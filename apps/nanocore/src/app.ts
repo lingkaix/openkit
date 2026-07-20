@@ -5,7 +5,6 @@ import {
   type BootReadinessSnapshot,
   SetupDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { MaterializedWorkspaceRoot as ConfigMaterializedWorkspaceRoot } from '@openkit/config-schema';
 import type { ActorRef, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -91,10 +90,6 @@ import {
   createConfiguredTurnExecutor,
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
-import {
-  materializeWorkspaceRootsForTurn,
-  resolveWorkspaceRepositoryForTurn,
-} from './runtime/turn-workspace-context.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { createWorkerControlCommandDeliveryRecorder } from './runtime/worker-control-commands.js';
 import {
@@ -134,7 +129,6 @@ import { registerVaultAdminRoutes } from './vault/vault-admin-routes.js';
 import type { OsKeychainVaultAdapter } from './vault/vault-os-keychain-backend.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
 import { backfillRepositoryDataSourceCatalogs } from './workspace/repository-data-source-catalog.js';
-import type { WorkspaceRepositoryResourceRecord } from './workspace/repository-store.js';
 import { ensureUserQuickChatWorkspace, resolveWorkspaceRole } from './workspace-membership.js';
 import { registerWorkspaceRoutes } from './workspace-routes.js';
 import { registerWorkspaceSharingRoutes } from './workspace-sharing-routes.js';
@@ -789,28 +783,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   /**
-   * Materializes current workspace roots for explicit context package root-file reads.
-   *
-   * @param store Request store that owns the workspace.
-   * @param workspaceId Workspace id that owns the context request.
-   * @returns Current materialized roots, including a ready default repository root when available.
-   */
-  function workspaceRootsForContextPackage(
-    store: FsStore,
-    workspaceId: string
-  ): ConfigMaterializedWorkspaceRoot[] {
-    let repository: WorkspaceRepositoryResourceRecord | null = null;
-
-    try {
-      repository = resolveWorkspaceRepositoryForTurn(options.coreDb, workspaceId);
-    } catch {
-      repository = null;
-    }
-
-    return materializeWorkspaceRootsForTurn(runtimeConfig(), store, workspaceId, repository);
-  }
-
-  /**
    * Starts one mode-selected worker turn through app-owned runtime composition.
    *
    * @param input Worker selection and turn input.
@@ -1342,8 +1314,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     inflightCommands,
+    repositoryWorkspaceDb,
     requestStore,
-    workspaceRootsForContextPackage,
   });
   registerTurnRoutes({
     app,

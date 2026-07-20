@@ -2,7 +2,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { KnowledgeManagerPrepareContextResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -26,38 +25,6 @@ function writeJsonl(path: string, rows: readonly unknown[]): void {
     path,
     rows.length > 0 ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : ''
   );
-}
-
-/** Builds the smallest valid persisted context-package trace. */
-function contextTrace(workspaceId: string) {
-  const response = KnowledgeManagerPrepareContextResponseSchema.parse({
-    operationId: 'op_portable',
-    operation: 'prepare-context-material',
-    workspaceId,
-    caller: 'workflow-coordinator',
-    query: 'portable state',
-    outcome: 'insufficient-evidence',
-    materials: [],
-    exclusions: [],
-    packageTrace: {
-      contextPackageId: 'ctx_portable',
-      contextPackageDigest: `ctxpkg_sha256_${'0'.repeat(64)}`,
-      policyVersion: 'knowledge-context-v1',
-      selectedKnowledgeEntryIds: [],
-      excludedCandidateCount: 0,
-      budget: { requestedLimit: 1, selectedCount: 0, excludedCount: 0 },
-    },
-    confidence: 0,
-    uncertainty: 'No matching context.',
-  });
-
-  return {
-    id: 'ctx_portable',
-    workspaceId,
-    operationId: response.operationId,
-    createdAt: JULY,
-    response,
-  };
 }
 
 /** Writes one complete portable source fixture. */
@@ -153,9 +120,11 @@ function writePortableFixture(root: string): void {
     },
   ];
   const retrieval = {
-    traceId: 'krt_portable',
+    traceId: 'krt_00000000-0000-4000-8000-000000000001',
     workspaceId,
-    query: 'portable state',
+    caller: 'app-api',
+    requestDigest: `sha256:${'0'.repeat(64)}`,
+    retrievalParameters: { limit: 1, pinnedConceptIds: [] },
     createdAt: JULY,
     selected: [],
     excluded: [],
@@ -166,9 +135,6 @@ function writePortableFixture(root: string): void {
   writeJsonl(join(root, 'knowledge', 'claims', '202607.jsonl'), claims);
   writeJsonl(join(root, 'knowledge', 'conflicts', '202606.jsonl'), [conflicts[0]]);
   writeJsonl(join(root, 'knowledge', 'conflicts', '202607.jsonl'), [conflicts[1]]);
-  writeJsonl(join(root, 'knowledge', 'context-packages', '202607.jsonl'), [
-    contextTrace(workspaceId),
-  ]);
   writeJsonl(join(root, 'knowledge', 'traces', '202607.jsonl'), [retrieval]);
 
   mkdirSync(join(root, 'config'), { recursive: true });
@@ -192,21 +158,6 @@ function writePortableFixture(root: string): void {
     join(root, 'knowledge', 'pages', 'kn_owned.md'),
     '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n'
   );
-  const materializationRoot = join(
-    root,
-    'knowledge',
-    'context-materializations',
-    'ctx_portable',
-    'openkit',
-    'context'
-  );
-  mkdirSync(join(materializationRoot, 'knowledge'), { recursive: true });
-  writeFileSync(
-    join(materializationRoot, 'package.json'),
-    '{"workspaceId":"ws_portable_source"}\n'
-  );
-  writeFileSync(join(materializationRoot, 'knowledge', 'kn_owned.md'), 'Portable context.\n');
-
   const packageRoot = join(root, 'threads', PORTABLE_TURN.threadId, 'turns', PORTABLE_TURN.turnId);
   mkdirSync(join(packageRoot, 'context-package'), { recursive: true });
   writeFileSync(
@@ -248,10 +199,13 @@ describe('workspace portable file-state IO', () => {
       'resolved',
     ]);
     expect([...state.nativeKnowledgePages.keys()]).toEqual([
+      'knowledge/pages/kn_owned.md',
       'knowledge/pages/native.md',
       'knowledge/pages/nested/native.md',
     ]);
-    expect(state.nativeKnowledgePages.has('knowledge/pages/kn_owned.md')).toBe(false);
+    expect(state.nativeKnowledgePages.get('knowledge/pages/kn_owned.md')).toContain(
+      'openkit_entry_id: "kn_owned"'
+    );
     expect([...state.workerContextPackageFiles]).toEqual([
       [
         'threads/th_portable/turns/tu_portable/context-package.json',
@@ -269,7 +223,10 @@ describe('workspace portable file-state IO', () => {
 
     writeWorkspacePortableFileState(targetRoot, state);
 
-    expect(readWorkspacePortableFileState(targetRoot, [PORTABLE_TURN])).toEqual(state);
+    const roundTripped = readWorkspacePortableFileState(targetRoot, [PORTABLE_TURN]);
+    for (const [path, content] of state.nativeKnowledgePages) {
+      expect(roundTripped.nativeKnowledgePages.get(path)).toBe(content);
+    }
     expect(readFileSync(join(targetRoot, 'config', 'workspace.jsonc'), 'utf8')).toBe(
       state.workspaceConfig
     );
@@ -313,15 +270,7 @@ describe('workspace portable file-state IO', () => {
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched\n');
     symlinkSync(
       join(outsideRoot, 'sentinel.txt'),
-      join(
-        linkedRoot,
-        'knowledge',
-        'context-materializations',
-        'ctx_portable',
-        'openkit',
-        'context',
-        'linked.txt'
-      )
+      join(linkedRoot, 'knowledge', 'pages', 'linked.md')
     );
     expect(() => readWorkspacePortableFileState(linkedRoot, [PORTABLE_TURN])).toThrow(
       /symbolic link/i

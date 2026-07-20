@@ -42,9 +42,13 @@ describe('nanocore e2e config loading', () => {
         schemaVersion: 1,
         id: 'agent_e2e',
         displayName: 'E2E Agent',
-        runtime: { kind: 'custom', adapter: 'custom-http', version: '0.0.2' },
-        mode: 'local',
-        deployment: { local: {} },
+        runtime: {
+          kind: 'custom',
+          adapter: 'custom-http',
+          version: '0.0.2',
+          image: { ref: 'openkit/worker-e2e:dev', pullPolicy: 'never' },
+          binaries: [{ id: 'node', path: '/usr/local/bin/node' }],
+        },
         readiness: { status: 'ready' },
       })
     );

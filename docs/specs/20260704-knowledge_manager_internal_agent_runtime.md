@@ -1,7 +1,7 @@
 # Knowledge Manager Service
 
 Status: Accepted
-Implementation: Partial
+Implementation: Implemented
 
 ## Owns
 
@@ -155,11 +155,9 @@ NanoCore implements five direct deterministic functions over the existing knowle
 
 ## Current Implementation Projection
 
-The current implementation has completed the memory-to-knowledge route and projection rename across the active minimal knowledge slice. NanoCore exposes deterministic Knowledge Manager `answer`, `prepare-context-material`, first-slice `draft-proposal`, first-slice `suggest-repair`, and bounded `health-check` operations through App API schemas, `@openkit/core-client`, NanoCore server routes, OpenAPI projection, the transport-neutral operation catalog, the bundled CLI, and the unified Skill as `knowledge.answer`, `knowledge.context-prepare`, `knowledge.proposal-draft`, `knowledge.repair-suggest`, and `knowledge.health-check`. The proposal operation creates a pending app-local Knowledge Proposal, the repair operation reports duplicate-title suggestions, and the health operation remains report-only.
+NanoCore exposes the five deterministic Knowledge Manager operations through App API schemas, `@openkit/core-client`, NanoCore routes, OpenAPI, the transport-neutral operation catalog, the bundled CLI, and the unified Skill. Answer and context preparation delegate to S61's governed retrieval owner; context preparation returns that owner's trace reference and exposes no standalone worker-context materialization or delivery surface.
 
-The read operations currently use a separate minimal `KnowledgeEntry` substring-search path instead of S61's governed retrieval owner. Context preparation also persists a standalone Knowledge selection trace and exposes a separate materialization surface. Both paths are implementation drift that G07 deletes: the read operations must reuse S61, preparation may return its trace reference, and only S39 may materialize and prove delivery for a worker Turn. Task Mode can pass Knowledge references through its request path, but accepted delivery exists only when the owning S39 trace names and verifies the exact delivered `knowledgePageId + contentDigest` and byte projection. Product-facing Knowledge Manager operations do not implement worker-facing `knowledge.*` capability routes, and this specification does not authorize adding them.
-
-The current schema still uses `assistant`, `workflow-coordinator`, `user`, and `system`, allows request-side caller attribution, defaults context preparation to `workflow-coordinator`, and receives stale Task Mode attribution. Proposal drafting classifies source references in its response but does not yet preserve one fixed target page id, canonical bytes, digest, and required source lineage through the authoritative proposal owner. Its generic fallback still uses the shared command helper's default HTTP 404, and multiple failure paths expose caught messages without the required redaction boundary. These caller, retrieval, proposal, trace-authority, and error mismatches keep this specification Partial. Goal Mode integration remains deferred.
+The server assigns only `assistant`, `task-mode`, or `app-api`, rejects public caller overrides, validates generated candidate bytes and source lineage before proposal persistence, and returns bounded product-safe errors. Proposal drafting fixes one create-only page id, exact canonical bytes, digest, and source references through the existing proposal owner. Direct Task delivery remains proved only by S39's exact page, digest, provenance, and byte projection. Product-facing Knowledge Manager operations expose no worker-facing `knowledge.*` capability routes, and Goal Mode integration remains deferred outside this specification's acceptance boundary.
 
 ## Alternatives Considered
 

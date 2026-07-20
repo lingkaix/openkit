@@ -4,7 +4,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot } from '../../../../tests/support/demo-data.mjs';
+import {
+  seedDemoWorkspaceAuthority,
+  seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
+} from '../../../../tests/support/demo-data.mjs';
 
 export interface NanoCoreHarness {
   baseUrl: string;
@@ -57,6 +60,7 @@ export async function startNanoCoreHarness(
 
   if (options.seedDemoWorkspace ?? coreMode === 'local') {
     seedSharedDemoWorkspaceDataRoot(dataRoot);
+    await seedDemoWorkspaceAuthority(dataRoot);
   }
 
   if (options.useSimulator ?? true) {

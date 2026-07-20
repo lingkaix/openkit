@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,52 @@ import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 
 const TIMESTAMP = '2026-07-12T00:00:00.000Z';
+const PROPOSAL_REQUEST_ID = '00000000-0000-4000-8000-000000000117';
+const REVIEW_REQUEST_ID = '00000000-0000-4000-8000-000000000118';
+const VERIFIED_EXTERNAL_REFERENCE = 'turn:canonical-record-fixture';
+
+/**
+ * Creates one strict immutable Proposal for canonical corruption tests.
+ *
+ * @param store File-backed authority under test.
+ * @param workspaceId Workspace that owns the Proposal.
+ * @returns Persisted Proposal record.
+ */
+function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
+  const canonicalPageBytes = [
+    '---',
+    'type: "KnowledgePage"',
+    'title: "Canonical proposal"',
+    'schema_version: "openkit-workspace-knowledge-schema-v1"',
+    'status: "active"',
+    'scope: "workspace"',
+    'openkit_entry_id: "canonical-proposal"',
+    'openkit_entry_kind: "project-context"',
+    `source_refs: ${JSON.stringify([VERIFIED_EXTERNAL_REFERENCE])}`,
+    'review_state: "accepted"',
+    'sensitivity: "normal"',
+    'freshness: "current"',
+    `created_at: "${TIMESTAMP}"`,
+    `updated_at: "${TIMESTAMP}"`,
+    '---',
+    'Canonical proposal bytes.',
+    '',
+  ].join('\n');
+
+  return store.createKnowledgeProposal({
+    workspaceId,
+    requestId: PROPOSAL_REQUEST_ID,
+    knowledgePageId: 'canonical-proposal',
+    canonicalPageBytes,
+    contentDigest: `sha256:${createHash('sha256').update(canonicalPageBytes).digest('hex')}`,
+    sourceReferences: [VERIFIED_EXTERNAL_REFERENCE],
+    rationale: 'Exercise canonical Proposal loading.',
+    confidence: 1,
+    verifiedExternalReferences: [VERIFIED_EXTERNAL_REFERENCE],
+    producer: { kind: 'user', id: 'user_local' },
+    createdAt: TIMESTAMP,
+  });
+}
 
 /**
  * Creates one file-backed workspace lineage for canonical record validation tests.
@@ -34,49 +81,25 @@ function createCanonicalRecordFixture() {
 }
 
 describe('workspace canonical record schemas', () => {
-  it.each([
-    ['created_at', `created_at: "${TIMESTAMP}"`, 'created_at: "not-a-timestamp"'],
-    ['updated_at', `updated_at: "${TIMESTAMP}"`, 'updated_at: "not-a-timestamp"'],
-  ])('rejects a knowledge proposal with an invalid required %s field', (_, before, after) => {
+  it('rejects a knowledge proposal missing its required created_at field', () => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
-    const proposal = store.createKnowledgeProposal({
-      id: 'kp_invalid_schema',
-      workspaceId: workspace.id,
-      title: 'Invalid proposal schema',
-      summary: 'This proposal must fail closed after persisted corruption.',
-      status: 'pending',
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
-    });
+    const proposal = createStrictKnowledgeProposal(store, workspace.id);
     const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
 
-    writeFileSync(path, readFileSync(path, 'utf8').replace(before, after));
+    writeFileSync(path, readFileSync(path, 'utf8').replace(`created_at: "${TIMESTAMP}"\n`, ''));
 
     expect(() => new FsStore({ dataRoot })).toThrow();
   });
 
   it('rejects a knowledge proposal with embedded decision status', () => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
-    const proposal = store.createKnowledgeProposal({
-      id: 'kp_embedded_status',
-      workspaceId: workspace.id,
-      title: 'Embedded decision status',
-      summary: 'The review record alone owns decision status.',
-      status: 'pending',
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
-    });
+    const proposal = createStrictKnowledgeProposal(store, workspace.id);
     const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
     const content = readFileSync(path, 'utf8');
 
     writeFileSync(
       path,
-      content.includes('\nstatus:')
-        ? content
-        : content.replace(
-            'requested_operation: "review_summary"',
-            'requested_operation: "review_summary"\nstatus: "pending"'
-          )
+      content.replace('review_required: true', 'review_required: true\nstatus: "pending"')
     );
 
     expect(() => new FsStore({ dataRoot })).toThrow();
@@ -84,30 +107,24 @@ describe('workspace canonical record schemas', () => {
 
   it('rejects a knowledge proposal review with invalid persisted fields', () => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
-    const proposal = store.createKnowledgeProposal({
-      id: 'kp_invalid_review_schema',
-      workspaceId: workspace.id,
-      title: 'Invalid proposal review schema',
-      summary: 'The review record must be schema-validated on reload.',
-      status: 'pending',
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
-    });
+    const proposal = createStrictKnowledgeProposal(store, workspace.id);
     store.recordKnowledgeProposalReviewDecision({
       proposalId: proposal.id,
       workspaceId: workspace.id,
-      status: 'accepted',
-      requestId: null,
-      message: null,
+      decision: 'rejected',
+      requestId: REVIEW_REQUEST_ID,
+      verifiedExternalReferences: [VERIFIED_EXTERNAL_REFERENCE],
+      actor: { kind: 'user', id: 'user_local' },
       decidedAt: TIMESTAMP,
     });
     const path = join(workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`);
-    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    const record = JSON.parse(readFileSync(path, 'utf8')) as {
+      decisions: Array<Record<string, unknown>>;
+    };
+    record.decisions[0]!.decision = 'not-a-review-decision';
+    record.decisions[0]!.decidedAt = 'not-a-timestamp';
 
-    writeFileSync(
-      path,
-      `${JSON.stringify({ ...record, status: 'not-a-review-status', decidedAt: 'not-a-timestamp' })}\n`
-    );
+    writeFileSync(path, `${JSON.stringify(record)}\n`);
 
     expect(() => new FsStore({ dataRoot })).toThrow();
   });

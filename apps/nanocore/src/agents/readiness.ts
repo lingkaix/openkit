@@ -130,10 +130,18 @@ export function computeReadiness(
       };
     }
 
-    const credentialState = providerRegistry.hasResolvableCredentials(
-      manifest.provider.ref,
-      dependencies.providerCredentialResolver
-    );
+    let credentialState: boolean | null;
+    try {
+      credentialState = providerRegistry.hasResolvableCredentials(
+        manifest.provider.ref,
+        dependencies.providerCredentialResolver
+      );
+    } catch {
+      return {
+        reasons: [`Provider ${provider.id} credentials are unavailable.`],
+        status: 'blocked',
+      };
+    }
 
     if (credentialState === false) {
       if (

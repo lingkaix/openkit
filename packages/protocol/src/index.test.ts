@@ -33,6 +33,7 @@ import {
   SubmitTurnInputRequestSchema,
   ThreadSchema,
   TurnHumanGateSchema,
+  TurnReadProjectionSchema,
   TurnSchema,
   TurnStatusSchema,
   UpdateThreadRequestSchema,
@@ -652,6 +653,46 @@ describe('protocol schemas', () => {
 
     expect(parsed.items).toEqual([]);
     expect(parsed.configVersion).toBe(7);
+  });
+
+  it('keeps the turn read projection strict and separate from durable Turn authority', () => {
+    const turn = {
+      id: 'tu_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      triggerActor: { kind: 'user', id: 'user_demo' },
+      items: [],
+      status: 'completed',
+      humanGate: null,
+      error: null,
+      configVersion: 7,
+      startedAt: '2026-04-15T00:00:00Z',
+      completedAt: '2026-04-15T00:00:01Z',
+      durationMs: 1_000,
+    } as const;
+    const contextPackageDigest = `ctxpkg_sha256_${'a'.repeat(64)}`;
+
+    expect(TurnSchema.safeParse(turn).success).toBe(true);
+    expect(TurnReadProjectionSchema.safeParse(turn).success).toBe(false);
+    expect(
+      TurnReadProjectionSchema.parse({
+        ...turn,
+        contextPackageDigest,
+      })
+    ).toMatchObject({ contextPackageDigest });
+    expect(
+      TurnReadProjectionSchema.parse({
+        ...turn,
+        contextPackageDigest: null,
+      }).contextPackageDigest
+    ).toBeNull();
+    expect(
+      TurnReadProjectionSchema.safeParse({
+        ...turn,
+        contextPackageDigest,
+        undocumentedProjectionField: true,
+      }).success
+    ).toBe(false);
   });
 
   it('requires immutable source actors only on the three human-authored item variants', () => {

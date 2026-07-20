@@ -36,7 +36,6 @@ import {
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { goalStartOwnerIds, startGoalModeObjective } from './goal-routes.js';
 import {
-  type DelegationContextRef,
   type StructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
@@ -49,8 +48,8 @@ import {
 } from './internal-agents/worker-coordinator.js';
 import {
   answerKnowledgeManager,
-  prepareKnowledgeContext,
-  resolveRetrievedKnowledgeEntries,
+  prepareTaskKnowledgeContext,
+  resolveWorkspaceKnowledgeReferenceProofs,
 } from './knowledge-manager.js';
 import type { ChatCommandReceiptMetadata, CommandRequestRecord, FsStore } from './lib/store.js';
 import { parseUsage } from './llm/gateway-usage.js';
@@ -90,7 +89,6 @@ import {
   requireSchedulerSessionLeaseAdmissionContext,
 } from './scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import {
   getDefaultWorkspaceRepositoryResource,
@@ -899,6 +897,34 @@ function directTaskModeTurnId(
 }
 
 /**
+ * Derives one canonical UUID-shaped S61 trace id from the complete direct Task command identity.
+ *
+ * @param actorId Authenticated actor id.
+ * @param workspaceId Workspace command scope.
+ * @param threadId Thread command scope.
+ * @param requestId Caller-supplied command request id.
+ * @returns Stable server-owned S61 retrieval trace id.
+ */
+function directTaskKnowledgeRetrievalTraceId(
+  actorId: string,
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): string {
+  const digest = commandInputHash({
+    command: 'task.start.knowledge-retrieval',
+    actorId,
+    workspaceId,
+    threadId,
+    requestId,
+  }).slice('sha256:'.length);
+  const variant = ((Number.parseInt(digest[16] ?? '0', 16) & 0x3) | 0x8).toString(16);
+  const uuid = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+
+  return `krt_${uuid}`;
+}
+
+/**
  * Records durable usage for one successful QuickChat LLM call when storage is available.
  *
  * @param input QuickChat usage attribution and provider usage payload.
@@ -1030,48 +1056,7 @@ function createTaskModeDelegation(input: {
       workspaceId: input.workspaceId,
     },
   } as const;
-  let coordinator = createWorkerCoordinatorDecision(coordinatorInput);
-
-  if (
-    coordinator.decision === 'worker_turn' &&
-    coordinator.selectedWorkerCandidate &&
-    coordinator.workerRequest &&
-    coordinator.requiredUserAction === 'none'
-  ) {
-    const dataRoot = input.store.getDataRoot();
-
-    if (dataRoot) {
-      const retrieval = retrieveWorkspaceKnowledge({
-        dataRoot,
-        workspaceId: input.workspaceId,
-        caller: 'task-mode',
-        query: input.prompt,
-        limit: 5,
-        traceId: `krt_${randomUUID()}`,
-      });
-      const knowledgeContext = prepareKnowledgeContext({
-        operationId: `km_context_${randomUUID()}`,
-        workspaceId: input.workspaceId,
-        caller: 'task-mode',
-        query: input.prompt,
-        limit: 5,
-        retrievalTraceId: retrieval.traceId,
-        entries: resolveRetrievedKnowledgeEntries(
-          input.store.listKnowledge(input.workspaceId),
-          retrieval.selected
-        ),
-      });
-      const contextRefs: DelegationContextRef[] =
-        knowledgeContext.outcome === 'prepared'
-          ? knowledgeContext.materials.map((material) => ({
-              kind: 'knowledge',
-              id: material.knowledgeEntryId,
-            }))
-          : [];
-
-      coordinator = createWorkerCoordinatorDecision({ ...coordinatorInput, contextRefs });
-    }
-  }
+  const coordinator = createWorkerCoordinatorDecision(coordinatorInput);
 
   if (
     coordinator.decision !== 'worker_turn' ||
@@ -2195,24 +2180,27 @@ export function registerQuickAndChatModeRoutes({
       let knowledgeAnswer: ReturnType<typeof answerKnowledgeManager> | null = null;
 
       if (dataRoot) {
-        const retrieval = retrieveWorkspaceKnowledge({
-          dataRoot,
-          workspaceId,
-          caller: 'assistant',
-          query: chatInput.input,
-          limit: 3,
-          traceId: `krt_${randomUUID()}`,
-        });
+        const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
+        let referenceProofs: ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> =
+          new Map();
+        try {
+          referenceProofs = resolveWorkspaceKnowledgeReferenceProofs({
+            coreDb,
+            store,
+            workspaceDb,
+            workspaceId,
+          });
+        } finally {
+          workspaceDb?.sqlite.close();
+        }
         knowledgeAnswer = answerKnowledgeManager({
+          dataRoot,
           operationId: `km_answer_${randomUUID()}`,
           workspaceId,
           caller: 'assistant',
           query: chatInput.input,
-          retrievalTraceId: retrieval.traceId,
-          entries: resolveRetrievedKnowledgeEntries(
-            store.listKnowledge(workspaceId),
-            retrieval.selected
-          ),
+          limit: 3,
+          referenceProofs,
         });
       }
 
@@ -2670,11 +2658,49 @@ export function registerTaskModeRoute({
           requestInputHash,
           reviewRequired: false,
           remainingWorkerIterations: 0,
-          prepare: () => ({
-            repository,
-            delegationRequest: workerRequest,
-            contextPackageDigest: commandInputHash(workerRequest),
-          }),
+          prepare: () => {
+            const dataRoot = store.getDataRoot();
+            if (!dataRoot) {
+              throw directTaskModeRecoveryError(
+                'Task Knowledge retrieval requires a file-backed data root.'
+              );
+            }
+
+            let knowledgeSelectionInput: { readonly retrievalTraceId: string };
+            try {
+              knowledgeSelectionInput = prepareTaskKnowledgeContext({
+                dataRoot,
+                workspaceId,
+                query: taskInput.input,
+                referenceProofs: resolveWorkspaceKnowledgeReferenceProofs({
+                  coreDb,
+                  store,
+                  workspaceDb,
+                  workspaceId,
+                }),
+                traceId: directTaskKnowledgeRetrievalTraceId(
+                  actorId,
+                  workspaceId,
+                  threadId,
+                  taskInput.requestId
+                ),
+              });
+            } catch (error) {
+              throw directTaskModeRecoveryError(
+                error instanceof Error &&
+                  error.message === 'Duplicate Knowledge retrieval trace id.'
+                  ? 'Task Knowledge retrieval exists without a provable worker owner.'
+                  : 'Task Knowledge retrieval could not establish one coherent selection.'
+              );
+            }
+
+            return {
+              repository,
+              delegationRequest: workerRequest,
+              contextPackageDigest: commandInputHash(workerRequest),
+              knowledgeSelectionInput,
+            };
+          },
           reserveTurn: () => ({ turnId: reservedTurnId }),
           startWorker: async ({ turnId, prepared }) => {
             const turn = await startModeWorkerTurn({

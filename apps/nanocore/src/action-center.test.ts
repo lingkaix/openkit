@@ -11,6 +11,7 @@ import { createArtifactReview, decideArtifactReview } from './artifact-reviews.j
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { createPendingUserTurnRecord } from './goal-steering-authority.js';
+import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from './knowledge/okf.js';
 import { createGoalReviewRecord, resolveGoalReviewRecord } from './runtime/goal-review-records.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
@@ -22,6 +23,7 @@ import {
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -74,6 +76,69 @@ function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   return workspaceDb;
+}
+
+/**
+ * Creates one strict immutable Knowledge Proposal for Action Center projection tests.
+ *
+ * @param store Test store that owns the Workspace.
+ * @param workspaceId Workspace that owns the proposal.
+ * @param label Stable lowercase fixture label.
+ * @param rationale Human-readable proposal rationale.
+ * @returns Deterministic pending proposal authority.
+ */
+function createKnowledgeProposalFixture(
+  store: ReturnType<typeof createDemoStore>,
+  workspaceId: string,
+  label: string,
+  rationale: string
+) {
+  const source = store.createKnowledgeEntry(workspaceId, {
+    kind: 'project-context',
+    title: `${label} evidence`,
+    content: rationale,
+    sourceReferences: [],
+  });
+  const sourceReference = `knowledge:${source.id}@sha256:${createHash('sha256')
+    .update(serializeUserAuthoredKnowledgePage(source), 'utf8')
+    .digest('hex')}`;
+  const knowledgePageId = `action-center/${label}`;
+  const canonicalPageBytes = [
+    '---',
+    'type: "KnowledgePage"',
+    `title: ${JSON.stringify(`Review ${label}`)}`,
+    'openkit_entry_kind: "project-context"',
+    `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
+    `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
+    'status: "active"',
+    'scope: "workspace"',
+    `source_refs: ${JSON.stringify([sourceReference])}`,
+    'review_state: "accepted"',
+    'sensitivity: "normal"',
+    'freshness: "current"',
+    `created_at: ${JSON.stringify(timestamp)}`,
+    `updated_at: ${JSON.stringify(timestamp)}`,
+    '---',
+    rationale,
+    '',
+  ].join('\n');
+  const requestSuffix = createHash('sha256').update(label, 'utf8').digest('hex').slice(0, 12);
+
+  return store.createKnowledgeProposal({
+    workspaceId,
+    requestId: `00000000-0000-4000-8000-${requestSuffix}`,
+    knowledgePageId,
+    canonicalPageBytes,
+    contentDigest: `sha256:${createHash('sha256')
+      .update(canonicalPageBytes, 'utf8')
+      .digest('hex')}`,
+    sourceReferences: [sourceReference],
+    rationale,
+    confidence: 0.9,
+    verifiedExternalReferences: [],
+    producer: { kind: 'system', id: 'system_action_center', responsibleUserId: 'user_local' },
+    createdAt: timestamp,
+  });
 }
 
 /**
@@ -306,15 +371,12 @@ describe('action center app API', () => {
         itemId: questionItem.id,
       },
     });
-    store.createKnowledgeProposal({
-      id: 'knowledge_actor_scoped',
-      workspaceId: 'ws_demo',
-      title: 'Review actor-scoped knowledge',
-      summary: 'Only current review authority may see this row.',
-      status: 'pending',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    const knowledgeProposal = createKnowledgeProposalFixture(
+      store,
+      'ws_demo',
+      'actor-scoped',
+      'Only current review authority may see this row.'
+    );
     store.upsertAgent('ws_demo', {
       id: 'agent_codex_host',
       name: 'Codex Host Agent',
@@ -405,7 +467,7 @@ describe('action center app API', () => {
         visibleIds: [
           'agent-readiness:agent_codex_host',
           `approval:${approval.id}`,
-          'knowledge:knowledge_actor_scoped',
+          `knowledge:${knowledgeProposal.id}`,
         ],
       },
       {
@@ -415,7 +477,7 @@ describe('action center app API', () => {
         visibleIds: [
           'agent-readiness:agent_codex_host',
           `approval:${approval.id}`,
-          'knowledge:knowledge_actor_scoped',
+          `knowledge:${knowledgeProposal.id}`,
           `question:${questionItem.id}`,
         ],
       },
@@ -426,7 +488,7 @@ describe('action center app API', () => {
         visibleIds: [
           'agent-readiness:agent_codex_host',
           `approval:${approval.id}`,
-          'knowledge:knowledge_actor_scoped',
+          `knowledge:${knowledgeProposal.id}`,
         ],
       },
       {
@@ -452,7 +514,7 @@ describe('action center app API', () => {
       'agent-readiness:agent_codex_host',
       `approval:${approval.id}`,
       `question:${questionItem.id}`,
-      'knowledge:knowledge_actor_scoped',
+      `knowledge:${knowledgeProposal.id}`,
     ]);
 
     try {
@@ -903,15 +965,12 @@ describe('action center app API', () => {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      store.createKnowledgeProposal({
-        id: 'knowledge_proposal_demo',
-        workspaceId: 'ws_demo',
-        title: 'Remember project decision',
-        summary: 'Persist the Action Center decision.',
-        status: 'pending',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
+      const knowledgeProposal = createKnowledgeProposalFixture(
+        store,
+        'ws_demo',
+        'project-decision',
+        'Persist the Action Center decision.'
+      );
       const app = createAuthorizedCoreApp(coreDb, store);
 
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
@@ -930,7 +989,7 @@ describe('action center app API', () => {
       });
       expect(byId.get('artifact:artifact_demo')).toBeUndefined();
       expect(byId.get('artifact:ar_workspace_changes_turn_1_swr_1')).toBeUndefined();
-      expect(byId.get('knowledge:knowledge_proposal_demo')).toMatchObject({
+      expect(byId.get(`knowledge:${knowledgeProposal.id}`)).toMatchObject({
         kind: 'knowledge_review',
         severity: 'needs_input',
         source: { type: 'knowledge', status: 'pending' },
@@ -938,18 +997,50 @@ describe('action center app API', () => {
           expect.objectContaining({
             kind: 'accept_knowledge',
             method: 'POST',
-            href: '/api/app/workspaces/ws_demo/knowledge/proposals/knowledge_proposal_demo/decision',
+            href: `/api/app/workspaces/ws_demo/knowledge/proposals/${knowledgeProposal.id}/decision`,
           }),
           expect.objectContaining({
             kind: 'reject_knowledge',
             method: 'POST',
-            href: '/api/app/workspaces/ws_demo/knowledge/proposals/knowledge_proposal_demo/decision',
+            href: `/api/app/workspaces/ws_demo/knowledge/proposals/${knowledgeProposal.id}/decision`,
           }),
         ]),
       });
       expect(
-        byId.get('knowledge:knowledge_proposal_demo')?.actions.map((action) => action.kind)
+        byId.get(`knowledge:${knowledgeProposal.id}`)?.actions.map((action) => action.kind)
       ).toEqual(['accept_knowledge', 'reject_knowledge', 'defer']);
+
+      store.recordKnowledgeProposalReviewDecision({
+        workspaceId: 'ws_demo',
+        proposalId: knowledgeProposal.id,
+        requestId: '00000000-0000-4000-8000-000000000001',
+        decision: 'deferred',
+        verifiedExternalReferences: [],
+        actor: { kind: 'user', id: 'user_local' },
+        decidedAt: timestamp,
+      });
+      const deferred = ListHumanAttentionResponseSchema.parse(
+        await (await app.request('/api/app/workspaces/ws_demo/action-center')).json()
+      );
+      expect(
+        deferred.items.find((row) => row.id === `knowledge:${knowledgeProposal.id}`)
+      ).toMatchObject({ source: { type: 'knowledge', status: 'deferred' } });
+
+      store.recordKnowledgeProposalReviewDecision({
+        workspaceId: 'ws_demo',
+        proposalId: knowledgeProposal.id,
+        requestId: '00000000-0000-4000-8000-000000000002',
+        decision: 'accepted',
+        verifiedExternalReferences: [],
+        actor: { kind: 'user', id: 'user_local' },
+        decidedAt: timestamp,
+      });
+      const accepted = ListHumanAttentionResponseSchema.parse(
+        await (await app.request('/api/app/workspaces/ws_demo/action-center')).json()
+      );
+      expect(
+        accepted.items.find((row) => row.id === `knowledge:${knowledgeProposal.id}`)
+      ).toBeUndefined();
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();

@@ -78,6 +78,8 @@ export interface PreparedNextTurn {
   readonly delegationRequest: StructuredWorkerDelegationRequest;
   /** Context package digest from the selected projection. */
   readonly contextPackageDigest: string;
+  /** Governed Knowledge selection consumed by a direct Task, or null for non-Task turns. */
+  readonly knowledgeSelectionInput: { readonly retrievalTraceId: string } | null;
 }
 
 /**

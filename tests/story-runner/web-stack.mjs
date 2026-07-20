@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { seedDemoWorkspaceDataRoot } from '../support/demo-data.mjs';
+import { seedDemoWorkspaceAuthority, seedDemoWorkspaceDataRoot } from '../support/demo-data.mjs';
 
 const storyRunnerRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(storyRunnerRoot, '../..');
@@ -36,6 +36,7 @@ export async function startIsolatedStoryWebStack(options = {}) {
 
   if (mode === 'local') {
     seedDemoWorkspaceDataRoot(dataRoot);
+    await seedDemoWorkspaceAuthority(dataRoot);
   }
 
   if (options.useSimulator ?? true) {

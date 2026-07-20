@@ -91,6 +91,7 @@ Workflow, human attention, and verification:
 - [`20260713-work_resource_interaction_model.md`](./20260713-work_resource_interaction_model.md)
 - [`20260529-test_strategy.md`](./20260529-test_strategy.md)
 - [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
+- [`20260719-verification_calibration.md`](./20260719-verification_calibration.md)
 
 Worker runtime, supply, and synchronization:
 
@@ -180,7 +181,7 @@ Every spec MUST state exactly one implementation-alignment value near the top.
 `Implementation` describes how the current system relates to the spec contract.
 It does not decide whether the spec is current guidance.
 
-- `Not Started`: the accepted contract has no meaningful implementation yet.
+- `Not Started`: the described contract has no meaningful implementation yet.
 - `In Progress`: implementation work is actively underway.
 - `Partial`: the system implements part of the contract, but acceptance criteria are not fully satisfied.
 - `Implemented`: the system, tests, and current implementation projection are aligned with the spec contract.

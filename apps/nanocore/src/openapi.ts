@@ -109,12 +109,10 @@ import {
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
-  MaterializeKnowledgeContextPackageResponseSchema,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
-  ReadKnowledgeManagerContextPackageTraceResponseSchema,
   ReadKnowledgeSourceResponseSchema,
   RecordKnowledgeClaimRequestSchema,
   RecordKnowledgeClaimResponseSchema,
@@ -139,6 +137,8 @@ import {
   RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
+  ReverseKnowledgeProposalRequestSchema,
+  ReverseKnowledgeProposalResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
   ReviseThreadGoalPlanResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
@@ -2778,7 +2778,7 @@ export function createAppOpenApiDocument() {
         post: {
           operationId: 'prepareKnowledgeContext',
           tags: ['knowledge'],
-          summary: 'Prepare source-traceable knowledge context material.',
+          summary: 'Select a bounded governed Knowledge retrieval projection.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [WORKSPACE_ID_PARAMETER],
           requestBody: {
@@ -2793,7 +2793,7 @@ export function createAppOpenApiDocument() {
           },
           responses: {
             '200': {
-              description: 'Prepared knowledge context material.',
+              description: 'Governed Knowledge selection and retrieval trace reference.',
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: {
@@ -2813,116 +2813,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}': {
-        get: {
-          operationId: 'readKnowledgeContextPackageTrace',
-          tags: ['knowledge'],
-          summary: 'Read one persisted Knowledge Manager context package trace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'contextPackageId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Persisted knowledge context package trace.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ReadKnowledgeManagerContextPackageTraceResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}/materialization':
-        {
-          get: {
-            operationId: 'readKnowledgeContextPackageMaterialization',
-            tags: ['knowledge'],
-            summary: 'Read one materialized Knowledge Manager context package.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              {
-                name: 'contextPackageId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            responses: {
-              '200': {
-                description: 'Previously materialized worker-visible context package summary.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/MaterializeKnowledgeContextPackageResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-          post: {
-            operationId: 'materializeKnowledgeContextPackage',
-            tags: ['knowledge'],
-            summary: 'Materialize one Knowledge Manager context package for worker-visible files.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              {
-                name: 'contextPackageId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            responses: {
-              '200': {
-                description: 'Worker-visible context package materialization summary.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/MaterializeKnowledgeContextPackageResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
       '/api/app/workspaces/{workspaceId}/knowledge/manager/proposals': {
         post: {
           operationId: 'draftKnowledgeProposal',
@@ -3539,6 +3429,49 @@ export function createAppOpenApiDocument() {
                   schema: {
                     $ref: '#/components/schemas/SubmitKnowledgeProposalDecisionResponse',
                   },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/reversal': {
+        post: {
+          operationId: 'reverseKnowledgeProposal',
+          tags: ['reviews'],
+          summary: 'Remove one unchanged proposal-created Knowledge Page.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [
+            WORKSPACE_ID_PARAMETER,
+            {
+              name: 'proposalId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/ReverseKnowledgeProposalRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Derived projection after bounded Knowledge Proposal reversal.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ReverseKnowledgeProposalResponse' },
                 },
               },
             },
@@ -5022,12 +4955,6 @@ export function createAppOpenApiDocument() {
         KnowledgeManagerPrepareContextResponse: toJsonSchema(
           KnowledgeManagerPrepareContextResponseSchema
         ),
-        ReadKnowledgeManagerContextPackageTraceResponse: toJsonSchema(
-          ReadKnowledgeManagerContextPackageTraceResponseSchema
-        ),
-        MaterializeKnowledgeContextPackageResponse: toJsonSchema(
-          MaterializeKnowledgeContextPackageResponseSchema
-        ),
         KnowledgeManagerSuggestRepairRequest: toJsonSchema(
           KnowledgeManagerSuggestRepairRequestSchema
         ),
@@ -5176,6 +5103,8 @@ export function createAppOpenApiDocument() {
         SubmitKnowledgeProposalDecisionResponse: toJsonSchema(
           SubmitKnowledgeProposalDecisionResponseSchema
         ),
+        ReverseKnowledgeProposalRequest: toJsonSchema(ReverseKnowledgeProposalRequestSchema),
+        ReverseKnowledgeProposalResponse: toJsonSchema(ReverseKnowledgeProposalResponseSchema),
         SubmitThreadGoalSteeringRequest: toJsonSchema(SubmitThreadGoalSteeringRequestSchema),
         SubmitThreadGoalSteeringResponse: toJsonSchema(SubmitThreadGoalSteeringResponseSchema),
         SubmitTurnFeedbackRequest: toJsonSchema(SubmitTurnFeedbackRequestSchema),

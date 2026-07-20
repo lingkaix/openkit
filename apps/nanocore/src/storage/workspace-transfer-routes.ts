@@ -736,8 +736,6 @@ export function registerWorkspaceTransferRoutes({
       threads,
       turns,
       knowledge: store.listKnowledge(workspaceId),
-      knowledgeProposalReviews: store.listKnowledgeProposalReviewDecisions(workspaceId),
-      knowledgeProposals: store.listKnowledgeProposals(workspaceId),
       knowledgeSources: store.listKnowledgeSources(workspaceId),
       knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
       itemRevisions: store.listWorkspaceItemRevisions(workspaceId),

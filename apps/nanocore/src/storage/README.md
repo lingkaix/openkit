@@ -25,8 +25,8 @@ One record family must have one durable authority. Do not add aggregate workspac
 - `../goal-steering-authority.ts` owns the Thread-unique pending input and immutable terminal outcome rows; callers own Item, Context Package, follow-up Turn, and body-free receipt effects around its exact transaction fences.
 - `workspace-export.ts` owns the V2 export tree, manifest, exact-byte inventory, and offline verification.
 - `workspace-import.ts` parses only verified bytes, validates and remints the import graph, and reconstructs importable records.
-- `workspace-portable-file-state.ts` owns portable knowledge ledgers, workspace config and schema, native OKF pages, and export/import capture and publication of context materializations.
-- `../lib/store.ts` currently owns live context-materialization reads and writes; do not duplicate that path protocol or add another durable owner while the broad store boundary remains.
+- `workspace-portable-file-state.ts` owns portable Knowledge ledgers, workspace config and schema, native OKF pages, S61 retrieval traces, and retained S39 worker Context Package files.
+- Standalone Knowledge context traces and materializations are unsupported; worker delivery belongs only to the S39 Context Package owner.
 - `workspace-transfer-routes.ts` coordinates public requests, staged workspace publication, the Core database transaction, and synchronous compensation when Core replay fails.
 - `index-rebuild.ts` consumes canonical records and authoritative ledgers but must never become their source of truth.
 - Secret material belongs to `../vault/` backends and credential consumers; storage may retain only explicitly allowed non-secret metadata and redacted evidence.

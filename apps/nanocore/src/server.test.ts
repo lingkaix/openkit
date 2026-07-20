@@ -17,6 +17,7 @@ import {
   CapabilityUsageResponseSchema,
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyResponseSchema,
+  KnowledgeRetrievalResponseSchema,
   ListHumanAttentionResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
@@ -126,6 +127,7 @@ import type {
 import {
   getWorkerCheckpoint,
   listExportableWorkerCheckpoints,
+  parseWorkerCheckpointContextAssembly,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
@@ -166,6 +168,7 @@ import {
   recordDataRootDeploymentMove,
 } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { readWorkspaceKnowledgeRetrievalTrace } from './storage/workspace-portable-file-state.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp as createDeterministicTestApp } from './test-support/app.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -351,7 +354,8 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
     ensureLocalUser(options.coreDb);
   }
 
-  const store = options.store ?? createDemoStore();
+  const store =
+    options.store ?? createDemoStore(options.coreDb ? { dataRoot: options.coreDb.dataRoot } : {});
 
   seedDemoWorkspace(store);
   if (options.coreDb) {
@@ -373,6 +377,148 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
     agentManifests: [createTestAgentSetup({ provider: null }).manifest],
     ...options,
     store,
+  });
+}
+
+/**
+ * Drafts one source-backed create-only Knowledge Proposal through its public route.
+ *
+ * @param app Test NanoCore app.
+ * @param suffix Safe unique suffix for the proposal fixture.
+ * @returns Exact proposal and candidate page tuple used by decision and reversal tests.
+ */
+async function draftKnowledgeProposalFixture(
+  app: ReturnType<typeof createNanoCoreApp>,
+  suffix: string
+) {
+  const sourceResponse = await app.request('/api/app/workspaces/ws_demo/knowledge/sources', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId: `knowledge-source-${suffix}`,
+      kind: 'document',
+      title: `Proposal source ${suffix}`,
+      uri: `file://proposal-source-${suffix}.md`,
+      content: `Authoritative proposal source ${suffix}.`,
+    }),
+  });
+  expect(sourceResponse.status, await sourceResponse.clone().text()).toBe(201);
+  const source = (await sourceResponse.json()) as {
+    source: { id: string; contentDigest: string };
+  };
+  const sourceReference = `source:${source.source.id}@${source.source.contentDigest}`;
+  const knowledgePageId = `proposal-${suffix}`;
+  const canonicalPageBytes = [
+    '---',
+    'type: "KnowledgePage"',
+    `title: "Proposal ${suffix}"`,
+    'schema_version: "openkit-workspace-knowledge-schema-v1"',
+    'status: "active"',
+    'scope: "workspace"',
+    `openkit_entry_id: "${knowledgePageId}"`,
+    'openkit_entry_kind: "project-context"',
+    `source_refs: ${JSON.stringify([sourceReference])}`,
+    'review_state: "accepted"',
+    'sensitivity: "normal"',
+    'freshness: "current"',
+    'created_at: "2026-07-19T00:00:00.000Z"',
+    'updated_at: "2026-07-19T00:00:00.000Z"',
+    '---',
+    `Reusable proposal lesson ${suffix}.`,
+    '',
+  ].join('\n');
+  const contentDigest = artifactDigest(canonicalPageBytes);
+  const requestId = knowledgeProposalRequestId(`draft-${suffix}`);
+  const response = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/proposals', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      requestId,
+      knowledgePageId,
+      canonicalPageBytes,
+      contentDigest,
+      sourceReferences: [sourceReference],
+      rationale: `Preserve proposal lesson ${suffix}.`,
+      confidence: 0.8,
+    }),
+  });
+  expect(response.status, await response.clone().text()).toBe(200);
+  const body = (await response.json()) as { proposal: { id: string } };
+
+  return {
+    proposalId: body.proposal.id,
+    knowledgePageId,
+    canonicalPageBytes,
+    contentDigest,
+  };
+}
+
+/**
+ * Derives one deterministic protocol UUID for a Knowledge Proposal test command.
+ *
+ * @param label Stable fixture label.
+ * @returns Deterministic UUID-shaped request identity.
+ */
+function knowledgeProposalRequestId(label: string): string {
+  const suffix = createHash('sha256').update(label, 'utf8').digest('hex').slice(0, 12);
+  return `00000000-0000-4000-8000-${suffix}`;
+}
+
+/**
+ * Returns the authoritative file path for one Knowledge Page fixture.
+ *
+ * @param dataRoot Data root that owns the fixture.
+ * @param knowledgePageId Safe Knowledge Page identity.
+ * @returns Absolute authoritative page path.
+ */
+function knowledgeProposalPagePath(dataRoot: string, knowledgePageId: string): string {
+  return join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', `${knowledgePageId}.md`);
+}
+
+/**
+ * Submits one exact Knowledge Proposal decision through the public route.
+ *
+ * @param app Test NanoCore app.
+ * @param proposalId Addressed Proposal identity.
+ * @param requestId Decision command identity.
+ * @param decision Human decision to submit.
+ * @returns Route response.
+ */
+function submitKnowledgeProposalDecision(
+  app: ReturnType<typeof createNanoCoreApp>,
+  proposalId: string,
+  requestId: string,
+  decision: 'accepted' | 'rejected' | 'deferred'
+): Promise<Response> {
+  return app.request(`/api/app/workspaces/ws_demo/knowledge/proposals/${proposalId}/decision`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId, decision }),
+  });
+}
+
+/**
+ * Submits one bounded Knowledge Proposal reversal through the public route.
+ *
+ * @param app Test NanoCore app.
+ * @param proposalId Addressed Proposal identity.
+ * @param input Exact reversal request.
+ * @returns Route response.
+ */
+function submitKnowledgeProposalReversal(
+  app: ReturnType<typeof createNanoCoreApp>,
+  proposalId: string,
+  input: {
+    requestId: string;
+    reviewId: string;
+    knowledgePageId: string;
+    expectedContentDigest: string;
+  }
+): Promise<Response> {
+  return app.request(`/api/app/workspaces/ws_demo/knowledge/proposals/${proposalId}/reversal`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
   });
 }
 
@@ -1190,14 +1336,13 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 17,
+      fileCount: 18,
       checkedFiles: [
         'records/agent-sessions.jsonl',
         'records/artifact-reviews.jsonl',
         'records/item-revisions.jsonl',
         'records/knowledge-claims.jsonl',
         'records/knowledge-conflicts.jsonl',
-        'records/knowledge-context-package-traces.jsonl',
         'records/knowledge-observations.jsonl',
         'records/knowledge-retrieval-traces.jsonl',
         'records/knowledge.jsonl',
@@ -1208,6 +1353,8 @@ describe('nanocore server', () => {
         'records/workspace-material-revisions.jsonl',
         'records/workspace-materials.jsonl',
         'records/workspace.json',
+        'workspace-files/knowledge/pages/mem_2.md',
+        'workspace-files/knowledge/pages/mem_project.md',
         'workspace-files/knowledge/schema/workspace-schema.yaml',
       ],
       manifest: {
@@ -1645,28 +1792,11 @@ describe('nanocore server', () => {
     }
   });
 
-  it('exports and imports knowledge proposal and source records as line-oriented records', async () => {
+  it('exports and imports knowledge source records as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-knowledge-state-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    store.createKnowledgeProposal({
-      id: 'kp_source_1',
-      workspaceId: 'ws_demo',
-      title: 'Capture deployment note',
-      summary: 'Remember the deployment checkpoint.',
-      status: 'pending',
-      createdAt: '2026-07-06T00:00:00.000Z',
-      updatedAt: '2026-07-06T00:00:00.000Z',
-    });
-    store.recordKnowledgeProposalReviewDecision({
-      proposalId: 'kp_source_1',
-      workspaceId: 'ws_demo',
-      status: 'accepted',
-      requestId: '00000000-0000-4000-8000-00000000d735',
-      message: 'Accept the deployment note.',
-      decidedAt: '2026-07-06T00:00:01.000Z',
-    });
     store.createKnowledgeSource(
       {
         id: 'ks_source_1',
@@ -1688,8 +1818,6 @@ describe('nanocore server', () => {
     const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    expect(exported.checkedFiles).toContain('records/knowledge-proposals.jsonl');
-    expect(exported.checkedFiles).toContain('records/knowledge-proposal-reviews.jsonl');
     expect(exported.checkedFiles).toContain('records/knowledge-sources.jsonl');
     expect(exported.checkedFiles).toContain('sources/materials/ks_source_1/content.txt');
     expect(exported.checkedFiles).toContain('sources/derived/ks_source_1/text.json');
@@ -1706,21 +1834,6 @@ describe('nanocore server', () => {
 
     expect(importRes.status).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    expect(store.listKnowledgeProposals(body.importedWorkspaceId)).toEqual([
-      expect.objectContaining({
-        id: 'kp_imported_ws_imported_ws_demo_1',
-        workspaceId: body.importedWorkspaceId,
-        status: 'accepted',
-      }),
-    ]);
-    expect(store.listKnowledgeProposalReviewDecisions(body.importedWorkspaceId)).toEqual([
-      expect.objectContaining({
-        proposalId: 'kp_imported_ws_imported_ws_demo_1',
-        workspaceId: body.importedWorkspaceId,
-        status: 'accepted',
-        requestId: '00000000-0000-4000-8000-00000000d735',
-      }),
-    ]);
     expect(store.listKnowledgeSources(body.importedWorkspaceId)).toEqual([
       expect.objectContaining({
         id: 'ks_imported_ws_imported_ws_demo_1',
@@ -1747,7 +1860,6 @@ describe('nanocore server', () => {
         materialPath: 'sources/materials/ks_imported_ws_imported_ws_demo_1/content.txt',
       }),
     ]);
-    expect(store.getKnowledgeProposal('kp_source_1')?.workspaceId).toBe('ws_demo');
     expect(store.getKnowledgeSource('ws_demo', 'ks_source_1').workspaceId).toBe('ws_demo');
     expect(JSON.stringify(exported)).not.toContain(dataRoot);
     coreDb.sqlite.close();
@@ -1763,23 +1875,6 @@ describe('nanocore server', () => {
       kind: 'project-context',
       title: 'Round trip knowledge',
       content: 'Keep this entry through import.',
-    });
-    store.createKnowledgeProposal({
-      id: 'kp_round_trip_1',
-      workspaceId: 'ws_demo',
-      title: 'Round trip proposal',
-      summary: 'Keep this proposal through import.',
-      status: 'pending',
-      createdAt: '2026-07-06T00:00:00.000Z',
-      updatedAt: '2026-07-06T00:00:00.000Z',
-    });
-    store.recordKnowledgeProposalReviewDecision({
-      proposalId: 'kp_round_trip_1',
-      workspaceId: 'ws_demo',
-      status: 'accepted',
-      requestId: '00000000-0000-4000-8000-00000000d745',
-      message: 'Accept the round-trip proposal.',
-      decidedAt: '2026-07-06T00:00:01.000Z',
     });
     store.createKnowledgeSource({
       id: 'ks_round_trip_1',
@@ -1878,20 +1973,6 @@ describe('nanocore server', () => {
     expect(
       readExportJsonl(reExportRoot, 'records/knowledge.jsonl').map((entry) => entry.title)
     ).toEqual(readExportJsonl(sourceRoot, 'records/knowledge.jsonl').map((entry) => entry.title));
-    expect(readExportJsonl(reExportRoot, 'records/knowledge-proposals.jsonl')).toEqual([
-      expect.objectContaining({
-        status: 'accepted',
-        summary: 'Keep this proposal through import.',
-        workspaceId: imported.importedWorkspaceId,
-      }),
-    ]);
-    expect(readExportJsonl(reExportRoot, 'records/knowledge-proposal-reviews.jsonl')).toEqual([
-      expect.objectContaining({
-        requestId: '00000000-0000-4000-8000-00000000d745',
-        status: 'accepted',
-        workspaceId: imported.importedWorkspaceId,
-      }),
-    ]);
     expect(readExportJsonl(reExportRoot, 'records/knowledge-sources.jsonl')).toEqual([
       expect.objectContaining({
         contentDigest: 'sha256:round-trip-source',
@@ -4906,7 +4987,26 @@ describe('nanocore server', () => {
   it('starts Task Mode through the worker coordinator and one bounded worker turn', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const knowledge = store.createKnowledgeEntry('ws_demo', {
+      content: 'Implement the focused Task Mode fix with the existing worker path.',
+      kind: 'project-context',
+      title: 'Focused Task Mode fix',
+    });
     const executor = new FakeTurnExecutor();
+    let launchedContextAssembly: ReturnType<typeof parseWorkerCheckpointContextAssembly> = null;
+    const startTurn = executor.startTurn.bind(executor);
+    vi.spyOn(executor, 'startTurn').mockImplementation(async (...args) => {
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        launchedContextAssembly = parseWorkerCheckpointContextAssembly(
+          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', args[1])?.diagnosticsSummary ??
+            null
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      return startTurn(...args);
+    });
     const baseAgentManifest = createTestAgentSetup({ provider: null }).manifest;
     const opaqueAgentManifest = {
       ...baseAgentManifest,
@@ -4990,7 +5090,6 @@ describe('nanocore server', () => {
         ],
         threadState: { status: 'idle', threadId: 'th_demo' },
         workspaceSummary: { name: 'Demo Workspace', workspaceId: 'ws_demo' },
-        contextRefs: [{ kind: 'knowledge', id: 'mem_project' }],
       }).workerRequest;
       expect(expectedWorkerRequest).not.toBeNull();
       expect(
@@ -4998,6 +5097,31 @@ describe('nanocore server', () => {
           JSON.parse(workerInput?.type === 'user-message' ? workerInput.text : '')
         )
       ).toEqual(expectedWorkerRequest);
+      const month = new Date().toISOString().slice(0, 7).replace('-', '');
+      const retrievalTrace = KnowledgeRetrievalResponseSchema.parse(
+        JSON.parse(
+          readFileSync(
+            join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces', `${month}.jsonl`),
+            'utf8'
+          ).trim()
+        )
+      );
+
+      expect(retrievalTrace).toEqual(
+        expect.objectContaining({
+          caller: 'task-mode',
+          retrievalParameters: { limit: 5, pinnedConceptIds: [] },
+          traceId: expect.stringMatching(
+            /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+          ),
+          selected: expect.arrayContaining([
+            expect.objectContaining({ knowledgePageId: knowledge.id }),
+          ]),
+        })
+      );
+      expect(launchedContextAssembly).toMatchObject({
+        knowledgeSelectionInput: { retrievalTraceId: retrievalTrace.traceId },
+      });
       const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
         body: JSON.stringify({ requestId, input }),
@@ -5011,6 +5135,12 @@ describe('nanocore server', () => {
 
       expect(replayRes.status).toBe(202);
       expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+      expect(
+        readWorkspaceKnowledgeRetrievalTrace(
+          join(coreDb.dataRoot, 'workspaces', 'ws_demo'),
+          retrievalTrace.traceId
+        )
+      ).toEqual(retrievalTrace);
       store.updateTurn(parsed.turn.id, { status: 'cancelled' });
       const cancelledReplayRes = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/task',
@@ -5505,7 +5635,7 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(202);
+      expect(res.status, await res.clone().text()).toBe(202);
       const parsed = StartTaskModeResponseSchema.parse(await res.json());
 
       expect(parsed.evidence.artifactIds).toContain(`ar_task_review_${parsed.turn.id}`);
@@ -8487,96 +8617,386 @@ describe('nanocore server', () => {
 
     expect(response.status).toBe(404);
   });
-  it('records knowledge proposal review decisions idempotently', async () => {
+  it('applies only accepted fixed proposals and resumes only their missing page effect', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = createApp({ coreDb, store });
+
+    try {
+      const accepted = await draftKnowledgeProposalFixture(app, 'accepted');
+      const acceptedRequestId = knowledgeProposalRequestId('decision-accepted');
+      const firstRes = await submitKnowledgeProposalDecision(
+        app,
+        accepted.proposalId,
+        acceptedRequestId,
+        'accepted'
+      );
+      expect(firstRes.status, await firstRes.clone().text()).toBe(200);
+      const first = await firstRes.json();
+      expect(first).toMatchObject({
+        review: {
+          reviewId: expect.stringMatching(/^kr_[a-f0-9]{64}$/),
+          proposalId: accepted.proposalId,
+          workspaceId: 'ws_demo',
+          requestId: acceptedRequestId,
+          decision: 'accepted',
+          actor: { kind: 'user', id: 'user_local' },
+          proposalDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          knowledgePageId: accepted.knowledgePageId,
+          contentDigest: accepted.contentDigest,
+          targetAbsentAtDecision: true,
+          decidedAt: expect.any(String),
+        },
+        application: {
+          knowledgePageId: accepted.knowledgePageId,
+          contentDigest: accepted.contentDigest,
+          present: true,
+        },
+      });
+      const acceptedPagePath = knowledgeProposalPagePath(coreDb.dataRoot, accepted.knowledgePageId);
+      expect(readFileSync(acceptedPagePath, 'utf8')).toBe(accepted.canonicalPageBytes);
+
+      const replayRes = await submitKnowledgeProposalDecision(
+        app,
+        accepted.proposalId,
+        acceptedRequestId,
+        'accepted'
+      );
+      expect(replayRes.status).toBe(200);
+      expect(await replayRes.json()).toEqual(first);
+
+      const conflictRes = await submitKnowledgeProposalDecision(
+        app,
+        accepted.proposalId,
+        acceptedRequestId,
+        'rejected'
+      );
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+
+      for (const decision of ['rejected', 'deferred'] as const) {
+        const fixture = await draftKnowledgeProposalFixture(app, decision);
+        const response = await submitKnowledgeProposalDecision(
+          app,
+          fixture.proposalId,
+          knowledgeProposalRequestId(`decision-${decision}`),
+          decision
+        );
+        expect(response.status, await response.clone().text()).toBe(200);
+        await expect(response.json()).resolves.toMatchObject({
+          review: {
+            proposalId: fixture.proposalId,
+            decision,
+            targetAbsentAtDecision: null,
+          },
+          application: null,
+        });
+        expect(
+          existsSync(knowledgeProposalPagePath(coreDb.dataRoot, fixture.knowledgePageId))
+        ).toBe(false);
+      }
+
+      const interrupted = await draftKnowledgeProposalFixture(app, 'interrupted');
+      const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
+      const completed = await submitKnowledgeProposalDecision(
+        app,
+        interrupted.proposalId,
+        interruptedRequestId,
+        'accepted'
+      );
+      expect(completed.status, await completed.clone().text()).toBe(200);
+      const interruptedPagePath = knowledgeProposalPagePath(
+        coreDb.dataRoot,
+        interrupted.knowledgePageId
+      );
+      rmSync(interruptedPagePath);
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      workspaceDb.sqlite
+        .prepare(
+          `DELETE FROM idempotency_requests
+           WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+        )
+        .run(interruptedRequestId);
+      workspaceDb.sqlite
+        .prepare('DELETE FROM audit_events WHERE request_id = ?')
+        .run(interruptedRequestId);
+      workspaceDb.sqlite.close();
+
+      const resumed = await submitKnowledgeProposalDecision(
+        app,
+        interrupted.proposalId,
+        interruptedRequestId,
+        'accepted'
+      );
+      expect(resumed.status, await resumed.clone().text()).toBe(200);
+      expect(readFileSync(interruptedPagePath, 'utf8')).toBe(interrupted.canonicalPageBytes);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('fails closed when an applied proposal lacks its receipt or Audit evidence', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = createApp({ coreDb, store });
+
+    try {
+      for (const missingEvidence of ['receipt', 'audit'] as const) {
+        const fixture = await draftKnowledgeProposalFixture(app, `missing-${missingEvidence}`);
+        const requestId = knowledgeProposalRequestId(`decision-missing-${missingEvidence}`);
+        const completed = await submitKnowledgeProposalDecision(
+          app,
+          fixture.proposalId,
+          requestId,
+          'accepted'
+        );
+        expect(completed.status, await completed.clone().text()).toBe(200);
+
+        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+        if (missingEvidence === 'receipt') {
+          workspaceDb.sqlite
+            .prepare(
+              `DELETE FROM idempotency_requests
+               WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+            )
+            .run(requestId);
+        } else {
+          workspaceDb.sqlite
+            .prepare('DELETE FROM audit_events WHERE request_id = ?')
+            .run(requestId);
+        }
+        workspaceDb.sqlite.close();
+
+        const replay = await submitKnowledgeProposalDecision(
+          app,
+          fixture.proposalId,
+          requestId,
+          'accepted'
+        );
+        expect(replay.status).toBe(409);
+        await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        expect(
+          readFileSync(knowledgeProposalPagePath(coreDb.dataRoot, fixture.knowledgePageId), 'utf8')
+        ).toBe(fixture.canonicalPageBytes);
+
+        const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+        const remaining =
+          missingEvidence === 'receipt'
+            ? evidenceDb.sqlite
+                .prepare(
+                  `SELECT COUNT(*) AS count FROM idempotency_requests
+                   WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+                )
+                .get(requestId)
+            : evidenceDb.sqlite
+                .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
+                .get(requestId);
+        evidenceDb.sqlite.close();
+        expect(remaining).toEqual({ count: 0 });
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects secret-bearing or host-path-bearing proposal text without durable mutation', async () => {
     const store = createDemoStore();
     const app = createApp({ store });
-    store.createKnowledgeProposal({
-      id: 'kp_review_idempotent',
-      workspaceId: 'ws_demo',
-      title: 'Review knowledge proposal',
-      summary: 'Persist the review decision.',
-      status: 'pending',
-      createdAt: '2026-07-05T00:00:00.000Z',
-      updatedAt: '2026-07-05T00:00:00.000Z',
+    const sourceResponse = await app.request('/api/app/workspaces/ws_demo/knowledge/sources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId: 'knowledge-source-unsafe-proposal',
+        kind: 'document',
+        title: 'Unsafe proposal input source',
+        uri: 'file://unsafe-proposal-source.md',
+        content: 'Authoritative source without unsafe proposal text.',
+      }),
     });
-
-    const firstRes = await app.request(
-      '/api/app/workspaces/ws_demo/knowledge/proposals/kp_review_idempotent/decision',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'knowledge-review-request-1',
-          decision: 'rejected',
-          message: 'Not reusable enough.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
-    );
-    const secondRes = await app.request(
-      '/api/app/workspaces/ws_demo/knowledge/proposals/kp_review_idempotent/decision',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'knowledge-review-request-1',
-          decision: 'rejected',
-          message: 'Not reusable enough.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
-    );
-    const conflictRes = await app.request(
-      '/api/app/workspaces/ws_demo/knowledge/proposals/kp_review_idempotent/decision',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'knowledge-review-request-1',
-          decision: 'accepted',
-          message: 'Accept instead.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
-    );
-    const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
-    const reviewed = (await firstRes.json()) as {
-      review: { status: string; message: string | null; requestId: string | null };
+    expect(sourceResponse.status, await sourceResponse.clone().text()).toBe(201);
+    const source = (await sourceResponse.json()) as {
+      source: { id: string; contentDigest: string };
     };
-    const reviewedAgain = (await secondRes.json()) as {
-      review: { status: string; message: string | null; requestId: string | null };
-    };
-    const actionCenter = ListHumanAttentionResponseSchema.parse(await actionCenterRes.json());
+    const sourceReference = `source:${source.source.id}@${source.source.contentDigest}`;
 
-    expect(firstRes.status).toBe(200);
-    expect(secondRes.status).toBe(200);
-    expect(reviewed.review).toMatchObject({
-      status: 'rejected',
-      message: 'Not reusable enough.',
-      requestId: 'knowledge-review-request-1',
-    });
-    expect(reviewedAgain).toEqual(reviewed);
-    expect(store.listKnowledgeProposals('ws_demo')).toEqual([
-      expect.objectContaining({ id: 'kp_review_idempotent', status: 'rejected' }),
-    ]);
-    expect(actionCenter.items.some((row) => row.id === 'knowledge:kp_review_idempotent')).toBe(
-      false
-    );
-    expect(conflictRes.status).toBe(409);
-    await expect(conflictRes.json()).resolves.toMatchObject({
-      code: 'idempotency_key_conflict',
-    });
+    for (const [index, unsafe] of [
+      {
+        candidateSuffix: '\nghp_openkit_candidate_route_canary',
+        rationale: 'Preserve a bounded reusable lesson.',
+        canary: 'ghp_openkit_candidate_route_canary',
+      },
+      {
+        candidateSuffix: '',
+        rationale: 'Preserve ghp_openkit_rationale_route_canary as a reusable lesson.',
+        canary: 'ghp_openkit_rationale_route_canary',
+      },
+      {
+        candidateSuffix: '\nHost source: /Users/example/openkit/private.md',
+        rationale: 'Preserve a bounded reusable lesson.',
+        canary: '/Users/example/openkit/private.md',
+      },
+      {
+        candidateSuffix: '',
+        rationale: 'Preserve the lesson from /Users/example/openkit/private.md.',
+        canary: '/Users/example/openkit/private.md',
+      },
+    ].entries()) {
+      const knowledgePageId = `unsafe-proposal-${index}`;
+      const canonicalPageBytes = [
+        '---',
+        'type: "KnowledgePage"',
+        `title: "Unsafe proposal ${index}"`,
+        'schema_version: "openkit-workspace-knowledge-schema-v1"',
+        'status: "active"',
+        'scope: "workspace"',
+        `openkit_entry_id: "${knowledgePageId}"`,
+        'openkit_entry_kind: "project-context"',
+        `source_refs: ${JSON.stringify([sourceReference])}`,
+        'review_state: "accepted"',
+        'sensitivity: "normal"',
+        'freshness: "current"',
+        'created_at: "2026-07-19T00:00:00.000Z"',
+        'updated_at: "2026-07-19T00:00:00.000Z"',
+        '---',
+        `Candidate lesson ${index}.${unsafe.candidateSuffix}`,
+        '',
+      ].join('\n');
+      const response = await app.request(
+        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: knowledgeProposalRequestId(`unsafe-proposal-${index}`),
+            knowledgePageId,
+            canonicalPageBytes,
+            contentDigest: artifactDigest(canonicalPageBytes),
+            sourceReferences: [sourceReference],
+            rationale: unsafe.rationale,
+            confidence: 0.8,
+          }),
+        }
+      );
+      const body = await response.text();
+
+      expect(response.status).toBe(400);
+      expect(JSON.parse(body)).toMatchObject({ code: 'invalid_request' });
+      expect(body).not.toContain(unsafe.canary);
+    }
+
+    expect(store.listKnowledgeProposals('ws_demo')).toEqual([]);
+  });
+
+  it('reverses only the unchanged proposal-created page and replays without another effect', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = createApp({ coreDb, store });
+
+    try {
+      const accepted = await draftKnowledgeProposalFixture(app, 'reverse');
+      const decisionResponse = await submitKnowledgeProposalDecision(
+        app,
+        accepted.proposalId,
+        knowledgeProposalRequestId('decision-reverse'),
+        'accepted'
+      );
+      expect(decisionResponse.status, await decisionResponse.clone().text()).toBe(200);
+      const decision = (await decisionResponse.json()) as { review: { reviewId: string } };
+      const reversalRequest = {
+        requestId: knowledgeProposalRequestId('reversal-1'),
+        reviewId: decision.review.reviewId,
+        knowledgePageId: accepted.knowledgePageId,
+        expectedContentDigest: accepted.contentDigest,
+      };
+      const firstRes = await submitKnowledgeProposalReversal(
+        app,
+        accepted.proposalId,
+        reversalRequest
+      );
+      expect(firstRes.status, await firstRes.clone().text()).toBe(200);
+      const first = await firstRes.json();
+      expect(first).toEqual({
+        proposalId: accepted.proposalId,
+        reviewId: decision.review.reviewId,
+        application: {
+          knowledgePageId: accepted.knowledgePageId,
+          contentDigest: accepted.contentDigest,
+          present: false,
+        },
+      });
+      expect(existsSync(knowledgeProposalPagePath(coreDb.dataRoot, accepted.knowledgePageId))).toBe(
+        false
+      );
+
+      const replayRes = await submitKnowledgeProposalReversal(
+        app,
+        accepted.proposalId,
+        reversalRequest
+      );
+      expect(replayRes.status).toBe(200);
+      expect(await replayRes.json()).toEqual(first);
+
+      const conflictRes = await submitKnowledgeProposalReversal(app, accepted.proposalId, {
+        ...reversalRequest,
+        expectedContentDigest: artifactDigest('different bytes'),
+      });
+      expect(conflictRes.status).toBe(409);
+      await expect(conflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
+
+      const changed = await draftKnowledgeProposalFixture(app, 'reverse-changed');
+      const changedDecision = await submitKnowledgeProposalDecision(
+        app,
+        changed.proposalId,
+        knowledgeProposalRequestId('decision-reverse-changed'),
+        'accepted'
+      );
+      expect(changedDecision.status, await changedDecision.clone().text()).toBe(200);
+      const changedReview = (await changedDecision.json()) as { review: { reviewId: string } };
+      const changedPagePath = knowledgeProposalPagePath(coreDb.dataRoot, changed.knowledgePageId);
+      const changedBytes = `${changed.canonicalPageBytes}Intervening edit.\n`;
+      writeFileSync(changedPagePath, changedBytes, 'utf8');
+      const changedReversal = await submitKnowledgeProposalReversal(app, changed.proposalId, {
+        requestId: knowledgeProposalRequestId('reversal-changed'),
+        reviewId: changedReview.review.reviewId,
+        knowledgePageId: changed.knowledgePageId,
+        expectedContentDigest: changed.contentDigest,
+      });
+      expect(changedReversal.status).toBe(409);
+      await expect(changedReversal.json()).resolves.toMatchObject({ code: 'conflict' });
+      expect(readFileSync(changedPagePath, 'utf8')).toBe(changedBytes);
+
+      const missing = await draftKnowledgeProposalFixture(app, 'reverse-missing');
+      const missingDecision = await submitKnowledgeProposalDecision(
+        app,
+        missing.proposalId,
+        knowledgeProposalRequestId('decision-reverse-missing'),
+        'accepted'
+      );
+      expect(missingDecision.status, await missingDecision.clone().text()).toBe(200);
+      const missingReview = (await missingDecision.json()) as { review: { reviewId: string } };
+      rmSync(knowledgeProposalPagePath(coreDb.dataRoot, missing.knowledgePageId));
+      const missingReversal = await submitKnowledgeProposalReversal(app, missing.proposalId, {
+        requestId: knowledgeProposalRequestId('reversal-missing'),
+        reviewId: missingReview.review.reviewId,
+        knowledgePageId: missing.knowledgePageId,
+        expectedContentDigest: missing.contentDigest,
+      });
+      expect(missingReversal.status).toBe(409);
+      await expect(missingReversal.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('rejects edited knowledge proposal decisions without mutation', async () => {
     const store = createDemoStore();
     const app = createApp({ store });
-    store.createKnowledgeProposal({
-      id: 'kp_review_edit',
-      workspaceId: 'ws_demo',
-      title: 'Original proposal title',
-      summary: 'Original proposal summary.',
-      status: 'pending',
-      createdAt: '2026-07-05T00:00:00.000Z',
-      updatedAt: '2026-07-05T00:00:00.000Z',
-    });
 
     const res = await app.request(
       '/api/app/workspaces/ws_demo/knowledge/proposals/kp_review_edit/decision',
@@ -8594,11 +9014,7 @@ describe('nanocore server', () => {
     );
 
     expect(res.status).toBe(400);
-    expect(store.getKnowledgeProposal('kp_review_edit')).toMatchObject({
-      title: 'Original proposal title',
-      summary: 'Original proposal summary.',
-      status: 'pending',
-    });
+    expect(store.listKnowledgeProposals('ws_demo')).toEqual([]);
   });
 
   it('applies accepted workspace synchronization review patches to the linked repository', async () => {

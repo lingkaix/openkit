@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -107,14 +108,12 @@ import {
   ListWorkspaceRuntimeEvidenceResponseSchema,
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
-  MaterializeKnowledgeContextPackageResponseSchema,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
   PendingGoalSteeringHumanAttentionSourceSchema,
   ProviderRegistryEntrySchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
-  ReadKnowledgeManagerContextPackageTraceResponseSchema,
   ReadKnowledgeSourceResponseSchema,
   RecordKnowledgeClaimRequestSchema,
   RecordKnowledgeClaimResponseSchema,
@@ -137,6 +136,8 @@ import {
   RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
+  ReverseKnowledgeProposalRequestSchema,
+  ReverseKnowledgeProposalResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
   ReviseThreadGoalPlanResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
@@ -217,6 +218,40 @@ import {
 
 const timestamp = '2026-05-15T05:17:42.000Z';
 const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
+const knowledgeSourceReference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'1'.repeat(64)}`;
+const knowledgePageId = 'lessons/release-review';
+const canonicalKnowledgePageBytes = [
+  '---',
+  'type: "KnowledgePage"',
+  'title: "Release review"',
+  'schema_version: "openkit-workspace-knowledge-schema-v1"',
+  'status: "active"',
+  'scope: "workspace"',
+  `source_refs: ${JSON.stringify([knowledgeSourceReference])}`,
+  'review_state: "accepted"',
+  'sensitivity: "normal"',
+  'freshness: "current"',
+  `created_at: ${JSON.stringify(timestamp)}`,
+  `updated_at: ${JSON.stringify(timestamp)}`,
+  'openkit_entry_kind: "project-context"',
+  `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
+  '---',
+  'Release reviews happen every Friday.',
+  '',
+].join('\n');
+const knowledgeContentDigest = `sha256:${createHash('sha256')
+  .update(canonicalKnowledgePageBytes)
+  .digest('hex')}`;
+const knowledgeProposalDigest = `sha256:${'2'.repeat(64)}`;
+const knowledgeProposalDraftRequest = {
+  requestId: '00000000-0000-4000-8000-000000000601',
+  knowledgePageId,
+  canonicalPageBytes: canonicalKnowledgePageBytes,
+  contentDigest: knowledgeContentDigest,
+  sourceReferences: [knowledgeSourceReference],
+  rationale: 'This completed-work evidence supports one reusable release-review rule.',
+  confidence: 0.75,
+};
 const rawSecretShapes = [
   'sk-openkit-secret',
   'hf_openkit_secret',
@@ -1226,416 +1261,223 @@ describe('app api schemas', () => {
     });
   });
 
-  it('accepts Knowledge Manager context material requests and responses', () => {
+  it('accepts only bounded Knowledge Manager context retrieval requests', () => {
     expect(
       KnowledgeManagerPrepareContextRequestSchema.parse({
-        artifactIds: ['artifact_release_log'],
         query: 'release cadence',
-        workspaceFiles: [{ path: 'docs/release.md' }],
-        workspaceRootFiles: [{ rootId: 'repo_docs', path: 'docs/runtime.md' }],
+        limit: 5,
       })
-    ).toMatchObject({
-      artifactIds: ['artifact_release_log'],
+    ).toEqual({
       query: 'release cadence',
-      workspaceFiles: [{ path: 'docs/release.md' }],
-      workspaceRootFiles: [{ rootId: 'repo_docs', path: 'docs/runtime.md' }],
+      limit: 5,
     });
-
-    expect(
-      KnowledgeManagerPrepareContextResponseSchema.parse({
-        operationId: 'km_context_demo',
-        operation: 'prepare-context-material',
-        workspaceId: 'ws_demo',
-        caller: 'app-api',
-        retrievalTraceId,
+    expect(KnowledgeManagerPrepareContextRequestSchema.parse({ query: 'release cadence' })).toEqual(
+      {
         query: 'release cadence',
-        outcome: 'prepared',
-        materials: [
-          {
-            knowledgeEntryId: 'kn_demo',
-            kind: 'project-context',
-            title: 'Release plan',
-            excerpt: 'Release cadence is weekly.',
-            trace: {
-              source: 'workspace-knowledge',
-              reason: 'matched-query',
-            },
-          },
-        ],
-        exclusions: [],
-        artifacts: [
-          {
-            id: 'artifact_release_log',
-            workspaceId: 'ws_demo',
-            threadId: null,
-            turnId: null,
-            kind: 'file',
-            title: 'Release log',
-            status: 'ready',
-            summary: null,
-            version: 1,
-            content: {
-              format: 'markdown',
-              body: 'Release evidence is ready.',
-            },
-            contentDigest:
-              'sha256:3dfe19c382bcb22acc80ab226fcb1f3b11dbc835c6bfc68ea5fbaa6657d30248',
-            lastMutationRequestId: 'knowledge-context-artifact-1',
-            origin: {
-              kind: 'imported',
-              sourceKind: 'direct-import',
-              sourceId: 'knowledge-context-artifact-1',
-              sourceDigest:
-                'sha256:3dfe19c382bcb22acc80ab226fcb1f3b11dbc835c6bfc68ea5fbaa6657d30248',
-              actor: { kind: 'user', id: 'user_local' },
-              requestId: 'knowledge-context-artifact-1',
-              recordedAt: '2026-07-07T00:00:00.000Z',
-            },
-            createdAt: '2026-07-07T00:00:00.000Z',
-            updatedAt: '2026-07-07T00:00:00.000Z',
-          },
-        ],
-        workspaceFiles: [
-          {
-            path: 'docs/release.md',
-            contentBytes: 68,
-            contentDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-        ],
-        workspaceRootFiles: [
-          {
-            rootId: 'repo_docs',
-            path: 'docs/runtime.md',
-            contentBytes: 61,
-            contentDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-        ],
-        claims: [
-          {
-            id: 'kc_release',
-            workspaceId: 'ws_demo',
-            statement: 'Release cadence is weekly.',
-            sourceReferences: ['knowledge:kn_demo'],
-            scope: 'workspace',
-            producer: 'knowledge-manager',
-            confidence: 0.8,
-            freshness: 'current',
-            reviewState: 'accepted',
-            conflictStatus: 'none',
-            createdAt: '2026-07-07T00:00:00.000Z',
-            updatedAt: '2026-07-07T00:00:00.000Z',
-          },
-        ],
-        conflicts: [
-          {
-            id: 'kf_release',
-            workspaceId: 'ws_demo',
-            subjectReferences: ['knowledge:kn_demo', 'claim:kc_release'],
-            sourceReferences: ['source:ks_release'],
-            status: 'conflicting',
-            summary: 'Release cadence has conflicting evidence.',
-            suggestedActions: ['Ask the user which source is authoritative.'],
-            producer: 'knowledge-manager',
-            createdAt: '2026-07-07T00:00:00.000Z',
-            updatedAt: '2026-07-07T00:00:00.000Z',
-          },
-        ],
-        policy: {
-          version: 'knowledge-context-v1',
-          claimReviewState: 'accepted',
-          conflictResolution: 'exclude-resolved',
-        },
-        packageTrace: {
-          contextPackageId: 'ctxpkg_km_context_demo',
-          contextPackageDigest:
-            'ctxpkg_sha256_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          policyVersion: 'knowledge-context-v1',
-          selectedKnowledgeEntryIds: ['kn_demo'],
-          selectedArtifactIds: ['artifact_release_log'],
-          selectedWorkspaceFilePaths: ['docs/release.md'],
-          selectedWorkspaceRootFiles: [{ rootId: 'repo_docs', path: 'docs/runtime.md' }],
-          selectedClaimIds: ['kc_release'],
-          selectedConflictIds: ['kf_release'],
-          excludedCandidateCount: 0,
-          budget: {
-            requestedLimit: 5,
-            selectedCount: 1,
-            excludedCount: 0,
-          },
-        },
-        confidence: 0.65,
-        uncertainty: null,
-      })
-    ).toMatchObject({
-      operation: 'prepare-context-material',
-      outcome: 'prepared',
-      retrievalTraceId,
-      materials: [{ knowledgeEntryId: 'kn_demo' }],
-      artifacts: [{ id: 'artifact_release_log' }],
-      workspaceFiles: [{ path: 'docs/release.md' }],
-      workspaceRootFiles: [{ rootId: 'repo_docs', path: 'docs/runtime.md' }],
-      claims: [{ id: 'kc_release' }],
-      conflicts: [{ id: 'kf_release' }],
-      policy: { claimReviewState: 'accepted' },
-      packageTrace: {
-        selectedKnowledgeEntryIds: ['kn_demo'],
-        selectedArtifactIds: ['artifact_release_log'],
-        selectedWorkspaceFilePaths: ['docs/release.md'],
-        selectedWorkspaceRootFiles: [{ rootId: 'repo_docs', path: 'docs/runtime.md' }],
-        selectedClaimIds: ['kc_release'],
-        selectedConflictIds: ['kf_release'],
-      },
-    });
-  });
-
-  it('accepts persisted Knowledge Manager context package trace responses', () => {
-    expect(
-      ReadKnowledgeManagerContextPackageTraceResponseSchema.parse({
-        trace: {
-          id: 'ctxpkg_km_context_demo',
-          workspaceId: 'ws_demo',
-          operationId: 'km_context_demo',
-          createdAt: '2026-07-07T00:00:00.000Z',
-          response: {
-            operationId: 'km_context_demo',
-            operation: 'prepare-context-material',
-            workspaceId: 'ws_demo',
-            caller: 'app-api',
-            retrievalTraceId,
-            query: 'release cadence',
-            outcome: 'prepared',
-            materials: [
-              {
-                knowledgeEntryId: 'kn_demo',
-                kind: 'project-context',
-                title: 'Release plan',
-                excerpt: 'Release cadence is weekly.',
-                trace: {
-                  source: 'workspace-knowledge',
-                  reason: 'matched-query',
-                },
-              },
-            ],
-            exclusions: [],
-            packageTrace: {
-              contextPackageId: 'ctxpkg_km_context_demo',
-              contextPackageDigest:
-                'ctxpkg_sha256_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-              policyVersion: 'knowledge-context-v1',
-              selectedKnowledgeEntryIds: ['kn_demo'],
-              excludedCandidateCount: 0,
-              budget: {
-                requestedLimit: 5,
-                selectedCount: 1,
-                excludedCount: 0,
-              },
-            },
-            confidence: 0.65,
-            uncertainty: null,
-          },
-        },
-      })
-    ).toMatchObject({
-      trace: {
-        id: 'ctxpkg_km_context_demo',
-        response: {
-          retrievalTraceId,
-          packageTrace: {
-            contextPackageId: 'ctxpkg_km_context_demo',
-          },
-        },
-      },
-    });
-  });
-
-  it('accepts materialized worker context package responses', () => {
-    expect(
-      MaterializeKnowledgeContextPackageResponseSchema.parse({
-        manifest: {
-          version: 'worker-context-package-v1',
-          contextPackageId: 'ctxpkg_km_context_demo',
-          workspaceId: 'ws_demo',
-          contextPackageDigest:
-            'ctxpkg_sha256_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          rootPath: '/openkit/context',
-          generatedAt: '2026-07-07T00:00:00.000Z',
-          budget: {
-            entryCount: 2,
-            estimatedTokenCount: 32,
-            fileCount: 3,
-            materializedContentBytes: 128,
-          },
-          entries: [
-            {
-              kind: 'knowledge',
-              path: '/openkit/context/knowledge/kn_demo.md',
-              relativePath: 'knowledge/kn_demo.md',
-              sensitivityLabel: 'normal',
-              title: 'Release plan',
-              sourceReferences: ['knowledge:kn_demo'],
-              digest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-            },
-            {
-              kind: 'workspace',
-              path: '/openkit/context/workspace/docs/release.md',
-              relativePath: 'workspace/docs/release.md',
-              sensitivityLabel: 'normal',
-              title: 'docs/release.md',
-              sourceReferences: ['workspace:docs/release.md'],
-              digest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-            },
-            {
-              kind: 'workspace-root',
-              path: '/openkit/context/workspace-roots/repo_docs/docs/runtime.md',
-              relativePath: 'workspace-roots/repo_docs/docs/runtime.md',
-              sensitivityLabel: 'normal',
-              title: 'repo_docs:docs/runtime.md',
-              sourceReferences: ['workspace-root:repo_docs:docs/runtime.md'],
-              digest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-            },
-            {
-              citationLabel: 'Source ks_demo',
-              derivedRepresentationId: 'ks_demo:text',
-              kind: 'source',
-              path: '/openkit/context/sources/ks_demo.txt',
-              relativePath: 'sources/ks_demo.txt',
-              sensitivityLabel: 'redacted',
-              sourceContentDigest: 'sha256:abcdef',
-              sourceId: 'ks_demo',
-              sourceKind: 'document',
-              sourceUri: 'file://release-source.md',
-              title: 'Source ks_demo',
-              sourceReferences: ['source:ks_demo'],
-              digest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-            },
-          ],
-        },
-        files: [
-          {
-            path: '/openkit/context/package.json',
-            kind: 'manifest',
-            contentDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-          {
-            path: '/openkit/context/knowledge/kn_demo.md',
-            kind: 'knowledge',
-            contentDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-          {
-            path: '/openkit/context/workspace/docs/release.md',
-            kind: 'workspace',
-            contentDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-          {
-            path: '/openkit/context/workspace-roots/repo_docs/docs/runtime.md',
-            kind: 'workspace-root',
-            contentDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-          {
-            path: '/openkit/context/sources/ks_demo.txt',
-            kind: 'source',
-            contentDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-        ],
-      })
-    ).toEqual(
-      expect.objectContaining({
-        manifest: expect.objectContaining({
-          budget: expect.objectContaining({
-            estimatedTokenCount: 32,
-          }),
-          contextPackageId: 'ctxpkg_km_context_demo',
-          entries: expect.arrayContaining([
-            expect.objectContaining({
-              kind: 'knowledge',
-              sensitivityLabel: 'normal',
-            }),
-            expect.objectContaining({
-              kind: 'source',
-              sourceId: 'ks_demo',
-              sensitivityLabel: 'redacted',
-            }),
-            expect.objectContaining({
-              kind: 'workspace',
-              path: '/openkit/context/workspace/docs/release.md',
-            }),
-            expect.objectContaining({
-              kind: 'workspace-root',
-              path: '/openkit/context/workspace-roots/repo_docs/docs/runtime.md',
-            }),
-          ]),
-          rootPath: '/openkit/context',
-        }),
-        files: expect.arrayContaining([
-          expect.objectContaining({ path: '/openkit/context/package.json' }),
-        ]),
-      })
+      }
     );
+
+    expect(
+      KnowledgeManagerPrepareContextRequestSchema.safeParse({
+        query: 'release cadence',
+        artifactIds: ['artifact_release_log'],
+      }).success
+    ).toBe(false);
+  });
+
+  it('accepts only narrow Knowledge Manager context retrieval responses', () => {
+    const response = {
+      operationId: 'km_context_demo',
+      operation: 'prepare-context-material' as const,
+      workspaceId: 'ws_demo',
+      caller: 'app-api' as const,
+      retrievalTraceId,
+      outcome: 'prepared' as const,
+      selected: [
+        {
+          knowledgePageId: 'kn_demo',
+          contentDigest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          score: 3,
+          sourceReferences: ['source:ks_release'],
+        },
+      ],
+      excluded: [
+        {
+          knowledgePageId: 'kn_expired',
+          contentDigest: 'sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+          reason: 'freshness_expired' as const,
+        },
+        {
+          knowledgePageId: 'kn_missing',
+          contentDigest: null,
+          reason: 'source_unavailable' as const,
+        },
+      ],
+    };
+
+    expect(KnowledgeManagerPrepareContextResponseSchema.parse(response)).toEqual(response);
+    expect(
+      KnowledgeManagerPrepareContextResponseSchema.safeParse({
+        ...response,
+        packageTrace: {},
+      }).success
+    ).toBe(false);
+  });
+
+  it('does not export standalone Knowledge context trace or materialization schemas', () => {
+    for (const exportName of [
+      'KnowledgeManagerWorkspaceRootFileRequestSchema',
+      'KnowledgeManagerContextTraceSchema',
+      'KnowledgeManagerContextMaterialSchema',
+      'KnowledgeManagerContextExclusionSchema',
+      'KnowledgeManagerContextPackageBudgetSchema',
+      'KnowledgeManagerContextPackageTraceSchema',
+      'KnowledgeManagerContextPolicySchema',
+      'KnowledgeManagerWorkspaceFileSchema',
+      'KnowledgeManagerWorkspaceRootFileSchema',
+      'KnowledgeManagerContextPackageTraceRecordSchema',
+      'ReadKnowledgeManagerContextPackageTraceResponseSchema',
+      'WorkerContextPackageMaterializedFileSchema',
+      'WorkerContextPackageSensitivityLabelSchema',
+      'WorkerContextPackageManifestEntrySchema',
+      'WorkerContextPackageBudgetSchema',
+      'WorkerContextPackageManifestSchema',
+      'MaterializeKnowledgeContextPackageResponseSchema',
+    ]) {
+      expect(appApiSchemas).not.toHaveProperty(exportName);
+    }
   });
 
   it('accepts Knowledge Manager proposal draft requests and responses', () => {
+    const request = knowledgeProposalDraftRequest;
+
+    expect(KnowledgeManagerDraftProposalRequestSchema.parse(request)).toEqual(request);
     expect(
-      KnowledgeManagerDraftProposalRequestSchema.parse({
-        requestId: 'req_km_proposal',
+      KnowledgeManagerDraftProposalRequestSchema.safeParse({
+        ...request,
+        sourceReferences: [
+          `context-package:turn_demo@ctxpkg_sha256_${'a'.repeat(64)}`,
+          'item:item_demo',
+          'turn:turn_demo',
+        ],
+      }).success
+    ).toBe(true);
+    expect(
+      KnowledgeManagerDraftProposalRequestSchema.safeParse({
+        ...request,
+        sourceReferences: [
+          `context-package:turn_demo@sha256:${'a'.repeat(64)}`,
+          'item:item_demo',
+          'turn:turn_demo',
+        ],
+      }).success
+    ).toBe(false);
+
+    const response = {
+      operationId: 'km_proposal_demo',
+      operation: 'draft-proposal' as const,
+      workspaceId: 'ws_demo',
+      caller: 'app-api' as const,
+      proposal: {
+        id: 'kp_demo',
+        workspaceId: 'ws_demo',
+        operation: 'create' as const,
+        knowledgePageId: request.knowledgePageId,
+        canonicalPageBytes: request.canonicalPageBytes,
+        contentDigest: request.contentDigest,
+        sourceReferences: request.sourceReferences,
+        rationale: request.rationale,
+        confidence: request.confidence,
+        producer: {
+          kind: 'agent' as const,
+          id: 'knowledge-manager',
+          responsibleUserId: 'user_demo',
+        },
+        status: 'pending' as const,
+        createdAt: timestamp,
+      },
+      validation: {
+        conformance: 'Workspace-schema-valid' as const,
+        generatedFromCompletedWorkHistory: false,
+      },
+    };
+
+    expect(KnowledgeManagerDraftProposalResponseSchema.parse(response)).toEqual(response);
+    expect(
+      KnowledgeManagerDraftProposalResponseSchema.safeParse({
+        ...response,
+        sourceLineage: [],
+      }).success
+    ).toBe(false);
+  });
+
+  it.each([
+    [
+      'legacy title and summary',
+      {
+        requestId: '00000000-0000-4000-8000-000000000602',
         title: 'Release cadence',
         summary: 'Record that releases are reviewed every Friday.',
-      })
-    ).toMatchObject({
-      requestId: 'req_km_proposal',
-      title: 'Release cadence',
-    });
-
-    expect(
-      KnowledgeManagerDraftProposalResponseSchema.parse({
-        operationId: 'km_proposal_demo',
-        operation: 'draft-proposal',
-        workspaceId: 'ws_demo',
-        caller: 'app-api',
-        proposal: {
-          id: 'kp_demo',
-          workspaceId: 'ws_demo',
-          title: 'Release cadence',
-          summary: 'Record that releases are reviewed every Friday.',
-          status: 'pending',
-          createdAt: '2026-07-06T00:00:00.000Z',
-          updatedAt: '2026-07-06T00:00:00.000Z',
-        },
-        sourceReferences: ['knowledge:kn_demo'],
-        sourceLineage: [
-          {
-            reference: 'knowledge:kn_demo',
-            classification: 'workspace-knowledge',
-            sourceId: null,
-            knowledgeEntryId: 'kn_demo',
-            title: 'Release plan',
-            reviewRequired: false,
-            detail: 'Reference resolves to an existing workspace knowledge entry.',
-          },
-        ],
-        validation: {
-          status: 'ready-for-review',
-          checks: [
-            {
-              code: 'source-reference-resolved',
-              passed: true,
-              detail: 'Reference resolves to an existing workspace knowledge entry.',
-            },
-          ],
-        },
-        confidence: 0.5,
-      })
-    ).toMatchObject({
-      operation: 'draft-proposal',
-      proposal: { id: 'kp_demo', status: 'pending' },
-      validation: { status: 'ready-for-review' },
-    });
+      },
+    ],
+    [
+      'caller-supplied producer',
+      {
+        ...knowledgeProposalDraftRequest,
+        producer: { kind: 'agent', id: 'client', responsibleUserId: null },
+      },
+    ],
+    [
+      'unsupported source reference',
+      {
+        ...knowledgeProposalDraftRequest,
+        sourceReferences: ['https://example.com/release-notes'],
+      },
+    ],
+    [
+      'non-sha256 digest',
+      {
+        ...knowledgeProposalDraftRequest,
+        contentDigest: 'digest_demo',
+      },
+    ],
+    [
+      'non-UUID request id',
+      {
+        ...knowledgeProposalDraftRequest,
+        requestId: 'req_km_proposal',
+      },
+    ],
+    [
+      'raw secret in candidate page bytes',
+      {
+        ...knowledgeProposalDraftRequest,
+        canonicalPageBytes: `${knowledgeProposalDraftRequest.canonicalPageBytes}\nghp_openkit_candidate_canary`,
+      },
+    ],
+    [
+      'raw secret in rationale',
+      {
+        ...knowledgeProposalDraftRequest,
+        rationale: 'Preserve ghp_openkit_rationale_canary as a reusable lesson.',
+      },
+    ],
+    [
+      'absolute host path in candidate page bytes',
+      {
+        ...knowledgeProposalDraftRequest,
+        canonicalPageBytes: `${knowledgeProposalDraftRequest.canonicalPageBytes}\nHost source: /Users/example/openkit/private.md`,
+      },
+    ],
+    [
+      'absolute host path in rationale',
+      {
+        ...knowledgeProposalDraftRequest,
+        rationale: 'Preserve the lesson from /Users/example/openkit/private.md.',
+      },
+    ],
+  ])('rejects loose Knowledge Manager proposal draft input: %s', (_name, request) => {
+    expect(KnowledgeManagerDraftProposalRequestSchema.safeParse(request).success).toBe(false);
   });
 
   it('accepts Knowledge Manager repair suggestion requests and responses', () => {
@@ -1727,9 +1569,8 @@ describe('app api schemas', () => {
       [
         KnowledgeManagerDraftProposalRequestSchema,
         {
-          requestId: 'req_km_proposal_caller',
-          title: 'Release cadence',
-          summary: 'Record the release cadence.',
+          ...knowledgeProposalDraftRequest,
+          requestId: '00000000-0000-4000-8000-000000000603',
         },
       ],
       [KnowledgeManagerSuggestRepairRequestSchema, {}],
@@ -3429,9 +3270,15 @@ describe('app api schemas', () => {
       false
     );
     expect(
-      StartTaskModeRequestSchema.parse({
+      StartTaskModeRequestSchema.safeParse({
         input: 'Implement the focused fix.',
         requestId: 'req_task_1',
+      }).success
+    ).toBe(false);
+    expect(
+      StartTaskModeRequestSchema.parse({
+        input: 'Implement the focused fix.',
+        requestId: '0190f4c8-0000-7000-8000-000000000301',
       }).input
     ).toBe('Implement the focused fix.');
     const taskResponse = StartTaskModeResponseSchema.parse({
@@ -5834,31 +5681,119 @@ describe('app api schemas', () => {
   });
 
   it('accepts knowledge proposal decision requests and responses', () => {
+    const requestIds = {
+      accepted: '00000000-0000-4000-8000-000000000611',
+      rejected: '00000000-0000-4000-8000-000000000612',
+      deferred: '00000000-0000-4000-8000-000000000613',
+    } as const;
     for (const decision of ['accepted', 'rejected', 'deferred'] as const) {
-      expect(SubmitKnowledgeProposalDecisionRequestSchema.parse({ decision }).decision).toBe(
-        decision
-      );
+      expect(
+        SubmitKnowledgeProposalDecisionRequestSchema.parse({
+          requestId: requestIds[decision],
+          decision,
+        }).decision
+      ).toBe(decision);
     }
+
+    const response = {
+      review: {
+        reviewId: 'kr_demo',
+        proposalId: 'kp_demo',
+        workspaceId: 'ws_demo',
+        requestId: requestIds.accepted,
+        decision: 'accepted' as const,
+        actor: { kind: 'user' as const, id: 'user_demo' },
+        proposalDigest: knowledgeProposalDigest,
+        knowledgePageId,
+        contentDigest: knowledgeContentDigest,
+        targetAbsentAtDecision: true as const,
+        decidedAt: timestamp,
+      },
+      application: {
+        knowledgePageId,
+        contentDigest: knowledgeContentDigest,
+        present: true as const,
+      },
+    };
+
+    expect(SubmitKnowledgeProposalDecisionResponseSchema.parse(response)).toEqual(response);
     expect(
-      SubmitKnowledgeProposalDecisionResponseSchema.parse({
-        review: {
-          proposalId: 'kp_demo',
-          workspaceId: 'ws_demo',
-          status: 'accepted',
-          message: 'Looks reusable.',
-          decidedAt: timestamp,
-          requestId: 'knowledge-review-1',
-        },
-      }).review.status
-    ).toBe('accepted');
+      SubmitKnowledgeProposalDecisionResponseSchema.safeParse({
+        ...response,
+        review: { ...response.review, status: 'accepted', message: 'Legacy review projection.' },
+      }).success
+    ).toBe(false);
   });
 
   it.each([
-    ['edited decision', { decision: 'edited', title: 'Edited knowledge title' }],
-    ['title field', { decision: 'accepted', title: 'Edited knowledge title' }],
-    ['summary field', { decision: 'accepted', summary: 'Edited knowledge summary.' }],
+    ['missing request id', { decision: 'accepted' }],
+    ['non-UUID request id', { requestId: 'req_knowledge_edit', decision: 'accepted' }],
+    ['edited decision', { requestId: '00000000-0000-4000-8000-000000000614', decision: 'edited' }],
+    [
+      'message field',
+      {
+        requestId: '00000000-0000-4000-8000-000000000615',
+        decision: 'accepted',
+        message: 'Looks reusable.',
+      },
+    ],
+    [
+      'title field',
+      {
+        requestId: '00000000-0000-4000-8000-000000000616',
+        decision: 'accepted',
+        title: 'Edited knowledge title',
+      },
+    ],
+    [
+      'summary field',
+      {
+        requestId: '00000000-0000-4000-8000-000000000617',
+        decision: 'accepted',
+        summary: 'Edited knowledge summary.',
+      },
+    ],
   ])('rejects removed knowledge proposal request %s', (_name, request) => {
     expect(SubmitKnowledgeProposalDecisionRequestSchema.safeParse(request).success).toBe(false);
+  });
+
+  it('accepts only bounded knowledge proposal reversal projections', () => {
+    const request = {
+      requestId: '00000000-0000-4000-8000-000000000618',
+      reviewId: 'kr_demo',
+      knowledgePageId,
+      expectedContentDigest: knowledgeContentDigest,
+    };
+    const response = {
+      proposalId: 'kp_demo',
+      reviewId: request.reviewId,
+      application: {
+        knowledgePageId: request.knowledgePageId,
+        contentDigest: request.expectedContentDigest,
+        present: false as const,
+      },
+    };
+
+    expect(ReverseKnowledgeProposalRequestSchema.parse(request)).toEqual(request);
+    expect(ReverseKnowledgeProposalResponseSchema.parse(response)).toEqual(response);
+    expect(
+      ReverseKnowledgeProposalRequestSchema.safeParse({
+        ...request,
+        proposalId: 'kp_client_override',
+      }).success
+    ).toBe(false);
+    expect(
+      ReverseKnowledgeProposalRequestSchema.safeParse({
+        ...request,
+        requestId: 'req_knowledge_reverse',
+      }).success
+    ).toBe(false);
+    expect(
+      ReverseKnowledgeProposalResponseSchema.safeParse({
+        ...response,
+        reversalId: 'knowledge_reversal_demo',
+      }).success
+    ).toBe(false);
   });
 
   it('rejects goal step review overrides', () => {

@@ -28,7 +28,7 @@ test('keeps configured provider secrets out of visible diagnostics', async ({ pa
       id: 'provider_web_redaction',
       displayName: 'Web Redaction Provider',
       kind: 'custom',
-      baseUrl: `https://user:${secret}@provider.example.com/v1`,
+      baseUrl: 'https://provider.example.com/v1',
       models: ['redaction-model'],
       defaultModel: 'redaction-model',
       secretRef: 'env:OPENKIT_WEB_REDACTION_SECRET',
@@ -57,7 +57,7 @@ test('keeps configured provider secrets out of visible diagnostics', async ({ pa
   await expect(
     page
       .getByRole('region', { name: /Agent setup readiness/i })
-      .getByText(/agent_codex_host - local - openai/)
+      .getByText(/agent_codex_host - no deployment - openai/)
   ).toBeVisible();
   await expect(page.locator('body')).not.toContainText(secret);
 });

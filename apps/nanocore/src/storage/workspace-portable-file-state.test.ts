@@ -1,21 +1,10 @@
 import { createHash } from 'node:crypto';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import {
-  KnowledgeManagerContextPackageTraceRecordSchema,
-  KnowledgeManagerPrepareContextResponseSchema,
   KnowledgeRetrievalResponseSchema,
-  MaterializeKnowledgeContextPackageResponseSchema,
   WorkspaceExportResponseSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -23,11 +12,13 @@ import { describe, expect, it } from 'vitest';
 
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
-import { WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
+import { verifyWorkspaceExportTree } from './workspace-export.js';
+import { readWorkspaceImportSnapshot } from './workspace-import.js';
 
 /**
  * Reads one optional JSONL fixture so a single red test can report every missing file family.
@@ -42,39 +33,6 @@ function readOptionalJsonl(path: string): Array<Record<string, unknown>> {
 
   const text = readFileSync(path, 'utf8').trim();
   return text ? text.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>) : [];
-}
-
-/** Clones one server-managed export under a new handle and aligns its manifest id. */
-function cloneWorkspaceExport(sourceRoot: string, exportId: string): string {
-  const exportRoot = join(sourceRoot, '..', exportId);
-  cpSync(sourceRoot, exportRoot, { recursive: true, errorOnExist: true });
-  const manifestPath = join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
-  writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, id: exportId }, null, 2)}\n`);
-  return exportRoot;
-}
-
-/** Replaces or adds one inventoried export file and recomputes both inventory digests. */
-function writeInventoriedExportFile(exportRoot: string, exportPath: string, content: string): void {
-  const path = join(exportRoot, ...exportPath.split('/'));
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content);
-  const manifestPath = join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
-    contentDigest: string;
-    contentInventory: Array<{ path: string; digest: string; bytes: number }>;
-  };
-  let entry = manifest.contentInventory.find((candidate) => candidate.path === exportPath);
-  if (!entry) {
-    entry = { path: exportPath, digest: '', bytes: 0 };
-    manifest.contentInventory.push(entry);
-  }
-  entry.bytes = Buffer.byteLength(content);
-  entry.digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
-  manifest.contentDigest = `sha256:${createHash('sha256')
-    .update(JSON.stringify(manifest.contentInventory))
-    .digest('hex')}`;
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 describe('workspace portable file state', () => {
@@ -176,17 +134,6 @@ describe('workspace portable file state', () => {
       resolvedBy: 'portability-test',
       resolvedAt: secondTimestamp,
     });
-    store.createKnowledgeProposal({
-      id: 'kp_portable_source_claim',
-      workspaceId: sourceWorkspaceId,
-      title: 'Promote portable claim',
-      summary: 'The imported claim must remain usable by proposal review.',
-      sourceClaimId: 'kc_portable_source',
-      status: 'pending',
-      createdAt: secondTimestamp,
-      updatedAt: secondTimestamp,
-    });
-
     const workspaceConfig = [
       '{',
       '  // This workspace-local policy comment must survive transfer.',
@@ -203,8 +150,8 @@ describe('workspace portable file state', () => {
       'status: "active"',
       'allowed_types: ["KnowledgePage", "RepoConvention"]',
       'allowed_statuses: ["active"]',
-      'allowed_review_states: ["accepted"]',
-      'allowed_sensitivities: ["normal"]',
+      'allowed_review_states: ["accepted", "user-authored"]',
+      'allowed_sensitivities: ["normal", "confidential"]',
       'allowed_freshness: ["current"]',
       '',
     ].join('\n');
@@ -216,7 +163,7 @@ describe('workspace portable file state', () => {
       'status: "active"',
       'scope: "workspace"',
       `source_refs: ["knowledge:${knowledge.id}"]`,
-      'review_state: "accepted"',
+      'review_state: "user-authored"',
       'sensitivity: "normal"',
       'freshness: "current"',
       `created_at: "${firstTimestamp}"`,
@@ -234,6 +181,59 @@ describe('workspace portable file state', () => {
     );
     writeFileSync(join(sourceRoot, 'knowledge', 'pages', 'portable-file.md'), portablePage);
 
+    const knowledgePageBytes = readFileSync(
+      join(sourceRoot, 'knowledge', 'pages', `${knowledge.id}.md`),
+      'utf8'
+    );
+    const knowledgeReference = `knowledge:${knowledge.id}@sha256:${createHash('sha256')
+      .update(knowledgePageBytes)
+      .digest('hex')}`;
+    const acceptedPageId = 'portable-accepted-proposal';
+    const acceptedPageBytes = [
+      '---',
+      'type: "KnowledgePage"',
+      'title: "Portable accepted proposal"',
+      'schema_version: "openkit-workspace-knowledge-schema-v1"',
+      'status: "active"',
+      'scope: "workspace"',
+      `openkit_entry_id: "${acceptedPageId}"`,
+      'openkit_entry_kind: "project-context"',
+      `source_refs: ${JSON.stringify([knowledgeReference])}`,
+      'review_state: "accepted"',
+      'sensitivity: "normal"',
+      'freshness: "current"',
+      `created_at: "${firstTimestamp}"`,
+      `updated_at: "${secondTimestamp}"`,
+      '---',
+      'Exact accepted proposal bytes survive portable transfer.',
+      '',
+    ].join('\n');
+    const acceptedPageDigest = `sha256:${createHash('sha256')
+      .update(acceptedPageBytes)
+      .digest('hex')}`;
+    const acceptedProposal = store.createKnowledgeProposal({
+      workspaceId: sourceWorkspaceId,
+      requestId: '00000000-0000-4000-8000-00000000d911',
+      knowledgePageId: acceptedPageId,
+      canonicalPageBytes: acceptedPageBytes,
+      contentDigest: acceptedPageDigest,
+      sourceReferences: [knowledgeReference],
+      rationale: 'Preserve the exact reviewed page as portable Knowledge.',
+      confidence: 1,
+      verifiedExternalReferences: [],
+      producer: { kind: 'agent', id: 'agent_knowledge', responsibleUserId: 'user_local' },
+      createdAt: firstTimestamp,
+    });
+    store.recordKnowledgeProposalReviewDecision({
+      workspaceId: sourceWorkspaceId,
+      proposalId: acceptedProposal.id,
+      requestId: '00000000-0000-4000-8000-00000000d912',
+      decision: 'accepted',
+      verifiedExternalReferences: [],
+      actor: { kind: 'user', id: 'user_local' },
+      decidedAt: secondTimestamp,
+    });
+
     const app = createApp({ coreDb, dataRoot, store });
     const retrievalRes = await app.request(
       `/api/app/workspaces/${sourceWorkspaceId}/knowledge/retrievals`,
@@ -247,161 +247,63 @@ describe('workspace portable file state', () => {
     const retrieval = KnowledgeRetrievalResponseSchema.parse(await retrievalRes.json());
     expect(retrieval.selected).toEqual([
       expect.objectContaining({
-        path: 'knowledge/pages/portable-file.md',
+        knowledgePageId: 'portable-file',
         sourceReferences: [`knowledge:${knowledge.id}`],
       }),
     ]);
-
-    const contextRes = await app.request(
-      `/api/app/workspaces/${sourceWorkspaceId}/knowledge/manager/context`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: 'portable contract evidence' }),
-      }
-    );
-    expect(contextRes.status, await contextRes.clone().text()).toBe(200);
-    const context = KnowledgeManagerPrepareContextResponseSchema.parse(await contextRes.json());
-    expect(context.packageTrace.selectedKnowledgeEntryIds).toContain(knowledge.id);
-    store.createKnowledgeSource({
-      id: context.packageTrace.contextPackageId,
-      workspaceId: sourceWorkspaceId,
-      kind: 'document',
-      title: 'Package id collision source',
-      uri: null,
-      contentDigest: 'sha256:package-id-collision',
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: secondTimestamp,
-      createdAt: secondTimestamp,
-      updatedAt: secondTimestamp,
-    });
-    const materializeRes = await app.request(
-      `/api/app/workspaces/${sourceWorkspaceId}/knowledge/manager/context/${context.packageTrace.contextPackageId}/materialization`,
-      { method: 'POST' }
-    );
-    expect(materializeRes.status, await materializeRes.clone().text()).toBe(200);
-    MaterializeKnowledgeContextPackageResponseSchema.parse(await materializeRes.json());
 
     const exportRes = await app.request(`/api/app/workspaces/${sourceWorkspaceId}/export`, {
       method: 'POST',
     });
     expect(exportRes.status, await exportRes.clone().text()).toBe(200);
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-    const exportRoot = join(
-      dataRoot,
-      'server',
-      'exports',
-      'workspaces',
-      sourceWorkspaceId,
-      exported.exportId
-    );
-    const tracePath = 'records/knowledge-context-package-traces.jsonl';
-    const sourceTrace = JSON.parse(
-      readFileSync(join(exportRoot, ...tracePath.split('/')), 'utf8').trim()
-    ) as Record<string, unknown>;
-    const invalidTraceExportId = 'wsexp_invalid_source_context_digest';
-    const invalidTraceRoot = cloneWorkspaceExport(exportRoot, invalidTraceExportId);
-    writeInventoriedExportFile(
-      invalidTraceRoot,
-      tracePath,
-      `${JSON.stringify({
-        ...sourceTrace,
-        response: {
-          ...(sourceTrace.response as Record<string, unknown>),
-          packageTrace: {
-            ...((sourceTrace.response as { packageTrace: Record<string, unknown> }).packageTrace ??
-              {}),
-            contextPackageDigest: `ctxpkg_sha256_${'f'.repeat(64)}`,
-          },
+    const verified = verifyWorkspaceExportTree({
+      exportRoot: join(
+        dataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        sourceWorkspaceId,
+        exported.exportId
+      ),
+    });
+    const acceptedExportPath = `workspace-files/knowledge/pages/${acceptedPageId}.md`;
+    expect(verified.fileContents.get(acceptedExportPath)).toBe(acceptedPageBytes);
+    for (const [name, alter] of [
+      ['missing', (files: Map<string, string>) => files.delete(acceptedExportPath)],
+      [
+        'contradictory',
+        (files: Map<string, string>) =>
+          files.set(
+            acceptedExportPath,
+            acceptedPageBytes.replace(
+              'Exact accepted proposal bytes survive portable transfer.',
+              'Contradictory page content must fail import.'
+            )
+          ),
+      ],
+      [
+        'duplicate-record',
+        (files: Map<string, string>) => {
+          const records = files.get('records/knowledge.jsonl');
+          if (!records) {
+            throw new Error('Knowledge records are unavailable in the export fixture.');
+          }
+          files.set('records/knowledge.jsonl', `${records}${records.split('\n')[0]}\n`);
         },
-      })}\n`
-    );
-    const invalidTraceImport = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId,
-        exportId: invalidTraceExportId,
-        requestId: '00000000-0000-4000-8000-00000000d911',
-      }),
-    });
-    expect(invalidTraceImport.status).toBe(400);
-
-    const contextPackageId = context.packageTrace.contextPackageId;
-    const materializationPrefix = `workspace-files/knowledge/context-materializations/${contextPackageId}/openkit/context`;
-    const packagePath = `${materializationPrefix}/package.json`;
-    const sourceManifest = JSON.parse(
-      readFileSync(join(exportRoot, ...packagePath.split('/')), 'utf8')
-    ) as Record<string, unknown>;
-    const invalidManifestExportId = 'wsexp_invalid_materialization_digest';
-    const invalidManifestRoot = cloneWorkspaceExport(exportRoot, invalidManifestExportId);
-    writeInventoriedExportFile(
-      invalidManifestRoot,
-      packagePath,
-      `${JSON.stringify(
-        { ...sourceManifest, contextPackageDigest: `ctxpkg_sha256_${'e'.repeat(64)}` },
-        null,
-        2
-      )}\n`
-    );
-    const invalidManifestImport = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId,
-        exportId: invalidManifestExportId,
-        requestId: '00000000-0000-4000-8000-00000000d912',
-      }),
-    });
-    expect(invalidManifestImport.status).toBe(400);
-
-    const unlistedExportId = 'wsexp_unlisted_materialization_file';
-    const unlistedRoot = cloneWorkspaceExport(exportRoot, unlistedExportId);
-    writeInventoriedExportFile(
-      unlistedRoot,
-      `${materializationPrefix}/unlisted.txt`,
-      'This file is absent from the package manifest.\n'
-    );
-    const unlistedImport = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId,
-        exportId: unlistedExportId,
-        requestId: '00000000-0000-4000-8000-00000000d913',
-      }),
-    });
-    expect(unlistedImport.status).toBe(400);
-
-    const sourceEntries = sourceManifest.entries as unknown[];
-    const duplicateEntry = sourceEntries[0];
-    if (!duplicateEntry) {
-      throw new Error('Expected a materialization manifest entry.');
+      ],
+    ] as const) {
+      const fileContents = new Map(verified.fileContents);
+      alter(fileContents);
+      expect(
+        () =>
+          readWorkspaceImportSnapshot({
+            verified: { ...verified, fileContents },
+            targetWorkspaceId: `ws_${name}_page_import`,
+          }),
+        name
+      ).toThrow(/Knowledge Page/i);
     }
-    const duplicateEntryExportId = 'wsexp_duplicate_materialization_entry';
-    const duplicateEntryRoot = cloneWorkspaceExport(exportRoot, duplicateEntryExportId);
-    writeInventoriedExportFile(
-      duplicateEntryRoot,
-      packagePath,
-      `${JSON.stringify(
-        { ...sourceManifest, entries: [...sourceEntries, duplicateEntry] },
-        null,
-        2
-      )}\n`
-    );
-    const duplicateEntryImport = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId,
-        exportId: duplicateEntryExportId,
-        requestId: '00000000-0000-4000-8000-00000000d914',
-      }),
-    });
-    expect(duplicateEntryImport.status).toBe(400);
-
     const importRes = await app.request('/api/app/workspace-imports', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -418,8 +320,12 @@ describe('workspace portable file state', () => {
     const importedKnowledge = store
       .listKnowledge(importedWorkspaceId)
       .find((entry) => entry.title === knowledge.title);
+    const importedAcceptedKnowledge = store
+      .listKnowledge(importedWorkspaceId)
+      .find((entry) => entry.title === 'Portable accepted proposal');
     expect(importedKnowledge).toBeDefined();
-    if (!importedKnowledge) {
+    expect(importedAcceptedKnowledge).toBeDefined();
+    if (!importedKnowledge || !importedAcceptedKnowledge) {
       coreDb.sqlite.close();
       return;
     }
@@ -465,29 +371,6 @@ describe('workspace portable file state', () => {
       ],
     });
 
-    const importedContextRows = readOptionalJsonl(
-      join(importedRoot, 'knowledge', 'context-packages', '202607.jsonl')
-    );
-    const importedContextTrace = importedContextRows[0]
-      ? KnowledgeManagerContextPackageTraceRecordSchema.parse(importedContextRows[0])
-      : null;
-    expect.soft(importedContextRows).toHaveLength(1);
-    expect.soft(importedContextRows[0]).toMatchObject({
-      workspaceId: importedWorkspaceId,
-      response: {
-        workspaceId: importedWorkspaceId,
-        packageTrace: {
-          selectedKnowledgeEntryIds: expect.arrayContaining([importedKnowledge.id]),
-        },
-        claims: expect.arrayContaining([
-          expect.objectContaining({
-            id: importedSourceClaim?.id,
-            sourceReferences: [`knowledge:${importedKnowledge.id}`],
-          }),
-        ]),
-      },
-    });
-
     const importedRetrievalRows = readOptionalJsonl(
       join(importedRoot, 'knowledge', 'traces', '202607.jsonl')
     );
@@ -496,7 +379,7 @@ describe('workspace portable file state', () => {
         workspaceId: importedWorkspaceId,
         selected: [
           expect.objectContaining({
-            path: 'knowledge/pages/portable-file.md',
+            knowledgePageId: 'portable-file',
             sourceReferences: [`knowledge:${importedKnowledge.id}`],
           }),
         ],
@@ -526,87 +409,51 @@ describe('workspace portable file state', () => {
         existsSync(importedNativePagePath) ? readFileSync(importedNativePagePath, 'utf8') : null
       )
       .toContain(`openkit_entry_id: "${importedKnowledge.id}"`);
-
-    const materializationsRoot = join(importedRoot, 'knowledge', 'context-materializations');
-    const importedContextPackageIds = existsSync(materializationsRoot)
-      ? readdirSync(materializationsRoot)
-      : [];
-    const importedContextPackageId = importedContextTrace?.id;
-    expect.soft(importedContextPackageIds).toEqual([importedContextPackageId]);
-    const importedManifestPath = join(
-      materializationsRoot,
-      String(importedContextPackageId),
-      'openkit',
-      'context',
-      'package.json'
+    const importedAcceptedPagePath = join(
+      importedRoot,
+      'knowledge',
+      'pages',
+      `${importedAcceptedKnowledge.id}.md`
     );
-    const importedManifest = existsSync(importedManifestPath)
-      ? (JSON.parse(readFileSync(importedManifestPath, 'utf8')) as Record<string, unknown>)
-      : null;
-    expect.soft(importedManifest).toMatchObject({
-      workspaceId: importedWorkspaceId,
-      contextPackageId: importedContextPackageId,
-      contextPackageDigest: importedContextTrace?.response.packageTrace.contextPackageDigest,
-      entries: expect.arrayContaining([
-        expect.objectContaining({
-          path: `/openkit/context/knowledge/${importedKnowledge.id}.md`,
-          sourceReferences: expect.arrayContaining([`knowledge:${importedKnowledge.id}`]),
-        }),
-      ]),
-    });
+    const expectedImportedAcceptedPageBytes = acceptedPageBytes
+      .replaceAll(acceptedPageId, importedAcceptedKnowledge.id)
+      .replaceAll(knowledge.id, importedKnowledge.id);
     expect
-      .soft(importedContextTrace?.response.packageTrace.contextPackageDigest)
-      .not.toBe(context.packageTrace.contextPackageDigest);
-    const importedPolicyPath = join(
-      materializationsRoot,
-      String(importedContextPackageId),
-      'openkit',
-      'context',
-      'policy.json'
-    );
-    const importedPolicy = existsSync(importedPolicyPath)
-      ? (JSON.parse(readFileSync(importedPolicyPath, 'utf8')) as Record<string, unknown>)
-      : null;
-    expect.soft(importedPolicy).toMatchObject({
-      claims: importedContextTrace?.response.claims,
-      conflicts: importedContextTrace?.response.conflicts,
-      packageTrace: importedContextTrace?.response.packageTrace,
-      policy: importedContextTrace?.response.policy,
-    });
-    expect(
-      (importedPolicy?.claims as Array<{ workspaceId?: string }> | undefined)?.every(
-        (claim) => claim.workspaceId === importedWorkspaceId
+      .soft(
+        existsSync(importedAcceptedPagePath) ? readFileSync(importedAcceptedPagePath, 'utf8') : null
       )
-    ).toBe(true);
-    expect(
-      store.readKnowledgeContextPackageMaterialization(
-        importedWorkspaceId,
-        String(importedContextPackageId)
-      )
-    ).not.toBeNull();
+      .toBe(expectedImportedAcceptedPageBytes);
+    expect(store.listKnowledgeProposals(importedWorkspaceId)).toEqual([]);
+    expect(store.listKnowledgeProposalReviewDecisions(importedWorkspaceId)).toEqual([]);
 
-    const importedProposal = store.listKnowledgeProposals(importedWorkspaceId)[0];
-    expect.soft(importedProposal?.sourceClaimId).toBe(importedSourceClaim?.id);
-    const decisionRes = await app.request(
-      `/api/app/workspaces/${importedWorkspaceId}/knowledge/proposals/${importedProposal?.id}/decision`,
+    store.updateWorkspace(importedWorkspaceId, { name: 'Persist unrelated imported change' });
+    expect(readFileSync(importedAcceptedPagePath, 'utf8')).toBe(expectedImportedAcceptedPageBytes);
+    const restartedStore = new FsStore({ dataRoot });
+    expect(
+      restartedStore
+        .listKnowledge(importedWorkspaceId)
+        .some((entry) => entry.id === importedAcceptedKnowledge.id)
+    ).toBe(true);
+    expect(readFileSync(importedAcceptedPagePath, 'utf8')).toBe(expectedImportedAcceptedPageBytes);
+
+    const importedRetrievalRes = await app.request(
+      `/api/app/workspaces/${importedWorkspaceId}/knowledge/retrievals`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-00000000d902',
-          decision: 'accepted',
-          message: 'Apply the imported source claim.',
-        }),
+        body: JSON.stringify({ query: 'Exact accepted proposal bytes', limit: 1 }),
       }
     );
-    expect.soft(decisionRes.status, await decisionRes.clone().text()).toBe(200);
-    expect
-      .soft(
-        store
-          .listKnowledge(importedWorkspaceId)
-          .find((entry) => entry.title === 'Source-backed portable claim.')
-      )
-      .toMatchObject({ sourceReferences: [`knowledge:${importedKnowledge.id}`] });
+    expect(importedRetrievalRes.status, await importedRetrievalRes.clone().text()).toBe(200);
+    const importedRetrieval = KnowledgeRetrievalResponseSchema.parse(
+      await importedRetrievalRes.json()
+    );
+    expect(importedRetrieval.selected).toEqual([
+      expect.objectContaining({
+        knowledgePageId: importedAcceptedKnowledge.id,
+        sourceReferences: [knowledgeReference.replaceAll(knowledge.id, importedKnowledge.id)],
+      }),
+    ]);
 
     coreDb.sqlite.close();
   });

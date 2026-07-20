@@ -43,7 +43,7 @@ describe('nanocore e2e server workspace scoping', () => {
     expect(createResponse.status).toBe(201);
     expect(secondList.items.map((workspace) => workspace.id)).not.toContain(createdWorkspace.id);
     expect(secondGetResponse.status).toBe(403);
-    expect(secondGetBody.code).toBe('core.auth.scope_forbidden');
+    expect(secondGetBody.code).toBe('workspace_access_denied');
   });
 });
 

@@ -98,6 +98,18 @@ test('one catalog covers the checked App API and public Core projection', async 
   ]);
   assert.equal(new Set(operationCatalog.map((entry) => entry.id)).size, operationCatalog.length);
   assert.ok(!operationCatalog.some((entry) => entry.id === 'knowledge.claim-promote'));
+  assert.ok(operationCatalog.some((entry) => entry.id === 'knowledge.context-prepare'));
+  for (const id of [
+    'knowledge.context-trace',
+    'knowledge.context-materialization',
+    'knowledge.context-materialize',
+  ]) {
+    assert.ok(!operationCatalog.some((entry) => entry.id === id));
+  }
+  assert.equal(
+    operationCatalog.find((entry) => entry.id === 'turn.read')?.protocolSchema,
+    'TurnReadProjectionSchema'
+  );
   assert.equal(operationCatalog.filter((entry) => entry.id === 'thread.items').length, 1);
   assert.deepEqual(
     operationCatalog.filter((entry) => entry.source === 'local-only').map((entry) => entry.id),
@@ -140,8 +152,32 @@ test('one catalog covers the checked App API and public Core projection', async 
     assert.ok(exclusion.owner);
   }
 
+  const proposalOperationIds = operationCatalog
+    .filter((entry) => entry.id.startsWith('knowledge.proposal-'))
+    .map((entry) => entry.id)
+    .sort();
+  assert.deepEqual(proposalOperationIds, [
+    'knowledge.proposal-decide',
+    'knowledge.proposal-draft',
+    'knowledge.proposal-reverse',
+  ]);
+  assert.ok(!operationCatalog.some((entry) => entry.id === 'knowledge.reflect'));
   const proposalDecision = operationCatalog.find(
     (entry) => entry.id === 'knowledge.proposal-decide'
+  );
+  const proposalDecisionInput = {
+    workspaceId: 'workspace_1',
+    proposalId: 'proposal_1',
+    requestId: '00000000-0000-4000-8000-000000000001',
+    decision: 'accepted',
+  };
+  assert.deepEqual(
+    Object.keys(proposalDecision.inputSchema.shape).sort(),
+    Object.keys(proposalDecisionInput).sort()
+  );
+  assert.deepEqual(
+    proposalDecision.inputSchema.parse(proposalDecisionInput),
+    proposalDecisionInput
   );
   assert.equal(
     proposalDecision.inputSchema.safeParse({
@@ -149,8 +185,26 @@ test('one catalog covers the checked App API and public Core projection', async 
       proposalId: 'proposal_1',
       decision: 'accepted',
     }).success,
-    true
+    false
   );
+  const [proposalReverse] = operationCatalog.filter(
+    (entry) => entry.id === 'knowledge.proposal-reverse'
+  );
+  const proposalReverseInput = {
+    workspaceId: 'workspace_1',
+    proposalId: 'proposal_1',
+    requestId: '00000000-0000-4000-8000-000000000002',
+    reviewId: 'review_1',
+    knowledgePageId: 'lessons/release-review',
+    expectedContentDigest: `sha256:${'a'.repeat(64)}`,
+  };
+  assert.equal(proposalReverse.clientMethod, 'app.reverseKnowledgeProposal');
+  assert.equal(proposalReverse.appOperationId, 'reverseKnowledgeProposal');
+  assert.deepEqual(
+    Object.keys(proposalReverse.inputSchema.shape).sort(),
+    Object.keys(proposalReverseInput).sort()
+  );
+  assert.deepEqual(proposalReverse.inputSchema.parse(proposalReverseInput), proposalReverseInput);
 
   const idsWithAccess = (requiredAccess) =>
     operationCatalog

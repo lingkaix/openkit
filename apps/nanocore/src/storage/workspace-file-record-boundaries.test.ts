@@ -87,7 +87,6 @@ describe('workspace file-record write and load boundaries', () => {
   it.each([
     'agent session',
     'artifact',
-    'knowledge proposal',
     'knowledge source',
   ] as const)('rejects a cross-workspace duplicate %s id without replacing its owner', (family) => {
     const { first, second, store } = createBoundaryFixture();
@@ -182,36 +181,6 @@ describe('workspace file-record write and load boundaries', () => {
           .toThrow();
         expect.soft(store.listArtifacts(first.workspace.id)).toContainEqual(original);
         expect.soft(existsSync(join(first.root, 'artifacts', id, 'artifact.json'))).toBe(true);
-        break;
-      }
-
-      case 'knowledge proposal': {
-        const id = 'kp_cross_workspace_boundary';
-        const original = store.createKnowledgeProposal({
-          id,
-          workspaceId: first.workspace.id,
-          title: 'Original proposal',
-          summary: 'The first workspace owns this proposal.',
-          status: 'pending',
-          createdAt: firstTimestamp,
-          updatedAt: firstTimestamp,
-        });
-
-        expect
-          .soft(() =>
-            store.createKnowledgeProposal({
-              id,
-              workspaceId: second.workspace.id,
-              title: 'Replacement proposal',
-              summary: 'The second workspace must not replace the owner.',
-              status: 'pending',
-              createdAt: secondTimestamp,
-              updatedAt: secondTimestamp,
-            })
-          )
-          .toThrow();
-        expect.soft(store.getKnowledgeProposal(id)).toEqual(original);
-        expect.soft(existsSync(join(first.root, 'knowledge', 'proposals', `${id}.md`))).toBe(true);
         break;
       }
 

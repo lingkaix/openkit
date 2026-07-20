@@ -143,10 +143,6 @@ export interface WriteWorkspaceExportTreeInput {
   turnEvents: readonly (readonly [string, readonly unknown[]])[];
   /** Authoritative workspace files not owned by canonical protocol records. */
   portableFileState?: WorkspacePortableFileState;
-  /** Knowledge proposal records to export as line-oriented records. */
-  knowledgeProposals?: readonly unknown[];
-  /** Knowledge proposal review records to export as line-oriented records. */
-  knowledgeProposalReviews?: readonly unknown[];
   /** Knowledge source identity records to export as line-oriented records. */
   knowledgeSources?: readonly unknown[];
   /** Knowledge source text materials to export as evidence files. */
@@ -272,8 +268,6 @@ export function writeWorkspaceExportTree(
     turns: input.turns,
     itemRevisions: input.itemRevisions,
     artifacts: input.artifacts,
-    knowledgeProposals: input.knowledgeProposals,
-    knowledgeProposalReviews: input.knowledgeProposalReviews,
     knowledgeSources: input.knowledgeSources,
     agentSessions: input.agentSessions,
     turnEvents: input.turnEvents,
@@ -344,15 +338,6 @@ export function writeWorkspaceExportTree(
       writeFileSync(
         join(filesRoot, artifactContentFileName(artifact.content.format)),
         artifact.content.body
-      );
-    }
-    if (history.knowledgeProposals.length) {
-      writeJsonl(join(recordsRoot, 'knowledge-proposals.jsonl'), history.knowledgeProposals);
-    }
-    if (history.knowledgeProposalReviews.length) {
-      writeJsonl(
-        join(recordsRoot, 'knowledge-proposal-reviews.jsonl'),
-        history.knowledgeProposalReviews
       );
     }
     if (history.knowledgeSources.length) {

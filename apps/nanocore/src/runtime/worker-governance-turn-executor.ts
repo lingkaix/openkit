@@ -20,6 +20,9 @@ import {
   projectWorkerContextRequest,
   readWorkerContextPackageTrace,
   type WorkerContextPackageFiles,
+  type WorkerContextPackageKnowledgeExclusion,
+  type WorkerContextPackageKnowledgeSelectionInput,
+  type WorkerContextPackageKnowledgeSelectionReference,
   type WorkerContextPackageMaterialExclusion,
   type WorkerContextPackageMaterialSelectionInput,
   type WorkerContextPackageTrace,
@@ -31,9 +34,11 @@ import {
   getPendingUserTurnRecord,
   type PendingUserTurnRecord,
 } from '../goal-steering-authority.js';
+import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-manager.js';
 import { ArtifactAuthorityError, type FsStore } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
@@ -72,7 +77,11 @@ import {
   transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
 } from './worker-backend-sessions.js';
-import { getWorkerCheckpoint, type WorkerCheckpointRecord } from './worker-checkpoints.js';
+import {
+  getWorkerCheckpoint,
+  parseWorkerCheckpointContextAssembly,
+  type WorkerCheckpointRecord,
+} from './worker-checkpoints.js';
 import {
   type AcceptedWorkerFinalStatus,
   canonicalStopReasonForAcceptedWorkerFinalStatus,
@@ -137,11 +146,16 @@ interface PreparedWorkerTurnContext {
   readonly queuedMaterialSelection: QueuedThreadMaterialSelection | null;
   /** Addressed automatic Material candidates excluded by the closed S39 rules. */
   readonly materialExclusions: readonly WorkerContextPackageMaterialExclusion[];
+  /** Exact S61 selection invocation consumed by this direct Task. */
+  readonly knowledgeSelectionInput: WorkerContextPackageKnowledgeSelectionReference | null;
+  /** S61-selected Knowledge pages omitted only by the later S39 package budget. */
+  readonly knowledgeExclusions: readonly WorkerContextPackageKnowledgeExclusion[];
 }
 
 /**
  * Prepares the one accepted S39 package only when an exact worker checkpoint owns this Turn.
  *
+ * @param coreDb Core authority used to reverify accepted Knowledge work references.
  * @param workspaceDb Open Workspace database containing checkpoint and Material authority.
  * @param store Product store containing canonical Thread Items.
  * @param checkpoint Exact diagnostic checkpoint that owns this worker Turn.
@@ -150,6 +164,7 @@ interface PreparedWorkerTurnContext {
  * @throws TurnStartValidationError when checkpoint or requested Item authority is contradictory.
  */
 function prepareWorkerTurnContextPackage(
+  coreDb: CoreDb | null,
   workspaceDb: WorkspaceDb,
   store: FsStore,
   checkpoint: WorkerCheckpointRecord,
@@ -175,6 +190,20 @@ function prepareWorkerTurnContextPackage(
 
   const workerRequest = projectWorkerContextRequest(input.workerRequest);
   const contextBudgetTokens = workerRequest.contextBudgetTokens;
+  const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
+  const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
+  const requiresTaskKnowledgeSelection =
+    workerRequest.requestKind === 'structured-delegation' && checkpoint.goalId === null;
+  if (
+    (requiresTaskKnowledgeSelection && knowledgeSelectionInput === null) ||
+    (!requiresTaskKnowledgeSelection && knowledgeSelectionInput !== null)
+  ) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Worker Context Package Task Knowledge selection authority is contradictory.',
+      409
+    );
+  }
   const pending = getPendingUserTurnRecord(workspaceDb, input.workspaceId, input.threadId);
   let appliedPending: PendingUserTurnRecord | null = null;
   if (pending?.goalId === checkpoint.goalId && pending.terminalClaimKind !== null) {
@@ -341,10 +370,58 @@ function prepareWorkerTurnContextPackage(
     }
   }
 
+  const knowledgeSelections: WorkerContextPackageKnowledgeSelectionInput[] = [];
+  const knowledgeExclusions: WorkerContextPackageKnowledgeExclusion[] = [];
+  if (knowledgeSelectionInput) {
+    let pages: ReturnType<typeof resolveWorkspaceKnowledgeRetrievalPages>;
+    try {
+      const referenceProofs = resolveWorkspaceKnowledgeReferenceProofs({
+        coreDb: coreDb ?? undefined,
+        store,
+        workspaceDb,
+        workspaceId: input.workspaceId,
+      });
+      pages = resolveWorkspaceKnowledgeRetrievalPages({
+        caller: 'task-mode',
+        dataRoot: workspaceDb.dataRoot,
+        referenceProofs,
+        retrievalTraceId: knowledgeSelectionInput.retrievalTraceId,
+        workspaceId: input.workspaceId,
+      });
+    } catch {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker Context Package Knowledge selection is contradictory.',
+        409
+      );
+    }
+    if (!pages) {
+      throw new TurnStartValidationError(
+        'source_unavailable',
+        'Worker Context Package Knowledge source is unavailable.',
+        503
+      );
+    }
+    for (const page of pages) {
+      const pageBytes = Buffer.byteLength(page.content, 'utf8');
+      if (Math.ceil((selectedContextBytes + pageBytes) / 4) > contextBudgetTokens) {
+        knowledgeExclusions.push({
+          contentDigest: page.contentDigest,
+          knowledgePageId: page.knowledgePageId,
+          reason: 'budget_exceeded',
+        });
+        continue;
+      }
+      selectedContextBytes += pageBytes;
+      knowledgeSelections.push(page);
+    }
+  }
+
   const includedItemIds = [workerRequestItemId, ...includedPriorItems.map((item) => item.id)];
   const packageFiles = createWorkerContextPackageFiles({
     contextBudgetTokens,
     includedItemIds,
+    knowledgeSelections,
     materialSelections,
     threadId: input.threadId,
     turnId: input.turnId,
@@ -365,6 +442,8 @@ function prepareWorkerTurnContextPackage(
   return {
     appliedPending,
     checkpoint,
+    knowledgeExclusions,
+    knowledgeSelectionInput,
     materialExclusions,
     packageFiles,
     preparedContextPackage: {
@@ -543,13 +622,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       if (workspaceDb && checkpoint && context.sandboxBindingRef) {
-        preparedWorkerContext = prepareWorkerTurnContextPackage(workspaceDb, store, checkpoint, {
-          requestId,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          workerRequest: input,
-          workspaceId: turn.workspaceId,
-        });
+        preparedWorkerContext = prepareWorkerTurnContextPackage(
+          this.coreDb,
+          workspaceDb,
+          store,
+          checkpoint,
+          {
+            requestId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            workerRequest: input,
+            workspaceId: turn.workspaceId,
+          }
+        );
       }
       if (preparedWorkerContext && !turn.startedAt) {
         throw new TurnStartValidationError(
@@ -749,6 +834,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           agentSessionId: agentSession.id,
           excludedItems: [],
           goalId: preparedWorkerContext.checkpoint.goalId,
+          knowledgeExclusions: preparedWorkerContext.knowledgeExclusions,
+          knowledgeSelectionInput: preparedWorkerContext.knowledgeSelectionInput,
           materialExclusions: preparedWorkerContext.materialExclusions,
           packageFiles: preparedWorkerContext.packageFiles,
           packageSnapshotId: environmentPackage.snapshotId,

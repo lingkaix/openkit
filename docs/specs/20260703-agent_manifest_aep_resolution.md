@@ -1,7 +1,7 @@
 # Agent Manifest And AEP Resolution
 
 Status: Accepted
-Implementation: Implemented
+Implementation: Partial
 
 ## Summary
 
@@ -368,7 +368,7 @@ The current implementation follows the single authority chain defined by this sp
 - The AEP preserves sourceRef lineage, vault-backed attachments, backend requirements, workspace roots, private per-turn input, policy binding, transcript paths, and redacted snapshots. Current Skill and MCP entries are static approved supply metadata; `capabilities` remains explicitly disabled with no callable route or generated native MCP configuration.
 - `packages/worker-shim` selects one adapter from its static registry. The shared contract is only `prepare` and `collect`: adapters derive native argv, safe child environment, isolated state-root paths, and one bounded normalized result. It has no adapter-authored config-file envelope, runtime compatibility fallback, dynamic plugin loader, worker capability client, or control sidecar.
 
-Local schema, resolver, AEP, materializer, readiness, redaction, worker-shim, adapter, image-contract, closed-runtime, typecheck, build, and repository gates cover this boundary. The three pinned arm64 images build on A1 and pass stock OpenShell `0.0.80` create, upload, adapter `prepare` dry-run, and `--no-keep` cleanup checks. That evidence proves image content, adapter preparation, containment, upload, and cleanup only; it does not prove the complete worker-control readiness, heartbeat, interrupt, reconnect, recovery, or terminal lifecycle for every adapter.
+Local schema, resolver, AEP, materializer, readiness, redaction, worker-shim, adapter, image-contract, closed-runtime, typecheck, build, and repository gates cover this boundary. The three pinned arm64 images build on A1 and pass stock OpenShell `0.0.80` create, upload, adapter `prepare` dry-run, and `--no-keep` cleanup checks. That evidence proves image content, adapter preparation, containment, upload, and cleanup only; it does not prove the complete worker-control readiness, heartbeat, interrupt, reconnect, recovery, or terminal lifecycle for every adapter. The shared product-visible readiness projection can still report `ready` before provider/model compatibility and the fixed control-binary set are resolved; later AEP resolution fails closed, but this earlier false-ready projection keeps the specification Partial until the existing setup resolver owns both decisions.
 
 ## Scale Fields
 

@@ -60,7 +60,7 @@ describe('OpenKit Skill CLI e2e', () => {
       command: 'ops.call',
       operation: 'workspace.list',
     });
-    expect(listed.data.items).toContainEqual(created.data);
+    expect(listed.data.items).toContainEqual(expect.objectContaining({ workspace: created.data }));
   }, 20_000);
 });
 

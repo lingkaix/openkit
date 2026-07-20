@@ -4271,7 +4271,7 @@
         "tags": [
           "knowledge"
         ],
-        "summary": "Prepare source-traceable knowledge context material.",
+        "summary": "Select a bounded governed Knowledge retrieval projection.",
         "security": [
           {
             "bearerAuth": []
@@ -4302,183 +4302,11 @@
         },
         "responses": {
           "200": {
-            "description": "Prepared knowledge context material.",
+            "description": "Governed Knowledge selection and retrieval trace reference.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/KnowledgeManagerPrepareContextResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}": {
-      "get": {
-        "operationId": "readKnowledgeContextPackageTrace",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Read one persisted Knowledge Manager context package trace.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "contextPackageId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Persisted knowledge context package trace.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadKnowledgeManagerContextPackageTraceResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}/materialization": {
-      "get": {
-        "operationId": "readKnowledgeContextPackageMaterialization",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Read one materialized Knowledge Manager context package.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "contextPackageId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Previously materialized worker-visible context package summary.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MaterializeKnowledgeContextPackageResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "materializeKnowledgeContextPackage",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Materialize one Knowledge Manager context package for worker-visible files.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "contextPackageId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Worker-visible context package materialization summary.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MaterializeKnowledgeContextPackageResponse"
                 }
               }
             }
@@ -6253,6 +6081,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SubmitKnowledgeProposalDecisionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/reversal": {
+      "post": {
+        "operationId": "reverseKnowledgeProposal",
+        "tags": [
+          "reviews"
+        ],
+        "summary": "Remove one unchanged proposal-created Knowledge Page.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "proposalId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReverseKnowledgeProposalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Derived projection after bounded Knowledge Proposal reversal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReverseKnowledgeProposalResponse"
                 }
               }
             }
@@ -18234,46 +18130,63 @@
         "properties": {
           "traceId": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
           },
           "workspaceId": {
             "type": "string",
             "minLength": 1
           },
-          "query": {
+          "caller": {
             "type": "string",
-            "minLength": 1
+            "enum": [
+              "assistant",
+              "task-mode",
+              "app-api"
+            ]
           },
-          "createdAt": {
+          "requestDigest": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "retrievalParameters": {
+            "type": "object",
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 20
+              },
+              "pinnedConceptIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "limit",
+              "pinnedConceptIds"
+            ],
+            "additionalProperties": false
           },
           "selected": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "conceptId": {
+                "knowledgePageId": {
                   "type": "string",
                   "minLength": 1
                 },
-                "title": {
+                "contentDigest": {
                   "type": "string",
-                  "minLength": 1
-                },
-                "path": {
-                  "type": "string",
-                  "minLength": 1
+                  "pattern": "^sha256:[a-f0-9]{64}$"
                 },
                 "score": {
-                  "type": "number"
-                },
-                "matchedTerms": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 },
                 "sourceReferences": {
                   "type": "array",
@@ -18284,11 +18197,9 @@
                 }
               },
               "required": [
-                "conceptId",
-                "title",
-                "path",
+                "knowledgePageId",
+                "contentDigest",
                 "score",
-                "matchedTerms",
                 "sourceReferences"
               ],
               "additionalProperties": false
@@ -18299,48 +18210,55 @@
             "items": {
               "type": "object",
               "properties": {
-                "conceptId": {
+                "knowledgePageId": {
                   "type": "string",
                   "minLength": 1
                 },
-                "title": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "path": {
-                  "type": "string",
-                  "minLength": 1
+                "contentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "reason": {
                   "type": "string",
                   "enum": [
-                    "relevance_too_low",
-                    "budget_exceeded"
+                    "sensitive_content",
+                    "lower_conformance",
+                    "policy_excluded",
+                    "freshness_expired",
+                    "budget_exceeded",
+                    "source_unavailable"
                   ]
-                },
-                "detail": {
-                  "type": "string",
-                  "minLength": 1
                 }
               },
               "required": [
-                "conceptId",
-                "title",
-                "path",
-                "reason",
-                "detail"
+                "knowledgePageId",
+                "contentDigest",
+                "reason"
               ],
               "additionalProperties": false
             }
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
           "traceId",
           "workspaceId",
-          "query",
-          "createdAt",
+          "caller",
+          "requestDigest",
+          "retrievalParameters",
           "selected",
-          "excluded"
+          "excluded",
+          "createdAt"
         ],
         "additionalProperties": false
       },
@@ -18386,6 +18304,10 @@
               "task-mode",
               "app-api"
             ]
+          },
+          "retrievalTraceId": {
+            "type": "string",
+            "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
           },
           "query": {
             "type": "string",
@@ -18459,6 +18381,7 @@
           "operation",
           "workspaceId",
           "caller",
+          "retrievalTraceId",
           "query",
           "outcome",
           "answer",
@@ -18474,26 +18397,34 @@
         "properties": {
           "requestId": {
             "type": "string",
-            "minLength": 1
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
           },
-          "title": {
+          "knowledgePageId": {
+            "type": "string",
+            "maxLength": 240,
+            "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+          },
+          "canonicalPageBytes": {
             "type": "string",
             "minLength": 1
           },
-          "summary": {
+          "contentDigest": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^sha256:[a-f0-9]{64}$"
           },
           "sourceReferences": {
-            "default": [],
+            "minItems": 1,
             "type": "array",
             "items": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             }
           },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
           "confidence": {
-            "default": 0.5,
             "type": "number",
             "minimum": 0,
             "maximum": 1
@@ -18501,9 +18432,11 @@
         },
         "required": [
           "requestId",
-          "title",
-          "summary",
+          "knowledgePageId",
+          "canonicalPageBytes",
+          "contentDigest",
           "sourceReferences",
+          "rationale",
           "confidence"
         ],
         "additionalProperties": false
@@ -18543,13 +18476,95 @@
                 "type": "string",
                 "minLength": 1
               },
-              "title": {
+              "operation": {
+                "type": "string",
+                "const": "create"
+              },
+              "knowledgePageId": {
+                "type": "string",
+                "maxLength": 240,
+                "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+              },
+              "canonicalPageBytes": {
                 "type": "string",
                 "minLength": 1
               },
-              "summary": {
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "sourceReferences": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rationale": {
                 "type": "string",
                 "minLength": 1
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "producer": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "agent",
+                          "automation",
+                          "integration",
+                          "system"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "responsibleUserId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "responsibleUserId"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
               },
               "status": {
                 "type": "string",
@@ -18558,150 +18573,40 @@
               "createdAt": {
                 "type": "string",
                 "minLength": 1
-              },
-              "updatedAt": {
-                "type": "string",
-                "minLength": 1
               }
             },
             "required": [
               "id",
               "workspaceId",
-              "title",
-              "summary",
+              "operation",
+              "knowledgePageId",
+              "canonicalPageBytes",
+              "contentDigest",
+              "sourceReferences",
+              "rationale",
+              "confidence",
+              "producer",
               "status",
-              "createdAt",
-              "updatedAt"
+              "createdAt"
             ],
             "additionalProperties": false
-          },
-          "sourceReferences": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "sourceLineage": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "reference": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "classification": {
-                  "type": "string",
-                  "enum": [
-                    "registered-source",
-                    "workspace-knowledge",
-                    "external-reference"
-                  ]
-                },
-                "sourceId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "knowledgeEntryId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "title": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "reviewRequired": {
-                  "type": "boolean"
-                },
-                "detail": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "reference",
-                "classification",
-                "sourceId",
-                "knowledgeEntryId",
-                "title",
-                "reviewRequired",
-                "detail"
-              ],
-              "additionalProperties": false
-            }
           },
           "validation": {
             "type": "object",
             "properties": {
-              "status": {
+              "conformance": {
                 "type": "string",
-                "enum": [
-                  "ready-for-review",
-                  "needs-source-review"
-                ]
+                "const": "Workspace-schema-valid"
               },
-              "checks": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string",
-                      "enum": [
-                        "source-reference-resolved",
-                        "source-reference-unregistered",
-                        "no-source-references"
-                      ]
-                    },
-                    "passed": {
-                      "type": "boolean"
-                    },
-                    "detail": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "passed",
-                    "detail"
-                  ],
-                  "additionalProperties": false
-                }
+              "generatedFromCompletedWorkHistory": {
+                "type": "boolean"
               }
             },
             "required": [
-              "status",
-              "checks"
+              "conformance",
+              "generatedFromCompletedWorkHistory"
             ],
             "additionalProperties": false
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
           }
         },
         "required": [
@@ -18710,10 +18615,7 @@
           "workspaceId",
           "caller",
           "proposal",
-          "sourceReferences",
-          "sourceLineage",
-          "validation",
-          "confidence"
+          "validation"
         ],
         "additionalProperties": false
       },
@@ -18875,64 +18777,10 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 10
-          },
-          "artifactIds": {
-            "default": [],
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "workspaceFiles": {
-            "default": [],
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "path"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "workspaceRootFiles": {
-            "default": [],
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "rootId": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9._-]+$"
-                },
-                "path": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "rootId",
-                "path"
-              ],
-              "additionalProperties": false
-            }
           }
         },
         "required": [
-          "query",
-          "artifactIds",
-          "workspaceFiles",
-          "workspaceRootFiles"
+          "query"
         ],
         "additionalProperties": false
       },
@@ -18960,9 +18808,9 @@
               "app-api"
             ]
           },
-          "query": {
+          "retrievalTraceId": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
           },
           "outcome": {
             "type": "string",
@@ -18971,764 +18819,80 @@
               "insufficient-evidence"
             ]
           },
-          "materials": {
+          "selected": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "knowledgeEntryId": {
+                "knowledgePageId": {
                   "type": "string",
                   "minLength": 1
                 },
-                "kind": {
+                "contentDigest": {
                   "type": "string",
-                  "enum": [
-                    "preference",
-                    "project-context",
-                    "task-summary"
-                  ]
+                  "pattern": "^sha256:[a-f0-9]{64}$"
                 },
-                "title": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "excerpt": {
-                  "type": "string",
-                  "minLength": 1
+                "score": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 },
                 "sourceReferences": {
-                  "default": [],
                   "type": "array",
                   "items": {
                     "type": "string",
                     "minLength": 1
                   }
-                },
-                "trace": {
-                  "type": "object",
-                  "properties": {
-                    "source": {
-                      "type": "string",
-                      "const": "workspace-knowledge"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "const": "matched-query"
-                    }
-                  },
-                  "required": [
-                    "source",
-                    "reason"
-                  ],
-                  "additionalProperties": false
                 }
               },
               "required": [
-                "knowledgeEntryId",
-                "kind",
-                "title",
-                "excerpt",
-                "sourceReferences",
-                "trace"
+                "knowledgePageId",
+                "contentDigest",
+                "score",
+                "sourceReferences"
               ],
               "additionalProperties": false
             }
           },
-          "exclusions": {
+          "excluded": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
+                "knowledgePageId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "reason": {
                   "type": "string",
                   "enum": [
-                    "no-matching-knowledge"
+                    "sensitive_content",
+                    "lower_conformance",
+                    "policy_excluded",
+                    "freshness_expired",
+                    "budget_exceeded",
+                    "source_unavailable"
                   ]
-                },
-                "detail": {
-                  "type": "string",
-                  "minLength": 1
                 }
               },
               "required": [
-                "reason",
-                "detail"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "artifacts": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "threadId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "turnId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "report",
-                    "diff",
-                    "file",
-                    "summary"
-                  ]
-                },
-                "title": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "draft",
-                    "ready",
-                    "archived"
-                  ]
-                },
-                "summary": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "version": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "content": {
-                  "type": "object",
-                  "properties": {
-                    "format": {
-                      "type": "string",
-                      "enum": [
-                        "markdown",
-                        "text",
-                        "json"
-                      ]
-                    },
-                    "body": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "format",
-                    "body"
-                  ],
-                  "additionalProperties": false
-                },
-                "contentDigest": {
-                  "type": "string",
-                  "pattern": "^sha256:[a-f0-9]{64}$"
-                },
-                "lastMutationRequestId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "origin": {
-                  "oneOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "const": "turn-output"
-                        },
-                        "threadId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "turnId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "requestId": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "kind",
-                        "threadId",
-                        "turnId",
-                        "requestId"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "const": "imported"
-                        },
-                        "sourceKind": {
-                          "type": "string",
-                          "const": "direct-import"
-                        },
-                        "sourceId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "sourceDigest": {
-                          "type": "string",
-                          "pattern": "^sha256:[a-f0-9]{64}$"
-                        },
-                        "actor": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "user"
-                                },
-                                "id": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "id"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "agent",
-                                    "automation",
-                                    "integration",
-                                    "system"
-                                  ]
-                                },
-                                "id": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "responsibleUserId": {
-                                  "anyOf": [
-                                    {
-                                      "type": "string",
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "id",
-                                "responsibleUserId"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
-                        "requestId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "recordedAt": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "kind",
-                        "sourceKind",
-                        "sourceId",
-                        "sourceDigest",
-                        "actor",
-                        "requestId",
-                        "recordedAt"
-                      ],
-                      "additionalProperties": false
-                    }
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "workspaceId",
-                "threadId",
-                "turnId",
-                "kind",
-                "title",
-                "status",
-                "summary",
-                "version",
-                "content",
+                "knowledgePageId",
                 "contentDigest",
-                "lastMutationRequestId",
-                "origin",
-                "createdAt",
-                "updatedAt"
+                "reason"
               ],
               "additionalProperties": false
             }
-          },
-          "workspaceFiles": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "contentDigest": {
-                  "type": "string",
-                  "pattern": "^sha256:[a-f0-9]{64}$"
-                },
-                "contentBytes": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "path",
-                "contentDigest",
-                "contentBytes"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "workspaceRootFiles": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "rootId": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9._-]+$"
-                },
-                "path": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "contentDigest": {
-                  "type": "string",
-                  "pattern": "^sha256:[a-f0-9]{64}$"
-                },
-                "contentBytes": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "rootId",
-                "path",
-                "contentDigest",
-                "contentBytes"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "claims": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "statement": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "scope": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "producer": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "confidence": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1
-                },
-                "freshness": {
-                  "type": "string",
-                  "enum": [
-                    "current",
-                    "stale",
-                    "unknown"
-                  ]
-                },
-                "reviewState": {
-                  "type": "string",
-                  "enum": [
-                    "needs-review",
-                    "accepted",
-                    "rejected",
-                    "deferred"
-                  ]
-                },
-                "conflictStatus": {
-                  "type": "string",
-                  "enum": [
-                    "none",
-                    "conflicting",
-                    "weak_evidence",
-                    "stale",
-                    "superseded",
-                    "partially_superseded"
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "workspaceId",
-                "statement",
-                "sourceReferences",
-                "scope",
-                "producer",
-                "confidence",
-                "freshness",
-                "reviewState",
-                "conflictStatus",
-                "createdAt",
-                "updatedAt"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "conflicts": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "subjectReferences": {
-                  "minItems": 1,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "conflicting",
-                    "needs_review",
-                    "weak_evidence",
-                    "stale",
-                    "resolved",
-                    "superseded",
-                    "partially_superseded"
-                  ]
-                },
-                "summary": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "suggestedActions": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "producer": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "resolution": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "resolvedAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "resolvedBy": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "workspaceId",
-                "subjectReferences",
-                "sourceReferences",
-                "status",
-                "summary",
-                "suggestedActions",
-                "producer",
-                "createdAt",
-                "updatedAt"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "policy": {
-            "default": {
-              "version": "knowledge-context-v1",
-              "claimReviewState": "accepted",
-              "conflictResolution": "exclude-resolved"
-            },
-            "type": "object",
-            "properties": {
-              "version": {
-                "type": "string",
-                "const": "knowledge-context-v1"
-              },
-              "claimReviewState": {
-                "type": "string",
-                "const": "accepted"
-              },
-              "conflictResolution": {
-                "type": "string",
-                "const": "exclude-resolved"
-              }
-            },
-            "required": [
-              "version",
-              "claimReviewState",
-              "conflictResolution"
-            ],
-            "additionalProperties": false
-          },
-          "packageTrace": {
-            "type": "object",
-            "properties": {
-              "contextPackageId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "contextPackageDigest": {
-                "type": "string",
-                "pattern": "^ctxpkg_sha256_[a-f0-9]{64}$"
-              },
-              "policyVersion": {
-                "type": "string",
-                "const": "knowledge-context-v1"
-              },
-              "selectedKnowledgeEntryIds": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "selectedArtifactIds": {
-                "default": [],
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "selectedWorkspaceFilePaths": {
-                "default": [],
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "selectedWorkspaceRootFiles": {
-                "default": [],
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "rootId": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "^[A-Za-z0-9._-]+$"
-                    },
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "rootId",
-                    "path"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "selectedClaimIds": {
-                "default": [],
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "selectedConflictIds": {
-                "default": [],
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "excludedCandidateCount": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "budget": {
-                "type": "object",
-                "properties": {
-                  "requestedLimit": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "selectedCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "excludedCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "requestedLimit",
-                  "selectedCount",
-                  "excludedCount"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "contextPackageId",
-              "contextPackageDigest",
-              "policyVersion",
-              "selectedKnowledgeEntryIds",
-              "selectedArtifactIds",
-              "selectedWorkspaceFilePaths",
-              "selectedWorkspaceRootFiles",
-              "selectedClaimIds",
-              "selectedConflictIds",
-              "excludedCandidateCount",
-              "budget"
-            ],
-            "additionalProperties": false
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "uncertainty": {
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -19736,1097 +18900,10 @@
           "operation",
           "workspaceId",
           "caller",
-          "query",
+          "retrievalTraceId",
           "outcome",
-          "materials",
-          "exclusions",
-          "artifacts",
-          "workspaceFiles",
-          "workspaceRootFiles",
-          "claims",
-          "conflicts",
-          "policy",
-          "packageTrace",
-          "confidence",
-          "uncertainty"
-        ],
-        "additionalProperties": false
-      },
-      "ReadKnowledgeManagerContextPackageTraceResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "trace": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "operationId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "createdAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "response": {
-                "type": "object",
-                "properties": {
-                  "operationId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "operation": {
-                    "type": "string",
-                    "const": "prepare-context-material"
-                  },
-                  "workspaceId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "caller": {
-                    "type": "string",
-                    "enum": [
-                      "assistant",
-                      "task-mode",
-                      "app-api"
-                    ]
-                  },
-                  "query": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "outcome": {
-                    "type": "string",
-                    "enum": [
-                      "prepared",
-                      "insufficient-evidence"
-                    ]
-                  },
-                  "materials": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "knowledgeEntryId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "kind": {
-                          "type": "string",
-                          "enum": [
-                            "preference",
-                            "project-context",
-                            "task-summary"
-                          ]
-                        },
-                        "title": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "excerpt": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "sourceReferences": {
-                          "default": [],
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "trace": {
-                          "type": "object",
-                          "properties": {
-                            "source": {
-                              "type": "string",
-                              "const": "workspace-knowledge"
-                            },
-                            "reason": {
-                              "type": "string",
-                              "const": "matched-query"
-                            }
-                          },
-                          "required": [
-                            "source",
-                            "reason"
-                          ],
-                          "additionalProperties": false
-                        }
-                      },
-                      "required": [
-                        "knowledgeEntryId",
-                        "kind",
-                        "title",
-                        "excerpt",
-                        "sourceReferences",
-                        "trace"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "exclusions": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "reason": {
-                          "type": "string",
-                          "enum": [
-                            "no-matching-knowledge"
-                          ]
-                        },
-                        "detail": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "reason",
-                        "detail"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "artifacts": {
-                    "default": [],
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "workspaceId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "threadId": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "turnId": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "kind": {
-                          "type": "string",
-                          "enum": [
-                            "report",
-                            "diff",
-                            "file",
-                            "summary"
-                          ]
-                        },
-                        "title": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "draft",
-                            "ready",
-                            "archived"
-                          ]
-                        },
-                        "summary": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "version": {
-                          "type": "integer",
-                          "exclusiveMinimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        "content": {
-                          "type": "object",
-                          "properties": {
-                            "format": {
-                              "type": "string",
-                              "enum": [
-                                "markdown",
-                                "text",
-                                "json"
-                              ]
-                            },
-                            "body": {
-                              "type": "string",
-                              "minLength": 1
-                            }
-                          },
-                          "required": [
-                            "format",
-                            "body"
-                          ],
-                          "additionalProperties": false
-                        },
-                        "contentDigest": {
-                          "type": "string",
-                          "pattern": "^sha256:[a-f0-9]{64}$"
-                        },
-                        "lastMutationRequestId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "origin": {
-                          "oneOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "turn-output"
-                                },
-                                "threadId": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "turnId": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "requestId": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "threadId",
-                                "turnId",
-                                "requestId"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "imported"
-                                },
-                                "sourceKind": {
-                                  "type": "string",
-                                  "const": "direct-import"
-                                },
-                                "sourceId": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "sourceDigest": {
-                                  "type": "string",
-                                  "pattern": "^sha256:[a-f0-9]{64}$"
-                                },
-                                "actor": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "properties": {
-                                        "kind": {
-                                          "type": "string",
-                                          "const": "user"
-                                        },
-                                        "id": {
-                                          "type": "string",
-                                          "minLength": 1
-                                        }
-                                      },
-                                      "required": [
-                                        "kind",
-                                        "id"
-                                      ],
-                                      "additionalProperties": false
-                                    },
-                                    {
-                                      "type": "object",
-                                      "properties": {
-                                        "kind": {
-                                          "type": "string",
-                                          "enum": [
-                                            "agent",
-                                            "automation",
-                                            "integration",
-                                            "system"
-                                          ]
-                                        },
-                                        "id": {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        "responsibleUserId": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string",
-                                              "minLength": 1
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": [
-                                        "kind",
-                                        "id",
-                                        "responsibleUserId"
-                                      ],
-                                      "additionalProperties": false
-                                    }
-                                  ]
-                                },
-                                "requestId": {
-                                  "type": "string",
-                                  "minLength": 1
-                                },
-                                "recordedAt": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "sourceKind",
-                                "sourceId",
-                                "sourceDigest",
-                                "actor",
-                                "requestId",
-                                "recordedAt"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
-                        "createdAt": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "updatedAt": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "workspaceId",
-                        "threadId",
-                        "turnId",
-                        "kind",
-                        "title",
-                        "status",
-                        "summary",
-                        "version",
-                        "content",
-                        "contentDigest",
-                        "lastMutationRequestId",
-                        "origin",
-                        "createdAt",
-                        "updatedAt"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "workspaceFiles": {
-                    "default": [],
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "path": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "contentDigest": {
-                          "type": "string",
-                          "pattern": "^sha256:[a-f0-9]{64}$"
-                        },
-                        "contentBytes": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        }
-                      },
-                      "required": [
-                        "path",
-                        "contentDigest",
-                        "contentBytes"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "workspaceRootFiles": {
-                    "default": [],
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "rootId": {
-                          "type": "string",
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9._-]+$"
-                        },
-                        "path": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "contentDigest": {
-                          "type": "string",
-                          "pattern": "^sha256:[a-f0-9]{64}$"
-                        },
-                        "contentBytes": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        }
-                      },
-                      "required": [
-                        "rootId",
-                        "path",
-                        "contentDigest",
-                        "contentBytes"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "claims": {
-                    "default": [],
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "workspaceId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "statement": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "sourceReferences": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "scope": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "producer": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "confidence": {
-                          "type": "number",
-                          "minimum": 0,
-                          "maximum": 1
-                        },
-                        "freshness": {
-                          "type": "string",
-                          "enum": [
-                            "current",
-                            "stale",
-                            "unknown"
-                          ]
-                        },
-                        "reviewState": {
-                          "type": "string",
-                          "enum": [
-                            "needs-review",
-                            "accepted",
-                            "rejected",
-                            "deferred"
-                          ]
-                        },
-                        "conflictStatus": {
-                          "type": "string",
-                          "enum": [
-                            "none",
-                            "conflicting",
-                            "weak_evidence",
-                            "stale",
-                            "superseded",
-                            "partially_superseded"
-                          ]
-                        },
-                        "createdAt": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "updatedAt": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "workspaceId",
-                        "statement",
-                        "sourceReferences",
-                        "scope",
-                        "producer",
-                        "confidence",
-                        "freshness",
-                        "reviewState",
-                        "conflictStatus",
-                        "createdAt",
-                        "updatedAt"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "conflicts": {
-                    "default": [],
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "workspaceId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "subjectReferences": {
-                          "minItems": 1,
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "sourceReferences": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "conflicting",
-                            "needs_review",
-                            "weak_evidence",
-                            "stale",
-                            "resolved",
-                            "superseded",
-                            "partially_superseded"
-                          ]
-                        },
-                        "summary": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "suggestedActions": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "producer": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "resolution": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "resolvedAt": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "resolvedBy": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "createdAt": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "updatedAt": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "workspaceId",
-                        "subjectReferences",
-                        "sourceReferences",
-                        "status",
-                        "summary",
-                        "suggestedActions",
-                        "producer",
-                        "createdAt",
-                        "updatedAt"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "policy": {
-                    "default": {
-                      "version": "knowledge-context-v1",
-                      "claimReviewState": "accepted",
-                      "conflictResolution": "exclude-resolved"
-                    },
-                    "type": "object",
-                    "properties": {
-                      "version": {
-                        "type": "string",
-                        "const": "knowledge-context-v1"
-                      },
-                      "claimReviewState": {
-                        "type": "string",
-                        "const": "accepted"
-                      },
-                      "conflictResolution": {
-                        "type": "string",
-                        "const": "exclude-resolved"
-                      }
-                    },
-                    "required": [
-                      "version",
-                      "claimReviewState",
-                      "conflictResolution"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "packageTrace": {
-                    "type": "object",
-                    "properties": {
-                      "contextPackageId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "contextPackageDigest": {
-                        "type": "string",
-                        "pattern": "^ctxpkg_sha256_[a-f0-9]{64}$"
-                      },
-                      "policyVersion": {
-                        "type": "string",
-                        "const": "knowledge-context-v1"
-                      },
-                      "selectedKnowledgeEntryIds": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "selectedArtifactIds": {
-                        "default": [],
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "selectedWorkspaceFilePaths": {
-                        "default": [],
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "selectedWorkspaceRootFiles": {
-                        "default": [],
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "rootId": {
-                              "type": "string",
-                              "minLength": 1,
-                              "pattern": "^[A-Za-z0-9._-]+$"
-                            },
-                            "path": {
-                              "type": "string",
-                              "minLength": 1
-                            }
-                          },
-                          "required": [
-                            "rootId",
-                            "path"
-                          ],
-                          "additionalProperties": false
-                        }
-                      },
-                      "selectedClaimIds": {
-                        "default": [],
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "selectedConflictIds": {
-                        "default": [],
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "excludedCandidateCount": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "budget": {
-                        "type": "object",
-                        "properties": {
-                          "requestedLimit": {
-                            "type": "integer",
-                            "exclusiveMinimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "selectedCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "excludedCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          }
-                        },
-                        "required": [
-                          "requestedLimit",
-                          "selectedCount",
-                          "excludedCount"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "required": [
-                      "contextPackageId",
-                      "contextPackageDigest",
-                      "policyVersion",
-                      "selectedKnowledgeEntryIds",
-                      "selectedArtifactIds",
-                      "selectedWorkspaceFilePaths",
-                      "selectedWorkspaceRootFiles",
-                      "selectedClaimIds",
-                      "selectedConflictIds",
-                      "excludedCandidateCount",
-                      "budget"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "confidence": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 1
-                  },
-                  "uncertainty": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "operationId",
-                  "operation",
-                  "workspaceId",
-                  "caller",
-                  "query",
-                  "outcome",
-                  "materials",
-                  "exclusions",
-                  "artifacts",
-                  "workspaceFiles",
-                  "workspaceRootFiles",
-                  "claims",
-                  "conflicts",
-                  "policy",
-                  "packageTrace",
-                  "confidence",
-                  "uncertainty"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "id",
-              "workspaceId",
-              "operationId",
-              "createdAt",
-              "response"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "trace"
-        ],
-        "additionalProperties": false
-      },
-      "MaterializeKnowledgeContextPackageResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "manifest": {
-            "type": "object",
-            "properties": {
-              "version": {
-                "type": "string",
-                "const": "worker-context-package-v1"
-              },
-              "contextPackageId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "contextPackageDigest": {
-                "type": "string",
-                "pattern": "^ctxpkg_sha256_[a-f0-9]{64}$"
-              },
-              "rootPath": {
-                "type": "string",
-                "const": "/openkit/context"
-              },
-              "generatedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "budget": {
-                "type": "object",
-                "properties": {
-                  "entryCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "estimatedTokenCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "fileCount": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "materializedContentBytes": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "entryCount",
-                  "estimatedTokenCount",
-                  "fileCount",
-                  "materializedContentBytes"
-                ],
-                "additionalProperties": false
-              },
-              "entries": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "citationLabel": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "derivedRepresentationId": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "kind": {
-                      "type": "string",
-                      "enum": [
-                        "instructions",
-                        "knowledge",
-                        "source",
-                        "artifact",
-                        "workspace",
-                        "workspace-root",
-                        "policy"
-                      ]
-                    },
-                    "path": {
-                      "type": "string",
-                      "pattern": "^\\/openkit\\/context\\/.+"
-                    },
-                    "relativePath": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "sensitivityLabel": {
-                      "type": "string",
-                      "enum": [
-                        "normal",
-                        "redacted"
-                      ]
-                    },
-                    "sourceContentDigest": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "sourceId": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "sourceKind": {
-                      "type": "string",
-                      "enum": [
-                        "upload",
-                        "url",
-                        "document",
-                        "transcript",
-                        "code"
-                      ]
-                    },
-                    "title": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "sourceReferences": {
-                      "default": [],
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "sourceUri": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "digest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "path",
-                    "relativePath",
-                    "sensitivityLabel",
-                    "title",
-                    "sourceReferences",
-                    "digest"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "version",
-              "contextPackageId",
-              "workspaceId",
-              "contextPackageDigest",
-              "rootPath",
-              "generatedAt",
-              "budget",
-              "entries"
-            ],
-            "additionalProperties": false
-          },
-          "files": {
-            "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "pattern": "^\\/openkit\\/context\\/.+"
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "manifest",
-                    "instructions",
-                    "knowledge",
-                    "source",
-                    "artifact",
-                    "workspace",
-                    "workspace-root",
-                    "policy"
-                  ]
-                },
-                "contentDigest": {
-                  "type": "string",
-                  "pattern": "^sha256:[a-f0-9]{64}$"
-                }
-              },
-              "required": [
-                "path",
-                "kind",
-                "contentDigest"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "manifest",
-          "files"
+          "selected",
+          "excluded"
         ],
         "additionalProperties": false
       },
@@ -52774,7 +50851,8 @@
           },
           "requestId": {
             "type": "string",
-            "minLength": 1
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
           }
         },
         "required": [
@@ -67981,6 +66059,11 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
           "decision": {
             "type": "string",
             "enum": [
@@ -67988,17 +66071,10 @@
               "rejected",
               "deferred"
             ]
-          },
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "message": {
-            "type": "string",
-            "minLength": 1
           }
         },
         "required": [
+          "requestId",
           "decision"
         ],
         "additionalProperties": false
@@ -68018,7 +66094,16 @@
                 "type": "string",
                 "minLength": 1
               },
-              "status": {
+              "reviewId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "decision": {
                 "type": "string",
                 "enum": [
                   "accepted",
@@ -68026,11 +66111,80 @@
                   "deferred"
                 ]
               },
-              "message": {
+              "actor": {
                 "anyOf": [
                   {
-                    "type": "string",
-                    "minLength": 1
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "agent",
+                          "automation",
+                          "integration",
+                          "system"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "responsibleUserId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "responsibleUserId"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "proposalDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "knowledgePageId": {
+                "type": "string",
+                "maxLength": 240,
+                "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "targetAbsentAtDecision": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
                   },
                   {
                     "type": "null"
@@ -68040,32 +66194,132 @@
               "decidedAt": {
                 "type": "string",
                 "minLength": 1
-              },
-              "requestId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
               }
             },
             "required": [
               "proposalId",
               "workspaceId",
-              "status",
-              "message",
-              "decidedAt",
-              "requestId"
+              "reviewId",
+              "requestId",
+              "decision",
+              "actor",
+              "proposalDigest",
+              "knowledgePageId",
+              "contentDigest",
+              "targetAbsentAtDecision",
+              "decidedAt"
+            ],
+            "additionalProperties": false
+          },
+          "application": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "knowledgePageId": {
+                    "type": "string",
+                    "maxLength": 240,
+                    "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                  },
+                  "contentDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "present": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "knowledgePageId",
+                  "contentDigest",
+                  "present"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "review",
+          "application"
+        ],
+        "additionalProperties": false
+      },
+      "ReverseKnowledgeProposalRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "reviewId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "knowledgePageId": {
+            "type": "string",
+            "maxLength": 240,
+            "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+          },
+          "expectedContentDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "requestId",
+          "reviewId",
+          "knowledgePageId",
+          "expectedContentDigest"
+        ],
+        "additionalProperties": false
+      },
+      "ReverseKnowledgeProposalResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "proposalId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reviewId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "application": {
+            "type": "object",
+            "properties": {
+              "knowledgePageId": {
+                "type": "string",
+                "maxLength": 240,
+                "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "present": {
+                "type": "boolean",
+                "const": false
+              }
+            },
+            "required": [
+              "knowledgePageId",
+              "contentDigest",
+              "present"
             ],
             "additionalProperties": false
           }
         },
         "required": [
-          "review"
+          "proposalId",
+          "reviewId",
+          "application"
         ],
         "additionalProperties": false
       },
@@ -85281,5 +83535,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:eadb9de6c6e97f405e7d6f6c8df3f43d74ac5711f64c23d959373af25884b3fa"
+  "x-openkit-source-digest": "sha256:80859234ed594c25c32e615912a28b39ca1130d1f64728748482785577274e5e"
 }

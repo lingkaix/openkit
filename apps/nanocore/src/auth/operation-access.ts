@@ -353,7 +353,7 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['retrieveKnowledge'], {
+registerOperations(catalog, ['retrieveKnowledge', 'prepareKnowledgeContext'], {
   mutating: true,
   policyOperation: 'knowledge.read',
   resolver: 'path-workspace',
@@ -366,7 +366,6 @@ registerOperations(
     'recordKnowledgeObservation',
     'recordKnowledgeClaim',
     'recordKnowledgeConflict',
-    'prepareKnowledgeContext',
     'POST /api/workspaces/:workspaceId/knowledge',
   ],
   {
@@ -533,25 +532,17 @@ registerOperations(
     scope: 'workspace',
   }
 );
+registerOperations(catalog, ['readKnowledgeSource'], {
+  mutating: false,
+  policyOperation: 'knowledge.read',
+  resolver: 'workspace-child-lineage',
+  scope: 'workspace',
+});
 registerOperations(
   catalog,
   [
-    'readKnowledgeSource',
-    'readKnowledgeContextPackageTrace',
-    'readKnowledgeContextPackageMaterialization',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'knowledge.read',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
-registerOperations(
-  catalog,
-  [
+    'reverseKnowledgeProposal',
     'resolveKnowledgeConflict',
-    'materializeKnowledgeContextPackage',
     'PATCH /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
     'DELETE /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
   ],

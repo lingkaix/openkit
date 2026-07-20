@@ -10,6 +10,7 @@ import {
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  KnowledgeProposalPageIdSchema,
   WorkspaceInputSnapshotSchema,
   WorkspaceMaterializationRecordSchema,
 } from '@openkit/app-api-schemas';
@@ -80,11 +81,26 @@ const MaterialExclusionSchema = z.strictObject({
   revisionId: IdSchema,
   sensitivity: z.enum(['public', 'internal', 'restricted']),
 });
+const KnowledgeSelectionInputSchema = z.strictObject({
+  retrievalTraceId: IdSchema,
+});
+const KnowledgeSelectionSchema = z.strictObject({
+  contentDigest: Sha256Schema,
+  knowledgePageId: IdSchema,
+  packagePath: IdSchema,
+  sourceRefs: z.array(IdSchema),
+});
+const KnowledgeExclusionSchema = z.strictObject({
+  contentDigest: Sha256Schema,
+  knowledgePageId: IdSchema,
+  reason: z.literal('budget_exceeded'),
+});
 const WorkerContextPackageManifestSchema = z.strictObject({
   contextBudgetTokens: z.number().int().positive().safe(),
   contextPackageId: IdSchema,
   fileInventory: z.array(FileInventoryEntrySchema),
   includedItemIds: z.array(IdSchema).min(1),
+  knowledgeSelections: z.array(KnowledgeSelectionSchema),
   materialSelections: z.array(MaterialSelectionSchema),
   policyVersion: z.literal(WORKER_CONTEXT_PACKAGE_POLICY_VERSION),
   schemaVersion: z.literal(1),
@@ -101,6 +117,8 @@ const WorkerContextPackageTraceSchema = WorkerContextPackageManifestSchema.omit(
   contextPackageDigest: ContextPackageDigestSchema,
   excludedItems: z.array(z.strictObject({ itemId: IdSchema, reason: ExclusionReasonSchema })),
   goalId: IdSchema.nullable(),
+  knowledgeExclusions: z.array(KnowledgeExclusionSchema),
+  knowledgeSelectionInput: KnowledgeSelectionInputSchema.nullable(),
   materialExclusions: z.array(MaterialExclusionSchema),
   packageSnapshotId: IdSchema,
   requestId: IdSchema,
@@ -181,6 +199,46 @@ export interface WorkerContextPackageMaterialExclusion {
     | 'budget_exceeded';
 }
 
+/** Governed Knowledge page bytes accepted for package construction. */
+export interface WorkerContextPackageKnowledgeSelectionInput {
+  /** Workspace Knowledge page identity. */
+  readonly knowledgePageId: string;
+  /** Digest of the exact canonical UTF-8 page bytes. */
+  readonly contentDigest: string;
+  /** Complete source references retained by the page. */
+  readonly sourceRefs: readonly string[];
+  /** Exact canonical UTF-8 page content. */
+  readonly content: string;
+}
+
+/** Governed Knowledge page delivered through the worker-visible package. */
+export interface WorkerContextPackageKnowledgeSelection {
+  /** Workspace Knowledge page identity. */
+  readonly knowledgePageId: string;
+  /** Digest of the exact delivered bytes. */
+  readonly contentDigest: string;
+  /** Complete duplicate-free source references in bytewise order. */
+  readonly sourceRefs: readonly string[];
+  /** Canonical worker-visible package-relative path. */
+  readonly packagePath: string;
+}
+
+/** Existing S61 retrieval trace consumed as the Task selection input. */
+export interface WorkerContextPackageKnowledgeSelectionReference {
+  /** Exact governed-retrieval trace identity. */
+  readonly retrievalTraceId: string;
+}
+
+/** S61-selected Knowledge page omitted only by the later package budget. */
+export interface WorkerContextPackageKnowledgeExclusion {
+  /** Workspace Knowledge page identity. */
+  readonly knowledgePageId: string;
+  /** Digest selected by the governed retrieval row. */
+  readonly contentDigest: string;
+  /** The only exclusion reason owned by S39. */
+  readonly reason: 'budget_exceeded';
+}
+
 /** One worker-visible file and its exact bytes. */
 export interface WorkerContextPackageFile {
   /** Package-relative path. */
@@ -205,6 +263,8 @@ export interface WorkerContextPackageFiles {
   readonly workerRequestDigest: string;
   /** Ordered Item ids actually selected. */
   readonly includedItemIds: readonly string[];
+  /** Included Knowledge pages without duplicate content bytes. */
+  readonly knowledgeSelections: readonly WorkerContextPackageKnowledgeSelection[];
   /** Included Material metadata without duplicate content bytes. */
   readonly materialSelections: readonly WorkerContextPackageMaterialSelection[];
   /** Complete sorted worker-visible file set. */
@@ -254,6 +314,12 @@ export interface WorkerContextPackageTrace {
     readonly itemId: string;
     readonly reason: WorkerContextPackageExclusionReason;
   }[];
+  /** Existing S61 retrieval trace used for this direct Task, or null. */
+  readonly knowledgeSelectionInput: WorkerContextPackageKnowledgeSelectionReference | null;
+  /** Exact Knowledge pages delivered through this package. */
+  readonly knowledgeSelections: readonly WorkerContextPackageKnowledgeSelection[];
+  /** Exact selected Knowledge pages omitted by the package budget. */
+  readonly knowledgeExclusions: readonly WorkerContextPackageKnowledgeExclusion[];
   /** Exact included Material revisions. */
   readonly materialSelections: readonly WorkerContextPackageMaterialSelection[];
   /** Exact addressed Material exclusions with limited metadata. */
@@ -405,6 +471,8 @@ export interface CreateWorkerContextPackageFilesInput {
   readonly includedItemIds: readonly string[];
   /** Explicit maximum worker context budget. */
   readonly contextBudgetTokens: number;
+  /** Exact governed Knowledge page bytes selected for delivery. */
+  readonly knowledgeSelections?: readonly WorkerContextPackageKnowledgeSelectionInput[];
   /** Exact included Material revision candidates. */
   readonly materialSelections: readonly WorkerContextPackageMaterialSelectionInput[];
 }
@@ -428,6 +496,10 @@ export interface CreateWorkerContextPackageTraceInput {
     readonly itemId: string;
     readonly reason: WorkerContextPackageExclusionReason;
   }[];
+  /** Existing governed-retrieval trace used by a direct Task, or null. */
+  readonly knowledgeSelectionInput?: WorkerContextPackageKnowledgeSelectionReference | null;
+  /** S61 selections omitted only by the later package budget. */
+  readonly knowledgeExclusions?: readonly WorkerContextPackageKnowledgeExclusion[];
   /** Addressed Material exclusions. */
   readonly materialExclusions?: readonly WorkerContextPackageMaterialExclusion[];
 }
@@ -448,6 +520,12 @@ export function createWorkerContextPackageFiles(
   }
   assertUnique(input.includedItemIds, 'included Item');
 
+  const knowledgeInputs = [...(input.knowledgeSelections ?? [])].sort(compareKnowledgeIdentity);
+  assertUnique(
+    knowledgeInputs.map((selection) => selection.knowledgePageId),
+    'Knowledge selection'
+  );
+  const knowledgeSelections: WorkerContextPackageKnowledgeSelection[] = [];
   const materialInputs = [...input.materialSelections].sort(compareMaterialIdentity);
   assertUnique(
     materialInputs.map((selection) => selection.materialId),
@@ -457,6 +535,25 @@ export function createWorkerContextPackageFiles(
   const ordinaryFiles: WorkerContextPackageFile[] = [
     { path: 'instructions.md', bytes: Buffer.from(input.workerRequestBytes, 'utf8') },
   ];
+  for (const selection of knowledgeInputs) {
+    assertKnowledgePageId(selection.knowledgePageId, 'Knowledge page id');
+    const sourceRefs = [...new Set(selection.sourceRefs)].sort(compareBytewise);
+    if (sourceRefs.some((sourceRef) => sourceRef.length === 0)) {
+      throw new Error(`Knowledge page source reference is invalid: ${selection.knowledgePageId}.`);
+    }
+    const bytes = Buffer.from(selection.content, 'utf8');
+    if (sha256(bytes) !== selection.contentDigest) {
+      throw new Error(`Knowledge page digest mismatch: ${selection.knowledgePageId}.`);
+    }
+    const packagePath = `knowledge/pages/${selection.knowledgePageId}.md`;
+    ordinaryFiles.push({ path: packagePath, bytes });
+    knowledgeSelections.push({
+      contentDigest: selection.contentDigest,
+      knowledgePageId: selection.knowledgePageId,
+      packagePath,
+      sourceRefs,
+    });
+  }
   for (const selection of materialInputs) {
     assertSafeWorkspacePathSegment(selection.materialId, 'Material id');
     assertSafeWorkspacePathSegment(selection.revisionId, 'Material revision id');
@@ -492,6 +589,7 @@ export function createWorkerContextPackageFiles(
     contextPackageId,
     fileInventory: ordinaryInventory,
     includedItemIds: [...input.includedItemIds],
+    knowledgeSelections,
     materialSelections,
     policyVersion: WORKER_CONTEXT_PACKAGE_POLICY_VERSION,
     schemaVersion: 1,
@@ -514,6 +612,7 @@ export function createWorkerContextPackageFiles(
     fileInventory,
     files,
     includedItemIds: [...input.includedItemIds],
+    knowledgeSelections,
     materialSelections,
     packageRootDigest: sha256(Buffer.from(canonicalJson(fileInventory), 'utf8')),
     threadId: input.threadId,
@@ -579,6 +678,42 @@ export function createWorkerContextPackageTrace(
     throw new Error('Worker Context Package Goal and Task lineage must both be null or non-null.');
   }
   const packageFiles = input.packageFiles;
+  const knowledgeSelectionInput = input.knowledgeSelectionInput ?? null;
+  const knowledgeExclusions = [...(input.knowledgeExclusions ?? [])].sort(compareKnowledgeIdentity);
+  const hasKnowledge =
+    knowledgeSelectionInput !== null ||
+    packageFiles.knowledgeSelections.length > 0 ||
+    knowledgeExclusions.length > 0;
+  if (input.goalId !== null && hasKnowledge) {
+    throw new Error('Goal worker Context Packages cannot carry Knowledge selection.');
+  }
+  if (
+    knowledgeSelectionInput === null &&
+    (packageFiles.knowledgeSelections.length > 0 || knowledgeExclusions.length > 0)
+  ) {
+    throw new Error('Worker Context Package Knowledge delivery lacks its selection input.');
+  }
+  const instructions = packageFiles.files.find((file) => file.path === 'instructions.md');
+  let requestKind: ReturnType<typeof projectWorkerContextRequest>['requestKind'] | null = null;
+  try {
+    requestKind = instructions
+      ? projectWorkerContextRequest(Buffer.from(instructions.bytes).toString('utf8')).requestKind
+      : null;
+  } catch {
+    requestKind = null;
+  }
+  if (hasKnowledge && requestKind !== 'structured-delegation') {
+    throw new Error('Worker Context Package Knowledge requires structured delegation.');
+  }
+  if (
+    input.goalId === null &&
+    requestKind === 'structured-delegation' &&
+    knowledgeSelectionInput === null
+  ) {
+    throw new Error(
+      'Worker Context Package direct Task lacks its governed Knowledge selection input.'
+    );
+  }
   const traceWithoutDigest = {
     agentSessionId: input.agentSessionId,
     contextPackageId: packageFiles.contextPackageId,
@@ -588,6 +723,9 @@ export function createWorkerContextPackageTrace(
     fileInventory: [...packageFiles.fileInventory],
     goalId: input.goalId,
     includedItemIds: [...packageFiles.includedItemIds],
+    knowledgeExclusions,
+    knowledgeSelectionInput,
+    knowledgeSelections: [...packageFiles.knowledgeSelections],
     materialExclusions: [...(input.materialExclusions ?? [])].sort(compareMaterialIdentity),
     materialSelections: [...packageFiles.materialSelections],
     packageSnapshotId: input.packageSnapshotId,
@@ -657,6 +795,30 @@ export function readWorkerContextPackageTrace(input: {
   readonly turnId: string;
   readonly workspaceRoot: string;
 }): WorkerContextPackageTrace {
+  const verified = readPortableWorkerContextPackageTrace(input);
+  if (verified.verification !== 'strict') {
+    throw new Error('Worker Context Package strict delivery rejects reserved import lineage.');
+  }
+  return verified.trace;
+}
+
+/**
+ * Reads one immutable trace through the exact strict-or-imported-history authority branch.
+ *
+ * @param input Existing authority reader plus exact Workspace, Thread, Turn, and root lineage.
+ * @returns The fully verified trace and the authority branch that accepted it.
+ * @throws Error when the trace is absent, path lineage is contradictory, or authority fails.
+ */
+export function readPortableWorkerContextPackageTrace(input: {
+  readonly authorities: WorkerContextPackageAuthorityReader;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly workspaceRoot: string;
+}): {
+  readonly trace: WorkerContextPackageTrace;
+  readonly verification: 'strict' | 'imported-history';
+} {
   const path = workerContextPackageTracePath(input.workspaceRoot, input.threadId, input.turnId);
   if (!lstatSync(path, { throwIfNoEntry: false })) {
     throw new Error('Worker Context Package trace is unavailable.');
@@ -669,12 +831,11 @@ export function readWorkerContextPackageTrace(input: {
   ) {
     throw new Error('Worker Context Package trace path lineage mismatch.');
   }
-  verifyWorkerContextPackageTrace({
+  return verifyPortableWorkerContextPackageTrace({
     authorities: input.authorities,
     trace,
     workspaceRoot: input.workspaceRoot,
   });
-  return trace;
 }
 
 /**
@@ -709,6 +870,7 @@ export function serializeWorkerContextPackageTrace(trace: WorkerContextPackageTr
  */
 export function projectWorkerContextRequest(text: string): {
   readonly contextBudgetTokens: number;
+  readonly requestKind: 'artifact-review' | 'structured-delegation';
   readonly requestedItemIds: readonly string[];
 } {
   const value = JSON.parse(text) as unknown;
@@ -716,6 +878,7 @@ export function projectWorkerContextRequest(text: string): {
   if (structured.success) {
     return {
       contextBudgetTokens: structured.data.constraints.maxContextTokens,
+      requestKind: 'structured-delegation',
       requestedItemIds: structured.data.contextRefs
         .filter((reference) => reference.kind === 'item')
         .map((reference) => reference.id),
@@ -724,6 +887,7 @@ export function projectWorkerContextRequest(text: string): {
   ArtifactReviewFollowUpRequestSchema.parse(value);
   return {
     contextBudgetTokens: STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
+    requestKind: 'artifact-review',
     requestedItemIds: [],
   };
 }
@@ -922,6 +1086,14 @@ function verifyWorkerContextPackagePortableOwners(
     workerRequest = projectWorkerContextRequest(requestItem.text);
   } catch {
     throw new Error('Worker Context Package request Item is not an accepted worker request.');
+  }
+  const requiresTaskKnowledgeSelection =
+    workerRequest.requestKind === 'structured-delegation' && trace.goalId === null;
+  if (
+    (requiresTaskKnowledgeSelection && trace.knowledgeSelectionInput === null) ||
+    (!requiresTaskKnowledgeSelection && trace.knowledgeSelectionInput !== null)
+  ) {
+    throw new Error('Worker Context Package Task Knowledge selection authority is contradictory.');
   }
   for (const itemId of [
     ...trace.includedItemIds,
@@ -1163,6 +1335,7 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
     manifest.workerRequestItemId !== trace.workerRequestItemId ||
     manifest.workerRequestDigest !== trace.workerRequestDigest ||
     !isDeepStrictEqual(manifest.includedItemIds, trace.includedItemIds) ||
+    !isDeepStrictEqual(manifest.knowledgeSelections, trace.knowledgeSelections) ||
     !isDeepStrictEqual(manifest.materialSelections, trace.materialSelections) ||
     !isDeepStrictEqual(
       manifest.fileInventory,
@@ -1211,6 +1384,28 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
       assertSafeWorkspacePathSegment(value, label);
     }
   }
+  if ((trace.goalId === null) !== (trace.taskId === null)) {
+    throw new Error('Worker Context Package Goal and Task lineage is incomplete.');
+  }
+  const hasKnowledge =
+    trace.knowledgeSelectionInput !== null ||
+    trace.knowledgeSelections.length > 0 ||
+    trace.knowledgeExclusions.length > 0;
+  if (trace.goalId !== null && hasKnowledge) {
+    throw new Error('Goal worker Context Packages cannot carry Knowledge selection.');
+  }
+  if (
+    trace.knowledgeSelectionInput === null &&
+    (trace.knowledgeSelections.length > 0 || trace.knowledgeExclusions.length > 0)
+  ) {
+    throw new Error('Worker Context Package Knowledge delivery lacks its selection input.');
+  }
+  if (trace.knowledgeSelectionInput !== null) {
+    assertSafeWorkspacePathSegment(
+      trace.knowledgeSelectionInput.retrievalTraceId,
+      'Knowledge retrieval trace id'
+    );
+  }
   for (const itemId of trace.includedItemIds) {
     assertSafeWorkspacePathSegment(itemId, 'included Item id');
   }
@@ -1225,6 +1420,43 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   );
   if (trace.excludedItems.some((entry) => trace.includedItemIds.includes(entry.itemId))) {
     throw new Error('Worker Context Package Item selections overlap exclusions.');
+  }
+
+  assertStrictlySorted(trace.knowledgeSelections, compareKnowledgeIdentity, 'Knowledge selections');
+  assertStrictlySorted(trace.knowledgeExclusions, compareKnowledgeIdentity, 'Knowledge exclusions');
+  assertUnique(
+    trace.knowledgeSelections.map((entry) => entry.knowledgePageId),
+    'Knowledge selection'
+  );
+  assertUnique(
+    trace.knowledgeExclusions.map((entry) => entry.knowledgePageId),
+    'Knowledge exclusion'
+  );
+  const selectedKnowledgePageIds = new Set(
+    trace.knowledgeSelections.map((entry) => entry.knowledgePageId)
+  );
+  if (
+    trace.knowledgeExclusions.some((entry) => selectedKnowledgePageIds.has(entry.knowledgePageId))
+  ) {
+    throw new Error('Worker Context Package Knowledge selections overlap exclusions.');
+  }
+  for (const selection of trace.knowledgeSelections) {
+    assertKnowledgePageId(selection.knowledgePageId, 'Knowledge page id');
+    assertStrictlySorted(selection.sourceRefs, compareBytewise, 'Knowledge source references');
+    const expectedPath = `knowledge/pages/${selection.knowledgePageId}.md`;
+    const inventoryEntry = trace.fileInventory.find((entry) => entry.path === expectedPath);
+    if (
+      selection.packagePath !== expectedPath ||
+      !inventoryEntry ||
+      inventoryEntry.contentDigest !== selection.contentDigest
+    ) {
+      throw new Error(
+        `Worker Context Package Knowledge path mismatch: ${selection.knowledgePageId}.`
+      );
+    }
+  }
+  for (const exclusion of trace.knowledgeExclusions) {
+    assertKnowledgePageId(exclusion.knowledgePageId, 'excluded Knowledge page id');
   }
 
   assertStrictlySorted(trace.materialSelections, compareMaterialIdentity, 'Material selections');
@@ -1287,6 +1519,14 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
     (left, right) => left.path.localeCompare(right.path),
     'package file inventory'
   );
+  const knowledgePaths = new Set(trace.knowledgeSelections.map((entry) => entry.packagePath));
+  if (
+    trace.fileInventory.some(
+      (entry) => entry.path.startsWith('knowledge/') && !knowledgePaths.has(entry.path)
+    )
+  ) {
+    throw new Error('Worker Context Package inventory contains an unselected Knowledge file.');
+  }
   const materialPaths = new Set(trace.materialSelections.map((entry) => entry.packagePath));
   if (
     trace.fileInventory.some(
@@ -1407,6 +1647,17 @@ function inventoryEntry(file: WorkerContextPackageFile): WorkerContextPackageFil
   };
 }
 
+/** Orders Knowledge tuples by their stable page identity and content digest. */
+function compareKnowledgeIdentity(
+  left: { readonly knowledgePageId: string; readonly contentDigest: string },
+  right: { readonly knowledgePageId: string; readonly contentDigest: string }
+): number {
+  return (
+    compareBytewise(left.knowledgePageId, right.knowledgePageId) ||
+    compareBytewise(left.contentDigest, right.contentDigest)
+  );
+}
+
 /** Orders Material tuples by their stable identities. */
 function compareMaterialIdentity(
   left: { readonly materialId: string; readonly revisionId: string },
@@ -1416,6 +1667,11 @@ function compareMaterialIdentity(
     left.materialId.localeCompare(right.materialId) ||
     left.revisionId.localeCompare(right.revisionId)
   );
+}
+
+/** Orders exact strings by UTF-8 byte value. */
+function compareBytewise(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
 }
 
 /** Serializes JSON with recursively sorted object keys. */
@@ -1465,6 +1721,13 @@ function safeRelativePathSegments(path: string): string[] {
     assertSafeWorkspacePathSegment(segment, 'Worker Context Package path segment');
   }
   return segments;
+}
+
+/** Requires one closed slash-separated S61 Knowledge Page identity. */
+function assertKnowledgePageId(value: string, label: string): void {
+  if (!KnowledgeProposalPageIdSchema.safeParse(value).success) {
+    throw new Error(`${label} is invalid.`);
+  }
 }
 
 /** Requires all values in one identity list to be unique. */

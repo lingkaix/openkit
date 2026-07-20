@@ -1432,75 +1432,26 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}'
-      ]?.get
-    ).toMatchObject({
-      operationId: 'readKnowledgeContextPackageTrace',
-      tags: ['knowledge'],
-      parameters: expect.arrayContaining([
-        expect.objectContaining({ name: 'workspaceId' }),
-        expect.objectContaining({ name: 'contextPackageId' }),
-      ]),
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ReadKnowledgeManagerContextPackageTraceResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}/materialization'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'materializeKnowledgeContextPackage',
-      tags: ['knowledge'],
-      parameters: expect.arrayContaining([
-        expect.objectContaining({ name: 'workspaceId' }),
-        expect.objectContaining({ name: 'contextPackageId' }),
-      ]),
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/MaterializeKnowledgeContextPackageResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}/materialization'
-      ]?.get
-    ).toMatchObject({
-      operationId: 'readKnowledgeContextPackageMaterialization',
-      tags: ['knowledge'],
-      parameters: expect.arrayContaining([
-        expect.objectContaining({ name: 'workspaceId' }),
-        expect.objectContaining({ name: 'contextPackageId' }),
-      ]),
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/MaterializeKnowledgeContextPackageResponse',
-              },
-            },
-          },
-        },
-      },
-    });
+    for (const path of [
+      '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}',
+      '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}/materialization',
+    ]) {
+      expect(document.paths).not.toHaveProperty(path);
+    }
+    const serializedDocument = JSON.stringify(document);
+    for (const operationId of [
+      'readKnowledgeContextPackageTrace',
+      'materializeKnowledgeContextPackage',
+      'readKnowledgeContextPackageMaterialization',
+    ]) {
+      expect(serializedDocument).not.toContain(`"operationId":"${operationId}"`);
+    }
+    for (const schemaName of [
+      'ReadKnowledgeManagerContextPackageTraceResponse',
+      'MaterializeKnowledgeContextPackageResponse',
+    ]) {
+      expect(document.components.schemas).not.toHaveProperty(schemaName);
+    }
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/knowledge/manager/proposals']?.post
     ).toMatchObject({
@@ -3056,6 +3007,18 @@ describe('app api openapi projection', () => {
     });
 
     expect(PUBLIC_OPERATION_ACCESS.retrieveKnowledge?.mutating).toBe(true);
+    expect(PUBLIC_OPERATION_ACCESS.prepareKnowledgeContext).toMatchObject({
+      mutating: true,
+      policyOperation: 'knowledge.read',
+      resolver: 'path-workspace',
+      scope: 'workspace',
+    });
+    expect(PUBLIC_OPERATION_ACCESS.reverseKnowledgeProposal).toMatchObject({
+      mutating: true,
+      policyOperation: 'knowledge.write',
+      resolver: 'workspace-child-lineage',
+      scope: 'workspace',
+    });
     expect(PUBLIC_OPERATION_ACCESS.answerKnowledgeManager?.mutating).toBe(false);
     expect(PUBLIC_OPERATION_ACCESS.suggestKnowledgeRepairs?.mutating).toBe(false);
     expect(PUBLIC_OPERATION_ACCESS.checkKnowledgeHealth?.mutating).toBe(false);
@@ -3387,9 +3350,6 @@ describe('app api openapi projection', () => {
       'readKnowledgeSource',
       'answerKnowledgeManager',
       'prepareKnowledgeContext',
-      'readKnowledgeContextPackageTrace',
-      'materializeKnowledgeContextPackage',
-      'readKnowledgeContextPackageMaterialization',
       'draftKnowledgeProposal',
       'suggestKnowledgeRepairs',
       'checkKnowledgeHealth',
@@ -3416,6 +3376,7 @@ describe('app api openapi projection', () => {
       'listAgentEnvironmentPackageSnapshots',
       'getAgentEnvironmentPackageSnapshot',
       'submitKnowledgeProposalDecision',
+      'reverseKnowledgeProposal',
       'submitGoalReviewDecision',
     ]);
   });

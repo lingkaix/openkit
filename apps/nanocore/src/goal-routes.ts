@@ -1901,6 +1901,7 @@ function createDeterministicPreparedGoalTask(task: GoalTaskRecord): PreparedNext
     delegationRequest: {
       objective: task.objective,
     } as PreparedNextTurn['delegationRequest'],
+    knowledgeSelectionInput: null,
     repository: {
       resourceId: 'repo_deterministic',
     } as PreparedNextTurn['repository'],
@@ -3439,6 +3440,7 @@ export function registerGoalRoutes({
                   repository: preparedContext.repository,
                   delegationRequest: coordinator.workerRequest,
                   contextPackageDigest: preparedContext.contextPackageDigest,
+                  knowledgeSelectionInput: null,
                 };
               },
               reserveTurn: ({ prepared }) => {

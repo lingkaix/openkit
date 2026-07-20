@@ -26,6 +26,7 @@ import {
   createWorkerContextPackagePolicyDigest,
   createWorkerContextPackageTrace,
   parseWorkerContextPackageTrace,
+  readPortableWorkerContextPackageTrace,
   readWorkerContextPackageTrace,
   serializeWorkerContextPackageTrace,
   verifyImportedWorkerContextPackageTrace,
@@ -72,6 +73,22 @@ const WORKER_REQUEST_BYTES = serializeStructuredWorkerDelegationRequest(
     ],
   })
 );
+
+/** Exact reviewed Knowledge Page bytes selected by the governed retrieval owner. */
+const KNOWLEDGE_PAGE_BYTES = [
+  '---',
+  'type: "KnowledgePage"',
+  'title: "Task Mode conventions"',
+  'status: "active"',
+  'scope: "workspace"',
+  'source_refs: ["source:ks_alpha", "source:ks_beta"]',
+  'review_state: "accepted"',
+  'sensitivity: "public"',
+  'freshness: "current"',
+  '---',
+  'Use the existing direct Task worker path.',
+  '',
+].join('\n');
 
 /** Computes the public SHA-256 format for exact UTF-8 bytes. */
 function sha256(value: string): string {
@@ -581,6 +598,96 @@ describe('worker Context Package owner', () => {
     ).toBe(WORKER_REQUEST_BYTES);
   });
 
+  it('materializes one governed Knowledge selection into the existing package and trace', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-knowledge-'));
+    const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000399';
+    const contentDigest = sha256(KNOWLEDGE_PAGE_BYTES);
+    const packageFiles = createWorkerContextPackageFiles({
+      contextBudgetTokens: 4_096,
+      includedItemIds: ['it_request'],
+      knowledgeSelections: [
+        {
+          content: KNOWLEDGE_PAGE_BYTES,
+          contentDigest,
+          knowledgePageId: 'lessons/task-mode',
+          sourceRefs: ['source:ks_beta', 'source:ks_alpha'],
+        },
+      ],
+      materialSelections: [],
+      threadId: 'th_context',
+      turnId: 'tu_context',
+      workerRequestBytes: WORKER_REQUEST_BYTES,
+      workerRequestItemId: 'it_request',
+      workspaceId: 'ws_context',
+    });
+    writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
+
+    const expectedSelection = {
+      contentDigest,
+      knowledgePageId: 'lessons/task-mode',
+      packagePath: 'knowledge/pages/lessons/task-mode.md',
+      sourceRefs: ['source:ks_alpha', 'source:ks_beta'],
+    };
+    expect(packageFiles).toMatchObject({
+      knowledgeSelections: [expectedSelection],
+    });
+    expect(packageFiles.fileInventory.map((entry) => entry.path)).toEqual([
+      'instructions.md',
+      'knowledge/pages/lessons/task-mode.md',
+      'package.json',
+    ]);
+    expect(
+      readFileSync(
+        join(
+          workspaceRoot,
+          'threads/th_context/turns/tu_context/context-package/knowledge/pages/lessons/task-mode.md'
+        ),
+        'utf8'
+      )
+    ).toBe(KNOWLEDGE_PAGE_BYTES);
+    const manifestBytes = packageFiles.files.find((file) => file.path === 'package.json')?.bytes;
+    expect(JSON.parse(Buffer.from(manifestBytes ?? []).toString('utf8'))).toMatchObject({
+      knowledgeSelections: [expectedSelection],
+    });
+    expect(JSON.parse(Buffer.from(manifestBytes ?? []).toString('utf8'))).not.toHaveProperty(
+      'knowledgeSelectionInput'
+    );
+    expect(JSON.parse(Buffer.from(manifestBytes ?? []).toString('utf8'))).not.toHaveProperty(
+      'knowledgeExclusions'
+    );
+
+    const traceInput = {
+      agentSessionId: 'as_context',
+      excludedItems: [],
+      goalId: null,
+      knowledgeExclusions: [],
+      knowledgeSelectionInput: { retrievalTraceId },
+      packageFiles,
+      packageSnapshotId: 'aepsnap_context',
+      requestId: 'req_context',
+      taskId: null,
+    };
+    expect(createWorkerContextPackageTrace(traceInput)).toMatchObject({
+      knowledgeExclusions: [],
+      knowledgeSelectionInput: { retrievalTraceId },
+      knowledgeSelections: [expectedSelection],
+    });
+    expect(() =>
+      createWorkerContextPackageTrace({
+        ...traceInput,
+        goalId: 'goal_context',
+        taskId: 'task_context',
+      })
+    ).toThrow();
+    expect(() =>
+      createWorkerContextPackageTrace({
+        ...traceInput,
+        knowledgeSelectionInput: null,
+        packageFiles: createPackage(workspaceRoot, false),
+      })
+    ).toThrow('direct Task lacks its governed Knowledge selection input');
+  });
+
   it('persists one immutable trace and verifies every durable owner without a checkpoint', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-trace-'));
     const fixture = createAcceptedFixture(workspaceRoot);
@@ -696,6 +803,19 @@ describe('worker Context Package owner', () => {
       verifyPortableWorkerContextPackageTrace({
         authorities: fixture.authorities,
         trace: fixture.trace,
+        workspaceRoot,
+      })
+    ).toEqual({ trace: fixture.trace, verification: 'imported-history' });
+    writeFileSync(
+      join(workspaceRoot, 'threads/th_context/turns/tu_context/context-package.json'),
+      serializeWorkerContextPackageTrace(fixture.trace)
+    );
+    expect(
+      readPortableWorkerContextPackageTrace({
+        authorities: fixture.authorities,
+        threadId: fixture.trace.threadId,
+        turnId: fixture.trace.turnId,
+        workspaceId: fixture.trace.workspaceId,
         workspaceRoot,
       })
     ).toEqual({ trace: fixture.trace, verification: 'imported-history' });

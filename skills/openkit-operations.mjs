@@ -1036,7 +1036,7 @@ export const operationCatalog = [
     appOperationId: 'prepareKnowledgeContext',
     clientMethod: 'app.prepareKnowledgeContext',
     group: 'knowledge',
-    summary: 'Prepare and persist one knowledge context package trace.',
+    summary: 'Prepare one bounded governed knowledge selection.',
     mutating: true,
     inputSchema: flatRequest(
       appSchemas.KnowledgeManagerPrepareContextRequestSchema,
@@ -1044,48 +1044,6 @@ export const operationCatalog = [
     ),
     handler: ({ client }, input) =>
       client.app.prepareKnowledgeContext(input.workspaceId, bodyWithout(input, 'workspaceId')),
-  },
-  {
-    ...STANDARD,
-    id: 'knowledge.context-trace',
-    source: 'app-api',
-    appOperationId: 'readKnowledgeContextPackageTrace',
-    clientMethod: 'app.readKnowledgeContextPackageTrace',
-    group: 'knowledge',
-    summary: 'Read one persisted knowledge context package trace.',
-    mutating: false,
-    inputSchema: strictScope({ ...workspaceScope, contextPackageId: IDENTIFIER }),
-    handler: ({ client }, input) =>
-      client.app.readKnowledgeContextPackageTrace(input.workspaceId, input.contextPackageId),
-  },
-  {
-    ...STANDARD,
-    id: 'knowledge.context-materialization',
-    source: 'app-api',
-    appOperationId: 'readKnowledgeContextPackageMaterialization',
-    clientMethod: 'app.readKnowledgeContextPackageMaterialization',
-    group: 'knowledge',
-    summary: 'Read one materialized knowledge context package.',
-    mutating: false,
-    inputSchema: strictScope({ ...workspaceScope, contextPackageId: IDENTIFIER }),
-    handler: ({ client }, input) =>
-      client.app.readKnowledgeContextPackageMaterialization(
-        input.workspaceId,
-        input.contextPackageId
-      ),
-  },
-  {
-    ...STANDARD,
-    id: 'knowledge.context-materialize',
-    source: 'app-api',
-    appOperationId: 'materializeKnowledgeContextPackage',
-    clientMethod: 'app.materializeKnowledgeContextPackage',
-    group: 'knowledge',
-    summary: 'Materialize one knowledge context package.',
-    mutating: true,
-    inputSchema: strictScope({ ...workspaceScope, contextPackageId: IDENTIFIER }),
-    handler: ({ client }, input) =>
-      client.app.materializeKnowledgeContextPackage(input.workspaceId, input.contextPackageId),
   },
   {
     ...STANDARD,
@@ -1259,6 +1217,26 @@ export const operationCatalog = [
     }),
     handler: ({ client }, input) =>
       client.app.submitKnowledgeProposalDecision(
+        input.workspaceId,
+        input.proposalId,
+        bodyWithout(input, 'workspaceId', 'proposalId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'knowledge.proposal-reverse',
+    source: 'app-api',
+    appOperationId: 'reverseKnowledgeProposal',
+    clientMethod: 'app.reverseKnowledgeProposal',
+    group: 'knowledge',
+    summary: 'Remove one unchanged proposal-created knowledge page.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.ReverseKnowledgeProposalRequestSchema, {
+      ...workspaceScope,
+      proposalId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.reverseKnowledgeProposal(
         input.workspaceId,
         input.proposalId,
         bodyWithout(input, 'workspaceId', 'proposalId')
@@ -2205,7 +2183,7 @@ export const operationCatalog = [
     id: 'turn.read',
     source: 'core-projection',
     clientMethod: 'core.getTurn',
-    protocolSchema: 'TurnSchema',
+    protocolSchema: 'TurnReadProjectionSchema',
     group: 'turn',
     summary: 'Read one turn.',
     mutating: false,

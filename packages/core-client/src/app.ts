@@ -183,8 +183,6 @@ import {
   ListWorkspaceVaultGrantsResponseSchema,
   type ListWorkspaceVaultUseRecordsResponse,
   ListWorkspaceVaultUseRecordsResponseSchema,
-  type MaterializeKnowledgeContextPackageResponse,
-  MaterializeKnowledgeContextPackageResponseSchema,
   type PauseThreadGoalRequest,
   PauseThreadGoalRequestSchema,
   type PauseThreadGoalResponse,
@@ -193,8 +191,6 @@ import {
   QuickChatRequestSchema,
   type QuickChatResponse,
   QuickChatResponseSchema,
-  type ReadKnowledgeManagerContextPackageTraceResponse,
-  ReadKnowledgeManagerContextPackageTraceResponseSchema,
   type ReadKnowledgeSourceResponse,
   ReadKnowledgeSourceResponseSchema,
   type RecordKnowledgeClaimRequest,
@@ -237,6 +233,10 @@ import {
   RetryInterruptedWorkerCheckpointResponseSchema,
   type RetrySchedulerAdmissionResponse,
   RetrySchedulerAdmissionResponseSchema,
+  type ReverseKnowledgeProposalRequest,
+  ReverseKnowledgeProposalRequestSchema,
+  type ReverseKnowledgeProposalResponse,
+  ReverseKnowledgeProposalResponseSchema,
   type ReviseThreadGoalPlanRequest,
   ReviseThreadGoalPlanRequestSchema,
   type ReviseThreadGoalPlanResponse,
@@ -451,8 +451,10 @@ export type SubmitGoalReviewDecisionInput = Omit<SubmitGoalReviewDecisionRequest
   /** Optional caller-provided request id; the client generates one when omitted. */
   requestId?: SubmitGoalReviewDecisionRequest['requestId'];
 };
-/** Knowledge proposal decision input with optional caller-provided request id. */
+/** Knowledge proposal decision input with its required caller-provided request id. */
 export type SubmitKnowledgeProposalDecisionInput = SubmitKnowledgeProposalDecisionRequest;
+/** Bounded Knowledge proposal reversal input. */
+export type ReverseKnowledgeProposalInput = ReverseKnowledgeProposalRequest;
 /** Durable workspace synchronization review decision input with optional caller-provided request id. */
 export type SubmitWorkspaceSyncReviewDecisionInput = SubmitWorkspaceSyncReviewDecisionRequest;
 /** Workspace recovery decision input with optional caller-provided request id. */
@@ -709,21 +711,6 @@ export interface AppApiClient {
     workspaceId: string,
     input: KnowledgeManagerPrepareContextInput
   ): Promise<KnowledgeManagerPrepareContextResponse>;
-  /** Reads one persisted Knowledge Manager context package trace. */
-  readKnowledgeContextPackageTrace(
-    workspaceId: string,
-    contextPackageId: string
-  ): Promise<ReadKnowledgeManagerContextPackageTraceResponse>;
-  /** Materializes one persisted Knowledge Manager context package trace as worker-visible files. */
-  materializeKnowledgeContextPackage(
-    workspaceId: string,
-    contextPackageId: string
-  ): Promise<MaterializeKnowledgeContextPackageResponse>;
-  /** Reads one previously materialized Knowledge Manager context package snapshot. */
-  readKnowledgeContextPackageMaterialization(
-    workspaceId: string,
-    contextPackageId: string
-  ): Promise<MaterializeKnowledgeContextPackageResponse>;
   /** Drafts one pending Knowledge Proposal for explicit review. */
   draftKnowledgeProposal(
     workspaceId: string,
@@ -816,6 +803,12 @@ export interface AppApiClient {
     proposalId: string,
     input: SubmitKnowledgeProposalDecisionInput
   ): Promise<SubmitKnowledgeProposalDecisionResponse>;
+  /** Removes one unchanged page created by an accepted Knowledge Proposal. */
+  reverseKnowledgeProposal(
+    workspaceId: string,
+    proposalId: string,
+    input: ReverseKnowledgeProposalInput
+  ): Promise<ReverseKnowledgeProposalResponse>;
   /** Lists workspace synchronization reviews for one workspace. */
   listWorkspaceSyncReviews(workspaceId: string): Promise<ListWorkspaceSyncReviewsResponse>;
   /** Reads one workspace synchronization review by id. */
@@ -1320,22 +1313,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         KnowledgeManagerPrepareContextRequestSchema.parse(input),
         KnowledgeManagerPrepareContextResponseSchema
       ),
-    readKnowledgeContextPackageTrace: (workspaceId, contextPackageId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/context/${contextPackageId}`,
-        ReadKnowledgeManagerContextPackageTraceResponseSchema
-      ),
-    materializeKnowledgeContextPackage: (workspaceId, contextPackageId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/context/${contextPackageId}/materialization`,
-        {},
-        MaterializeKnowledgeContextPackageResponseSchema
-      ),
-    readKnowledgeContextPackageMaterialization: (workspaceId, contextPackageId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/context/${contextPackageId}/materialization`,
-        MaterializeKnowledgeContextPackageResponseSchema
-      ),
     draftKnowledgeProposal: (workspaceId, input) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/knowledge/manager/proposals`,
@@ -1456,15 +1433,18 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         SubmitGoalReviewDecisionResponseSchema
       );
     },
-    submitKnowledgeProposalDecision: (workspaceId, proposalId, input) => {
-      const request = { ...input, requestId: input.requestId ?? createRequestId() };
-
-      return transport.postJson(
+    submitKnowledgeProposalDecision: (workspaceId, proposalId, input) =>
+      transport.postJson(
         `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposalId}/decision`,
-        SubmitKnowledgeProposalDecisionRequestSchema.parse(request),
+        SubmitKnowledgeProposalDecisionRequestSchema.parse(input),
         SubmitKnowledgeProposalDecisionResponseSchema
-      );
-    },
+      ),
+    reverseKnowledgeProposal: (workspaceId, proposalId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposalId}/reversal`,
+        ReverseKnowledgeProposalRequestSchema.parse(input),
+        ReverseKnowledgeProposalResponseSchema
+      ),
     listWorkspaceSyncReviews: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/workspace-sync/reviews`,

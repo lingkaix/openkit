@@ -3,7 +3,10 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { seedDemoWorkspaceDataRoot } from '../../../tests/support/demo-data.mjs';
+import {
+  seedDemoWorkspaceAuthority,
+  seedDemoWorkspaceDataRoot,
+} from '../../../tests/support/demo-data.mjs';
 import { FsStore } from '../dist/lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../dist/runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from '../dist/runtime/agent-environment.js';
@@ -38,6 +41,7 @@ it('reconnects one anchored worker across a killed NanoCore process', async () =
   try {
     ensureLayout(dataRoot);
     seedDemoWorkspaceDataRoot(dataRoot);
+    await seedDemoWorkspaceAuthority(dataRoot);
     const store = new FsStore({ dataRoot });
     const turn = store.createTurn('ws_demo', 'th_demo', 'Finish after NanoCore restarts.', {
       kind: 'user',
@@ -112,7 +116,7 @@ it('reconnects one anchored worker across a killed NanoCore process', async () =
       threadId: turn.threadId,
       turnId: turn.id,
       turnInput: 'Finish after NanoCore restarts.',
-      userId: LOCAL_USER_ID,
+      triggerActor: turn.triggerActor,
       workspaceId: turn.workspaceId,
     });
     dispatchNextSchedulerEntry(coreDb, {

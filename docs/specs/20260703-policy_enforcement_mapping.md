@@ -265,7 +265,7 @@ Runtime-native approval prompts may still be imported as item-backed requests, b
 
 ## Current Implementation Projection
 
-The V1 enforcement bridge exists, but full alignment with the standard-aligned policy-kernel contract is partial:
+The V1 enforcement bridge exists, but full alignment with the standard-aligned policy-kernel contract remains partial:
 
 - `packages/policy-kernel` implements the first standard-aligned NGAC subset evaluator over policy elements, assignments, process-to-user mappings, operation-to-access-right mappings, associations, prohibitions, and access requests. It returns `allow` or `deny` plus structural traces.
 - `POLICY_CATALOG` in `packages/config-schema/src/policy.ts` governs config-layer override, merge, reload, and secret-handling behavior. It is separate from the product authorization policy engine targeted here.

@@ -72,7 +72,7 @@ Static step: for a sampled document, enumerate its normative statements and, for
 
 Dynamic step: for a sample of claimed pointers, invert the pointed-to projection and confirm it fails, reusing layer 1 mechanics as the proof.
 
-The output is a load-bearing map per document — enforced, story-covered, audit-only, or unverified per statement — published as an audit record, and it drives where the next L2 tests and L0 rules are added. Existing mechanical edges are story `contracts` metadata and story deterministic assertions; a citation convention linking L2 contract tests to their owning specification is authorized as a follow-up implementation.
+The output is a load-bearing map per document — enforced, story-covered, audit-only, or unverified per statement — published as an audit record, and it drives where the next L2 tests and L0 rules are added. Existing mechanical edges are story `contracts` metadata and story deterministic assertions; a citation convention linking L2 contract tests to their owning specification remains a proposed follow-up and is not authorized while this specification is Draft.
 
 ## Shared Fault Taxonomy
 

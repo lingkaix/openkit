@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ApiErrorSchema, TurnSchema } from '@openkit/protocol';
+import { ApiErrorSchema, TurnReadProjectionSchema, TurnSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from './app.js';
@@ -266,7 +266,10 @@ describe('generic turn routes', () => {
     const response = await app.request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}`);
 
     expect(response.status).toBe(200);
-    expect(TurnSchema.parse(await response.json())).toEqual(turn);
+    expect(TurnReadProjectionSchema.parse(await response.json())).toEqual({
+      ...turn,
+      contextPackageDigest: null,
+    });
   });
 
   it('does not read a turn through a different workspace or thread path', async () => {

@@ -297,6 +297,7 @@ function createContextAssemblySummary(
   return {
     contextDigest: prepared.contextPackageDigest,
     contextRefs: prepared.delegationRequest.contextRefs,
+    knowledgeSelectionInput: prepared.knowledgeSelectionInput,
     repositoryResourceId: prepared.repository.resourceId,
   };
 }

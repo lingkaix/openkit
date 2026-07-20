@@ -1,6 +1,23 @@
-import { ArtifactSchema } from '@openkit/protocol';
+import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { WorkspaceRelativePathSchema } from './workspace-sync.js';
+import { addRawSecretIssues } from './raw-secrets.js';
+
+const obviousKnowledgeProposalHostPathPattern =
+  /(?:^|[\s"'`(])(?:\/(?:Users|home)\/\S+|~\/\S+|[A-Za-z]:[\\/]\S+|\\\\[^\\\s]+\\[^\\\s]+(?:\\\S*)?)/;
+
+/** Returns whether proposal text exposes one bounded obvious local host path shape. */
+function containsObviousKnowledgeProposalHostPath(value: string): boolean {
+  return obviousKnowledgeProposalHostPathPattern.test(value);
+}
+
+/** Non-empty proposal text without supported raw credential or local-home path canaries. */
+const KnowledgeProposalSafeTextSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !containsObviousKnowledgeProposalHostPath(value), {
+    message: 'Knowledge Proposal text must not expose an absolute host path.',
+  })
+  .superRefine((value, context) => addRawSecretIssues(value, context, []));
 
 /** Server-assigned semantic owner of one Knowledge Manager invocation path. */
 export const KnowledgeManagerCallerSchema = z.enum(['assistant', 'task-mode', 'app-api']);
@@ -460,264 +477,113 @@ export const KnowledgeManagerAnswerResponseSchema = z.object({
 });
 
 /** Request body for one bounded Knowledge Manager context-material operation. */
-export const KnowledgeManagerWorkspaceRootFileRequestSchema = z.object({
-  rootId: z
-    .string()
-    .min(1)
-    .regex(/^[A-Za-z0-9._-]+$/),
-  path: WorkspaceRelativePathSchema,
-});
-
-/** Request body for one bounded Knowledge Manager context-material operation. */
 export const KnowledgeManagerPrepareContextRequestSchema = z
   .object({
     query: z.string().min(1),
     limit: z.number().int().positive().max(10).optional(),
-    artifactIds: z.array(z.string().min(1)).max(20).default([]),
-    workspaceFiles: z
-      .array(z.object({ path: WorkspaceRelativePathSchema }))
-      .max(20)
-      .default([]),
-    workspaceRootFiles: z.array(KnowledgeManagerWorkspaceRootFileRequestSchema).max(20).default([]),
   })
   .strict();
 
-/** Source trace for one Knowledge Manager context material item. */
-export const KnowledgeManagerContextTraceSchema = z.object({
-  source: z.literal('workspace-knowledge'),
-  reason: z.literal('matched-query'),
-});
-
-/** Context material returned by Knowledge Manager for Coordinator assembly. */
-export const KnowledgeManagerContextMaterialSchema = z.object({
-  knowledgeEntryId: z.string().min(1),
-  kind: z.enum(['preference', 'project-context', 'task-summary']),
-  title: z.string().min(1),
-  excerpt: z.string().min(1),
-  sourceReferences: z.array(z.string().min(1)).default([]),
-  trace: KnowledgeManagerContextTraceSchema,
-});
-
-/** Exclusion returned when Knowledge Manager omits a candidate material item. */
-export const KnowledgeManagerContextExclusionSchema = z.object({
-  reason: z.enum(['no-matching-knowledge']),
-  detail: z.string().min(1),
-});
-
-/** Budget summary for one prepared Knowledge Manager context package trace. */
-export const KnowledgeManagerContextPackageBudgetSchema = z.object({
-  requestedLimit: z.number().int().positive(),
-  selectedCount: z.number().int().nonnegative(),
-  excludedCount: z.number().int().nonnegative(),
-});
-
-/** Package-level trace for Knowledge Manager context material selection. */
-export const KnowledgeManagerContextPackageTraceSchema = z.object({
-  contextPackageId: z.string().min(1),
-  contextPackageDigest: z.string().regex(/^ctxpkg_sha256_[a-f0-9]{64}$/),
-  policyVersion: z.literal('knowledge-context-v1'),
-  selectedKnowledgeEntryIds: z.array(z.string().min(1)),
-  selectedArtifactIds: z.array(z.string().min(1)).default([]),
-  selectedWorkspaceFilePaths: z.array(WorkspaceRelativePathSchema).default([]),
-  selectedWorkspaceRootFiles: z.array(KnowledgeManagerWorkspaceRootFileRequestSchema).default([]),
-  selectedClaimIds: z.array(z.string().min(1)).default([]),
-  selectedConflictIds: z.array(z.string().min(1)).default([]),
-  excludedCandidateCount: z.number().int().nonnegative(),
-  budget: KnowledgeManagerContextPackageBudgetSchema,
-});
-
-/** Context selection policy summary returned with prepared context material. */
-export const KnowledgeManagerContextPolicySchema = z.object({
-  version: z.literal('knowledge-context-v1'),
-  claimReviewState: z.literal('accepted'),
-  conflictResolution: z.literal('exclude-resolved'),
-});
-
-/** Explicit workspace file summary selected for worker context. */
-export const KnowledgeManagerWorkspaceFileSchema = z.object({
-  path: WorkspaceRelativePathSchema,
-  contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  contentBytes: z.number().int().nonnegative(),
-});
-
-/** Explicit workspace root file summary selected for worker context. */
-export const KnowledgeManagerWorkspaceRootFileSchema =
-  KnowledgeManagerWorkspaceRootFileRequestSchema.extend({
-    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    contentBytes: z.number().int().nonnegative(),
-  });
-
 /** Response returned by one bounded Knowledge Manager context-material operation. */
-export const KnowledgeManagerPrepareContextResponseSchema = z.object({
-  operationId: z.string().min(1),
-  operation: z.literal('prepare-context-material'),
-  workspaceId: z.string().min(1),
-  caller: KnowledgeManagerCallerSchema,
-  retrievalTraceId: KnowledgeRetrievalTraceIdSchema,
-  query: z.string().min(1),
-  outcome: z.enum(['prepared', 'insufficient-evidence']),
-  materials: z.array(KnowledgeManagerContextMaterialSchema),
-  exclusions: z.array(KnowledgeManagerContextExclusionSchema),
-  artifacts: z.array(ArtifactSchema).default([]),
-  workspaceFiles: z.array(KnowledgeManagerWorkspaceFileSchema).default([]),
-  workspaceRootFiles: z.array(KnowledgeManagerWorkspaceRootFileSchema).default([]),
-  claims: z.array(KnowledgeClaimSchema).default([]),
-  conflicts: z.array(KnowledgeConflictSchema).default([]),
-  policy: KnowledgeManagerContextPolicySchema.default({
-    version: 'knowledge-context-v1',
-    claimReviewState: 'accepted',
-    conflictResolution: 'exclude-resolved',
-  }),
-  packageTrace: KnowledgeManagerContextPackageTraceSchema,
-  confidence: z.number().min(0).max(1),
-  uncertainty: z.string().min(1).nullable(),
-});
+export const KnowledgeManagerPrepareContextResponseSchema = z
+  .object({
+    operationId: z.string().min(1),
+    operation: z.literal('prepare-context-material'),
+    workspaceId: z.string().min(1),
+    caller: KnowledgeManagerCallerSchema,
+    retrievalTraceId: KnowledgeRetrievalTraceIdSchema,
+    outcome: z.enum(['prepared', 'insufficient-evidence']),
+    selected: z.array(KnowledgeRetrievalCandidateSchema),
+    excluded: z.array(KnowledgeRetrievalExclusionSchema),
+  })
+  .strict();
 
-/** Persisted audit trace row for one prepared Knowledge Manager context package. */
-export const KnowledgeManagerContextPackageTraceRecordSchema = z.object({
-  id: z.string().min(1),
-  workspaceId: z.string().min(1),
-  operationId: z.string().min(1),
-  createdAt: z.string().min(1),
-  response: KnowledgeManagerPrepareContextResponseSchema,
-});
+/** Safe create-only Knowledge Page identity carried by proposal commands. */
+export const KnowledgeProposalPageIdSchema = z
+  .string()
+  .max(240)
+  .regex(/^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/);
 
-/** Response returned when reading one persisted Knowledge Manager context package trace. */
-export const ReadKnowledgeManagerContextPackageTraceResponseSchema = z.object({
-  trace: KnowledgeManagerContextPackageTraceRecordSchema,
-});
+/** Lowercase SHA-256 digest over exact canonical Knowledge content bytes. */
+export const KnowledgeProposalContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
-/** Worker-visible context package materialized file summary. */
-export const WorkerContextPackageMaterializedFileSchema = z.object({
-  path: z.string().regex(/^\/openkit\/context\/.+/),
-  kind: z.enum([
-    'manifest',
-    'instructions',
-    'knowledge',
-    'source',
-    'artifact',
-    'workspace',
-    'workspace-root',
-    'policy',
-  ]),
-  contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-});
-
-/** Worker-visible context package manifest sensitivity label. */
-export const WorkerContextPackageSensitivityLabelSchema = z.enum(['normal', 'redacted']);
-
-/** Worker-visible context package manifest entry. */
-export const WorkerContextPackageManifestEntrySchema = z.object({
-  citationLabel: z.string().min(1).optional(),
-  derivedRepresentationId: z.string().min(1).optional(),
-  kind: z.enum([
-    'instructions',
-    'knowledge',
-    'source',
-    'artifact',
-    'workspace',
-    'workspace-root',
-    'policy',
-  ]),
-  path: z.string().regex(/^\/openkit\/context\/.+/),
-  relativePath: z.string().min(1),
-  sensitivityLabel: WorkerContextPackageSensitivityLabelSchema,
-  sourceContentDigest: z.string().min(1).optional(),
-  sourceId: z.string().min(1).optional(),
-  sourceKind: KnowledgeSourceKindSchema.optional(),
-  title: z.string().min(1).nullable(),
-  sourceReferences: z.array(z.string().min(1)).default([]),
-  sourceUri: z.string().min(1).nullable().optional(),
-  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-});
-
-/** Worker-visible context package materialization budget summary. */
-export const WorkerContextPackageBudgetSchema = z.object({
-  entryCount: z.number().int().nonnegative(),
-  estimatedTokenCount: z.number().int().nonnegative(),
-  fileCount: z.number().int().nonnegative(),
-  materializedContentBytes: z.number().int().nonnegative(),
-});
-
-/** Worker-visible context package manifest. */
-export const WorkerContextPackageManifestSchema = z.object({
-  version: z.literal('worker-context-package-v1'),
-  contextPackageId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  contextPackageDigest: z.string().regex(/^ctxpkg_sha256_[a-f0-9]{64}$/),
-  rootPath: z.literal('/openkit/context'),
-  generatedAt: z.string().min(1),
-  budget: WorkerContextPackageBudgetSchema,
-  entries: z.array(WorkerContextPackageManifestEntrySchema),
-});
-
-/** Response returned after materializing one Knowledge Manager context package. */
-export const MaterializeKnowledgeContextPackageResponseSchema = z.object({
-  manifest: WorkerContextPackageManifestSchema,
-  files: z.array(WorkerContextPackageMaterializedFileSchema).min(1),
-});
+const knowledgeProposalSourceReferenceSchema = z
+  .string()
+  .refine(
+    (reference) =>
+      /^source:ks_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}@sha256:[a-f0-9]{64}$/.test(
+        reference
+      ) ||
+      /^knowledge:(?!index@|log@)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*@sha256:[a-f0-9]{64}$/.test(
+        reference
+      ) ||
+      /^(?:turn|item):[^@\s]+$/.test(reference) ||
+      /^context-package:[^@\s]+@ctxpkg_sha256_[a-f0-9]{64}$/.test(reference),
+    'Unsupported Knowledge Proposal source reference.'
+  );
 
 /** Request body for one governed Knowledge Manager proposal draft operation. */
 export const KnowledgeManagerDraftProposalRequestSchema = z
   .object({
-    requestId: z.string().min(1),
-    title: z.string().min(1),
-    summary: z.string().min(1),
-    sourceReferences: z.array(z.string().min(1)).default([]),
-    confidence: z.number().min(0).max(1).default(0.5),
+    requestId: RequestIdSchema,
+    knowledgePageId: KnowledgeProposalPageIdSchema,
+    canonicalPageBytes: KnowledgeProposalSafeTextSchema,
+    contentDigest: KnowledgeProposalContentDigestSchema,
+    sourceReferences: z
+      .array(knowledgeProposalSourceReferenceSchema)
+      .min(1)
+      .superRefine((references, context) => {
+        if (
+          references.some((reference, index) => index > 0 && references[index - 1]! >= reference)
+        ) {
+          context.addIssue({
+            code: 'custom',
+            message: 'Knowledge Proposal source references must be bytewise sorted and unique.',
+          });
+        }
+      }),
+    rationale: KnowledgeProposalSafeTextSchema,
+    confidence: z.number().min(0).max(1),
   })
   .strict();
 
-/** Pending knowledge proposal created by a Knowledge Manager draft operation. */
-export const KnowledgeManagerDraftedProposalSchema = z.object({
-  id: z.string().min(1),
-  workspaceId: z.string().min(1),
-  title: z.string().min(1),
-  summary: z.string().min(1),
-  status: z.literal('pending'),
-  createdAt: z.string().min(1),
-  updatedAt: z.string().min(1),
-});
-
-/** Source-lineage classification for one Knowledge Manager proposal reference. */
-export const KnowledgeManagerProposalSourceLineageSchema = z.object({
-  reference: z.string().min(1),
-  classification: z.enum(['registered-source', 'workspace-knowledge', 'external-reference']),
-  sourceId: z.string().min(1).nullable(),
-  knowledgeEntryId: z.string().min(1).nullable(),
-  title: z.string().min(1).nullable(),
-  reviewRequired: z.boolean(),
-  detail: z.string().min(1),
-});
+/** Pending immutable create-only Knowledge Proposal projected after drafting. */
+export const KnowledgeManagerDraftedProposalSchema = z
+  .object({
+    id: z.string().min(1),
+    workspaceId: z.string().min(1),
+    operation: z.literal('create'),
+    knowledgePageId: KnowledgeProposalPageIdSchema,
+    canonicalPageBytes: KnowledgeProposalSafeTextSchema,
+    contentDigest: KnowledgeProposalContentDigestSchema,
+    sourceReferences: KnowledgeManagerDraftProposalRequestSchema.shape.sourceReferences,
+    rationale: KnowledgeProposalSafeTextSchema,
+    confidence: z.number().min(0).max(1),
+    producer: ActorRefSchema,
+    status: z.literal('pending'),
+    createdAt: TimestampSchema,
+  })
+  .strict();
 
 /** Deterministic validation result for one Knowledge Manager proposal draft. */
-export const KnowledgeManagerProposalValidationSchema = z.object({
-  status: z.enum(['ready-for-review', 'needs-source-review']),
-  checks: z.array(
-    z.object({
-      code: z.enum([
-        'source-reference-resolved',
-        'source-reference-unregistered',
-        'no-source-references',
-      ]),
-      passed: z.boolean(),
-      detail: z.string().min(1),
-    })
-  ),
-});
+export const KnowledgeManagerProposalValidationSchema = z
+  .object({
+    conformance: z.literal('Workspace-schema-valid'),
+    generatedFromCompletedWorkHistory: z.boolean(),
+  })
+  .strict();
 
 /** Response returned by one governed Knowledge Manager proposal draft operation. */
-export const KnowledgeManagerDraftProposalResponseSchema = z.object({
-  operationId: z.string().min(1),
-  operation: z.literal('draft-proposal'),
-  workspaceId: z.string().min(1),
-  caller: KnowledgeManagerCallerSchema,
-  proposal: KnowledgeManagerDraftedProposalSchema,
-  sourceReferences: z.array(z.string().min(1)),
-  sourceLineage: z.array(KnowledgeManagerProposalSourceLineageSchema),
-  validation: KnowledgeManagerProposalValidationSchema,
-  confidence: z.number().min(0).max(1),
-});
+export const KnowledgeManagerDraftProposalResponseSchema = z
+  .object({
+    operationId: z.string().min(1),
+    operation: z.literal('draft-proposal'),
+    workspaceId: z.string().min(1),
+    caller: KnowledgeManagerCallerSchema,
+    proposal: KnowledgeManagerDraftedProposalSchema,
+    validation: KnowledgeManagerProposalValidationSchema,
+  })
+  .strict();
 
 /** Request body for one bounded Knowledge Manager repair suggestion operation. */
 export const KnowledgeManagerSuggestRepairRequestSchema = z
@@ -784,28 +650,6 @@ export type KnowledgeManagerPrepareContextRequest = z.infer<
 /** Response returned by one bounded Knowledge Manager context-material operation. */
 export type KnowledgeManagerPrepareContextResponse = z.infer<
   typeof KnowledgeManagerPrepareContextResponseSchema
->;
-/** Persisted audit trace row for one prepared Knowledge Manager context package. */
-export type KnowledgeManagerContextPackageTraceRecord = z.infer<
-  typeof KnowledgeManagerContextPackageTraceRecordSchema
->;
-/** Response returned when reading one persisted Knowledge Manager context package trace. */
-export type ReadKnowledgeManagerContextPackageTraceResponse = z.infer<
-  typeof ReadKnowledgeManagerContextPackageTraceResponseSchema
->;
-/** Worker-visible context package materialized file summary. */
-export type WorkerContextPackageMaterializedFile = z.infer<
-  typeof WorkerContextPackageMaterializedFileSchema
->;
-/** Worker-visible context package manifest entry. */
-export type WorkerContextPackageManifestEntry = z.infer<
-  typeof WorkerContextPackageManifestEntrySchema
->;
-/** Worker-visible context package manifest. */
-export type WorkerContextPackageManifest = z.infer<typeof WorkerContextPackageManifestSchema>;
-/** Response returned after materializing one Knowledge Manager context package. */
-export type MaterializeKnowledgeContextPackageResponse = z.infer<
-  typeof MaterializeKnowledgeContextPackageResponseSchema
 >;
 /** Request body for one governed Knowledge Manager proposal draft operation. */
 export type KnowledgeManagerDraftProposalRequest = z.infer<

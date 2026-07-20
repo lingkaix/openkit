@@ -1,7 +1,7 @@
 # Explicit Work Reflection And Knowledge Improvement
 
 Status: Accepted
-Implementation: Partial
+Implementation: Implemented
 
 ## Owns
 
@@ -72,7 +72,7 @@ Agent analysis is advisory. The proposal remains pending until the existing huma
 
 ### Evidence boundary
 
-The reviewing agent may inspect existing readable completed-work projections from one Workspace. For the V1 proposal mutation, however, S61's closed evidence vocabulary is the complete boundary: one terminal direct-Task worker Turn, the final completed `assistant-message` Item projected by that Turn, and the exact accepted S39 digest exposed by the existing `turn.read` response projection, with optional exact registered-Source or existing-Knowledge-Page references. That digest is non-null only when S39's strict live accepted-delivery verifier succeeds; imported history and any Turn without retained verified package bytes project null and cannot supply this evidence. The agent supplies the matching `turn`, `item`, and `context-package` references in the fixed candidate page and proposal; a request `user-message` or another completed Item cannot masquerade as worker output. Other Artifacts, reviews, EvidenceBundles, audit, usage, or external material may guide advisory analysis but must first be explicitly captured through the existing registered Knowledge Source owner before becoming proposal evidence.
+The reviewing agent may inspect existing readable completed-work projections from one Workspace. For the V1 proposal mutation, however, S61's closed evidence vocabulary is the complete boundary: one terminal direct-Task worker Turn, the final completed `assistant-message` Item projected by that Turn, and the exact accepted S39 digest exposed by the existing `turn.read` response projection, with optional exact registered-Source or directly `user-authored` Knowledge-Page references. That digest is non-null only when S39's strict live accepted-delivery verifier succeeds; imported history and any Turn without retained verified package bytes project null and cannot supply this evidence. An `accepted` generated Page cannot become proposal evidence because V1 deliberately avoids a transitive proposal-authority graph. The agent supplies the matching `turn`, `item`, and `context-package` references in the fixed candidate page and proposal; a request `user-message` or another completed Item cannot masquerade as worker output. Other Artifacts, reviews, EvidenceBundles, audit, usage, or external material may guide advisory analysis but must first be explicitly captured through the existing registered Knowledge Source owner before becoming proposal evidence.
 
 Candidate lesson text, caller-supplied summaries, copied response text, model claims, projection labels, and external URLs are proposed interpretation, not evidence. A missing accepted S39 trace MUST NOT be reconstructed or replaced with current Workspace state. Secret values, Vault material, raw credentials, unrestricted host paths, and cross-Workspace content MUST NOT enter the proposal, review projection, audit summary, or CLI output.
 
@@ -86,7 +86,7 @@ The command uses the normal command-ledger key `command + requestId + scope`, wi
 
 ### Human review and application
 
-The existing Knowledge Proposal and Knowledge Review owners decide acceptance, rejection, or deferral. Acceptance applies only the exact reviewed create-only target and remains subject to current authorization, validation, conflict, sensitivity, and source-lineage checks.
+The existing Knowledge Proposal and Knowledge Review owners decide acceptance, rejection, or deferral. Acceptance applies only the exact reviewed create-only target and remains subject to current authorization, validation, conflict, sensitivity, and source-lineage checks. Once any generated proposal for a page id is accepted, its retained Proposal and Review permanently reserve that id against later generated proposals; reversal removes the page but a later generated proposal must choose another id.
 
 Application may require more than one file write. Success MUST NOT be reported until both the accepted decision and the matching proposal-created page are durable. If interruption leaves an accepted decision without its exact page effect, that condition remains discoverable; replay of the same authorized decision may complete the deterministic missing effect, otherwise it returns `recovery_required`. No background repair, settlement record, or recovery workflow is created.
 
@@ -100,7 +100,7 @@ If the required S39 trace, page byte, digest, or owner tuple is missing or contr
 
 ### Bounded reversal
 
-A reversal request through the existing Knowledge owner MUST name the original proposal and accepted review, the exact proposal-created page, and the expected current digest. The original content digest is resolved from the named immutable proposal and review rather than duplicated in the request. It may remove that page only when all lineage matches and the page remains unchanged. Proposal, review, command, and audit evidence remain retained.
+A reversal request through the existing Knowledge owner MUST name the original proposal and accepted review, the exact proposal-created page, and the expected current digest. The original content digest is resolved from the named immutable proposal and review rather than duplicated in the request. It may remove that page only when all lineage matches and the page remains unchanged. Proposal, review, command, and audit evidence remain retained and continue reserving the page id, so no later byte-identical page can be mistaken for the old proposal's effect.
 
 If the page has changed, reversal returns S61's `409 conflict`; missing or contradictory lineage returns `409 recovery_required`, and both produce zero mutation. Reversal MUST NOT delete intervening history, reopen completed work, enqueue follow-up execution, or create recovery state.
 
@@ -118,7 +118,7 @@ Use the unified `openkit` Skill and bundled CLI as the agent's composition surfa
 
 The repository already has completed-work projections, a unified Skill/CLI, pending Knowledge Proposals, human review decisions, deterministic retrieval, audit and usage records, and accepted S39 worker delivery traces. These are the only permitted V1 owners.
 
-The existing proposal draft does not yet carry and apply the complete create-only page target, Task does not yet use the sole governed retrieval owner, S39 does not yet materialize exact Knowledge bytes and lineage, and bounded proposal-created-page reversal is incomplete. The specification is therefore `Implementation: Partial`.
+The explicit V1 composition is implemented through existing owners. Proposal drafting freezes one create-only page target, exact bytes, digest, and same-Workspace completed-work lineage; human acceptance applies only that reviewed target; direct Task retrieval uses S61 and S39 materializes and verifies the exact selected page bytes; bounded reversal removes only the unchanged proposal-created page while retaining proposal, review, command, and audit evidence. One real stock-OpenShell/Codex loop on A1 proved completed work, proposal, human acceptance, later worker-visible use, and reversal without adding a reflection endpoint, lifecycle, scheduler, runner, or Harness.
 
 ## Testing Strategy / Acceptance Criteria
 

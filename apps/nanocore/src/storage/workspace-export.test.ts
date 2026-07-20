@@ -28,6 +28,7 @@ import {
 import {
   artifactReferenceItemId,
   listUnresolvedUserInputRequestItemIds,
+  serializeKnowledgeProposalRecord,
 } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
 
@@ -161,6 +162,22 @@ describe('workspace export verifier', () => {
 
   it('writes a verifiable workspace export tree', () => {
     const root = freshExportRoot('openkit-workspace-export-write-');
+    const canonicalPageBytes = 'Portable exports must not carry actionable proposals.\n';
+    const contentDigest = `sha256:${createHash('sha256').update(canonicalPageBytes).digest('hex')}`;
+    const proposal = {
+      id: `kp_${'a'.repeat(64)}`,
+      workspaceId: 'ws_demo',
+      operation: 'create',
+      knowledgePageId: 'portable/export-exclusion',
+      canonicalPageBytes,
+      contentDigest,
+      sourceReferences: ['turn:tu_source'],
+      rationale: 'Proposal authority remains local to its source Workspace.',
+      confidence: 1,
+      producer: localActor,
+      createdAt: timestamp,
+    } as const;
+    const reviewRequestId = '00000000-0000-4000-8000-00000000a701';
     const exported = writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -201,6 +218,32 @@ describe('workspace export verifier', () => {
       itemRevisions: [],
       artifacts: [],
       artifactReviews: [],
+      knowledgeProposals: [proposal],
+      knowledgeProposalReviews: [
+        {
+          proposalId: proposal.id,
+          workspaceId: proposal.workspaceId,
+          reviewId: `kr_${createHash('sha256')
+            .update(
+              JSON.stringify({
+                workspaceId: proposal.workspaceId,
+                proposalId: proposal.id,
+                requestId: reviewRequestId,
+              })
+            )
+            .digest('hex')}`,
+          requestId: reviewRequestId,
+          decision: 'deferred',
+          actor: localActor,
+          proposalDigest: `sha256:${createHash('sha256')
+            .update(serializeKnowledgeProposalRecord(proposal))
+            .digest('hex')}`,
+          knowledgePageId: proposal.knowledgePageId,
+          contentDigest: proposal.contentDigest,
+          targetAbsentAtDecision: null,
+          decidedAt: timestamp,
+        },
+      ],
       workspaceMaterials: [{ workspaceId: 'ws_demo', materialId: 'mat_demo' }],
       workspaceMaterialRevisions: [
         { workspaceId: 'ws_demo', materialId: 'mat_demo', revisionId: 'mrev_demo' },
@@ -234,7 +277,6 @@ describe('workspace export verifier', () => {
       'records/item-revisions.jsonl',
       'records/knowledge-claims.jsonl',
       'records/knowledge-conflicts.jsonl',
-      'records/knowledge-context-package-traces.jsonl',
       'records/knowledge-observations.jsonl',
       'records/knowledge-retrieval-traces.jsonl',
       'records/knowledge.jsonl',
@@ -262,78 +304,6 @@ describe('workspace export verifier', () => {
       }
     );
     expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest.workspaceId).toBe('ws_demo');
-  });
-
-  it('round-trips a knowledge proposal source claim', () => {
-    const root = freshExportRoot('openkit-workspace-proposal-export-');
-    const fixture = createDemoWorkspaceForUser(LOCAL_USER_ID);
-
-    writeWorkspaceExportTree({
-      exportRoot: root,
-      exportId: 'wsexp_proposal',
-      sourceDeploymentId: 'dep_local',
-      createdAt: timestamp,
-      workspace: fixture.workspace,
-      threads: [fixture.thread],
-      turns: [],
-      knowledge: [],
-      itemRevisions: [],
-      artifacts: [],
-      artifactReviews: [],
-      agentSessions: [],
-      turnEvents: [],
-      portableFileState: {
-        observations: new Map(),
-        claims: new Map([
-          [
-            '202607',
-            [
-              {
-                id: 'cl_demo',
-                workspaceId: fixture.workspace.id,
-                statement: 'Portable source claim.',
-                sourceReferences: [],
-                scope: 'workspace',
-                producer: 'test',
-                confidence: 1,
-                freshness: 'current',
-                reviewState: 'accepted',
-                conflictStatus: 'none',
-                createdAt: timestamp,
-                updatedAt: timestamp,
-              },
-            ],
-          ],
-        ]),
-        conflicts: new Map(),
-        contextPackageTraces: new Map(),
-        retrievalTraces: new Map(),
-        workspaceConfig: null,
-        workspaceSchema: null,
-        nativeKnowledgePages: new Map(),
-        contextMaterializations: new Map(),
-        workerContextPackageFiles: new Map(),
-      },
-      knowledgeProposals: [
-        {
-          id: 'kp_demo',
-          workspaceId: fixture.workspace.id,
-          title: 'Source-backed proposal',
-          summary: 'Preserve the source claim through workspace transfer.',
-          sourceClaimId: 'cl_demo',
-          status: 'pending',
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-      ],
-    });
-
-    expect(readImportSnapshot(root, 'ws_imported_proposal').knowledgeProposals).toEqual([
-      expect.objectContaining({
-        workspaceId: 'ws_imported_proposal',
-        sourceClaimId: 'cl_demo',
-      }),
-    ]);
   });
 
   it('round-trips canonical workspace history with deterministic reminted lineage', () => {
@@ -1140,14 +1110,13 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_imported_ws_demo',
       },
       verification: {
-        fileCount: 16,
+        fileCount: 15,
         checkedFiles: [
           'records/agent-sessions.jsonl',
           'records/artifact-reviews.jsonl',
           'records/item-revisions.jsonl',
           'records/knowledge-claims.jsonl',
           'records/knowledge-conflicts.jsonl',
-          'records/knowledge-context-package-traces.jsonl',
           'records/knowledge-observations.jsonl',
           'records/knowledge-retrieval-traces.jsonl',
           'records/knowledge.jsonl',
@@ -1619,8 +1588,13 @@ describe('workspace export verifier', () => {
     ]);
   });
 
-  it('rejects the removed workspace synchronization evidence record family on import', () => {
-    const root = freshExportRoot('openkit-workspace-import-sync-evidence-');
+  it.each([
+    'records/workspace-sync-evidence-bundles.jsonl',
+    'records/knowledge-context-package-traces.jsonl',
+    'records/knowledge-proposals.jsonl',
+    'records/knowledge-proposal-reviews.jsonl',
+  ] as const)('rejects removed export record %s on import', (removedPath) => {
+    const root = freshExportRoot('openkit-workspace-import-removed-record-');
     writeWorkspaceExportTree({
       exportRoot: root,
       exportId: 'wsexp_demo',
@@ -1645,8 +1619,7 @@ describe('workspace export verifier', () => {
       agentSessions: [],
       turnEvents: [],
     });
-    const removedPath = 'records/workspace-sync-evidence-bundles.jsonl';
-    const removedContent = `${JSON.stringify({ id: 'wseb_import', workspaceId: 'ws_demo' })}\n`;
+    const removedContent = `${JSON.stringify({ id: 'removed_import', workspaceId: 'ws_demo' })}\n`;
     writeFileSync(join(root, removedPath), removedContent);
     const manifestPath = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {

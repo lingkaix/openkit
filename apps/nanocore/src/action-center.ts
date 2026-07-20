@@ -1126,45 +1126,52 @@ function agentReadinessRows(store: FsStore, workspaceId: string): HumanAttention
  * @returns Knowledge review rows.
  */
 function knowledgeReviewRows(store: FsStore, workspaceId: string): HumanAttentionRow[] {
-  return store
-    .listKnowledgeProposals(workspaceId)
-    .filter((proposal) => proposal.status === 'pending')
-    .map((proposal) => ({
-      id: `knowledge:${proposal.id}`,
-      kind: 'knowledge_review',
-      workspaceId,
-      title: proposal.title,
-      summary: proposal.summary,
-      severity: 'needs_input',
-      createdAt: proposal.createdAt,
-      recommendedAction: 'Accept, reject, or defer the knowledge proposal.',
-      source: {
-        type: 'knowledge',
-        knowledgeProposalId: proposal.id,
+  return store.listKnowledgeProposals(workspaceId).flatMap((proposal) => {
+    const decision = store.getKnowledgeProposalReviewDecision(proposal.id)?.decision;
+    if (decision === 'accepted' || decision === 'rejected') {
+      return [];
+    }
+    const status = decision ?? 'pending';
+
+    return [
+      {
+        id: `knowledge:${proposal.id}`,
+        kind: 'knowledge_review',
         workspaceId,
-        status: proposal.status,
+        title: `Review knowledge proposal for ${proposal.knowledgePageId}`,
+        summary: proposal.rationale,
+        severity: 'needs_input',
+        createdAt: proposal.createdAt,
+        recommendedAction: 'Accept, reject, or defer the knowledge proposal.',
+        source: {
+          type: 'knowledge',
+          knowledgeProposalId: proposal.id,
+          workspaceId,
+          status,
+        },
+        actions: [
+          {
+            kind: 'accept_knowledge',
+            label: 'Accept',
+            href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
+            method: 'POST',
+          },
+          {
+            kind: 'reject_knowledge',
+            label: 'Reject',
+            href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
+            method: 'POST',
+          },
+          {
+            kind: 'defer',
+            label: 'Defer',
+            href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
+            method: 'POST',
+          },
+        ],
       },
-      actions: [
-        {
-          kind: 'accept_knowledge',
-          label: 'Accept',
-          href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
-          method: 'POST',
-        },
-        {
-          kind: 'reject_knowledge',
-          label: 'Reject',
-          href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
-          method: 'POST',
-        },
-        {
-          kind: 'defer',
-          label: 'Defer',
-          href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
-          method: 'POST',
-        },
-      ],
-    }));
+    ];
+  });
 }
 
 /**

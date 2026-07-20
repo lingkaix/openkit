@@ -19,6 +19,7 @@ import {
 } from '../storage/workspace-file-records.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
+  readWorkerContextPackageTrace,
   verifyPortableWorkerContextPackageTrace,
   type WorkerContextPackageTrace,
 } from './worker-context-package.js';
@@ -53,6 +54,28 @@ export interface WorkerContextProjectionInput {
   readonly workspaceDb: WorkspaceDb;
   /** Thread whose immutable traces are inspected. */
   readonly threadId: string;
+}
+
+/**
+ * Reads one strict accepted S39 digest without promoting imported or incomplete history.
+ *
+ * @param input Existing authorities plus the exact Turn to verify.
+ * @returns Digest from the fully verified immutable Context Package trace.
+ * @throws Error when the strict trace or any required authority is unavailable or contradictory.
+ */
+export function readStrictWorkerContextPackageDigest(
+  input: WorkerContextProjectionInput & { readonly turnId: string }
+): string {
+  const workspaceId = input.workspaceDb.workspaceId;
+  const workspaceRoot = resolveDataRootPath(input.workspaceDb.dataRoot, 'workspaces', workspaceId);
+
+  return readWorkerContextPackageTrace({
+    authorities: createWorkerContextPackageAuthorityReader(input),
+    threadId: input.threadId,
+    turnId: input.turnId,
+    workspaceId,
+    workspaceRoot,
+  }).contextPackageDigest;
 }
 
 /** Verified projection of the single current Goal steering owner. */

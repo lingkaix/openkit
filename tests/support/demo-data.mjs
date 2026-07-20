@@ -119,3 +119,38 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   writeFileSync(join(threadRoot, 'thread.json'), `${JSON.stringify(thread, null, 2)}\n`);
   writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'mem_project.md'), knowledgePage);
 }
+
+/**
+ * Records the canonical local owner membership for the demo Workspace files.
+ *
+ * @param {string} dataRoot NanoCore data root containing the demo Workspace files.
+ * @returns {Promise<void>} Resolves after Core membership authority is durable.
+ */
+export async function seedDemoWorkspaceAuthority(dataRoot) {
+  const [
+    { ensureLocalUser },
+    { openCoreDb },
+    { applyMigrations },
+    { LOCAL_USER_ID },
+    { recordWorkspaceOwnerMembership },
+  ] = await Promise.all([
+    import('../../apps/nanocore/dist/auth/identity.js'),
+    import('../../apps/nanocore/dist/storage/db.js'),
+    import('../../apps/nanocore/dist/storage/migrate.js'),
+    import('../../apps/nanocore/dist/storage/fs-layout.js'),
+    import('../../apps/nanocore/dist/workspace-membership.js'),
+  ]);
+  const coreDb = openCoreDb(dataRoot);
+
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_demo',
+    });
+  } finally {
+    coreDb.sqlite.close();
+  }
+}

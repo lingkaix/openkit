@@ -3,7 +3,7 @@
 Status: Accepted
 Implementation: Partial
 
-Implementation note: the accepted V1 validation, source, maintenance-record, retrieval, proposal-review, and standalone context-selection slices exist, but exact create-only proposal-to-page application and bounded unchanged-page reversal remain unimplemented.
+Implementation note: the accepted V1 validation, source, maintenance-record, create-only proposal review and application, unchanged-page reversal, and S39-only worker-delivery boundaries are implemented. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority.
 
 ## Summary
 
@@ -194,9 +194,11 @@ Maintenance records SHOULD use bounded append-only ledgers or equivalent history
 
 ## Proposal And Human Review Rules
 
-A V1 generated Knowledge Proposal MUST request creation of one absent Knowledge Page. Generated update, replacement, merge, split, patch, supersede, archive, and delete operations are not authorized by this contract and remain deferred.
+A V1 generated Knowledge Proposal MUST request creation of one absent Knowledge Page whose id has never received an accepted generated proposal. The retained accepted Proposal and Review permanently reserve that page id against later generated proposals even after bounded reversal; a later generated lesson uses a new page id. This is the V1 compromise that prevents an old proposal from claiming or reversing a later byte-identical generated page without adding a tombstone, page revision, or application owner. Generated update, replacement, merge, split, patch, supersede, archive, and delete operations are not authorized by this contract and remain deferred.
 
-Before review, the proposal MUST fix its exact target Knowledge Page id, complete canonical page bytes, content digest, source references, rationale, confidence, freshness, sensitivity, scope, producer, creation time, and whether it was generated from completed work history. S61 encodes proposal creation time and the server-owned producer directly, derives freshness, sensitivity and scope from the digested candidate page bytes, and derives the completed-work fact from the closed immutable Turn, Item and S39 source-reference tuple, so it does not persist duplicate fields that could disagree. Review input or response-only content cannot replace those durable candidate bytes.
+Before review, the proposal MUST fix its exact target Knowledge Page id, complete canonical page bytes, content digest, source references, rationale, confidence, freshness, sensitivity, scope, producer, creation time, and whether it was generated from completed work history. S61 encodes proposal creation time and the server-owned producer directly, derives freshness, sensitivity and scope from the digested candidate page bytes, and derives the completed-work fact only from the closed immutable Turn, Item and strict live S39 source-reference tuple, so imported history cannot masquerade as a new worker result and no duplicate field can disagree. Review input or response-only content cannot replace those durable candidate bytes.
+
+V1 generated proposals may cite exact registered Sources, directly `user-authored` Knowledge Pages, or the one strict completed-work trio. They MUST NOT cite another `accepted` generated Page as proposal evidence. This bounded compromise avoids a transitive proposal-authority graph; a user may restate the needed fact in a reviewed user-authored Page or register the underlying material as a Source.
 
 Every generated proposal begins pending and remains excluded from active retrieval.
 
@@ -216,7 +218,7 @@ Accepting a proposal creates durable application authorization; it does not itse
 
 The existing Knowledge Store mutation owner applies an accepted create-only proposal exactly once; this specification introduces no application runner, queue, application record, settlement record, or recovery workflow.
 
-The application MUST validate the accepted proposal, human review, target absence, fixed bytes and digest, sources, Workspace scope, authorization, schema, sensitivity, freshness, and conflict state immediately before publication.
+The application MUST validate the accepted proposal, human review, target absence, fixed bytes and digest, sources, Workspace scope, authorization, schema, sensitivity, freshness, and conflict state immediately before publication. A latest conflict row is unresolved exactly while its status is `conflicting`, `needs_review`, `weak_evidence`, or `stale`; `resolved`, `superseded`, and `partially_superseded` do not block publication. An unresolved row is relevant exactly when one of its `subjectReferences` names the target as `knowledge:<knowledgePageId>`, exactly equals a fixed proposal source reference, or equals the digest-free owner form of a qualified `source:` or `knowledge:` proposal source. The conflict row's own `sourceReferences` are evidence for that conflict and do not make it relevant. A relevant unresolved conflict returns `409 conflict` before the accepted Review or Page write; no conflict workflow or derived state is created.
 
 The existing proposal, review, page, command-idempotency, and audit owners MUST make the business activation tuple and separate command-completion evidence verifiable without a new record family:
 
@@ -247,7 +249,7 @@ Process memory, current page content, a generated summary, or an S61 retrieval t
 
 V1 reversal is an explicit authorized Knowledge command naming the original proposal, accepting review, fixed Knowledge Page id, expected content digest, and reversal request id. The original decision request id resolves through the named immutable review row rather than being duplicated in the reversal request.
 
-Exact replay with matching completed reversal command and audit evidence returns the same completed reversal without another page effect. Otherwise, the command MAY remove only the page created by that proposal and only while its current bytes still match the fixed digest. A changed target returns `409 conflict` with zero mutation; a missing page without matching completed reversal evidence, or contradictory proposal, review, page, command, source, actor, digest, or audit authority, returns `409 recovery_required`.
+Exact replay with matching completed reversal command and audit evidence returns the same completed reversal without another page effect. Otherwise, the command MAY remove only the page created by that proposal and only while its current bytes still match the fixed digest. The retained accepted Proposal and Review continue to reserve the page id after removal, so another proposal targeting that id returns `409 conflict`. A changed target returns `409 conflict` with zero mutation; a missing page without matching completed reversal evidence, or contradictory proposal, review, page, command, source, actor, digest, or audit authority, returns `409 recovery_required`.
 
 The original proposal, review, decision request, sources, actors, created-page digest, reversal request, and audit evidence remain durable.
 
@@ -316,15 +318,15 @@ Restricted trace evidence MUST remain redacted or access-controlled under the ow
 
 ## Current Implementation Projection
 
-The current V1 implements portable governed page projection, the default Workspace Schema, validation and secret-like-field rejection, source identity and first text-derived metadata, observation and claim ledgers, conflict recording and resolution, derived indexes, deterministic retrieval traces, proposal review, and explicit Knowledge context preparation.
+The current V1 implements portable governed page projection, the default Workspace Schema, pre-write validation and secret-like-field rejection, source identity and first text-derived metadata, observation and claim ledgers, conflict recording and resolution, derived indexes, deterministic retrieval traces, proposal review and application, and explicit Knowledge context preparation. The retrieval path does not yet consume the latest conflict ledger, so it cannot satisfy the required unresolved-conflict selection and trace decision; this bounded implementation defect remains scheduled under S60/S61 before the next generated-Knowledge release claim.
 
 The transport-neutral operation catalog, bundled CLI, and public App API project those existing owners; no user-facing MCP facade remains.
 
 Worker-facing Knowledge capability routes remain disabled and are not current product behavior.
 
-The current accepted-proposal path does not freeze exact create-only page bytes and digest, preserve complete proposal-to-review-to-page lineage, provide bounded unchanged-page reversal, or enforce the fail-closed partial-application contract above, so this specification remains `Implementation: Partial`.
+The accepted-proposal path freezes exact create-only page bytes and digest, preserves proposal-to-review-to-page lineage, applies the one deterministic missing-page effect only for its matching accepted decision, and otherwise returns `recovery_required` for incomplete or contradictory authority. Bounded reversal removes only the unchanged proposal-created page and retains its durable evidence.
 
-The existing standalone Knowledge context trace and materialization are duplicate implementation projections scheduled for deletion by G07. Context preparation must reference the single governed retrieval trace, and only S39 may materialize or prove worker delivery.
+Context preparation references the single governed retrieval trace and exposes no standalone worker-context trace or materialization. Only S39 materializes and proves worker delivery.
 
 No provisional auto-promotion, citation confirmation, TTL expiry, scheduled Knowledge maintenance, or passive Knowledge Manager trigger is implemented or accepted.
 

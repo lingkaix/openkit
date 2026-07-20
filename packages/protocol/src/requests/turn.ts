@@ -1,6 +1,26 @@
 import { z } from 'zod';
 
 import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '../common/ids.js';
+import { TurnSchema } from '../models/turn.js';
+
+/** Strict release-coupled Turn read variants with accepted package delivery evidence. */
+const StrictTurnReadProjectionSchema = z.union(
+  TurnSchema.options.map((variant) =>
+    variant
+      .extend({
+        contextPackageDigest: z
+          .string()
+          .regex(/^ctxpkg_sha256_[a-f0-9]{64}$/)
+          .nullable(),
+      })
+      .strict()
+  )
+);
+
+/**
+ * Release-coupled Turn read projection with nullable accepted Context Package evidence.
+ */
+export const TurnReadProjectionSchema = z.intersection(StrictTurnReadProjectionSchema, TurnSchema);
 
 const OrdinaryTurnInputRequestSchema = z
   .object({

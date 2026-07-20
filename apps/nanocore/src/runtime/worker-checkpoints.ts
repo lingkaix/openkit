@@ -151,6 +151,8 @@ export interface WorkerCheckpointContextAssemblySummary {
   readonly contextDigest: string;
   /** Source references selected for the worker context package. */
   readonly contextRefs: readonly { readonly kind: string; readonly id: string }[];
+  /** Governed Knowledge selection consumed by a direct Task, or null when not requested. */
+  readonly knowledgeSelectionInput: { readonly retrievalTraceId: string } | null;
   /** Workspace repository resource selected for the worker turn. */
   readonly repositoryResourceId: string;
 }
@@ -205,11 +207,18 @@ export function parseWorkerCheckpointContextAssembly(
       contextAssembly?: WorkerCheckpointContextAssemblySummary;
     };
     const summary = parsed.contextAssembly;
+    const knowledgeSelectionInput = summary?.knowledgeSelectionInput;
 
     return summary &&
       typeof summary.contextDigest === 'string' &&
       typeof summary.repositoryResourceId === 'string' &&
-      Array.isArray(summary.contextRefs)
+      Array.isArray(summary.contextRefs) &&
+      (knowledgeSelectionInput === null ||
+        (typeof knowledgeSelectionInput === 'object' &&
+          Object.keys(knowledgeSelectionInput).length === 1 &&
+          /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+            knowledgeSelectionInput.retrievalTraceId
+          )))
       ? summary
       : null;
   } catch {

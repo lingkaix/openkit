@@ -1,7 +1,7 @@
 # Self-Improvement Loop Foundations
 
 Type: change-plan
-Status: planned
+Status: verified
 
 ## Intent
 
@@ -11,7 +11,7 @@ This package does not build an autonomous improvement platform. The Task Evaluat
 
 ## Inherited Audit Responsibility
 
-This plan is WP-6 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs G07 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). G07 covers C12 Knowledge, S17-S19, S60-S61, and their supporting projections. The bounded review-only preamble and both implementation entry gates are complete; Stage 1 is active.
+This plan is WP-6 of the [OpenKit Execution Program](./202607172152230001-openkit_execution_program.md) and absorbs G07 from the [alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md). G07 covers C12 Knowledge, S17-S19, S60-S61, and their supporting projections. The bounded review-only preamble, both implementation entry gates, Stages 1-3, and the WP-6 exit are complete.
 
 ### G07 Review-Only Preamble (2026-07-19)
 
@@ -45,7 +45,7 @@ This plan is WP-6 of the [OpenKit Execution Program](./202607172152230001-openki
 
 ### Explicit reflection composition
 
-- Reuse the unified `openkit` Skill and bundled CLI to inspect one completed Thread and its existing projections for advisory analysis, then call the existing Knowledge Proposal operation with S61's closed same-Workspace evidence set: one terminal direct-Task worker Turn, its final completed `assistant-message` Item, the matching S39 trace and digest, and optional exact registered-Source or Knowledge-Page references. Other evidence must first use the existing explicit source-registration owner. The later delivery proof remains an S39 system predicate; this plan does not add a Context Package read operation merely for reflection.
+- Reuse the unified `openkit` Skill and bundled CLI to inspect one completed Thread and its existing projections for advisory analysis, then call the existing Knowledge Proposal operation with S61's closed same-Workspace evidence set: one terminal direct-Task worker Turn, its final completed `assistant-message` Item, the matching strict S39 trace and digest, and optional exact registered-Source or directly `user-authored` Knowledge-Page references. Imported history and accepted generated Pages are not new proposal evidence. Other evidence must first use the existing explicit source-registration owner. The later delivery proof remains an S39 system predicate; this plan does not add a Context Package read operation merely for reflection.
 - Treat the reviewing agent's analysis as advisory. Human Knowledge Review remains the only activation authority.
 - Missing history, unavailable source bytes, provider failure, contradictory lineage, or an already changed target returns a typed unavailable, conflict, or `recovery_required` result through the existing owners; it creates no private retry or recovery state. A user may make a new authorized attempt.
 
@@ -60,7 +60,7 @@ This plan is WP-6 of the [OpenKit Execution Program](./202607172152230001-openki
 - No Goal-mode Knowledge integration, worker `knowledge.*` capability plane, semantic/vector retrieval, external crawling, general notebook editor, or Web projection in this package.
 - No recurring Automation replacement. The current non-executing Automation facade is handled separately rather than becoming a trigger platform inside G07.
 
-## Current Baseline
+## Starting Baseline (2026-07-19)
 
 - C12, S60 and S61 already have a substantial file-backed V1: governed Markdown projections, sources, observations, claims, conflicts, deterministic derived indexes and retrieval traces, explicit Knowledge Manager operations, proposal review, Core Client, CLI and Skill projections.
 - Task Mode calls a second substring selector, carries only Knowledge ids in its worker request, and S39 currently ignores those refs when building worker-visible files. Goal Mode does not select Knowledge.
@@ -122,3 +122,15 @@ This plan is WP-6 of the [OpenKit Execution Program](./202607172152230001-openki
 - 2026-07-19 — Stage 0 exited docs-only after contract, minimality, lifecycle, documentation-model, repository, index, and whitespace checks. Exact proposal replay, source/review identities, live S39 projection, index coherency, output isolation, and deletion of duplicate proposal producers are frozen; WP-5A is active and no G07 production or test change has begun.
 - 2026-07-19 — The real-history entry gate passed on disposable A1 through stock OpenShell `0.0.80` and Codex `0.144.1`. One useful direct Task retained a completed Turn, one completed assistant Item, strict-verifier-confirmed S39 bytes and digest, normal runtime evidence, and one meaningful positive feedback record; the source repository remained clean and whole-Cell cleanup returned zero containers and sandboxes.
 - 2026-07-19 — Three entry-path defects were reduced without expanding G07: OpenShell exec arguments are newline-free, the existing story supervisor is the sole request deadline, and the Codex adapter creates its isolated `0700` home before launch. Commits `4b8f55f`, `51d12b7`, `e0d13f5`, `14e9c82`, `13f856b`, and `0c0ebcb` passed their focused or package suites. Stage 1 is active.
+- 2026-07-20 — WP-6/G07 implementation closed through `fb67760`. S17 and S18 are Implemented; the verified S60/S61 slice selects accepted pages through one governed S61 path, materializes exact bytes and lineage through the existing Turn trace, and retains bounded fail-closed recovery and reversal without another durable owner. The later WP-7 inventory correctly keeps S60/S61 Partial until retrieval consumes unresolved conflict authority.
+- 2026-07-20 — One disposable-A1 stock OpenShell/Codex loop used retained completed work to draft an exact source-linked proposal, applied it only after human acceptance, selected and delivered the accepted page to a later Task, observed the expected governed value after explicitly directing the worker to consume the package index, reversed the unchanged page, and then observed no selection. Runtime provenance passed, the checkout stayed clean, and cleanup left no listener or sandbox.
+- 2026-07-20 — The final independent authority review found three fail-closed gaps and closed them test-first in `14b9986` and `ec410c9`: imported history cannot claim new local completed work, accepted generated Pages cannot form a proposal-evidence chain, and an accepted Page id remains permanently reserved against later generated proposals after reversal. These are bounded V1 compromises over existing owners, not new revision, dependency-graph, settlement, or recovery mechanisms.
+- 2026-07-20 — Follow-up minimality review removed one over-tight historical-source check in `ec181cd` and `fb67760`: a human direct edit converts current bytes to `user-authored` and may then serve as evidence after current local references verify, while an unchanged `accepted` generated Page still fails closed. No compatibility or transitive authority path was added.
+
+## Implementation Summary
+
+WP-6 corrected only the existing Knowledge owners. NanoCore now assigns exact Knowledge Manager callers, rejects caller overrides, redacts public failures, validates page bytes before mutation, routes every read and Task selection through S61, freezes create-only proposal bytes and lineage, applies the one bounded accepted-review missing-page effect, reserves every accepted generated Page id against later generated proposals, reverses only an unchanged proposal-created page, and projects exact selected Knowledge bytes through S39. New proposals may cite registered Sources, current directly `user-authored` Pages, or one strict local completed-work trio; imported history remains read-only and unchanged accepted generated Pages do not create a transitive authority graph. A human direct edit revalidates current local references and replaces the accepted label with `user-authored`; external work-history references fail that Store-local edit rather than gaining inferred authority. Duplicate claim promotion, worker proposal production, standalone Knowledge context traces, and standalone materialization surfaces were deleted without aliases. No reflection endpoint, persistent evaluator, trigger, scheduler, settlement or recovery workflow, revision family, runner, Harness, fork, patch, compatibility path, or dependency was added.
+
+## Final Verification
+
+Focused Knowledge, proposal, review, retrieval, portability, and S39 suites passed together with the complete NanoCore suite, NanoCore typecheck, lint, format, and build, App API schemas, Agent Skill interface, generated OpenAPI validation, repository checks, and whitespace checks. The A1 L6 loop ran against stock OpenShell `0.0.80` and Codex `0.144.1`, proved exact completed-work lineage, human-only activation, S39 worker-visible delivery, bounded reversal, runtime provenance, clean Git state, and zero residual sandboxes. Goal-mode Knowledge selection remains separately deferred outside this package's accepted scope; S39 remains Partial only for broader candidate-audit and worker-output citation projections, which are not WP-6 or G07 exit criteria.

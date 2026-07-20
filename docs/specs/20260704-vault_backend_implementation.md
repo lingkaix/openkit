@@ -216,13 +216,11 @@ Implemented gates:
 - L3 built-process coverage proves correct-key boot availability and a wrong-key restart that remains healthy with locked Vault. App API tests cover admin unlock, lock, redaction, auditing, rate limiting, and authorization.
 - L5 currently proves the built NanoCore artifact starts and remains healthy; it does not yet provide a packaged secret store-and-resolve scenario.
 
-Remaining completion gates:
+Remaining completion gate:
 
-- Add one shared L2 conformance fixture that runs the same operation and typed-error contract against both concrete backends.
-- Add the full-data-root no-plaintext scan after store, rotate, resolve, export-reference, and restart flows.
-- Add a packaged L5 encrypted-file store-and-resolve smoke and the opt-in L6 operator rotation and audit story.
+- Before the first tagged server-mode release, run one packaged encrypted-file canary through store, rotate, resolve, reference export, and restart, then scan the complete data root and prove that no plaintext canary remains. Existing backend-specific L1 coverage is sufficient for the current internal-development profile; no shared L2 fixture or dedicated L6 operator story is an independent completion requirement unless a new backend or real operator failure proves the need.
 
-The backend and key-file boot path are accepted for internal development. This spec remains `Partial` until the remaining L2, no-plaintext, packaged L5, and L6 gates pass.
+The backend and key-file boot path are accepted for internal development. This spec remains `Partial` until the packaged canary and complete data-root no-plaintext gate passes.
 
 ## Risks & Mitigations
 

@@ -58,6 +58,31 @@ describe('computeReadiness', () => {
     });
   });
 
+  it('isolates provider credential resolution failures to the affected agent', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://api.example.com/v1',
+        displayName: 'Hosted',
+        id: 'hosted',
+        kind: 'direct',
+        models: ['model'],
+        readiness: { status: 'ready' },
+        secretRef: 'vault://provider_hosted',
+      },
+    ]);
+
+    expect(
+      computeReadiness(manifest({ provider: { ref: 'hosted' } }), registry, {
+        providerCredentialResolver: () => {
+          throw new Error('secret-bearing backend detail');
+        },
+      })
+    ).toEqual({
+      reasons: ['Provider hosted credentials are unavailable.'],
+      status: 'blocked',
+    });
+  });
+
   it('defers manifest-owned worker credential validation to turn-scoped AEP resolution', () => {
     const registry = new ProviderRegistry([
       {

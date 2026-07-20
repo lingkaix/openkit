@@ -686,15 +686,6 @@ describe('FsStore persistence', () => {
       title: 'Persisted knowledge',
       content: 'Knowledge survived restart.',
     });
-    const knowledgeProposal = store.createKnowledgeProposal({
-      id: 'kp_persisted',
-      workspaceId: 'ws_demo',
-      title: 'Persisted proposal',
-      summary: 'Proposal survived restart.',
-      status: 'pending',
-      createdAt: turn.startedAt ?? new Date().toISOString(),
-      updatedAt: turn.startedAt ?? new Date().toISOString(),
-    });
     const knowledgeSourceContent = 'Persisted source material.';
     const knowledgeSource = store.createKnowledgeSource(
       {
@@ -713,19 +704,6 @@ describe('FsStore persistence', () => {
       },
       knowledgeSourceContent
     );
-    const knowledgeProposalReview = store.recordKnowledgeProposalReviewDecision({
-      proposalId: knowledgeProposal.id,
-      workspaceId: 'ws_demo',
-      status: 'accepted',
-      requestId: 'knowledge-review-request-1',
-      message: 'Proposal accepted.',
-      decidedAt: turn.startedAt ?? new Date().toISOString(),
-    });
-    const reviewedKnowledgeProposal = {
-      ...knowledgeProposal,
-      status: 'accepted' as const,
-      updatedAt: knowledgeProposalReview.decidedAt,
-    };
     const agentSession = store.createAgentSession({
       id: 'as_persisted',
       agentId: 'agent_codex_host',
@@ -785,18 +763,6 @@ describe('FsStore persistence', () => {
       'pages',
       `${knowledgeEntry.id}.md`
     );
-    const knowledgeProposalProjectionPath = join(
-      workspaceRoot,
-      'knowledge',
-      'proposals',
-      `${knowledgeProposal.id}.md`
-    );
-    const knowledgeReviewProjectionPath = join(
-      workspaceRoot,
-      'knowledge',
-      'reviews',
-      `${knowledgeProposal.id}.json`
-    );
     const knowledgeSourceProjectionPath = join(
       workspaceRoot,
       'sources',
@@ -825,12 +791,6 @@ describe('FsStore persistence', () => {
     });
     expect(readFileSync(artifactContentPath, 'utf8')).toBe('History survived restart.');
     expect(readFileSync(knowledgeProjectionPath, 'utf8')).toContain('Knowledge survived restart.');
-    expect(readFileSync(knowledgeProposalProjectionPath, 'utf8')).toContain(
-      'Proposal survived restart.'
-    );
-    expect(JSON.parse(readFileSync(knowledgeReviewProjectionPath, 'utf8'))).toEqual(
-      knowledgeProposalReview
-    );
     expect(JSON.parse(readFileSync(knowledgeSourceProjectionPath, 'utf8'))).toEqual(
       knowledgeSource
     );
@@ -839,10 +799,6 @@ describe('FsStore persistence', () => {
     expect(restarted.listThreads('ws_demo').map((item) => item.id)).toContain(thread.id);
     expect(restarted.getTurn('ws_demo', thread.id, turn.id).id).toBe(turn.id);
     expect(restarted.getKnowledgeEntry('ws_demo', knowledgeEntry.id)).toEqual(knowledgeEntry);
-    expect(restarted.listKnowledgeProposals('ws_demo')).toEqual([reviewedKnowledgeProposal]);
-    expect(restarted.getKnowledgeProposalReviewDecision(knowledgeProposal.id)).toEqual(
-      knowledgeProposalReview
-    );
     expect(restarted.getKnowledgeSource('ws_demo', knowledgeSource.id)).toEqual(knowledgeSource);
     expect(restarted.readKnowledgeSourceMaterial('ws_demo', knowledgeSource.id)).toBe(
       knowledgeSourceContent

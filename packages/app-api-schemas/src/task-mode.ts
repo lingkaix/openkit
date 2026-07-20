@@ -1,11 +1,11 @@
-import { TurnSchema } from '@openkit/protocol';
+import { RequestIdSchema, TurnSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Request body for starting one bounded Task Mode worker delegation. */
 export const StartTaskModeRequestSchema = z.object({
   input: z.string().min(1),
   modelId: z.string().min(1).optional(),
-  requestId: z.string().min(1),
+  requestId: RequestIdSchema,
 });
 
 /** Product-visible Task Mode worker target. */

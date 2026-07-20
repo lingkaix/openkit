@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CapabilityUsageResponseSchema,
+  KnowledgeManagerDraftProposalResponseSchema,
   ListThreadItemsResponseSchema,
   ListWorkspaceAuditEventsResponseSchema,
   ListWorkspaceEvidenceBundlesResponseSchema,
@@ -56,6 +57,7 @@ import {
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout.js';
+import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
@@ -81,7 +83,11 @@ import { commandInputHash } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
-import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
+import {
+  createWorkerCheckpointContextDiagnostics,
+  getWorkerCheckpoint,
+  upsertWorkerCheckpoint,
+} from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type {
@@ -3906,6 +3912,406 @@ describe('WorkerGovernanceTurnExecutor', () => {
     } finally {
       launchSpy.mockRestore();
       coreDb.sqlite.close();
+    }
+  });
+
+  it('delivers direct-Task Knowledge through S39 and proves exact completed-work proposal lineage', async () => {
+    const fixture = createWorkerContextExecutorFixture('task-knowledge');
+    const knowledge = fixture.store.createKnowledgeEntry('ws_demo', {
+      content: 'Zygomorphic worker guidance belongs in the existing Context Package.',
+      kind: 'project-context',
+      title: 'Zygomorphic worker guidance',
+    });
+    const oversizedKnowledge = fixture.store.createKnowledgeEntry('ws_demo', {
+      content: `Zygomorphic worker guidance that exceeds the package budget.\n${'X'.repeat(50_000)}`,
+      kind: 'project-context',
+      title: 'Oversized zygomorphic worker guidance',
+    });
+    const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000398';
+    const retrieval = retrieveWorkspaceKnowledge({
+      caller: 'task-mode',
+      dataRoot: fixture.coreDb.dataRoot,
+      limit: 5,
+      pinnedConceptIds: [],
+      query: 'Zygomorphic worker guidance',
+      traceId: retrievalTraceId,
+      workspaceId: fixture.turn.workspaceId,
+    });
+    const knowledgePagesRoot = join(
+      fixture.coreDb.dataRoot,
+      'workspaces',
+      fixture.turn.workspaceId,
+      'knowledge',
+      'pages'
+    );
+    const knowledgePagePath = join(knowledgePagesRoot, `${knowledge.id}.md`);
+    const knowledgePageBytes = readFileSync(knowledgePagePath, 'utf8');
+    const knowledgePageDigest = turnRuntimeSha256(Buffer.from(knowledgePageBytes, 'utf8'));
+    const oversizedKnowledgePageBytes = readFileSync(
+      join(knowledgePagesRoot, `${oversizedKnowledge.id}.md`),
+      'utf8'
+    );
+    const oversizedKnowledgePageDigest = turnRuntimeSha256(
+      Buffer.from(oversizedKnowledgePageBytes, 'utf8')
+    );
+    expect(retrieval.selected).toHaveLength(2);
+    expect(retrieval.selected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          contentDigest: knowledgePageDigest,
+          knowledgePageId: knowledge.id,
+          sourceReferences: [],
+        }),
+        expect.objectContaining({
+          contentDigest: oversizedKnowledgePageDigest,
+          knowledgePageId: oversizedKnowledge.id,
+          sourceReferences: [],
+        }),
+      ])
+    );
+
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    const checkpoint = getWorkerCheckpoint(
+      workspaceDb,
+      fixture.turn.workspaceId,
+      fixture.turn.threadId,
+      fixture.turn.id
+    )!;
+    workspaceDb.sqlite.transaction(() => {
+      deleteAppliedPendingUserTurnRecord(workspaceDb, {
+        contextPackageId: `ctxpkg_${fixture.turn.id}`,
+        pendingTurnId: fixture.pending.pendingTurnId,
+        threadId: fixture.turn.threadId,
+        workspaceId: fixture.turn.workspaceId,
+      });
+      upsertWorkerCheckpoint(workspaceDb, {
+        diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+          contextDigest: commandInputHash(fixture.workerRequest),
+          contextRefs: [],
+          knowledgeSelectionInput: { retrievalTraceId },
+          repositoryResourceId: 'repo_default',
+        }),
+        goalId: null,
+        iteration: checkpoint.iteration,
+        requestId: checkpoint.requestId,
+        requestInputHash: checkpoint.requestInputHash,
+        stage: 'preparing',
+        taskId: null,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        workspaceId: fixture.turn.workspaceId,
+      });
+    })();
+    workspaceDb.sqlite.close();
+
+    const backend = new FakeWorkerGovernanceBackend();
+    const launch = backend.launch.bind(backend);
+    const launchSpy = vi.spyOn(backend, 'launch').mockImplementation(async (...args) => {
+      expect(JSON.parse(readFileSync(fixture.tracePath, 'utf8'))).toMatchObject({
+        goalId: null,
+        knowledgeExclusions: [
+          {
+            contentDigest: oversizedKnowledgePageDigest,
+            knowledgePageId: oversizedKnowledge.id,
+            reason: 'budget_exceeded',
+          },
+        ],
+        knowledgeSelectionInput: { retrievalTraceId },
+        knowledgeSelections: [
+          {
+            contentDigest: knowledgePageDigest,
+            knowledgePageId: knowledge.id,
+            packagePath: `knowledge/pages/${knowledge.id}.md`,
+            sourceRefs: [],
+          },
+        ],
+        taskId: null,
+      });
+      expect(
+        readFileSync(join(fixture.packageRoot, 'knowledge', 'pages', `${knowledge.id}.md`), 'utf8')
+      ).toBe(knowledgePageBytes);
+      expect(
+        existsSync(join(fixture.packageRoot, 'knowledge', 'pages', `${oversizedKnowledge.id}.md`))
+      ).toBe(false);
+      return launch(...args);
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        agentSessionId: fixture.agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+      expect(launchSpy).toHaveBeenCalledTimes(1);
+
+      const completedTurn = fixture.store.getTurn(
+        fixture.turn.workspaceId,
+        fixture.turn.threadId,
+        fixture.turn.id
+      );
+      const completedAssistantItems = fixture.store
+        .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+        .filter(
+          (item) =>
+            item.turnId === fixture.turn.id &&
+            item.type === 'assistant-message' &&
+            item.status === 'completed'
+        );
+      const finalAssistantItem = completedAssistantItems.at(-1)!;
+      const earlierAssistantItem = completedAssistantItems[0]!;
+      const contextTrace = JSON.parse(readFileSync(fixture.tracePath, 'utf8')) as {
+        contextPackageDigest: string;
+        goalId: string | null;
+        knowledgeSelectionInput: unknown | null;
+        taskId: string | null;
+      };
+      expect(completedTurn.status).toBe('completed');
+      expect(contextTrace).toMatchObject({
+        goalId: null,
+        knowledgeSelectionInput: expect.any(Object),
+        taskId: null,
+      });
+      expect(finalAssistantItem.id).not.toBe(earlierAssistantItem.id);
+
+      const sourceReferences = [
+        `context-package:${fixture.turn.id}@${contextTrace.contextPackageDigest}`,
+        `item:${finalAssistantItem.id}`,
+        `turn:${fixture.turn.id}`,
+      ];
+      const candidatePageBytes = [
+        '---',
+        'type: "KnowledgePage"',
+        'title: "Direct Task lesson"',
+        'schema_version: "openkit-workspace-knowledge-schema-v1"',
+        'status: "active"',
+        'scope: "workspace"',
+        'openkit_entry_id: "direct-task-lesson"',
+        'openkit_entry_kind: "project-context"',
+        `source_refs: ${JSON.stringify(sourceReferences)}`,
+        'review_state: "accepted"',
+        'sensitivity: "normal"',
+        'freshness: "current"',
+        'created_at: "2026-07-19T00:00:00.000Z"',
+        'updated_at: "2026-07-19T00:00:00.000Z"',
+        '---',
+        'The retained direct Task supports this reusable lesson.',
+        '',
+      ].join('\n');
+      const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
+      const draftRequest = {
+        requestId: '00000000-0000-4000-8000-000000000639',
+        knowledgePageId: 'direct-task-lesson',
+        canonicalPageBytes: candidatePageBytes,
+        contentDigest: turnRuntimeSha256(Buffer.from(candidatePageBytes, 'utf8')),
+        sourceReferences,
+        rationale: 'Retain one source-traceable lesson from the completed direct Task.',
+        confidence: 0.8,
+      };
+      const draftResponse = await app.request(
+        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(draftRequest),
+        }
+      );
+      expect(draftResponse.status, await draftResponse.clone().text()).toBe(200);
+      const drafted = KnowledgeManagerDraftProposalResponseSchema.parse(await draftResponse.json());
+      expect(drafted.validation).toEqual({
+        conformance: 'Workspace-schema-valid',
+        generatedFromCompletedWorkHistory: true,
+      });
+
+      const invalidSourceReferences = sourceReferences.map((reference) =>
+        reference === `item:${finalAssistantItem.id}`
+          ? `item:${earlierAssistantItem.id}`
+          : reference
+      );
+      const invalidCandidatePageBytes = candidatePageBytes.replace(
+        JSON.stringify(sourceReferences),
+        JSON.stringify(invalidSourceReferences)
+      );
+      const invalidDraftResponse = await app.request(
+        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000640',
+            knowledgePageId: 'direct-task-lesson',
+            canonicalPageBytes: invalidCandidatePageBytes,
+            contentDigest: turnRuntimeSha256(Buffer.from(invalidCandidatePageBytes, 'utf8')),
+            sourceReferences: invalidSourceReferences,
+            rationale: 'An earlier completed Item must not masquerade as final worker output.',
+            confidence: 0.8,
+          }),
+        }
+      );
+      expect(invalidDraftResponse.status).toBe(400);
+      await expect(invalidDraftResponse.json()).resolves.toMatchObject({ code: 'invalid_request' });
+      expect(fixture.store.listKnowledgeProposals('ws_demo')).toHaveLength(1);
+
+      const decisionRequestId = '00000000-0000-4000-8000-000000000641';
+      const acceptedDecision = await app.request(
+        `/api/app/workspaces/ws_demo/knowledge/proposals/${drafted.proposal.id}/decision`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
+        }
+      );
+      expect(acceptedDecision.status, await acceptedDecision.clone().text()).toBe(200);
+      const retrievalResponse = await app.request(
+        '/api/app/workspaces/ws_demo/knowledge/retrievals',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            query: 'Direct Task lesson',
+            limit: 5,
+            pinnedConceptIds: [],
+          }),
+        }
+      );
+      expect(retrievalResponse.status, await retrievalResponse.clone().text()).toBe(200);
+      const acceptedRetrieval = (await retrievalResponse.json()) as {
+        selected: Array<{ knowledgePageId: string; sourceReferences: string[] }>;
+      };
+      expect(acceptedRetrieval.selected).toEqual([
+        expect.objectContaining({
+          knowledgePageId: 'direct-task-lesson',
+          sourceReferences,
+        }),
+      ]);
+      const pagePath = join(
+        fixture.coreDb.dataRoot,
+        'workspaces',
+        'ws_demo',
+        'knowledge',
+        'pages',
+        'direct-task-lesson.md'
+      );
+      const changedPageBytes = `${candidatePageBytes}Intervening edit.\n`;
+      writeFileSync(pagePath, changedPageBytes, 'utf8');
+
+      const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+      workspaceDb.sqlite
+        .prepare(
+          `DELETE FROM idempotency_requests
+           WHERE command_name = 'knowledge.proposal.draft' AND request_id = ?`
+        )
+        .run(draftRequest.requestId);
+      workspaceDb.sqlite
+        .prepare(
+          `DELETE FROM idempotency_requests
+           WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+        )
+        .run(decisionRequestId);
+      workspaceDb.sqlite
+        .prepare('DELETE FROM audit_events WHERE request_id = ?')
+        .run(decisionRequestId);
+      workspaceDb.sqlite.close();
+      rmSync(fixture.tracePath);
+      const interruptedReplay = await app.request(
+        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(draftRequest),
+        }
+      );
+      expect(interruptedReplay.status).toBe(409);
+      await expect(interruptedReplay.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(fixture.store.listKnowledgeProposals('ws_demo')).toHaveLength(1);
+
+      const conflictingResume = await app.request(
+        `/api/app/workspaces/ws_demo/knowledge/proposals/${drafted.proposal.id}/decision`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
+        }
+      );
+      expect(conflictingResume.status).toBe(409);
+      await expect(conflictingResume.json()).resolves.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(readFileSync(pagePath, 'utf8')).toBe(changedPageBytes);
+    } finally {
+      launchSpy.mockRestore();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('fails closed when a direct Task checkpoint lacks its governed Knowledge selection', async () => {
+    const fixture = createWorkerContextExecutorFixture('task-knowledge-missing');
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    const checkpoint = getWorkerCheckpoint(
+      workspaceDb,
+      fixture.turn.workspaceId,
+      fixture.turn.threadId,
+      fixture.turn.id
+    )!;
+    upsertWorkerCheckpoint(workspaceDb, {
+      diagnosticsSummary: null,
+      goalId: null,
+      iteration: checkpoint.iteration,
+      requestId: checkpoint.requestId,
+      requestInputHash: checkpoint.requestInputHash,
+      stage: 'preparing',
+      taskId: null,
+      threadId: fixture.turn.threadId,
+      turnId: fixture.turn.id,
+      workspaceId: fixture.turn.workspaceId,
+    });
+    workspaceDb.sqlite.close();
+
+    const backend = new FakeWorkerGovernanceBackend();
+    const launchSpy = vi.spyOn(backend, 'launch');
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: {
+        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+        kind: 'openshell',
+        sandboxImageRef: 'openkit/worker-codex:dev',
+      },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+
+    try {
+      await expect(
+        executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
+      expect(launchSpy).not.toHaveBeenCalled();
+      expect(existsSync(fixture.tracePath)).toBe(false);
+    } finally {
+      launchSpy.mockRestore();
+      fixture.coreDb.sqlite.close();
     }
   });
 

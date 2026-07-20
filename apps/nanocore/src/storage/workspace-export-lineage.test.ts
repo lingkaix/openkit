@@ -32,7 +32,11 @@ import {
   type WriteWorkspaceExportTreeInput,
   writeWorkspaceExportTree,
 } from './workspace-export.js';
-import { artifactReferenceItemId } from './workspace-file-records.js';
+import {
+  artifactReferenceItemId,
+  parseOwnedKnowledgeEntry,
+  serializeUserAuthoredKnowledgePage,
+} from './workspace-file-records.js';
 import {
   readWorkspaceImportSnapshot,
   verifyImportedWorkerContextPackageSnapshot,
@@ -753,6 +757,13 @@ function createWorkResourceLineageExportInput(followUp?: {
   const appliedContent = '# Portable\n';
   const baseContentDigest = `sha256:${createHash('sha256').update(baseContent).digest('hex')}`;
   const appliedContentDigest = `sha256:${createHash('sha256').update(appliedContent).digest('hex')}`;
+  const knowledgePageId = 'knowledge_portable_source';
+  const knowledgeContent = '# Retained portable knowledge\n\nUse the retained package bytes.\n';
+  const knowledgeContentDigest = `sha256:${createHash('sha256')
+    .update(knowledgeContent)
+    .digest('hex')}`;
+  const knowledgeSourceRefs = ['https://example.com/retained-portable-knowledge'];
+  const retrievalTraceId = 'krt_00000000-0000-4000-8000-000000000001';
   const workerRequest = serializeStructuredWorkerDelegationRequest(
     createStructuredWorkerDelegationRequest({
       acceptanceCriteria: ['Preserve the portable Material graph.'],
@@ -855,6 +866,14 @@ function createWorkResourceLineageExportInput(followUp?: {
   const packageFiles = createWorkerContextPackageFiles({
     contextBudgetTokens: 4_096,
     includedItemIds: [source.itemId],
+    knowledgeSelections: [
+      {
+        content: knowledgeContent,
+        contentDigest: knowledgeContentDigest,
+        knowledgePageId,
+        sourceRefs: knowledgeSourceRefs,
+      },
+    ],
     materialSelections: [
       {
         bindingMutationRequestId: 'request_material_bind',
@@ -903,6 +922,7 @@ function createWorkResourceLineageExportInput(followUp?: {
     agentSessionId: source.sessionId,
     excludedItems: [],
     goalId: null,
+    knowledgeSelectionInput: { retrievalTraceId },
     packageFiles,
     packageSnapshotId: snapshot.snapshotId,
     requestId: 'request_source',
@@ -1027,11 +1047,34 @@ function createWorkResourceLineageExportInput(followUp?: {
   input.portableFileState = {
     claims: new Map(),
     conflicts: new Map(),
-    contextMaterializations: new Map(),
-    contextPackageTraces: new Map(),
     nativeKnowledgePages: new Map(),
     observations: new Map(),
-    retrievalTraces: new Map(),
+    retrievalTraces: new Map([
+      [
+        '202607',
+        [
+          {
+            caller: 'task-mode',
+            createdAt: timestamp,
+            excluded: [],
+            requestDigest: `sha256:${createHash('sha256')
+              .update('portable Knowledge retrieval')
+              .digest('hex')}`,
+            retrievalParameters: { limit: 5, pinnedConceptIds: [] },
+            selected: [
+              {
+                contentDigest: knowledgeContentDigest,
+                knowledgePageId,
+                score: 1,
+                sourceReferences: knowledgeSourceRefs,
+              },
+            ],
+            traceId: retrievalTraceId,
+            workspaceId: source.workspaceId,
+          },
+        ],
+      ],
+    ]),
     workerContextPackageFiles: new Map([
       ...packageFiles.files.map(
         (file) =>
@@ -1241,6 +1284,48 @@ function createWorkResourceLineageExportInput(followUp?: {
 }
 
 describe('workspace auxiliary lineage reminting', () => {
+  it('remints accepted Knowledge Page Context Package references with the imported digest', () => {
+    const input = createWorkResourceLineageExportInput();
+    const sourceTraceText = [...input.portableFileState!.workerContextPackageFiles.entries()].find(
+      ([path]) => path.endsWith('/context-package.json')
+    )?.[1];
+    const sourceTrace = parseWorkerContextPackageTrace(JSON.parse(sourceTraceText ?? '{}'));
+    const knowledge = {
+      id: 'mem_1',
+      kind: 'task-summary' as const,
+      title: 'Portable work history',
+      content: 'Reuse the accepted Context Package.',
+      sourceReferences: [`context-package:${source.turnId}@${sourceTrace.contextPackageDigest}`],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    input.knowledge = [knowledge];
+    input.workspace = {
+      ...input.workspace,
+      counts: { ...input.workspace.counts, knowledgeEntryCount: 1 },
+    };
+    input.portableFileState!.nativeKnowledgePages.set(
+      `knowledge/pages/${knowledge.id}.md`,
+      serializeUserAuthoredKnowledgePage(knowledge)
+    );
+
+    const imported = importLineage(input);
+    const targetTraceText = [
+      ...imported.portableFileState.workerContextPackageFiles.entries(),
+    ].find(([path]) => path.endsWith('/context-package.json'))?.[1];
+    const targetTrace = parseWorkerContextPackageTrace(JSON.parse(targetTraceText ?? '{}'));
+    const expectedReference = `context-package:${targetTrace.turnId}@${targetTrace.contextPackageDigest}`;
+    const [pagePath, pageContent] = [
+      ...imported.portableFileState.nativeKnowledgePages.entries(),
+    ][0]!;
+
+    expect(targetTrace.contextPackageDigest).not.toBe(sourceTrace.contextPackageDigest);
+    expect(imported.knowledge[0]?.sourceReferences).toEqual([expectedReference]);
+    expect(parseOwnedKnowledgeEntry(pagePath, knowledge.id, pageContent).sourceReferences).toEqual([
+      expectedReference,
+    ]);
+  });
+
   it('remints one complete Material, Review, and S39 imported-history graph', () => {
     const imported = importLineage(createWorkResourceLineageExportInput());
     const material = imported.workspaceMaterials[0];
@@ -1289,6 +1374,17 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(trace).toMatchObject({
       agentSessionId: imported.agentSessions[0]?.id,
       contextPackageId: `ctxpkg_${imported.turns[0]?.id}`,
+      knowledgeSelectionInput: { retrievalTraceId: 'krt_00000000-0000-4000-8000-000000000001' },
+      knowledgeSelections: [
+        {
+          contentDigest: `sha256:${createHash('sha256')
+            .update('# Retained portable knowledge\n\nUse the retained package bytes.\n')
+            .digest('hex')}`,
+          knowledgePageId: 'knowledge_portable_source',
+          packagePath: 'knowledge/pages/knowledge_portable_source.md',
+          sourceRefs: ['https://example.com/retained-portable-knowledge'],
+        },
+      ],
       materialSelections: [
         {
           materialId: material?.materialId,
@@ -1329,6 +1425,12 @@ describe('workspace auxiliary lineage reminting', () => {
         `threads/${trace.threadId}/turns/${trace.turnId}/context-package/package.json`,
       ])
     );
+    expect(imported.portableFileState.nativeKnowledgePages.size).toBe(0);
+    expect(
+      imported.portableFileState.workerContextPackageFiles.get(
+        `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
+      )
+    ).toBe('# Retained portable knowledge\n\nUse the retained package bytes.\n');
     expect(imported.turnEvents[0]?.[1][2]?.data).toMatchObject({
       itemId: imported.turns[0]?.items[0]?.id,
       item: imported.turns[0]?.items[0],

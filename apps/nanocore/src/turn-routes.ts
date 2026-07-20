@@ -1,6 +1,7 @@
 import {
   InterruptTurnRequestSchema,
   SubmitTurnInputRequestSchema,
+  TurnReadProjectionSchema,
   TurnSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
@@ -10,6 +11,7 @@ import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
@@ -365,7 +367,28 @@ export function registerTurnRoutes({
     }
 
     try {
-      return c.json(TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId)));
+      const turn = store.getTurn(workspaceId, threadId, turnId);
+      let contextPackageDigest: string | null = null;
+
+      if (coreDb) {
+        let workspaceDb: WorkspaceDb | null = null;
+        try {
+          workspaceDb = repositoryWorkspaceDb(workspaceId);
+          contextPackageDigest = readStrictWorkerContextPackageDigest({
+            coreDb,
+            store,
+            threadId,
+            turnId,
+            workspaceDb,
+          });
+        } catch {
+          contextPackageDigest = null;
+        } finally {
+          workspaceDb?.sqlite.close();
+        }
+      }
+
+      return c.json(TurnReadProjectionSchema.parse({ ...turn, contextPackageDigest }));
     } catch (error) {
       return asApiError((error as Error).message);
     }

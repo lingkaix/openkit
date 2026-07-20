@@ -1,4 +1,9 @@
+import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import {
+  KnowledgeProposalContentDigestSchema,
+  KnowledgeProposalPageIdSchema,
+} from './knowledge-manager.js';
 import { WorkspaceSyncReviewDecisionSchema } from './workspace-sync.js';
 
 /** Goal Review decision values owned by the Goal Review record. */
@@ -432,25 +437,83 @@ export const KnowledgeProposalDecisionSchema = z.enum(['accepted', 'rejected', '
 /** Request payload for recording one knowledge proposal decision. */
 export const SubmitKnowledgeProposalDecisionRequestSchema = z
   .object({
+    requestId: RequestIdSchema,
     decision: KnowledgeProposalDecisionSchema,
-    requestId: z.string().min(1).optional(),
-    message: z.string().min(1).optional(),
+  })
+  .strict();
+
+/** Append-only human Knowledge Review row projected after one decision. */
+export const KnowledgeProposalReviewSchema = z
+  .object({
+    proposalId: z.string().min(1),
+    workspaceId: z.string().min(1),
+    reviewId: z.string().min(1),
+    requestId: RequestIdSchema,
+    decision: KnowledgeProposalDecisionSchema,
+    actor: ActorRefSchema,
+    proposalDigest: KnowledgeProposalContentDigestSchema,
+    knowledgePageId: KnowledgeProposalPageIdSchema,
+    contentDigest: KnowledgeProposalContentDigestSchema,
+    targetAbsentAtDecision: z.boolean().nullable(),
+    decidedAt: TimestampSchema,
+  })
+  .strict();
+
+/** Current Knowledge Page presence projected from proposal-owned application lineage. */
+export const KnowledgeProposalApplicationSchema = z
+  .object({
+    knowledgePageId: KnowledgeProposalPageIdSchema,
+    contentDigest: KnowledgeProposalContentDigestSchema,
+    present: z.boolean(),
   })
   .strict();
 
 /** Response payload after recording one knowledge proposal decision. */
 export const SubmitKnowledgeProposalDecisionResponseSchema = z
   .object({
-    review: z
-      .object({
-        proposalId: z.string().min(1),
-        workspaceId: z.string().min(1),
-        status: KnowledgeProposalDecisionSchema,
-        message: z.string().min(1).nullable(),
-        decidedAt: z.string().min(1),
-        requestId: z.string().min(1).nullable(),
-      })
-      .strict(),
+    review: KnowledgeProposalReviewSchema,
+    application: KnowledgeProposalApplicationSchema.nullable(),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    const accepted = response.review.decision === 'accepted';
+    if (
+      response.review.targetAbsentAtDecision !== (accepted ? true : null) ||
+      (accepted ? response.application?.present !== true : response.application !== null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Knowledge Proposal application must match its review decision.',
+      });
+    }
+    if (
+      response.application &&
+      (response.application.knowledgePageId !== response.review.knowledgePageId ||
+        response.application.contentDigest !== response.review.contentDigest)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Knowledge Proposal application must match its reviewed page and digest.',
+      });
+    }
+  });
+
+/** Request payload for removing one unchanged proposal-created Knowledge Page. */
+export const ReverseKnowledgeProposalRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    reviewId: z.string().min(1),
+    knowledgePageId: KnowledgeProposalPageIdSchema,
+    expectedContentDigest: KnowledgeProposalContentDigestSchema,
+  })
+  .strict();
+
+/** Derived post-reversal projection without a separate reversal record. */
+export const ReverseKnowledgeProposalResponseSchema = z
+  .object({
+    proposalId: z.string().min(1),
+    reviewId: z.string().min(1),
+    application: KnowledgeProposalApplicationSchema.extend({ present: z.literal(false) }),
   })
   .strict();
 
@@ -583,9 +646,19 @@ export type KnowledgeProposalDecision = z.infer<typeof KnowledgeProposalDecision
 export type SubmitKnowledgeProposalDecisionRequest = z.infer<
   typeof SubmitKnowledgeProposalDecisionRequestSchema
 >;
+/** Append-only human Knowledge Review row projected after one decision. */
+export type KnowledgeProposalReview = z.infer<typeof KnowledgeProposalReviewSchema>;
+/** Current Knowledge Page presence projected from proposal-owned application lineage. */
+export type KnowledgeProposalApplication = z.infer<typeof KnowledgeProposalApplicationSchema>;
 /** Response payload after recording one knowledge proposal decision. */
 export type SubmitKnowledgeProposalDecisionResponse = z.infer<
   typeof SubmitKnowledgeProposalDecisionResponseSchema
+>;
+/** Request payload for removing one unchanged proposal-created Knowledge Page. */
+export type ReverseKnowledgeProposalRequest = z.infer<typeof ReverseKnowledgeProposalRequestSchema>;
+/** Derived post-reversal projection without a separate reversal record. */
+export type ReverseKnowledgeProposalResponse = z.infer<
+  typeof ReverseKnowledgeProposalResponseSchema
 >;
 /** Request payload for resolving one app-local Goal Review attention row. */
 export type SubmitGoalReviewDecisionRequest = z.infer<typeof SubmitGoalReviewDecisionRequestSchema>;

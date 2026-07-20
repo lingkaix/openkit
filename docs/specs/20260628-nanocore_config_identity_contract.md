@@ -1,7 +1,7 @@
 # NanoCore Config And Identity Contract
 
 Status: Accepted
-Implementation: Partial
+Implementation: Implemented
 
 ## Summary
 
@@ -70,7 +70,7 @@ The bundled CLI server-mode contract uses the `OPENKIT_NANOCORE_TOKEN` explicit 
 
 ## Current Implementation Projection
 
-The NanoCore config, authentication, bundled CLI credential substrate, and V1 shared-Workspace identity and authorization lifecycle are implemented. This specification remains partial because broader config recovery, secret-backed editing, and deployment diagnostics remain deferred:
+The NanoCore config, authentication, bundled CLI credential substrate, and V1 shared-Workspace identity and authorization lifecycle are implemented. Broader config recovery, secret-backed editing, and deployment diagnostics remain deferred outside the closed V1 contract:
 
 - Better Auth is the current server-mode auth implementation.
 - The Better Auth table layout may use provider-owned table names such as `session`. Core identity doctrine still names the conceptual record `AuthSession`; implementation table names must not redefine the product concept.

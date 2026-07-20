@@ -18,6 +18,7 @@ import {
   type RespondToApprovalRequestSchema,
   type SubmitTurnInputRequestSchema,
   ThreadSchema,
+  TurnReadProjectionSchema,
   TurnSchema,
   type UpdateKnowledgeEntryRequestSchema,
   type UpdateThreadRequestSchema,
@@ -72,6 +73,8 @@ export type UpdateThreadInput = OptionalRequestId<z.infer<typeof UpdateThreadReq
 export type ArchiveThreadInput = OptionalRequestId<z.infer<typeof ArchiveThreadRequestSchema>>;
 /** Turn record. */
 export type Turn = z.infer<typeof TurnSchema>;
+/** Turn read projection with nullable verified Context Package evidence. */
+export type TurnReadProjection = z.infer<typeof TurnReadProjectionSchema>;
 /** Turn start input. */
 export type StartTurnInput = OptionalRequestId<z.infer<typeof SubmitTurnInputRequestSchema>>;
 /** Turn interrupt input. */
@@ -144,7 +147,7 @@ export interface CoreProjectionClient {
   /** Starts or resumes a turn. */
   startTurn(input: StartTurnInput): Promise<Turn>;
   /** Reads one turn. */
-  getTurn(workspaceId: string, threadId: string, turnId: string): Promise<Turn>;
+  getTurn(workspaceId: string, threadId: string, turnId: string): Promise<TurnReadProjection>;
   /** Interrupts one turn. */
   interruptTurn(input: InterruptTurnInput): Promise<Turn>;
   /** Responds to one approval request. */
@@ -268,7 +271,7 @@ export function createCoreProjectionClient(
     getTurn: (workspaceId, threadId, turnId) =>
       transport.getJson(
         `/api/workspaces/${workspaceId}/threads/${threadId}/turns/${turnId}`,
-        TurnSchema
+        TurnReadProjectionSchema
       ),
     interruptTurn: (input) => {
       const request = withRequestId(input);

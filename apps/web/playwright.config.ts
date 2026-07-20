@@ -5,7 +5,9 @@ const coreUrl = 'http://127.0.0.1:3100';
 const webUrl = 'http://127.0.0.1:4173';
 const dataRoot = `/private/tmp/openkit-web-e2e-data-${Date.now()}`;
 
-seedDemoWorkspaceDataRoot(dataRoot);
+if (process.env.TEST_WORKER_INDEX === undefined) {
+  await seedDemoWorkspaceDataRoot(dataRoot);
+}
 
 export default defineConfig({
   testDir: './e2e',

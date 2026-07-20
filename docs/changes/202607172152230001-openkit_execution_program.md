@@ -1,7 +1,7 @@
 # OpenKit Execution Program
 
 Type: change-plan
-Status: in-progress
+Status: verified
 Date: 2026-07-17
 
 ## Intent
@@ -42,7 +42,7 @@ The [alignment audit](./202607111941330001-core_spec_implementation_alignment_au
 | WP-6 | Explicit self-improvement loop, absorbing audit G07 | [Self-Improvement plan](./202607111600390001-self_improvement_loop_foundations.md) | WP-5A exit; one retained real completed work history exists to mine | Exact Knowledge callers, governed selection, accepted S39 delivery, human-reviewed create-only proposal and bounded reversal pass the owning plan |
 | WP-7 | Residual reviews (audit G00, G08, G09, and residual G03) and program closeout | [Alignment audit](./202607111941330001-core_spec_implementation_alignment_audit.md) | WP-6 exit | Time-boxed reviews and explicit residual G03 consolidation/deletion dispositions complete; the full real-use scenario matrix re-checked; the audit record reaches `verified`; this program closes |
 
-Current position: WP-0 through WP-5A are complete, including the G07 Stage 0 docs-only exit. The original WP-6 Draft bundle was removed from current authority because it would create a second evaluation and trigger platform. A stock OpenShell/Codex direct Task now supplies the retained completed history, strict S39 bytes, final assistant Item, and meaningful feedback required by the last entry gate; WP-6 Stage 1 is active over only existing-owner Knowledge correctness and one explicit human-reviewed loop.
+Current position: WP-0 through WP-7 are complete. The residual G00/G03/G08/G09 reviews found no security interruption, every non-security finding has an explicit post-program owner and schedule or activation trigger, the full real-use matrix has been rechecked against the bounded V1 profile, final repository verification passes, and human closeout approval was granted on 2026-07-20.
 
 ## Ordering Rationale
 
@@ -71,24 +71,30 @@ Items evicted from the audit's G01 group by its 2026-07-17 redesign, and their d
 
 ## Backlog
 
-New findings land here as one-line entries: `classification code — finding — proposed owner`. The active work package never absorbs them (rule 1). An entry leaves the backlog only by being scheduled into a work package through an explicit ledger edit.
+New findings land here as one-line entries: `classification code — finding — accepted owner and schedule or activation trigger`. The active work package never absorbs them (rule 1). An entry leaves only when resolved; program closeout may retain it only with the explicit post-program disposition required by the Exit Condition.
 
-- `TEST-GAP` — the A1 restart runner does not load and validate its owning Markdown story — WP-7 / G08.
-- `OWNERSHIP-CONFLICT` — S23/S24 and dormant snapshot/resume implementation still disagree about the contracted fresh-session continuity boundary — WP-7 residual G03 deletion review and dispatch.
-- `OWNERSHIP-CONFLICT` — S29 remains a separate current deployment/timing owner because S30 has not absorbed those contracts — WP-7 residual G03 consolidation review; retain both until then.
-- `IMPLEMENTATION-DEFECT` — the bespoke GitHub credential helper remains outside the generic S32 declaration path — WP-7 residual G03 review and dispatch.
-- `IMPLEMENTATION-DEFECT` — shared Agent readiness can report `ready` before provider/model compatibility and the fixed control-binary set are complete, although AEP resolution later fails closed — WP-7 residual G03 review and dispatch.
-- `OWNERSHIP-CONFLICT` — pi-ai cost estimates are written as UsageRecord truth despite C19 reserving metering authority for provider facts — WP-7 / G08 evidence and metering review.
+- `TEST-GAP` — the A1 restart runner does not load and validate its owning Markdown story — first post-program S08 maintenance slice, before that story is next cited as acceptance evidence or an applicable release gate.
+- `OWNERSHIP-CONFLICT` — dormant S23/S24 snapshot, generic-resume and recovery-option machinery exceeds the exact reconnect-or-interrupt contract — post-program S24 deletion-only cleanup before any continuity expansion; retain exact reconnect and existing owners.
+- `TEST-GAP` — S50 Git-push tests can inject a private raw environment instead of exercising the repository-bound Vault resolver, although the production host helper has the correct S50 owner — post-program S50 maintenance before any Git-provider expansion.
+- `IMPLEMENTATION-DEFECT` — shared Agent readiness can report `ready` before provider/model compatibility and the fixed control-binary set are complete, although AEP resolution later fails closed — post-program S22 setup/readiness alignment before another runtime or provider is advertised ready.
+- `IMPLEMENTATION-DEFECT` — S37 durable interrupt rows never transition to the accepted `undeliverable` terminal/takeover outcome — first post-program S37 maintenance before the next restart or continuity release claim; reuse the existing command row and scheduler transition without another recovery owner.
+- `OWNERSHIP-CONFLICT` — pi-ai estimated cost is written as UsageRecord truth despite C19 reserving durable metering for provider facts — first post-program S42/S59 ledger-cleanup slice before any cost, budget, or S59-completion claim.
 - `IMPLEMENTATION-DEFECT` — the native pi Responses path still bridges through Chat and has incomplete content-index, thinking, StopReason, and cancellation-partial-usage handling — post-program S40/S42 provider hardening; not a dependency of the explicit G07 loop.
-- `DESIGN-DEFECT` — public Gateway lineage metadata is caller assertion rather than trusted evidence, so current projections can overstate provenance — WP-7 / G08 evidence review; no proof framework in WP-3.
-- `REAL-USE-GAP` — Codex OAuth has pre-provisioned-account evidence but no real browser/device login, refresh, cancellation, and logout lifecycle proof — post-program S44 provider real-use work.
-- `DOC-DRIFT` — S45's remaining gap is license declaration and validation — post-program snapshot maintenance.
-- `REAL-USE-GAP` — one-time server bootstrap can be consumed before local credential storage succeeds, while repeat bootstrap is forbidden and no bounded operator credential-recovery contract exists — WP-7 / G00 residual design review and dispatch; do not add an onboarding or recovery workflow in WP-5.
-- `OWNERSHIP-CONFLICT` — S47 claims general contract-evolution authority already owned by C03 — WP-7 / G00 residual documentation review.
-- `IMPLEMENTATION-DEFECT` — Chat Mode Task handoff bypasses the existing WorkerCheckpoint/S39 loop used by direct Task Mode, so its exported worker history can lack the required Context Package trace — WP-7 / G00 residual alignment review and dispatch.
+- `DESIGN-DEFECT` — public Gateway lineage metadata is caller assertion rather than trusted evidence, so current projections can overstate provenance — the same first post-program S42/S59 attribution slice before Gateway lineage is used as proof; keep the trusted worker AEP path unchanged.
+- `OWNERSHIP-CONFLICT` — S43 remains a one-time foundation after its current producers gained direct owners — post-program consolidation after the ledger cleanup: S59 absorbs durable recording, S42 keeps LLM extraction, S38 keeps future MCP production, then S43 may be superseded.
+- `REAL-USE-GAP` — Codex OAuth has pre-provisioned-account evidence but no real browser/device login, refresh, cancellation, and logout lifecycle proof — post-program S44 provider real-use work before browser OAuth is release-ready.
+- `DOC-DRIFT` — S45's remaining gap is license declaration and validation — post-program snapshot maintenance before the next vendor refresh.
+- `REAL-USE-GAP` — one-time server bootstrap can be consumed before local credential storage succeeds, while repeat bootstrap is forbidden and no bounded operator credential-recovery contract exists — post-program S53 stopped-process operator recovery before a server-mode release candidate; no re-bootstrap or recovery workflow.
+- `OWNERSHIP-CONFLICT` — S47 claims general contract-evolution authority already owned by C18 — post-program C18/S47 documentation correction before the next record-envelope evolution.
+- `IMPLEMENTATION-DEFECT` — S56 still uses route-local policy decisions for part of the current bridge and does not yet satisfy its accepted general fact-mapping, escalation-consumer and backend-compilation contract — post-program S56 policy alignment before a general policy-completion or `require_escalation` claim; retain current fail-closed checks.
+- `IMPLEMENTATION-DEFECT` — Chat Mode Task handoff bypasses the existing WorkerCheckpoint/S39 loop, and Chat provider-failure persistence and clarification continuation remain Partial — immediate post-program S11/S12/S39 mode-hardening slice before S10/Web; reuse the outer Chat receipt and existing owners.
+- `REAL-USE-GAP` — Goal Mode has deterministic coverage but no stock-runtime end-to-end Goal proof — post-program S13 dogfooding before Goal is called release-ready, reusing existing runners rather than adding a Goal harness.
+- `IMPLEMENTATION-DEFECT` — governed Knowledge retrieval does not consume or surface latest unresolved conflict-ledger authority — first post-program S60/S61 maintenance before the next generated-Knowledge release claim.
+- `IMPLEMENTATION-DEFECT` — Action Center dispatch, accessibility, readiness diagnostics, Quick Chat identity and stale Solid guidance remain incomplete Web projections — post-program S10 after the immediate kernel corrections; S10 also owns the deferred S16 and S63 browser acceptance.
+- `DEFERRED-ALIGNMENT` — S67 remains Draft and authorizes no calibration implementation — post-program audit-side manual Layer 1 pilot only after explicit human acceptance or revision, with no shared platform or global score gate.
 - `DEFERRED-ALIGNMENT` — recurring reflection, user Automation execution and event triggers lack real demand and the current Draft overbuilds fire/recovery ownership — post-program S35 only after manual-loop evidence.
 - `DEFERRED-ALIGNMENT` — no real materialized worker Skill or repeated runtime promotion demand justifies the Draft Skill Catalog — post-program S34 / Agent Supply work after a concrete consumer exists.
-- `DEFERRED-ALIGNMENT` — S19's suite, Judge and Harness platform is not authorized by current Core or proportionality rules — roadmap; a future accepted design must reauthorize current effects, bound retained fixtures and use a fresh explicit attempt after interruption.
+- `DEFERRED-ALIGNMENT` — S19's suite, Judge and Harness platform is not authorized by current Core or proportionality rules — post-program only after repeated real evaluation demand proves the existing owners insufficient; a future accepted design must reauthorize current effects, bound retained fixtures and use a fresh explicit attempt after interruption.
 
 ## Checkpoints
 
@@ -121,7 +127,13 @@ New findings land here as one-line entries: `classification code — finding —
 - 2026-07-19 — G07 Stage 0 exited docs-only after blocker-focused contract and deletion-first reviews plus repository document gates. It froze one proposal producer, one S61 retrieval owner, one S39 delivery owner, bounded `recovery_required`, and deletion of duplicate claim/worker proposal paths; WP-5A entered without starting G07 production work.
 - 2026-07-19 — WP-5A exited after coherent non-Codex provider ownership, product-neutral dispatch evidence, reported cache quantities, contradictory-effect rejection, and fail-closed uncertain Git replay passed their package gates. The existing real-provider runner passed on disposable A1 through stock pi-ai and stock Ollama with an empty leak scan; its keyless-provider defect was reduced to a focused regression and a fixed non-secret bounded placeholder, with no new runner, harness, recovery workflow, fork, or patch. One retained real completed work history is now WP-6's sole entry gate.
 - 2026-07-19 — WP-6 entered after the existing real Task story passed on disposable A1 through stock OpenShell `0.0.80` and Codex `0.144.1`. The retained completed Turn has one final assistant Item, strict-verifier-confirmed S39 bytes and digest, normal runtime evidence, and meaningful positive feedback; the task repository stayed clean and whole-Cell cleanup returned zero containers and sandboxes. Three bounded entry defects were reduced to focused regressions and direct fixes without a new runner or recovery owner. Stage 1 is active.
+- 2026-07-20 — WP-6/G07 exited through production commit `fb67760`. Exact internal callers, pre-write validation, one S61 retrieval owner, create-only proposal application, human-only activation, strict local work-history proof, current user-authored source authority after direct-edit revalidation, permanent accepted Page-id reservation against later generated proposals, S39 exact-byte delivery, fail-closed partial evidence, and unchanged-page reversal passed affected package and repository gates. One disposable-A1 stock OpenShell/Codex loop proved retained-work review, proposal, acceptance, later governed use, reversal, runtime provenance, clean Git state, and zero residual sandboxes; no evaluator lifecycle, trigger, dependency graph, revision owner, recovery workflow, runner, Harness, fork, patch, or compatibility path was added. WP-7 is next.
+- 2026-07-20 — WP-7 and the program closed with human approval after residual reviews found no `SECURITY-GAP`: S29/S30 retain distinct owners, dormant continuity machinery and every G00/G08/G09 finding are explicitly dispatched, S37, S56, S60 and S61 remain Partial for their named unmet contracts, all 65 active specifications and U01-U21 have bounded dispositions, and the single package-exit `verify:full` passes.
 
 ## Exit Condition
 
-Every work package has met its exit gate, the Backlog is empty or every entry has an accepted owner and schedule, and the alignment audit record is `verified`. This record then closes with a final summary.
+Every work package has met its exit gate, the Backlog is empty or every entry has an accepted owner plus a schedule or activation trigger, and the alignment audit record is `verified`. This record then closes with a final summary.
+
+## Final Summary
+
+Verified on 2026-07-20. WP-0 through WP-7 completed their bounded work-package and grouped-audit responsibilities; the retained Backlog is explicitly post-program and non-authorizing, and no unresolved security gap remains in this program.

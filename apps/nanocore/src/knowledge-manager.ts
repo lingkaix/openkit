@@ -1,7 +1,5 @@
-import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type {
-  KnowledgeClaim,
-  KnowledgeConflict,
   KnowledgeManagerAnswerResponse,
   KnowledgeManagerCallerSchema,
   KnowledgeManagerDraftProposalResponse,
@@ -9,111 +7,76 @@ import type {
   KnowledgeManagerPrepareContextResponse,
   KnowledgeManagerSuggestRepairResponse,
 } from '@openkit/app-api-schemas';
-import type { ArtifactSchema, KnowledgeEntrySchema } from '@openkit/protocol';
+import type { KnowledgeEntrySchema } from '@openkit/protocol';
 import type { z } from 'zod';
-import type { KnowledgeProposalRecord, KnowledgeSourceRecord } from './lib/store.js';
-
-const KNOWLEDGE_CONTEXT_POLICY_VERSION = 'knowledge-context-v1';
-
-type KnowledgeManagerContextMaterial = KnowledgeManagerPrepareContextResponse['materials'][number];
-type KnowledgeManagerContextExclusion =
-  KnowledgeManagerPrepareContextResponse['exclusions'][number];
-type KnowledgeManagerContextPolicy = KnowledgeManagerPrepareContextResponse['policy'];
-type KnowledgeManagerContextPackageTrace = KnowledgeManagerPrepareContextResponse['packageTrace'];
-type KnowledgeManagerWorkspaceFile =
-  KnowledgeManagerPrepareContextResponse['workspaceFiles'][number];
-type KnowledgeManagerWorkspaceRootFile =
-  KnowledgeManagerPrepareContextResponse['workspaceRootFiles'][number];
-type Artifact = z.infer<typeof ArtifactSchema>;
+import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
+import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
+import { type KnowledgePageReferenceProof, KnowledgePageValidationError } from './knowledge/okf.js';
+import type { FsStore, KnowledgeProposalRecord } from './lib/store.js';
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { resolveDataRootPath } from './storage/fs-layout.js';
+import {
+  resolveWorkspaceKnowledgeRetrievalPages,
+  retrieveWorkspaceKnowledge,
+} from './storage/index-rebuild.js';
 
 /** Workspace Knowledge Page projection consumed by request-scoped Knowledge operations. */
 export type WorkspaceKnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
 
-const KNOWLEDGE_CONTEXT_POLICY: KnowledgeManagerContextPolicy = {
-  version: KNOWLEDGE_CONTEXT_POLICY_VERSION,
-  claimReviewState: 'accepted',
-  conflictResolution: 'exclude-resolved',
-};
-
-/**
- * Resolves governed retrieval selections to store projections without changing their order.
- *
- * @param entries Workspace Knowledge Page projections.
- * @param selected Persisted S61 selections in ranking order.
- * @returns Selected entries in the exact persisted order.
- * @throws Error when a selected page is unavailable from the current store projection.
- */
-export function resolveRetrievedKnowledgeEntries(
-  entries: readonly WorkspaceKnowledgeEntry[],
-  selected: readonly { readonly knowledgePageId: string }[]
-): WorkspaceKnowledgeEntry[] {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
-
-  return selected.map(({ knowledgePageId }) => {
-    const entry = byId.get(knowledgePageId);
-
-    if (!entry) {
-      throw new Error('Knowledge retrieval selected an unavailable page.');
-    }
-
-    return entry;
-  });
-}
-
-/** Input for deriving a package-level trace from selected Knowledge Manager material. */
-interface BuildKnowledgeContextPackageTraceInput {
-  /** Original context preparation input. */
-  input: PrepareKnowledgeContextInput;
-  /** Material selected for later Coordinator context assembly. */
-  materials: readonly KnowledgeManagerContextMaterial[];
-  /** Candidate exclusions surfaced by Knowledge Manager. */
-  exclusions: readonly KnowledgeManagerContextExclusion[];
-  /** Effective selection limit used as the first context budget. */
-  requestedLimit: number;
-}
-
 /** Input for one deterministic Knowledge Manager answer operation. */
 export interface AnswerKnowledgeManagerInput {
+  /** File-backed NanoCore data root that owns the governed retrieval trace. */
+  dataRoot: string;
   /** Operation id assigned by NanoCore. */
   operationId: string;
   /** Workspace that owns the query. */
   workspaceId: string;
   /** Caller that requested the answer. */
-  caller: z.infer<typeof KnowledgeManagerCallerSchema>;
+  caller: 'assistant' | 'app-api';
   /** User or coordinator query. */
   query: string;
-  /** Entries already selected by the governed S61 retrieval owner. */
-  entries: readonly WorkspaceKnowledgeEntry[];
-  /** Durable S61 retrieval trace that selected the entries. */
-  retrievalTraceId: string;
+  /** Maximum number of selected Knowledge Pages. */
+  limit?: number | undefined;
+  /** Exact Page-bound source-authority proofs for this request. */
+  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
 }
 
 /** Input for one deterministic Knowledge Manager context-material operation. */
 export interface PrepareKnowledgeContextInput {
+  /** File-backed NanoCore data root that owns the governed retrieval trace. */
+  dataRoot: string;
   /** Operation id assigned by NanoCore. */
   operationId: string;
   /** Workspace that owns the context request. */
   workspaceId: string;
   /** Caller that requested context material. */
-  caller: z.infer<typeof KnowledgeManagerCallerSchema>;
+  caller: 'app-api';
   /** Coordinator query used to select material. */
   query: string;
-  /** Entries already selected by the governed S61 retrieval owner. */
-  entries: readonly WorkspaceKnowledgeEntry[];
-  /** Durable S61 retrieval trace that selected the entries. */
-  retrievalTraceId: string;
-  /** Workspace claim ledger rows available for governed context selection. */
-  claims?: readonly KnowledgeClaim[] | undefined;
-  /** Workspace conflict ledger rows available for governed context selection. */
-  conflicts?: readonly KnowledgeConflict[] | undefined;
-  /** Explicit artifact records selected by the caller for worker context. */
-  artifacts?: readonly Artifact[] | undefined;
-  /** Explicit workspace file summaries selected by the caller for worker context. */
-  workspaceFiles?: readonly KnowledgeManagerWorkspaceFile[] | undefined;
-  /** Explicit workspace root file summaries selected by the caller for worker context. */
-  workspaceRootFiles?: readonly KnowledgeManagerWorkspaceRootFile[] | undefined;
   /** Maximum number of source entries to include. */
   limit?: number | undefined;
+  /** Exact Page-bound source-authority proofs for this request. */
+  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
+}
+
+/** Input for the direct Task Mode Knowledge preparation boundary. */
+export interface PrepareTaskKnowledgeContextInput {
+  /** File-backed NanoCore data root that owns the governed retrieval trace. */
+  readonly dataRoot: string;
+  /** Workspace that owns the direct Task. */
+  readonly workspaceId: string;
+  /** Exact immutable Task input used as the governed retrieval query. */
+  readonly query: string;
+  /** Deterministic Task-owned retrieval trace id. */
+  readonly traceId: string;
+  /** Exact Page-bound source-authority proofs for this request. */
+  readonly referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
+}
+
+/** Exact S17 result consumed by the direct Task owner. */
+export interface PreparedTaskKnowledgeContext {
+  /** Existing S61 trace that owns the Task Knowledge selection. */
+  readonly retrievalTraceId: string;
 }
 
 /** Input for one deterministic Knowledge Manager proposal draft operation. */
@@ -126,14 +89,192 @@ export interface DraftKnowledgeProposalInput {
   caller: z.infer<typeof KnowledgeManagerCallerSchema>;
   /** Stored pending proposal. */
   proposal: KnowledgeProposalRecord;
-  /** Source references supporting the draft. */
-  sourceReferences: readonly string[];
-  /** Workspace knowledge entries available for lineage resolution. */
-  entries: readonly WorkspaceKnowledgeEntry[];
-  /** Registered source records available for lineage resolution. */
-  sources: readonly KnowledgeSourceRecord[];
-  /** Draft confidence. */
-  confidence: number;
+  /** Whether exact current owners prove the completed-work reference trio. */
+  generatedFromCompletedWorkHistory: boolean;
+}
+
+/** Exact completed-work evidence accepted from one proposal request. */
+export interface KnowledgeProposalWorkHistoryVerification {
+  /** Exact non-Knowledge references already verified by their owning domains. */
+  readonly verifiedExternalReferences: readonly string[];
+}
+
+/**
+ * Verifies the sole completed-work reference shape against current Turn, Item, and S39 owners.
+ *
+ * @param input Proposal references and existing owner handles.
+ * @returns Exact references safe to pass through the Knowledge Store boundary.
+ * @throws KnowledgePageValidationError when any claimed completed-work owner is absent or changed.
+ */
+export function verifyKnowledgeProposalWorkHistory(input: {
+  /** Allows imported-history proof only while reading an already accepted imported Page. */
+  readonly allowImportedHistory?: boolean | undefined;
+  /** Core scheduler and worker-session authority when available. */
+  readonly coreDb: CoreDb | undefined;
+  /** Closed normalized references carried by the Proposal. */
+  readonly sourceReferences: readonly string[];
+  /** Product Turn and Item owner. */
+  readonly store: FsStore;
+  /** Workspace S39 authority when available. */
+  readonly workspaceDb: WorkspaceDb | undefined;
+  /** Workspace that must own every completed-work record. */
+  readonly workspaceId: string;
+}): KnowledgeProposalWorkHistoryVerification {
+  const workReferences = input.sourceReferences.filter((reference) =>
+    /^(?:turn|item|context-package):/.test(reference)
+  );
+  if (workReferences.length === 0) {
+    return {
+      verifiedExternalReferences: [],
+    };
+  }
+
+  const turnReferences = workReferences.filter((reference) => reference.startsWith('turn:'));
+  const itemReferences = workReferences.filter((reference) => reference.startsWith('item:'));
+  const contextReferences = workReferences.filter((reference) =>
+    reference.startsWith('context-package:')
+  );
+  if (
+    workReferences.length !== 3 ||
+    turnReferences.length !== 1 ||
+    itemReferences.length !== 1 ||
+    contextReferences.length !== 1 ||
+    !input.coreDb ||
+    !input.workspaceDb
+  ) {
+    throw new KnowledgePageValidationError();
+  }
+
+  const turnId = turnReferences[0]!.slice('turn:'.length);
+  const itemId = itemReferences[0]!.slice('item:'.length);
+  const contextMatch = /^context-package:([^@]+)@(ctxpkg_sha256_[a-f0-9]{64})$/.exec(
+    contextReferences[0]!
+  );
+  try {
+    if (!contextMatch || contextMatch[1] !== turnId) {
+      throw new Error('Completed-work reference lineage does not match.');
+    }
+    const turn = input.store.getTurnById(turnId);
+    if (turn.workspaceId !== input.workspaceId || turn.status !== 'completed') {
+      throw new Error('Completed-work Turn is not eligible.');
+    }
+
+    const finalAssistantItem = input.store
+      .listThreadItems(input.workspaceId, turn.threadId)
+      .filter(
+        (item) =>
+          item.turnId === turn.id &&
+          item.type === 'assistant-message' &&
+          item.status === 'completed'
+      )
+      .at(-1);
+    if (!finalAssistantItem || finalAssistantItem.id !== itemId) {
+      throw new Error('Completed-work Item is not the final assistant result.');
+    }
+
+    const { trace, verification } = readPortableWorkerContextPackageTrace({
+      authorities: createWorkerContextPackageAuthorityReader({
+        coreDb: input.coreDb,
+        store: input.store,
+        workspaceDb: input.workspaceDb,
+      }),
+      workspaceId: input.workspaceId,
+      threadId: turn.threadId,
+      turnId,
+      workspaceRoot: resolveDataRootPath(
+        input.workspaceDb.dataRoot,
+        'workspaces',
+        input.workspaceId
+      ),
+    });
+    if (
+      (verification !== 'strict' && !input.allowImportedHistory) ||
+      trace.goalId !== null ||
+      trace.taskId !== null ||
+      trace.knowledgeSelectionInput === null ||
+      trace.contextPackageDigest !== contextMatch[2]
+    ) {
+      throw new Error('Completed-work Context Package is not an exact direct-Task trace.');
+    }
+  } catch {
+    throw new KnowledgePageValidationError();
+  }
+
+  return {
+    verifiedExternalReferences: workReferences,
+  };
+}
+
+/**
+ * Resolves current Page-bound source proof for accepted local and portable Pages.
+ *
+ * @param input Existing Proposal, Review, Page, Turn, Item, and S39 authorities.
+ * @returns Exact Page and digest keyed proofs whose current owner tuples remain coherent.
+ */
+export function resolveWorkspaceKnowledgeReferenceProofs(input: {
+  /** Core scheduler and worker-session authority when available. */
+  readonly coreDb: CoreDb | undefined;
+  /** Product Proposal, Review, Page, Turn, and Item owner. */
+  readonly store: FsStore;
+  /** Workspace S39 authority when available. */
+  readonly workspaceDb: WorkspaceDb | undefined;
+  /** Workspace that must own every referenced record. */
+  readonly workspaceId: string;
+}): ReadonlyMap<string, KnowledgePageReferenceProof> {
+  const referenceProofs = new Map<string, KnowledgePageReferenceProof>();
+
+  for (const proposal of input.store.listKnowledgeProposals(input.workspaceId)) {
+    const review = input.store.getKnowledgeProposalReviewDecision(proposal.id);
+    if (!review || review.decision !== 'accepted') {
+      continue;
+    }
+
+    try {
+      const verification = verifyKnowledgeProposalWorkHistory({
+        coreDb: input.coreDb,
+        sourceReferences: proposal.sourceReferences,
+        store: input.store,
+        workspaceDb: input.workspaceDb,
+        workspaceId: input.workspaceId,
+      });
+      const proof = input.store.projectKnowledgeProposalReferenceProof(
+        input.workspaceId,
+        review.reviewId,
+        verification.verifiedExternalReferences
+      );
+      referenceProofs.set(proof.knowledgePageId, proof);
+    } catch {
+      // An incoherent owner tuple remains excluded by normal Knowledge validation.
+    }
+  }
+
+  if (input.store.getWorkspace(input.workspaceId).importedFrom) {
+    for (const entry of input.store.getWorkspaceResources(input.workspaceId).knowledge) {
+      if (referenceProofs.has(entry.id)) {
+        continue;
+      }
+      try {
+        const verification = verifyKnowledgeProposalWorkHistory({
+          allowImportedHistory: true,
+          coreDb: input.coreDb,
+          sourceReferences: entry.sourceReferences ?? [],
+          store: input.store,
+          workspaceDb: input.workspaceDb,
+          workspaceId: input.workspaceId,
+        });
+        const proof = input.store.projectImportedKnowledgePageReferenceProof(
+          input.workspaceId,
+          entry.id,
+          verification.verifiedExternalReferences
+        );
+        referenceProofs.set(proof.knowledgePageId, proof);
+      } catch {
+        // Imported Pages remain excluded when their reminted current owners do not verify.
+      }
+    }
+  }
+
+  return referenceProofs;
 }
 
 /** Input for one deterministic Knowledge Manager repair suggestion operation. */
@@ -173,7 +314,33 @@ export interface CheckKnowledgeHealthInput {
 export function answerKnowledgeManager(
   input: AnswerKnowledgeManagerInput
 ): KnowledgeManagerAnswerResponse {
-  const matches = input.entries;
+  const retrieval = retrieveWorkspaceKnowledge({
+    dataRoot: input.dataRoot,
+    workspaceId: input.workspaceId,
+    caller: input.caller,
+    query: input.query,
+    limit: input.limit ?? 5,
+    pinnedConceptIds: [],
+    referenceProofs: input.referenceProofs,
+    traceId: `krt_${randomUUID()}`,
+  });
+  const pages = resolveWorkspaceKnowledgeRetrievalPages({
+    caller: input.caller,
+    dataRoot: input.dataRoot,
+    referenceProofs: input.referenceProofs,
+    retrievalTraceId: retrieval.traceId,
+    workspaceId: input.workspaceId,
+  });
+  if (!pages) {
+    throw new Error('Knowledge retrieval selected an unavailable page.');
+  }
+  const matches = pages.map((page) => ({
+    id: page.knowledgePageId,
+    content: page.body,
+    kind: page.kind,
+    sourceReferences: page.sourceRefs,
+    title: page.title,
+  }));
 
   if (matches.length === 0) {
     return {
@@ -181,7 +348,7 @@ export function answerKnowledgeManager(
       operation: 'answer',
       workspaceId: input.workspaceId,
       caller: input.caller,
-      retrievalTraceId: input.retrievalTraceId,
+      retrievalTraceId: retrieval.traceId,
       query: input.query,
       outcome: 'insufficient-evidence',
       answer: 'I do not have enough source-traceable workspace knowledge to answer that.',
@@ -203,7 +370,7 @@ export function answerKnowledgeManager(
     operation: 'answer',
     workspaceId: input.workspaceId,
     caller: input.caller,
-    retrievalTraceId: input.retrievalTraceId,
+    retrievalTraceId: retrieval.traceId,
     query: input.query,
     outcome: 'answered',
     answer: matches[0]?.content ?? citations[0]?.excerpt ?? 'Knowledge matched the query.',
@@ -222,116 +389,51 @@ export function answerKnowledgeManager(
 export function prepareKnowledgeContext(
   input: PrepareKnowledgeContextInput
 ): KnowledgeManagerPrepareContextResponse {
-  const requestedLimit = input.limit ?? 5;
-  const matches = input.entries;
-  const artifacts = [...(input.artifacts ?? [])];
-  const workspaceFiles = [...(input.workspaceFiles ?? [])];
-  const workspaceRootFiles = [...(input.workspaceRootFiles ?? [])];
-
-  if (
-    matches.length === 0 &&
-    artifacts.length === 0 &&
-    workspaceFiles.length === 0 &&
-    workspaceRootFiles.length === 0
-  ) {
-    const exclusions: KnowledgeManagerContextExclusion[] = [
-      {
-        reason: 'no-matching-knowledge',
-        detail: 'No matching workspace knowledge entries were found.',
-      },
-    ];
-
-    return {
-      operationId: input.operationId,
-      operation: 'prepare-context-material',
-      workspaceId: input.workspaceId,
-      caller: input.caller,
-      retrievalTraceId: input.retrievalTraceId,
-      query: input.query,
-      outcome: 'insufficient-evidence',
-      materials: [],
-      exclusions,
-      artifacts: [],
-      workspaceFiles: [],
-      workspaceRootFiles: [],
-      claims: [],
-      conflicts: [],
-      policy: KNOWLEDGE_CONTEXT_POLICY,
-      packageTrace: buildKnowledgeContextPackageTrace({
-        input,
-        materials: [],
-        exclusions,
-        requestedLimit,
-      }),
-      confidence: 0,
-      uncertainty: 'No matching workspace knowledge entries were found.',
-    };
-  }
-
-  const materials = matches.map((entry) => ({
-    knowledgeEntryId: entry.id,
-    kind: entry.kind,
-    title: entry.title,
-    excerpt: excerpt(entry.content),
-    sourceReferences: entry.sourceReferences ?? [],
-    trace: {
-      source: 'workspace-knowledge' as const,
-      reason: 'matched-query' as const,
-    },
-  }));
-  const claims = selectContextClaims({
-    claims: input.claims ?? [],
-    materials,
+  const retrieval = retrieveWorkspaceKnowledge({
+    dataRoot: input.dataRoot,
+    workspaceId: input.workspaceId,
+    caller: 'app-api',
     query: input.query,
+    limit: input.limit ?? 5,
+    pinnedConceptIds: [],
+    referenceProofs: input.referenceProofs,
+    traceId: `krt_${randomUUID()}`,
   });
-  const conflicts = selectContextConflicts({
-    conflicts: input.conflicts ?? [],
-    materials,
-    claims,
-  });
-  const exclusions: KnowledgeManagerContextExclusion[] =
-    matches.length === 0
-      ? [
-          {
-            reason: 'no-matching-knowledge',
-            detail: 'No matching workspace knowledge entries were found.',
-          },
-        ]
-      : [];
 
   return {
     operationId: input.operationId,
     operation: 'prepare-context-material',
     workspaceId: input.workspaceId,
     caller: input.caller,
-    retrievalTraceId: input.retrievalTraceId,
-    query: input.query,
-    outcome: 'prepared',
-    materials,
-    exclusions,
-    artifacts,
-    workspaceFiles,
-    workspaceRootFiles,
-    claims,
-    conflicts,
-    policy: KNOWLEDGE_CONTEXT_POLICY,
-    packageTrace: buildKnowledgeContextPackageTrace({
-      input,
-      materials,
-      exclusions,
-      requestedLimit,
-    }),
-    confidence: Math.min(
-      0.9,
-      0.45 +
-        matches.length * 0.1 +
-        artifacts.length * 0.05 +
-        workspaceFiles.length * 0.05 +
-        workspaceRootFiles.length * 0.05
-    ),
-    uncertainty:
-      matches.length === 0 ? 'No matching workspace knowledge entries were found.' : null,
+    retrievalTraceId: retrieval.traceId,
+    outcome: retrieval.selected.length > 0 ? 'prepared' : 'insufficient-evidence',
+    selected: retrieval.selected,
+    excluded: retrieval.excluded,
   };
+}
+
+/**
+ * Selects governed Knowledge once for one direct Task without assembling worker context.
+ *
+ * @param input Direct Task Knowledge preparation input.
+ * @returns The existing S61 retrieval trace reference and no second selection projection.
+ * @throws Error when S61 cannot create the exact deterministic retrieval trace.
+ */
+export function prepareTaskKnowledgeContext(
+  input: PrepareTaskKnowledgeContextInput
+): PreparedTaskKnowledgeContext {
+  const retrieval = retrieveWorkspaceKnowledge({
+    dataRoot: input.dataRoot,
+    workspaceId: input.workspaceId,
+    caller: 'task-mode',
+    query: input.query,
+    limit: 5,
+    pinnedConceptIds: [],
+    referenceProofs: input.referenceProofs,
+    traceId: input.traceId,
+  });
+
+  return { retrievalTraceId: retrieval.traceId };
 }
 
 /**
@@ -343,33 +445,19 @@ export function prepareKnowledgeContext(
 export function draftKnowledgeProposal(
   input: DraftKnowledgeProposalInput
 ): KnowledgeManagerDraftProposalResponse {
-  const sourceLineage = input.sourceReferences.map((reference) =>
-    classifyProposalSourceReference(reference, input.entries, input.sources)
-  );
-  const unresolvedCount = sourceLineage.filter((lineage) => lineage.reviewRequired).length;
-  const hasReferences = input.sourceReferences.length > 0;
-
   return {
     operationId: input.operationId,
     operation: 'draft-proposal',
     workspaceId: input.workspaceId,
     caller: input.caller,
     proposal: {
-      id: input.proposal.id,
-      workspaceId: input.proposal.workspaceId,
-      title: input.proposal.title,
-      summary: input.proposal.summary,
+      ...input.proposal,
       status: 'pending',
-      createdAt: input.proposal.createdAt,
-      updatedAt: input.proposal.updatedAt,
     },
-    sourceReferences: [...input.sourceReferences],
-    sourceLineage,
     validation: {
-      status: hasReferences && unresolvedCount === 0 ? 'ready-for-review' : 'needs-source-review',
-      checks: buildProposalValidationChecks(hasReferences, sourceLineage),
+      conformance: 'Workspace-schema-valid',
+      generatedFromCompletedWorkHistory: input.generatedFromCompletedWorkHistory,
     },
-    confidence: input.confidence,
   };
 }
 
@@ -470,259 +558,6 @@ function excerpt(content: string): string {
 }
 
 /**
- * Computes the stable digest owned by one prepared Knowledge Manager context package.
- *
- * @param context Prepared context fields that contribute to the digest.
- * @returns Stable context package digest.
- */
-export function createKnowledgeContextPackageDigest(
-  context: Pick<
-    KnowledgeManagerPrepareContextResponse,
-    'workspaceId' | 'caller' | 'query' | 'policy'
-  > & {
-    materials: readonly KnowledgeManagerContextMaterial[];
-    artifacts: readonly Artifact[];
-    workspaceFiles: readonly KnowledgeManagerWorkspaceFile[];
-    workspaceRootFiles: readonly KnowledgeManagerWorkspaceRootFile[];
-    exclusions: readonly KnowledgeManagerContextExclusion[];
-    packageTrace: Pick<
-      KnowledgeManagerContextPackageTrace,
-      | 'selectedKnowledgeEntryIds'
-      | 'selectedArtifactIds'
-      | 'selectedWorkspaceFilePaths'
-      | 'selectedWorkspaceRootFiles'
-      | 'selectedClaimIds'
-      | 'selectedConflictIds'
-      | 'policyVersion'
-      | 'budget'
-    >;
-  }
-): string {
-  return `ctxpkg_sha256_${createHash('sha256')
-    .update(
-      stableStringify({
-        policyVersion: context.packageTrace.policyVersion,
-        policy: context.policy,
-        workspaceId: context.workspaceId,
-        caller: context.caller,
-        query: context.query,
-        selectedKnowledgeEntryIds: context.packageTrace.selectedKnowledgeEntryIds,
-        selectedArtifactIds: context.packageTrace.selectedArtifactIds,
-        selectedWorkspaceFilePaths: context.packageTrace.selectedWorkspaceFilePaths,
-        selectedWorkspaceRootFiles: context.packageTrace.selectedWorkspaceRootFiles,
-        selectedClaimIds: context.packageTrace.selectedClaimIds,
-        selectedConflictIds: context.packageTrace.selectedConflictIds,
-        materials: context.materials,
-        artifacts: context.artifacts,
-        workspaceFiles: context.workspaceFiles,
-        workspaceRootFiles: context.workspaceRootFiles,
-        exclusions: context.exclusions,
-        budget: context.packageTrace.budget,
-      })
-    )
-    .digest('hex')}`;
-}
-
-/**
- * Builds a deterministic package-level trace for prepared knowledge context material.
- *
- * @param traceInput Selected material and original request data.
- * @returns Context package trace with stable digest and budget summary.
- */
-function buildKnowledgeContextPackageTrace(
-  traceInput: BuildKnowledgeContextPackageTraceInput
-): KnowledgeManagerContextPackageTrace {
-  const selectedKnowledgeEntryIds = traceInput.materials.map(
-    (material) => material.knowledgeEntryId
-  );
-  const selectedArtifactIds = (traceInput.input.artifacts ?? []).map((artifact) => artifact.id);
-  const selectedWorkspaceFilePaths = (traceInput.input.workspaceFiles ?? []).map(
-    (file) => file.path
-  );
-  const selectedWorkspaceRootFiles = (traceInput.input.workspaceRootFiles ?? []).map((file) => ({
-    rootId: file.rootId,
-    path: file.path,
-  }));
-  const selectedClaimIds = (traceInput.input.claims ?? [])
-    .filter((claim) => isSelectedClaim(claim, traceInput.materials, traceInput.input.query))
-    .map((claim) => claim.id);
-  const selectedConflictIds = (traceInput.input.conflicts ?? [])
-    .filter((conflict) =>
-      isSelectedConflict(conflict, traceInput.materials, new Set(selectedClaimIds))
-    )
-    .map((conflict) => conflict.id);
-  const budget = {
-    requestedLimit: traceInput.requestedLimit,
-    selectedCount: traceInput.materials.length,
-    excludedCount: traceInput.exclusions.length,
-  };
-
-  return {
-    contextPackageId: `ctxpkg_${traceInput.input.operationId}`,
-    contextPackageDigest: createKnowledgeContextPackageDigest({
-      workspaceId: traceInput.input.workspaceId,
-      caller: traceInput.input.caller,
-      query: traceInput.input.query,
-      materials: traceInput.materials,
-      artifacts: traceInput.input.artifacts ?? [],
-      workspaceFiles: traceInput.input.workspaceFiles ?? [],
-      workspaceRootFiles: traceInput.input.workspaceRootFiles ?? [],
-      exclusions: traceInput.exclusions,
-      policy: KNOWLEDGE_CONTEXT_POLICY,
-      packageTrace: {
-        selectedKnowledgeEntryIds,
-        selectedArtifactIds,
-        selectedWorkspaceFilePaths,
-        selectedWorkspaceRootFiles,
-        selectedClaimIds,
-        selectedConflictIds,
-        policyVersion: KNOWLEDGE_CONTEXT_POLICY_VERSION,
-        budget,
-      },
-    }),
-    policyVersion: KNOWLEDGE_CONTEXT_POLICY_VERSION,
-    selectedKnowledgeEntryIds,
-    selectedArtifactIds,
-    selectedWorkspaceFilePaths,
-    selectedWorkspaceRootFiles,
-    selectedClaimIds,
-    selectedConflictIds,
-    excludedCandidateCount: traceInput.exclusions.length,
-    budget,
-  };
-}
-
-/**
- * Selects accepted claims relevant to selected context material.
- *
- * @param input Available claims, selected materials, and query.
- * @returns Claims safe to include in a first-slice context package.
- */
-function selectContextClaims(input: {
-  claims: readonly KnowledgeClaim[];
-  materials: readonly KnowledgeManagerContextMaterial[];
-  query: string;
-}): KnowledgeClaim[] {
-  return input.claims.filter((claim) => isSelectedClaim(claim, input.materials, input.query));
-}
-
-/**
- * Returns whether a claim is eligible and relevant for context selection.
- *
- * @param claim Candidate claim.
- * @param materials Selected knowledge materials.
- * @param query Original context query.
- * @returns True when the claim is accepted and related to selected context.
- */
-function isSelectedClaim(
-  claim: KnowledgeClaim,
-  materials: readonly KnowledgeManagerContextMaterial[],
-  query: string
-): boolean {
-  if (materials.length === 0) {
-    return false;
-  }
-
-  if (
-    claim.reviewState !== 'accepted' ||
-    claim.freshness === 'stale' ||
-    claim.conflictStatus !== 'none'
-  ) {
-    return false;
-  }
-
-  const selectedRefs = new Set(
-    materials.map((material) => `knowledge:${material.knowledgeEntryId}`)
-  );
-
-  return (
-    claim.sourceReferences.some((reference) => selectedRefs.has(reference)) ||
-    queryMatchesText(query, claim.statement)
-  );
-}
-
-/**
- * Selects unresolved conflicts related to selected knowledge material or selected claims.
- *
- * @param input Available conflicts, selected materials, and selected claims.
- * @returns Unresolved conflicts relevant to the first-slice context package.
- */
-function selectContextConflicts(input: {
-  conflicts: readonly KnowledgeConflict[];
-  materials: readonly KnowledgeManagerContextMaterial[];
-  claims: readonly KnowledgeClaim[];
-}): KnowledgeConflict[] {
-  const selectedClaimIds = new Set(input.claims.map((claim) => claim.id));
-
-  return input.conflicts.filter((conflict) =>
-    isSelectedConflict(conflict, input.materials, selectedClaimIds)
-  );
-}
-
-/**
- * Returns whether a conflict is unresolved and related to selected context.
- *
- * @param conflict Candidate conflict.
- * @param materials Selected knowledge materials.
- * @param selectedClaimIds Claim ids selected for context.
- * @returns True when the conflict should be carried for worker-visible caution.
- */
-function isSelectedConflict(
-  conflict: KnowledgeConflict,
-  materials: readonly KnowledgeManagerContextMaterial[],
-  selectedClaimIds: ReadonlySet<string>
-): boolean {
-  if (conflict.status === 'resolved' || conflict.resolvedAt) {
-    return false;
-  }
-
-  const selectedRefs = new Set([
-    ...materials.map((material) => `knowledge:${material.knowledgeEntryId}`),
-    ...[...selectedClaimIds].map((claimId) => `claim:${claimId}`),
-  ]);
-
-  return conflict.subjectReferences.some((reference) => selectedRefs.has(reference));
-}
-
-/**
- * Checks whether query terms appear in a candidate text.
- *
- * @param query Context query.
- * @param text Candidate text.
- * @returns True when at least one non-trivial query token appears.
- */
-function queryMatchesText(query: string, text: string): boolean {
-  const normalized = text.toLowerCase();
-
-  return query
-    .toLowerCase()
-    .split(/[^a-z0-9]+/u)
-    .filter((token) => token.length > 2)
-    .some((token) => normalized.includes(token));
-}
-
-/**
- * Serializes JSON-like input with stable object key ordering.
- *
- * @param value Value to serialize.
- * @returns Deterministic JSON string.
- */
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
-
-    return `{${entries
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
-      .join(',')}}`;
-  }
-
-  return JSON.stringify(value);
-}
-
-/**
  * Normalizes a knowledge title for duplicate-title repair detection.
  *
  * @param title Knowledge entry title.
@@ -755,100 +590,4 @@ function repairIdPart(title: string): string {
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '') || 'untitled'
   );
-}
-
-/**
- * Classifies one proposal source reference against known workspace records.
- *
- * @param reference Raw source reference from the draft request.
- * @param entries Workspace knowledge entries.
- * @param sources Registered source records.
- * @returns Deterministic lineage projection.
- */
-function classifyProposalSourceReference(
-  reference: string,
-  entries: readonly WorkspaceKnowledgeEntry[],
-  sources: readonly KnowledgeSourceRecord[]
-): KnowledgeManagerDraftProposalResponse['sourceLineage'][number] {
-  const sourceId = stripReferencePrefix(reference, 'source');
-  const source = sources.find((candidate) => candidate.id === sourceId);
-
-  if (source) {
-    return {
-      reference,
-      classification: 'registered-source',
-      sourceId: source.id,
-      knowledgeEntryId: null,
-      title: source.title,
-      reviewRequired: false,
-      detail: 'Reference resolves to a registered workspace knowledge source.',
-    };
-  }
-
-  const knowledgeEntryId = stripReferencePrefix(reference, 'knowledge');
-  const entry = entries.find((candidate) => candidate.id === knowledgeEntryId);
-
-  if (entry) {
-    return {
-      reference,
-      classification: 'workspace-knowledge',
-      sourceId: null,
-      knowledgeEntryId: entry.id,
-      title: entry.title,
-      reviewRequired: false,
-      detail: 'Reference resolves to an existing workspace knowledge entry.',
-    };
-  }
-
-  return {
-    reference,
-    classification: 'external-reference',
-    sourceId: null,
-    knowledgeEntryId: null,
-    title: null,
-    reviewRequired: true,
-    detail: 'Reference is not registered as a workspace knowledge source or knowledge entry.',
-  };
-}
-
-/**
- * Builds proposal validation checks from source-lineage results.
- *
- * @param hasReferences Whether the draft carried source references.
- * @param sourceLineage Classified source lineage.
- * @returns Validation checks for the draft operation.
- */
-function buildProposalValidationChecks(
-  hasReferences: boolean,
-  sourceLineage: KnowledgeManagerDraftProposalResponse['sourceLineage']
-): KnowledgeManagerDraftProposalResponse['validation']['checks'] {
-  if (!hasReferences) {
-    return [
-      {
-        code: 'no-source-references',
-        passed: false,
-        detail: 'Proposal draft has no source references and requires source review.',
-      },
-    ];
-  }
-
-  return sourceLineage.map((lineage) => ({
-    code: lineage.reviewRequired
-      ? ('source-reference-unregistered' as const)
-      : ('source-reference-resolved' as const),
-    passed: !lineage.reviewRequired,
-    detail: lineage.detail,
-  }));
-}
-
-/**
- * Returns the id part of a typed reference when the prefix matches.
- *
- * @param reference Raw proposal source reference.
- * @param prefix Expected reference prefix.
- * @returns Stripped id or original reference.
- */
-function stripReferencePrefix(reference: string, prefix: 'knowledge' | 'source'): string {
-  const expected = `${prefix}:`;
-  return reference.startsWith(expected) ? reference.slice(expected.length) : reference;
 }

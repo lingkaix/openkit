@@ -117,6 +117,18 @@ export interface KnowledgeProfileValidationReport {
   errors: KnowledgeValidationError[];
 }
 
+/** Ephemeral proof that one exact Knowledge Page still has valid source authority. */
+export interface KnowledgePageReferenceProof {
+  /** Exact canonical page digest verified with its current owners. */
+  readonly contentDigest: string;
+  /** Bundle-relative Knowledge Page identity bound to this proof. */
+  readonly knowledgePageId: string;
+  /** Complete references verified by their current owning domains. */
+  readonly resolvedReferences: ReadonlySet<string>;
+  /** Complete bytewise-sorted references carried by the exact page. */
+  readonly sourceReferences: readonly string[];
+}
+
 /** First-slice workspace schema used for active Knowledge Store validation. */
 export interface WorkspaceKnowledgeSchema {
   /** Schema version expected by governed knowledge records. */
@@ -417,6 +429,8 @@ export function validateKnowledgePageCandidate(input: {
   registeredSourceIds: ReadonlySet<string>;
   /** Knowledge page ids that exist after the candidate write. */
   knowledgeIds: ReadonlySet<string>;
+  /** Closed references already verified by their owning authority. */
+  resolvedReferences?: ReadonlySet<string>;
 }): KnowledgeProfileValidationReport {
   const parsed = parseOkfDocument({ path: input.path, content: input.content });
 
@@ -447,7 +461,8 @@ export function validateKnowledgePageCandidate(input: {
   const referenceErrors = knowledgeReferenceErrors(
     parsed.document,
     input.registeredSourceIds,
-    input.knowledgeIds
+    input.knowledgeIds,
+    input.resolvedReferences
   );
 
   return referenceErrors.length === 0 ? schemaReport : { ...schemaReport, errors: referenceErrors };
@@ -491,12 +506,14 @@ export function stringFrontmatterField(document: OkfDocument, field: string): st
  * @param document Parsed candidate document.
  * @param registeredSourceIds Registered source ids in the owning Workspace.
  * @param knowledgeIds Knowledge page ids that exist after the candidate write.
+ * @param resolvedReferences Closed non-page references verified by their owners.
  * @returns Reference-resolution errors.
  */
 export function knowledgeReferenceErrors(
   document: OkfDocument,
   registeredSourceIds: ReadonlySet<string>,
-  knowledgeIds: ReadonlySet<string>
+  knowledgeIds: ReadonlySet<string>,
+  resolvedReferences: ReadonlySet<string> = new Set()
 ): KnowledgeValidationError[] {
   const sourceRefs = document.frontmatter.source_refs;
 
@@ -505,6 +522,10 @@ export function knowledgeReferenceErrors(
   }
 
   return sourceRefs.flatMap((reference) => {
+    if (resolvedReferences.has(reference)) {
+      return [];
+    }
+
     if (reference.startsWith('source:')) {
       return registeredSourceIds.has(reference.slice('source:'.length))
         ? []

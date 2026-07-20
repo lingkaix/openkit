@@ -1449,7 +1449,7 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
         throw new Error(`Turn not found: ${turnId}`);
       }
 
-      return turn;
+      return { ...turn, contextPackageDigest: null };
     },
     interruptTurn: async (input) => {
       options.onInterrupt?.(input);
@@ -2533,15 +2533,6 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       prepareKnowledgeContext: async () => {
         throw new Error('Knowledge Manager context fixture not configured.');
       },
-      readKnowledgeContextPackageTrace: async () => {
-        throw new Error('Knowledge context package trace fixture not configured.');
-      },
-      materializeKnowledgeContextPackage: async () => {
-        throw new Error('Knowledge context package materialization fixture not configured.');
-      },
-      readKnowledgeContextPackageMaterialization: async () => {
-        throw new Error('Knowledge context package materialization fixture not configured.');
-      },
       draftKnowledgeProposal: async () => {
         throw new Error('Knowledge proposal fixture not configured.');
       },
@@ -2565,6 +2556,9 @@ function createFakeClient(options: FakeClientOptions = {}): CoreClient {
       submitGoalReviewDecision: implementations.submitGoalReviewDecision,
       submitKnowledgeProposalDecision: async () => {
         throw new Error('Knowledge proposal decision fixture not configured.');
+      },
+      reverseKnowledgeProposal: async () => {
+        throw new Error('Knowledge proposal reversal fixture not configured.');
       },
       listWorkspaceSyncReviews: async () => ({ items: [] }),
       getWorkspaceSyncReview: async () => {

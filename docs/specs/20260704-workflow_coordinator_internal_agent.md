@@ -1,7 +1,7 @@
 # Workflow Coordinator Internal Core Role
 
 Status: Accepted
-Implementation: Partial
+Implementation: Implemented
 
 ## Owns
 

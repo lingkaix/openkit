@@ -10,16 +10,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  type KnowledgeManagerContextPackageTraceRecord,
-  KnowledgeManagerPrepareContextResponseSchema,
-} from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import { FsStore } from '../lib/store.js';
 
 const TIMESTAMP = '2026-07-12T00:00:00.000Z';
-type LedgerFamily = 'claims' | 'conflicts' | 'context-packages' | 'observations';
+type LedgerFamily = 'claims' | 'conflicts' | 'observations';
 
 /**
  * Creates one file-backed workspace for direct canonical JSONL tests.
@@ -35,44 +31,6 @@ function createFixture() {
     store,
     workspaceId: workspace.id,
     workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
-  };
-}
-
-/**
- * Builds one valid empty Knowledge Manager context trace.
- *
- * @param workspaceId Owning workspace id.
- * @param id Context package id.
- * @returns Context trace fixture.
- */
-function contextTrace(workspaceId: string, id: string): KnowledgeManagerContextPackageTraceRecord {
-  const operationId = `op_${id}`;
-
-  return {
-    id,
-    workspaceId,
-    operationId,
-    createdAt: TIMESTAMP,
-    response: KnowledgeManagerPrepareContextResponseSchema.parse({
-      operationId,
-      operation: 'prepare-context-material',
-      workspaceId,
-      caller: 'workflow-coordinator',
-      query: 'Verify canonical JSONL recovery.',
-      outcome: 'insufficient-evidence',
-      materials: [],
-      exclusions: [],
-      packageTrace: {
-        contextPackageId: id,
-        contextPackageDigest: `ctxpkg_sha256_${'0'.repeat(64)}`,
-        policyVersion: 'knowledge-context-v1',
-        selectedKnowledgeEntryIds: [],
-        excludedCandidateCount: 0,
-        budget: { requestedLimit: 1, selectedCount: 0, excludedCount: 0 },
-      },
-      confidence: 0,
-      uncertainty: 'No context was selected.',
-    }),
   };
 }
 
@@ -137,9 +95,6 @@ function appendLedgerRecord(
         updatedAt: TIMESTAMP,
       });
       break;
-    case 'context-packages':
-      store.recordKnowledgeContextPackageTrace(contextTrace(workspaceId, `ctx_${suffix}`));
-      break;
   }
 }
 
@@ -161,9 +116,6 @@ function readLedger(store: FsStore, workspaceId: string, family: LedgerFamily): 
     case 'conflicts':
       store.listKnowledgeConflicts(workspaceId);
       break;
-    case 'context-packages':
-      store.readKnowledgeContextPackageTrace(workspaceId, 'ctx_second');
-      break;
   }
 }
 
@@ -172,7 +124,6 @@ describe('direct canonical JSONL ledgers', () => {
     'observations',
     'claims',
     'conflicts',
-    'context-packages',
   ] as const)('repairs incomplete %s tails before append and read', (family) => {
     const { store, workspaceId, workspaceRoot } = createFixture();
     const path = join(workspaceRoot, 'knowledge', family, '202607.jsonl');
@@ -192,7 +143,6 @@ describe('direct canonical JSONL ledgers', () => {
     'observations',
     'claims',
     'conflicts',
-    'context-packages',
   ] as const)('rejects a symlinked %s ledger without writing outside', (family) => {
     const { store, workspaceId, workspaceRoot } = createFixture();
     const path = join(workspaceRoot, 'knowledge', family, '202607.jsonl');
@@ -212,7 +162,6 @@ describe('direct canonical JSONL ledgers', () => {
     'observations',
     'claims',
     'conflicts',
-    'context-packages',
   ] as const)('rejects schema-invalid %s rows through the Store API', (family) => {
     const { store, workspaceId, workspaceRoot } = createFixture();
     const path = join(workspaceRoot, 'knowledge', family, '202607.jsonl');
@@ -228,7 +177,6 @@ describe('direct canonical JSONL ledgers', () => {
     'observations',
     'claims',
     'conflicts',
-    'context-packages',
   ] as const)('rejects %s rows stored under the wrong ledger month', (family) => {
     const { store, workspaceId, workspaceRoot } = createFixture();
     const expectedPath = join(workspaceRoot, 'knowledge', family, '202607.jsonl');

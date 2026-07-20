@@ -53,7 +53,7 @@ Adapt this sequence to the task, but preserve its authority and safety boundarie
 
 - Load [setup.md](references/setup.md) for first connection, endpoint configuration, credential storage, bootstrap, `doctor`, or connection and authentication diagnosis.
 - Load [loop.md](references/loop.md) for workspace work, mode selection, plans, bounded execution, Action Center decisions, artifacts, evidence, review, or completion.
-- Load [knowledge.md](references/knowledge.md) for knowledge sources, observations, claims, conflicts, retrieval, context packages, proposals, repair, or knowledge health.
+- Load [knowledge.md](references/knowledge.md) for knowledge sources, observations, claims, conflicts, retrieval, bounded context preparation, proposals, repair, or knowledge health.
 - Load [recovery.md](references/recovery.md) for interrupted or unknown work, retries, checkpoints, restarts, stale state, `recovery_required`, or local aborts.
 - Load [administration.md](references/administration.md) for runtime configuration, access administration, vault operations, audit, usage, automations, Git administration, backup, export, import, or workspace portability.
 - Load [capability-map.md](references/capability-map.md) when the user intent does not clearly identify a capability group or when an operation cannot be found.

@@ -11,10 +11,6 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import {
-  type KnowledgeManagerContextPackageTraceRecord,
-  KnowledgeManagerPrepareContextResponseSchema,
-} from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
@@ -77,47 +73,6 @@ function knowledgeSource(workspaceId: string, sourceId: string): KnowledgeSource
     capturedAt: timestamp,
     createdAt: timestamp,
     updatedAt: timestamp,
-  };
-}
-
-/**
- * Builds one valid empty Knowledge Manager context trace.
- *
- * @param workspaceId Owning workspace id.
- * @param id Context package id.
- * @returns Context trace fixture.
- */
-function contextTrace(
-  workspaceId: string,
-  id = 'ctx_direct_write_symlink'
-): KnowledgeManagerContextPackageTraceRecord {
-  const operationId = 'op_direct_write_symlink';
-
-  return {
-    id,
-    workspaceId,
-    operationId,
-    createdAt: timestamp,
-    response: KnowledgeManagerPrepareContextResponseSchema.parse({
-      operationId,
-      operation: 'prepare-context-material',
-      workspaceId,
-      caller: 'workflow-coordinator',
-      query: 'Verify canonical write boundaries.',
-      outcome: 'insufficient-evidence',
-      materials: [],
-      exclusions: [],
-      packageTrace: {
-        contextPackageId: id,
-        contextPackageDigest: `ctxpkg_sha256_${'0'.repeat(64)}`,
-        policyVersion: 'knowledge-context-v1',
-        selectedKnowledgeEntryIds: [],
-        excludedCandidateCount: 0,
-        budget: { requestedLimit: 1, selectedCount: 0, excludedCount: 0 },
-      },
-      confidence: 0,
-      uncertainty: 'No context was selected.',
-    }),
   };
 }
 
@@ -241,8 +196,6 @@ describe('direct canonical write boundaries', () => {
     ['observation', 'observations'],
     ['claim', 'claims'],
     ['conflict', 'conflicts'],
-    ['context-package', 'context-packages'],
-    ['materialization', 'context-materializations'],
   ] as const)('rejects a symlinked %s write parent without writing outside', (family, directory) => {
     const { store, workspace, workspaceRoot } = createFixture(`openkit-direct-${family}-symlink-`);
     const outsideRoot = installOutsideParent(
@@ -299,21 +252,11 @@ describe('direct canonical write boundaries', () => {
               updatedAt: timestamp,
             });
             break;
-          case 'context-package':
-            store.recordKnowledgeContextPackageTrace(contextTrace(workspace.id));
-            break;
-          case 'materialization':
-            store.materializeKnowledgeContextPackageTrace(contextTrace(workspace.id));
-            break;
         }
       })
       .toThrow();
 
-    const outsideFile =
-      family === 'materialization'
-        ? join('ctx_direct_write_symlink', 'openkit', 'context', 'instructions.md')
-        : '202607.jsonl';
-    expect(existsSync(join(outsideRoot, outsideFile))).toBe(false);
+    expect(existsSync(join(outsideRoot, '202607.jsonl'))).toBe(false);
   });
 
   it.each([

@@ -126,7 +126,7 @@ OpenKit-authored end-user Skills ship in-repo today (`skills/README.md`), but th
 - Remote auth bootstrap and channel credential storage: `docs/specs/20260704-remote_auth_credential_bootstrap.md`.
 - Vault backends (OS keychain and encrypted local store): `docs/specs/20260704-vault_backend_implementation.md`.
 - Workspace backup, export, import, and data-root migration: `docs/specs/20260704-workspace_backup_export_import.md`.
-- Agent session continuity (snapshot, resume, rollback, crash recovery records): `docs/specs/20260704-agent_session_continuity.md`.
+- Agent Session continuity through exact same-worker reconnect or truthful interruption and a fresh authorized request; snapshot, generic resume, rollback, fork, clone, and automatic replacement remain non-authorizing future directions: `docs/specs/20260704-agent_session_continuity.md`.
 - Git write workflow (commit-on-apply, review branches, GitHub-only approval-gated push): `docs/specs/20260704-git_write_workflow.md`.
 
 ## Links

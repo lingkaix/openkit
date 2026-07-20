@@ -8,6 +8,7 @@ import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
   type KnowledgeConformance,
+  type KnowledgePageReferenceProof,
   type KnowledgeValidationError,
   knowledgeReferenceErrors,
   type OkfDocument,
@@ -21,10 +22,15 @@ import { resolveDataRootPath } from './fs-layout.js';
 import {
   artifactContentFileName,
   assertCanonicalDirectory,
+  listKnowledgePageIds,
   readCanonicalJsonLines,
   readCanonicalTextFile,
+  readWorkspaceKnowledgePage,
 } from './workspace-file-records.js';
-import { appendWorkspaceKnowledgeRetrievalTrace } from './workspace-portable-file-state.js';
+import {
+  appendWorkspaceKnowledgeRetrievalTrace,
+  readWorkspaceKnowledgeRetrievalTrace,
+} from './workspace-portable-file-state.js';
 
 type SearchIndexKind = 'workspace' | 'thread' | 'knowledge' | 'artifact' | 'item';
 
@@ -245,6 +251,8 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   limit?: number | undefined;
   /** Concepts that should be included when present and active. */
   pinnedConceptIds?: readonly string[] | undefined;
+  /** Current Page-bound source-authority proofs for accepted candidates. */
+  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
   /** Optional trace id for deterministic tests and route ownership. */
   traceId?: string | undefined;
   /** Optional timestamp source for deterministic tests. */
@@ -302,6 +310,24 @@ export interface WorkspaceKnowledgeRetrievalTrace {
   excluded: WorkspaceKnowledgeRetrievalExclusion[];
   /** Trace creation timestamp. */
   createdAt: string;
+}
+
+/** Exact authoritative Knowledge Page selected for one Task worker Context Package. */
+export interface ResolvedWorkspaceKnowledgeRetrievalPage {
+  /** Selected Knowledge Page id. */
+  knowledgePageId: string;
+  /** SHA-256 digest of the exact authoritative page bytes. */
+  contentDigest: string;
+  /** Source references declared by the page in canonical retrieval order. */
+  sourceRefs: string[];
+  /** Exact authoritative UTF-8 Markdown bytes. */
+  content: string;
+  /** Human-readable page title from the verified authoritative bytes. */
+  title: string;
+  /** Markdown body from the verified authoritative bytes. */
+  body: string;
+  /** Existing App API projection kind, defaulted for native OKF pages. */
+  kind: 'preference' | 'project-context' | 'task-summary';
 }
 
 /** Options for boot-time derived index rebuild scans. */
@@ -504,6 +530,14 @@ export function retrieveWorkspaceKnowledge(
       );
     }
   }
+  addProofBackedKnowledgeCandidates({
+    addressedIds,
+    pinnedConceptIds,
+    proofs: input.referenceProofs,
+    queryTerms,
+    scores,
+    workspaceRoot,
+  });
 
   const validationByConcept = new Map(
     indexes.validation.records.map((record) => [record.conceptId, record] as const)
@@ -536,11 +570,8 @@ export function retrieveWorkspaceKnowledge(
       throw new Error('Knowledge retrieval requires an index rebuild.');
     }
 
-    let content: string;
-
-    try {
-      content = readCanonicalTextFile(join(workspaceRoot, expectedPath));
-    } catch {
+    const content = readWorkspaceKnowledgePage(workspaceRoot, candidate.knowledgePageId);
+    if (content === null) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest: null,
@@ -552,7 +583,7 @@ export function retrieveWorkspaceKnowledge(
     const contentDigest = sha256Digest(content);
     const parsed = parseOkfDocument({ path: expectedPath, content });
     const document = parsed.document;
-    const validation = validateKnowledgePageCandidate({
+    const indexValidation = validateKnowledgePageCandidate({
       path: expectedPath,
       content,
       ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
@@ -563,23 +594,38 @@ export function retrieveWorkspaceKnowledge(
       document && Array.isArray(document.frontmatter.source_refs)
         ? [...new Set(document.frontmatter.source_refs)].sort(compareBytewise)
         : [];
+    const referenceProof = matchingKnowledgeReferenceProof(
+      input.referenceProofs,
+      candidate.knowledgePageId,
+      contentDigest,
+      sourceReferences
+    );
+    const validation = validateKnowledgePageCandidate({
+      path: expectedPath,
+      content,
+      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
+      registeredSourceIds,
+      knowledgeIds,
+      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+    });
     const projectedSourceReferences = [
       ...new Set(sourceReferencesByConcept.get(candidate.knowledgePageId) ?? []),
     ].sort(compareBytewise);
     const active = document?.frontmatter.status === 'active';
-    const indexed =
+    const staticallyIndexed =
       active &&
-      validation.conformance === 'Workspace-schema-valid' &&
-      validation.errors.length === 0;
+      stringFrontmatterField(document, 'review_state') === 'user-authored' &&
+      indexValidation.conformance === 'Workspace-schema-valid' &&
+      indexValidation.errors.length === 0;
     const title = document ? stringFrontmatterField(document, 'title') : null;
 
     if (
       record.contentDigest !== contentDigest ||
-      record.conformance !== validation.conformance ||
+      record.conformance !== indexValidation.conformance ||
       record.active !== active ||
-      record.indexed !== indexed ||
+      record.indexed !== staticallyIndexed ||
       (record.title ?? null) !== title ||
-      canonicalJson(record.errors) !== canonicalJson(validation.errors) ||
+      canonicalJson(record.errors) !== canonicalJson(indexValidation.errors) ||
       (document &&
         (document.conceptId !== candidate.knowledgePageId ||
           !sameStrings(sourceReferences, projectedSourceReferences))) ||
@@ -610,7 +656,11 @@ export function retrieveWorkspaceKnowledge(
 
     const reviewState = stringFrontmatterField(document, 'review_state');
 
-    if (!indexed || (reviewState !== 'accepted' && reviewState !== 'user-authored')) {
+    if (
+      validation.errors.length > 0 ||
+      (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
+      (reviewState === 'accepted' && !referenceProof)
+    ) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest,
@@ -677,6 +727,191 @@ export function retrieveWorkspaceKnowledge(
   appendWorkspaceKnowledgeRetrievalTrace(workspaceRoot, trace);
 
   return trace;
+}
+
+/**
+ * Resolves one Task-owned retrieval trace to its exact current Knowledge Page bytes.
+ *
+ * @param input Data root, workspace, and persisted retrieval-trace identity.
+ * @returns Selected pages in persisted order, or null when a selected page file is missing.
+ * @throws Error when trace lineage or authoritative page evidence is contradictory.
+ */
+export function resolveWorkspaceKnowledgeRetrievalPages(input: {
+  /** Data root that owns the workspace. */
+  dataRoot: string;
+  /** Workspace expected to own the retrieval trace and pages. */
+  workspaceId: string;
+  /** Persisted governed retrieval trace to resolve. */
+  retrievalTraceId: string;
+  /** Server-owned caller expected on the retrieval trace. */
+  caller: RetrieveWorkspaceKnowledgeInput['caller'];
+  /** Fresh Page-bound source-authority proofs for accepted selections. */
+  referenceProofs?: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
+}): ResolvedWorkspaceKnowledgeRetrievalPage[] | null {
+  const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
+  const trace = readWorkspaceKnowledgeRetrievalTrace(workspaceRoot, input.retrievalTraceId);
+
+  if (!trace) {
+    throw new Error('Knowledge retrieval trace was not found.');
+  }
+  if (trace.workspaceId !== input.workspaceId || trace.caller !== input.caller) {
+    throw new Error('Knowledge retrieval trace lineage is contradictory.');
+  }
+
+  const workspaceSchemaText = readWorkspaceKnowledgeSchemaText(workspaceRoot);
+  const registeredSourceIds = readRegisteredSourceIds(workspaceRoot, input.workspaceId);
+  const knowledgeIds = readKnowledgePageIds(join(workspaceRoot, 'knowledge', 'pages'));
+  const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
+
+  for (const selected of trace.selected) {
+    const path = `knowledge/pages/${selected.knowledgePageId}.md`;
+    const content = readWorkspaceKnowledgePage(workspaceRoot, selected.knowledgePageId);
+    if (content === null) {
+      return null;
+    }
+
+    const parsed = parseOkfDocument({ path, content });
+    const document = parsed.document;
+    const sourceRefs =
+      document && Array.isArray(document.frontmatter.source_refs)
+        ? [...new Set(document.frontmatter.source_refs)].sort(compareBytewise)
+        : [];
+    const contentDigest = sha256Digest(content);
+    const referenceProof = matchingKnowledgeReferenceProof(
+      input.referenceProofs,
+      selected.knowledgePageId,
+      contentDigest,
+      sourceRefs
+    );
+    const validation = validateKnowledgePageCandidate({
+      path,
+      content,
+      ...(workspaceSchemaText ? { workspaceSchemaText } : {}),
+      registeredSourceIds,
+      knowledgeIds,
+      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+    });
+    const reviewState = document ? stringFrontmatterField(document, 'review_state') : null;
+    const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
+    const freshness = document ? stringFrontmatterField(document, 'freshness') : null;
+    const title = document ? stringFrontmatterField(document, 'title') : null;
+    const entryKind = document ? stringFrontmatterField(document, 'openkit_entry_kind') : null;
+
+    if (
+      !parsed.ok ||
+      !document ||
+      validation.conformance !== 'Workspace-schema-valid' ||
+      validation.errors.length > 0 ||
+      document.conceptId !== selected.knowledgePageId ||
+      stringFrontmatterField(document, 'status') !== 'active' ||
+      (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
+      (reviewState === 'accepted' && !referenceProof) ||
+      sensitivity === 'restricted' ||
+      sensitivity === 'confidential' ||
+      freshness === 'stale' ||
+      freshness === 'expired' ||
+      title === null ||
+      contentDigest !== selected.contentDigest ||
+      !sameStrings(sourceRefs, selected.sourceReferences)
+    ) {
+      throw new Error('Knowledge retrieval trace no longer matches authoritative pages.');
+    }
+
+    pages.push({
+      knowledgePageId: selected.knowledgePageId,
+      contentDigest,
+      sourceRefs,
+      content,
+      title,
+      body: document.body.trim(),
+      kind:
+        entryKind === 'preference' ||
+        entryKind === 'project-context' ||
+        entryKind === 'task-summary'
+          ? entryKind
+          : 'project-context',
+    });
+  }
+
+  return pages;
+}
+
+/**
+ * Selects one exact Page-bound proof without allowing references from another Page to leak in.
+ *
+ * @param proofs Current request-scoped proof map.
+ * @param knowledgePageId Exact candidate Page identity.
+ * @param contentDigest Exact current canonical Page digest.
+ * @param sourceReferences Exact current Page references.
+ * @returns Matching proof, or null when any part of the tuple differs.
+ */
+function matchingKnowledgeReferenceProof(
+  proofs: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined,
+  knowledgePageId: string,
+  contentDigest: string,
+  sourceReferences: readonly string[]
+): KnowledgePageReferenceProof | null {
+  const proof = proofs?.get(knowledgePageId);
+  if (
+    !proof ||
+    proof.knowledgePageId !== knowledgePageId ||
+    proof.contentDigest !== contentDigest ||
+    !sameStrings(proof.sourceReferences, sourceReferences) ||
+    !sameStrings([...proof.resolvedReferences].sort(compareBytewise), sourceReferences)
+  ) {
+    return null;
+  }
+  return proof;
+}
+
+/**
+ * Adds exact proof-backed Pages to the existing retrieval candidate and score maps.
+ *
+ * Persisted indexes remain proof-neutral; this bounded pass considers only current proofs and uses
+ * the same tokenizer and scorer as ordinary postings.
+ *
+ * @param input Existing candidate maps, current proofs, query terms, and Workspace root.
+ */
+function addProofBackedKnowledgeCandidates(input: {
+  readonly addressedIds: Set<string>;
+  readonly pinnedConceptIds: ReadonlySet<string>;
+  readonly proofs: ReadonlyMap<string, KnowledgePageReferenceProof> | undefined;
+  readonly queryTerms: readonly string[];
+  readonly scores: Map<string, number>;
+  readonly workspaceRoot: string;
+}): void {
+  for (const [knowledgePageId] of input.proofs ?? []) {
+    const content = readWorkspaceKnowledgePage(input.workspaceRoot, knowledgePageId);
+    if (content === null) {
+      continue;
+    }
+    const path = `knowledge/pages/${knowledgePageId}.md`;
+    const parsed = parseOkfDocument({ path, content });
+    const document = parsed.document;
+    const sourceReferences =
+      document && Array.isArray(document.frontmatter.source_refs)
+        ? [...new Set(document.frontmatter.source_refs)].sort(compareBytewise)
+        : [];
+    if (
+      !parsed.ok ||
+      !document ||
+      stringFrontmatterField(document, 'review_state') !== 'accepted' ||
+      !matchingKnowledgeReferenceProof(
+        input.proofs,
+        knowledgePageId,
+        sha256Digest(content),
+        sourceReferences
+      )
+    ) {
+      continue;
+    }
+    const score = knowledgeTermScore(document, input.queryTerms);
+    if (score === 0 && !input.pinnedConceptIds.has(knowledgePageId)) {
+      continue;
+    }
+    input.addressedIds.add(knowledgePageId);
+    input.scores.set(knowledgePageId, score);
+  }
 }
 
 /**
@@ -846,19 +1081,14 @@ function readKnowledgePageEntries(
     return entries;
   }
 
-  for (const fileName of listFiles(pagesRoot).filter((name) => name.endsWith('.md'))) {
-    if (fileName === 'index.md' || fileName === 'log.md') {
-      continue;
-    }
-
-    const path = join(pagesRoot, fileName);
+  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
+    const path = join(pagesRoot, `${knowledgePageId}.md`);
     const content = readCanonicalTextFile(path);
     const parsed = parseOkfDocument({ path, content });
 
     if (
       !parsed.ok ||
-      !isActiveOpenKitKnowledgePage(parsed.document, schema) ||
-      !sourceReferencesResolve(parsed.document, registeredSourceIds, knowledgeIds)
+      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSourceIds, knowledgeIds)
     ) {
       continue;
     }
@@ -866,7 +1096,7 @@ function readKnowledgePageEntries(
     const id =
       stringFrontmatterField(parsed.document, 'openkit_entry_id') ??
       parsed.document.conceptId ??
-      fileName.slice(0, -'.md'.length);
+      knowledgePageId;
     const title = stringFrontmatterField(parsed.document, 'title') ?? id;
 
     entries.push({
@@ -890,24 +1120,30 @@ function readKnowledgePageEntries(
 function readKnowledgePageIds(pagesRoot: string): Set<string> {
   const ids = new Set<string>();
 
-  for (const fileName of listFiles(pagesRoot).filter((name) => name.endsWith('.md'))) {
-    if (fileName === 'index.md' || fileName === 'log.md') {
-      continue;
-    }
-
-    const path = join(pagesRoot, fileName);
+  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
+    const path = join(pagesRoot, `${knowledgePageId}.md`);
     const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (parsed.ok) {
       ids.add(
         stringFrontmatterField(parsed.document, 'openkit_entry_id') ??
           parsed.document.conceptId ??
-          fileName.slice(0, -'.md'.length)
+          knowledgePageId
       );
     }
   }
 
   return ids;
+}
+
+/**
+ * Lists non-reserved Knowledge Page ids recursively through the canonical path owner.
+ *
+ * @param pagesRoot Canonical OKF bundle pages root.
+ * @returns Sorted bundle-relative Page ids.
+ */
+function indexKnowledgePageIds(pagesRoot: string): string[] {
+  return listKnowledgePageIds(pagesRoot).filter((id) => id !== 'index' && id !== 'log');
 }
 
 /**
@@ -942,13 +1178,42 @@ function readRegisteredSourceIds(workspaceRoot: string, workspaceId: string): Se
 function sourceReferencesResolve(
   document: OkfDocument,
   registeredSourceIds: ReadonlySet<string>,
-  knowledgeIds: ReadonlySet<string>
+  knowledgeIds: ReadonlySet<string>,
+  resolvedReferences?: ReadonlySet<string>
 ): boolean {
   if (!Array.isArray(document.frontmatter.source_refs)) {
     return false;
   }
 
-  return knowledgeReferenceErrors(document, registeredSourceIds, knowledgeIds).length === 0;
+  return (
+    knowledgeReferenceErrors(document, registeredSourceIds, knowledgeIds, resolvedReferences)
+      .length === 0
+  );
+}
+
+/**
+ * Returns whether one Page may enter proof-neutral persisted search projections.
+ *
+ * Accepted Pages require request-scoped Proposal/Review or import proof and are added only by the
+ * governed retrieval owner; user-authored Pages can be indexed from their file-owned authority.
+ *
+ * @param document Parsed authoritative Page.
+ * @param schema Current Workspace Knowledge schema.
+ * @param registeredSourceIds Current registered Source identities.
+ * @param knowledgeIds Current Workspace Knowledge identities.
+ * @returns True only for an active, valid, directly user-authored Page.
+ */
+function isStaticKnowledgeIndexPage(
+  document: OkfDocument,
+  schema: WorkspaceKnowledgeSchema,
+  registeredSourceIds: ReadonlySet<string>,
+  knowledgeIds: ReadonlySet<string>
+): boolean {
+  return (
+    stringFrontmatterField(document, 'review_state') === 'user-authored' &&
+    isActiveOpenKitKnowledgePage(document, schema) &&
+    sourceReferencesResolve(document, registeredSourceIds, knowledgeIds)
+  );
 }
 
 /**
@@ -968,13 +1233,9 @@ function buildKnowledgeValidationRecords(
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const records: WorkspaceKnowledgeValidationRecord[] = [];
 
-  for (const fileName of listFiles(pagesRoot).filter((name) => name.endsWith('.md'))) {
-    if (fileName === 'index.md' || fileName === 'log.md') {
-      continue;
-    }
-
-    const path = join(pagesRoot, fileName);
-    const workspacePath = `knowledge/pages/${fileName}`;
+  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
+    const path = join(pagesRoot, `${knowledgePageId}.md`);
+    const workspacePath = `knowledge/pages/${knowledgePageId}.md`;
     const content = readCanonicalTextFile(path);
     const contentDigest = sha256Digest(content);
     const parsed = parseOkfDocument({ path, content });
@@ -987,17 +1248,23 @@ function buildKnowledgeValidationRecords(
       knowledgeIds,
     });
     const active = parsed.document?.frontmatter.status === 'active';
+    const reviewState = parsed.document
+      ? stringFrontmatterField(parsed.document, 'review_state')
+      : null;
     const title = parsed.document ? stringFrontmatterField(parsed.document, 'title') : null;
 
     records.push({
-      conceptId: parsed.document?.conceptId ?? fileName.slice(0, -'.md'.length),
+      conceptId: parsed.document?.conceptId ?? knowledgePageId,
       path: workspacePath,
       contentDigest,
       ...(title ? { title } : {}),
       conformance: report.conformance,
       active,
       indexed:
-        active && report.conformance === 'Workspace-schema-valid' && report.errors.length === 0,
+        active &&
+        reviewState === 'user-authored' &&
+        report.conformance === 'Workspace-schema-valid' &&
+        report.errors.length === 0,
       errors: report.errors,
     });
   }
@@ -1021,12 +1288,8 @@ function buildKnowledgeSourceReferences(
   const knowledgeIds = readKnowledgePageIds(pagesRoot);
   const references: WorkspaceKnowledgeSourceReference[] = [];
 
-  for (const fileName of listFiles(pagesRoot).filter((name) => name.endsWith('.md'))) {
-    if (fileName === 'index.md' || fileName === 'log.md') {
-      continue;
-    }
-
-    const path = join(pagesRoot, fileName);
+  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
+    const path = join(pagesRoot, `${knowledgePageId}.md`);
     const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
     const document = parsed.document;
     const sourceRefs = document?.frontmatter.source_refs;
@@ -1035,8 +1298,8 @@ function buildKnowledgeSourceReferences(
       continue;
     }
 
-    const conceptId = document.conceptId ?? fileName.slice(0, -'.md'.length);
-    const workspacePath = `knowledge/pages/${fileName}`;
+    const conceptId = document.conceptId ?? knowledgePageId;
+    const workspacePath = `knowledge/pages/${knowledgePageId}.md`;
 
     for (const reference of sourceRefs) {
       references.push(
@@ -1076,6 +1339,34 @@ function classifyKnowledgeSourceReference(input: {
   /** File-backed workspace knowledge ids. */
   knowledgeIds: ReadonlySet<string>;
 }): WorkspaceKnowledgeSourceReference {
+  if (input.reference.startsWith('source:')) {
+    const targetId = input.reference.slice('source:'.length).replace(/@sha256:[a-f0-9]{64}$/, '');
+
+    return {
+      conceptId: input.conceptId,
+      path: input.path,
+      reference: input.reference,
+      kind: 'registered-source',
+      targetId,
+      resolved: input.registeredSourceIds.has(targetId),
+    };
+  }
+
+  if (input.reference.startsWith('knowledge:')) {
+    const targetId = input.reference
+      .slice('knowledge:'.length)
+      .replace(/@sha256:[a-f0-9]{64}$/, '');
+
+    return {
+      conceptId: input.conceptId,
+      path: input.path,
+      reference: input.reference,
+      kind: 'workspace-knowledge',
+      targetId,
+      resolved: input.knowledgeIds.has(targetId),
+    };
+  }
+
   const resolved =
     knowledgeReferenceErrors(
       {
@@ -1088,32 +1379,6 @@ function classifyKnowledgeSourceReference(input: {
       input.registeredSourceIds,
       input.knowledgeIds
     ).length === 0;
-
-  if (input.reference.startsWith('source:')) {
-    const targetId = input.reference.slice('source:'.length);
-
-    return {
-      conceptId: input.conceptId,
-      path: input.path,
-      reference: input.reference,
-      kind: 'registered-source',
-      targetId,
-      resolved,
-    };
-  }
-
-  if (input.reference.startsWith('knowledge:')) {
-    const targetId = input.reference.slice('knowledge:'.length);
-
-    return {
-      conceptId: input.conceptId,
-      path: input.path,
-      reference: input.reference,
-      kind: 'workspace-knowledge',
-      targetId,
-      resolved,
-    };
-  }
 
   return {
     conceptId: input.conceptId,
@@ -1155,23 +1420,18 @@ function buildKnowledgeFullTextTerms(
     return [];
   }
 
-  for (const fileName of listFiles(pagesRoot).filter((name) => name.endsWith('.md'))) {
-    if (fileName === 'index.md' || fileName === 'log.md') {
-      continue;
-    }
-
-    const path = join(pagesRoot, fileName);
+  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
+    const path = join(pagesRoot, `${knowledgePageId}.md`);
     const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (
       !parsed.ok ||
-      !isActiveOpenKitKnowledgePage(parsed.document, schema) ||
-      !sourceReferencesResolve(parsed.document, registeredSourceIds, knowledgeIds)
+      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSourceIds, knowledgeIds)
     ) {
       continue;
     }
 
-    const conceptId = parsed.document.conceptId ?? fileName.slice(0, -'.md'.length);
+    const conceptId = parsed.document.conceptId ?? knowledgePageId;
     const title = stringFrontmatterField(parsed.document, 'title') ?? conceptId;
 
     addKnowledgeFullTextTerms(terms, conceptId, 'title', title);
@@ -1257,23 +1517,18 @@ function buildKnowledgeLinkEdges(
     return edges;
   }
 
-  for (const fileName of listFiles(pagesRoot).filter((name) => name.endsWith('.md'))) {
-    if (fileName === 'index.md' || fileName === 'log.md') {
-      continue;
-    }
-
-    const path = join(pagesRoot, fileName);
+  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
+    const path = join(pagesRoot, `${knowledgePageId}.md`);
     const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (
       !parsed.ok ||
-      !isActiveOpenKitKnowledgePage(parsed.document, schema) ||
-      !sourceReferencesResolve(parsed.document, registeredSourceIds, knowledgeIds)
+      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSourceIds, knowledgeIds)
     ) {
       continue;
     }
 
-    const fromId = parsed.document.conceptId ?? fileName.slice(0, -'.md'.length);
+    const fromId = parsed.document.conceptId ?? knowledgePageId;
 
     for (const target of extractMarkdownLinkTargets(parsed.document.body)) {
       const toId = normalizeKnowledgeLinkTarget(parsed.document.conceptId, target);
@@ -1305,16 +1560,12 @@ function buildKnowledgeLinkEdges(
 function readKnowledgePageConceptIds(pagesRoot: string): Set<string> {
   const ids = new Set<string>();
 
-  for (const fileName of listFiles(pagesRoot).filter((name) => name.endsWith('.md'))) {
-    if (fileName === 'index.md' || fileName === 'log.md') {
-      continue;
-    }
-
-    const path = join(pagesRoot, fileName);
+  for (const knowledgePageId of indexKnowledgePageIds(pagesRoot)) {
+    const path = join(pagesRoot, `${knowledgePageId}.md`);
     const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
 
     if (parsed.ok) {
-      ids.add(parsed.document.conceptId ?? fileName.slice(0, -'.md'.length));
+      ids.add(parsed.document.conceptId ?? knowledgePageId);
     }
   }
 

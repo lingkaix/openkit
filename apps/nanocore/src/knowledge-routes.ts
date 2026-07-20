@@ -17,8 +17,6 @@ import {
   ListKnowledgeConflictsResponseSchema,
   ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
-  MaterializeKnowledgeContextPackageResponseSchema,
-  ReadKnowledgeManagerContextPackageTraceResponseSchema,
   ReadKnowledgeSourceResponseSchema,
   RecordKnowledgeClaimRequestSchema,
   RecordKnowledgeClaimResponseSchema,
@@ -32,7 +30,6 @@ import {
   ResolveKnowledgeConflictResponseSchema,
   RetrieveKnowledgeRequestSchema,
 } from '@openkit/app-api-schemas';
-import type { MaterializedWorkspaceRoot as ConfigMaterializedWorkspaceRoot } from '@openkit/config-schema';
 import {
   type ActorRef,
   CreateKnowledgeEntryRequestSchema,
@@ -53,28 +50,70 @@ import {
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
+import { KnowledgePageValidationError } from './knowledge/okf.js';
 import {
   answerKnowledgeManager,
   checkKnowledgeHealth,
   draftKnowledgeProposal,
   prepareKnowledgeContext,
-  resolveRetrievedKnowledgeEntries,
+  resolveWorkspaceKnowledgeReferenceProofs,
   suggestKnowledgeRepairs,
+  verifyKnowledgeProposalWorkHistory,
 } from './knowledge-manager.js';
-import type { FsStore } from './lib/store.js';
+import {
+  type FsStore,
+  knowledgeAuthorityId,
+  knowledgeProposalAuthorityError as knowledgeProposalAuthorityFailure,
+} from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
-import type { CoreDb } from './storage/db.js';
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { openWorkspaceDb } from './storage/db.js';
 import {
   readWorkspaceKnowledgeDerivedIndexes,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+
+/**
+ * Maps one proposal draft failure to the closed public error vocabulary.
+ *
+ * @param error Caught draft command failure.
+ * @returns Redacted protocol error response.
+ */
+function asKnowledgeProposalDraftError(error: unknown): Response {
+  if (
+    error instanceof IdempotencyKeyConflictError ||
+    error instanceof KnowledgePageValidationError
+  ) {
+    return asCommandError(error, 'knowledge_manager_proposal_draft_failed');
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    'status' in error &&
+    ['invalid_request', 'not_found', 'conflict', 'recovery_required'].includes(
+      String(error.code)
+    ) &&
+    [400, 404, 409].includes(Number(error.status))
+  ) {
+    return asApiError(
+      'Knowledge Proposal authority check failed.',
+      String(error.code),
+      Number(error.status)
+    );
+  }
+  return asApiError(
+    'Knowledge Manager proposal draft failed.',
+    'knowledge_manager_proposal_draft_failed',
+    500
+  );
+}
 
 /**
  * Records durable usage for one successful Knowledge Store gateway operation.
@@ -151,18 +190,48 @@ export function registerKnowledgeRoutes({
   app,
   coreDb,
   inflightCommands,
+  repositoryWorkspaceDb,
   requestStore,
-  workspaceRootsForContextPackage,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly workspaceRootsForContextPackage: (
+}): void {
+  /**
+   * Resolves current Page-bound source authority for one retrieval request.
+   *
+   * @param store Product Knowledge and work-history owner.
+   * @param workspaceId Workspace that owns the retrieval.
+   * @returns Exact Page and digest keyed proofs whose owners remain coherent.
+   */
+  function knowledgeReferenceProofs(
     store: FsStore,
     workspaceId: string
-  ) => ConfigMaterializedWorkspaceRoot[];
-}): void {
+  ): ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> {
+    if (!coreDb) {
+      return resolveWorkspaceKnowledgeReferenceProofs({
+        coreDb: undefined,
+        store,
+        workspaceDb: undefined,
+        workspaceId,
+      });
+    }
+
+    const workspaceDb = repositoryWorkspaceDb(workspaceId);
+    try {
+      return resolveWorkspaceKnowledgeReferenceProofs({
+        coreDb,
+        store,
+        workspaceDb,
+        workspaceId,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  }
+
   app.get('/api/workspaces/:workspaceId/knowledge', (c) => {
     try {
       return c.json(
@@ -714,6 +783,7 @@ export function registerKnowledgeRoutes({
           query: parsed.data.query,
           limit: parsed.data.limit,
           pinnedConceptIds: parsed.data.pinnedConceptIds,
+          referenceProofs: knowledgeReferenceProofs(store, workspaceId),
           traceId: `krt_${randomUUID()}`,
         })
       );
@@ -787,24 +857,14 @@ export function registerKnowledgeRoutes({
         throw new Error('Knowledge Manager answer requires a file-backed data root.');
       }
 
-      const retrieval = retrieveWorkspaceKnowledge({
-        dataRoot,
-        workspaceId,
-        caller: 'app-api',
-        query: parsed.data.query,
-        limit: parsed.data.limit,
-        traceId: `krt_${randomUUID()}`,
-      });
       const response = answerKnowledgeManager({
+        dataRoot,
         operationId: `km_answer_${randomUUID()}`,
         workspaceId,
         caller: 'app-api',
         query: parsed.data.query,
-        retrievalTraceId: retrieval.traceId,
-        entries: resolveRetrievedKnowledgeEntries(
-          store.listKnowledge(workspaceId),
-          retrieval.selected
-        ),
+        limit: parsed.data.limit,
+        referenceProofs: knowledgeReferenceProofs(store, workspaceId),
       });
       recordKnowledgeGatewayUsage({
         authorityActor: { kind: 'user', id: c.get('actor').userId },
@@ -841,73 +901,21 @@ export function registerKnowledgeRoutes({
         throw new Error('Knowledge Manager context requires a file-backed data root.');
       }
 
-      const workspaceRoots =
-        (parsed.data.workspaceRootFiles ?? []).length > 0
-          ? workspaceRootsForContextPackage(store, workspaceId)
-          : [];
-      const retrieval = retrieveWorkspaceKnowledge({
-        dataRoot,
-        workspaceId,
-        caller: 'app-api',
-        query: parsed.data.query,
-        limit: parsed.data.limit,
-        traceId: `krt_${randomUUID()}`,
-      });
       const response = prepareKnowledgeContext({
+        dataRoot,
         operationId: `km_context_${randomUUID()}`,
         workspaceId,
         caller: 'app-api',
         query: parsed.data.query,
         limit: parsed.data.limit,
-        retrievalTraceId: retrieval.traceId,
-        entries: resolveRetrievedKnowledgeEntries(
-          store.listKnowledge(workspaceId),
-          retrieval.selected
-        ),
-        claims: store.listKnowledgeClaims(workspaceId),
-        conflicts: store.listKnowledgeConflicts(workspaceId),
-        artifacts: parsed.data.artifactIds.map((artifactId) =>
-          store.getArtifact(workspaceId, artifactId)
-        ),
-        workspaceFiles: (parsed.data.workspaceFiles ?? []).map(({ path }) => {
-          const file = store.readWorkspaceContextFileMaterial(workspaceId, path);
-
-          return {
-            contentBytes: file.contentBytes,
-            contentDigest: file.contentDigest,
-            path: file.path,
-          };
-        }),
-        workspaceRootFiles: (parsed.data.workspaceRootFiles ?? []).map(({ rootId, path }) => {
-          const root = workspaceRoots.find((candidate) => candidate.id === rootId);
-
-          if (!root) {
-            throw new Error(`Workspace root not available for context file: ${rootId}`);
-          }
-
-          const file = store.readWorkspaceRootContextFileMaterial(root, path);
-
-          return {
-            contentBytes: file.contentBytes,
-            contentDigest: file.contentDigest,
-            path: file.path,
-            rootId: file.rootId,
-          };
-        }),
-      });
-      store.recordKnowledgeContextPackageTrace({
-        id: response.packageTrace.contextPackageId,
-        workspaceId,
-        operationId: response.operationId,
-        createdAt: new Date().toISOString(),
-        response,
+        referenceProofs: knowledgeReferenceProofs(store, workspaceId),
       });
       recordKnowledgeGatewayUsage({
         authorityActor: { kind: 'user', id: c.get('actor').userId },
         capabilityId: 'knowledge.context.prepare',
         operation: 'knowledge.context.prepare',
         serviceRef: 'knowledge-manager',
-        summary: `Knowledge context prepared ${response.packageTrace.selectedKnowledgeEntryIds.length} knowledge entries.`,
+        summary: `Knowledge context selected ${response.selected.length} knowledge entries.`,
         usageSource: 'knowledge-context-prepare',
         workspaceId,
         ...(coreDb ? { coreDb: coreDb } : {}),
@@ -918,107 +926,6 @@ export function registerKnowledgeRoutes({
       return asApiError(
         'Knowledge Manager context preparation failed.',
         'knowledge_manager_context_failed',
-        500
-      );
-    }
-  });
-
-  registerAppApiRoute(app, 'readKnowledgeContextPackageTrace', async (c) => {
-    try {
-      const store = requestStore(c);
-      const workspaceId = c.req.param('workspaceId');
-      const contextPackageId = c.req.param('contextPackageId');
-      const trace = readAuthorizedKnowledgeOwner(c, () =>
-        store.readKnowledgeContextPackageTrace(workspaceId, contextPackageId)
-      );
-      if (!trace) {
-        return asApiError(
-          'Knowledge context package trace not found.',
-          'knowledge_context_package_trace_not_found',
-          404
-        );
-      }
-
-      return c.json(ReadKnowledgeManagerContextPackageTraceResponseSchema.parse({ trace }));
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      return asApiError(
-        (error as Error).message,
-        'knowledge_context_package_trace_read_failed',
-        500
-      );
-    }
-  });
-
-  registerAppApiRoute(app, 'materializeKnowledgeContextPackage', async (c) => {
-    try {
-      const store = requestStore(c);
-      const workspaceId = c.req.param('workspaceId');
-      const contextPackageId = c.req.param('contextPackageId');
-      const trace = readAuthorizedKnowledgeOwner(c, () =>
-        store.readKnowledgeContextPackageTrace(workspaceId, contextPackageId)
-      );
-      if (!trace) {
-        return asApiError(
-          'Knowledge context package trace not found.',
-          'knowledge_context_package_trace_not_found',
-          404
-        );
-      }
-
-      const workspaceRoots =
-        (trace.response.workspaceRootFiles ?? []).length > 0
-          ? workspaceRootsForContextPackage(store, trace.workspaceId)
-          : [];
-
-      return c.json(
-        MaterializeKnowledgeContextPackageResponseSchema.parse(
-          store.materializeKnowledgeContextPackageTrace(trace, { workspaceRoots })
-        )
-      );
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      return asApiError(
-        (error as Error).message,
-        'knowledge_context_package_materialization_failed',
-        500
-      );
-    }
-  });
-
-  registerAppApiRoute(app, 'readKnowledgeContextPackageMaterialization', async (c) => {
-    try {
-      const store = requestStore(c);
-      const workspaceId = c.req.param('workspaceId');
-      const contextPackageId = c.req.param('contextPackageId');
-      readAuthorizedKnowledgeOwner(c, () =>
-        store.readKnowledgeContextPackageTrace(workspaceId, contextPackageId)
-      );
-      const materialization = store.readKnowledgeContextPackageMaterialization(
-        workspaceId,
-        contextPackageId
-      );
-
-      if (!materialization) {
-        return asApiError(
-          'Knowledge context package materialization not found.',
-          'knowledge_context_package_materialization_not_found',
-          404
-        );
-      }
-
-      return c.json(MaterializeKnowledgeContextPackageResponseSchema.parse(materialization));
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
-      }
-      return asApiError(
-        (error as Error).message,
-        'knowledge_context_package_materialization_read_failed',
         500
       );
     }
@@ -1036,46 +943,97 @@ export function registerKnowledgeRoutes({
     try {
       const store = requestStore(c);
       const workspaceId = c.req.param('workspaceId');
-      const now = new Date().toISOString();
-      const proposalId = `kp_${randomUUID()}`;
-      const proposal = await runIdempotentCommand({
-        store,
-        inflightCommands,
-        command: 'knowledge.proposal.draft',
+      const producer: ActorRef = { kind: 'user', id: c.get('actor').userId };
+      const proposalId = knowledgeAuthorityId('kp_', {
+        workspaceId,
         requestId: parsed.data.requestId,
-        scope: { workspaceId, title: parsed.data.title },
-        input: parsed.data,
-        responseKind: 'knowledge_proposal',
-        execute: () =>
-          store.createKnowledgeProposal({
-            createdAt: now,
-            id: proposalId,
-            status: 'pending',
-            summary: parsed.data.summary,
-            title: parsed.data.title,
-            updatedAt: now,
-            workspaceId,
-          }),
-        replay: (record) => {
-          const replayed = store.getKnowledgeProposal(record.response.id);
-
-          if (!replayed) {
-            throw new Error(`Knowledge proposal not found: ${record.response.id}`);
-          }
-
-          return replayed;
-        },
-        responseId: (result) => result.id,
       });
+      const scope = { workspaceId };
+      const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
+      let proposal: ReturnType<FsStore['createKnowledgeProposal']>;
+      let generatedFromCompletedWorkHistory: boolean;
+      try {
+        const existingReceipt = store.getCommandRequest(
+          'knowledge.proposal.draft',
+          parsed.data.requestId,
+          scope,
+          workspaceDb
+        );
+        if (!existingReceipt && store.getKnowledgeProposal(proposalId)) {
+          throw knowledgeProposalAuthorityFailure('recovery_required');
+        }
+
+        proposal = await runIdempotentCommand({
+          store,
+          inflightCommands,
+          command: 'knowledge.proposal.draft',
+          requestId: parsed.data.requestId,
+          scope,
+          input: { ...parsed.data, producer },
+          responseKind: 'knowledge_proposal',
+          ...(workspaceDb ? { workspaceDb } : {}),
+          execute: () => {
+            const executionVerification = verifyKnowledgeProposalWorkHistory({
+              coreDb,
+              sourceReferences: parsed.data.sourceReferences,
+              store,
+              workspaceDb,
+              workspaceId,
+            });
+            return store.createKnowledgeProposal({
+              ...parsed.data,
+              workspaceId,
+              producer,
+              createdAt: new Date().toISOString(),
+              verifiedExternalReferences: executionVerification.verifiedExternalReferences,
+            });
+          },
+          replay: (record) => {
+            if (
+              record.response.kind !== 'knowledge_proposal' ||
+              record.response.id !== proposalId
+            ) {
+              throw knowledgeProposalAuthorityFailure('recovery_required');
+            }
+            const replayed = store.projectKnowledgeProposalDraft(workspaceId, record.response.id);
+            if (
+              replayed.id !== proposalId ||
+              replayed.workspaceId !== workspaceId ||
+              replayed.operation !== 'create' ||
+              replayed.knowledgePageId !== parsed.data.knowledgePageId ||
+              replayed.canonicalPageBytes !== parsed.data.canonicalPageBytes ||
+              replayed.contentDigest !== parsed.data.contentDigest ||
+              JSON.stringify(replayed.sourceReferences) !==
+                JSON.stringify(parsed.data.sourceReferences) ||
+              replayed.rationale !== parsed.data.rationale ||
+              replayed.confidence !== parsed.data.confidence ||
+              JSON.stringify(replayed.producer) !== JSON.stringify(producer)
+            ) {
+              throw knowledgeProposalAuthorityFailure('recovery_required');
+            }
+            return replayed;
+          },
+          responseId: (result) => result.id,
+        });
+        const completedWorkReferences = proposal.sourceReferences.filter((reference) =>
+          /^(?:turn|item|context-package):/.test(reference)
+        );
+        generatedFromCompletedWorkHistory =
+          completedWorkReferences.length === 3 &&
+          ['turn:', 'item:', 'context-package:'].every(
+            (prefix) =>
+              completedWorkReferences.filter((reference) => reference.startsWith(prefix)).length ===
+              1
+          );
+      } finally {
+        workspaceDb?.sqlite.close();
+      }
       const response = draftKnowledgeProposal({
         operationId: `km_proposal_${randomUUID()}`,
         workspaceId,
         caller: 'app-api',
         proposal,
-        sourceReferences: parsed.data.sourceReferences,
-        entries: store.listKnowledge(workspaceId),
-        sources: store.listKnowledgeSources(workspaceId),
-        confidence: parsed.data.confidence,
+        generatedFromCompletedWorkHistory,
       });
       recordKnowledgeGatewayUsage({
         authorityActor: { kind: 'user', id: c.get('actor').userId },
@@ -1091,14 +1049,7 @@ export function registerKnowledgeRoutes({
 
       return c.json(KnowledgeManagerDraftProposalResponseSchema.parse(response));
     } catch (error) {
-      if (error instanceof IdempotencyKeyConflictError) {
-        return asCommandError(error, 'knowledge_manager_proposal_draft_failed');
-      }
-      return asApiError(
-        'Knowledge Manager proposal draft failed.',
-        'knowledge_manager_proposal_draft_failed',
-        500
-      );
+      return asKnowledgeProposalDraftError(error);
     }
   });
 

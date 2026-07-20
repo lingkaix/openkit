@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
+  knowledgeReferenceErrors,
   parseOkfDocument,
   parseWorkspaceKnowledgeSchema,
   validateOpenKitKnowledgeProfile,
@@ -48,6 +49,38 @@ describe('parseOkfDocument', () => {
         field: 'type',
       })
     );
+  });
+});
+
+describe('knowledgeReferenceErrors', () => {
+  it('requires digest-qualified local references to be verified as an exact closed reference', () => {
+    const reference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'0'.repeat(64)}`;
+    const parsed = parseOkfDocument({
+      path: 'knowledge/pages/digest-reference.md',
+      content: [
+        '---',
+        'type: "KnowledgePage"',
+        `source_refs: ${JSON.stringify([reference])}`,
+        '---',
+        'Body',
+      ].join('\n'),
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+
+    expect(
+      knowledgeReferenceErrors(
+        parsed.document,
+        new Set(['ks_123e4567-e89b-42d3-a456-426614174000']),
+        new Set()
+      )
+    ).toContainEqual(expect.objectContaining({ code: 'reference.unresolved_source' }));
+    expect(
+      knowledgeReferenceErrors(parsed.document, new Set(), new Set(), new Set([reference]))
+    ).toEqual([]);
   });
 });
 

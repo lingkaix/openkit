@@ -13,13 +13,11 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   KnowledgeClaimSchema,
   KnowledgeConflictSchema,
-  KnowledgeManagerContextPackageTraceRecordSchema,
   KnowledgeObservationSchema,
   KnowledgeRetrievalResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { z } from 'zod';
 
-import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import {
   appendCanonicalTextFile,
   assertCanonicalDirectory,
@@ -30,7 +28,6 @@ import {
 const ObservationRowSchema = KnowledgeObservationSchema.strict();
 const ClaimRowSchema = KnowledgeClaimSchema.strict();
 const ConflictRowSchema = KnowledgeConflictSchema.strict();
-const ContextPackageTraceRowSchema = KnowledgeManagerContextPackageTraceRecordSchema.strict();
 const RetrievalTraceRowSchema = KnowledgeRetrievalResponseSchema.strict();
 
 /** Authoritative file-backed workspace state that is portable but not owned by canonical protocol records. */
@@ -41,21 +38,14 @@ export interface WorkspacePortableFileState {
   readonly claims: ReadonlyMap<string, readonly z.infer<typeof ClaimRowSchema>[]>;
   /** Complete conflict append history grouped by canonical ledger month. */
   readonly conflicts: ReadonlyMap<string, readonly z.infer<typeof ConflictRowSchema>[]>;
-  /** Context-package traces grouped by canonical ledger month in append order. */
-  readonly contextPackageTraces: ReadonlyMap<
-    string,
-    readonly z.infer<typeof ContextPackageTraceRowSchema>[]
-  >;
   /** Retrieval traces grouped by canonical ledger month in append order. */
   readonly retrievalTraces: ReadonlyMap<string, readonly z.infer<typeof RetrievalTraceRowSchema>[]>;
   /** Exact workspace configuration text, or null when absent. */
   readonly workspaceConfig: string | null;
   /** Exact workspace knowledge schema text, or null when absent. */
   readonly workspaceSchema: string | null;
-  /** Native OKF page text keyed by workspace-relative path. */
+  /** Exact portable OKF page text keyed by workspace-relative path. */
   readonly nativeKnowledgePages: ReadonlyMap<string, string>;
-  /** Context materialization text keyed by workspace-relative path. */
-  readonly contextMaterializations: ReadonlyMap<string, string>;
   /** Turn-owned worker Context Package traces and exact worker-visible text files. */
   readonly workerContextPackageFiles: ReadonlyMap<string, string>;
 }
@@ -184,47 +174,6 @@ export function readWorkspaceKnowledgeConflictLedger(
 }
 
 /**
- * Appends one strictly validated context-package trace to its canonical monthly ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param row Context-package trace to append.
- * @throws Error for malformed rows, timestamps, paths, links, or non-regular files.
- */
-export function appendWorkspaceKnowledgeContextPackageTrace(
-  workspaceRoot: string,
-  row: z.infer<typeof ContextPackageTraceRowSchema>
-): void {
-  appendMonthlyLedgerRow(
-    workspaceRoot,
-    'knowledge/context-packages',
-    row,
-    ContextPackageTraceRowSchema,
-    (entry) => entry.createdAt
-  );
-}
-
-/**
- * Reads the complete strictly validated context-package trace ledger.
- *
- * @param workspaceRoot Published workspace root.
- * @param repairFinalFragment Whether to repair an interrupted final JSON fragment.
- * @returns Context-package traces grouped by canonical ledger month.
- * @throws Error for malformed rows, month placement, paths, links, or non-regular files.
- */
-export function readWorkspaceKnowledgeContextPackageTraceLedger(
-  workspaceRoot: string,
-  repairFinalFragment = false
-): ReadonlyMap<string, readonly z.infer<typeof ContextPackageTraceRowSchema>[]> {
-  return readMonthlyLedger(
-    workspaceRoot,
-    'knowledge/context-packages',
-    ContextPackageTraceRowSchema,
-    (row) => row.createdAt,
-    repairFinalFragment
-  );
-}
-
-/**
  * Appends one strictly validated retrieval trace to its canonical monthly ledger.
  *
  * @param workspaceRoot Published workspace root.
@@ -260,6 +209,37 @@ export function appendWorkspaceKnowledgeRetrievalTrace(
 }
 
 /**
+ * Reads one strictly validated Knowledge retrieval trace by id.
+ *
+ * @param workspaceRoot Published workspace root.
+ * @param traceId Retrieval trace id to locate.
+ * @returns The unique trace, or null when no row has that id.
+ * @throws Error when the ledger is malformed or contains the id more than once.
+ */
+export function readWorkspaceKnowledgeRetrievalTrace(
+  workspaceRoot: string,
+  traceId: string
+): z.infer<typeof RetrievalTraceRowSchema> | null {
+  // ponytail: a linear scan fits the small-deployment profile; add an index only if trace volume proves it necessary.
+  const matches = [
+    ...readMonthlyLedger(
+      workspaceRoot,
+      'knowledge/traces',
+      RetrievalTraceRowSchema,
+      (row) => row.createdAt
+    ).values(),
+  ]
+    .flat()
+    .filter((row) => row.traceId === traceId);
+
+  if (matches.length > 1) {
+    throw new Error('Duplicate Knowledge retrieval trace id.');
+  }
+
+  return matches[0] ?? null;
+}
+
+/**
  * Reads all authoritative portable file state beneath one real workspace root.
  *
  * @param workspaceRoot Published source workspace root.
@@ -278,7 +258,6 @@ export function readWorkspacePortableFileState(
     observations: readWorkspaceKnowledgeObservationLedger(root),
     claims: readWorkspaceKnowledgeClaimLedger(root),
     conflicts: readWorkspaceKnowledgeConflictLedger(root),
-    contextPackageTraces: readWorkspaceKnowledgeContextPackageTraceLedger(root),
     retrievalTraces: readMonthlyLedger(
       root,
       'knowledge/traces',
@@ -288,7 +267,6 @@ export function readWorkspacePortableFileState(
     workspaceConfig: readOptionalText(root, 'config/workspace.jsonc'),
     workspaceSchema: readOptionalText(root, 'knowledge/schema/workspace-schema.yaml'),
     nativeKnowledgePages: readNativeKnowledgePages(root),
-    contextMaterializations: readTextTree(root, 'knowledge/context-materializations', true),
     workerContextPackageFiles: readWorkerContextPackageFiles(root, turns),
   };
 }
@@ -330,13 +308,6 @@ export function writeWorkspacePortableFileState(
   );
   writeMonthlyLedger(
     root,
-    'knowledge/context-packages',
-    state.contextPackageTraces,
-    ContextPackageTraceRowSchema,
-    (row) => row.createdAt
-  );
-  writeMonthlyLedger(
-    root,
     'knowledge/traces',
     state.retrievalTraces,
     RetrievalTraceRowSchema,
@@ -348,8 +319,7 @@ export function writeWorkspacePortableFileState(
   if (state.workspaceSchema !== null) {
     writeText(root, 'knowledge/schema/workspace-schema.yaml', state.workspaceSchema, true);
   }
-  writeTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/', false);
-  writeTextMap(root, state.contextMaterializations, 'knowledge/context-materializations/', false);
+  writeTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/', true);
   assertWorkerContextPackageFiles(state.workerContextPackageFiles);
   writeTextMap(root, state.workerContextPackageFiles, 'threads/', false);
 }
@@ -396,16 +366,6 @@ export function writeWorkspacePortableExportState(
   );
   writeText(
     root,
-    'records/knowledge-context-package-traces.jsonl',
-    serializeMonthlyLedger(
-      state?.contextPackageTraces ?? empty,
-      ContextPackageTraceRowSchema,
-      (row) => row.createdAt
-    ),
-    false
-  );
-  writeText(
-    root,
     'records/knowledge-retrieval-traces.jsonl',
     serializeMonthlyLedger(
       state?.retrievalTraces ?? empty,
@@ -430,7 +390,6 @@ export function writeWorkspacePortableExportState(
     );
   }
   writeExportTextMap(root, state.nativeKnowledgePages, 'knowledge/pages/');
-  writeExportTextMap(root, state.contextMaterializations, 'knowledge/context-materializations/');
   assertWorkerContextPackageFiles(state.workerContextPackageFiles);
   writeExportTextMap(root, state.workerContextPackageFiles, 'threads/');
 }
@@ -585,21 +544,11 @@ function readOptionalText(root: string, relativePath: string): string | null {
   return lstatSync(path, { throwIfNoEntry: false }) ? readCanonicalTextFile(path) : null;
 }
 
-/** Reads native OKF pages while leaving canonical openkit_entry_id pages to their existing owner. */
+/** Reads every portable OKF page, including exact canonical openkit_entry_id pages. */
 function readNativeKnowledgePages(root: string): ReadonlyMap<string, string> {
-  const pages = readTextTree(root, 'knowledge/pages', true);
-  const nativePages = new Map<string, string>();
-
-  for (const [path, content] of pages) {
-    if (!path.endsWith('.md')) {
-      continue;
-    }
-    const parsed = parseOkfDocument({ path, content });
-    if (!parsed.document || !stringFrontmatterField(parsed.document, 'openkit_entry_id')) {
-      nativePages.set(path, content);
-    }
-  }
-  return nativePages;
+  return new Map(
+    [...readTextTree(root, 'knowledge/pages', true)].filter(([path]) => path.endsWith('.md'))
+  );
 }
 
 /** Reads only complete worker Context Package trees owned by canonical Turns. */

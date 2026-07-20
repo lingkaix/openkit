@@ -76,7 +76,7 @@ export async function startIsolatedWebStack(
   };
 
   if (mode === 'local') {
-    seedDemoWorkspaceDataRoot(dataRoot);
+    await seedDemoWorkspaceDataRoot(dataRoot);
   }
 
   if (options.useSimulator ?? true) {

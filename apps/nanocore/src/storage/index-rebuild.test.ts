@@ -17,6 +17,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
   rebuildWorkspaceDerivedIndexes,
+  resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
 
@@ -341,6 +342,29 @@ describe('workspace derived index rebuild', () => {
     };
 
     retrieveWorkspaceKnowledge(input);
+    const selectedPageBytes = readFileSync(
+      join(workspaceRoot, 'knowledge', 'pages', `${selected.id}.md`),
+      'utf8'
+    );
+
+    expect(
+      resolveWorkspaceKnowledgeRetrievalPages({
+        caller: 'task-mode',
+        dataRoot,
+        workspaceId: 'ws_demo',
+        retrievalTraceId: traceId,
+      })
+    ).toEqual([
+      {
+        body: 'retrievalneedle',
+        knowledgePageId: selected.id,
+        contentDigest: sha256Digest(selectedPageBytes),
+        kind: 'project-context',
+        sourceRefs: [sourceReference],
+        content: selectedPageBytes,
+        title: 'Selected page',
+      },
+    ]);
 
     const row = JSON.parse(
       readFileSync(join(workspaceRoot, 'knowledge', 'traces', '202607.jsonl'), 'utf8')
@@ -359,9 +383,7 @@ describe('workspace derived index rebuild', () => {
       selected: [
         {
           knowledgePageId: selected.id,
-          contentDigest: sha256Digest(
-            readFileSync(join(workspaceRoot, 'knowledge', 'pages', `${selected.id}.md`), 'utf8')
-          ),
+          contentDigest: sha256Digest(selectedPageBytes),
           score: 1,
           sourceReferences: [sourceReference],
         },
@@ -378,6 +400,129 @@ describe('workspace derived index rebuild', () => {
       createdAt,
     });
     expect(JSON.stringify(row)).not.toContain(zeroScore.id);
+  });
+
+  it('does not let a persisted retrieval trace authorize accepted page references', () => {
+    const dataRoot = createDataRoot();
+    createDemoStore({ dataRoot });
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const knowledgePageId = 'reviewed-task-proof';
+    const sourceReferences = [
+      'context-package:turn_source@ctxpkg_sha256_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'item:item_source',
+      'turn:turn_source',
+    ];
+    const content = [
+      '---',
+      'type: "KnowledgePage"',
+      'title: "Reviewed task proof"',
+      'schema_version: "openkit-workspace-knowledge-schema-v1"',
+      'status: "active"',
+      'scope: "workspace"',
+      `source_refs: ${JSON.stringify(sourceReferences)}`,
+      'review_state: "accepted"',
+      'sensitivity: "normal"',
+      'freshness: "current"',
+      'created_at: "2026-07-12T00:00:00.000Z"',
+      'updated_at: "2026-07-12T00:00:00.000Z"',
+      'openkit_entry_kind: "project-context"',
+      `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
+      '---',
+      'Only current owners can authorize this reviewed task proof.',
+      '',
+    ].join('\n');
+    const contentDigest = sha256Digest(content);
+    const proof = {
+      contentDigest,
+      knowledgePageId,
+      resolvedReferences: new Set(sourceReferences),
+      sourceReferences,
+    };
+    writeFileSync(join(workspaceRoot, 'knowledge', 'pages', `${knowledgePageId}.md`), content);
+    const retrieval = retrieveWorkspaceKnowledge({
+      caller: 'task-mode',
+      dataRoot,
+      query: 'Reviewed task proof',
+      referenceProofs: new Map([[knowledgePageId, proof]]),
+      traceId: 'krt_00000000-0000-4000-8000-000000000702',
+      workspaceId: 'ws_demo',
+      now: () => '2026-07-12T00:00:00.000Z',
+    });
+
+    expect(retrieval.selected).toHaveLength(1);
+    const validationIndex = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    ) as { records: Array<{ conceptId: string; indexed: boolean }> };
+    const sourceReferenceIndex = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-source-refs.json'), 'utf8')
+    ) as { references: Array<{ conceptId: string; resolved: boolean }> };
+    expect(validationIndex.records.find((record) => record.conceptId === knowledgePageId)).toEqual(
+      expect.objectContaining({ indexed: false })
+    );
+    expect(
+      sourceReferenceIndex.references
+        .filter((reference) => reference.conceptId === knowledgePageId)
+        .map((reference) => reference.resolved)
+    ).toEqual([false, false, false]);
+    expect(() =>
+      resolveWorkspaceKnowledgeRetrievalPages({
+        caller: 'task-mode',
+        dataRoot,
+        referenceProofs: new Map(),
+        retrievalTraceId: retrieval.traceId,
+        workspaceId: 'ws_demo',
+      })
+    ).toThrow('Knowledge retrieval trace no longer matches authoritative pages.');
+  });
+
+  it('requires exact page-bound proof for every accepted page', () => {
+    const dataRoot = createDataRoot();
+    createDemoStore({ dataRoot });
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const knowledgePageId = 'accepted-without-proof';
+    const content = [
+      '---',
+      'type: "KnowledgePage"',
+      'title: "Accepted page without proof"',
+      'schema_version: "openkit-workspace-knowledge-schema-v1"',
+      'status: "active"',
+      'scope: "workspace"',
+      'source_refs: []',
+      'review_state: "accepted"',
+      'sensitivity: "normal"',
+      'freshness: "current"',
+      'created_at: "2026-07-12T00:00:00.000Z"',
+      'updated_at: "2026-07-12T00:00:00.000Z"',
+      'openkit_entry_kind: "project-context"',
+      `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
+      '---',
+      'This accepted page must not become retrievable without its authority proof.',
+      '',
+    ].join('\n');
+    writeFileSync(join(workspaceRoot, 'knowledge', 'pages', `${knowledgePageId}.md`), content);
+
+    const retrieval = retrieveWorkspaceKnowledge({
+      caller: 'task-mode',
+      dataRoot,
+      pinnedConceptIds: [knowledgePageId],
+      query: 'accepted page',
+      traceId: 'krt_00000000-0000-4000-8000-000000000703',
+      workspaceId: 'ws_demo',
+      now: () => '2026-07-12T00:00:00.000Z',
+    });
+    const validationIndex = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    ) as { records: Array<{ conceptId: string; indexed: boolean }> };
+
+    expect(retrieval.selected).toEqual([]);
+    expect(retrieval.excluded).toContainEqual({
+      contentDigest: sha256Digest(content),
+      knowledgePageId,
+      reason: 'lower_conformance',
+    });
+    expect(validationIndex.records.find((record) => record.conceptId === knowledgePageId)).toEqual(
+      expect.objectContaining({ indexed: false })
+    );
   });
 
   it('repairs an incomplete retrieval-trace tail before appending', () => {
@@ -607,7 +752,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: []',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -627,7 +772,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: ["source:ks_missing"]',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -703,7 +848,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: []',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         '---',
@@ -744,7 +889,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: []',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -853,7 +998,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'allowed_types: ["KnowledgePage", "RepoConvention"]',
         'allowed_statuses: ["active"]',
-        'allowed_review_states: ["accepted"]',
+        'allowed_review_states: ["user-authored"]',
         'allowed_sensitivities: ["normal"]',
         'allowed_freshness: ["current"]',
         '',
@@ -869,7 +1014,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: []',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         'created_at: "2026-07-07T00:00:00.000Z"',
@@ -959,7 +1104,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: ["source:ks_registered"]',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -979,7 +1124,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         `source_refs: ["knowledge:${knowledge.id}"]`,
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -999,7 +1144,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: ["source:ks_missing"]',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -1019,7 +1164,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: ["knowledge:kn_missing"]',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -1039,7 +1184,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: ["https://example.com/source"]',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -1059,7 +1204,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: ["not-a-valid-external-reference"]',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -1147,7 +1292,16 @@ describe('workspace derived index rebuild', () => {
         'schema_version: "openkit-workspace-knowledge-schema-v1"',
         'status: "active"',
         'scope: "workspace"',
-        `source_refs: ["source:ks_registered", "knowledge:${knowledge.id}", "source:ks_missing", "knowledge:kn_missing", "https://example.com/source", "not-a-valid-external-reference"]`,
+        `source_refs: ${JSON.stringify([
+          'source:ks_registered',
+          `source:ks_registered@sha256:${'a'.repeat(64)}`,
+          `knowledge:${knowledge.id}`,
+          `knowledge:${knowledge.id}@sha256:${'b'.repeat(64)}`,
+          'source:ks_missing',
+          'knowledge:kn_missing',
+          'https://example.com/source',
+          'not-a-valid-external-reference',
+        ])}`,
         'review_state: "accepted"',
         'sensitivity: "normal"',
         'freshness: "current"',
@@ -1194,7 +1348,23 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
+          reference: `source:ks_registered@sha256:${'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
+          kind: 'registered-source',
+          targetId: 'ks_registered',
+          resolved: true,
+        },
+        {
+          conceptId: 'source-reference-index',
+          path: 'knowledge/pages/source-reference-index.md',
           reference: `knowledge:${knowledge.id}`,
+          kind: 'workspace-knowledge',
+          targetId: knowledge.id,
+          resolved: true,
+        },
+        {
+          conceptId: 'source-reference-index',
+          path: 'knowledge/pages/source-reference-index.md',
+          reference: `knowledge:${knowledge.id}@sha256:${'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}`,
           kind: 'workspace-knowledge',
           targetId: knowledge.id,
           resolved: true,
@@ -1256,7 +1426,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: []',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
@@ -1276,7 +1446,7 @@ describe('workspace derived index rebuild', () => {
         'status: "active"',
         'scope: "workspace"',
         'source_refs: []',
-        'review_state: "accepted"',
+        'review_state: "user-authored"',
         'sensitivity: "normal"',
         'freshness: "current"',
         `created_at: "${timestamp}"`,
