@@ -5,7 +5,6 @@ import type {
   ProviderProfileLoadResult,
 } from '../config/providers-loader.js';
 import { loadProviderProfiles } from '../config/providers-loader.js';
-import { isCodexOAuthProviderProfile, readCodexOAuthAccountSlotId } from './codex-oauth-profile.js';
 import { createProviderDiagnostics, type ProviderDiagnosticsSnapshot } from './diagnostics.js';
 import { ProviderRegistry } from './registry.js';
 
@@ -60,56 +59,14 @@ function mergeProviderProfiles(
     severity: 'error',
   }));
 
-  const slotDiagnostics: ProviderProfileDiagnostic[] = [];
-  const currentServerProfiles = serverProfiles
-    .filter((profile) => !duplicateIds.has(profile.id))
-    .map((profile) =>
-      applyCodexOAuthSlotDiagnostics(profile, 'provider-registry', slotDiagnostics)
-    );
+  const currentServerProfiles = serverProfiles.filter((profile) => !duplicateIds.has(profile.id));
   const currentFileProfiles = loadResult.profiles.filter(
     (profile) => !duplicateIds.has(profile.id)
   );
 
   return {
-    diagnostics: [...loadResult.diagnostics, ...duplicateDiagnostics, ...slotDiagnostics],
+    diagnostics: [...loadResult.diagnostics, ...duplicateDiagnostics],
     profiles: [...currentServerProfiles, ...currentFileProfiles],
-  };
-}
-
-/**
- * Applies readiness diagnostics for server-config Codex OAuth providers without explicit slots.
- *
- * @param profile Provider profile to inspect.
- * @param path Diagnostic source path.
- * @param diagnostics Diagnostics collection to append to.
- * @returns Profile with readiness blocked when needed.
- */
-function applyCodexOAuthSlotDiagnostics(
-  profile: ProviderProfile,
-  path: string,
-  diagnostics: ProviderProfileDiagnostic[]
-): ProviderProfile {
-  if (!isCodexOAuthProviderProfile(profile) || readCodexOAuthAccountSlotId(profile)) {
-    return profile;
-  }
-
-  const message =
-    'Codex OAuth provider profiles must set extensions.openkit.codexOAuth.accountSlotId.';
-
-  diagnostics.push({
-    code: 'provider.missing_codex_oauth_account_slot',
-    message,
-    path,
-    profileId: profile.id,
-    severity: 'error',
-  });
-
-  return {
-    ...profile,
-    readiness: {
-      message,
-      status: 'blocked',
-    },
   };
 }
 

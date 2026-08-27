@@ -8,7 +8,6 @@ import type {
   RuntimeConfigReloadRequest,
   RuntimeConfigReloadResponse,
   RuntimeConfigReloadSummarySchema,
-  RuntimeConfigStaleSessionSchema,
   RuntimeConfigStatus,
 } from '@openkit/app-api-schemas';
 import {
@@ -35,10 +34,6 @@ import {
 type RuntimeConfigChange = z.infer<typeof RuntimeConfigChangeSchema>;
 type RuntimeConfigReloadPlan = z.infer<typeof RuntimeConfigReloadPlanSchema>;
 type RuntimeConfigReloadSummary = z.infer<typeof RuntimeConfigReloadSummarySchema>;
-type RuntimeConfigStaleSession = z.infer<typeof RuntimeConfigStaleSessionSchema>;
-type RuntimeConfigStaleSessionInput = Omit<RuntimeConfigStaleSession, 'choices'> & {
-  choices?: RuntimeConfigStaleSession['choices'];
-};
 
 interface RuntimeConfigSnapshotConstructionInput {
   dataRoot: string | null;
@@ -186,7 +181,7 @@ export interface RuntimeConfigManager {
   /** Reloads runtime config from the configured data root. */
   reload(input: RuntimeConfigReloadRequest): RuntimeConfigReloadResponse;
   /** Returns redacted runtime config status. */
-  status(staleSessions?: RuntimeConfigStaleSession[]): RuntimeConfigStatus;
+  status(): RuntimeConfigStatus;
 }
 
 const RESTART_REQUIRED_CONFIG_PATHS = [
@@ -354,8 +349,8 @@ export function createRuntimeConfigManager(
         };
       }
     },
-    status: (staleSessions = []) => ({
-      ...createRuntimeConfigStatus(current, pendingRestart, staleSessions),
+    status: () => ({
+      ...createRuntimeConfigStatus(current, pendingRestart),
       lastReload,
       lastFailedReload,
     }),
@@ -366,8 +361,7 @@ export function createRuntimeConfigManager(
    */
   function createRuntimeConfigStatus(
     snapshot: RuntimeConfigSnapshot,
-    restartChanges: RuntimeConfigChange[],
-    staleSessions: RuntimeConfigStaleSession[] = []
+    restartChanges: RuntimeConfigChange[]
   ): RuntimeConfigStatus {
     return {
       currentVersion: snapshot.version,
@@ -375,7 +369,6 @@ export function createRuntimeConfigManager(
       lastReload,
       lastFailedReload,
       pendingRestart: restartChanges,
-      staleSessions,
     };
   }
 }
@@ -685,35 +678,6 @@ export function findWorkspaceConfig(
   workspaceId: string
 ): LoadedWorkspaceConfig | null {
   return snapshot.workspaceConfigs.find((config) => config.workspaceId === workspaceId) ?? null;
-}
-
-/**
- * Creates a redacted stale-session record.
- *
- * @param input Stale-session fields.
- * @returns Stale-session diagnostic payload.
- */
-export function createRuntimeConfigStaleSession(
-  input: RuntimeConfigStaleSessionInput
-): RuntimeConfigStaleSession {
-  return {
-    ...input,
-    choices: input.choices ?? [
-      {
-        kind: 'inspect',
-        label: 'Inspect stale session details',
-        recommended: true,
-      },
-      {
-        kind: 'restart_session',
-        label: 'Restart the stale session before continuing',
-      },
-      {
-        kind: 'request_human',
-        label: 'Ask the user how to handle the stale session',
-      },
-    ],
-  };
 }
 
 /**

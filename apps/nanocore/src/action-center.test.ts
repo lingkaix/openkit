@@ -1383,12 +1383,12 @@ describe('action center app API', () => {
         ListHumanAttentionResponseSchema.parse(await res.json()).items.map((row) => [row.id, row])
       );
 
-      expect(byId.get('worker-control-rejection:wcr_action_center')).toMatchObject({
+      const rejection = byId.get('worker-control-rejection:wcr_action_center');
+      expect(rejection).toMatchObject({
         kind: 'blocked_turn',
         severity: 'risk',
         threadId: thread.id,
         turnId: turn.id,
-        agentSessionId: 'as_rejected',
         source: {
           type: 'worker_control_rejection',
           rejectionId: 'wcr_action_center',
@@ -1397,12 +1397,15 @@ describe('action center app API', () => {
         },
         actions: [expect.objectContaining({ kind: 'open_thread' })],
       });
-      expect(byId.get('scheduler-orphan-worker:orphan_action_center')).toMatchObject({
+      expect(JSON.stringify(rejection)).not.toContain('as_rejected');
+      expect(rejection?.source).not.toHaveProperty('agentSessionId');
+
+      const orphan = byId.get('scheduler-orphan-worker:orphan_action_center');
+      expect(orphan).toMatchObject({
         kind: 'blocked_turn',
         severity: 'risk',
         threadId: thread.id,
         turnId: turn.id,
-        agentSessionId: 'as_orphan',
         source: {
           type: 'scheduler_orphan_worker',
           evidenceId: 'orphan_action_center',
@@ -1412,6 +1415,8 @@ describe('action center app API', () => {
         },
         actions: [expect.objectContaining({ kind: 'open_thread' })],
       });
+      expect(JSON.stringify(orphan)).not.toContain('as_orphan');
+      expect(orphan?.source).not.toHaveProperty('agentSessionId');
     } finally {
       coreDb.sqlite.close();
     }
@@ -1556,7 +1561,7 @@ describe('action center app API', () => {
     }
   });
 
-  it('projects only active unresolved Goal Reviews with four executable decisions', async () => {
+  it('projects one unique active Goal Review while isolating ambiguity and malformed unrelated Reviews', async () => {
     const coreDb = createCoreDb();
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     const store = createDemoStore();
@@ -1581,6 +1586,18 @@ describe('action center app API', () => {
         thread: inactiveTaskThread,
         goalStatus: 'reviewing',
         taskStatus: 'completed',
+      },
+      {
+        id: 'ambiguous',
+        thread: store.createThread('ws_demo', 'Ambiguous accept review'),
+        goalStatus: 'reviewing',
+        taskStatus: 'reviewing',
+      },
+      {
+        id: 'malformed',
+        thread: store.createThread('ws_demo', 'Malformed unrelated review'),
+        goalStatus: 'reviewing',
+        taskStatus: 'reviewing',
       },
     ] as const;
 
@@ -1638,7 +1655,7 @@ describe('action center app API', () => {
           now: () => timestamp,
         });
         createGoalReviewRecord(workspaceDb, {
-          reviewId: `review_accept_${scenario.id}`,
+          reviewId: scenario.id === 'malformed' ? '' : `review_accept_${scenario.id}`,
           workspaceId: 'ws_demo',
           threadId: scenario.thread.id,
           goalId: `goal_accept_${scenario.id}`,
@@ -1648,10 +1665,25 @@ describe('action center app API', () => {
           createdByRequestId: `goal-step-${scenario.id}`,
           now: () => timestamp,
         });
+        if (scenario.id === 'ambiguous') {
+          createGoalReviewRecord(workspaceDb, {
+            reviewId: 'review_accept_ambiguous_second',
+            workspaceId: 'ws_demo',
+            threadId: scenario.thread.id,
+            goalId: 'goal_accept_ambiguous',
+            taskId: 'task_accept_ambiguous',
+            turnId: turn.id,
+            prompt: 'Review the duplicate unresolved worker output.',
+            createdByRequestId: 'goal-step-ambiguous-second',
+            now: () => timestamp,
+          });
+        }
       }
 
       const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+
+      expect(res.status, await res.clone().text()).toBe(200);
       const reviewRows = ListHumanAttentionResponseSchema.parse(await res.json()).items.filter(
         (row) => row.source.type === 'goal_review'
       );

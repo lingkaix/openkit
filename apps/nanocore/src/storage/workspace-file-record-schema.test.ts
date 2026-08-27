@@ -165,7 +165,7 @@ describe('workspace canonical record schemas', () => {
     'environmentPackageSnapshotId',
     'sessionCompatibilityKey',
     'policySnapshotId',
-  ])('rejects an agent session missing required %s', (field) => {
+  ])('rejects an AgentSession missing required %s', (field) => {
     const { dataRoot, store, workspace, thread, workspaceRoot } = createCanonicalRecordFixture();
     const session = store.createAgentSession({
       id: 'as_invalid_schema',
@@ -186,7 +186,7 @@ describe('workspace canonical record schemas', () => {
     expect(() => new FsStore({ dataRoot })).toThrow();
   });
 
-  it('stores only a scalar environment package snapshot reference in an agent session', () => {
+  it('stores only a scalar environment package snapshot reference in an AgentSession', () => {
     const { store, workspace, thread, workspaceRoot } = createCanonicalRecordFixture();
     const session = store.createAgentSession({
       id: 'as_scalar_aep_reference',

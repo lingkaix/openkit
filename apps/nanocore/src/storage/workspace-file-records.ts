@@ -127,7 +127,7 @@ export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
   createdAt: CanonicalTimestampSchema,
   updatedAt: CanonicalTimestampSchema,
 }).strict();
-/** Canonical agent session record schema shared with workspace portability. */
+/** Canonical AgentSession record schema shared with workspace portability. */
 export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   sandboxSummary: AgentSandboxSummarySchema.extend({
     workspaceRootRefs: z.array(z.string().min(1)),
@@ -141,8 +141,19 @@ export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   policySnapshotId: z.string().min(1).nullable(),
   sessionCompatibilityKey: z.string().min(1).nullable(),
   stale: z.boolean(),
-  workspaceRoots: z.array(MaterializedWorkspaceRootSchema.strict()),
+  workspaceRoots: z.array(MaterializedWorkspaceRootSchema),
 }).strict();
+
+const TERMINAL_AGENT_SESSION_STATUSES = new Set<AgentSession['status']>([
+  'interrupted',
+  'failed',
+  'closed',
+]);
+
+/** Returns whether one AgentSession status remains current for its Thread. */
+export function isCurrentAgentSessionStatus(status: AgentSession['status']): boolean {
+  return !TERMINAL_AGENT_SESSION_STATUSES.has(status);
+}
 
 /** Maximum canonical replay window retained in memory after reload. */
 export const TURN_STREAM_EVENT_WINDOW_SIZE = 100;
@@ -304,6 +315,7 @@ export function parseCanonicalWorkspaceHistory(input: {
   const proposalsById = new Map<string, KnowledgeProposalRecord>();
   const proposalReviewsById = new Map<string, KnowledgeProposalReviewRecord[]>();
   const sessionsById = new Map<string, AgentSession>();
+  const currentSessionByThreadId = new Map<string, string>();
   const itemOrder: string[] = [];
   const latestItems = new Map<string, Item>();
 
@@ -494,13 +506,22 @@ export function parseCanonicalWorkspaceHistory(input: {
     }
   }
   for (const session of agentSessions) {
-    claimGlobalId(sessionIds, session.id, 'agent session');
+    claimGlobalId(sessionIds, session.id, 'AgentSession');
     if (
       session.workspaceId !== workspace.id ||
       session.threadId === null ||
       !threadsById.has(session.threadId)
     ) {
-      throw new Error(`Agent session ${session.id} has invalid lineage.`);
+      throw new Error(`AgentSession ${session.id} has invalid lineage.`);
+    }
+    if (isCurrentAgentSessionStatus(session.status)) {
+      const currentSessionId = currentSessionByThreadId.get(session.threadId);
+      if (currentSessionId) {
+        throw new Error(
+          `Thread ${session.threadId} has duplicate current AgentSessions: ${currentSessionId}, ${session.id}.`
+        );
+      }
+      currentSessionByThreadId.set(session.threadId, session.id);
     }
     sessionsById.set(session.id, session);
   }
@@ -715,7 +736,7 @@ export interface WorkspaceFileRecords {
   readonly knowledgeProposalReviews: readonly KnowledgeProposalReviewRecord[];
   /** Knowledge source registry records. */
   readonly knowledgeSources: readonly KnowledgeSourceRecord[];
-  /** Durable agent sessions. */
+  /** Durable AgentSessions. */
   readonly agentSessions: readonly AgentSession[];
   /** Retained turn event windows keyed by turn id. */
   readonly streamEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
@@ -765,7 +786,7 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
       claimGlobalId(sourceIds, source.id, 'knowledge source');
     }
     for (const session of workspaceRecords.agentSessions) {
-      claimGlobalId(agentSessionIds, session.id, 'agent session');
+      claimGlobalId(agentSessionIds, session.id, 'AgentSession');
     }
   }
 
@@ -1547,12 +1568,12 @@ function loadArtifacts(
 }
 
 /**
- * Loads durable agent session JSON records.
+ * Loads durable AgentSession JSON records.
  *
  * @param workspaceRoot Published workspace root.
  * @param workspaceId Owning workspace id.
  * @param threadIds Known thread ids.
- * @returns Agent sessions in directory-name order.
+ * @returns AgentSessions in directory-name order.
  */
 function loadAgentSessions(
   workspaceRoot: string,
@@ -1565,7 +1586,7 @@ function loadAgentSessions(
     const sessionPath = join(root, sessionId, 'session.json');
 
     if (!existsSync(sessionPath)) {
-      throw new Error(`Canonical agent session directory is missing session.json: ${sessionId}.`);
+      throw new Error(`Canonical AgentSession directory is missing session.json: ${sessionId}.`);
     }
 
     const session = AgentSessionRecordSchema.parse(readJson(sessionPath)) as AgentSession;
@@ -1576,7 +1597,7 @@ function loadAgentSessions(
       !session.threadId ||
       !threadIds.has(session.threadId)
     ) {
-      throw new Error(`Agent session ${sessionId} has invalid lineage.`);
+      throw new Error(`AgentSession ${sessionId} has invalid lineage.`);
     }
 
     return session;
@@ -1626,7 +1647,7 @@ function assertSafeWorkspaceFileRecordIds(records: WorkspaceFileRecords): void {
     assertSafeWorkspacePathSegment(artifact.id, 'Artifact id');
   }
   for (const session of records.agentSessions) {
-    assertSafeWorkspacePathSegment(session.id, 'Agent session id');
+    assertSafeWorkspacePathSegment(session.id, 'AgentSession id');
   }
 }
 
@@ -1907,7 +1928,7 @@ function writeArtifacts(workspaceRoot: string, records: WorkspaceFileRecords): v
 }
 
 /**
- * Writes durable agent session records and removes stale session directories.
+ * Writes durable AgentSession records and removes stale session directories.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.

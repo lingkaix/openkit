@@ -1,11 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import type { TurnExecutor, TurnStartRuntimeContext } from '../runtime/types.js';
+import { ProviderRegistry } from '../providers/registry.js';
+import { resolveAgentSessionCompatibilityKey } from '../runtime/agent-environment.js';
+import type {
+  CommitPreparedAgentSessionForTurnInput,
+  PrepareAgentSessionForTurnInput,
+  PreparedAgentSessionForTurn,
+  TurnExecutor,
+  TurnStartRuntimeContext,
+} from '../runtime/types.js';
 import {
   ensureConfiguredSchedulerBaseline,
   upsertSchedulerCapacityRecord,
@@ -16,6 +24,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { createBetterAuth } from './better-auth.js';
@@ -66,6 +75,45 @@ class DelayedServerTurnExecutor implements TurnExecutor {
    */
   public release(): void {
     this.releaseStart?.();
+  }
+
+  /**
+   * Admits one fresh AgentSession for a Thread that has no current runtime owner.
+   */
+  public async prepareAgentSessionForTurn(
+    _store: FsStore,
+    input: PrepareAgentSessionForTurnInput
+  ): Promise<PreparedAgentSessionForTurn> {
+    return {
+      agentSessionId: input.freshAgentSessionId,
+      currentAgentSession: null,
+      replacementRequired: false,
+      sessionCompatibilityKey: resolveAgentSessionCompatibilityKey({
+        agentSessionId: input.freshAgentSessionId,
+        agentSetup: input.agentSetup,
+        backend: { kind: 'openshell' },
+        requestId: input.requestId,
+        turn: input.turn,
+        turnInput: input.turnInput,
+        triggerActor: input.turn.triggerActor,
+        workspaceCwd: input.workspaceCwd,
+        workspaceRoots: input.workspaceRoots,
+        ...(input.workspaceDataSourceCatalog
+          ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+          : {}),
+        ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+      }),
+    };
+  }
+
+  /**
+   * No-op post-dispatch commit for this delayed executor, which never replaces a predecessor.
+   */
+  public async commitPreparedAgentSessionForTurn(
+    _store: FsStore,
+    _input: CommitPreparedAgentSessionForTurnInput
+  ): Promise<void> {
+    return;
   }
 
   /**
@@ -418,11 +466,19 @@ describe('server auth flow', () => {
     try {
       const executor = new DelayedServerTurnExecutor();
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,
         mode: 'server',
+        providerRegistry: new ProviderRegistry([
+          {
+            displayName: 'Agent OpenRouter',
+            id: 'agent-openrouter',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
         turnExecutor: executor,
       });
       const firstSignUp = await app.request('/api/auth/sign-up/email', {
@@ -452,8 +508,8 @@ describe('server auth flow', () => {
         input: 'Run the same request for two users.',
       };
 
-      mkdirSync(join(firstRepositoryPath, '.git'));
-      mkdirSync(join(secondRepositoryPath, '.git'));
+      seedWritableGitRepository(firstRepositoryPath);
+      seedWritableGitRepository(secondRepositoryPath);
       await app.request(`/api/app/workspaces/${firstScope.workspaceId}/repositories/default`, {
         method: 'PUT',
         headers: { cookie: sessionCookie(firstSignUp), 'content-type': 'application/json' },

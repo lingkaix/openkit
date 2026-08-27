@@ -68,7 +68,7 @@ export interface SchedulerSupplyRefreshAckRecord {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
@@ -138,7 +138,7 @@ export interface SchedulerSessionLeaseRecord {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
@@ -176,6 +176,10 @@ export interface SchedulerSessionLeaseRecord {
   readonly recoveryDeadline: string | null;
   /** SHA-256 digest of the worker process's memory-only reconnect key. */
   readonly workerProcessKeyHash: string | null;
+  /** Lowercase SHA-256 projection of the live-memory worker-control token. */
+  readonly workerControlTokenHash: string | null;
+  /** Lowercase SHA-256 projection of the live-memory worker-inference token. */
+  readonly workerInferenceTokenHash: string | null;
 }
 
 /** Durable scheduler orphan-worker evidence record. */
@@ -190,7 +194,7 @@ export interface SchedulerOrphanWorkerEvidenceRecord {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
@@ -250,7 +254,7 @@ export interface SchedulerCapacityRecord {
   readonly capacityClass: string;
   /** Concurrency ceiling. */
   readonly concurrencyCeiling: number;
-  /** Sessions currently in use. */
+  /** Runtime slots currently in use. */
   readonly inUseCount: number;
   /** Queue depth attributable to this target. */
   readonly queueDepth: number;
@@ -394,6 +398,8 @@ interface SchedulerSessionLeaseRow {
   readonly recovery_state: string | null;
   readonly recovery_deadline: string | null;
   readonly worker_process_key_hash: string | null;
+  readonly worker_control_token_hash: string | null;
+  readonly worker_inference_token_hash: string | null;
   readonly backend_anchor_state: 'unanchored' | 'anchored';
 }
 
@@ -508,7 +514,7 @@ export interface RecordSchedulerSupplyRefreshAckInput {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
@@ -526,7 +532,7 @@ export interface RecordSchedulerSupplyRefreshAckInput {
 
 /** Selector used by renewal gates to check applied supply-refresh support. */
 export interface SchedulerSupplyRefreshLeaseSelector {
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
@@ -596,7 +602,7 @@ export interface CreateSchedulerSessionLeaseInput {
   readonly leaseId: string;
   /** Planned placement plan id. */
   readonly planId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
@@ -652,7 +658,7 @@ export interface UpsertSchedulerCapacityRecordInput {
   readonly capacityClass: string;
   /** Concurrency ceiling. */
   readonly concurrencyCeiling: number;
-  /** Sessions currently in use. */
+  /** Runtime slots currently in use. */
   readonly inUseCount: number;
   /** Queue depth attributable to this target. */
   readonly queueDepth: number;
@@ -688,14 +694,14 @@ export interface UpsertSchedulerTargetHealthRecordInput {
 export interface EnsureConfiguredSchedulerBaselineInput {
   /** Optional deterministic clock. */
   readonly now?: () => string;
-  /** Configured disposable Cell placement. */
+  /** Configured scheduler placement. */
   readonly placement: 'local' | 'remote';
 }
 
-/** Initial lease window that preserves normal runtime after bounded cold Cell startup. */
+/** Initial lease window that preserves normal NanoHost-backed runtime startup. */
 export const CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS = 2_400_000;
 
-/** Startup authority aligned with the bounded disposable Cell and materialization path. */
+/** Startup authority aligned with the bounded NanoHost materialization path. */
 export const CONFIGURED_WORKER_STARTUP_TIMEOUT_MS = 1_500_000;
 
 /** Input used to dispatch one queued scheduler entry on the configured baseline. */
@@ -704,7 +710,7 @@ export interface DispatchNextSchedulerEntryInput {
   readonly planId: string;
   /** Stable session lease id. */
   readonly leaseId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. Defaults to the NanoCore AEP snapshot id for the selected entry. */
   readonly packageSnapshotId?: string;
@@ -726,6 +732,8 @@ export interface DispatchNextSchedulerEntryInput {
   readonly expectedDataPlaneMode: string;
   /** Non-secret sandbox binding reference. */
   readonly sandboxBindingRef: string;
+  /** Exact dispatchable queue entry selected before asynchronous runtime preparation. */
+  readonly expectedQueueEntryId?: string;
   /** Optional deterministic clock. */
   readonly now?: () => string;
 }
@@ -819,19 +827,40 @@ export interface SchedulerLeaseTokenBindingLineage {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
 }
 
+/** Route-token families bound independently to one scheduler lease. */
+export type SchedulerLeaseRouteTokenFamily = 'worker-control' | 'inference';
+
 /** Input used to resolve a durable scheduler lease token binding. */
 export interface ResolveSchedulerLeaseTokenBindingInput {
-  /** Non-secret sandbox binding reference presented by worker-control auth. */
+  /** Non-secret sandbox binding reference that locates the owning lease. */
   readonly sandboxBindingRef: string;
   /** Worker-control request lineage. */
   readonly lineage: SchedulerLeaseTokenBindingLineage;
+  /** Presented live-memory route token when the call performs authentication. */
+  readonly token?: string;
+  /** Exact route-token family when the call performs authentication. */
+  readonly tokenFamily?: SchedulerLeaseRouteTokenFamily;
   /** Optional deterministic clock used for request-time lease liveness checks. */
+  readonly now?: () => string;
+}
+
+/** Input used to bind the two route-token hashes to one live scheduler lease. */
+export interface BindSchedulerLeaseRouteTokenHashesInput {
+  /** Stable session lease id. */
+  readonly leaseId: string;
+  /** Non-secret sandbox binding owned by the same lease. */
+  readonly sandboxBindingRef: string;
+  /** Lowercase SHA-256 projection of the worker-control token. */
+  readonly workerControlTokenHash: string;
+  /** Lowercase SHA-256 projection of the independently generated inference token. */
+  readonly workerInferenceTokenHash: string;
+  /** Optional deterministic clock used for lease liveness checks. */
   readonly now?: () => string;
 }
 
@@ -1176,6 +1205,22 @@ export function listQueuedSchedulerAdmissionEntries(
       )
       .all() as SchedulerAdmissionEntryRow[]
   ).map(mapSchedulerAdmissionEntryRow);
+}
+
+/**
+ * Selects the first queued entry whose Thread has no nonterminal scheduler lease.
+ *
+ * @param coreDb Open Core database handle.
+ * @returns Next dispatchable queued entry, or null while every queued Thread is busy.
+ */
+export function findNextDispatchableSchedulerAdmissionEntry(
+  coreDb: CoreDb
+): SchedulerAdmissionEntryRecord | null {
+  return (
+    listQueuedSchedulerAdmissionEntries(coreDb).find(
+      (candidate) => !threadHasNonTerminalSchedulerLease(coreDb, candidate)
+    ) ?? null
+  );
 }
 
 /**
@@ -1882,10 +1927,87 @@ export function renewSchedulerSessionLease(
 }
 
 /**
- * Resolves a non-secret worker-control sandbox binding through durable lease records.
+ * Binds the two independently generated route-token hashes to one live lease.
  *
  * @param coreDb Open Core database handle.
- * @param input Binding lookup input.
+ * @param input Exact lease, sandbox binding, and hash-only token projections.
+ * @returns Updated scheduler lease.
+ * @throws Error when the lease is not live, ownership differs, or hashes were already changed.
+ */
+export function bindSchedulerLeaseRouteTokenHashes(
+  coreDb: CoreDb,
+  input: BindSchedulerLeaseRouteTokenHashesInput
+): SchedulerSessionLeaseRecord {
+  assertLowercaseSha256(input.workerControlTokenHash, 'Worker-control token hash');
+  assertLowercaseSha256(input.workerInferenceTokenHash, 'Worker-inference token hash');
+
+  if (input.workerControlTokenHash === input.workerInferenceTokenHash) {
+    throw new Error('Worker-control and worker-inference token hashes must be distinct.');
+  }
+
+  const lease = requireSchedulerSessionLease(coreDb, input.leaseId);
+  const timestamp = input.now?.() ?? new Date().toISOString();
+  const workerDeadline = lease.lastAcceptedHeartbeatAt
+    ? lease.heartbeatDeadline
+    : lease.startupDeadline;
+
+  if (
+    lease.sandboxBindingRef !== input.sandboxBindingRef ||
+    !canAcceptHeartbeat(lease.status) ||
+    lease.expiresAt <= timestamp ||
+    workerDeadline <= timestamp
+  ) {
+    throw new Error(`Scheduler lease cannot bind route tokens: ${input.leaseId}`);
+  }
+
+  if (lease.workerControlTokenHash || lease.workerInferenceTokenHash) {
+    if (
+      lease.workerControlTokenHash === input.workerControlTokenHash &&
+      lease.workerInferenceTokenHash === input.workerInferenceTokenHash
+    ) {
+      return lease;
+    }
+
+    throw new Error(`Scheduler lease route-token hashes already differ: ${input.leaseId}`);
+  }
+
+  const update = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_session_leases
+       SET worker_control_token_hash = ?,
+           worker_inference_token_hash = ?
+       WHERE lease_id = ?
+         AND sandbox_binding_ref = ?
+         AND status IN ('acquired', 'starting', 'active', 'idle')
+         AND expires_at > ?
+         AND CASE
+               WHEN last_accepted_heartbeat_at IS NULL THEN startup_deadline
+               ELSE heartbeat_deadline
+             END > ?
+         AND worker_control_token_hash IS NULL
+         AND worker_inference_token_hash IS NULL`
+    )
+    .run(
+      input.workerControlTokenHash,
+      input.workerInferenceTokenHash,
+      input.leaseId,
+      input.sandboxBindingRef,
+      timestamp,
+      timestamp
+    );
+
+  if (update.changes !== 1) {
+    throw new Error(`Scheduler lease route-token binding changed concurrently: ${input.leaseId}`);
+  }
+
+  return requireSchedulerSessionLease(coreDb, input.leaseId);
+}
+
+/**
+ * Resolves a non-secret sandbox binding and optional route token through durable lease records.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Binding, lineage, and optional family-authentication input.
  * @returns Accepted lease or stable rejection reason.
  */
 export function resolveSchedulerLeaseTokenBinding(
@@ -1905,6 +2027,21 @@ export function resolveSchedulerLeaseTokenBinding(
 
   if (!leaseMatchesLineage(lease, input.lineage)) {
     return { status: 'rejected', reason: 'lineage-mismatch' };
+  }
+
+  if ((input.token === undefined) !== (input.tokenFamily === undefined)) {
+    return { status: 'rejected', reason: 'binding-not-found' };
+  }
+
+  if (input.token !== undefined && input.tokenFamily !== undefined) {
+    const expectedHash =
+      input.tokenFamily === 'worker-control'
+        ? lease.workerControlTokenHash
+        : lease.workerInferenceTokenHash;
+
+    if (!expectedHash || !matchesRouteTokenHash(input.token, expectedHash)) {
+      return { status: 'rejected', reason: 'binding-not-found' };
+    }
   }
 
   if (
@@ -1953,6 +2090,8 @@ export function listRestorableSchedulerSessionLeases(
       `${schedulerSessionLeaseSelectSql()}
       WHERE status IN ('acquired', 'starting', 'active', 'idle')
         AND sandbox_binding_ref IS NOT NULL
+        AND worker_control_token_hash IS NOT NULL
+        AND worker_inference_token_hash IS NOT NULL
       ORDER BY acquired_at ASC, lease_id ASC`
     )
     .all() as SchedulerSessionLeaseRow[];
@@ -2499,7 +2638,7 @@ export function upsertSchedulerTargetHealthRecord(
  * Ensures the configured scheduler pool, capacity, and health rows exist.
  *
  * @param coreDb Open Core database handle.
- * @param input Configured Cell placement and optional deterministic clock.
+ * @param input Configured scheduler placement and optional deterministic clock.
  */
 export function ensureConfiguredSchedulerBaseline(
   coreDb: CoreDb,
@@ -2591,15 +2730,18 @@ export function dispatchNextSchedulerEntry(
   input: DispatchNextSchedulerEntryInput
 ): SchedulerDispatchResult {
   const queuedEntries = listQueuedSchedulerAdmissionEntries(coreDb);
-  const entry = queuedEntries.find(
-    (candidate) => !threadHasNonTerminalSchedulerLease(coreDb, candidate)
-  );
+  const entry = findNextDispatchableSchedulerAdmissionEntry(coreDb);
 
   if (!entry) {
     return {
       status: 'queued',
       reason: queuedEntries.length === 0 ? 'no-queued-entry' : 'thread-busy',
     };
+  }
+  if (input.expectedQueueEntryId && entry.queueEntryId !== input.expectedQueueEntryId) {
+    throw new Error(
+      `Scheduler dispatchable queue entry changed concurrently: ${input.expectedQueueEntryId}`
+    );
   }
 
   const matchingPools = listSchedulerWorkerPools(coreDb).filter(
@@ -3087,6 +3229,40 @@ function isPlaceableTargetHealth(healthState: SchedulerTargetHealthState): boole
 }
 
 /**
+ * Validates one lowercase SHA-256 projection before durable publication.
+ *
+ * @param value Candidate lowercase hexadecimal digest.
+ * @param label Product-safe field label for failures.
+ * @throws Error when the value is not exactly one lowercase SHA-256 digest.
+ */
+function assertLowercaseSha256(value: string, label: string): void {
+  if (!/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${label} must be a lowercase SHA-256 digest.`);
+  }
+}
+
+/**
+ * Compares one presented route token with a durable lowercase SHA-256 projection.
+ *
+ * @param token Presented 43-character unpadded base64url token.
+ * @param expectedHash Durable lowercase hexadecimal digest.
+ * @returns True only when the token is well formed and its digest matches in constant time.
+ */
+function matchesRouteTokenHash(token: string, expectedHash: string): boolean {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token) || !/^[0-9a-f]{64}$/.test(expectedHash)) {
+    return false;
+  }
+
+  const actual = Buffer.from(
+    createHash('sha256').update(Buffer.from(token, 'base64url')).digest('hex'),
+    'ascii'
+  );
+  const expected = Buffer.from(expectedHash, 'ascii');
+
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+/**
  * Returns whether a lease status can accept worker heartbeats.
  *
  * @param status Lease status.
@@ -3270,6 +3446,8 @@ function schedulerSessionLeaseSelectSql(): string {
     recovery_state,
     recovery_deadline,
     worker_process_key_hash,
+    worker_control_token_hash,
+    worker_inference_token_hash,
     backend_anchor_state
   FROM scheduler_session_leases`;
 }
@@ -3480,6 +3658,8 @@ function mapSchedulerSessionLeaseRow(row: SchedulerSessionLeaseRow): SchedulerSe
     recoveryState: row.recovery_state,
     recoveryDeadline: row.recovery_deadline,
     workerProcessKeyHash: row.worker_process_key_hash,
+    workerControlTokenHash: row.worker_control_token_hash,
+    workerInferenceTokenHash: row.worker_inference_token_hash,
   };
 }
 

@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import {
   classifyGoalStepCheckpointAfterSchedulerRecovery,
   goalStartOwnerIds,
@@ -24,6 +29,7 @@ import {
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import {
@@ -40,7 +46,12 @@ import {
 } from './runtime/goal-store.js';
 import { createGoalVerificationRecord } from './runtime/goal-verification-records.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
-import type { TurnExecutor, TurnStartRuntimeContext } from './runtime/types.js';
+import type {
+  CommitPreparedAgentSessionForTurnInput,
+  PrepareAgentSessionForTurnInput,
+  TurnExecutor,
+  TurnStartRuntimeContext,
+} from './runtime/types.js';
 import {
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
@@ -65,6 +76,7 @@ import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -197,10 +209,19 @@ function artifactDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
 }
 
-/** Simulator variant that reaches its user-input Gate during the original worker attempt. */
-class UserInputGateTurnExecutor extends SimulatedTurnExecutor {
+/** Test executor that projects the simulator's paused Turn through the existing approval owners. */
+class ApprovalGateTurnExecutor extends SimulatedTurnExecutor {
+  public override readonly capabilities: TurnExecutor['capabilities'] = {
+    approvals: true,
+    interrupts: true,
+    artifacts: true,
+    workspaceConfig: true,
+    workspaceKnowledgeEditing: true,
+    questions: false,
+  };
+
   /**
-   * Advances the deterministic simulator from its approval Gate to its user-input Gate.
+   * Replaces the simulator's question Gate with one pending Approval and matching Item.
    *
    * @param store Product store containing the worker Turn.
    * @param turnId Worker Turn id.
@@ -215,15 +236,59 @@ class UserInputGateTurnExecutor extends SimulatedTurnExecutor {
   ): Promise<void> {
     await super.startTurn(store, turnId, input, context);
     const turn = store.getTurnById(turnId);
-    if (turn.humanGate?.kind !== 'approval') {
-      throw new Error('Simulator did not produce its approval Gate.');
-    }
-    if (turn.triggerActor.kind !== 'user') {
-      throw new Error('User-input Gate fixture requires a human trigger actor.');
-    }
-    await super.respondApproval(store, turn.humanGate.approvalRequestId, 'granted', {
-      actor: turn.triggerActor,
-      requestId: context?.requestId ?? null,
+    const createdAt = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
+    const approval = store.createApproval({
+      id: `ap_goal_gate_${turnId}`,
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId,
+      kind: 'permission',
+      status: 'pending',
+      title: 'Approve Goal worker continuation',
+      description: 'Approve the pending Goal worker action.',
+      createdAt,
+      resolvedAt: null,
+    });
+    const item = store.createItem({
+      id: `it_approval_request_${turnId}`,
+      workspaceId: turn.workspaceId,
+      threadId: turn.threadId,
+      turnId,
+      type: 'approval-request',
+      status: 'completed',
+      approvalRequestId: approval.id,
+      title: approval.title,
+      description: approval.description,
+      kind: approval.kind,
+      createdAt,
+      completedAt: createdAt,
+    });
+    store.updateTurn(turnId, {
+      status: 'awaiting_human',
+      humanGate: {
+        kind: 'approval',
+        approvalRequestId: approval.id,
+        itemId: item.id,
+      },
+    });
+  }
+
+  /**
+   * Resolves the test Approval through its existing durable store owner.
+   *
+   * @param store Product store containing the Approval.
+   * @param approvalRequestId Approval identity to resolve.
+   * @param decision Human decision accepted by the Approval owner.
+   * @returns Resolved Approval record.
+   */
+  public override async respondApproval(
+    store: Parameters<SimulatedTurnExecutor['respondApproval']>[0],
+    approvalRequestId: string,
+    decision: Parameters<SimulatedTurnExecutor['respondApproval']>[2]
+  ) {
+    return store.updateApproval(approvalRequestId, {
+      status: decision,
+      resolvedAt: new Date().toISOString(),
     });
   }
 }
@@ -265,6 +330,71 @@ function seedReadyRepository(coreDb: CoreDb, repositoryPath: string): void {
     });
   } finally {
     workspaceDb.sqlite.close();
+  }
+}
+
+/**
+ * Returns the local provider registry that matches `createTestAgentSetup()`.
+ *
+ * @returns Registry containing the test OpenRouter profile.
+ */
+function testProviderRegistry(): ProviderRegistry {
+  return new ProviderRegistry([
+    {
+      displayName: 'Agent OpenRouter',
+      id: 'agent-openrouter',
+      kind: 'local',
+      models: ['openai/gpt-5.2'],
+    },
+  ]);
+}
+
+/**
+ * Attaches the current SimulatedTurnExecutor prepare/commit contract to a Goal fixture.
+ *
+ * @param executor Goal turn executor that owns start behavior.
+ * @returns Executor that admits AgentSessions through the current runtime contract.
+ */
+function withGoalSessionContinuity(executor: TurnExecutor): TurnExecutor {
+  const continuity = new SimulatedTurnExecutor();
+  return {
+    ...executor,
+    commitPreparedAgentSessionForTurn: (store, input: CommitPreparedAgentSessionForTurnInput) =>
+      continuity.commitPreparedAgentSessionForTurn(store, input),
+    prepareAgentSessionForTurn: (store, input: PrepareAgentSessionForTurnInput) =>
+      continuity.prepareAgentSessionForTurn(store, input),
+  };
+}
+
+/**
+ * Reuses the scheduler-admitted AgentSession when present, otherwise creates one.
+ *
+ * @param store Store that owns AgentSessions.
+ * @param turn Turn whose agent and lineage the session must match.
+ * @param context Scheduler start context carrying the admitted identity.
+ * @param timestamp Creation timestamp used only for a fresh session.
+ * @returns Bound AgentSession identity.
+ */
+function bindGoalAgentSession(
+  store: Parameters<TurnExecutor['startTurn']>[0],
+  turn: ReturnType<Parameters<TurnExecutor['startTurn']>[0]['getTurnById']>,
+  context: TurnStartRuntimeContext,
+  timestamp: string
+) {
+  const id = context.agentSessionId ?? `session_${turn.id}`;
+  try {
+    return store.getAgentSession(id);
+  } catch {
+    return store.createAgentSession({
+      agentId: turn.agentId!,
+      createdAt: timestamp,
+      id,
+      message: null,
+      status: 'busy',
+      threadId: turn.threadId,
+      updatedAt: timestamp,
+      workspaceId: turn.workspaceId,
+    });
   }
 }
 
@@ -523,7 +653,7 @@ function seedActiveGoalWorkerTurn(
 function createCompletingGoalTurnExecutor(
   startContexts: TurnStartRuntimeContext[] = []
 ): TurnExecutor {
-  return {
+  return withGoalSessionContinuity({
     capabilities: {
       approvals: true,
       interrupts: true,
@@ -537,16 +667,7 @@ function createCompletingGoalTurnExecutor(
       startContexts.push(context);
       const turn = workerStore.getTurnById(turnId);
       const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
-      const agentSession = workerStore.createAgentSession({
-        id: context.agentSessionId ?? `session_${turnId}`,
-        agentId: turn.agentId!,
-        workspaceId: turn.workspaceId,
-        threadId: turn.threadId,
-        status: 'busy',
-        message: null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
+      const agentSession = bindGoalAgentSession(workerStore, turn, context, timestamp);
       workerStore.updateTurn(turnId, { agentSessionId: agentSession.id });
       workerStore.createArtifact({
         id: `art_${turnId}`,
@@ -585,7 +706,7 @@ function createCompletingGoalTurnExecutor(
         data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
       });
     },
-  };
+  });
 }
 
 /**
@@ -597,7 +718,7 @@ function createCompletingGoalTurnExecutor(
 function createFailingGoalTurnExecutor(
   startContexts: TurnStartRuntimeContext[] = []
 ): TurnExecutor {
-  return {
+  return withGoalSessionContinuity({
     capabilities: {
       approvals: true,
       interrupts: true,
@@ -623,7 +744,7 @@ function createFailingGoalTurnExecutor(
       });
       throw new Error('injected worker start failure');
     },
-  };
+  });
 }
 
 /**
@@ -1380,12 +1501,13 @@ describe('thread goal summary app API', () => {
         now: () => '2026-07-18T02:32:00.000Z',
       });
       const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-steering-budget-'));
-      mkdirSync(join(repositoryPath, '.git'));
+      seedWritableGitRepository(repositoryPath);
       seedReadyRepository(coreDb, repositoryPath);
       const turnsBeforeBudgetRejection = store.listThreadTurns('ws_demo', thread.id).length;
       const budgetApp = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor: createCompletingGoalTurnExecutor(),
       });
@@ -2895,11 +3017,55 @@ describe('thread goal summary app API', () => {
     const workspaceDb = createWorkspaceDb(coreDb);
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Real goal step thread');
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-real-goal-step-repo-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    const remoteCommit = '0123456789abcdef0123456789abcdef01234567';
+    const agentManifest = {
+      ...createTestAgentSetup().manifest,
+      workspace: {
+        inputs: [{ access: 'read-write' as const, id: 'repo_remote', sourceRef: 'main-repo' }],
+      },
+    };
+    const catalog = parseWorkspaceDataSourceCatalog({
+      schemaVersion: 1,
+      sources: [
+        {
+          access: 'read-write',
+          allowedSlotKinds: ['worktree'],
+          displayName: 'Goal Mode remote repository',
+          id: 'main-repo',
+          kind: 'git',
+          locator: {
+            commit: remoteCommit,
+            url: 'https://git.example.test/openkit/goal-mode.git',
+          },
+          sensitivity: 'internal',
+          status: 'active',
+        },
+      ],
+    });
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot: coreDb.dataRoot,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [agentManifest],
+        dataRoot: coreDb.dataRoot,
+        providerRegistry: testProviderRegistry(),
+        workspaceDataSourceCatalogs: [
+          {
+            catalog,
+            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'data-sources.jsonc'),
+            workspaceId: 'ws_demo',
+          },
+        ],
+      }),
+    });
 
     try {
-      seedReadyRepository(coreDb, repositoryPath);
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            'SELECT COUNT(*) AS count FROM workspace_repository_resources WHERE workspace_id = ?'
+          )
+          .get('ws_demo')
+      ).toEqual({ count: 0 });
       const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context', {
         kind: 'user',
         id: 'user_local',
@@ -2912,7 +3078,7 @@ describe('thread goal summary app API', () => {
         type: 'user-message',
         status: 'completed',
         actor: contextTurn.triggerActor,
-        text: 'Use the linked repository and produce evidence.',
+        text: 'Use the remote repository source and produce evidence.',
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
       });
@@ -2953,8 +3119,8 @@ describe('thread goal summary app API', () => {
       const startContexts: TurnStartRuntimeContext[] = [];
       const turnExecutor = createCompletingGoalTurnExecutor(startContexts);
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
         coreDb,
+        runtimeConfigManager,
         store,
         turnExecutor,
       });
@@ -3128,8 +3294,20 @@ describe('thread goal summary app API', () => {
           agentSessionId: expect.any(String),
           requestId: 'req_goal_step',
           sandboxBindingRef: expect.stringMatching(/^lease-binding:/),
+          workspaceCwd: '/workspace/openkit',
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo_remote',
+              sourceCommit: remoteCommit,
+              sourceKind: 'remote-git',
+              workerPath: '/workspace/openkit',
+            },
+          ],
+          workspaceSourceRefs: { repo_remote: 'main-repo' },
         }),
       ]);
+      expect(JSON.stringify(startContexts[0])).not.toContain(coreDb.dataRoot);
       const sandboxBindingRef = startContexts[0]!.sandboxBindingRef!;
       const lease = requireSchedulerSessionLease(
         coreDb,
@@ -3149,6 +3327,16 @@ describe('thread goal summary app API', () => {
         expect.objectContaining({
           requestedAgentId: 'agent_codex_host',
           turnId: workerTurnId,
+          workspaceCwd: '/workspace/openkit',
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo_remote',
+              sourceCommit: remoteCommit,
+              sourceKind: 'remote-git',
+              workerPath: '/workspace/openkit',
+            },
+          ],
         }),
       ]);
       const unresolvedReviews = listGoalReviewRecordsForTask(workspaceDb, {
@@ -3394,7 +3582,7 @@ describe('thread goal summary app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Failing goal step thread');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-failing-goal-step-repo-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
@@ -3453,8 +3641,9 @@ describe('thread goal summary app API', () => {
 
       const startContexts: TurnStartRuntimeContext[] = [];
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor: createFailingGoalTurnExecutor(startContexts),
       });
@@ -3552,7 +3741,7 @@ describe('thread goal summary app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Deferred goal step thread');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-deferred-goal-step-repo-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
@@ -3622,8 +3811,9 @@ describe('thread goal summary app API', () => {
 
       const startContexts: TurnStartRuntimeContext[] = [];
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor: createCompletingGoalTurnExecutor(startContexts),
       });
@@ -3683,7 +3873,7 @@ describe('thread goal summary app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Dependent no-review goal thread');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-no-review-goal-step-repo-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
@@ -3764,8 +3954,9 @@ describe('thread goal summary app API', () => {
       });
 
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor: createCompletingGoalTurnExecutor(),
       });
@@ -3910,7 +4101,7 @@ describe('thread goal summary app API', () => {
     const thread = store.createThread('ws_demo', 'Atomic goal review thread');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-atomic-goal-review-repo-'));
     const requestId = '00000000-0000-4000-8000-000000000271';
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
@@ -4004,7 +4195,6 @@ describe('thread goal summary app API', () => {
             agentSetup: createTestAgentSetup(),
             agentSessionId: context.agentSessionId,
             backend: {
-              workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
               kind: 'openshell',
             },
             requestId: context.requestId,
@@ -4018,38 +4208,24 @@ describe('thread goal summary app API', () => {
             createdAt: turn.startedAt ?? '2026-05-31T00:00:00.000Z',
             environmentPackage,
           });
-          workerStore.createAgentSession({
-            agentId: 'agent_codex_host',
-            createdAt: turn.startedAt ?? '2026-05-31T00:00:00.000Z',
-            environmentPackageSnapshotId: environmentPackage.snapshotId,
-            id: context.agentSessionId,
-            message: null,
-            status: 'busy',
-            threadId: turn.threadId,
-            updatedAt: turn.startedAt ?? '2026-05-31T00:00:00.000Z',
-            workspaceId: turn.workspaceId,
-          });
+          const timestamp = turn.startedAt ?? '2026-05-31T00:00:00.000Z';
+          bindGoalAgentSession(workerStore, turn, context, timestamp);
           workerStore.updateTurn(turnId, { agentSessionId: context.agentSessionId });
           const backendSession = recordWorkerBackendSessionMaterializing(coreDb, {
-            backendVersion: '0.0.80',
+            backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+            backendVersion: '0.0.99',
             identity: {
               agentSessionId: context.agentSessionId,
               backendKind: 'openshell',
               backendSessionId: `openkit-${context.agentSessionId}`,
-              backendTarget: {
-                cellTargetId: 'cell-test',
-                gatewayEndpoint: null,
-                gatewayName: 'openshell',
-                placement: 'local',
-              },
               deploymentId: 'deployment-test',
               packageSnapshotId: environmentPackage.snapshotId,
+              runtimeTargetId: 'runtime-target-test',
               stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
               transientProviderInstanceId: null,
             },
             lineage: { threadId: turn.threadId, turnId, workspaceId: turn.workspaceId },
             sandboxBindingRef: context.sandboxBindingRef,
-            workerImage: environmentPackage.runtime.image.ref,
           });
           markWorkerBackendWorkspaceHandoffComplete(coreDb, { leaseId: backendSession.leaseId });
           for (const [fromState, toState] of [
@@ -4105,8 +4281,9 @@ describe('thread goal summary app API', () => {
         },
       };
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor: acceptedFinalStatusExecutor,
       });
@@ -4162,8 +4339,9 @@ describe('thread goal summary app API', () => {
       workspaceDb.sqlite.exec('DROP TRIGGER fail_goal_checkpoint_terminal');
       const replayStarts: TurnStartRuntimeContext[] = [];
       const restartedApp = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor: createCompletingGoalTurnExecutor(replayStarts),
       });
@@ -4213,7 +4391,7 @@ describe('thread goal summary app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Async worker goal step thread');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-async-goal-step-repo-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
@@ -4272,7 +4450,7 @@ describe('thread goal summary app API', () => {
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
-      const turnExecutor: TurnExecutor = {
+      const turnExecutor: TurnExecutor = withGoalSessionContinuity({
         capabilities: {
           approvals: true,
           interrupts: true,
@@ -4331,10 +4509,11 @@ describe('thread goal summary app API', () => {
             });
           });
         },
-      };
+      });
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor,
       });
@@ -4407,8 +4586,8 @@ describe('thread goal summary app API', () => {
   });
 
   it.each([
-    { gateKind: 'approval' as const, executor: () => new SimulatedTurnExecutor() },
-    { gateKind: 'user-input' as const, executor: () => new UserInputGateTurnExecutor() },
+    { gateKind: 'approval' as const, executor: () => new ApprovalGateTurnExecutor() },
+    { gateKind: 'user-input' as const, executor: () => new SimulatedTurnExecutor() },
   ])('closes a Goal Mode worker $gateKind Gate without resuming it', async ({
     gateKind,
     executor,
@@ -4418,7 +4597,7 @@ describe('thread goal summary app API', () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Human approval goal step thread');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-human-goal-step-repo-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
@@ -4478,8 +4657,9 @@ describe('thread goal summary app API', () => {
       });
 
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
+        providerRegistry: testProviderRegistry(),
         store,
         turnExecutor: executor(),
       });

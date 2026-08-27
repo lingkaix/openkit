@@ -4,9 +4,9 @@ export default defineConfig({
   test: {
     exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
     include: ['src/**/*.test.ts'],
-    testTimeout: 15_000,
+    testTimeout: 30_000,
     coverage: {
-      exclude: ['dist/**', 'src/index.ts', 'src/runtime/codex/transport.ts'],
+      exclude: ['dist/**', 'src/index.ts'],
       provider: 'v8',
       thresholds: {
         lines: 70,

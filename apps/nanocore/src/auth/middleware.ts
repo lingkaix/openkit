@@ -9,6 +9,8 @@ import {
   actorFromRequest,
   actorFromSession,
 } from './identity.js';
+import { isNanoHostTransportAdmissionPath } from './nanohost-transport-admission.js';
+import { NANOHOST_TRANSPORT_TOKEN_SCOPE } from './nanohost-transport-token.js';
 import type { WorkspaceAccess } from './operation-authorizer.js';
 
 /**
@@ -83,7 +85,8 @@ export function createAuthMiddleware(
       if (
         mode === 'server' &&
         c.req.method === 'POST' &&
-        c.req.path === '/api/app/auth/bootstrap/consume' &&
+        (c.req.path === '/api/app/auth/bootstrap/consume' ||
+          isNanoHostTransportAdmissionPath(c.req.path)) &&
         !acceptsSecretTransport(c)
       ) {
         return insecureTransport(c);
@@ -113,6 +116,12 @@ export function createAuthMiddleware(
       const token = await options.accessTokenVerifier?.(bearerToken, c.req.raw);
 
       if (!token) {
+        return unauthorized(c);
+      }
+
+      // NanoHost transport Tokens authenticate only the NanoCore-to-NanoHost
+      // transport. Product and server-admin App API paths must reject them.
+      if ((token.actor as { tokenScope?: string }).tokenScope === NANOHOST_TRANSPORT_TOKEN_SCOPE) {
         return unauthorized(c);
       }
 
@@ -149,6 +158,15 @@ function isPublicRoute(method: string, path: string): boolean {
   }
 
   if (method === 'POST' && path === '/api/app/auth/bootstrap/consume') {
+    return true;
+  }
+
+  // Native NanoHost transport paths authenticate through the bound physical
+  // connection and must not enter the product / server-admin App API actor path.
+  if (method === 'POST' && isNanoHostTransportAdmissionPath(path)) {
+    return true;
+  }
+  if (method === 'POST' && path.startsWith('/api/nanohost/transport/effects/')) {
     return true;
   }
 

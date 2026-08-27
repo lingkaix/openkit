@@ -2,10 +2,6 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type ProviderProfile, ProviderProfileSchema } from '@openkit/config-schema';
 import { z } from 'zod';
-import {
-  isCodexOAuthProviderProfile,
-  readCodexOAuthAccountSlotId,
-} from '../providers/codex-oauth-profile.js';
 import { parseJsoncObject } from './jsonc.js';
 
 export type { ProviderProfile };
@@ -19,7 +15,6 @@ export interface ProviderProfileDiagnostic {
   code:
     | 'provider.duplicate_id'
     | 'provider.invalid_profile'
-    | 'provider.missing_codex_oauth_account_slot'
     | 'provider.unknown_required_extension';
   /** File path that produced the diagnostic. */
   path: string;
@@ -77,47 +72,10 @@ export function loadProviderProfiles(dataRoot: string): ProviderProfileLoadResul
 
     const profile = applyRequiredExtensionDiagnostics(profileResult.data, path, result.diagnostics);
 
-    result.profiles.push(applyCodexOAuthSlotDiagnostics(profile, path, result.diagnostics));
+    result.profiles.push(profile);
   }
 
   return result;
-}
-
-/**
- * Applies readiness diagnostics for Codex OAuth profiles without explicit account slots.
- *
- * @param profile Parsed provider profile.
- * @param path Source file path.
- * @param diagnostics Diagnostics collection to append to.
- * @returns Profile with readiness blocked when a Codex OAuth slot is missing.
- */
-function applyCodexOAuthSlotDiagnostics(
-  profile: ProviderProfile,
-  path: string,
-  diagnostics: ProviderProfileDiagnostic[]
-): ProviderProfile {
-  if (!isCodexOAuthProviderProfile(profile) || readCodexOAuthAccountSlotId(profile)) {
-    return profile;
-  }
-
-  const message =
-    'Codex OAuth provider profiles must set extensions.openkit.codexOAuth.accountSlotId.';
-
-  diagnostics.push({
-    code: 'provider.missing_codex_oauth_account_slot',
-    message,
-    path,
-    profileId: profile.id,
-    severity: 'error',
-  });
-
-  return {
-    ...profile,
-    readiness: {
-      message,
-      status: 'blocked',
-    },
-  };
 }
 
 /**

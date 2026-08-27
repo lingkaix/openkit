@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   WorkspaceInputSnapshot,
@@ -17,6 +17,7 @@ import { createWorkerContextPackageAuthorityReader } from '../context/worker-con
 import {
   createWorkerContextPackageFiles,
   createWorkerContextPackageTrace,
+  isChatSubordinateTaskTurn,
   projectWorkerContextRequest,
   readWorkerContextPackageTrace,
   type WorkerContextPackageFiles,
@@ -40,6 +41,7 @@ import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-deci
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import {
@@ -57,11 +59,16 @@ import {
   type ResolvedAgentEnvironmentRuntimeEnvCredential,
   type ResolvedAgentEnvironmentRuntimeFileCredential,
   resolveAgentEnvironmentPackage,
+  resolveAgentSessionCompatibilityKey,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
   AgentSessionReadModel,
+  CommitPreparedAgentSessionForTurnInput,
+  PrepareAgentSessionForTurnInput,
+  PreparedAgentSessionForTurn,
+  PreparedCurrentAgentSession,
   RuntimeCapabilities,
   RuntimeEventFamily,
   RuntimeItemType,
@@ -76,12 +83,15 @@ import {
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
+  workerBackendImageIdentity,
+  workerBackendLineageFromRuntimeImage,
 } from './worker-backend-sessions.js';
 import {
   getWorkerCheckpoint,
   parseWorkerCheckpointContextAssembly,
   type WorkerCheckpointRecord,
 } from './worker-checkpoints.js';
+import type { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   type AcceptedWorkerFinalStatus,
   canonicalStopReasonForAcceptedWorkerFinalStatus,
@@ -91,6 +101,7 @@ import {
 } from './worker-control-records.js';
 import {
   WORKER_ARTIFACT_COLLECTION_INVALID,
+  type WorkerGovernanceAgentSessionContinuityDisposition,
   type WorkerGovernanceBackend,
   type WorkerGovernanceBackendSessionIdentity,
   type WorkerGovernanceEvidenceRecord,
@@ -131,7 +142,7 @@ interface WorkerTurnBackendLifecycle {
 }
 
 /** Prepared S39 package state retained until its accepted trace and queue handoff complete. */
-interface PreparedWorkerTurnContext {
+export interface PreparedWorkerTurnContext {
   /** Exact applied steering claim consumed only after accepted trace verification. */
   readonly appliedPending: PendingUserTurnRecord | null;
   /** Exact diagnostic checkpoint whose lineage is frozen into the trace. */
@@ -163,7 +174,7 @@ interface PreparedWorkerTurnContext {
  * @returns Prepared immutable package state.
  * @throws TurnStartValidationError when checkpoint or requested Item authority is contradictory.
  */
-function prepareWorkerTurnContextPackage(
+export function prepareWorkerTurnContextPackage(
   coreDb: CoreDb | null,
   workspaceDb: WorkspaceDb,
   store: FsStore,
@@ -192,8 +203,15 @@ function prepareWorkerTurnContextPackage(
   const contextBudgetTokens = workerRequest.contextBudgetTokens;
   const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
+  const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const isChatSubordinateTask = isChatSubordinateTaskTurn({
+    requestId: input.requestId,
+    turn,
+  });
   const requiresTaskKnowledgeSelection =
-    workerRequest.requestKind === 'structured-delegation' && checkpoint.goalId === null;
+    workerRequest.requestKind === 'structured-delegation' &&
+    checkpoint.goalId === null &&
+    !isChatSubordinateTask;
   if (
     (requiresTaskKnowledgeSelection && knowledgeSelectionInput === null) ||
     (!requiresTaskKnowledgeSelection && knowledgeSelectionInput !== null)
@@ -462,6 +480,76 @@ function prepareWorkerTurnContextPackage(
 }
 
 /**
+ * Publishes and strictly reverifies one prepared S39 package before consuming its input owners.
+ *
+ * @param input Existing Core, Workspace, product, package, and AEP authorities.
+ * @returns Strictly accepted immutable worker Context Package trace.
+ * @throws Error when any delivery owner, package byte, handoff, or queue proof is contradictory.
+ */
+export function acceptPreparedWorkerTurnContextPackage(input: {
+  readonly coreDb: CoreDb;
+  readonly environmentPackage: AgentEnvironmentPackage;
+  readonly preparedContext: PreparedWorkerTurnContext;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+}): WorkerContextPackageTrace {
+  const { environmentPackage, preparedContext, workspaceDb } = input;
+  const authorities = createWorkerContextPackageAuthorityReader({
+    coreDb: input.coreDb,
+    store: input.store,
+    workspaceDb,
+  });
+  const trace = createWorkerContextPackageTrace({
+    agentSessionId: environmentPackage.scope.agentSessionId,
+    excludedItems: [],
+    goalId: preparedContext.checkpoint.goalId,
+    knowledgeExclusions: preparedContext.knowledgeExclusions,
+    knowledgeSelectionInput: preparedContext.knowledgeSelectionInput,
+    materialExclusions: preparedContext.materialExclusions,
+    packageFiles: preparedContext.packageFiles,
+    packageSnapshotId: environmentPackage.snapshotId,
+    requestId: preparedContext.checkpoint.requestId,
+    taskId: preparedContext.checkpoint.taskId,
+  });
+  writeWorkerContextPackageTrace({
+    authorities,
+    trace,
+    workspaceRoot: preparedContext.workspaceRoot,
+  });
+  const acceptedTrace = readWorkerContextPackageTrace({
+    authorities,
+    threadId: environmentPackage.scope.threadId,
+    turnId: environmentPackage.scope.turnId,
+    workspaceId: environmentPackage.scope.workspaceId,
+    workspaceRoot: preparedContext.workspaceRoot,
+  });
+
+  workspaceDb.sqlite.transaction(() => {
+    const queuedMaterial = preparedContext.queuedMaterialSelection;
+    if (queuedMaterial) {
+      consumeQueuedThreadMaterialRevision(
+        workspaceDb,
+        environmentPackage.scope.threadId,
+        queuedMaterial.materialId,
+        queuedMaterial.revisionId,
+        queuedMaterial.bindingMutationRequestId
+      );
+    }
+    const appliedPending = preparedContext.appliedPending;
+    if (appliedPending) {
+      deleteAppliedPendingUserTurnRecord(workspaceDb, {
+        contextPackageId: trace.contextPackageId,
+        pendingTurnId: appliedPending.pendingTurnId,
+        threadId: appliedPending.threadId,
+        workspaceId: appliedPending.workspaceId,
+      });
+    }
+  })();
+
+  return acceptedTrace;
+}
+
+/**
  * Options for the worker-governance-backed turn executor.
  */
 export interface WorkerGovernanceTurnExecutorOptions {
@@ -476,9 +564,7 @@ export interface WorkerGovernanceTurnExecutorOptions {
   backend: WorkerGovernanceBackend;
   /** Optional Core database used to persist workspace synchronization records. */
   coreDb?: CoreDb | undefined;
-  /** Backend target used when resolving the Agent Environment Package. */
-  environmentBackend: ResolveAgentEnvironmentBackendInput;
-  /** Optional deterministic agent-session id factory for tests. */
+  /** Optional deterministic AgentSession id factory for tests. */
   createAgentSessionId?: (() => string) | undefined;
   /** Optional clock for deterministic tests. */
   now?: (() => string) | undefined;
@@ -486,20 +572,15 @@ export interface WorkerGovernanceTurnExecutorOptions {
   runtimeProvenanceImporter?: typeof importWorkerRuntimeProvenance | undefined;
   /** Optional vault backend used for grant-derived provider attachments. */
   vaultBackend?: (() => VaultBackend) | undefined;
+  /** Optional shared worker-control gateway used to enqueue live-session interrupts. */
+  workerControlGateway?: WorkerControlGateway | undefined;
 }
 
 /**
  * Turn executor that runs one worker through a WorkerGovernanceBackend.
  */
 export class WorkerGovernanceTurnExecutor implements TurnExecutor {
-  public readonly capabilities: RuntimeCapabilities = {
-    approvals: false,
-    artifacts: true,
-    interrupts: false,
-    questions: false,
-    workspaceConfig: true,
-    workspaceKnowledgeEditing: false,
-  };
+  public readonly capabilities: RuntimeCapabilities;
 
   public readonly eventFamilies: readonly RuntimeEventFamily[] = [
     'turn.started',
@@ -528,10 +609,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly backend: WorkerGovernanceBackend;
   private readonly coreDb: CoreDb | null;
   private readonly createAgentSessionId: () => string;
-  private readonly environmentBackend: ResolveAgentEnvironmentBackendInput;
   private readonly now: () => string;
   private readonly runtimeProvenanceImporter: typeof importWorkerRuntimeProvenance;
   private readonly vaultBackend: (() => VaultBackend) | null;
+  private readonly workerControlGateway: WorkerControlGateway | null;
 
   /**
    * Creates the governance-backed turn executor.
@@ -541,13 +622,373 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   public constructor(options: WorkerGovernanceTurnExecutorOptions) {
     this.awaitWorkerCompletion = options.awaitWorkerCompletion ?? null;
     this.backend = options.backend;
+    this.capabilities = {
+      approvals: false,
+      artifacts: true,
+      interrupts: Boolean(options.workerControlGateway),
+      questions: false,
+      workspaceConfig: true,
+      workspaceKnowledgeEditing: false,
+    };
     this.coreDb = options.coreDb ?? null;
-    this.environmentBackend = options.environmentBackend;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => generateUuidV7());
     this.now = options.now ?? (() => new Date().toISOString());
     this.runtimeProvenanceImporter =
       options.runtimeProvenanceImporter ?? importWorkerRuntimeProvenance;
     this.vaultBackend = options.vaultBackend ?? null;
+    this.workerControlGateway = options.workerControlGateway ?? null;
+  }
+
+  /** Previews reusable continuity or replacement without Store or backend effects. */
+  public async prepareAgentSessionForTurn(
+    store: FsStore,
+    input: PrepareAgentSessionForTurnInput
+  ): Promise<PreparedAgentSessionForTurn> {
+    const currentSessions = store
+      .listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId)
+      .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
+    if (currentSessions.length > 1) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The Thread has multiple current AgentSessions.',
+        409
+      );
+    }
+    const current = currentSessions[0];
+    const previewCompatibilityKey = (agentSessionId: string) =>
+      this.previewAgentSessionCompatibilityKey(agentSessionId, input);
+    if (!current) {
+      if (!this.backend.prepareAgentSessionContinuity) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The worker backend cannot prove fresh AgentSession admission readiness.',
+          409
+        );
+      }
+      const sessionCompatibilityKey = previewCompatibilityKey(input.freshAgentSessionId);
+      let disposition: WorkerGovernanceAgentSessionContinuityDisposition;
+      try {
+        disposition = await this.backend.prepareAgentSessionContinuity({
+          agentSessionCompatibilityKey: sessionCompatibilityKey,
+          agentSessionId: input.freshAgentSessionId,
+          reuseAllowed: true,
+          threadId: input.turn.threadId,
+          workspaceId: input.turn.workspaceId,
+        });
+      } catch {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The worker backend is not ready for fresh AgentSession admission.',
+          409
+        );
+      }
+      if (disposition !== 'absent') {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Fresh AgentSession admission did not prove absent durable continuity.',
+          409
+        );
+      }
+      return {
+        agentSessionId: input.freshAgentSessionId,
+        currentAgentSession: null,
+        replacementRequired: false,
+        sessionCompatibilityKey,
+      };
+    }
+    const currentTurns = store
+      .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
+      .filter((turn) => turn.agentSessionId === current.id);
+    if (
+      currentTurns.some(
+        (turn) => !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status)
+      )
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The current AgentSession still owns an active Turn.',
+        409
+      );
+    }
+    const currentCompatibilityKey = previewCompatibilityKey(current.id);
+    const reuseAllowed =
+      current.status === 'idle' &&
+      !current.stale &&
+      current.agentId === input.agentSetup.manifest.id &&
+      current.policySnapshotId === WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID &&
+      current.sessionCompatibilityKey === currentCompatibilityKey;
+    if (!this.backend.prepareAgentSessionContinuity) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The worker backend cannot prove current AgentSession continuity.',
+        409
+      );
+    }
+    let disposition: WorkerGovernanceAgentSessionContinuityDisposition;
+    try {
+      disposition = await this.backend.prepareAgentSessionContinuity({
+        agentSessionCompatibilityKey: currentCompatibilityKey,
+        agentSessionId: current.id,
+        reuseAllowed: true,
+        threadId: input.turn.threadId,
+        workspaceId: input.turn.workspaceId,
+      });
+    } catch {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The current AgentSession runtime binding cannot be safely inspected.',
+        409
+      );
+    }
+    const currentAgentSession: PreparedCurrentAgentSession = {
+      agentId: current.agentId,
+      id: current.id,
+      policySnapshotId: current.policySnapshotId,
+      sessionCompatibilityKey: current.sessionCompatibilityKey,
+      stale: current.stale,
+      status: current.status,
+      updatedAt: current.updatedAt,
+    };
+    if (reuseAllowed && disposition === 'reusable') {
+      return {
+        agentSessionId: current.id,
+        currentAgentSession,
+        replacementRequired: false,
+        sessionCompatibilityKey: currentCompatibilityKey,
+      };
+    }
+    if (!['reusable', 'replacement-required', 'absent'].includes(disposition)) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The worker backend performed an effect during read-only continuity inspection.',
+        409
+      );
+    }
+    const freshCompatibilityKey = previewCompatibilityKey(input.freshAgentSessionId);
+    return {
+      agentSessionId: input.freshAgentSessionId,
+      currentAgentSession,
+      replacementRequired: true,
+      sessionCompatibilityKey: freshCompatibilityKey,
+    };
+  }
+
+  /** Revalidates one preview after dispatch and commits exact predecessor replacement. */
+  public async commitPreparedAgentSessionForTurn(
+    store: FsStore,
+    input: CommitPreparedAgentSessionForTurnInput
+  ): Promise<void> {
+    const { prepared, preparation } = input;
+    const currentSessions = store
+      .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
+      .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
+    const previewCompatibilityKey = (agentSessionId: string) =>
+      this.previewAgentSessionCompatibilityKey(agentSessionId, preparation);
+    if (!this.backend.prepareAgentSessionContinuity) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The worker backend cannot commit AgentSession admission.',
+        409
+      );
+    }
+    const inspectBackendContinuity = async (
+      agentSessionId: string,
+      agentSessionCompatibilityKey: string,
+      reuseAllowed: boolean
+    ) => {
+      try {
+        return await this.backend.prepareAgentSessionContinuity!({
+          admissionAgentSessionId: prepared.agentSessionId,
+          admissionLeaseId: input.leaseId,
+          agentSessionCompatibilityKey,
+          agentSessionId,
+          reuseAllowed,
+          threadId: preparation.turn.threadId,
+          workspaceId: preparation.turn.workspaceId,
+        });
+      } catch {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The AgentSession runtime binding changed after scheduler dispatch.',
+          409
+        );
+      }
+    };
+
+    if (!prepared.currentAgentSession) {
+      if (prepared.replacementRequired || currentSessions.length !== 0) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Fresh AgentSession admission changed after scheduler dispatch.',
+          409
+        );
+      }
+      const freshCompatibilityKey = previewCompatibilityKey(prepared.agentSessionId);
+      if (freshCompatibilityKey !== prepared.sessionCompatibilityKey) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Fresh AgentSession compatibility changed after scheduler dispatch.',
+          409
+        );
+      }
+      const disposition = await inspectBackendContinuity(
+        prepared.agentSessionId,
+        freshCompatibilityKey,
+        true
+      );
+      if (disposition !== 'absent') {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Fresh AgentSession admission no longer has absent durable continuity.',
+          409
+        );
+      }
+      return;
+    }
+
+    const current = currentSessions[0];
+    const currentSnapshot: PreparedCurrentAgentSession | null = current
+      ? {
+          agentId: current.agentId,
+          id: current.id,
+          policySnapshotId: current.policySnapshotId,
+          sessionCompatibilityKey: current.sessionCompatibilityKey,
+          stale: current.stale,
+          status: current.status,
+          updatedAt: current.updatedAt,
+        }
+      : null;
+    if (
+      currentSessions.length !== 1 ||
+      !isDeepStrictEqual(currentSnapshot, prepared.currentAgentSession) ||
+      !current ||
+      current.status !== 'idle' ||
+      current.stale
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The current AgentSession changed after scheduler dispatch.',
+        409
+      );
+    }
+    const hasActiveTurn = store
+      .listThreadTurns(preparation.turn.workspaceId, preparation.turn.threadId)
+      .some(
+        (turn) =>
+          turn.agentSessionId === current.id &&
+          !['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status)
+      );
+    if (hasActiveTurn) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The current AgentSession acquired an active Turn after scheduler dispatch.',
+        409
+      );
+    }
+    const currentCompatibilityKey = previewCompatibilityKey(current.id);
+    const reuseAllowed =
+      current.agentId === preparation.agentSetup.manifest.id &&
+      current.policySnapshotId === WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID &&
+      current.sessionCompatibilityKey === currentCompatibilityKey;
+
+    if (!prepared.replacementRequired) {
+      if (
+        prepared.agentSessionId !== current.id ||
+        prepared.sessionCompatibilityKey !== currentCompatibilityKey ||
+        !reuseAllowed
+      ) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Reusable AgentSession admission changed after scheduler dispatch.',
+          409
+        );
+      }
+      const disposition = await inspectBackendContinuity(current.id, currentCompatibilityKey, true);
+      if (disposition !== 'reusable') {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Reusable AgentSession continuity changed after scheduler dispatch.',
+          409
+        );
+      }
+      return;
+    }
+
+    if (
+      prepared.agentSessionId !== preparation.freshAgentSessionId ||
+      prepared.agentSessionId === current.id
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Replacement AgentSession identity changed after scheduler dispatch.',
+        409
+      );
+    }
+    const freshCompatibilityKey = previewCompatibilityKey(prepared.agentSessionId);
+    if (freshCompatibilityKey !== prepared.sessionCompatibilityKey) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Replacement AgentSession compatibility changed after scheduler dispatch.',
+        409
+      );
+    }
+    const inspected = await inspectBackendContinuity(current.id, currentCompatibilityKey, true);
+    if (!['reusable', 'replacement-required', 'absent'].includes(inspected)) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The predecessor AgentSession runtime inspection was not read-only.',
+        409
+      );
+    }
+    if (inspected !== 'absent') {
+      const closed = await inspectBackendContinuity(current.id, currentCompatibilityKey, false);
+      if (closed !== 'closed' && closed !== 'absent') {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The worker backend did not retire predecessor AgentSession continuity.',
+          409
+        );
+      }
+    }
+    store.updateAgentSession(current.id, {
+      message: 'Replaced before a Turn with incompatible or unproved runtime continuity.',
+      status: 'closed',
+      updatedAt: this.now(),
+    });
+    if (
+      store
+        .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
+        .some((candidate) => isCurrentAgentSessionStatus(candidate.status))
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The predecessor AgentSession did not become terminal.',
+        409
+      );
+    }
+  }
+
+  /** Computes the metadata-only compatibility key used by admission and full launch. */
+  private previewAgentSessionCompatibilityKey(
+    agentSessionId: string,
+    input: PrepareAgentSessionForTurnInput
+  ): string {
+    return resolveAgentSessionCompatibilityKey({
+      agentSessionId,
+      agentSetup: input.agentSetup,
+      backend: { kind: 'openshell' },
+      ...(this.coreDb ? { coreDb: this.coreDb } : {}),
+      requestId: input.requestId,
+      turn: input.turn,
+      turnInput: input.turnInput,
+      triggerActor: input.turn.triggerActor,
+      workspaceCwd: input.workspaceCwd,
+      workspaceRoots: input.workspaceRoots,
+      ...(input.workspaceDataSourceCatalog
+        ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+        : {}),
+      ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+    });
   }
 
   /**
@@ -607,6 +1048,34 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       const resolvedAgentSessionId = agentSessionId ?? this.createAgentSessionId();
       agentSessionId = resolvedAgentSessionId;
+      const launchCompatibilityKey = this.previewAgentSessionCompatibilityKey(
+        resolvedAgentSessionId,
+        {
+          agentSetup: context.agentSetup,
+          freshAgentSessionId: resolvedAgentSessionId,
+          requestId,
+          turn,
+          turnInput: input,
+          workspaceCwd: workerVisibleWorkspaceCwd(context, { kind: 'openshell' }),
+          workspaceRoots: context.workspaceRoots,
+          ...(context.workspaceDataSourceCatalog
+            ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+            : {}),
+          ...(context.workspaceSourceRefs
+            ? { workspaceSourceRefs: context.workspaceSourceRefs }
+            : {}),
+        }
+      );
+      if (
+        context.sessionCompatibilityKey &&
+        context.sessionCompatibilityKey !== launchCompatibilityKey
+      ) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The scheduler lease SessionCompatibilityKey does not match launch metadata.',
+          409
+        );
+      }
       workspaceDb = this.openWorkspaceDb(turn.workspaceId);
       if (workspaceDb) {
         applyScopedMigrations(workspaceDb);
@@ -650,7 +1119,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const resolvedEnvironmentPackage = resolveAgentEnvironmentPackage({
         agentSetup: context.agentSetup,
         agentSessionId: resolvedAgentSessionId,
-        backend: this.environmentBackend,
+        backend: { kind: 'openshell' },
         ...(preparedWorkerContext
           ? {
               createdAt: timestamp,
@@ -669,7 +1138,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ...(context.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
           : {}),
-        workspaceCwd: workerVisibleWorkspaceCwd(context, this.environmentBackend),
+        workspaceCwd: workerVisibleWorkspaceCwd(context, { kind: 'openshell' }),
         workspaceRoots: context.workspaceRoots,
         ...(context.workspaceSourceRefs
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
@@ -689,21 +1158,77 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           sessionWorkspace: SessionWorkspaceMaterializationPlan;
         }
       ).sessionWorkspace;
-      const agentSession = store.createAgentSession({
-        agentId: manifest.id,
-        configVersion: turn.configVersion,
-        createdAt: timestamp,
-        environmentPackageSnapshotId: environmentPackage.snapshotId,
-        id: resolvedAgentSessionId,
-        message: null,
-        policySnapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
-        sessionCompatibilityKey: sessionWorkspace.compatibilityKey.digest,
-        status: 'created',
-        threadId: turn.threadId,
-        updatedAt: timestamp,
-        workspaceId: turn.workspaceId,
-        workspaceRoots: context.workspaceRoots,
-      });
+      if (
+        context.sessionCompatibilityKey &&
+        sessionWorkspace.compatibilityKey.digest !== launchCompatibilityKey
+      ) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The final Agent Environment Package changed the prepared compatibility key.',
+          409
+        );
+      }
+      const threadAgentSessions = store.listThreadAgentSessions(turn.workspaceId, turn.threadId);
+      let existingAgentSession: ReturnType<FsStore['getAgentSession']> | undefined;
+      try {
+        existingAgentSession = store.getAgentSession(resolvedAgentSessionId);
+      } catch {
+        existingAgentSession = undefined;
+      }
+      const conflictingCurrentAgentSession = threadAgentSessions.find(
+        (candidate) =>
+          candidate.id !== resolvedAgentSessionId &&
+          !['interrupted', 'failed', 'closed'].includes(candidate.status)
+      );
+      if (conflictingCurrentAgentSession) {
+        agentSessionId = null;
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The Thread already has another current AgentSession.',
+          409
+        );
+      }
+      if (
+        existingAgentSession &&
+        (existingAgentSession.workspaceId !== turn.workspaceId ||
+          existingAgentSession.threadId !== turn.threadId ||
+          existingAgentSession.agentId !== manifest.id ||
+          existingAgentSession.status !== 'idle' ||
+          existingAgentSession.stale ||
+          existingAgentSession.sessionCompatibilityKey !==
+            sessionWorkspace.compatibilityKey.digest ||
+          existingAgentSession.policySnapshotId !== WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID)
+      ) {
+        agentSessionId = null;
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The selected AgentSession is not reusable for this Turn.',
+          409
+        );
+      }
+      const agentSession = existingAgentSession
+        ? store.updateAgentSession(existingAgentSession.id, {
+            configVersion: turn.configVersion,
+            environmentPackageSnapshotId: environmentPackage.snapshotId,
+            message: null,
+            status: 'initializing',
+            updatedAt: timestamp,
+          })
+        : store.createAgentSession({
+            agentId: manifest.id,
+            configVersion: turn.configVersion,
+            createdAt: timestamp,
+            environmentPackageSnapshotId: environmentPackage.snapshotId,
+            id: resolvedAgentSessionId,
+            message: null,
+            policySnapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
+            sessionCompatibilityKey: sessionWorkspace.compatibilityKey.digest,
+            status: 'created',
+            threadId: turn.threadId,
+            updatedAt: timestamp,
+            workspaceId: turn.workspaceId,
+            workspaceRoots: context.workspaceRoots,
+          });
       store.updateTurn(turnId, {
         agentProfileId: environmentPackage.agent.profileId,
         agentSessionId: agentSession.id,
@@ -766,6 +1291,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       if (this.coreDb && context.sandboxBindingRef) {
         backendLifecycle.session = recordWorkerBackendSessionMaterializing(this.coreDb, {
+          backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
           backendVersion: backendCapabilities.version ?? null,
           identity: backendLifecycle.identity,
           lineage: {
@@ -775,7 +1301,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           },
           now: this.now,
           sandboxBindingRef: context.sandboxBindingRef,
-          workerImage: environmentPackage.runtime.image.ref,
         });
       }
       backendCleanupRequired = true;
@@ -825,58 +1350,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             409
           );
         }
-        const authorities = createWorkerContextPackageAuthorityReader({
+        acceptedContextPackageTrace = acceptPreparedWorkerTurnContextPackage({
           coreDb: this.coreDb,
+          environmentPackage,
+          preparedContext: preparedWorkerContext,
           store,
           workspaceDb,
         });
-        const trace = createWorkerContextPackageTrace({
-          agentSessionId: agentSession.id,
-          excludedItems: [],
-          goalId: preparedWorkerContext.checkpoint.goalId,
-          knowledgeExclusions: preparedWorkerContext.knowledgeExclusions,
-          knowledgeSelectionInput: preparedWorkerContext.knowledgeSelectionInput,
-          materialExclusions: preparedWorkerContext.materialExclusions,
-          packageFiles: preparedWorkerContext.packageFiles,
-          packageSnapshotId: environmentPackage.snapshotId,
-          requestId: preparedWorkerContext.checkpoint.requestId,
-          taskId: preparedWorkerContext.checkpoint.taskId,
-        });
-        writeWorkerContextPackageTrace({
-          authorities,
-          trace,
-          workspaceRoot: preparedWorkerContext.workspaceRoot,
-        });
-        acceptedContextPackageTrace = readWorkerContextPackageTrace({
-          authorities,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          workspaceId: turn.workspaceId,
-          workspaceRoot: preparedWorkerContext.workspaceRoot,
-        });
-        const acceptedWorkspaceDb = workspaceDb;
-        const acceptedContext = preparedWorkerContext;
-        acceptedWorkspaceDb.sqlite.transaction(() => {
-          const queuedMaterial = acceptedContext.queuedMaterialSelection;
-          if (queuedMaterial) {
-            consumeQueuedThreadMaterialRevision(
-              acceptedWorkspaceDb,
-              turn.threadId,
-              queuedMaterial.materialId,
-              queuedMaterial.revisionId,
-              queuedMaterial.bindingMutationRequestId
-            );
-          }
-          const appliedPending = acceptedContext.appliedPending;
-          if (appliedPending) {
-            deleteAppliedPendingUserTurnRecord(acceptedWorkspaceDb, {
-              contextPackageId: trace.contextPackageId,
-              pendingTurnId: appliedPending.pendingTurnId,
-              threadId: appliedPending.threadId,
-              workspaceId: appliedPending.workspaceId,
-            });
-          }
-        })();
       }
 
       const busySession = store.updateAgentSession(agentSession.id, {
@@ -964,7 +1444,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let terminalObserved = false;
     if (errors.length === 0) {
       if (!agentSessionId) {
-        errors.push(new Error('The governed worker turn is missing its agent session id.'));
+        errors.push(new Error('The governed worker turn is missing its AgentSession id.'));
       } else {
         try {
           if (workerFinalStatus) {
@@ -1212,29 +1692,67 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Interrupt is unsupported for the initial one-shot backend executor.
+   * Enqueues one interrupt for the exact live worker attempt without terminalizing it.
    *
-   * @param _store Store that owns the turn.
-   * @param _turnId Turn id to interrupt.
+   * @param store Store that owns the turn and AgentSession.
+   * @param turnId Turn id to interrupt.
    * @param _context Runtime command context.
-   * @returns Promise that always rejects because the backend cannot interrupt turns.
-   * @throws Error Always, because interrupting a governed worker is unsupported.
+   * @returns Promise resolved after the interrupt is queued.
+   * @throws Error when no shared gateway or exact live lineage exists.
    */
   public async interruptTurn(
-    _store: FsStore,
-    _turnId: string,
+    store: FsStore,
+    turnId: string,
     _context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
-    throw new Error('The worker governance executor does not support turn interruption.');
+    const gateway = this.workerControlGateway;
+    if (!gateway) {
+      throw new Error('The worker governance executor does not support turn interruption.');
+    }
+
+    const turn = store.getTurnById(turnId);
+    if (
+      !turn.agentSessionId ||
+      turn.status === 'completed' ||
+      turn.status === 'interrupted' ||
+      turn.status === 'cancelled' ||
+      turn.status === 'failed'
+    ) {
+      throw new Error(`Turn has no live worker attempt: ${turnId}`);
+    }
+
+    const agentSession = store.getAgentSession(turn.agentSessionId);
+    const snapshot = agentSession.environmentPackageSnapshotId
+      ? gateway.getSessionSnapshot(agentSession.environmentPackageSnapshotId)
+      : null;
+    if (
+      agentSession.stale ||
+      agentSession.status !== 'busy' ||
+      agentSession.workspaceId !== turn.workspaceId ||
+      agentSession.threadId !== turn.threadId ||
+      !snapshot ||
+      snapshot.workspaceId !== turn.workspaceId ||
+      snapshot.threadId !== turn.threadId ||
+      snapshot.turnId !== turn.id ||
+      snapshot.agentSessionId !== turn.agentSessionId
+    ) {
+      throw new Error(`Turn worker lineage is not live and exact: ${turnId}`);
+    }
+
+    if (this.backend.interruptTurn) {
+      await this.backend.interruptTurn(snapshot.packageSnapshotId);
+      return;
+    }
+    gateway.enqueueInterrupt(snapshot.packageSnapshotId, null);
   }
 
   /**
-   * Returns the latest persisted agent session for one thread.
+   * Returns the latest persisted AgentSession for one thread.
    *
    * @param store Store that owns the thread.
    * @param workspaceId Workspace id.
    * @param threadId Thread id.
-   * @returns Agent session read model, or null.
+   * @returns AgentSession read model, or null.
    */
   public getAgentSession(
     store: FsStore,
@@ -1275,7 +1793,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     contextPackageTrace?: WorkerContextPackageTrace
   ): Promise<void> {
     await this.backend.collectEvidence(environmentPackage.snapshotId);
-    const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId);
+    const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId, true);
     let acceptedContextPackageTrace = contextPackageTrace;
     if (
       !acceptedContextPackageTrace &&
@@ -1306,23 +1824,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         throw new Error('Runtime provenance collection requires durable workspace storage.');
       }
       const collection = transcript.runtimeProvenance;
-      const firstRawStreamPath = Object.values(collection?.rawStreamPaths ?? {})[0];
-      const rawStreamsRoot = firstRawStreamPath
-        ? dirname(firstRawStreamPath)
-        : collection?.manifestPath
-          ? join(dirname(collection.manifestPath), 'raw')
-          : collection?.nativeOriginIndexPath
-            ? join(dirname(collection.nativeOriginIndexPath), 'raw')
-            : '';
       const provenance = await this.runtimeProvenanceImporter({
         backend: {
           kind: backendCapabilities.kind,
-          placement: this.environmentBackend.placement ?? 'local',
+          placement: 'local',
           version: backendCapabilities.version ?? null,
         },
         capture: {
           nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
-          rawStreamsRoot,
+          rawStreamPaths: collection?.rawStreamPaths ?? {},
           streamManifestPath: collection?.manifestPath ?? null,
         },
         collectedAt: this.now(),
@@ -1345,7 +1855,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         })
       : [];
     const workspaceChanges = await this.backend.collectWorkspaceChanges(
-      environmentPackage.snapshotId
+      environmentPackage.snapshotId,
+      true
     );
     const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
     const publishesArtifacts = Boolean(
@@ -1477,10 +1988,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         environmentPackage,
         outcome: 'succeeded',
         packageSnapshotId: environmentPackage.snapshotId,
-        placement: lifecycle.identity.backendTarget.placement,
+        placement: 'local',
         threadId: environmentPackage.scope.threadId,
         turnId: environmentPackage.scope.turnId,
-        workerImage: environmentPackage.runtime.image.ref,
+        workerImage: lifecycle.session
+          ? workerBackendImageIdentity(lifecycle.session.backendLineage)
+          : workerBackendImageIdentity(
+              normalizeUnanchoredReferenceLineage(environmentPackage.runtime.image)
+            ),
         workspaceHandoffState: lifecycle.workspaceHandoffState,
         workspaceId: environmentPackage.scope.workspaceId,
       });
@@ -1824,12 +2339,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Emits an agent-session update event.
+   * Emits an AgentSession update event.
    *
    * @param store Store that owns the turn.
    * @param environmentPackage Package lineage.
    * @param requestId Request id.
-   * @param agentSession Agent session record.
+   * @param agentSession AgentSession record.
    */
   private emitAgentSession(
     store: FsStore,
@@ -1890,9 +2405,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /**
    * Projects one accepted worker-control final status through the canonical Turn owners.
    *
-   * @param store Store that owns the Turn and Agent Session.
+   * @param store Store that owns the Turn and AgentSession.
    * @param turnScope Turn whose ids scope the terminal records.
-   * @param agentSessionId Exact worker Agent Session.
+   * @param agentSessionId Exact worker AgentSession.
    * @param requestId Worker command request id.
    * @param accepted Durable worker-control final status.
    * @throws Error when the accepted status has no supported canonical StopReason.
@@ -1953,7 +2468,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    *
    * @param store Store that owns the turn.
    * @param turnScope Turn whose ids scope the terminal records.
-   * @param agentSessionId Agent session completed by the turn.
+   * @param agentSessionId AgentSession completed by the turn.
    * @param requestId Request id.
    * @param stopReason Canonical successful terminal reason.
    */
@@ -1999,7 +2514,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    *
    * @param store Store that owns the turn.
    * @param turnScope Turn whose ids scope the terminal records.
-   * @param agentSessionId Optional agent session created before the failure.
+   * @param agentSessionId Optional AgentSession created before the failure.
    * @param requestId Request id.
    * @param error Failure reason.
    * @throws AggregateError when one or more terminal writes report a partial failure.
@@ -2071,10 +2586,20 @@ function assertRestoredSession(
     session.deploymentId !== identity.deploymentId ||
     session.stagingDirectoryRef !== identity.stagingDirectoryRef ||
     session.transientProviderInstanceId !== identity.transientProviderInstanceId ||
-    !isDeepStrictEqual(session.backendTarget, identity.backendTarget)
+    session.runtimeTargetId !== identity.runtimeTargetId
   ) {
     throw new Error('Restart closeout backend session does not match its immutable lineage.');
   }
+}
+
+/** Returns reference lineage for the retained unanchored legacy cleanup projection. */
+function normalizeUnanchoredReferenceLineage(
+  image: AgentEnvironmentPackage['runtime']['image']
+): WorkerBackendSessionRecord['backendLineage'] {
+  if (image.kind !== 'reference') {
+    throw new Error('NanoHost build lineage must be durably anchored before cleanup.');
+  }
+  return { imageRef: image.ref };
 }
 
 /**
@@ -2108,7 +2633,7 @@ function toWorkspaceSynchronizationBackendKind(kind: string): WorkspaceSynchroni
  * @param backend Backend selected for the Agent Environment Package.
  * @returns Worker-visible cwd when a backend path mapping exists, otherwise the original cwd.
  */
-function workerVisibleWorkspaceCwd(
+export function workerVisibleWorkspaceCwd(
   context: TurnStartRuntimeContext,
   backend: ResolveAgentEnvironmentBackendInput
 ): string | null {
@@ -2119,7 +2644,8 @@ function workerVisibleWorkspaceCwd(
   }
 
   return (
-    context.workspaceRoots.find((root) => root.sourcePath === workspaceCwd)?.workerPath ??
-    workspaceCwd
+    context.workspaceRoots.find(
+      (root) => root.sourceKind !== 'remote-git' && root.sourcePath === workspaceCwd
+    )?.workerPath ?? workspaceCwd
   );
 }

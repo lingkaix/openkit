@@ -20,48 +20,90 @@ describe('resolveProviderProfileToLLMConfig', () => {
 
     expect(provider).toMatchObject({
       adapterId: 'openrouter',
-      backend: 'pi-ai',
       models: ['openai/gpt-5'],
       requiresApiKey: true,
     });
+    expect(provider).not.toHaveProperty('backend');
     expect(provider).not.toHaveProperty('apiKeySource');
     expect(provider).not.toHaveProperty('hasApiKey');
     expect(provider).not.toHaveProperty('spec');
     expect(provider).not.toHaveProperty('specId');
   });
 
-  it('projects Codex OAuth profiles onto the dedicated backend without API keys', () => {
-    const provider = resolveProviderProfileToLLMConfig({
-      defaultModel: 'openai-codex/gpt-5.1-codex',
-      displayName: 'Codex Team',
-      extensions: { openkit: { codexOAuth: { accountSlotId: 'team' } } },
-      id: 'codex-team',
-      kind: 'oauth',
-      models: ['openai-codex/gpt-5.1-codex'],
-      vendor: 'openai_codex',
-    });
+  it('projects strict Codex and xAI subscription profiles onto exact account pairs', () => {
+    const profiles = [
+      {
+        accountSlotId: 'codex_vendor',
+        expectedAdapterId: 'openai-codex',
+        expectedSubscriptionProviderId: 'openai-codex',
+        id: 'codex-work',
+        vendor: ' OpenAI-Codex ',
+      },
+      {
+        accountSlotId: 'codex_id',
+        expectedAdapterId: 'openai-codex',
+        expectedSubscriptionProviderId: 'openai-codex',
+        id: ' OPENAI-CODEX ',
+        vendor: 'catalog',
+      },
+    ] as const;
 
-    expect(provider).toMatchObject({
-      adapterId: 'openai_codex',
-      backend: 'codex-oauth',
-      codexOAuthAccountSlotId: 'team',
-      requiresApiKey: false,
+    for (const profile of profiles) {
+      const provider = resolveProviderProfileToLLMConfig({
+        displayName: profile.id,
+        extensions: {
+          openkit: { subscriptionAccount: { accountSlotId: profile.accountSlotId } },
+        },
+        id: profile.id,
+        kind: 'oauth',
+        models: ['configured-model'],
+        vendor: profile.vendor,
+      });
+
+      expect(provider).toMatchObject({
+        accountSlotId: profile.accountSlotId,
+        adapterId: profile.expectedAdapterId,
+        apiKey: null,
+        requiresApiKey: false,
+        subscriptionProviderId: profile.expectedSubscriptionProviderId,
+      });
+      expect(provider).not.toHaveProperty('backend');
+      expect(provider).not.toHaveProperty('codexOAuthAccountSlotId');
+    }
+
+    const directXai = resolveProviderProfileToLLMConfig(
+      {
+        baseUrl: 'https://api.x.ai/v1',
+        displayName: 'xAI API',
+        id: 'xai',
+        kind: 'direct',
+        models: ['grok-4'],
+        secretRef: 'vault://xai',
+        vendor: 'xai',
+      },
+      () => 'xai-api-key'
+    );
+
+    expect(directXai).toMatchObject({
+      adapterId: 'xai',
+      apiKey: 'xai-api-key',
+      requiresApiKey: true,
     });
+    expect(directXai).not.toHaveProperty('accountSlotId');
+    expect(directXai).not.toHaveProperty('subscriptionProviderId');
   });
 
-  it('normalizes the conventional hyphenated Codex adapter id', () => {
-    const provider = resolveProviderProfileToLLMConfig({
-      displayName: 'OpenAI Codex',
-      id: 'openai-codex',
-      kind: 'oauth',
-      models: ['openai-codex/gpt-5.1-codex'],
-    });
-
-    expect(provider).toMatchObject({
-      adapterId: 'openai_codex',
-      backend: 'codex-oauth',
-      requiresApiKey: false,
-    });
+  it('rejects conflicting recognized subscription vendor and id families', () => {
+    expect(() =>
+      resolveProviderProfileToLLMConfig({
+        displayName: 'Conflicting Subscription',
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'conflict-slot' } } },
+        id: 'openai-codex',
+        kind: 'oauth',
+        models: ['grok-4'],
+        vendor: 'xai',
+      })
+    ).toThrow();
   });
 
   it('resolves provider credentials through configured secret references', () => {
@@ -117,7 +159,6 @@ describe('resolveProviderProfileToLLMConfig', () => {
     expect(provider).toMatchObject({
       adapterId: 'google',
       apiKey: 'sk-google',
-      backend: 'pi-ai',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     });
   });
@@ -138,7 +179,6 @@ describe('resolveProviderProfileToLLMConfig', () => {
     expect(provider).toMatchObject({
       adapterId: 'custom_proxy',
       apiKey: 'sk-custom',
-      backend: 'pi-ai',
       baseUrl: 'https://proxy.example/v1',
     });
   });
@@ -171,7 +211,6 @@ describe('resolveProviderProfileToLLMConfig', () => {
     expect(provider).toMatchObject({
       adapterId: 'direct_provider',
       apiKey: 'sk-direct',
-      backend: 'pi-ai',
       baseUrl: 'https://direct.example/v1',
     });
   });

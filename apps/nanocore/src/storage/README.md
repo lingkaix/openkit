@@ -30,6 +30,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 - `workspace-transfer-routes.ts` coordinates public requests, staged workspace publication, the Core database transaction, and synchronous compensation when Core replay fails.
 - `index-rebuild.ts` consumes canonical records and authoritative ledgers but must never become their source of truth.
 - Secret material belongs to `../vault/` backends and credential consumers; storage may retain only explicitly allowed non-secret metadata and redacted evidence.
+- The scheduler lease is the narrow exception for worker route authentication: it retains exactly two nullable lowercase SHA-256 projections for the control and inference families, never either raw token or a derived sandbox-binding credential.
 
 ## File Record Rules
 

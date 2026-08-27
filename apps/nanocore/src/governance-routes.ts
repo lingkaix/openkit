@@ -4,11 +4,11 @@ import {
   ListServerPermissionDecisionsResponseSchema,
   ListWorkspaceAuditEventsResponseSchema,
   ListWorkspaceEvidenceBundlesResponseSchema,
-  ListWorkspaceInjectionPlansResponseSchema,
-  ListWorkspaceInjectionReceiptsResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
+  ListWorkspaceVaultInjectionPlansResponseSchema,
+  ListWorkspaceVaultInjectionReceiptsResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
@@ -21,8 +21,6 @@ import {
   listWorkspaceUsageRecords,
 } from './capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from './evidence-bundles.js';
-import { listExportableInjectionPlans } from './injection-plans.js';
-import { listExportableInjectionReceipts } from './injection-receipts.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import {
@@ -32,6 +30,8 @@ import {
 import { listWorkspaceRuntimeEvidence } from './runtime/runtime-evidence.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { listExportableWorkspaceVaultGrants } from './vault/vault-grants.js';
+import { listExportableVaultInjectionPlans } from './vault-injection-plans.js';
+import { listExportableVaultInjectionReceipts } from './vault-injection-receipts.js';
 
 /**
  * Requires deployment-admin authority for a server-owned governance projection.
@@ -214,7 +214,7 @@ export function registerGovernanceRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'listWorkspaceInjectionPlans', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceVaultInjectionPlans', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       requestStore(c).getWorkspace(workspaceId);
@@ -227,9 +227,9 @@ export function registerGovernanceRoutes({
         (grant) => grant.grantId
       );
       return c.json(
-        ListWorkspaceInjectionPlansResponseSchema.parse({
+        ListWorkspaceVaultInjectionPlansResponseSchema.parse({
           workspaceId,
-          items: listExportableInjectionPlans(coreDb, grantIds),
+          items: listExportableVaultInjectionPlans(coreDb, grantIds),
         })
       );
     } catch (error) {
@@ -237,7 +237,7 @@ export function registerGovernanceRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'listWorkspaceInjectionReceipts', (c) => {
+  registerAppApiRoute(app, 'listWorkspaceVaultInjectionReceipts', (c) => {
     try {
       const workspaceId = c.req.param('workspaceId');
       requestStore(c).getWorkspace(workspaceId);
@@ -249,11 +249,13 @@ export function registerGovernanceRoutes({
       const grantIds = listExportableWorkspaceVaultGrants(coreDb, workspaceId).map(
         (grant) => grant.grantId
       );
-      const planIds = listExportableInjectionPlans(coreDb, grantIds).map((plan) => plan.planId);
+      const planIds = listExportableVaultInjectionPlans(coreDb, grantIds).map(
+        (plan) => plan.planId
+      );
       return c.json(
-        ListWorkspaceInjectionReceiptsResponseSchema.parse({
+        ListWorkspaceVaultInjectionReceiptsResponseSchema.parse({
           workspaceId,
-          items: listExportableInjectionReceipts(coreDb, planIds),
+          items: listExportableVaultInjectionReceipts(coreDb, planIds),
         })
       );
     } catch (error) {

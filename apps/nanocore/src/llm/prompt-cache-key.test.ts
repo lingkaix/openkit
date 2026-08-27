@@ -26,7 +26,7 @@ function providerConfig(
     models: ['gpt-test'],
     requiresApiKey: true,
     ...overrides,
-  };
+  } as unknown as ResolvedLLMProviderConfig;
 }
 
 /**
@@ -90,10 +90,14 @@ describe('PromptCacheKeyResolver', () => {
     expect(request.prompt_cache_key).toBe('metadata-key');
   });
 
-  it('derives a stable hashed key from non-secret OpenKit scope metadata', () => {
+  it('hashes the configured provider, model, and exact subscription pair without raw ids', () => {
     const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
+    const subscription = {
+      accountSlotId: 'shared_slot',
+      subscriptionProviderId: 'openai-codex',
+    } as Partial<ResolvedLLMProviderConfig>;
     const first = resolver.withPromptCacheKey(
-      providerConfig({ id: 'codex-team-a', codexOAuthAccountSlotId: 'team_a' }),
+      providerConfig({ id: 'codex-team-a', ...subscription }),
       responsesRequest({
         metadata: {
           openkit: {
@@ -105,7 +109,7 @@ describe('PromptCacheKeyResolver', () => {
       })
     );
     const second = resolver.withPromptCacheKey(
-      providerConfig({ id: 'codex-team-a', codexOAuthAccountSlotId: 'team_a' }),
+      providerConfig({ id: 'codex-team-a', ...subscription }),
       responsesRequest({
         metadata: {
           openkit: {
@@ -116,24 +120,39 @@ describe('PromptCacheKeyResolver', () => {
         },
       })
     );
-    const otherSlot = resolver.withPromptCacheKey(
-      providerConfig({ id: 'codex-team-a', codexOAuthAccountSlotId: 'team_b' }),
-      responsesRequest({
-        metadata: {
-          openkit: {
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            agentSessionId: 'session_demo',
-          },
-        },
-      })
+    const variants = [
+      providerConfig({ id: 'codex-team-b', ...subscription }),
+      providerConfig({ id: 'codex-team-a', ...subscription, models: ['gpt-5.2'] }),
+      providerConfig({
+        id: 'codex-team-a',
+        ...subscription,
+        accountSlotId: 'other_slot',
+      } as Partial<ResolvedLLMProviderConfig>),
+      providerConfig({
+        id: 'codex-team-a',
+        ...subscription,
+        subscriptionProviderId: 'xai',
+      } as Partial<ResolvedLLMProviderConfig>),
+    ].map((provider, index) =>
+      resolver.withPromptCacheKey(
+        provider,
+        responsesRequest({ model: index === 1 ? 'gpt-5.2' : 'gpt-5.1' }),
+        {
+          agentSessionId: 'session_demo',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        }
+      )
     );
 
     expect(first.prompt_cache_key).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
     expect(first.prompt_cache_key).toBe(second.prompt_cache_key);
-    expect(first.prompt_cache_key).not.toBe(otherSlot.prompt_cache_key);
-    expect(first.prompt_cache_key).not.toContain('ws_demo');
-    expect(first.prompt_cache_key).not.toContain('team_a');
+    expect(variants.every((variant) => variant.prompt_cache_key !== first.prompt_cache_key)).toBe(
+      true
+    );
+    expect(
+      JSON.stringify([first, second, ...variants].map((request) => request.prompt_cache_key))
+    ).not.toMatch(/codex-team|openai-codex|shared_slot|other_slot|ws_demo|th_demo|session_demo/);
   });
 
   it('falls back to a request-scoped key when no stable scope exists', () => {
@@ -180,18 +199,29 @@ describe('PromptCacheKeyResolver', () => {
 });
 
 describe('resolveWorkerPromptCacheKey', () => {
+  const resolveSubscriptionWorkerPromptCacheKey =
+    resolveWorkerPromptCacheKey as unknown as (input: {
+      readonly accountSlotId: string;
+      readonly model: string;
+      readonly nativeCacheLineageId?: string;
+      readonly providerId: string;
+      readonly runtimeFamily: string;
+      readonly subscriptionProviderId: 'openai-codex' | 'xai';
+      readonly workspaceId: string;
+    }) => ReturnType<typeof resolveWorkerPromptCacheKey>;
   const input = {
-    codexOAuthAccountSlotId: 'team_a',
+    accountSlotId: 'team_a',
     model: 'gpt-5.1',
     nativeCacheLineageId: 'cache_parent',
     providerId: 'openai_codex',
     runtimeFamily: 'codex',
+    subscriptionProviderId: 'openai-codex' as const,
     workspaceId: 'ws_demo',
   };
 
   it('keeps the same explicit native lineage stable', () => {
-    const first = resolveWorkerPromptCacheKey(input);
-    const second = resolveWorkerPromptCacheKey(input);
+    const first = resolveSubscriptionWorkerPromptCacheKey(input);
+    const second = resolveSubscriptionWorkerPromptCacheKey(input);
 
     expect(first).toEqual(second);
     expect(first).toMatchObject({ degraded: false });
@@ -200,9 +230,15 @@ describe('resolveWorkerPromptCacheKey', () => {
   });
 
   it('keeps distinct sibling lineages isolated', () => {
-    const parent = resolveWorkerPromptCacheKey(input);
-    const childA = resolveWorkerPromptCacheKey({ ...input, nativeCacheLineageId: 'cache_child_a' });
-    const childB = resolveWorkerPromptCacheKey({ ...input, nativeCacheLineageId: 'cache_child_b' });
+    const parent = resolveSubscriptionWorkerPromptCacheKey(input);
+    const childA = resolveSubscriptionWorkerPromptCacheKey({
+      ...input,
+      nativeCacheLineageId: 'cache_child_a',
+    });
+    const childB = resolveSubscriptionWorkerPromptCacheKey({
+      ...input,
+      nativeCacheLineageId: 'cache_child_b',
+    });
 
     expect(
       new Set([parent.promptCacheKey, childA.promptCacheKey, childB.promptCacheKey])
@@ -218,13 +254,13 @@ describe('resolveWorkerPromptCacheKey', () => {
 
   it.each([
     ['provider', { providerId: 'openrouter' }],
-    ['account', { codexOAuthAccountSlotId: 'team_b' }],
+    ['subscription provider', { subscriptionProviderId: 'xai' as const }],
+    ['account', { accountSlotId: 'team_b' }],
     ['model', { model: 'gpt-5.2' }],
     ['workspace', { workspaceId: 'ws_other' }],
-    ['runtime family', { runtimeFamily: 'other-runtime' }],
   ])('isolates %s identity', (_label, override) => {
-    const baseline = resolveWorkerPromptCacheKey(input);
-    const isolated = resolveWorkerPromptCacheKey({ ...input, ...override });
+    const baseline = resolveSubscriptionWorkerPromptCacheKey(input);
+    const isolated = resolveSubscriptionWorkerPromptCacheKey({ ...input, ...override });
 
     expect(isolated.promptCacheKey).not.toBe(baseline.promptCacheKey);
     expect(isolated.runtimeCacheLineageRef).not.toBe(baseline.runtimeCacheLineageRef);
@@ -232,8 +268,8 @@ describe('resolveWorkerPromptCacheKey', () => {
 
   it('uses a random request fallback without a product cache ref', () => {
     const { nativeCacheLineageId: _omitted, ...withoutLineage } = input;
-    const first = resolveWorkerPromptCacheKey(withoutLineage);
-    const second = resolveWorkerPromptCacheKey(withoutLineage);
+    const first = resolveSubscriptionWorkerPromptCacheKey(withoutLineage);
+    const second = resolveSubscriptionWorkerPromptCacheKey(withoutLineage);
 
     expect(first).toMatchObject({ degraded: true, runtimeCacheLineageRef: null });
     expect(first.promptCacheKey).toMatch(/^openkit:responses:request:[0-9a-f-]{36}$/);
@@ -241,7 +277,9 @@ describe('resolveWorkerPromptCacheKey', () => {
   });
 
   it('shares one explicit lineage across distinct runtime origins', () => {
-    const results = ['rto_parent', 'rto_child'].map(() => resolveWorkerPromptCacheKey(input));
+    const results = ['rto_parent', 'rto_child'].map(() =>
+      resolveSubscriptionWorkerPromptCacheKey(input)
+    );
 
     expect(results[0]).toEqual(results[1]);
   });

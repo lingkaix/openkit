@@ -23,7 +23,6 @@ describe('workspace materializer records', () => {
       triggerActor: turn.triggerActor,
       userId: 'user_local',
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-06-27T00:00:00.000Z',
@@ -36,7 +35,7 @@ describe('workspace materializer records', () => {
           access: 'read-write',
           id: 'repo',
           sourceKind: 'host-dir',
-          sourcePath: '/Users/m5pro/Documents/AI/openkit',
+          sourcePath: process.cwd(),
           workerPath: '/workspace/openkit',
         },
       ],
@@ -79,7 +78,6 @@ describe('workspace materializer records', () => {
       triggerActor: turn.triggerActor,
       userId: 'user_local',
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-07-18T01:00:00.000Z',
@@ -210,7 +208,6 @@ describe('workspace materializer records', () => {
       triggerActor: turn.triggerActor,
       userId: 'user_local',
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-06-27T00:00:00.000Z',
@@ -237,7 +234,7 @@ describe('workspace materializer records', () => {
           access: 'read-write',
           id: 'repo_default',
           sourceKind: 'host-dir',
-          sourcePath: '/Users/m5pro/Documents/AI/openkit',
+          sourcePath: process.cwd(),
           workerPath: '/workspace/openkit',
         },
       ],
@@ -349,6 +346,30 @@ describe('workspace materializer records', () => {
       'docs/spec.md',
       'apps/nanocore/src/runtime/workspace-materializer.ts',
     ]);
+  });
+
+  it('rejects a present workspace change manifest with no changed paths', () => {
+    expect(() =>
+      parseWorkspaceChangeSetManifest(
+        JSON.stringify({
+          artifactIds: [],
+          base: { commit: 'abc123', contentDigest: null },
+          bundle: null,
+          changedPaths: [],
+          createdAt: '2026-06-27T01:00:00.000Z',
+          evidenceRefs: [],
+          head: { commit: 'abc123', contentDigest: null },
+          id: 'wcs_empty',
+          inputSnapshotId: 'wis_1',
+          materializationRecordId: 'wmr_1',
+          patch: null,
+          redaction: { notes: [], status: 'no-sensitive-content-found' },
+          resourceId: 'repo',
+          strategy: 'git',
+          workspaceId: 'ws_demo',
+        })
+      )
+    ).toThrow('semantically empty');
   });
 
   it('rejects manifests that escape the declared workspace path scope', () => {

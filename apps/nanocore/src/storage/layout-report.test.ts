@@ -36,6 +36,13 @@ describe('storage layout report', () => {
         'core_0001_workspace_sharing',
         'core_0002_scheduler_trigger_actor',
         'core_0003_lifecycle_authority',
+        'core_0004_nanohost_transport_tokens',
+        'core_0005_nanohost_runtime_target',
+        'core_0006_nanohost_harness_runtime',
+        'core_0007_nanohost_capacity_authority',
+        'core_0008_drop_session_snapshots',
+        'core_0009_retire_workspace_readwrite',
+        'core_0010_nanohost_last_fresh_ready',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

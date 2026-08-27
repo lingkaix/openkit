@@ -1,3 +1,4 @@
+import { ProductSseEventEnvelopeSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 
@@ -103,12 +104,18 @@ export function registerTurnEventRoutes({
         }
 
         lastQueuedSequence = event.sequence;
+        const productEvent = ProductSseEventEnvelopeSchema.safeParse(event);
+        if (!productEvent.success) {
+          return;
+        }
         writeTail = writeTail.then(async () => {
           if (finished || stream.aborted) {
             return;
           }
 
-          await stream.writeSSE({ data: JSON.stringify(event) });
+          await stream.writeSSE({
+            data: JSON.stringify(productEvent.data),
+          });
 
           if (event.event === 'turn.completed') {
             finished = true;

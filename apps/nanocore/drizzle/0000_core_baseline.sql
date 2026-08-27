@@ -199,7 +199,7 @@ CREATE INDEX `vault_grants_owner_idx` ON `vault_grants` (`owner_scope`,`workspac
 --> statement-breakpoint
 CREATE INDEX `vault_grants_lifetime_idx` ON `vault_grants` (`lifetime`,`status`);
 --> statement-breakpoint
-CREATE TABLE `injection_plans` (
+CREATE TABLE `vault_injection_plans` (
 	`plan_id` text PRIMARY KEY NOT NULL,
 	`grant_id` text NOT NULL,
 	`package_snapshot_id` text,
@@ -215,11 +215,11 @@ CREATE TABLE `injection_plans` (
 	`created_at` text NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `injection_plans_grant_idx` ON `injection_plans` (`grant_id`,`status`);
+CREATE INDEX `vault_injection_plans_grant_idx` ON `vault_injection_plans` (`grant_id`,`status`);
 --> statement-breakpoint
-CREATE INDEX `injection_plans_capability_idx` ON `injection_plans` (`capability_id`,`status`);
+CREATE INDEX `vault_injection_plans_capability_idx` ON `vault_injection_plans` (`capability_id`,`status`);
 --> statement-breakpoint
-CREATE TABLE `injection_receipts` (
+CREATE TABLE `vault_injection_receipts` (
 	`receipt_id` text PRIMARY KEY NOT NULL,
 	`plan_id` text NOT NULL,
 	`grant_id` text NOT NULL,
@@ -232,11 +232,11 @@ CREATE TABLE `injection_receipts` (
 	`audit_event_id` text
 );
 --> statement-breakpoint
-CREATE INDEX `injection_receipts_plan_idx` ON `injection_receipts` (`plan_id`,`revocation_status`);
+CREATE INDEX `vault_injection_receipts_plan_idx` ON `vault_injection_receipts` (`plan_id`,`revocation_status`);
 --> statement-breakpoint
-CREATE INDEX `injection_receipts_grant_idx` ON `injection_receipts` (`grant_id`,`revocation_status`);
+CREATE INDEX `vault_injection_receipts_grant_idx` ON `vault_injection_receipts` (`grant_id`,`revocation_status`);
 --> statement-breakpoint
-CREATE INDEX `injection_receipts_session_idx` ON `injection_receipts` (`agent_session_id`,`revocation_status`);
+CREATE INDEX `vault_injection_receipts_session_idx` ON `vault_injection_receipts` (`agent_session_id`,`revocation_status`);
 --> statement-breakpoint
 CREATE TABLE `vault_use_records` (
 	`use_id` text PRIMARY KEY NOT NULL,

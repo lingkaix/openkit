@@ -57,6 +57,55 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     expect(decision.confidence).toBeGreaterThan(0.7);
   });
 
+  it.each([
+    { prompt: 'Use the exact queued second release revision.', delegates: true },
+    { prompt: 'What should I use?', delegates: false },
+    { prompt: 'I use this revision every day.', delegates: false },
+    { prompt: 'Use it.', delegates: false },
+    { prompt: 'Use was limited in the last release.', delegates: false },
+    { prompt: 'Use of this revision is common.', delegates: false },
+    { prompt: 'Use it now.', delegates: false },
+    { prompt: 'Use is widespread.', delegates: false },
+    { prompt: 'Use remains limited.', delegates: false },
+    { prompt: 'Use cases are documented.', delegates: false },
+    { prompt: 'Use this code?', delegates: false },
+    { prompt: 'Use the file?', delegates: false },
+    { prompt: 'Use this now.', delegates: false },
+    { prompt: 'Use that now.', delegates: false },
+    { prompt: 'Use these now.', delegates: false },
+    { prompt: 'Use this code?!', delegates: false },
+    { prompt: 'Use the file?!', delegates: false },
+    { prompt: 'Use the code?!', delegates: false },
+  ])('routes concrete use intent without treating every use as work: $prompt', ({
+    delegates,
+    prompt,
+  }) => {
+    const decision = createWorkerCoordinatorDecision({
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+
+    if (!delegates) {
+      expect(decision.decision).not.toBe('worker_turn');
+      expect(decision).toMatchObject({
+        selectedWorkerCandidate: null,
+        delegationDraft: null,
+        workerRequest: null,
+      });
+      return;
+    }
+
+    expect(decision).toMatchObject({
+      decision: 'worker_turn',
+      requiredUserAction: 'none',
+      selectedWorkerCandidate: READY_CODEX,
+    });
+    expect(decision.delegationDraft?.prompt).toBe(prompt);
+    expect(decision.workerRequest?.objective).toBe(prompt);
+  });
+
   it('routes mutating repository file requests to a worker turn', () => {
     const decision = createWorkerCoordinatorDecision({
       prompt: 'Delete repository file README.md.',

@@ -1,5 +1,6 @@
 import {
   InterruptTurnRequestSchema,
+  ProductTurnSchema,
   SubmitTurnInputRequestSchema,
   TurnReadProjectionSchema,
   TurnSchema,
@@ -23,6 +24,7 @@ import {
   updateGoalTask,
 } from './runtime/goal-store.js';
 import {
+  chatTaskModeTurnId,
   commandInputHash,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -52,6 +54,16 @@ import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Parsed turn read model shape used by route-level guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
+
+/**
+ * Projects one durable Turn onto the ordinary product-safe response shape.
+ *
+ * @param turn Durable or protocol Turn that may carry AgentSession identity.
+ * @returns Ordinary Turn projection without `agentSessionId`.
+ */
+function projectOrdinaryTurn(turn: TurnReadModel) {
+  return ProductTurnSchema.parse(turn);
+}
 
 /**
  * Checks whether a turn can accept a follow-up user-input response through `/api/turns`.
@@ -199,7 +211,14 @@ export function registerTurnRoutes({
                   input,
                   responseKind: 'turn',
                   execute: () =>
-                    closeWorkerUserInputGate(coreDb, store, workspaceDb, input, responseActor.id),
+                    closeWorkerUserInputGate(
+                      coreDb,
+                      store,
+                      workspaceDb,
+                      input,
+                      responseActor.id,
+                      false
+                    ),
                   replay: (record) =>
                     TurnSchema.parse(
                       store.getTurn(input.workspaceId, input.threadId, record.response.id)
@@ -218,8 +237,18 @@ export function registerTurnRoutes({
                 }
                 throw error;
               }
+              if (turn.status === 'awaiting_human') {
+                turn = closeWorkerUserInputGate(
+                  coreDb,
+                  store,
+                  workspaceDb,
+                  input,
+                  responseActor.id,
+                  true
+                );
+              }
               await clearWorkerUserInputGateCheckpoint(coreDb, store, workspaceDb, input);
-              return c.json(turn, 202);
+              return c.json(projectOrdinaryTurn(turn), 202);
             }
             if (
               !inputReceipt &&
@@ -276,7 +305,7 @@ export function registerTurnRoutes({
 
         completeSchedulerLeaseForTerminalTurn(coreDb, turn);
 
-        return c.json(turn, 202);
+        return c.json(projectOrdinaryTurn(turn), 202);
       }
 
       if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
@@ -332,7 +361,7 @@ export function registerTurnRoutes({
 
       completeSchedulerLeaseForTerminalTurn(coreDb, turn);
 
-      return c.json(turn, 202);
+      return c.json(projectOrdinaryTurn(turn), 202);
     } catch (error) {
       if (error instanceof IdempotencyKeyConflictError) {
         return asCommandError(error, 'turn_start_failed');
@@ -388,7 +417,9 @@ export function registerTurnRoutes({
         }
       }
 
-      return c.json(TurnReadProjectionSchema.parse({ ...turn, contextPackageDigest }));
+      return c.json(
+        TurnReadProjectionSchema.parse({ ...projectOrdinaryTurn(turn), contextPackageDigest })
+      );
     } catch (error) {
       return asApiError((error as Error).message);
     }
@@ -478,7 +509,7 @@ export function registerTurnRoutes({
 
       completeSchedulerLeaseForTerminalTurn(coreDb, turn);
 
-      return c.json(turn);
+      return c.json(projectOrdinaryTurn(turn));
     } catch (error) {
       return asCommandError(error, 'turn_interrupt_failed');
     }
@@ -492,14 +523,81 @@ type WorkerUserInputCommand = Extract<
 >;
 
 /**
+ * Verifies the exact outer mode-command receipt that owns one worker user-input Gate.
+ *
+ * @param store Product store containing command receipts.
+ * @param workspaceDb Workspace receipt owner for Goal steps.
+ * @param checkpoint Exact worker checkpoint awaiting closeout.
+ * @param ownerScope Authenticated actor, Workspace, and Thread owner scope.
+ * @param turnId Worker Turn whose deterministic origin must match the receipt.
+ * @returns Whether the receipt proves the checkpoint's exact direct or Chat-subordinate origin.
+ */
+function hasExactWorkerUserInputOwnerReceipt(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  checkpoint: NonNullable<ReturnType<typeof getWorkerCheckpoint>>,
+  ownerScope: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>,
+  turnId: string
+): boolean {
+  if (checkpoint.goalId && checkpoint.taskId) {
+    const receipt = store.getCommandRequest(
+      'goal.step',
+      checkpoint.requestId,
+      ownerScope,
+      workspaceDb
+    );
+    return (
+      receipt?.inputHash === checkpoint.requestInputHash &&
+      receipt.scope.actorId === ownerScope.actorId &&
+      receipt.scope.workspaceId === ownerScope.workspaceId &&
+      receipt.scope.threadId === ownerScope.threadId &&
+      receipt.response.kind === 'goal' &&
+      receipt.response.id === checkpoint.goalId
+    );
+  }
+
+  const chatSubordinateTurnId = chatTaskModeTurnId(
+    ownerScope.actorId,
+    ownerScope.workspaceId,
+    ownerScope.threadId,
+    checkpoint.requestId
+  );
+  if (turnId === chatSubordinateTurnId) {
+    const receipt = store.getCommandRequest('chat.start', checkpoint.requestId, ownerScope);
+    return (
+      receipt?.inputHash === checkpoint.requestInputHash &&
+      receipt.scope.actorId === ownerScope.actorId &&
+      receipt.scope.workspaceId === ownerScope.workspaceId &&
+      receipt.scope.threadId === ownerScope.threadId &&
+      receipt.response.kind === 'turn' &&
+      receipt.response.chatMetadata?.resultKind === 'task-handoff' &&
+      receipt.response.chatMetadata.status === 202 &&
+      receipt.response.chatMetadata.downstream?.kind === 'task' &&
+      receipt.response.chatMetadata.downstream.turnId === turnId
+    );
+  }
+
+  const receipt = store.getCommandRequest('task.start', checkpoint.requestId, ownerScope);
+  return (
+    receipt?.inputHash === checkpoint.requestInputHash &&
+    receipt.scope.actorId === ownerScope.actorId &&
+    receipt.scope.workspaceId === ownerScope.workspaceId &&
+    receipt.scope.threadId === ownerScope.threadId &&
+    receipt.response.kind === 'turn' &&
+    receipt.response.id === turnId
+  );
+}
+
+/**
  * Closes one worker user-input Gate without resuming its worker executor.
  *
  * @param coreDb Core database containing scheduler and worker lineage.
- * @param store Product store containing the Turn, Session, Items, and receipts.
+ * @param store Product store containing the Turn, AgentSession, Items, and receipts.
  * @param workspaceDb Workspace database containing the worker checkpoint.
  * @param input Exact structured user-input command.
  * @param actorId Authenticated responsible user answering the request.
- * @returns Terminal Turn for the closed worker envelope.
+ * @param applyCloseout Whether to apply the already-validated response effect after receipt publish.
+ * @returns Validated active Turn before receipt publication, or its applied terminal closeout.
  * @throws TurnStartValidationError when the Gate owner tuple is absent or contradictory.
  */
 function closeWorkerUserInputGate(
@@ -507,7 +605,8 @@ function closeWorkerUserInputGate(
   store: FsStore,
   workspaceDb: WorkspaceDb,
   input: WorkerUserInputCommand,
-  actorId: string
+  actorId: string,
+  applyCloseout: boolean
 ): TurnReadModel {
   const checkpoint = getWorkerCheckpoint(
     workspaceDb,
@@ -596,19 +695,9 @@ function closeWorkerUserInputGate(
       'The worker user-input Gate has no exact human command identity.'
     );
   }
-  const ownerReceipt = store.getCommandRequest(
-    goalTaskCheckpoint ? 'goal.step' : 'task.start',
-    checkpoint.requestId,
-    ownerScope,
-    goalTaskCheckpoint ? workspaceDb : undefined
-  );
   if (
     !evidence ||
-    !ownerReceipt ||
-    ownerReceipt.inputHash !== checkpoint.requestInputHash ||
-    (goalTaskCheckpoint
-      ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== goalId
-      : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId)
+    !hasExactWorkerUserInputOwnerReceipt(store, workspaceDb, checkpoint, ownerScope, input.turnId)
   ) {
     throw workerGateRecoveryError('The worker user-input Gate has no exact mode-command receipt.');
   }
@@ -627,6 +716,9 @@ function closeWorkerUserInputGate(
     ) {
       throw workerGateRecoveryError('The worker user-input Gate contradicts its Goal Task owner.');
     }
+  }
+  if (!applyCloseout) {
+    return TurnSchema.parse(turn);
   }
   const timestamp = new Date().toISOString();
   const responseItemId = `it_user_input_response_${input.turnId}`;
@@ -736,14 +828,20 @@ async function clearWorkerUserInputGateCheckpoint(
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
   const closure = classifyClosedWorkerUserInputGate(store, turn);
   const evidence = checkpoint ? parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary) : null;
-  const ownerReceipt = checkpoint
-    ? store.getCommandRequest(
-        checkpoint.goalId && checkpoint.taskId ? 'goal.step' : 'task.start',
-        checkpoint.requestId,
-        requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
-        checkpoint.goalId && checkpoint.taskId ? workspaceDb : undefined
-      )
-    : null;
+  let hasOwnerReceipt = false;
+  try {
+    hasOwnerReceipt = checkpoint
+      ? hasExactWorkerUserInputOwnerReceipt(
+          store,
+          workspaceDb,
+          checkpoint,
+          requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
+          input.turnId
+        )
+      : false;
+  } catch {
+    hasOwnerReceipt = false;
+  }
   const gateReceipt = store.getCommandRequest('turn.input.submit', input.requestId, {
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -775,11 +873,7 @@ async function clearWorkerUserInputGateCheckpoint(
       !closure ||
       !evidence?.itemIds.includes(closure.requestItemId) ||
       !evidence.itemIds.includes(closure.responseItemId) ||
-      !ownerReceipt ||
-      ownerReceipt.inputHash !== checkpoint.requestInputHash ||
-      (checkpoint.goalId && checkpoint.taskId
-        ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== checkpoint.goalId
-        : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId) ||
+      !hasOwnerReceipt ||
       gateReceipt?.response.kind !== 'turn' ||
       gateReceipt.response.id !== input.turnId ||
       !goalOwnerComplete

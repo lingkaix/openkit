@@ -19,9 +19,6 @@ import {
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
-import { getThreadAgentSession } from './runtime/agent-session-read-model.js';
-import type { TurnExecutor } from './runtime/types.js';
-import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { hasExactActiveHumanGate } from './runtime/worker-recovery.js';
 import type { CoreDb } from './storage/db.js';
 
@@ -454,15 +451,11 @@ export function registerDashboardRoutes({
   coreDb,
   requestStore,
   runtimeConfigManager,
-  turnExecutor,
-  workerControlGateway,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly runtimeConfigManager: RuntimeConfigManager;
-  readonly turnExecutor: TurnExecutor;
-  readonly workerControlGateway: WorkerControlGateway;
 }): void {
   registerAppApiRoute(app, 'getWorkspaceDashboard', (c) => {
     try {
@@ -577,14 +570,6 @@ export function registerDashboardRoutes({
       return c.json(
         ThreadDashboardResponseSchema.parse({
           thread,
-          activeSession: getThreadAgentSession(
-            turnExecutor,
-            store,
-            workspaceId,
-            threadId,
-            runtimeConfigManager.current().version,
-            workerControlGateway
-          ),
           turns,
           artifacts,
           workStatus: buildThreadWorkStatus({

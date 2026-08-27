@@ -209,20 +209,15 @@ function recordBackendSession(
   suffix: string
 ): void {
   recordWorkerBackendSessionMaterializing(coreDb, {
-    backendVersion: '0.0.80',
-    workerImage: 'openkit/worker-codex:dev',
+    backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+    backendVersion: '0.0.99',
     identity: {
       agentSessionId: `as_${suffix}`,
       backendKind: 'openshell',
       backendSessionId: `openkit-as_${suffix}`,
-      backendTarget: {
-        cellTargetId: 'cell-test',
-        gatewayEndpoint: null,
-        gatewayName: 'openshell',
-        placement: 'local',
-      },
       deploymentId: 'deployment-test',
       packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
+      runtimeTargetId: 'runtime-target-test',
       stagingDirectoryRef: `server/runtime/worker-backend-sessions/aepsnap_turn_${suffix}_as_${suffix}`,
       transientProviderInstanceId: null,
     },
@@ -249,7 +244,7 @@ describe('scheduler lease maintenance service', () => {
     expect(maintenanceEnd).toBeGreaterThan(maintenanceStart);
     expect(wiring).toContain('maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS');
     expect(wiring).toContain('renewalDurationMs: SCHEDULER_LEASE_RENEWAL_DURATION_MS');
-    expect(wiring).toContain('cleanupExpiredReconnects:');
+    expect(wiring).toContain('runRecoveryMaintenance:');
     expect(wiring).not.toContain('canRenewPackageSnapshot');
     expect(source).not.toContain('scheduleExpiredReconnectCleanup');
   });
@@ -317,7 +312,7 @@ describe('scheduler lease maintenance service', () => {
       mkdirSync(brokenWorkspaceDbPath);
 
       const service = startSchedulerLeaseMaintenanceService(coreDb, {
-        cleanupExpiredReconnects: async () => {},
+        runRecoveryMaintenance: async () => {},
         intervalMs: 30_000,
         maxTotalLeaseMs: 7_200_000,
         now: () => '2026-07-05T00:10:30.000Z',
@@ -813,7 +808,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       const service = startSchedulerLeaseMaintenanceService(coreDb, {
-        cleanupExpiredReconnects: async () => {},
+        runRecoveryMaintenance: async () => {},
         intervalMs: 30_000,
         maxTotalLeaseMs: 7_200_000,
         now: () => '2026-07-05T00:10:30.000Z',
@@ -838,19 +833,28 @@ describe('scheduler lease maintenance service', () => {
     }
   });
 
-  it('runs expired reconnect cleanup through the existing maintenance timer', async () => {
+  it('serializes restart recovery maintenance and retries after an isolated failure', async () => {
     const coreDb = createMigratedCoreDb();
     const callbacks: Array<() => void> = [];
-    const cleanupCalls: string[] = [];
+    const errors: unknown[] = [];
+    let rejectFirstAttempt: ((error: Error) => void) | undefined;
+    const firstAttempt = new Promise<void>((_resolve, reject) => {
+      rejectFirstAttempt = reject;
+    });
+    let attempts = 0;
 
     try {
       const service = startSchedulerLeaseMaintenanceService(coreDb, {
-        cleanupExpiredReconnects: async () => {
-          cleanupCalls.push('cleanup');
+        runRecoveryMaintenance: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            await firstAttempt;
+          }
         },
         intervalMs: 30_000,
         maxTotalLeaseMs: 7_200_000,
         now: () => '2026-07-05T00:10:30.000Z',
+        onError: (error) => errors.push(error),
         renewalDurationMs: 1_800_000,
         renewalLeadMs: 300_000,
         setInterval: (callback) => {
@@ -860,11 +864,19 @@ describe('scheduler lease maintenance service', () => {
       });
 
       await Promise.resolve();
-      expect(cleanupCalls).toEqual(['cleanup']);
+      expect(attempts).toBe(1);
 
       callbacks[0]?.();
       await Promise.resolve();
-      expect(cleanupCalls).toEqual(['cleanup', 'cleanup']);
+      expect(attempts).toBe(1);
+
+      rejectFirstAttempt?.(new Error('NanoHost is not ready'));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(errors).toEqual([expect.objectContaining({ message: 'NanoHost is not ready' })]);
+
+      callbacks[0]?.();
+      await Promise.resolve();
+      expect(attempts).toBe(2);
 
       service.stop();
     } finally {

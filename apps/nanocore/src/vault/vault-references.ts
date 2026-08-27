@@ -71,6 +71,24 @@ export interface CreateVaultReferenceInput {
   readonly now?: () => string;
 }
 
+/** Result of idempotently creating one non-secret vault reference. */
+export interface CreateVaultReferenceResult {
+  /** True only when this call inserted the stored reference. */
+  readonly inserted: boolean;
+  /** Exact stored vault reference record. */
+  readonly reference: VaultReferenceRecord;
+}
+
+/** Input used to advance one active vault reference's material version. */
+export interface AdvanceActiveVaultReferenceVersionInput {
+  /** Reference whose material version should advance. */
+  readonly referenceId: string;
+  /** Exact stored or next material version reported by the backend. */
+  readonly currentVersion: number;
+  /** Optional deterministic clock. */
+  readonly now?: () => string;
+}
+
 /** Input used to import one workspace-scoped unbound vault reference. */
 export interface ImportUnboundWorkspaceVaultReferenceInput {
   /** Stable imported vault reference id. */
@@ -123,10 +141,25 @@ export function createVaultReference(
   coreDb: CoreDb,
   input: CreateVaultReferenceInput
 ): VaultReferenceRecord {
+  return createVaultReferenceWithInsertEvidence(coreDb, input).reference;
+}
+
+/**
+ * Creates one non-secret vault reference and reports whether this call inserted it.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Reference metadata to store.
+ * @returns Insert evidence and the exact stored vault reference record.
+ * @throws Error when scope identity fields are inconsistent or the stored row cannot be read.
+ */
+export function createVaultReferenceWithInsertEvidence(
+  coreDb: CoreDb,
+  input: CreateVaultReferenceInput
+): CreateVaultReferenceResult {
   assertVaultReferenceScope(input);
   const timestamp = input.now?.() ?? new Date().toISOString();
 
-  coreDb.sqlite
+  const result = coreDb.sqlite
     .prepare(
       `INSERT OR IGNORE INTO vault_references (
         reference_id,
@@ -158,6 +191,53 @@ export function createVaultReference(
       timestamp
     );
 
+  return {
+    inserted: result.changes === 1,
+    reference: requireVaultReference(coreDb, input.referenceId),
+  };
+}
+
+/**
+ * Advances an active vault reference by exactly one material version.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Reference id, exact backend material version, and optional clock.
+ * @returns The unchanged record for an equal version or the exact advanced record.
+ * @throws Error when the reference is missing, revoked, rolled back, skipped, or concurrently changed.
+ */
+export function advanceActiveVaultReferenceVersion(
+  coreDb: CoreDb,
+  input: AdvanceActiveVaultReferenceVersionInput
+): VaultReferenceRecord {
+  const reference = requireVaultReference(coreDb, input.referenceId);
+
+  if (reference.status !== 'active') {
+    throw new Error(`Vault reference is not active: ${input.referenceId}`);
+  }
+  if (input.currentVersion === reference.currentVersion) {
+    return reference;
+  }
+  if (input.currentVersion !== reference.currentVersion + 1) {
+    throw new Error(`Vault reference version must advance by exactly one: ${input.referenceId}`);
+  }
+
+  const result = coreDb.sqlite
+    .prepare(
+      `UPDATE vault_references
+        SET current_version = ?, updated_at = ?
+        WHERE reference_id = ? AND status = 'active' AND current_version = ?`
+    )
+    .run(
+      input.currentVersion,
+      input.now?.() ?? new Date().toISOString(),
+      input.referenceId,
+      reference.currentVersion
+    );
+
+  if (result.changes !== 1) {
+    throw new Error(`Vault reference version changed concurrently: ${input.referenceId}`);
+  }
+
   return requireVaultReference(coreDb, input.referenceId);
 }
 
@@ -173,39 +253,41 @@ export function revokeVaultReference(
   coreDb: CoreDb,
   input: RevokeVaultReferenceInput
 ): VaultReferenceRecord {
-  requireVaultReference(coreDb, input.referenceId);
-  const timestamp = input.now?.() ?? new Date().toISOString();
+  return coreDb.sqlite.transaction(() => {
+    requireVaultReference(coreDb, input.referenceId);
+    const timestamp = input.now?.() ?? new Date().toISOString();
 
-  coreDb.sqlite
-    .prepare(
-      "UPDATE vault_references SET status = 'revoked', updated_at = ? WHERE reference_id = ?"
-    )
-    .run(timestamp, input.referenceId);
-  coreDb.sqlite
-    .prepare(
-      `UPDATE injection_receipts
-        SET revocation_status = 'stale-session'
-        WHERE revocation_status = 'active'
-          AND grant_id IN (
-            SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?
-          )`
-    )
-    .run(input.referenceId);
-  coreDb.sqlite
-    .prepare(
-      `UPDATE injection_plans
-        SET status = 'revoked'
-        WHERE status = 'active'
-          AND grant_id IN (
-            SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?
-          )`
-    )
-    .run(input.referenceId);
-  coreDb.sqlite
-    .prepare("UPDATE vault_grants SET status = 'revoked' WHERE vault_reference_id = ?")
-    .run(input.referenceId);
+    coreDb.sqlite
+      .prepare(
+        "UPDATE vault_references SET status = 'revoked', updated_at = ? WHERE reference_id = ?"
+      )
+      .run(timestamp, input.referenceId);
+    coreDb.sqlite
+      .prepare(
+        `UPDATE vault_injection_receipts
+          SET revocation_status = 'stale-session'
+          WHERE revocation_status = 'active'
+            AND grant_id IN (
+              SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?
+            )`
+      )
+      .run(input.referenceId);
+    coreDb.sqlite
+      .prepare(
+        `UPDATE vault_injection_plans
+          SET status = 'revoked'
+          WHERE status = 'active'
+            AND grant_id IN (
+              SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?
+            )`
+      )
+      .run(input.referenceId);
+    coreDb.sqlite
+      .prepare("UPDATE vault_grants SET status = 'revoked' WHERE vault_reference_id = ?")
+      .run(input.referenceId);
 
-  return requireVaultReference(coreDb, input.referenceId);
+    return requireVaultReference(coreDb, input.referenceId);
+  })();
 }
 
 /**

@@ -80,7 +80,6 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
       agentSessionId: 'as_1',
       triggerActor: { kind: 'user', id: 'user_local' },
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       requestId: 'req_1',

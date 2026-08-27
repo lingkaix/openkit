@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -96,7 +96,7 @@ describe('workspace repository app API', () => {
     }
   });
 
-  it('backfills existing repository rows into the data source catalog at startup', async () => {
+  it('does not backfill existing repository rows during app construction', () => {
     const coreDb = createCoreDb();
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-backfill-repository-'));
     mkdirSync(join(repositoryPath, '.git'));
@@ -125,22 +125,7 @@ describe('workspace repository app API', () => {
         'config',
         'data-sources.jsonc'
       );
-      const catalogText = readFileSync(catalogPath, 'utf8');
-      const catalog = JSON.parse(catalogText) as {
-        sources: Array<Record<string, unknown>>;
-      };
-
-      expect(catalog.sources).toEqual([
-        expect.objectContaining({
-          displayName: expect.stringMatching(/^local directory "openkit-backfill-repository-/),
-          id: 'repo_default',
-          kind: 'git',
-          locator: { repositoryResourceId: 'repo_default' },
-          status: 'active',
-        }),
-      ]);
-      expect(catalogText).not.toContain(repositoryPath);
-      expect(catalogText).not.toContain('localPath');
+      expect(existsSync(catalogPath)).toBe(false);
     } finally {
       coreDb.sqlite.close();
     }
@@ -623,6 +608,71 @@ describe('workspace repository app API', () => {
       } finally {
         workspaceDb.sqlite.close();
         foreignDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a DATA_ROOT-contained replacement without mutating the existing repository row or catalog bytes', async () => {
+    const coreDb = createCoreDb();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-preseed-repository-'));
+    mkdirSync(join(repositoryPath, '.git'));
+    const catalogPath = join(
+      coreDb.dataRoot,
+      'workspaces',
+      'ws_demo',
+      'config',
+      'data-sources.jsonc'
+    );
+
+    try {
+      const app = createApp({ coreDb });
+      const seedRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'External repository',
+          localPath: repositoryPath,
+        }),
+      });
+
+      expect(seedRes.status).toBe(200);
+
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      try {
+        const beforeRow = workspaceDb.sqlite
+          .prepare('SELECT * FROM workspace_repository_resources')
+          .get();
+        const beforeCatalogBytes = readFileSync(catalogPath);
+        const containedPath = join(coreDb.dataRoot, 'contained-repo');
+
+        const replaceRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            displayName: 'Contained repository',
+            localPath: containedPath,
+          }),
+        });
+        const replacePayload = (await replaceRes.json()) as Record<string, unknown>;
+        const replaceJson = JSON.stringify(replacePayload);
+        const afterRow = workspaceDb.sqlite
+          .prepare('SELECT * FROM workspace_repository_resources')
+          .get();
+        const afterCatalogBytes = readFileSync(catalogPath);
+
+        expect(replaceRes.status).toBe(400);
+        expect(replacePayload).toMatchObject({
+          code: 'repository_resource_failed',
+        });
+        expect(afterRow).toEqual(beforeRow);
+        expect(afterCatalogBytes.equals(beforeCatalogBytes)).toBe(true);
+        expect(replaceJson).not.toContain(containedPath);
+        expect(replaceJson).not.toContain(coreDb.dataRoot);
+        expect(replaceJson).not.toContain(repositoryPath);
+      } finally {
+        workspaceDb.sqlite.close();
       }
     } finally {
       coreDb.sqlite.close();

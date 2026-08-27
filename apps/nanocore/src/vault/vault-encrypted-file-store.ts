@@ -1,8 +1,12 @@
 import { createCipheriv, createDecipheriv, randomBytes as nodeRandomBytes } from 'node:crypto';
 import {
-  chmodSync,
+  closeSync,
+  constants,
   existsSync,
-  mkdirSync,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -10,17 +14,22 @@ import {
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
-import { VaultBackendError, type VaultOwnerScope } from './vault-backend.js';
-import { ensureEncryptedFileVaultStoreDirectory } from './vault-store-directory.js';
+import {
+  assertVaultEntryMetadata,
+  VaultBackendError,
+  type VaultEntryMetadata,
+} from './vault-backend.js';
+import {
+  assertEncryptedFileVaultDirectory,
+  ensureEncryptedFileVaultChildDirectory,
+  ensureEncryptedFileVaultStoreDirectory,
+} from './vault-store-directory.js';
 
 /** Current encrypted-file vault store format version. */
 const ENCRYPTED_FILE_STORE_FORMAT_VERSION = 1;
 
 /** Required mode for encrypted-file vault store files. */
 const REQUIRED_STORE_FILE_MODE = 0o600;
-
-/** Required mode for encrypted-file vault entry directories. */
-const REQUIRED_ENTRY_DIRECTORY_MODE = 0o700;
 
 /** AEAD algorithm used by the first encrypted-file implementation. */
 const ENCRYPTED_FILE_AEAD_ALGORITHM = 'aes-256-gcm';
@@ -69,14 +78,7 @@ export interface EncryptedFileVaultEntryDataKey {
 }
 
 /** Non-secret metadata stored beside one encrypted entry version. */
-export interface EncryptedFileVaultEntryMetadata {
-  /** Scope that owns the vault reference. */
-  readonly ownerScope: VaultOwnerScope;
-  /** Workspace id when ownerScope is workspace. */
-  readonly workspaceId?: string;
-  /** User id when ownerScope is user. */
-  readonly userId?: string;
-}
+export type EncryptedFileVaultEntryMetadata = VaultEntryMetadata;
 
 /** Associated data bound into one encrypted entry version. */
 export interface EncryptedFileVaultEntryAssociatedData {
@@ -84,6 +86,12 @@ export interface EncryptedFileVaultEntryAssociatedData {
   readonly referenceId: string;
   /** Material version bound into AEAD associated data. */
   readonly version: number;
+  /** Canonical entry creation timestamp. */
+  readonly createdAt: string;
+  /** Exact non-secret ownership metadata. */
+  readonly metadata: EncryptedFileVaultEntryMetadata;
+  /** Immutable expiry snapshot known when this entry was sealed. */
+  readonly versionExpirations: Record<string, string>;
 }
 
 /** Durable encrypted-file vault entry envelope. */
@@ -132,6 +140,8 @@ export interface WriteEncryptedFileVaultEntryInput {
   readonly dataKey: EncryptedFileVaultEntryDataKey;
   /** ISO timestamp for entry creation. */
   readonly createdAt: string;
+  /** Immutable expiry snapshot known when this entry was sealed. */
+  readonly versionExpirations?: Record<string, string>;
 }
 
 /** Input used to read one encrypted-file vault entry envelope. */
@@ -142,6 +152,8 @@ export interface ReadEncryptedFileVaultEntryInput {
   readonly referenceId: string;
   /** Material version. */
   readonly version: number;
+  /** Exact canonical or interrupted-write source filename within the reference directory. */
+  readonly sourceFileName?: string;
 }
 
 /** Input used to seal one encrypted-file vault entry. */
@@ -160,6 +172,8 @@ export interface SealEncryptedFileVaultEntryInput {
   readonly masterKey: Uint8Array;
   /** ISO timestamp for entry creation. */
   readonly createdAt: string;
+  /** Immutable expiry snapshot known when this entry was sealed. */
+  readonly versionExpirations?: Record<string, string>;
   /** Optional deterministic byte source for tests. */
   readonly randomBytes?: RandomBytes;
 }
@@ -174,24 +188,28 @@ export interface OpenEncryptedFileVaultEntryInput {
   readonly version: number;
   /** Raw 32-byte master key used to unwrap the per-entry data key. */
   readonly masterKey: Uint8Array;
+  /** Exact canonical or interrupted-write source filename within the reference directory. */
+  readonly sourceFileName?: string;
 }
 
 /**
  * Initializes or verifies the encrypted-file store master-key header.
  *
  * @param input Store directory and owned master key.
+ * @returns Canonical validated store directory retained by the backend.
  * @throws VaultBackendError when the store is unsafe, malformed, or authenticated by another key.
  */
 export function initializeOrVerifyEncryptedFileVaultStore(input: {
   readonly masterKey: Uint8Array;
   readonly storeDir: string;
-}): void {
+}): string {
   assertMasterKey(input.masterKey);
-  ensureEncryptedFileVaultStoreDirectory({ storeDir: input.storeDir });
-  const path = headerPath(input.storeDir);
+  const ensured = ensureEncryptedFileVaultStoreDirectory({ storeDir: input.storeDir });
+  const canonicalStoreDir = assertEncryptedFileVaultDirectory(ensured.storeDir);
+  const path = headerPath(canonicalStoreDir);
 
   if (!existsSync(path)) {
-    if (readdirSync(input.storeDir).length > 0) {
+    if (readdirSync(canonicalStoreDir).length > 0) {
       throw invalidStoreFormatError(
         'Encrypted-file vault header is missing from a non-empty store.'
       );
@@ -218,7 +236,7 @@ export function initializeOrVerifyEncryptedFileVaultStore(input: {
         },
       };
 
-      writeJsonFileAtomically(path, header);
+      writeEncryptedFileVaultJsonAtomically(path, header);
     } catch (error) {
       if (error instanceof VaultBackendError) {
         throw error;
@@ -228,7 +246,7 @@ export function initializeOrVerifyEncryptedFileVaultStore(input: {
     } finally {
       nonce.fill(0);
     }
-    return;
+    return canonicalStoreDir;
   }
 
   const header = readEncryptedFileVaultStoreHeader(path);
@@ -246,6 +264,8 @@ export function initializeOrVerifyEncryptedFileVaultStore(input: {
   } catch {
     throw invalidStoreFormatError('Encrypted-file vault master key failed authentication.');
   }
+
+  return canonicalStoreDir;
 }
 
 /**
@@ -257,15 +277,21 @@ export function initializeOrVerifyEncryptedFileVaultStore(input: {
 export function writeEncryptedFileVaultEntry(
   input: WriteEncryptedFileVaultEntryInput
 ): EncryptedFileVaultEntry {
-  ensureEncryptedFileVaultStoreDirectory({ storeDir: input.storeDir });
+  const canonicalStoreDir = assertEncryptedFileVaultDirectory(input.storeDir);
   assertSafeReferenceId(input.referenceId);
   assertPositiveVersion(input.version);
+  assertCanonicalTimestamp(input.createdAt);
+  assertVaultEntryMetadata(input.metadata);
+  const versionExpirations = validateVersionExpirations(input.versionExpirations ?? {});
 
   const entry: EncryptedFileVaultEntry = {
     algorithm: ENCRYPTED_FILE_AEAD_ALGORITHM,
     associatedData: {
+      createdAt: input.createdAt,
+      metadata: input.metadata,
       referenceId: input.referenceId,
       version: input.version,
+      versionExpirations,
     },
     ciphertext: input.ciphertext,
     createdAt: input.createdAt,
@@ -277,11 +303,21 @@ export function writeEncryptedFileVaultEntry(
     tag: input.tag,
     version: input.version,
   };
-  const path = entryPath(input.storeDir, input.referenceId, input.version);
+  const entriesDir = ensureEncryptedFileVaultChildDirectory({
+    childName: 'entries',
+    parentDir: canonicalStoreDir,
+  });
+  const referenceDirectory = ensureEncryptedFileVaultChildDirectory({
+    childName: input.referenceId,
+    parentDir: entriesDir,
+  });
+  const path = join(referenceDirectory, `${input.version}.enc`);
 
-  mkdirSync(dirname(path), { mode: REQUIRED_ENTRY_DIRECTORY_MODE, recursive: true });
-  chmodSync(dirname(path), REQUIRED_ENTRY_DIRECTORY_MODE);
-  writeJsonFileAtomically(path, entry);
+  if (existsSync(path)) {
+    throw invalidStoreFormatError('Encrypted-file vault entry version already exists.');
+  }
+
+  writeEncryptedFileVaultJsonAtomically(path, entry);
   return entry;
 }
 
@@ -297,17 +333,50 @@ export function readEncryptedFileVaultEntry(
 ): EncryptedFileVaultEntry {
   assertSafeReferenceId(input.referenceId);
   assertPositiveVersion(input.version);
+  const path = entrySourcePath(input);
 
-  const entry = JSON.parse(
-    readFileSync(entryPath(input.storeDir, input.referenceId, input.version), 'utf8')
-  ) as EncryptedFileVaultEntry;
+  let value: unknown;
+
+  try {
+    value = JSON.parse(readEncryptedFileVaultText(path));
+  } catch {
+    throw invalidStoreFormatError('Encrypted-file vault entry is invalid.');
+  }
+
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'algorithm',
+      'associatedData',
+      'ciphertext',
+      'createdAt',
+      'dataKey',
+      'formatVersion',
+      'metadata',
+      'nonce',
+      'referenceId',
+      'tag',
+      'version',
+    ])
+  ) {
+    throw invalidStoreFormatError('Encrypted-file vault entry is invalid.');
+  }
+
+  const entry = value as unknown as EncryptedFileVaultEntry;
 
   if (
     entry.formatVersion !== ENCRYPTED_FILE_STORE_FORMAT_VERSION ||
     entry.referenceId !== input.referenceId ||
     entry.version !== input.version ||
-    !entry.associatedData ||
-    entry.associatedData?.referenceId !== input.referenceId ||
+    !isRecord(entry.associatedData) ||
+    !hasExactKeys(entry.associatedData, [
+      'createdAt',
+      'metadata',
+      'referenceId',
+      'version',
+      'versionExpirations',
+    ]) ||
+    entry.associatedData.referenceId !== input.referenceId ||
     entry.associatedData.version !== input.version
   ) {
     throw invalidStoreFormatError('Encrypted-file vault entry identity does not match its path.');
@@ -315,9 +384,35 @@ export function readEncryptedFileVaultEntry(
 
   if (
     entry.algorithm !== ENCRYPTED_FILE_AEAD_ALGORITHM ||
-    entry.dataKey.algorithm !== ENCRYPTED_FILE_AEAD_ALGORITHM
+    !isRecord(entry.dataKey) ||
+    !hasExactKeys(entry.dataKey, ['algorithm', 'nonce', 'tag', 'wrapped']) ||
+    entry.dataKey.algorithm !== ENCRYPTED_FILE_AEAD_ALGORITHM ||
+    !isBase64(entry.ciphertext) ||
+    !isBase64Bytes(entry.nonce, REQUIRED_NONCE_BYTES) ||
+    !isBase64Bytes(entry.tag, REQUIRED_TAG_BYTES) ||
+    !isBase64Bytes(entry.dataKey.nonce, REQUIRED_NONCE_BYTES) ||
+    !isBase64Bytes(entry.dataKey.tag, REQUIRED_TAG_BYTES) ||
+    !isBase64Bytes(entry.dataKey.wrapped, REQUIRED_KEY_BYTES)
   ) {
     throw invalidStoreFormatError('Unsupported encrypted-file vault entry algorithm.');
+  }
+
+  try {
+    assertCanonicalTimestamp(entry.createdAt);
+    assertVaultEntryMetadata(entry.metadata);
+    assertVaultEntryMetadata(entry.associatedData.metadata);
+    validateVersionExpirations(entry.associatedData.versionExpirations);
+  } catch {
+    throw invalidStoreFormatError('Encrypted-file vault entry metadata is invalid.');
+  }
+
+  if (
+    entry.createdAt !== entry.associatedData.createdAt ||
+    JSON.stringify(entry.metadata) !== JSON.stringify(entry.associatedData.metadata)
+  ) {
+    throw invalidStoreFormatError(
+      'Encrypted-file vault entry metadata does not match associated data.'
+    );
   }
 
   return entry;
@@ -345,8 +440,11 @@ export function sealEncryptedFileVaultEntry(
     entryNonce = randomBytes(REQUIRED_NONCE_BYTES);
     wrapNonce = randomBytes(REQUIRED_NONCE_BYTES);
     const associatedData = entryAssociatedDataBuffer({
+      createdAt: input.createdAt,
+      metadata: input.metadata,
       referenceId: input.referenceId,
       version: input.version,
+      versionExpirations: input.versionExpirations ?? {},
     });
     const sealed = encryptAesGcm(material, dataKey, entryNonce, associatedData);
     const wrapped = encryptAesGcm(
@@ -371,6 +469,7 @@ export function sealEncryptedFileVaultEntry(
       storeDir: input.storeDir,
       tag: sealed.tag,
       version: input.version,
+      versionExpirations: input.versionExpirations ?? {},
     });
   } finally {
     dataKey.fill(0);
@@ -430,7 +529,7 @@ function readEncryptedFileVaultStoreHeader(path: string): EncryptedFileVaultStor
   let value: unknown;
 
   try {
-    value = JSON.parse(readFileSync(path, 'utf8'));
+    value = JSON.parse(readEncryptedFileVaultText(path));
   } catch {
     throw invalidStoreFormatError('Encrypted-file vault header is invalid.');
   }
@@ -475,6 +574,38 @@ function headerPath(storeDir: string): string {
 }
 
 /**
+ * Resolves one exact canonical or interrupted-write entry source without following directories.
+ *
+ * @param input Entry identity, store root, and optional exact source filename.
+ * @returns Validated source path inside the canonical reference directory.
+ * @throws VaultBackendError when a directory or source filename is unsafe.
+ */
+function entrySourcePath(input: ReadEncryptedFileVaultEntryInput): string {
+  const canonicalStoreDir = assertEncryptedFileVaultDirectory(input.storeDir);
+  const entriesDir = assertEncryptedFileVaultDirectory(join(canonicalStoreDir, 'entries'));
+  const referenceDirectory = assertEncryptedFileVaultDirectory(join(entriesDir, input.referenceId));
+  const canonicalFileName = `${input.version}.enc`;
+  const sourceFileName = input.sourceFileName ?? canonicalFileName;
+  const tempMatch = new RegExp(`^\\.${input.version}\\.enc\\.([1-9][0-9]*)\\.tmp$`).exec(
+    sourceFileName
+  );
+  const tempPid = tempMatch ? Number(tempMatch[1]) : undefined;
+
+  if (
+    sourceFileName !== canonicalFileName &&
+    (!tempMatch ||
+      !Number.isSafeInteger(tempPid) ||
+      tempPid === undefined ||
+      tempPid < 1 ||
+      String(tempPid) !== tempMatch[1])
+  ) {
+    throw invalidStoreFormatError('Encrypted-file vault entry source is invalid.');
+  }
+
+  return join(referenceDirectory, sourceFileName);
+}
+
+/**
  * Builds fixed associated data for master-key verification.
  *
  * @param createdAt Authenticated header creation timestamp.
@@ -493,31 +624,161 @@ function headerAssociatedDataBuffer(createdAt: string): Buffer {
 }
 
 /**
- * Returns one entry envelope path.
- *
- * @param storeDir Store directory.
- * @param referenceId Vault reference id.
- * @param version Material version.
- * @returns Entry file path.
- */
-function entryPath(storeDir: string, referenceId: string, version: number): string {
-  return join(storeDir, 'entries', referenceId, `${version}.enc`);
-}
-
-/**
  * Writes one JSON file through a same-directory temp file and atomic rename.
  *
  * @param path Target path.
  * @param value JSON-serializable value.
  */
-function writeJsonFileAtomically(path: string, value: unknown): void {
+export function writeEncryptedFileVaultJsonAtomically(path: string, value: unknown): void {
   const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
+  let fileDescriptor: number | undefined;
 
-  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: REQUIRED_STORE_FILE_MODE,
-  });
-  chmodSync(tempPath, REQUIRED_STORE_FILE_MODE);
-  renameSync(tempPath, path);
+  try {
+    assertEncryptedFileVaultDirectory(dirname(path));
+    if (pathExistsWithoutFollowing(path)) {
+      assertEncryptedFileVaultRegularFile(path);
+    }
+    if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
+      throw invalidStoreFormatError(
+        'Encrypted-file vault writes are unavailable on this platform.'
+      );
+    }
+
+    fileDescriptor = openSync(
+      tempPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      REQUIRED_STORE_FILE_MODE
+    );
+    fchmodSync(fileDescriptor, REQUIRED_STORE_FILE_MODE);
+    writeFileSync(fileDescriptor, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    closeSync(fileDescriptor);
+    fileDescriptor = undefined;
+    renameSync(tempPath, path);
+  } catch (error) {
+    if (error instanceof VaultBackendError) {
+      throw error;
+    }
+    throw invalidStoreFormatError('Encrypted-file vault file could not be written securely.');
+  } finally {
+    if (fileDescriptor !== undefined) {
+      try {
+        closeSync(fileDescriptor);
+      } catch {
+        // Every exposed failure remains redacted and the owned temp stays fail-closed.
+      }
+    }
+  }
+}
+
+/**
+ * Reads one exact owner-only regular Vault file through a no-follow descriptor.
+ *
+ * @param path File path beneath already validated Vault directories.
+ * @returns UTF-8 file contents.
+ * @throws VaultBackendError when the file is a symlink, wrong node type, or not mode 0600.
+ */
+export function readEncryptedFileVaultText(path: string): string {
+  let fileDescriptor: number | undefined;
+
+  try {
+    if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
+      throw invalidStoreFormatError('Encrypted-file vault reads are unavailable on this platform.');
+    }
+    fileDescriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    assertEncryptedFileVaultDescriptor(fileDescriptor);
+    return readFileSync(fileDescriptor, 'utf8');
+  } catch (error) {
+    if (error instanceof VaultBackendError) {
+      throw error;
+    }
+    throw invalidStoreFormatError('Encrypted-file vault file could not be read securely.');
+  } finally {
+    if (fileDescriptor !== undefined) {
+      try {
+        closeSync(fileDescriptor);
+      } catch {
+        // Every exposed failure remains redacted.
+      }
+    }
+  }
+}
+
+/**
+ * Validates one exact owner-only regular Vault file without following a leaf symlink.
+ *
+ * @param path File path beneath already validated Vault directories.
+ * @throws VaultBackendError when the file is a symlink, wrong node type, or not mode 0600.
+ */
+export function assertEncryptedFileVaultRegularFile(path: string): void {
+  let fileDescriptor: number | undefined;
+
+  try {
+    if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
+      throw invalidStoreFormatError('Encrypted-file vault reads are unavailable on this platform.');
+    }
+    fileDescriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    assertEncryptedFileVaultDescriptor(fileDescriptor);
+  } catch (error) {
+    if (error instanceof VaultBackendError) {
+      throw error;
+    }
+    throw invalidStoreFormatError('Encrypted-file vault file could not be validated securely.');
+  } finally {
+    if (fileDescriptor !== undefined) {
+      try {
+        closeSync(fileDescriptor);
+      } catch {
+        // Every exposed failure remains redacted.
+      }
+    }
+  }
+}
+
+/**
+ * Validates the node type and exact mode for one already opened Vault file.
+ *
+ * @param fileDescriptor Open no-follow descriptor.
+ * @throws VaultBackendError when the descriptor is not an exact 0600 regular file.
+ */
+function assertEncryptedFileVaultDescriptor(fileDescriptor: number): void {
+  const stats = fstatSync(fileDescriptor);
+
+  if (!stats.isFile() || (stats.mode & 0o777) !== REQUIRED_STORE_FILE_MODE) {
+    throw invalidStoreFormatError('Encrypted-file vault file must be a regular 0600 file.');
+  }
+}
+
+/**
+ * Checks path existence without following a leaf symlink.
+ *
+ * @param path Candidate path.
+ * @returns True when any filesystem node occupies the path.
+ */
+function pathExistsWithoutFollowing(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Checks whether one filesystem failure reports a missing path.
+ *
+ * @param error Candidate filesystem failure.
+ * @returns True only for ENOENT failures.
+ */
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { readonly code?: unknown }).code === 'ENOENT'
+  );
 }
 
 /**
@@ -559,18 +820,29 @@ function decryptAesGcm(input: {
   readonly associatedData: Uint8Array;
   readonly tag: string;
 }): Buffer {
-  const decipher = createDecipheriv(
-    ENCRYPTED_FILE_AEAD_ALGORITHM,
-    input.key,
-    Buffer.from(input.nonce, 'base64')
-  );
-  decipher.setAAD(input.associatedData);
-  decipher.setAuthTag(Buffer.from(input.tag, 'base64'));
+  const nonce = Buffer.from(input.nonce, 'base64');
+  const tag = Buffer.from(input.tag, 'base64');
+  const ciphertext = Buffer.from(input.ciphertext, 'base64');
+  let updated = Buffer.alloc(0);
+  let finalized = Buffer.alloc(0);
+  let plaintext: Buffer | undefined;
 
-  return Buffer.concat([
-    decipher.update(Buffer.from(input.ciphertext, 'base64')),
-    decipher.final(),
-  ]);
+  try {
+    const decipher = createDecipheriv(ENCRYPTED_FILE_AEAD_ALGORITHM, input.key, nonce);
+    decipher.setAAD(input.associatedData);
+    decipher.setAuthTag(tag);
+    updated = decipher.update(ciphertext);
+    finalized = decipher.final();
+    plaintext = Buffer.concat([updated, finalized]);
+    return Buffer.from(plaintext);
+  } finally {
+    nonce.fill(0);
+    tag.fill(0);
+    ciphertext.fill(0);
+    updated.fill(0);
+    finalized.fill(0);
+    plaintext?.fill(0);
+  }
 }
 
 /**
@@ -580,13 +852,7 @@ function decryptAesGcm(input: {
  * @returns Stable associated data bytes.
  */
 function entryAssociatedDataBuffer(associatedData: EncryptedFileVaultEntryAssociatedData): Buffer {
-  return Buffer.from(
-    JSON.stringify({
-      referenceId: associatedData.referenceId,
-      version: associatedData.version,
-    }),
-    'utf8'
-  );
+  return Buffer.from(JSON.stringify(associatedData), 'utf8');
 }
 
 /**
@@ -649,6 +915,65 @@ function isBase64Bytes(value: unknown, byteLength: number): value is string {
 }
 
 /**
+ * Checks whether a value is canonical base64.
+ *
+ * @param value Candidate encoded value.
+ * @returns True when decoding and re-encoding preserves the value.
+ */
+function isBase64(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  return Buffer.from(value, 'base64').toString('base64') === value;
+}
+
+/**
+ * Validates and returns one exact version-expiration map.
+ *
+ * @param value Candidate expiration map.
+ * @returns Validated canonical expiration map.
+ * @throws VaultBackendError when a version key or timestamp is invalid.
+ */
+function validateVersionExpirations(value: unknown): Record<string, string> {
+  if (!isRecord(value)) {
+    throw invalidStoreFormatError('Encrypted-file vault version expirations are invalid.');
+  }
+
+  for (const [version, expiresAt] of Object.entries(value)) {
+    const numericVersion = Number(version);
+    if (
+      !/^[1-9][0-9]*$/.test(version) ||
+      !Number.isSafeInteger(numericVersion) ||
+      numericVersion < 1 ||
+      String(numericVersion) !== version ||
+      typeof expiresAt !== 'string'
+    ) {
+      throw invalidStoreFormatError('Encrypted-file vault version expirations are invalid.');
+    }
+    assertCanonicalTimestamp(expiresAt);
+  }
+
+  return value as Record<string, string>;
+}
+
+/**
+ * Validates one canonical UTC ISO timestamp.
+ *
+ * @param value Candidate timestamp.
+ * @throws VaultBackendError when the value is not canonical UTC ISO.
+ */
+function assertCanonicalTimestamp(value: unknown): asserts value is string {
+  if (
+    typeof value !== 'string' ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
+    throw invalidStoreFormatError('Encrypted-file vault timestamp is invalid.');
+  }
+}
+
+/**
  * Validates raw encrypted-file master key length.
  *
  * @param masterKey Raw master key bytes.
@@ -679,7 +1004,7 @@ function assertSafeReferenceId(referenceId: string): void {
  * @throws VaultBackendError when the version is invalid.
  */
 function assertPositiveVersion(version: number): void {
-  if (!Number.isInteger(version) || version < 1) {
+  if (!Number.isSafeInteger(version) || version < 1) {
     throw invalidStoreFormatError('Vault entry version must be a positive integer.');
   }
 }

@@ -358,4 +358,46 @@ describe('createAuthMiddleware', () => {
     });
     expect(membershipVerifierCalls).toBe(0);
   });
+
+  /**
+   * S-2b-1 Unit 2: presented `nanohost-transport` material MUST NOT become a
+   * product or `server-admin` actor on App API product paths
+   * (`docs/specs/20260802-nanohost_runtime_and_transport.md`).
+   */
+  it('rejects presented nanohost-transport material on product App API paths', async () => {
+    const nanohostSecret = 'okt_nanohost_transport_must_not_become_product_actor';
+    const app = new Hono();
+
+    app.use(
+      '/api/*',
+      createAuthMiddleware('server', undefined, {
+        accessTokenVerifier: async (secret) =>
+          secret === nanohostSecret
+            ? {
+                actor: {
+                  kind: 'token',
+                  // Simulate nanohost-transport material resolving into the product actor path.
+                  tokenScope: 'nanohost-transport',
+                  userId: 'integration_nanohost_primary',
+                } as import('./identity.js').Actor,
+                tokenId: 'tok_nanohost_1',
+              }
+            : null,
+      })
+    );
+    app.get('/api/app/workspaces', (c) => c.json(c.get('actor')));
+    app.get('/api/app/auth/tokens', (c) => c.json(c.get('actor')));
+
+    for (const path of ['/api/app/workspaces', '/api/app/auth/tokens']) {
+      const denied = await app.request(path, {
+        headers: { authorization: `Bearer ${nanohostSecret}` },
+      });
+      const body = await denied.text();
+
+      expect(denied.status).toBe(401);
+      expect(body).not.toContain(nanohostSecret);
+      expect(body).not.toContain('server-admin');
+      expect(body).not.toContain('integration_nanohost_primary');
+    }
+  });
 });

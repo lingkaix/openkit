@@ -6,7 +6,6 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -153,7 +152,7 @@ export interface WorkspaceLayoutPaths {
   threads: string;
   /** Workspace runtime output directory. */
   runtime: string;
-  /** Workspace agent-session runtime directory. */
+  /** Workspace AgentSession runtime directory. */
   runtimeAgentSessions: string;
   /** Workspace review directory. */
   reviews: string;
@@ -218,7 +217,6 @@ export function ensureLayout(root: string): FsLayoutPaths {
   }
   ensureEncryptedFileVaultStoreDirectory({ storeDir: paths.serverVault });
 
-  clearManagedCodexRuntimeScratch(root);
   verifyNoLegacyOwnershipViolations(root);
   verifyCanonicalDatabaseOwnership(root);
   verifyCanonicalRecordEnvelopeSupport(root);
@@ -227,42 +225,6 @@ export function ensureLayout(root: string): FsLayoutPaths {
   ensureConfigTemplateSurface(root);
 
   return paths;
-}
-
-/**
- * Removes Codex command-shim scratch before persistent DATA_ROOT validation.
- *
- * @param root Data root whose managed account homes should be cleaned.
- * @throws Error when any managed parent or scratch root is a symbolic link or non-directory.
- */
-function clearManagedCodexRuntimeScratch(root: string): void {
-  const accountsRootSegments = ['server', 'files', 'oauth', 'openai-codex', 'accounts'];
-  let accountsRoot = root;
-
-  for (const segment of accountsRootSegments) {
-    accountsRoot = join(accountsRoot, segment);
-    if (!lstatSync(accountsRoot, { throwIfNoEntry: false })) {
-      return;
-    }
-    assertLayoutDirectory(accountsRoot);
-  }
-
-  for (const accountSlotId of listChildDirectories(accountsRoot)) {
-    const codexHome = join(accountsRoot, accountSlotId, 'codex-home');
-
-    if (!lstatSync(codexHome, { throwIfNoEntry: false })) {
-      continue;
-    }
-    assertLayoutDirectory(codexHome);
-
-    const runtimeScratch = join(codexHome, 'tmp');
-
-    if (!lstatSync(runtimeScratch, { throwIfNoEntry: false })) {
-      continue;
-    }
-    assertLayoutDirectory(runtimeScratch);
-    rmSync(runtimeScratch, { force: true, recursive: true });
-  }
 }
 
 /**

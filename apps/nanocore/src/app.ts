@@ -5,6 +5,11 @@ import {
   type BootReadinessSnapshot,
   SetupDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
+import {
+  type ProviderSubscriptionAccountSlotId,
+  resolveProviderSubscriptionFamily,
+  type SubscriptionProviderId,
+} from '@openkit/config-schema';
 import type { ActorRef, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -27,6 +32,12 @@ import {
   createAuthMiddleware,
   isLoopbackHost,
 } from './auth/middleware.js';
+import { registerNanoHostTransportAdmissionRoutes } from './auth/nanohost-transport-admission.js';
+import { registerNanoHostTransportRoutes } from './auth/nanohost-transport-routes.js';
+import {
+  createNanoHostTransportSessionAuthority,
+  type NanoHostTransportSessionAuthority,
+} from './auth/nanohost-transport-session.js';
 import { registerOperationAccessGuards } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { registerAutomationRoutes } from './automation-routes.js';
@@ -49,22 +60,16 @@ import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordi
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
-import type { CodexOAuthStore } from './llm/codex-oauth.js';
-import { CodexOAuthAccountManager } from './llm/codex-oauth-accounts.js';
-import {
-  registerCodexOAuthAccountRoutes,
-  registerCodexOAuthLoginRoutes,
-} from './llm/codex-oauth-routes.js';
-import { CodexAuthTokenResolver, CodexResponsesClient } from './llm/codex-responses-client.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
 import { GatewayUsageTracker } from './llm/gateway-usage.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
+import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-routes.js';
 import { registerMaterialRoutes } from './material-routes.js';
 import { registerQuickAndChatModeRoutes, registerTaskModeRoute } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
-import { readCodexOAuthAccountSlotId } from './providers/codex-oauth-profile.js';
 import { resolveDefaultProviderStates } from './providers/default-provider.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
@@ -81,12 +86,19 @@ import { registerRepositoryRoutes } from './repository-routes.js';
 import { registerReviewDecisionRoutes } from './review-decision-routes.js';
 import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
 import { registerAgentHealthRoutes } from './runtime/agent-health-routes.js';
-import { listStaleRuntimeConfigSessions } from './runtime/agent-session-read-model.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import { recordNanoHostRuntimeTargetConnectionClose } from './runtime/nanohost-runtime-target.js';
+import {
+  createNanoHostSessionDispatch,
+  type NanoHostSessionDispatch,
+  registerNanoHostSessionEffectRoutes,
+  registerNanoHostSessionSemanticRoutes,
+} from './runtime/nanohost-session-dispatch.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { startProductTurn } from './runtime/product-turn-start.js';
 import { registerSchedulerAdmissionRoutes } from './runtime/scheduler-admission-routes.js';
 import {
+  type ConfiguredWorkerLifecycleRuntime,
   createConfiguredTurnExecutor,
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
@@ -126,14 +138,43 @@ import { registerThreadRoutes } from './thread-routes.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
 import { registerTurnRoutes } from './turn-routes.js';
 import { registerVaultAdminRoutes } from './vault/vault-admin-routes.js';
-import type { OsKeychainVaultAdapter } from './vault/vault-os-keychain-backend.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
-import { backfillRepositoryDataSourceCatalogs } from './workspace/repository-data-source-catalog.js';
 import { ensureUserQuickChatWorkspace, resolveWorkspaceRole } from './workspace-membership.js';
 import { registerWorkspaceRoutes } from './workspace-routes.js';
 import { registerWorkspaceSharingRoutes } from './workspace-sharing-routes.js';
 
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
+
+/**
+ * Process-local NanoHost transport session authority owned by one Hono app.
+ *
+ * Connection-generation fencing lives in `nanohost-transport-session.ts`.
+ * `createApp` installs the store and registers the production admission routes that
+ * verify `nanohost-transport` Tokens and consume `admit` / `fencePredecessor` /
+ * `mayCarryWork` without a parallel session framework.
+ */
+const nanoHostTransportSessionAuthorities = new WeakMap<
+  Hono<{ Variables: AuthVariables }>,
+  NanoHostTransportSessionAuthority
+>();
+
+/**
+ * Returns the NanoHost transport session authority installed on one app.
+ *
+ * @param app Hono app created by `createApp`.
+ * @returns Process-local session authority for connection-generation fencing.
+ * @throws Error when the app was not created through `createApp`.
+ */
+export function getNanoHostTransportSessionAuthority(
+  app: Hono<{ Variables: AuthVariables }>
+): NanoHostTransportSessionAuthority {
+  const authority = nanoHostTransportSessionAuthorities.get(app);
+  if (!authority) {
+    throw new Error('NanoHost transport session authority is not installed on this app.');
+  }
+
+  return authority;
+}
 
 /**
  * Creates credentialed browser CORS middleware for configured origins.
@@ -289,7 +330,6 @@ export interface CreateAppOptions {
   turnExecutor?: TurnExecutor;
   /** Optional Pi AI client override for tests and embedded deployments. */
   llmPiAiClient?: PiAiGatewayClient;
-  llmCodexResponsesClient?: CodexResponsesClient;
   llmGatewayDispatcher?: LLMGatewayProviderDispatcher;
   gatewayUsageTracker?: GatewayUsageTracker;
   /** Loaded operator config used for app diagnostics defaults. */
@@ -299,14 +339,14 @@ export interface CreateAppOptions {
   providerCredentialResolver?: ProviderCredentialResolver;
   providerDiagnostics?: ProviderDiagnosticsSnapshot;
   runtimeConfigManager?: RuntimeConfigManager;
-  codexOAuthAccountManager?: CodexOAuthAccountManager;
-  codexOAuthStore?: CodexOAuthStore;
+  /** Provider-neutral subscription account manager override for tests and embedded deployments. */
+  providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   automationStore?: AutomationStore;
-  /** Process-local worker control gateway used by direct sandbox workers. */
+  /** Process-local worker control gateway used by private Sandbox Integration routes. */
   workerControlGateway?: WorkerControlGateway;
   /** Scheduler epoch owned by this app instance. */
   schedulerEpoch?: number;
-  /** Configured disposable Cell placement used for scheduler admission. */
+  /** Configured scheduler placement used for admission. */
   workerPlacement?: 'local' | 'remote';
   agentManifests?: AgentManifest[];
   /** Boot readiness snapshot for this process. */
@@ -315,8 +355,16 @@ export interface CreateAppOptions {
   getBootReadiness?: () => BootReadinessSnapshot;
   /** Process-local vault unlock state used by vault admin routes. */
   vaultUnlockState?: VaultUnlockState;
-  /** Optional os-keychain adapter override used by tests and embedded local deployments. */
-  vaultOsKeychainAdapter?: OsKeychainVaultAdapter;
+  /**
+   * Optional process-local NanoHost transport session authority.
+   *
+   * When omitted, `createApp` installs a fresh connection-generation store.
+   */
+  nanohostTransportSessionAuthority?: NanoHostTransportSessionAuthority;
+  /** Optional dispatcher bound to the same process-local NanoHost session authority. */
+  nanoHostSessionDispatch?: NanoHostSessionDispatch;
+  /** Shared worker lifecycle runtime that owns Harness continuations and Turn credentials. */
+  workerLifecycleRuntime?: ConfiguredWorkerLifecycleRuntime;
 }
 
 /**
@@ -393,7 +441,16 @@ export function createDefaultWorkerControlGateway(
     },
     resolveFinalStatusTokenBinding: (input) =>
       resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
-    resolveTokenBinding: (input) => resolveSchedulerLeaseTokenBinding(coreDb, input),
+    resolveTokenBinding: (input) => {
+      const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
+      if (
+        resolution.status === 'accepted' &&
+        (!resolution.lease.workerControlTokenHash || !resolution.lease.workerInferenceTokenHash)
+      ) {
+        return { status: 'rejected', reason: 'binding-not-found' };
+      }
+      return resolution;
+    },
     runFinalStatusTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
     runHeartbeatTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
     sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
@@ -433,31 +490,19 @@ function throwSchedulerHeartbeatGatewayError(error: unknown): never {
 interface CreateDefaultVaultUnlockStateInput {
   /** Data root used by encrypted-file vault storage. */
   readonly dataRoot: string;
-  /** Local-mode vault backend selected from operator config. */
-  readonly localDefaultBackend?: 'os-keychain' | 'encrypted-file';
   /** NanoCore mode selected for this app. */
   readonly mode: 'local' | 'server';
-  /** Optional os-keychain adapter override. */
-  readonly osKeychainAdapter?: OsKeychainVaultAdapter;
 }
 
 /**
  * Creates the default vault state for the selected Core mode.
  *
- * @param input App mode, data root, and optional keychain adapter.
+ * @param input App mode and data root.
  * @returns Process-local vault state.
  */
 export function createDefaultVaultUnlockState(
   input: CreateDefaultVaultUnlockStateInput
 ): VaultUnlockState {
-  if (input.mode === 'local' && input.localDefaultBackend !== 'encrypted-file') {
-    return createVaultUnlockState({
-      ...(input.osKeychainAdapter ? { adapter: input.osKeychainAdapter } : {}),
-      backendKind: 'os-keychain',
-      deploymentId: 'local',
-    });
-  }
-
   return createVaultUnlockState({
     backendKind: 'encrypted-file',
     storeDir: join(input.dataRoot, 'server', 'vault'),
@@ -496,17 +541,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   ]);
   const bootReadiness = options.bootReadiness ?? createBootReadinessSnapshot();
   const getBootReadiness = options.getBootReadiness ?? (() => bootReadiness);
-  const localDefaultBackend = startupOpenKitConfig.vault?.localDefaultBackend;
   const vaultUnlockState =
     options.vaultUnlockState ??
     (dataRoot
       ? createDefaultVaultUnlockState({
           dataRoot,
-          ...(localDefaultBackend ? { localDefaultBackend } : {}),
           mode,
-          ...(options.vaultOsKeychainAdapter
-            ? { osKeychainAdapter: options.vaultOsKeychainAdapter }
-            : {}),
         })
       : null);
   const providerCredentialResolverFallback: ProviderCredentialResolver = (secretRef) =>
@@ -585,34 +625,22 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
     return label.slice(0, 80);
   }
-  if (options.coreDb) {
-    backfillRepositoryDataSourceCatalogs(options.coreDb);
-  }
   const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
   const llmPiAiClient = options.llmPiAiClient ?? new PiAiGatewayClient();
   const gatewayUsageTracker = options.gatewayUsageTracker ?? new GatewayUsageTracker();
-  const codexOAuthAccountManager =
-    options.codexOAuthAccountManager ??
-    new CodexOAuthAccountManager({
-      dataRoot,
-      resolveBoundProviderIds: (accountSlotId) => codexProviderIdsForSlot(accountSlotId),
-      resolveDefaultAccountSlotId: () => defaultCodexAccountSlotId(),
-    });
-  const llmCodexResponsesClient =
-    options.llmCodexResponsesClient ??
-    new CodexResponsesClient({
-      tokenResolverForProvider: (provider) =>
-        new CodexAuthTokenResolver({
-          accountStore: codexOAuthAccountManager.tokenResolutionStore(
-            requireCodexOAuthAccountSlotId(provider.codexOAuthAccountSlotId)
-          ),
-        }),
-    });
+  const providerSubscriptionAccountManager =
+    options.providerSubscriptionAccountManager ??
+    (options.coreDb && vaultUnlockState
+      ? new ProviderSubscriptionAccountManager({
+          coreDb: options.coreDb,
+          vaultBackend: () => vaultUnlockState.backend(),
+        })
+      : null);
   const llmGatewayDispatcher =
     options.llmGatewayDispatcher ??
     new LLMGatewayProviderDispatcher({
-      codexResponsesClient: llmCodexResponsesClient,
       piAiClient: llmPiAiClient,
+      ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
       usageTracker: gatewayUsageTracker,
     });
   const hasInlineRuntimeConfigInput = Boolean(
@@ -643,21 +671,50 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
   const schedulerEpoch = options.schedulerEpoch ?? 1;
+  const app = new Hono<{ Variables: AuthVariables }>();
+  const nanohostTransportSessionAuthority =
+    options.nanohostTransportSessionAuthority ?? createNanoHostTransportSessionAuthority();
+  if (options.coreDb && startupOpenKitConfig.nanohost) {
+    const coreDb = options.coreDb;
+    const targetId = startupOpenKitConfig.nanohost.identityId;
+    const closePhysicalConnection = nanohostTransportSessionAuthority.closePhysicalConnection.bind(
+      nanohostTransportSessionAuthority
+    );
+    /** Projects an explicit physical-session close through the existing durable target owner. */
+    nanohostTransportSessionAuthority.closePhysicalConnection = (physicalConnection) => {
+      const closed = closePhysicalConnection(physicalConnection);
+      if (coreDb.sqlite.open && closed.closedGeneration !== null) {
+        recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+          authoritativeGeneration: closed.authoritativeGeneration,
+          closedGeneration: closed.closedGeneration,
+          observedAt: new Date().toISOString(),
+          targetId,
+        });
+      }
+      return closed;
+    };
+  }
+  const nanoHostSessionDispatch =
+    options.nanoHostSessionDispatch ??
+    createNanoHostSessionDispatch({
+      sessionAuthority: nanohostTransportSessionAuthority,
+    });
+  nanoHostTransportSessionAuthorities.set(app, nanohostTransportSessionAuthority);
   const configuredWorkerRuntime =
-    options.turnExecutor || process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
+    options.workerLifecycleRuntime ??
+    (options.turnExecutor || process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
       ? null
       : createConfiguredWorkerLifecycleRuntime({
           coreDb: options.coreDb,
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
+          nanoHostSessionDispatch,
           workerControlGateway,
-        });
+        }));
   const turnExecutor =
     options.turnExecutor ??
     configuredWorkerRuntime?.turnExecutor ??
-    createConfiguredTurnExecutor({ workerControlGateway });
-  const workerPlacement = configuredWorkerRuntime?.placement ?? options.workerPlacement ?? 'local';
-  const app = new Hono<{ Variables: AuthVariables }>();
-
+    createConfiguredTurnExecutor({ coreDb: options.coreDb, workerControlGateway });
+  const workerPlacement = options.workerPlacement ?? 'local';
   app.use(async (c, next) => {
     if (
       !getBootReadiness().acceptingProductWork &&
@@ -840,15 +897,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       dataRoot,
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       runtimeConfigManager,
-      readRuntimeConfigStatus: () =>
-        runtimeConfigManager.status(
-          listStaleRuntimeConfigSessions(
-            turnExecutor,
-            store,
-            runtimeConfig().version,
-            workerControlGateway
-          )
-        ),
+      readRuntimeConfigStatus: () => runtimeConfigManager.status(),
       ...(options.coreDb
         ? {
             onDataSourceAuthorityChange: (change) => {
@@ -915,42 +964,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   /**
-   * Resolves the default Codex account slot from the current Gateway provider binding.
+   * Lists runtime provider ids bound to one provider-subscription account pair.
    *
-   * @returns Account slot id, or null when the default provider is not Codex.
+   * @param pair Provider-subscription account identity.
+   * @returns Lexicographically ordered bound provider profile ids.
    */
-  function defaultCodexAccountSlotId(): string | null {
-    const providerId = gatewayDefaultProviderId();
-    const profile = providerId ? runtimeConfig().providerRegistry.get(providerId) : null;
-
-    return profile ? readCodexOAuthAccountSlotId(profile) : null;
-  }
-
-  /**
-   * Requires a Codex OAuth provider account slot before resolving token storage.
-   *
-   * @param accountSlotId Account slot id from the resolved provider config.
-   * @returns Account slot id when present.
-   * @throws Error when a Codex OAuth provider omits its account slot.
-   */
-  function requireCodexOAuthAccountSlotId(accountSlotId: string | null | undefined): string {
-    if (!accountSlotId) {
-      throw new Error('Codex OAuth provider requires extensions.openkit.codexOAuth.accountSlotId.');
-    }
-
-    return accountSlotId;
-  }
-
-  /**
-   * Lists runtime provider ids bound to one Codex account slot.
-   *
-   * @param accountSlotId Account slot id.
-   * @returns Provider ids bound to the account slot.
-   */
-  function codexProviderIdsForSlot(accountSlotId: string): string[] {
+  function boundProviderIdsForSubscriptionAccount(pair: {
+    subscriptionProviderId: SubscriptionProviderId;
+    accountSlotId: ProviderSubscriptionAccountSlotId;
+  }): string[] {
     return runtimeConfig()
       .providerRegistry.list()
-      .filter((profile) => readCodexOAuthAccountSlotId(profile) === accountSlotId)
+      .filter((profile) => {
+        const extension = profile.extensions?.openkit?.subscriptionAccount;
+        return (
+          extension?.accountSlotId === pair.accountSlotId &&
+          resolveProviderSubscriptionFamily(profile) === pair.subscriptionProviderId
+        );
+      })
       .map((profile) => profile.id);
   }
 
@@ -1027,6 +1058,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workerControlGateway,
   });
 
+  registerNanoHostSessionSemanticRoutes({
+    app,
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    dispatch: nanoHostSessionDispatch,
+    ...(configuredWorkerRuntime
+      ? {
+          harnessCommandDispatched: configuredWorkerRuntime.acceptNanoHostHarnessCommand,
+          harnessResultSettled: configuredWorkerRuntime.acceptNanoHostHarnessResult,
+        }
+      : {}),
+    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
+  });
+
+  registerNanoHostSessionEffectRoutes({
+    app,
+    dispatch: nanoHostSessionDispatch,
+  });
+
   app.use('/api/*', browserCors);
   app.use('/api/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
   app.use('/v1/*', browserCors);
@@ -1052,6 +1101,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     isActiveWorkspaceMember,
     mode,
   });
+  registerNanoHostTransportRoutes({
+    app,
+    coreDb: options.coreDb,
+    mode,
+    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
+    sessionAuthority: nanohostTransportSessionAuthority,
+  });
+  registerNanoHostTransportAdmissionRoutes({
+    app,
+    coreDb: options.coreDb,
+    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
+    sessionAuthority: nanohostTransportSessionAuthority,
+  });
 
   registerServiceRoutes({ app, mode, turnExecutor });
 
@@ -1061,7 +1123,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     vaultUnlockState,
   });
-  registerCodexOAuthAccountRoutes(app, codexOAuthAccountManager);
+  registerProviderSubscriptionRoutes({
+    accountManager: providerSubscriptionAccountManager,
+    app,
+    boundProviderIds: boundProviderIdsForSubscriptionAccount,
+  });
 
   app.get('/api/diagnostics', (c) => {
     const adminError = requireDiagnosticsAdminActor(c.get('actor'));
@@ -1081,15 +1147,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  registerCodexOAuthLoginRoutes(app, codexOAuthAccountManager);
-
   registerAppApiRoute(app, 'getAppDiagnostics', async (c) => {
     const adminError = requireDiagnosticsAdminActor(c.get('actor'));
     if (adminError) {
       return adminError;
     }
-
-    const openaiCodexAccounts = await codexOAuthAccountManager.listAccounts();
 
     return c.json(
       AppDiagnosticsResponseSchema.parse({
@@ -1110,19 +1172,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           providerCredentialResolver
         ),
         defaults: diagnosticsProviderDefaults(),
-        oauth: {
-          openaiCodexAccounts,
-        },
         // Diagnostics mirrors protocol-visible capabilities for one consistent app surface.
         capabilities: mapRuntimeCapabilitiesToFlags(turnExecutor.capabilities),
-        runtimeConfig: runtimeConfigManager.status(
-          listStaleRuntimeConfigSessions(
-            turnExecutor,
-            requestStore(c),
-            runtimeConfig().version,
-            workerControlGateway
-          )
-        ),
+        runtimeConfig: runtimeConfigManager.status(),
       })
     );
   });
@@ -1142,14 +1194,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           providerRegistry: runtimeConfig().providerRegistry,
           providerCredentialResolver,
           agentManifests: runtimeConfig().agentManifests,
-          runtimeConfig: runtimeConfigManager.status(
-            listStaleRuntimeConfigSessions(
-              turnExecutor,
-              requestStore(c),
-              runtimeConfig().version,
-              workerControlGateway
-            )
-          ),
+          runtimeConfig: runtimeConfigManager.status(),
         })
       )
     );
@@ -1171,7 +1216,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerRuntimeConfigRoutes({
     app,
-    requestStore,
     runtimeConfigFileService,
     runtimeConfigManager,
   });
@@ -1181,6 +1225,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     gatewayDefaultProviderId,
     llmGatewayDispatcher,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     resolveGatewayProvider,
     runtimeConfig,
   });
@@ -1252,8 +1297,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     requestStore,
     runtimeConfigManager,
-    turnExecutor,
-    workerControlGateway,
   });
 
   registerTaskModeRoute({
@@ -1291,8 +1334,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerAgentHealthRoutes({
     app,
     requestStore,
-    runtimeConfigVersion: () => runtimeConfig().version,
-    turnExecutor,
   });
 
   registerWorkspaceRoutes({

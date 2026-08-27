@@ -91,20 +91,21 @@ function createFixture() {
 /** Returns the canonical materializing insert input. */
 function materializingInput() {
   return {
-    backendVersion: '0.0.80',
-    workerImage: 'openkit/worker-codex:dev',
+    backendLineage: {
+      buildArgumentsDigest: 'sha256:arguments',
+      buildContextDigest: 'sha256:context',
+      buildInputDigest: 'sha256:dockerfile',
+      kind: 'build',
+      resultingImageDigest: 'sha256:image',
+    },
+    backendVersion: '0.0.99',
     identity: {
       agentSessionId: 'as_backend_session',
       backendKind: 'openshell',
       backendSessionId: 'openkit-as_backend_session',
-      backendTarget: {
-        cellTargetId: 'cell-test',
-        gatewayEndpoint: null,
-        gatewayName: 'openshell',
-        placement: 'local',
-      },
       deploymentId: 'deployment-test',
       packageSnapshotId: 'aepsnap_backend_session',
+      runtimeTargetId: 'runtime-target-test',
       stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_backend_session',
       transientProviderInstanceId: 'okp-deployment-test-worker-inference-backend-session',
     },
@@ -130,19 +131,20 @@ describe('worker backend sessions', () => {
         agentSessionId: 'as_backend_session',
         backendKind: 'openshell',
         deploymentId: 'deployment-test',
-        backendVersion: '0.0.80',
-        workerImage: 'openkit/worker-codex:dev',
-        backendSessionId: 'openkit-as_backend_session',
-        backendTarget: {
-          cellTargetId: 'cell-test',
-          gatewayEndpoint: null,
-          gatewayName: 'openshell',
-          placement: 'local',
+        backendLineage: {
+          buildArgumentsDigest: 'sha256:arguments',
+          buildContextDigest: 'sha256:context',
+          buildInputDigest: 'sha256:dockerfile',
+          resultingImageDigest: 'sha256:image',
         },
+        backendVersion: '0.0.99',
+        backendSessionId: 'openkit-as_backend_session',
         createdAt: '2026-07-15T00:00:03.000Z',
         leaseId: 'lease_backend_session',
         packageSnapshotId: 'aepsnap_backend_session',
         physicalCleanedAt: null,
+        runtimeTargetId: 'runtime-target-test',
+        sandboxBindingRef: 'lease-binding:lease_backend_session',
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_backend_session',
         transientProviderInstanceId: 'okp-deployment-test-worker-inference-backend-session',
         workspaceHandoffState: 'pending',
@@ -176,22 +178,16 @@ describe('worker backend sessions', () => {
           ...materializingInput(),
           identity: {
             ...materializingInput().identity,
-            backendTarget: {
-              ...materializingInput().identity.backendTarget,
-              cellTargetId: 'cell-changed',
-            },
+            runtimeTargetId: 'runtime-target-changed',
           },
         })
       ).toThrow('Worker backend session identity conflicts with its durable lease.');
       expect(() =>
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
-          identity: {
-            ...materializingInput().identity,
-            backendTarget: {
-              ...materializingInput().identity.backendTarget,
-              gatewayName: 'changed-gateway',
-            },
+          backendLineage: {
+            ...materializingInput().backendLineage,
+            resultingImageDigest: 'sha256:changed-image',
           },
         })
       ).toThrow('Worker backend session identity conflicts with its durable lease.');
@@ -297,38 +293,27 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('treats endpoint aliases and placements as one physical backend target', () => {
+  it('gives one lease exclusive ownership of a sandbox binding', () => {
     const coreDb = createFixture();
 
     try {
-      const input = {
-        ...materializingInput(),
-        identity: {
-          ...materializingInput().identity,
-          backendTarget: {
-            ...materializingInput().identity.backendTarget,
-            gatewayEndpoint: 'https://gateway.example.invalid:17670',
-            placement: 'remote' as const,
-          },
-        },
-      };
-      recordWorkerBackendSessionMaterializing(coreDb, input);
+      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
 
       expect(() =>
         coreDb.sqlite
           .prepare(
             `INSERT INTO worker_backend_sessions (
                lease_id, workspace_id, thread_id, turn_id, agent_session_id,
-               package_snapshot_id, backend_kind, deployment_id, backend_version, worker_image, cell_target_id, placement, gateway_name,
-               gateway_endpoint, backend_session_id,
+               package_snapshot_id, backend_kind, deployment_id, backend_version,
+               runtime_target_id, backend_lineage_json, sandbox_binding_ref, backend_session_id,
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                state, created_at, updated_at
              )
              SELECT 'lease_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
-                    'aepsnap_other', backend_kind, deployment_id, backend_version, worker_image, cell_target_id, 'local', 'gateway-alias',
-                    gateway_endpoint, backend_session_id,
+                    'aepsnap_other', backend_kind, deployment_id, backend_version,
+                    runtime_target_id, backend_lineage_json, sandbox_binding_ref, 'openkit-as_other',
                     'server/runtime/worker-backend-sessions/aepsnap_other',
-                    transient_provider_instance_id, workspace_handoff_state,
+                    'provider-other', workspace_handoff_state,
                     state, created_at, updated_at
              FROM worker_backend_sessions
              WHERE lease_id = 'lease_backend_session'`
@@ -340,39 +325,26 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it.each([
-    ['named gateway', null],
-    ['canonical endpoint', 'https://gateway.example.invalid:17670'],
-  ] as const)('gives one lease exclusive ownership of a transient provider on a %s', (_target, endpoint) => {
+  it('gives one lease exclusive ownership of a transient provider', () => {
     const coreDb = createFixture();
 
     try {
-      recordWorkerBackendSessionMaterializing(coreDb, {
-        ...materializingInput(),
-        identity: {
-          ...materializingInput().identity,
-          backendTarget: {
-            ...materializingInput().identity.backendTarget,
-            gatewayEndpoint: endpoint,
-            placement: endpoint ? 'remote' : 'local',
-          },
-        },
-      });
+      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
 
       expect(() =>
         coreDb.sqlite
           .prepare(
             `INSERT INTO worker_backend_sessions (
                lease_id, workspace_id, thread_id, turn_id, agent_session_id,
-               package_snapshot_id, backend_kind, deployment_id, backend_version, worker_image, cell_target_id,
-               placement, gateway_name, gateway_endpoint,
+               package_snapshot_id, backend_kind, deployment_id, backend_version,
+               runtime_target_id, backend_lineage_json, sandbox_binding_ref,
                backend_session_id, staging_directory_ref, transient_provider_instance_id,
                workspace_handoff_state,
                state, created_at, updated_at
              )
              SELECT 'lease_provider_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
-                    'aepsnap_provider_other', backend_kind, deployment_id, backend_version, worker_image, cell_target_id,
-                    placement, gateway_name, gateway_endpoint,
+                    'aepsnap_provider_other', backend_kind, deployment_id, backend_version,
+                    runtime_target_id, backend_lineage_json, 'lease-binding:lease-provider-other',
                     'openkit-as_other',
                     'server/runtime/worker-backend-sessions/aepsnap_provider_other',
                     transient_provider_instance_id, workspace_handoff_state,
@@ -415,6 +387,7 @@ describe('worker backend sessions', () => {
   it.each([
     ['package snapshot', 'package_snapshot_id', "'aepsnap_backend_session'"],
     ['physical backend locator', 'backend_session_id', "'openkit-as_backend_session'"],
+    ['sandbox binding', 'sandbox_binding_ref', "'lease-binding:lease_backend_session'"],
     [
       'staging directory',
       'staging_directory_ref',
@@ -428,6 +401,7 @@ describe('worker backend sessions', () => {
       const replacements: Record<string, string> = {
         package_snapshot_id: "'aepsnap_other'",
         backend_session_id: "'openkit-as_other'",
+        sandbox_binding_ref: "'lease-binding:lease-other'",
         staging_directory_ref: "'server/runtime/worker-backend-sessions/aepsnap_other'",
       };
       replacements[preservedColumn] = value;
@@ -437,14 +411,14 @@ describe('worker backend sessions', () => {
           .prepare(
             `INSERT INTO worker_backend_sessions (
                lease_id, workspace_id, thread_id, turn_id, agent_session_id,
-               package_snapshot_id, backend_kind, deployment_id, backend_version, worker_image, cell_target_id, placement, gateway_name,
-               gateway_endpoint, backend_session_id,
+               package_snapshot_id, backend_kind, deployment_id, backend_version,
+               runtime_target_id, backend_lineage_json, sandbox_binding_ref, backend_session_id,
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                state, created_at, updated_at
              )
              SELECT 'lease_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
-                    ${replacements.package_snapshot_id}, backend_kind, deployment_id, backend_version, worker_image, cell_target_id, placement, gateway_name,
-                    gateway_endpoint, ${replacements.backend_session_id},
+                    ${replacements.package_snapshot_id}, backend_kind, deployment_id, backend_version,
+                    runtime_target_id, backend_lineage_json, ${replacements.sandbox_binding_ref}, ${replacements.backend_session_id},
                     ${replacements.staging_directory_ref}, transient_provider_instance_id,
                     workspace_handoff_state,
                     state, created_at, updated_at

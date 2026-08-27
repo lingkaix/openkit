@@ -8,12 +8,24 @@
     "adapter": "pi",
     "version": "0.80.7",
     "image": {
+      "kind": "reference",
       "ref": "openkit/worker-pi:dev",
       "pullPolicy": "if-not-present"
     },
     "binaries": [
       { "id": "openkit-worker-shim", "path": "/usr/local/bin/openkit-worker-shim" },
       { "id": "node", "path": "/usr/local/bin/node" },
+      { "id": "npm", "path": "/usr/local/bin/npm" },
+      { "id": "npx", "path": "/usr/local/bin/npx" },
+      { "id": "pnpm", "path": "/usr/local/bin/pnpm" },
+      { "id": "pnpx", "path": "/usr/local/bin/pnpx" },
+      { "id": "git", "path": "/usr/bin/git" },
+      { "id": "gh", "path": "/usr/local/bin/gh" },
+      { "id": "uv", "path": "/usr/local/bin/uv" },
+      { "id": "python", "path": "/sandbox/.venv/bin/python" },
+      { "id": "python3", "path": "/sandbox/.venv/bin/python3" },
+      { "id": "pip", "path": "/sandbox/.venv/bin/pip" },
+      { "id": "pip3", "path": "/sandbox/.venv/bin/pip3" },
       { "id": "pi", "path": "/usr/local/bin/pi" }
     ]
   },
@@ -37,6 +49,72 @@
   "sandbox": {
     "filesystem": [],
     "network": [
+      {
+        "id": "github-git-read",
+        "host": "github.com",
+        "port": 443,
+        "protocol": "rest",
+        "rules": [
+          { "method": "GET", "path": "/**/info/refs*" },
+          { "method": "POST", "path": "/**/git-upload-pack" }
+        ],
+        "purpose": "Clone and fetch GitHub repositories without push authority.",
+        "binaries": ["/usr/bin/git"]
+      },
+      {
+        "id": "github-rest-read",
+        "host": "api.github.com",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Read public GitHub REST resources through GitHub CLI.",
+        "binaries": ["/usr/local/bin/gh"]
+      },
+      {
+        "id": "npm-registry-read",
+        "host": "registry.npmjs.org",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Download Node.js package metadata and archives.",
+        "binaries": [
+          "/usr/local/bin/node",
+          "/usr/local/bin/npm",
+          "/usr/local/bin/npx",
+          "/usr/local/bin/pnpm",
+          "/usr/local/bin/pnpx"
+        ]
+      },
+      {
+        "id": "pypi-index-read",
+        "host": "pypi.org",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Read Python package index metadata.",
+        "binaries": [
+          "/usr/local/bin/uv",
+          "/sandbox/.venv/bin/python",
+          "/sandbox/.venv/bin/python3",
+          "/sandbox/.venv/bin/pip",
+          "/sandbox/.venv/bin/pip3"
+        ]
+      },
+      {
+        "id": "pypi-files-read",
+        "host": "files.pythonhosted.org",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Download Python package archives.",
+        "binaries": [
+          "/usr/local/bin/uv",
+          "/sandbox/.venv/bin/python",
+          "/sandbox/.venv/bin/python3",
+          "/sandbox/.venv/bin/pip",
+          "/sandbox/.venv/bin/pip3"
+        ]
+      },
       {
         "id": "anthropic-api",
         "host": "api.anthropic.com",

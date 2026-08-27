@@ -540,7 +540,7 @@ describe('workspace storage migration', () => {
     ).toMatchObject({ layoutVersion: 1 });
   });
 
-  it('transforms every staged V1 AEP snapshot into the exact V2 actor shape', () => {
+  it('transforms every staged V1 AEP snapshot into the strict V3 runtime and actor shape', () => {
     const fixture = createMigrationFixture();
     const userSnapshot = writeLegacyAepSnapshot(
       fixture,
@@ -581,7 +581,34 @@ describe('workspace storage migration', () => {
       const successorDigest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
       successorDigests.push(successorDigest);
 
-      expect(snapshot.schemaVersion).toBe(2);
+      expect(snapshot.schemaVersion).toBe(3);
+      expect(snapshot.runtime.image).toEqual({
+        kind: 'reference',
+        pullPolicy: 'if-not-present',
+        ref: 'openkit/worker-codex:dev',
+      });
+      expect(snapshot.control).toMatchObject({
+        mode: 'sandbox-integration',
+        bindings: {
+          capabilities: {
+            pathPrefix: '/capabilities/',
+            tokenRef: 'runtime://openkit/capability-token',
+          },
+          inference: {
+            pathPrefix: '/inference/',
+            tokenRef: 'runtime://openkit/inference-token',
+          },
+          workerControl: {
+            pathPrefix: '/worker-control/',
+            tokenRef: 'runtime://openkit/worker-control-token',
+          },
+        },
+      });
+      expect(snapshot.control).not.toHaveProperty('endpoint');
+      expect(snapshot.control).not.toHaveProperty('auth');
+      expect(
+        AgentEnvironmentPackageSchema.safeParse({ ...snapshot, schemaVersion: 2 }).success
+      ).toBe(false);
       expect(snapshot.scope.triggerActor).toEqual(legacy.triggerActor);
       expect(snapshot.scope).not.toHaveProperty('userId');
       expect(snapshot.scope).not.toHaveProperty('automationId');

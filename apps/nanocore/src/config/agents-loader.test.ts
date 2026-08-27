@@ -36,6 +36,7 @@ function workerRuntime(kind = 'codex', adapter = 'codex-app-server'): Record<str
       { id: kind, path: `/usr/local/bin/${kind}` },
     ],
     image: {
+      kind: 'reference',
       pullPolicy: 'if-not-present',
       ref: `ghcr.io/openkit/worker-${kind}:test`,
     },
@@ -54,6 +55,9 @@ describe('loadAgentManifests', () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(result).not.toHaveProperty('configs');
+    expect(result.manifests.every((manifest) => manifest.runtime.image.kind === 'reference')).toBe(
+      true
+    );
     expect(codexManifest?.sandbox?.backend?.requiredCapabilities).toEqual(
       expect.arrayContaining(['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'])
     );

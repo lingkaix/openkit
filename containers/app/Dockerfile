@@ -26,12 +26,7 @@ COPY . .
 
 RUN pnpm install --frozen-lockfile
 
-RUN pnpm --filter @openkit/protocol build \
-  && pnpm --filter @openkit/app-api-schemas build \
-  && pnpm --filter @openkit/core-client build \
-  && pnpm --filter @openkit/config-schema build \
-  && pnpm --filter @openkit/nanocore build \
-  && pnpm --filter @openkit/web build
+RUN pnpm --filter @openkit/nanocore... --filter @openkit/web... build
 
 # The workspace does not enable injected workspace packages, so pnpm v10 needs legacy deploy for a production nanocore tree.
 RUN pnpm --filter @openkit/nanocore deploy --prod --legacy /deploy/nanocore
@@ -58,6 +53,7 @@ RUN apt-get update \
     caddy \
     ca-certificates \
     curl \
+    git \
     libsqlite3-0 \
     tini \
   && rm -rf /var/lib/apt/lists/*
@@ -77,4 +73,4 @@ RUN chmod +x /usr/local/bin/openkit-app-entrypoint /usr/local/bin/openkit-app-sm
 
 EXPOSE 8080
 
-ENTRYPOINT ["tini", "-g", "--", "/usr/local/bin/openkit-app-entrypoint"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]

@@ -50,7 +50,11 @@ export function rebuildWorkerControlGatewaySessions(
   ];
 
   for (const lease of leases) {
-    if (!lease.sandboxBindingRef) {
+    if (
+      !lease.sandboxBindingRef ||
+      !lease.workerControlTokenHash ||
+      !lease.workerInferenceTokenHash
+    ) {
       continue;
     }
 
@@ -85,7 +89,9 @@ export function rebuildWorkerControlGatewaySessions(
       environmentPackage,
       lineage,
       registeredAt: lease.acquiredAt,
-      token: lease.sandboxBindingRef,
+      sandboxBindingRef: lease.sandboxBindingRef,
+      workerControlTokenHash: lease.workerControlTokenHash,
+      workerInferenceTokenHash: lease.workerInferenceTokenHash,
     });
   }
 }
@@ -109,9 +115,11 @@ function listFinalStatusReplayLeases(coreDb: CoreDb): SchedulerSessionLeaseRecor
     .prepare(
       `SELECT lease_id AS leaseId
          FROM scheduler_session_leases AS lease
-        WHERE lease.status = 'releasing'
-          AND lease.sandbox_binding_ref IS NOT NULL
-          AND lease.expires_at > ?
+         WHERE lease.status = 'releasing'
+           AND lease.sandbox_binding_ref IS NOT NULL
+           AND lease.worker_control_token_hash IS NOT NULL
+           AND lease.worker_inference_token_hash IS NOT NULL
+           AND lease.expires_at > ?
           AND EXISTS (
             SELECT 1
               FROM worker_control_records AS record

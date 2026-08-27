@@ -20,6 +20,7 @@ import {
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
 import {
+  hashWorkerRouteToken,
   WorkerControlGateway,
   type WorkerControlGatewayError,
   type WorkerControlLineage,
@@ -45,6 +46,7 @@ import {
 } from './runtime/workspace-sync-records.js';
 import {
   acceptSchedulerLeaseHeartbeat,
+  bindSchedulerLeaseRouteTokenHashes,
   completeSchedulerLeaseForTerminalTurn,
   completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
@@ -89,7 +91,6 @@ function createWorkerControlRouteFixture(workspaceRoots: MaterializedWorkspaceRo
       agentSessionId: 'as_control_route_1',
       triggerActor: { kind: 'user', id: LOCAL_USER_ID },
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-06-16T00:00:00.000Z',
@@ -201,6 +202,12 @@ function createDurableWorkerControlLease(
     schedulerEpoch: 1,
     startupTimeoutMs: 120_000,
   });
+  bindSchedulerLeaseRouteTokenHashes(coreDb, {
+    leaseId: `lease_${suffix}`,
+    sandboxBindingRef: binding,
+    workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
+    workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
+  });
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
 
   try {
@@ -216,29 +223,45 @@ function createDurableWorkerControlLease(
   return binding;
 }
 
+/** Derives one deterministic 32-byte raw route token for a durable fixture. */
+function workerRouteToken(
+  sandboxBindingRef: string,
+  family: 'worker-control' | 'inference'
+): string {
+  return createHash('sha256').update(`${family}:${sandboxBindingRef}`).digest('base64url');
+}
+
+/** Registers the exact raw token pair whose hashes are owned by a durable fixture lease. */
+function registerDurableWorkerControlSession(
+  gateway: WorkerControlGateway,
+  environmentPackage: AgentEnvironmentPackage,
+  sandboxBindingRef: string
+) {
+  return gateway.registerSession(environmentPackage, {
+    sandboxBindingRef,
+    workerControlToken: workerRouteToken(sandboxBindingRef, 'worker-control'),
+    workerInferenceToken: workerRouteToken(sandboxBindingRef, 'inference'),
+  });
+}
+
 /** Records the exact durable backend identity owned by one worker-control lease fixture. */
 function recordWorkerControlBackendSession(
   coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackage,
+  _environmentPackage: AgentEnvironmentPackage,
   lineage: WorkerControlLineage,
   sandboxBindingRef: string,
   backendSessionId: string
 ): string {
   return recordWorkerBackendSessionMaterializing(coreDb, {
-    backendVersion: '0.0.80',
-    workerImage: environmentPackage.runtime.image.ref,
+    backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+    backendVersion: '0.0.99',
     identity: {
       agentSessionId: lineage.agentSessionId,
       backendKind: 'openshell',
       backendSessionId,
-      backendTarget: {
-        cellTargetId: 'cell-test',
-        gatewayEndpoint: null,
-        gatewayName: 'openshell',
-        placement: 'local',
-      },
       deploymentId: 'deployment-worker-control-test',
       packageSnapshotId: lineage.packageSnapshotId,
+      runtimeTargetId: 'runtime-target-test',
       stagingDirectoryRef: `server/runtime/worker-backend-sessions/${lineage.packageSnapshotId}`,
       transientProviderInstanceId: null,
     },
@@ -351,7 +374,7 @@ describe('worker control routes', () => {
       });
       markWorkerBackendWorkspaceHandoffComplete(coreDb, { leaseId });
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
-      firstGateway.registerSession(fixture.environmentPackage, { sandboxBindingRef: binding });
+      registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
       const firstApp = createApp({
         coreDb,
         mode: 'server',
@@ -362,7 +385,10 @@ describe('worker control routes', () => {
         body: JSON.stringify(
           heartbeatEnvelope(fixture.lineage, 0, 'starting', null, processKeyHash)
         ),
-        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        headers: {
+          authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+          'content-type': 'application/json',
+        },
         method: 'POST',
       });
       expect(firstHeartbeat.status).toBe(200);
@@ -377,7 +403,7 @@ describe('worker control routes', () => {
         .run();
 
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
-      restartedGateway.registerSession(fixture.environmentPackage, { sandboxBindingRef: binding });
+      registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
       const restartedApp = createApp({
         coreDb,
         mode: 'server',
@@ -389,7 +415,10 @@ describe('worker control routes', () => {
           ...heartbeatEnvelope(fixture.lineage, 1, 'running', 'Worker survived NanoCore restart.'),
           reconnectKey,
         }),
-        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        headers: {
+          authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+          'content-type': 'application/json',
+        },
         method: 'POST',
       });
       const lease = requireSchedulerSessionLease(coreDb, 'lease_process_key_reconnect');
@@ -434,7 +463,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_durable_sequence',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -463,9 +491,11 @@ describe('worker control routes', () => {
         'durable_sequence'
       );
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
-      const firstRegistration = firstGateway.registerSession(environmentPackage, {
-        sandboxBindingRef: binding,
-      });
+      const firstRegistration = registerDurableWorkerControlSession(
+        firstGateway,
+        environmentPackage,
+        binding
+      );
       const firstApp = createApp({
         coreDb,
         mode: 'server',
@@ -491,9 +521,11 @@ describe('worker control routes', () => {
       });
 
       const secondGateway = createDefaultWorkerControlGateway(coreDb);
-      const secondRegistration = secondGateway.registerSession(environmentPackage, {
-        sandboxBindingRef: binding,
-      });
+      const secondRegistration = registerDurableWorkerControlSession(
+        secondGateway,
+        environmentPackage,
+        binding
+      );
       const secondApp = createApp({
         coreDb,
         mode: 'server',
@@ -544,7 +576,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_durable_records',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -573,9 +604,11 @@ describe('worker control routes', () => {
         'durable_records'
       );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage, {
-        sandboxBindingRef: binding,
-      });
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
       const app = createApp({
         coreDb,
         mode: 'server',
@@ -767,7 +800,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_rejected_records',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -796,9 +828,11 @@ describe('worker control routes', () => {
         'rejected_records'
       );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage, {
-        sandboxBindingRef: binding,
-      });
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
       const app = createApp({
         coreDb,
         mode: 'server',
@@ -873,7 +907,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_default_binding',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -953,6 +986,16 @@ describe('worker control routes', () => {
       schedulerEpoch: 1,
       startupTimeoutMs: 120_000,
     });
+    bindSchedulerLeaseRouteTokenHashes(coreDb, {
+      leaseId: 'lease_default_binding',
+      sandboxBindingRef: 'lease-binding:lease_default_binding',
+      workerControlTokenHash: hashWorkerRouteToken(
+        workerRouteToken('lease-binding:lease_default_binding', 'worker-control')
+      ),
+      workerInferenceTokenHash: hashWorkerRouteToken(
+        workerRouteToken('lease-binding:lease_default_binding', 'inference')
+      ),
+    });
     const backendLeaseId = recordWorkerControlBackendSession(
       coreDb,
       environmentPackage,
@@ -960,9 +1003,11 @@ describe('worker control routes', () => {
       'lease-binding:lease_default_binding',
       'sandbox_default_binding'
     );
-    const registration = gateway.registerSession(environmentPackage, {
-      sandboxBindingRef: 'lease-binding:lease_default_binding',
-    });
+    const registration = registerDurableWorkerControlSession(
+      gateway,
+      environmentPackage,
+      'lease-binding:lease_default_binding'
+    );
     const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
     gateway.recordHeartbeat({
@@ -1102,7 +1147,11 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage);
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        'lease-binding:missing_lease'
+      );
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
       const response = await app.request('/api/worker-control/heartbeat', {
         body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running')),
@@ -1265,7 +1314,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_final_status',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -1370,6 +1418,17 @@ describe('worker control routes', () => {
       startupTimeoutMs: 120_000,
       now: () => '2099-07-05T00:00:02.000Z',
     });
+    bindSchedulerLeaseRouteTokenHashes(coreDb, {
+      leaseId: 'lease_final_status',
+      now: () => '2099-07-05T00:00:03.000Z',
+      sandboxBindingRef: 'lease-binding:lease_final_status',
+      workerControlTokenHash: hashWorkerRouteToken(
+        workerRouteToken('lease-binding:lease_final_status', 'worker-control')
+      ),
+      workerInferenceTokenHash: hashWorkerRouteToken(
+        workerRouteToken('lease-binding:lease_final_status', 'inference')
+      ),
+    });
     const backendLeaseId = recordWorkerControlBackendSession(
       coreDb,
       environmentPackage,
@@ -1383,9 +1442,11 @@ describe('worker control routes', () => {
       now: () => '2099-07-05T00:00:10.000Z',
       workerSequence: 1,
     });
-    const registration = gateway.registerSession(environmentPackage, {
-      sandboxBindingRef: 'lease-binding:lease_final_status',
-    });
+    const registration = registerDurableWorkerControlSession(
+      gateway,
+      environmentPackage,
+      'lease-binding:lease_final_status'
+    );
     const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
     const finalStatusBody = JSON.stringify({
       schemaVersion: 1,
@@ -1609,7 +1670,7 @@ describe('worker control routes', () => {
         },
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
-      gateway.registerSession(environmentPackage, { sandboxBindingRef: binding });
+      registerDurableWorkerControlSession(gateway, environmentPackage, binding);
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
       const response = await app.request('/api/worker-control/final-status', {
         body: JSON.stringify({
@@ -1619,7 +1680,10 @@ describe('worker control routes', () => {
           schemaVersion: 1,
           sequence: 7,
         }),
-        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        headers: {
+          authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+          'content-type': 'application/json',
+        },
         method: 'POST',
       });
       const acceptedRecordCount = coreDb.sqlite
@@ -1704,7 +1768,7 @@ describe('worker control routes', () => {
         },
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
-      gateway.registerSession(environmentPackage, { sandboxBindingRef: binding });
+      registerDurableWorkerControlSession(gateway, environmentPackage, binding);
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
       const request = {
         body: JSON.stringify({
@@ -1714,7 +1778,10 @@ describe('worker control routes', () => {
           schemaVersion: 1,
           sequence: 7,
         }),
-        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        headers: {
+          authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+          'content-type': 'application/json',
+        },
         method: 'POST' as const,
       };
       const accepted = await app.request('/api/worker-control/final-status', request);
@@ -1826,7 +1893,10 @@ describe('worker control routes', () => {
           schemaVersion: 1,
           sequence: 7,
         }),
-        headers: { authorization: `Bearer ${binding}`, 'content-type': 'application/json' },
+        headers: {
+          authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+          'content-type': 'application/json',
+        },
         method: 'POST' as const,
       };
       const response = await app.request('/api/worker-control/final-status', request);
@@ -1915,7 +1985,7 @@ describe('worker control routes', () => {
       );
       const gateway = createDefaultWorkerControlGateway(coreDb);
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
-      const authorization = `Bearer ${binding}`;
+      const authorization = `Bearer ${workerRouteToken(binding, 'worker-control')}`;
       const finalStatusBody = JSON.stringify({
         body: { status: 'completed', stopReason: 'completed' },
         lineage,
@@ -2070,7 +2140,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_supply_refresh',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -2151,9 +2220,21 @@ describe('worker control routes', () => {
         schedulerEpoch: 1,
         startupTimeoutMs: 120_000,
       });
-      const registration = gateway.registerSession(environmentPackage, {
+      bindSchedulerLeaseRouteTokenHashes(coreDb, {
+        leaseId: 'lease_supply_refresh',
         sandboxBindingRef: 'lease-binding:lease_supply_refresh',
+        workerControlTokenHash: hashWorkerRouteToken(
+          workerRouteToken('lease-binding:lease_supply_refresh', 'worker-control')
+        ),
+        workerInferenceTokenHash: hashWorkerRouteToken(
+          workerRouteToken('lease-binding:lease_supply_refresh', 'inference')
+        ),
       });
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        'lease-binding:lease_supply_refresh'
+      );
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
       const res = await app.request('/api/worker-control/supply-refresh-ack', {
@@ -2399,7 +2480,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_durable_command_ack',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -2428,9 +2508,11 @@ describe('worker control routes', () => {
         'durable_command_ack'
       );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = gateway.registerSession(environmentPackage, {
-        sandboxBindingRef: binding,
-      });
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
       const interrupt = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
       const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
@@ -2481,7 +2563,6 @@ describe('worker control routes', () => {
         agentSessionId: 'session_rebuild',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         createdAt: '2026-06-16T00:00:00.000Z',
@@ -2563,10 +2644,22 @@ describe('worker control routes', () => {
         schedulerEpoch: 1,
         startupTimeoutMs: 120_000,
       });
-
-      const firstRegistration = firstGateway.registerSession(environmentPackage, {
+      bindSchedulerLeaseRouteTokenHashes(coreDb, {
+        leaseId: 'lease_rebuild',
         sandboxBindingRef: 'lease-binding:lease_rebuild',
+        workerControlTokenHash: hashWorkerRouteToken(
+          workerRouteToken('lease-binding:lease_rebuild', 'worker-control')
+        ),
+        workerInferenceTokenHash: hashWorkerRouteToken(
+          workerRouteToken('lease-binding:lease_rebuild', 'inference')
+        ),
       });
+
+      const firstRegistration = registerDurableWorkerControlSession(
+        firstGateway,
+        environmentPackage,
+        'lease-binding:lease_rebuild'
+      );
       const firstApp = createApp({
         coreDb,
         mode: 'server',
@@ -2617,7 +2710,10 @@ describe('worker control routes', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(Date.parse(firstHeartbeatBody.heartbeat.lastHeartbeatAt) + 1_000));
       const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
-      const authorization = 'Bearer lease-binding:lease_rebuild';
+      const authorization = `Bearer ${workerRouteToken(
+        'lease-binding:lease_rebuild',
+        'worker-control'
+      )}`;
       const retryHeartbeat = rebuiltGateway.recordHeartbeat({
         authorization,
         ...heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.'),
@@ -2779,5 +2875,16 @@ describe('worker control routes', () => {
 
     expect(res.status).toBe(401);
     expect(body.code).toBe('worker_control_unauthorized');
+  });
+
+  it('authenticates only the worker-control token family', () => {
+    const source = readFileSync(
+      new URL('./runtime/worker-control-routes.ts', import.meta.url),
+      'utf8'
+    );
+
+    expect(source).toContain('workerControlTokenHash');
+    expect(source).toContain("tokenFamily: 'worker-control'");
+    expect(source).not.toContain("tokenFamily: 'inference'");
   });
 });

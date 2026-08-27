@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, globSync, lstatSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
@@ -10,10 +11,6 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
-import type {
-  OsKeychainVaultAdapter,
-  OsKeychainVaultItemInput,
-} from './vault-os-keychain-backend.js';
 import { getVaultReference, importUnboundWorkspaceVaultReference } from './vault-references.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
@@ -79,7 +76,7 @@ function createSignedInAuthStub(): BetterAuthServer {
 }
 
 describe('vault admin app API', () => {
-  it('defaults local mode to os-keychain and server mode to encrypted-file', async () => {
+  it('defaults local and server modes to locked encrypted-file state', async () => {
     const localDataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-local-default-'));
     const serverDataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-server-default-'));
     const serverCoreDb = openCoreDb(serverDataRoot);
@@ -91,10 +88,7 @@ describe('vault admin app API', () => {
       scope: 'server-admin',
       workspaceIds: [],
     });
-    const localApp = createApp({
-      dataRoot: localDataRoot,
-      vaultOsKeychainAdapter: new MemoryKeychainAdapter(),
-    });
+    const localApp = createApp({ dataRoot: localDataRoot });
     const serverApp = createApp({
       auth: createSignedOutAuthStub(),
       coreDb: serverCoreDb,
@@ -110,8 +104,8 @@ describe('vault admin app API', () => {
 
       expect(localStatus.status).toBe(200);
       await expect(localStatus.json()).resolves.toMatchObject({
-        backendKind: 'os-keychain',
-        state: 'available',
+        backendKind: 'encrypted-file',
+        state: 'locked',
       });
       expect(serverStatus.status).toBe(200);
       await expect(serverStatus.json()).resolves.toMatchObject({
@@ -123,27 +117,38 @@ describe('vault admin app API', () => {
     }
   });
 
-  it('uses encrypted-file when local config selects it as the vault backend fallback', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-local-file-fallback-'));
-    mkdirSync(join(dataRoot, 'config'), { recursive: true });
-    writeFileSync(
-      join(dataRoot, 'config', 'server.jsonc'),
-      JSON.stringify({
-        schemaVersion: 1,
-        vault: {
-          localDefaultBackend: 'encrypted-file',
-        },
-      })
-    );
-    const app = createApp({ dataRoot });
+  it.each([
+    'local',
+    'server',
+  ] as const)('stores %s default Vault ciphertext only under DATA_ROOT/server/vault', (mode) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-vault-${mode}-composition-`));
+    const secret = `vault_${mode}_composition_plaintext`;
+    const referenceId = `vault_${mode}_composition`;
+    const vaultUnlockState = createDefaultVaultUnlockState({ dataRoot, mode });
 
-    const status = await app.request('/api/app/vault/status');
-
-    expect(status.status).toBe(200);
-    await expect(status.json()).resolves.toMatchObject({
-      backendKind: 'encrypted-file',
+    expect(vaultUnlockState.backend().health()).toMatchObject({
+      kind: 'encrypted-file',
       state: 'locked',
     });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 17) }).store({
+      material: secret,
+      metadata: { ownerScope: 'server' },
+      referenceId,
+    });
+
+    const expectedEntryPath = join('server', 'vault', 'entries', referenceId, '1.enc');
+    const files = globSync('**/*', { cwd: dataRoot })
+      .filter((path) => lstatSync(join(dataRoot, path)).isFile())
+      .sort();
+
+    expect(files.filter((path) => path.endsWith('.enc'))).toEqual([expectedEntryPath]);
+    expect(existsSync(join(dataRoot, expectedEntryPath))).toBe(true);
+    expect(JSON.parse(readFileSync(join(dataRoot, expectedEntryPath), 'utf8'))).toMatchObject({
+      ciphertext: expect.any(String),
+    });
+    for (const path of files) {
+      expect(readFileSync(join(dataRoot, path)).includes(Buffer.from(secret))).toBe(false);
+    }
   });
 
   it('reports, unlocks, and locks the encrypted-file backend without echoing key material', async () => {
@@ -622,28 +627,4 @@ function serverAuditEvent(coreDb: CoreDb, auditEventId: string): Record<string, 
   return coreDb.sqlite
     .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
     .get(auditEventId) as Record<string, unknown>;
-}
-
-class MemoryKeychainAdapter implements OsKeychainVaultAdapter {
-  private readonly items = new Map<string, string>();
-
-  public health(): ReturnType<OsKeychainVaultAdapter['health']> {
-    return { diagnostic: 'memory keychain available', state: 'available' };
-  }
-
-  public get(input: OsKeychainVaultItemInput): string | null {
-    return this.items.get(this.key(input)) ?? null;
-  }
-
-  public set(input: OsKeychainVaultItemInput & { value: string }): void {
-    this.items.set(this.key(input), input.value);
-  }
-
-  public delete(input: OsKeychainVaultItemInput): void {
-    this.items.delete(this.key(input));
-  }
-
-  private key(input: OsKeychainVaultItemInput): string {
-    return `${input.service}:${input.account}`;
-  }
 }

@@ -312,4 +312,64 @@ describe('turn event routes', () => {
     expect(res.status).toBe(404);
     expect(ApiErrorSchema.parse(await res.json()).code).toBe('not_found');
   });
+
+  it('omits AgentSession identity from ordinary SSE while retained events may still carry it', async () => {
+    const store = createDemoStore();
+    const app = createApp({ store });
+    const thread = store.createThread('ws_demo', 'Hidden AgentSession stream');
+    const turn = store.createTurn('ws_demo', thread.id, 'Hide AgentSession from SSE', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const agentSession = store.createAgentSession({
+      id: 'as_hidden',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: turn.startedAt ?? new Date().toISOString(),
+      updatedAt: turn.startedAt ?? new Date().toISOString(),
+    });
+    const hiddenTurn = store.updateTurn(turn.id, { agentSessionId: agentSession.id });
+    store.emitTurnEvent(turn.id, {
+      event: 'agent.session.updated',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'agent-session-updated', agentSession },
+    });
+    store.emitTurnEvent(turn.id, {
+      event: 'turn.updated',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'turn-updated', turn: hiddenTurn },
+    });
+    const completedTurn = store.updateTurn(turn.id, {
+      status: 'completed',
+      completedAt: turn.startedAt,
+    });
+    store.emitTurnEvent(turn.id, {
+      event: 'turn.completed',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+    });
+
+    const response = await app.request(
+      `/api/workspaces/ws_demo/threads/${thread.id}/events?turnId=${turn.id}&since=0`
+    );
+    const events = parseSseEvents(await response.text());
+
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(events)).not.toContain('agentSessionId');
+    expect(JSON.stringify(events)).not.toContain('agent-session-updated');
+    expect(JSON.stringify(events)).not.toContain('agent.session.updated');
+    expect(
+      store.getTurnEvents(turn.id).some((event) => event.event === 'agent.session.updated')
+    ).toBe(true);
+    expect(store.getTurn('ws_demo', thread.id, turn.id).agentSessionId).toBe('as_hidden');
+  });
 });

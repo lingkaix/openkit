@@ -1,5 +1,13 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
+import { isAbsolute, relative, sep } from 'node:path';
 
 import { VaultBackendError } from './vault-backend.js';
 
@@ -12,12 +20,17 @@ const REQUIRED_KEY_FILE_MODE = 0o600;
 /**
  * Loads a raw encrypted-file vault master key from an owner-only key file.
  *
- * @param input Configured key file path.
+ * @param input Absolute Data Root path and absolute external key-file path.
  * @returns Raw 32-byte master key.
- * @throws VaultBackendError when the file is not a regular 0600 file with exactly 32 bytes.
+ * @throws VaultBackendError when either configured path is not absolute or the canonical key is not external to the canonical Data Root.
+ * @throws VaultBackendError when descriptor and canonical identities differ or the key source is not a current-owner regular exact-0600 file containing exactly 32 bytes.
  */
-export function loadEncryptedFileVaultKeyFile(input: { readonly keyFilePath: string }): Buffer {
+export function loadEncryptedFileVaultKeyFile(input: {
+  readonly dataRoot: string;
+  readonly keyFilePath: string;
+}): Buffer {
   if (
+    !isAbsolute(input.dataRoot) ||
     !isAbsolute(input.keyFilePath) ||
     typeof process.geteuid !== 'function' ||
     typeof constants.O_NOFOLLOW !== 'number' ||
@@ -31,16 +44,33 @@ export function loadEncryptedFileVaultKeyFile(input: { readonly keyFilePath: str
 
   try {
     fileDescriptor = openSync(input.keyFilePath, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const stats = fstatSync(fileDescriptor);
+    const stats = fstatSync(fileDescriptor, { bigint: true });
 
     if (!stats.isFile()) {
       throw invalidKeyFileError('Vault key source must be a regular file.');
     }
-    if ((stats.mode & 0o777) !== REQUIRED_KEY_FILE_MODE) {
+    if ((stats.mode & 0o777n) !== BigInt(REQUIRED_KEY_FILE_MODE)) {
       throw invalidKeyFileError('Vault key file must use 0600 permissions.');
     }
-    if (stats.uid !== process.geteuid()) {
+    if (stats.uid !== BigInt(process.geteuid())) {
       throw invalidKeyFileError('Vault key file must be owned by the current user.');
+    }
+
+    const canonicalDataRoot = realpathSync(input.dataRoot);
+    const canonicalKeyFile = realpathSync(input.keyFilePath);
+    const canonicalKeyStats = statSync(canonicalKeyFile, { bigint: true });
+    const relativeKeyPath = relative(canonicalDataRoot, canonicalKeyFile);
+
+    if (canonicalKeyStats.dev !== stats.dev || canonicalKeyStats.ino !== stats.ino) {
+      throw invalidKeyFileError('Vault key file identity changed during validation.');
+    }
+    if (
+      relativeKeyPath === '' ||
+      (relativeKeyPath !== '..' &&
+        !relativeKeyPath.startsWith(`..${sep}`) &&
+        !isAbsolute(relativeKeyPath))
+    ) {
+      throw invalidKeyFileError('Vault key file must remain outside the Data Root.');
     }
 
     let bytesRead = 0;

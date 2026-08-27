@@ -1,4 +1,5 @@
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -115,6 +116,18 @@ describe('scheduler dispatch service', () => {
     const workspace = store.createWorkspace('Background dispatch workspace');
     const thread = store.createThread(workspace.id, 'Background dispatch thread');
     const turnExecutor = new RecordingTurnExecutor();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-background-dispatch-repo-'));
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+      cwd: repositoryPath,
+    });
+    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
+    writeFileSync(join(repositoryPath, 'README.md'), '# Background dispatch fixture\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
+    execFileSync('git', ['commit', '-m', 'initial'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
     const providerCredentialResolver = vi.fn((secretRef: string) =>
       secretRef === 'vault://provider_background' ? 'test-key' : null
     );
@@ -150,7 +163,7 @@ describe('scheduler dispatch service', () => {
             access: 'read-write',
             id: 'repo',
             sourceKind: 'host-dir',
-            sourcePath: '/host/background',
+            sourcePath: repositoryPath,
             workerPath: '/workspace/background',
           },
         ],
@@ -203,7 +216,7 @@ describe('scheduler dispatch service', () => {
             access: 'read-write',
             id: 'repo',
             sourceKind: 'host-dir',
-            sourcePath: '/host/background',
+            sourcePath: repositoryPath,
             workerPath: '/workspace/background',
           },
         ],

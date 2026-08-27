@@ -27,11 +27,11 @@ export const schedulerSessionLeases = sqliteTable(
     threadId: text('thread_id').notNull(),
     /** Turn lineage id. */
     turnId: text('turn_id').notNull(),
-    /** Agent session lineage id. */
+    /** AgentSession lineage id. */
     agentSessionId: text('agent_session_id').notNull(),
     /** Agent environment package snapshot id. */
     packageSnapshotId: text('package_snapshot_id').notNull(),
-    /** Session workspace compatibility digest used by future reuse gates. */
+    /** AgentSession workspace compatibility digest used by future reuse gates. */
     sessionCompatibilityKey: text('session_compatibility_key'),
     /** Scheduler pool id. */
     poolId: text('pool_id').notNull(),
@@ -70,6 +70,10 @@ export const schedulerSessionLeases = sqliteTable(
     recoveryDeadline: text('recovery_deadline'),
     /** SHA-256 digest of the worker process's memory-only reconnect key. */
     workerProcessKeyHash: text('worker_process_key_hash'),
+    /** Lowercase SHA-256 projection of the live-memory worker-control token. */
+    workerControlTokenHash: text('worker_control_token_hash'),
+    /** Lowercase SHA-256 projection of the live-memory worker-inference token. */
+    workerInferenceTokenHash: text('worker_inference_token_hash'),
   },
   (table) => [
     index('scheduler_session_leases_plan_idx').on(table.planId, table.status),

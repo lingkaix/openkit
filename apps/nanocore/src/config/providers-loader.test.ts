@@ -144,6 +144,89 @@ describe('loadProviderProfiles', () => {
     ]);
   });
 
+  it.each([
+    {
+      accountSlotId: 'codex_primary',
+      displayName: 'OpenAI Codex',
+      id: 'openai_codex',
+      models: ['openai-codex/gpt-5.6-sol'],
+      vendor: 'openai_codex',
+    },
+    {
+      accountSlotId: 'xai_primary',
+      displayName: 'xAI',
+      id: 'xai',
+      models: ['grok-4'],
+      vendor: 'xai',
+    },
+  ])('loads strict $vendor subscription-account profiles without blocking them', (profile) => {
+    const { dataRoot, providersRoot } = createProviderRoot();
+    writeFileSync(
+      join(providersRoot, `${profile.id}.provider.jsonc`),
+      JSON.stringify({
+        displayName: profile.displayName,
+        extensions: {
+          openkit: {
+            subscriptionAccount: { accountSlotId: profile.accountSlotId },
+          },
+        },
+        id: profile.id,
+        kind: 'oauth',
+        models: profile.models,
+        vendor: profile.vendor,
+      })
+    );
+
+    const result = loadProviderProfiles(dataRoot);
+
+    expect.soft(result.diagnostics).toEqual([]);
+    expect(result.profiles).toEqual([
+      {
+        displayName: profile.displayName,
+        extensions: {
+          openkit: {
+            subscriptionAccount: { accountSlotId: profile.accountSlotId },
+          },
+        },
+        id: profile.id,
+        kind: 'oauth',
+        models: profile.models,
+        vendor: profile.vendor,
+      },
+    ]);
+  });
+
+  it('rejects the removed codexOAuth extension without a compatibility alias', () => {
+    const { dataRoot, providersRoot } = createProviderRoot();
+    writeFileSync(
+      join(providersRoot, 'legacy-openai-codex.provider.jsonc'),
+      JSON.stringify({
+        displayName: 'Legacy OpenAI Codex',
+        extensions: {
+          openkit: {
+            codexOAuth: { accountSlotId: 'default' },
+            subscriptionAccount: { accountSlotId: 'default' },
+          },
+        },
+        id: 'legacy-openai-codex',
+        kind: 'oauth',
+        models: ['openai-codex/gpt-5.6-sol'],
+        vendor: 'openai_codex',
+      })
+    );
+
+    const result = loadProviderProfiles(dataRoot);
+
+    expect(result.profiles).toEqual([]);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'provider.invalid_profile',
+        profileId: 'legacy-openai-codex',
+        severity: 'error',
+      }),
+    ]);
+  });
+
   it('rejects raw API keys and obvious raw-secret variants', () => {
     const { dataRoot, providersRoot } = createProviderRoot();
     writeFileSync(

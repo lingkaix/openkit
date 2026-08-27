@@ -23,7 +23,6 @@ import {
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   materializeWorkspaceRootsForTurn,
-  resolveWorkspaceRepositoryForTurn,
   workspaceSourceContextForTurn,
 } from './turn-workspace-context.js';
 import type { TurnExecutor } from './types.js';
@@ -46,7 +45,7 @@ interface StartProductTurnInput {
   readonly store: FsStore;
   /** Runtime executor used to start worker turns. */
   readonly turnExecutor: TurnExecutor;
-  /** Configured disposable Cell placement. */
+  /** Configured scheduler placement. */
   readonly workerPlacement: 'local' | 'remote';
   /** Optional worker id selected by an upper-level coordinator. */
   readonly requestedAgentId?: string | null;
@@ -92,20 +91,6 @@ export async function startProductTurn(input: StartProductTurnInput) {
     throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
 
-  const repository = resolveWorkspaceRepositoryForTurn(input.coreDb, input.input.workspaceId);
-  const workspaceRoots = materializeWorkspaceRootsForTurn(
-    input.snapshot,
-    input.store,
-    input.input.workspaceId,
-    repository
-  );
-  const workspaceSourceContext = workspaceSourceContextForTurn(
-    input.coreDb,
-    input.snapshot,
-    input.input.workspaceId,
-    repository,
-    workspaceRoots
-  );
   const workspace = input.store.getWorkspace(input.input.workspaceId);
   const modelAgentId = resolveModelAgentOverride(
     input.snapshot.agentManifests,
@@ -129,6 +114,21 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.snapshot.providerRegistry,
     input.input.modelId
   );
+
+  const workspaceRoots = materializeWorkspaceRootsForTurn(
+    input.snapshot,
+    input.store,
+    input.input.workspaceId,
+    selectedAgent
+  );
+  const workspaceSourceContext = workspaceSourceContextForTurn(
+    input.snapshot,
+    input.input.workspaceId,
+    workspaceRoots,
+    selectedAgent
+  );
+  const workspaceCwd =
+    workspaceRoots.find((root) => root.sourceKind === 'remote-git')?.workerPath ?? null;
 
   const requestedAgentId = selectedAgent.id;
 
@@ -154,7 +154,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     turnId,
     turnInput: input.input.input,
     triggerActor: canonicalTriggerActor,
-    workspaceCwd: repository?.localPath ?? null,
+    workspaceCwd,
     workspaceId: input.input.workspaceId,
     workspaceRoots,
   });
@@ -178,7 +178,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     store: input.store,
     turnExecutor: input.turnExecutor,
     configVersion: input.snapshot.version,
-    workspaceCwd: repository?.localPath ?? null,
+    workspaceCwd,
     workspaceRoots,
     ...(workspaceSourceContext.workspaceDataSourceCatalog
       ? { workspaceDataSourceCatalog: workspaceSourceContext.workspaceDataSourceCatalog }

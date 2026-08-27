@@ -5,7 +5,7 @@ import type {
   WorkspaceRepositoryStagingStrategy,
 } from '../storage/schema/index.js';
 import type { RepositoryValidationResult } from './repository-validation.js';
-import { validateRepositoryPath } from './repository-validation.js';
+import { inspectRepositoryPath } from './repository-validation.js';
 
 /**
  * Callback used by repository store helpers to confirm app-local workspace ownership.
@@ -138,11 +138,15 @@ interface WorkspaceRepositoryResourceRow {
  * The helper persists the raw local path only in NanoCore SQLite storage and
  * stores the non-secret validation status separately for diagnostics. Missing
  * workspaces are rejected through the caller-supplied app-local ownership check.
+ * DATA_ROOT containment or an unresolved DATA_ROOT realpath is rejected with a
+ * redacted error before INSERT/UPDATE and does not write an invalid-path
+ * diagnostic row. Clear external invalid-path diagnostics remain stored.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Repository resource upsert input.
  * @returns Stored repository resource with user-safe validation diagnostics.
- * @throws Error when the workspace existence callback rejects the workspace id.
+ * @throws Error when the workspace existence callback rejects the workspace id
+ * or the candidate is contained by DATA_ROOT or unresolved against DATA_ROOT.
  */
 export function upsertWorkspaceRepositoryResource(
   workspaceDb: WorkspaceDb,
@@ -152,7 +156,11 @@ export function upsertWorkspaceRepositoryResource(
 
   const timestamp = input.now?.() ?? new Date().toISOString();
   const resourceId = input.resourceId ?? DEFAULT_REPOSITORY_RESOURCE_ID;
-  const validation = validateRepositoryPath(input.localPath);
+  const inspection = inspectRepositoryPath(input.localPath, { dataRoot: workspaceDb.dataRoot });
+  if (inspection.boundary !== 'clear') {
+    throw new Error('The selected repository location cannot be used.');
+  }
+  const validation = inspection.validation;
   const git = { ...DEFAULT_REPOSITORY_GIT_CONFIG, ...input.git };
 
   workspaceDb.sqlite

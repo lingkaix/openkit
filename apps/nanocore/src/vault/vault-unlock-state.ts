@@ -1,17 +1,11 @@
 import { createLockedVaultBackend, type VaultBackend, VaultBackendError } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
-import {
-  createOsKeychainVaultBackend,
-  type OsKeychainVaultAdapter,
-} from './vault-os-keychain-backend.js';
 
 /** Required raw encrypted-file unlock key length. */
 const RAW_UNLOCK_KEY_BYTES = 32;
 
 /** Input used to create process-local vault unlock state. */
-export type CreateVaultUnlockStateInput =
-  | CreateEncryptedFileVaultUnlockStateInput
-  | CreateOsKeychainVaultUnlockStateInput;
+export type CreateVaultUnlockStateInput = CreateEncryptedFileVaultUnlockStateInput;
 
 /** Input used to create encrypted-file process-local vault unlock state. */
 export interface CreateEncryptedFileVaultUnlockStateInput {
@@ -19,20 +13,6 @@ export interface CreateEncryptedFileVaultUnlockStateInput {
   readonly backendKind: 'encrypted-file';
   /** Encrypted-file store directory when backendKind is encrypted-file. */
   readonly storeDir: string;
-  /** Milliseconds prior versions remain resolvable after rotation. */
-  readonly rotationGraceMs?: number;
-  /** Optional deterministic clock. */
-  readonly now?: () => string;
-}
-
-/** Input used to create os-keychain process-local vault state. */
-export interface CreateOsKeychainVaultUnlockStateInput {
-  /** Backend kind managed by this state holder. */
-  readonly backendKind: 'os-keychain';
-  /** Stable deployment id used for keychain item namespacing. */
-  readonly deploymentId: string;
-  /** Optional platform keychain adapter. */
-  readonly adapter?: OsKeychainVaultAdapter;
   /** Milliseconds prior versions remain resolvable after rotation. */
   readonly rotationGraceMs?: number;
   /** Optional deterministic clock. */
@@ -94,8 +74,7 @@ class ProcessVaultUnlockState implements VaultUnlockState {
    */
   public constructor(input: CreateVaultUnlockStateInput) {
     this.input = input;
-    this.currentBackend =
-      input.backendKind === 'os-keychain' ? this.osKeychainBackend() : this.lockedBackend();
+    this.currentBackend = this.lockedBackend();
   }
 
   /**
@@ -115,13 +94,6 @@ class ProcessVaultUnlockState implements VaultUnlockState {
    * @throws VaultBackendError when key material is invalid.
    */
   public unlock(input: VaultUnlockInput): VaultBackend {
-    if (this.input.backendKind === 'os-keychain') {
-      throw new VaultBackendError(
-        'backend-unavailable',
-        'os-keychain vault backend does not use encrypted-file unlock keys.'
-      );
-    }
-
     this.assertUnlockKey(input.masterKey);
     const masterKey = Buffer.from(input.masterKey);
     const backend = createEncryptedFileVaultBackend({
@@ -147,10 +119,6 @@ class ProcessVaultUnlockState implements VaultUnlockState {
    * @returns Locked backend projection.
    */
   public lock(): VaultBackend {
-    if (this.input.backendKind === 'os-keychain') {
-      return this.currentBackend;
-    }
-
     this.masterKey?.fill(0);
     this.masterKey = null;
     this.currentBackend = this.lockedBackend();
@@ -166,26 +134,6 @@ class ProcessVaultUnlockState implements VaultUnlockState {
     return createLockedVaultBackend({
       diagnostic: 'Vault backend is locked.',
       kind: this.input.backendKind,
-    });
-  }
-
-  /**
-   * Builds the os-keychain backend projection.
-   *
-   * @returns os-keychain vault backend.
-   */
-  private osKeychainBackend(): VaultBackend {
-    if (this.input.backendKind !== 'os-keychain') {
-      throw new VaultBackendError('backend-unavailable', 'Vault backend kind is not os-keychain.');
-    }
-
-    return createOsKeychainVaultBackend({
-      ...(this.input.adapter ? { adapter: this.input.adapter } : {}),
-      deploymentId: this.input.deploymentId,
-      ...(this.input.now ? { now: this.input.now } : {}),
-      ...(this.input.rotationGraceMs != null
-        ? { rotationGraceMs: this.input.rotationGraceMs }
-        : {}),
     });
   }
 

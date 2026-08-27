@@ -231,7 +231,7 @@ function writeSnapshotRecord(
  *
  * @param workspaceDb Workspace that owns the snapshot.
  * @param path Canonical snapshot file path.
- * @param agentSessionId Parent session directory name.
+ * @param agentSessionId Parent AgentSession directory name.
  * @param snapshotId Snapshot file name without extension.
  * @returns Validated snapshot record.
  */
@@ -306,7 +306,7 @@ function validateSnapshotRecord(
   }
 
   assertWorkspaceOwner(workspaceDb, record.workspaceId);
-  assertPathSegment(record.agentSessionId, 'agent session id');
+  assertPathSegment(record.agentSessionId, 'AgentSession id');
   assertPathSegment(record.snapshotId, 'snapshot id');
 
   if (
@@ -334,7 +334,7 @@ function validateSnapshotRecord(
  * Resolves the canonical snapshot file path.
  *
  * @param workspaceDb Workspace that owns the snapshot.
- * @param agentSessionId Agent session directory id.
+ * @param agentSessionId AgentSession directory id.
  * @param snapshotId Snapshot file id.
  * @returns Absolute canonical snapshot path.
  */
@@ -343,7 +343,7 @@ function snapshotPath(
   agentSessionId: string,
   snapshotId: string
 ): string {
-  assertPathSegment(agentSessionId, 'agent session id');
+  assertPathSegment(agentSessionId, 'AgentSession id');
   assertPathSegment(snapshotId, 'snapshot id');
   return join(
     agentSessionsRoot(workspaceDb),
@@ -354,10 +354,10 @@ function snapshotPath(
 }
 
 /**
- * Resolves the workspace-owned agent session directory.
+ * Resolves the workspace-owned AgentSession directory.
  *
  * @param workspaceDb Workspace ownership metadata.
- * @returns Absolute agent session root.
+ * @returns Absolute AgentSession root.
  */
 function agentSessionsRoot(workspaceDb: WorkspaceDb): string {
   return join(dirname(dirname(workspaceDb.sqlite.name)), 'runtime', 'agent-sessions');

@@ -23,7 +23,7 @@ export interface VaultGrantRecord {
   readonly subjectSummary: string | null;
   /** Target agent id when applicable. */
   readonly targetAgentId: string | null;
-  /** Target agent session id when applicable. */
+  /** Target AgentSession id when applicable. */
   readonly targetAgentSessionId: string | null;
   /** Target capability id when applicable. */
   readonly targetCapabilityId: string | null;
@@ -79,7 +79,7 @@ export interface CreateVaultGrantInput {
   readonly subjectSummary?: string | null;
   /** Target agent id when applicable. */
   readonly targetAgentId?: string | null;
-  /** Target agent session id when applicable. */
+  /** Target AgentSession id when applicable. */
   readonly targetAgentSessionId?: string | null;
   /** Target capability id when applicable. */
   readonly targetCapabilityId?: string | null;
@@ -317,12 +317,12 @@ function cascadeGrantRevocation(coreDb: CoreDb, grantId: string): void {
     .run(grantId);
   coreDb.sqlite
     .prepare(
-      "UPDATE injection_plans SET status = 'revoked' WHERE grant_id = ? AND status = 'active'"
+      "UPDATE vault_injection_plans SET status = 'revoked' WHERE grant_id = ? AND status = 'active'"
     )
     .run(grantId);
   coreDb.sqlite
     .prepare(
-      "UPDATE injection_receipts SET revocation_status = 'stale-session' WHERE grant_id = ? AND revocation_status = 'active'"
+      "UPDATE vault_injection_receipts SET revocation_status = 'stale-session' WHERE grant_id = ? AND revocation_status = 'active'"
     )
     .run(grantId);
 }

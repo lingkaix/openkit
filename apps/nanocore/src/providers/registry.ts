@@ -1,5 +1,6 @@
+import { resolveProviderSubscriptionFamily } from '@openkit/config-schema';
+
 import type { ProviderProfile } from '../config/providers-loader.js';
-import { isCodexOAuthProviderProfile } from './codex-oauth-profile.js';
 
 /** Gateway support matrix for one runtime provider profile. */
 export interface ProviderGatewayCapabilities {
@@ -13,8 +14,6 @@ export interface ProviderGatewayCapabilities {
  * Redacted provider summary exposed through app diagnostics.
  */
 export interface ProviderRegistrySummary {
-  /** Public dispatch family selected from the authoritative profile. */
-  dispatchFamily: 'codex-oauth' | 'provider-api';
   /** Provider endpoint without username or password URL components. */
   baseUrl?: string;
   /** Default model used when a caller does not choose one. */
@@ -118,7 +117,6 @@ export class ProviderRegistry {
   public summarize(): ProviderRegistrySummary[] {
     return this.list().map((profile) => {
       const summary: ProviderRegistrySummary = {
-        dispatchFamily: isCodexOAuthProviderProfile(profile) ? 'codex-oauth' : 'provider-api',
         displayName: profile.displayName,
         id: profile.id,
         kind: profile.kind,
@@ -206,12 +204,14 @@ export function gatewayCapabilitiesForProfile(
 ): ProviderGatewayCapabilities {
   const vendor = (profile as { vendor?: unknown }).vendor;
   const vendorId = typeof vendor === 'string' ? normalizeProviderId(vendor) : null;
+  const profileId = normalizeProviderId(profile.id);
+  const subscriptionFamily = resolveProviderSubscriptionFamily(profile);
 
-  if (normalizeProviderId(profile.id) === 'openai' || vendorId === 'openai') {
+  if (profileId === 'openai' || vendorId === 'openai') {
     return { chatCompletions: 'native', responses: 'native' };
   }
 
-  if (isCodexOAuthProviderProfile(profile)) {
+  if (subscriptionFamily === 'openai-codex') {
     return { chatCompletions: 'bridged', responses: 'native' };
   }
 

@@ -66,7 +66,7 @@ export interface GatewayCallContext {
   itemId?: string | null;
   /** Agent lineage when available. */
   agentId?: string | null;
-  /** Agent session lineage when available. */
+  /** AgentSession lineage when available. */
   agentSessionId?: string | null;
   /** Agent Environment Package snapshot that authorized the call. */
   packageSnapshotId?: string | null;

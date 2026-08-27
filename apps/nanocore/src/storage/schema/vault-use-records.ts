@@ -40,7 +40,7 @@ export const vaultUseRecords = sqliteTable(
     planId: text('plan_id'),
     /** Injection receipt id when receipt-linked. */
     receiptId: text('receipt_id'),
-    /** Agent session id when available. */
+    /** AgentSession id when available. */
     agentSessionId: text('agent_session_id'),
     /** Capability call id when available. */
     capabilityCallId: text('capability_call_id'),

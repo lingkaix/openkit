@@ -4,12 +4,6 @@ import type {
   StructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestInput,
 } from '../internal-agents/delegation.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
-import {
-  getDefaultWorkspaceRepositoryResource,
-  type WorkspaceRepositoryResourceRecord,
-} from '../workspace/repository-store.js';
 
 /**
  * Task state needed to prepare the next bounded worker turn.
@@ -53,8 +47,6 @@ export interface PrepareNextTurnInput {
  * Authorized context and request facts prepared before Coordinator composition.
  */
 export interface PreparedNextTurnContext {
-  /** Ready repository resource selected for the worker. */
-  readonly repository: WorkspaceRepositoryResourceRecord;
   /** Worker objective read from the selected durable Task. */
   readonly objective: string;
   /** Source refs that Coordinator must place after Workspace and Thread refs. */
@@ -72,8 +64,6 @@ export interface PreparedNextTurnContext {
  * Prepared worker-turn inputs.
  */
 export interface PreparedNextTurn {
-  /** Ready repository resource selected for the worker. */
-  readonly repository: WorkspaceRepositoryResourceRecord;
   /** Structured worker delegation request for bounded execution. */
   readonly delegationRequest: StructuredWorkerDelegationRequest;
   /** Context package digest from the selected projection. */
@@ -85,20 +75,14 @@ export interface PreparedNextTurn {
 /**
  * Prepares authorized context and request facts without composing or starting a worker request.
  *
- * @param coreDb Open Core database handles.
  * @param input Next-turn preparation input.
  * @returns Prepared context and request facts for Coordinator composition.
- * @throws Error when no ready repository or no included context is available.
+ * @throws Error when no included context is available.
  */
-export function prepareNextTurnContext(
-  coreDb: CoreDb,
-  input: PrepareNextTurnInput
-): PreparedNextTurnContext {
-  const repository = requireReadyRepository(coreDb, input.workspaceId);
+export function prepareNextTurnContext(input: PrepareNextTurnInput): PreparedNextTurnContext {
   const contextRefs = createContextRefs(input);
 
   return {
-    repository,
     objective: input.taskState.objective,
     contextRefs,
     workerRequestDetails: {
@@ -116,34 +100,6 @@ export function prepareNextTurnContext(
     },
     contextPackageDigest: input.contextProjection.contextPackageDigest,
   };
-}
-
-/**
- * Reads the default ready repository for one workspace.
- *
- * @param coreDb Open Core database handles.
- * @param workspaceId Workspace id to inspect.
- * @returns Ready repository resource.
- * @throws Error when no ready repository exists.
- */
-function requireReadyRepository(
-  coreDb: CoreDb,
-  workspaceId: string
-): WorkspaceRepositoryResourceRecord {
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
-  let repository: WorkspaceRepositoryResourceRecord | null;
-  try {
-    applyScopedMigrations(workspaceDb);
-    repository = getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId);
-  } finally {
-    workspaceDb.sqlite.close();
-  }
-
-  if (!repository || repository.diagnosticsStatus !== 'ready') {
-    throw new Error(`Workspace repository not ready: ${workspaceId}`);
-  }
-
-  return repository;
 }
 
 /**

@@ -25,8 +25,6 @@ import {
   currentWorkspaceAuthority,
 } from './auth/operation-authorizer.js';
 import { listWorkspaceCapabilityCalls } from './capability/usage-ledger.js';
-import { createInjectionPlan } from './injection-plans.js';
-import { createInjectionReceipt } from './injection-receipts.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { createPolicyApprovalGate } from './policy/approval-gates.js';
@@ -51,6 +49,8 @@ import { vaultSecretMaterialToString } from './vault/vault-backend.js';
 import { getVaultGrant } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
 import { createVaultUseAuditedBackend } from './vault/vault-use-audited-backend.js';
+import { createVaultInjectionPlan } from './vault-injection-plans.js';
+import { createVaultInjectionReceipt } from './vault-injection-receipts.js';
 import { syncRepositoryDataSourceCatalog } from './workspace/repository-data-source-catalog.js';
 import {
   createWorkspaceRepositoryDiagnostic,
@@ -752,7 +752,7 @@ function resolveGitPushCredentialEnv(input: {
   const planId = `plan_git_push_${id}`;
   const receiptId = `receipt_git_push_${id}`;
 
-  createInjectionPlan(input.coreDb, {
+  createVaultInjectionPlan(input.coreDb, {
     backendCapabilityRequirement: 'git-push:github-token',
     capabilityId: 'workspace.git.push',
     expirationBehavior: grant.expiresAt ? `expires-at:${grant.expiresAt}` : 'grant-lifetime',
@@ -764,7 +764,7 @@ function resolveGitPushCredentialEnv(input: {
     revocationBehavior: 'host-process-only',
     now: () => now,
   });
-  createInjectionReceipt(input.coreDb, {
+  createVaultInjectionReceipt(input.coreDb, {
     agentSessionId: null,
     backendSummary: 'git-push:github-token',
     capabilityCallId: input.capabilityCallId,

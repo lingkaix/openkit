@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createModels } from '@earendil-works/pi-ai';
 import { StartChatModeResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
-import type { CodexResponsesClient } from './llm/codex-responses-client.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
+import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from './providers/registry.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -806,7 +807,7 @@ describe('quick chat app API', () => {
     expect(JSON.stringify(body)).not.toContain('tok_private_quick_chat');
   });
 
-  it('answers with the configured quick-chat provider without starting an agent session', async () => {
+  it('answers with the configured quick-chat provider without starting an AgentSession', async () => {
     const seenRequests: Array<{ metadata?: unknown; prompt_cache_key?: unknown }> = [];
     const app = createApp({
       ...createQuickChatProviderOptions(),
@@ -1043,6 +1044,9 @@ describe('quick chat app API', () => {
 
   it('adds stable OpenKit prompt cache metadata for Codex-backed quick chat', async () => {
     const seenRequests: Array<{ metadata?: unknown; prompt_cache_key?: unknown }> = [];
+    const models = createModels();
+    vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
     const app = createApp({
       openKitConfig: {
         defaults: {
@@ -1056,7 +1060,7 @@ describe('quick chat app API', () => {
           displayName: 'OpenAI Codex',
           extensions: {
             openkit: {
-              codexOAuth: {
+              subscriptionAccount: {
                 accountSlotId: 'default',
               },
             },
@@ -1068,7 +1072,7 @@ describe('quick chat app API', () => {
         },
       ]),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmCodexResponsesClient: {
+      llmPiAiClient: {
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
           return {
@@ -1085,7 +1089,10 @@ describe('quick chat app API', () => {
             ],
           };
         },
-      } as CodexResponsesClient,
+      } as unknown as PiAiGatewayClient,
+      providerSubscriptionAccountManager: {
+        getPairHandle,
+      } as unknown as ProviderSubscriptionAccountManager,
     });
 
     const res = await app.request('/api/app/quick-chat', {
@@ -1095,6 +1102,10 @@ describe('quick chat app API', () => {
     });
 
     expect(res.status).toBe(200);
+    expect(getPairHandle).toHaveBeenCalledWith({
+      accountSlotId: 'default',
+      subscriptionProviderId: 'openai-codex',
+    });
     expect(seenRequests[0]?.metadata).toEqual({
       openkit: {
         sessionId: 'quick-chat:ws_quick_chat',

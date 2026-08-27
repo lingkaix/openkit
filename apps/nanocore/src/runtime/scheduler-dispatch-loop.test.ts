@@ -1,13 +1,18 @@
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { ensureLocalUser } from '../auth/identity.js';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
 import {
+  completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
+  dispatchNextSchedulerEntry,
+  listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
   markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
@@ -18,12 +23,23 @@ import {
 } from '../scheduler-records';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
+import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { resolveAgentSessionCompatibilityKey } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator';
+import { startProductTurn } from './product-turn-start.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
-import type { TurnExecutor, TurnStartRuntimeContext } from './types';
+import type {
+  CommitPreparedAgentSessionForTurnInput,
+  PrepareAgentSessionForTurnInput,
+  PreparedAgentSessionForTurn,
+  PreparedCurrentAgentSession,
+  TurnExecutor,
+  TurnStartRuntimeContext,
+} from './types';
 import {
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
@@ -45,6 +61,108 @@ class RecordingTurnExecutor implements TurnExecutor {
     input: string;
     turnId: string;
   }> = [];
+  public readonly prepareCalls: Array<{
+    threadId: string;
+    turnId: string;
+  }> = [];
+
+  /**
+   * Projects deterministic runtime preparation for scheduler-loop tests.
+   *
+   * @param store Store containing any current AgentSession.
+   * @param input Exact future-Turn static AEP inputs.
+   * @returns Reused or fresh AgentSession identity with its real compatibility key.
+   */
+  public async prepareAgentSessionForTurn(
+    store: FsStore,
+    input: PrepareAgentSessionForTurnInput
+  ): Promise<PreparedAgentSessionForTurn> {
+    this.prepareCalls.push({ threadId: input.turn.threadId, turnId: input.turn.id });
+    const current = store
+      .listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId)
+      .find((candidate) => isCurrentAgentSessionStatus(candidate.status));
+    const resolveKey = (agentSessionId: string) =>
+      resolveAgentSessionCompatibilityKey({
+        agentSessionId,
+        agentSetup: input.agentSetup,
+        backend: { kind: 'openshell' },
+        requestId: input.requestId,
+        turn: input.turn,
+        turnInput: input.turnInput,
+        triggerActor: input.turn.triggerActor,
+        workspaceCwd: input.workspaceCwd,
+        workspaceRoots: input.workspaceRoots,
+        ...(input.workspaceDataSourceCatalog
+          ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+          : {}),
+        ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+      });
+
+    if (current) {
+      const sessionCompatibilityKey = resolveKey(current.id);
+      const currentAgentSession: PreparedCurrentAgentSession = {
+        agentId: current.agentId,
+        id: current.id,
+        policySnapshotId: current.policySnapshotId,
+        sessionCompatibilityKey: current.sessionCompatibilityKey,
+        stale: current.stale,
+        status: current.status,
+        updatedAt: current.updatedAt,
+      };
+      const activeTurn = store
+        .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
+        .some((turn) => turn.status === 'running');
+      if (
+        current.agentId === input.agentSetup.manifest.id &&
+        current.status === 'idle' &&
+        !current.stale &&
+        !activeTurn &&
+        current.sessionCompatibilityKey === sessionCompatibilityKey
+      ) {
+        return {
+          agentSessionId: current.id,
+          currentAgentSession,
+          replacementRequired: false,
+          sessionCompatibilityKey,
+        };
+      }
+      return {
+        agentSessionId: input.freshAgentSessionId,
+        currentAgentSession,
+        replacementRequired: true,
+        sessionCompatibilityKey: resolveKey(input.freshAgentSessionId),
+      };
+    }
+
+    return {
+      agentSessionId: input.freshAgentSessionId,
+      currentAgentSession: null,
+      replacementRequired: false,
+      sessionCompatibilityKey: resolveKey(input.freshAgentSessionId),
+    };
+  }
+
+  /** Commits only an exact prepared replacement after scheduler dispatch. */
+  public async commitPreparedAgentSessionForTurn(
+    store: FsStore,
+    input: CommitPreparedAgentSessionForTurnInput
+  ): Promise<void> {
+    if (!input.prepared.replacementRequired) {
+      return;
+    }
+    const predecessor = input.prepared.currentAgentSession;
+    if (!predecessor) {
+      throw new Error('Prepared replacement has no predecessor.');
+    }
+    const current = store.getAgentSession(predecessor.id);
+    if (current.status !== 'idle' || current.stale || current.updatedAt !== predecessor.updatedAt) {
+      throw new Error('Prepared predecessor changed before commit.');
+    }
+    store.updateAgentSession(current.id, {
+      status: 'closed',
+      updatedAt: '2026-07-05T00:00:01.500Z',
+    });
+  }
 
   /**
    * Records one started turn.
@@ -150,11 +268,24 @@ function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb
 /**
  * Creates a strict agent manifest for scheduler setup resolution tests.
  *
- * @param withProvider Whether the manifest should select the fixture provider.
  * @returns Strict agent manifest.
  */
-function agentManifest(withProvider = false) {
-  return createTestAgentSetup(withProvider ? {} : { provider: null }).manifest;
+function agentManifest() {
+  return createTestAgentSetup().manifest;
+}
+
+/** Creates one credential-free provider registry for static AEP planning tests. */
+function localProviderRegistry(): ProviderRegistry {
+  return new ProviderRegistry([
+    {
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      defaultModel: 'openai/gpt-5.2',
+      displayName: 'Scheduler fixture provider',
+      id: 'agent-openrouter',
+      kind: 'local',
+      models: ['openai/gpt-5.2'],
+    },
+  ]);
 }
 
 describe('scheduler dispatch loop', () => {
@@ -256,6 +387,197 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
+  it.each([
+    {
+      expected: { status: 'denied', entry: { denialReason: 'no-compatible-pool' } },
+      name: 'no compatible pool',
+      setup: (_coreDb: ReturnType<typeof createMigratedCoreDb>) => {},
+    },
+    {
+      expected: { status: 'queued', reason: 'capacity-saturated' },
+      name: 'capacity saturation',
+      setup: (coreDb: ReturnType<typeof createMigratedCoreDb>) => {
+        seedLocalSchedulerTarget(coreDb);
+        coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_capacity_records SET in_use_count = 1 WHERE target_id = 'target_local'"
+          )
+          .run();
+      },
+    },
+    {
+      expected: { status: 'queued', reason: 'thread-busy' },
+      name: 'a busy Thread',
+      setup: (coreDb: ReturnType<typeof createMigratedCoreDb>) => {
+        seedLocalSchedulerTarget(coreDb);
+        createSchedulerAdmissionEntry(coreDb, {
+          triggerActor: { kind: 'user', id: 'user_local' },
+          queueEntryId: 'queue_replacement_blocker',
+          requestId: 'req_replacement_blocker',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: 'turn_replacement_blocker',
+          turnInput: 'Hold the Thread scheduler lease',
+          requestedAgentId: 'agent_codex_host',
+          profileRef: 'profile_worker',
+          priorityClass: 'interactive',
+          requiredPoolConstraints: ['openshell.local'],
+        });
+        const blocker = dispatchNextSchedulerEntry(coreDb, {
+          agentSessionId: 'as_replacement_blocker',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          leaseId: 'lease_replacement_blocker',
+          planId: 'plan_replacement_blocker',
+          sandboxBindingRef: 'lease-binding:lease_replacement_blocker',
+          schedulerEpoch: 1,
+          sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
+          startupTimeoutMs: 120_000,
+        });
+        expect(blocker.status).toBe('dispatched');
+      },
+    },
+    {
+      expectedError: 'UNIQUE constraint failed: scheduler_placement_plans.plan_id',
+      name: 'a dispatch transaction failure',
+      setup: (coreDb: ReturnType<typeof createMigratedCoreDb>) => {
+        seedLocalSchedulerTarget(coreDb);
+        createSchedulerAdmissionEntry(coreDb, {
+          triggerActor: { kind: 'user', id: 'user_local' },
+          queueEntryId: 'queue_replacement_prior_plan',
+          requestId: 'req_replacement_prior_plan',
+          workspaceId: 'ws_demo',
+          threadId: 'th_prior_plan',
+          turnId: 'turn_replacement_prior_plan',
+          turnInput: 'Create a prior placement plan',
+          requestedAgentId: 'agent_codex_host',
+          profileRef: 'profile_worker',
+          priorityClass: 'interactive',
+          requiredPoolConstraints: ['openshell.local'],
+        });
+        const prior = dispatchNextSchedulerEntry(coreDb, {
+          agentSessionId: 'as_replacement_prior_plan',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          leaseId: 'lease_replacement_prior_plan',
+          planId: 'plan_replacement_duplicate',
+          sandboxBindingRef: 'lease-binding:lease_replacement_prior_plan',
+          schedulerEpoch: 1,
+          sessionCompatibilityKey: `sha256:${'c'.repeat(64)}`,
+          startupTimeoutMs: 120_000,
+        });
+        expect(prior.status).toBe('dispatched');
+        completeSchedulerSessionLease(coreDb, {
+          leaseId: 'lease_replacement_prior_plan',
+          releaseReason: 'turn-completed',
+          terminalStatus: 'released',
+        });
+      },
+    },
+  ])('keeps an incompatible current predecessor untouched before $name rejects dispatch', async ({
+    expected,
+    expectedError,
+    setup,
+  }) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    let replacementCloseEffects = 0;
+    const prepareAgentSessionForTurn = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+    turnExecutor.prepareAgentSessionForTurn = async (ownerStore, input) => {
+      const predecessorBefore = ownerStore.getAgentSession('as_replacement_predecessor');
+      const prepared = await prepareAgentSessionForTurn(ownerStore, input);
+      const predecessorAfter = ownerStore.getAgentSession('as_replacement_predecessor');
+      if (
+        isCurrentAgentSessionStatus(predecessorBefore.status) &&
+        !isCurrentAgentSessionStatus(predecessorAfter.status)
+      ) {
+        replacementCloseEffects += 1;
+      }
+      return prepared;
+    };
+
+    try {
+      store.createAgentSession({
+        agentId: 'agent_codex_host',
+        createdAt: '2026-07-05T00:00:00.000Z',
+        id: 'as_replacement_predecessor',
+        message: null,
+        sessionCompatibilityKey: `sha256:${'a'.repeat(64)}`,
+        status: 'idle',
+        threadId: 'th_demo',
+        updatedAt: '2026-07-05T00:00:00.000Z',
+        workspaceId: 'ws_demo',
+      });
+      setup(coreDb);
+      createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
+        queueEntryId: 'queue_replacement_candidate',
+        requestId: 'req_replacement_candidate',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_replacement_candidate',
+        turnInput: 'Use incompatible future static inputs',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: 'profile_worker',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+      });
+
+      let observed: unknown;
+      try {
+        observed = await runSchedulerDispatchLoop({
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => 'as_replacement_successor',
+          createLeaseId: () => 'lease_replacement_candidate',
+          createPlanId: () =>
+            expectedError ? 'plan_replacement_duplicate' : 'plan_replacement_candidate',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          maxDispatches: 1,
+          now: () => '2026-07-05T00:00:02.000Z',
+          providerRegistry: localProviderRegistry(),
+          schedulerEpoch: 1,
+          startupTimeoutMs: 120_000,
+          store,
+          turnExecutor,
+        });
+      } catch (error) {
+        observed = error;
+      }
+
+      if (expectedError) {
+        expect(observed).toBeInstanceOf(Error);
+        expect((observed as Error).message).toContain(expectedError);
+      } else {
+        expect(observed).toMatchObject({ startedTurns: [], terminalResult: expected });
+      }
+      expect(replacementCloseEffects).toBe(0);
+      expect(store.getAgentSession('as_replacement_predecessor')).toMatchObject({
+        stale: false,
+        status: 'idle',
+      });
+      expect(
+        store
+          .listThreadAgentSessions('ws_demo', 'th_demo')
+          .filter((candidate) => isCurrentAgentSessionStatus(candidate.status))
+          .map((candidate) => candidate.id)
+      ).toEqual(['as_replacement_predecessor']);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('starts one dispatched queued turn with scheduler-owned lineage', async () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
@@ -290,9 +612,8 @@ describe('scheduler dispatch loop', () => {
         leaseDurationMs: 900_000,
         maxDispatches: 1,
         now: () => '2026-07-05T00:00:02.000Z',
-        providerRegistry: new ProviderRegistry([]),
+        providerRegistry: localProviderRegistry(),
         schedulerEpoch: 1,
-        sessionCompatibilityKey: 'sha256:scheduler-session-compatible',
         startupTimeoutMs: 120_000,
         store,
         turnExecutor,
@@ -302,17 +623,17 @@ describe('scheduler dispatch loop', () => {
       expect(result.startedTurns).toHaveLength(1);
       expect(result.terminalResult).toEqual({ status: 'queued', reason: 'max-dispatches' });
       expect(result.startedTurns[0]?.handle.turn.id).toBe('turn_loop_1');
-      expect(requireSchedulerSessionLease(coreDb, 'lease_loop_1').sessionCompatibilityKey).toBe(
-        'sha256:scheduler-session-compatible'
-      );
+      const lease = requireSchedulerSessionLease(coreDb, 'lease_loop_1');
+      expect(lease.sessionCompatibilityKey).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect(store.getTurn('ws_demo', 'th_demo', 'turn_loop_1').status).toBe('running');
       expect(turnExecutor.calls).toEqual([
         {
           context: {
             agentSessionId: 'as_loop_1',
-            agentSetup: { manifest: agentManifest(), provider: null },
+            agentSetup: createTestAgentSetup(),
             requestId: '00000000-0000-4000-8000-00000000d201',
             sandboxBindingRef: 'lease-binding:lease_loop_1',
+            sessionCompatibilityKey: lease.sessionCompatibilityKey,
             triggerActor: { kind: 'user', id: 'user_local' },
             workspaceCwd: null,
             workspaceRoots: [],
@@ -326,7 +647,200 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it('reuses a compatible live session when scheduler continuity candidates are available', async () => {
+  it('prepares and starts a later dispatchable queued entry when the first queued Thread is busy', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const laterThread = store.createThread('ws_demo', 'Later dispatchable thread');
+
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_capacity_records SET concurrency_ceiling = 2 WHERE target_id = 'target_local'`
+        )
+        .run();
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_worker_pools SET max_concurrent_sessions = 2 WHERE pool_id = 'pool_local'`
+        )
+        .run();
+      createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
+        queueEntryId: 'queue_busy_active',
+        requestId: 'req_busy_active',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_busy_active',
+        turnInput: 'Hold the first Thread lease',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: 'profile_worker',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+        now: () => '2026-07-05T00:00:00.000Z',
+      });
+      const blocker = dispatchNextSchedulerEntry(coreDb, {
+        agentSessionId: 'as_busy_active',
+        expectedControlMode: 'poll',
+        expectedDataPlaneMode: 'openshell-files',
+        heartbeatIntervalMs: 10_000,
+        heartbeatTimeoutMs: 30_000,
+        leaseDurationMs: 900_000,
+        leaseId: 'lease_busy_active',
+        planId: 'plan_busy_active',
+        sandboxBindingRef: 'lease-binding:lease_busy_active',
+        schedulerEpoch: 1,
+        sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
+        startupTimeoutMs: 120_000,
+        now: () => '2026-07-05T00:00:01.000Z',
+      });
+      expect(blocker.status).toBe('dispatched');
+      createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
+        queueEntryId: 'queue_busy_followup',
+        requestId: 'req_busy_followup',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_busy_followup',
+        turnInput: 'Stay queued while the Thread is busy',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: 'profile_worker',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+        now: () => '2026-07-05T00:00:02.000Z',
+      });
+      createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
+        queueEntryId: 'queue_later_dispatchable',
+        requestId: 'req_later_dispatchable',
+        workspaceId: 'ws_demo',
+        threadId: laterThread.id,
+        turnId: 'turn_later_dispatchable',
+        turnInput: 'Start the later dispatchable Thread',
+        requestedAgentId: 'agent_codex_host',
+        profileRef: 'profile_worker',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+        now: () => '2026-07-05T00:00:03.000Z',
+      });
+      expect(
+        listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)
+      ).toEqual(['queue_busy_followup', 'queue_later_dispatchable']);
+
+      const result = await runSchedulerDispatchLoop({
+        agentManifests: [agentManifest()],
+        coreDb,
+        createAgentSessionId: () => 'as_later_dispatchable',
+        createLeaseId: () => 'lease_later_dispatchable',
+        createPlanId: () => 'plan_later_dispatchable',
+        expectedControlMode: 'poll',
+        expectedDataPlaneMode: 'openshell-files',
+        heartbeatIntervalMs: 10_000,
+        heartbeatTimeoutMs: 30_000,
+        leaseDurationMs: 900_000,
+        maxDispatches: 1,
+        now: () => '2026-07-05T00:00:04.000Z',
+        providerRegistry: localProviderRegistry(),
+        schedulerEpoch: 1,
+        startupTimeoutMs: 120_000,
+        store,
+        turnExecutor,
+      });
+
+      expect(result.startedTurns).toHaveLength(1);
+      expect(result.startedTurns[0]?.handle.turn.id).toBe('turn_later_dispatchable');
+      expect(result.startedTurns[0]?.dispatch.entry.queueEntryId).toBe('queue_later_dispatchable');
+      expect(result.startedTurns[0]?.dispatch.entry.threadId).toBe(laterThread.id);
+      expect(turnExecutor.prepareCalls).toEqual([
+        { threadId: laterThread.id, turnId: 'turn_later_dispatchable' },
+      ]);
+      expect(turnExecutor.calls).toEqual([
+        expect.objectContaining({
+          input: 'Start the later dispatchable Thread',
+          turnId: 'turn_later_dispatchable',
+        }),
+      ]);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          statuses: ['queued'],
+          workspaceId: 'ws_demo',
+        }).map((entry) => entry.queueEntryId)
+      ).toEqual(['queue_busy_followup']);
+      expect(requireSchedulerSessionLease(coreDb, 'lease_busy_active').status).not.toBe('failed');
+      expect(requireSchedulerSessionLease(coreDb, 'lease_later_dispatchable')).toMatchObject({
+        status: 'acquired',
+        threadId: laterThread.id,
+        turnId: 'turn_later_dispatchable',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT lease_id FROM scheduler_session_leases WHERE status = 'failed' ORDER BY lease_id`
+          )
+          .all()
+      ).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('fails the acquired lease when post-dispatch AgentSession commit rejects', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    turnExecutor.commitPreparedAgentSessionForTurn = async () => {
+      throw new Error('prepared AgentSession changed');
+    };
+
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      createSchedulerAdmissionEntry(coreDb, {
+        priorityClass: 'interactive',
+        profileRef: 'profile_worker',
+        queueEntryId: 'queue_commit_failed',
+        requestId: 'req_commit_failed',
+        requestedAgentId: 'agent_codex_host',
+        requiredPoolConstraints: ['openshell.local'],
+        threadId: 'th_demo',
+        turnId: 'turn_commit_failed',
+        turnInput: 'Reject after scheduler dispatch',
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_demo',
+      });
+
+      await expect(
+        runSchedulerDispatchLoop({
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => 'as_commit_failed',
+          createLeaseId: () => 'lease_commit_failed',
+          createPlanId: () => 'plan_commit_failed',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+          schedulerEpoch: 1,
+          startupTimeoutMs: 120_000,
+          store,
+          turnExecutor,
+        })
+      ).rejects.toThrow('prepared AgentSession changed');
+
+      expect(requireSchedulerSessionLease(coreDb, 'lease_commit_failed')).toMatchObject({
+        releaseReason: 'turn-start-failed',
+        status: 'failed',
+      });
+      expect(turnExecutor.calls).toEqual([]);
+      expect(() => store.getTurnById('turn_commit_failed')).toThrow('Turn not found');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('reuses the exact compatible current AgentSession selected by the runtime seam', async () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
@@ -348,12 +862,47 @@ describe('scheduler dispatch loop', () => {
         now: () => '2026-07-05T00:00:01.000Z',
       });
 
-      const result = await runSchedulerDispatchLoop({
-        agentManifests: [agentManifest()],
-        coreDb,
-        createAgentSessionId: () => {
-          throw new Error('fresh session id should not be requested');
+      const setup = createTestAgentSetup();
+      const sessionCompatibilityKey = resolveAgentSessionCompatibilityKey({
+        agentSessionId: 'as_live_continuity',
+        agentSetup: setup,
+        backend: { kind: 'openshell' },
+        requestId: 'req_continuity_live',
+        turn: {
+          completedAt: null,
+          configVersion: null,
+          durationMs: null,
+          error: null,
+          humanGate: null,
+          id: 'turn_continuity_live',
+          items: [],
+          startedAt: '2026-07-05T00:00:02.000Z',
+          status: 'running',
+          threadId: 'th_demo',
+          triggerActor: { kind: 'user', id: 'user_local' },
+          workspaceId: 'ws_demo',
         },
+        turnInput: 'Run with continuity',
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceCwd: null,
+        workspaceRoots: [],
+      });
+      store.createAgentSession({
+        agentId: 'agent_codex_host',
+        createdAt: '2026-07-05T00:00:00.000Z',
+        id: 'as_live_continuity',
+        message: null,
+        sessionCompatibilityKey,
+        status: 'idle',
+        threadId: 'th_demo',
+        updatedAt: '2026-07-05T00:00:00.000Z',
+        workspaceId: 'ws_demo',
+      });
+
+      const result = await runSchedulerDispatchLoop({
+        agentManifests: [setup.manifest],
+        coreDb,
+        createAgentSessionId: () => 'as_fresh_continuity',
         createLeaseId: () => 'lease_continuity_live',
         createPlanId: () => 'plan_continuity_live',
         expectedControlMode: 'poll',
@@ -363,37 +912,157 @@ describe('scheduler dispatch loop', () => {
         leaseDurationMs: 900_000,
         maxDispatches: 1,
         now: () => '2026-07-05T00:00:02.000Z',
-        providerRegistry: new ProviderRegistry([]),
+        providerRegistry: localProviderRegistry(),
         schedulerEpoch: 1,
-        sessionCompatibilityKey: 'sha256:scheduler-session-compatible',
-        sessionContinuityCandidates: {
-          liveSessions: [
-            {
-              agentSessionId: 'as_live_continuity',
-              reusable: true,
-              sessionCompatibilityKey: 'sha256:scheduler-session-compatible',
-              status: 'idle',
-            },
-          ],
-        },
         startupTimeoutMs: 120_000,
         store,
         turnExecutor,
       });
 
-      expect(result.startedTurns[0]?.continuity.selected).toEqual({
-        agentSessionId: 'as_live_continuity',
-        kind: 'live-session',
-      });
+      expect(result.startedTurns).toHaveLength(1);
       expect(requireSchedulerSessionLease(coreDb, 'lease_continuity_live')).toMatchObject({
         agentSessionId: 'as_live_continuity',
-        sessionCompatibilityKey: 'sha256:scheduler-session-compatible',
+        sessionCompatibilityKey,
       });
       expect(turnExecutor.calls[0]?.context).toMatchObject({
         agentSessionId: 'as_live_continuity',
-        agentSetup: { manifest: agentManifest(), provider: null },
+        agentSetup: setup,
         sandboxBindingRef: 'lease-binding:lease_continuity_live',
+        sessionCompatibilityKey,
       });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('reuses the current compatible AgentSession across sequential product admissions', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const providerRegistry = localProviderRegistry();
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [agentManifest()],
+      providerRegistry,
+      version: 1,
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-product-continuity-repo-'));
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+      cwd: repositoryPath,
+    });
+    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
+    writeFileSync(join(repositoryPath, 'README.md'), '# Product continuity fixture\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
+    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+    try {
+      applyScopedMigrations(workspaceDb);
+      upsertWorkspaceRepositoryResource(workspaceDb, {
+        displayName: 'Product continuity repository',
+        localPath: repositoryPath,
+        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
+        workspaceId: 'ws_demo',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const recordingStartTurn = turnExecutor.startTurn.bind(turnExecutor);
+    turnExecutor.startTurn = async (ownerStore, turnId, turnInput, context) => {
+      await recordingStartTurn(ownerStore, turnId, turnInput, context);
+      const agentSessionId = context?.agentSessionId;
+      if (!agentSessionId) {
+        throw new Error('Product admission did not assign an AgentSession.');
+      }
+      if (!context.sessionCompatibilityKey) {
+        throw new Error('Product admission did not retain its SessionCompatibilityKey.');
+      }
+      const turn = ownerStore.getTurnById(turnId);
+      const existing = ownerStore
+        .listThreadAgentSessions(turn.workspaceId, turn.threadId)
+        .find((candidate) => candidate.id === agentSessionId);
+      if (!existing) {
+        ownerStore.createAgentSession({
+          agentId: 'agent_codex_host',
+          createdAt: '2026-07-05T00:00:02.000Z',
+          id: agentSessionId,
+          message: null,
+          sessionCompatibilityKey: context.sessionCompatibilityKey,
+          status: 'idle',
+          threadId: turn.threadId,
+          updatedAt: '2026-07-05T00:00:02.000Z',
+          workspaceId: turn.workspaceId,
+        });
+      }
+      ownerStore.updateTurn(turnId, {
+        agentSessionId,
+        completedAt: '2026-07-05T00:00:03.000Z',
+        status: 'completed',
+      });
+    };
+
+    try {
+      const first = await startProductTurn({
+        coreDb,
+        input: {
+          input: 'Run the first sequential Turn',
+          requestId: '00000000-0000-4000-8000-00000000d211',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        },
+        providerCredentialResolver: () => null,
+        schedulerEpoch: 1,
+        snapshot,
+        store,
+        triggerActor: { kind: 'user', id: 'user_local' },
+        turnExecutor,
+        workerPlacement: 'local',
+      });
+      const firstLease = coreDb.sqlite
+        .prepare('SELECT lease_id AS leaseId FROM scheduler_session_leases WHERE turn_id = ?')
+        .get(first.turn.id) as { leaseId: string };
+      completeSchedulerSessionLease(coreDb, {
+        leaseId: firstLease.leaseId,
+        releaseReason: 'turn-completed',
+        terminalStatus: 'released',
+      });
+
+      const second = await startProductTurn({
+        coreDb,
+        input: {
+          input: 'Run the second sequential Turn',
+          requestId: '00000000-0000-4000-8000-00000000d212',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        },
+        providerCredentialResolver: () => null,
+        schedulerEpoch: 1,
+        snapshot,
+        store,
+        triggerActor: { kind: 'user', id: 'user_local' },
+        turnExecutor,
+        workerPlacement: 'local',
+      });
+      const leases = coreDb.sqlite
+        .prepare(
+          `SELECT agent_session_id AS agentSessionId, lease_id AS leaseId, turn_id AS turnId
+           FROM scheduler_session_leases
+           WHERE turn_id IN (?, ?)
+           ORDER BY turn_id`
+        )
+        .all(first.turn.id, second.turn.id) as Array<{
+        agentSessionId: string;
+        leaseId: string;
+        turnId: string;
+      }>;
+
+      expect(second.turn.id).not.toBe(first.turn.id);
+      expect(second.turn.agentSessionId).toBe(first.turn.agentSessionId);
+      expect(leases).toHaveLength(2);
+      expect(new Set(leases.map((lease) => lease.leaseId)).size).toBe(2);
+      expect(new Set(leases.map((lease) => lease.turnId)).size).toBe(2);
+      expect(new Set(leases.map((lease) => lease.agentSessionId))).toEqual(
+        new Set([first.turn.agentSessionId])
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -447,7 +1116,7 @@ describe('scheduler dispatch loop', () => {
         startupTimeoutMs: 120_000,
         store,
         turnExecutor,
-        agentManifests: [agentManifest(true)],
+        agentManifests: [agentManifest()],
       });
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
 
@@ -462,7 +1131,7 @@ describe('scheduler dispatch loop', () => {
           agentId: 'agent_codex_host',
           providerId: 'agent-openrouter',
         });
-        expect(turnExecutor.calls[0]?.context?.agentSetup?.manifest).toEqual(agentManifest(true));
+        expect(turnExecutor.calls[0]?.context?.agentSetup?.manifest).toEqual(agentManifest());
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -505,7 +1174,7 @@ describe('scheduler dispatch loop', () => {
           leaseDurationMs: 900_000,
           maxDispatches: 1,
           now: () => '2026-07-05T00:00:02.000Z',
-          providerRegistry: new ProviderRegistry([]),
+          providerRegistry: localProviderRegistry(),
           schedulerEpoch: 1,
           startupTimeoutMs: 120_000,
           store,
@@ -538,36 +1207,128 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
+  it('preserves the worker failure while anchored backend cleanup remains pending', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
+      const lease = requireSchedulerSessionLease(coreDb, 'lease_cleanup_pending');
+      if (!context?.agentSessionId) {
+        throw new Error('Expected scheduler-owned AgentSession lineage.');
+      }
+      recordWorkerBackendSessionMaterializing(coreDb, {
+        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+        backendVersion: '0.0.99',
+        identity: {
+          agentSessionId: context.agentSessionId,
+          backendKind: 'openshell',
+          backendSessionId: 'openkit-as_cleanup_pending',
+          deploymentId: 'deployment-test',
+          packageSnapshotId: lease.packageSnapshotId,
+          runtimeTargetId: 'runtime-target-test',
+          stagingDirectoryRef: 'server/runtime/worker-backend-sessions/cleanup-pending',
+          transientProviderInstanceId: null,
+        },
+        lineage: { threadId: 'th_demo', turnId, workspaceId: 'ws_demo' },
+        sandboxBindingRef: lease.sandboxBindingRef,
+      });
+      for (const [fromState, toState] of [
+        ['materializing', 'materialized'],
+        ['materialized', 'launching'],
+        ['launching', 'cleanup-pending'],
+      ] as const) {
+        transitionWorkerBackendSessionState(coreDb, {
+          fromState,
+          leaseId: lease.leaseId,
+          toState,
+        });
+      }
+      ownerStore.updateTurn(turnId, {
+        completedAt: '2026-07-05T00:00:03.000Z',
+        error: { code: 'worker_governance_turn_failed', message: 'accepted effect is unknown' },
+        status: 'failed',
+      });
+      throw new Error('accepted effect is unknown');
+    };
+
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      createSchedulerAdmissionEntry(coreDb, {
+        priorityClass: 'interactive',
+        profileRef: 'profile_worker',
+        queueEntryId: 'queue_cleanup_pending',
+        requestId: 'req_cleanup_pending',
+        requestedAgentId: 'agent_codex_host',
+        requiredPoolConstraints: ['openshell.local'],
+        threadId: 'th_demo',
+        turnId: 'turn_cleanup_pending',
+        turnInput: 'Fail with backend cleanup pending',
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_demo',
+      });
+
+      await expect(
+        runSchedulerDispatchLoop({
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => 'as_cleanup_pending',
+          createLeaseId: () => 'lease_cleanup_pending',
+          createPlanId: () => 'plan_cleanup_pending',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+          schedulerEpoch: 1,
+          startupTimeoutMs: 120_000,
+          store,
+          turnExecutor,
+        })
+      ).rejects.toThrow('accepted effect is unknown');
+
+      expect(requireSchedulerSessionLease(coreDb, 'lease_cleanup_pending')).toMatchObject({
+        releaseReason: null,
+        status: 'acquired',
+      });
+      expect(
+        (
+          coreDb.sqlite
+            .prepare('SELECT state FROM worker_backend_sessions WHERE lease_id = ?')
+            .get('lease_cleanup_pending') as { state: string }
+        ).state
+      ).toBe('cleanup-pending');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('releases an exact interrupted human-gate fallback lease with recovery evidence required', async () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
       if (!context?.agentSessionId) {
-        throw new Error('Expected scheduler-owned Agent Session lineage.');
+        throw new Error('Expected scheduler-owned AgentSession lineage.');
       }
       const lease = requireSchedulerSessionLease(coreDb, 'lease_human_gate_fallback');
       recordWorkerBackendSessionMaterializing(coreDb, {
-        backendVersion: '0.0.80',
+        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+        backendVersion: '0.0.99',
         identity: {
           agentSessionId: context.agentSessionId,
           backendKind: 'openshell',
           backendSessionId: 'openkit-as_human_gate_fallback',
-          backendTarget: {
-            cellTargetId: 'cell-test',
-            gatewayEndpoint: null,
-            gatewayName: 'openshell',
-            placement: 'local',
-          },
           deploymentId: 'deployment-test',
           packageSnapshotId: lease.packageSnapshotId,
+          runtimeTargetId: 'runtime-target-test',
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/human-gate-fallback',
           transientProviderInstanceId: null,
         },
         lineage: { threadId: 'th_demo', turnId, workspaceId: 'ws_demo' },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: lease.sandboxBindingRef,
-        workerImage: 'openkit/worker-codex:dev',
       });
       for (const [fromState, toState] of [
         ['materializing', 'materialized'],
@@ -657,7 +1418,7 @@ describe('scheduler dispatch loop', () => {
           leaseDurationMs: 900_000,
           maxDispatches: 1,
           now: () => '2026-07-05T00:00:02.000Z',
-          providerRegistry: new ProviderRegistry([]),
+          providerRegistry: localProviderRegistry(),
           schedulerEpoch: 1,
           startupTimeoutMs: 120_000,
           store,

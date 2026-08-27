@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   type AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackageSchema,
+  type SessionWorkspaceMaterializationPlan,
   type WorkerSandboxAccess,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
@@ -12,8 +13,6 @@ import { describe, expect, it } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import { ensureLocalUser } from '../auth/identity.js';
-import { listInjectionPlans } from '../injection-plans.js';
-import { listInjectionReceipts } from '../injection-receipts.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -22,8 +21,13 @@ import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
+import { listVaultInjectionPlans } from '../vault-injection-plans.js';
+import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { resolveAgentEnvironmentPackage } from './agent-environment.js';
+import {
+  resolveAgentEnvironmentPackage,
+  resolveAgentSessionCompatibilityKey,
+} from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
 
 const USER_TRIGGER_ACTOR = { kind: 'user', id: 'user_local' } as const satisfies ActorRef;
@@ -49,6 +53,7 @@ function createTestSetup(
     readonly requiredCapabilities?: Array<
       'backend-local-inference' | 'trusted-worker-inference-relay' | 'worker.runtime-provenance.v1'
     >;
+    readonly runtimeBinaries?: Array<{ readonly id: string; readonly path: string }>;
     readonly skillIds?: string[];
   } = {}
 ): ResolvedAgentSetup {
@@ -72,8 +77,10 @@ function createTestSetup(
           { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
           { id: 'node', path: '/usr/local/bin/node' },
           { id: adapter, path: `/usr/local/bin/${adapter}` },
+          ...(options.runtimeBinaries ?? []),
         ],
         image: {
+          kind: 'reference',
           pullPolicy: 'never',
           ref: `registry.example.com/openkit/worker-${adapter}:test`,
         },
@@ -144,7 +151,6 @@ describe('agent environment package resolver', () => {
       agentSessionId: 'session_actor_1',
       backend: {
         kind: 'openshell',
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_actor_1',
@@ -154,7 +160,7 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     });
 
-    expect(resolved.schemaVersion).toBe(2);
+    expect(resolved.schemaVersion).toBe(3);
     expect(resolved.scope.triggerActor).toEqual(AUTOMATION_TRIGGER_ACTOR);
     expect(resolved.scope).not.toHaveProperty('userId');
     expect(resolved.scope).not.toHaveProperty('automationId');
@@ -185,7 +191,6 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_future_1',
         backend: {
           kind: 'openshell',
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         },
         createdAt: '2026-07-18T00:00:00.000Z',
         requestId: 'req_future_1',
@@ -201,7 +206,7 @@ describe('agent environment package resolver', () => {
       binaries: setupResult.setup.manifest.runtime.binaries,
       command: { argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'] },
       image: {
-        kind: 'container-image',
+        kind: 'reference',
         pullPolicy: 'never',
         ref: 'registry.example.com/openkit/worker-future-adapter:test',
       },
@@ -209,7 +214,6 @@ describe('agent environment package resolver', () => {
     expect(resolved.control.adapter).toEqual({
       kind: 'openkit-worker-shim',
       targetRuntime: 'future-adapter',
-      targetTransport: 'outbound-https',
     });
     expect(resolved.llm).toEqual({
       mode: 'gateway',
@@ -226,45 +230,34 @@ describe('agent environment package resolver', () => {
     expect(resolved.extensions.openkit).not.toHaveProperty('resultMessagePath');
   });
 
-  it('keeps remote Gateway topology backend-owned while projecting remote requirements', () => {
+  it('rejects retired remote Gateway topology inputs', () => {
     const turn = createTurnFixture('Run remotely');
-    const resolved = resolveAgentEnvironmentPackage({
-      agentSetup: createTestSetup({
-        requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
-      }),
-      agentSessionId: 'session_remote_1',
-      backend: {
-        gatewayUrl: 'https://gateway.example.test',
-        kind: 'openshell',
-        placement: 'remote',
-        workerControlBaseUrl: 'https://nanocore.example.test/api/worker-control',
-      },
-      createdAt: '2026-07-18T00:00:00.000Z',
-      requestId: 'req_remote_1',
-      turn,
-      triggerActor: USER_TRIGGER_ACTOR,
-      workspaceCwd: '/workspace/repo',
-      workspaceRoots: [],
-    });
-
-    expect(resolved.backend.requiredCapabilities).toEqual(
-      expect.arrayContaining(['remote-gateway', 'worker.runtime-provenance.v1'])
-    );
-    expect(resolved.backend.extensions?.openshell).toEqual({
-      gatewayUrlRef: 'runtime://openshell/gateway-url',
-      placement: 'remote',
-    });
-    expect(JSON.stringify(resolved)).not.toContain('gateway.example.test');
-    expect(resolved.control.transcript.runtimeProvenance).toBeDefined();
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        agentSetup: createTestSetup(),
+        agentSessionId: 'session_remote_1',
+        backend: {
+          gatewayUrl: 'https://gateway.example.test',
+          kind: 'openshell',
+          placement: 'remote',
+          workerControlBaseUrl: 'https://nanocore.example.test/api/worker-control',
+        } as never,
+        createdAt: '2026-07-18T00:00:00.000Z',
+        requestId: 'req_remote_1',
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      })
+    ).toThrow();
   });
 
-  it('rejects relay authority conflicts and incomplete provenance before launch', () => {
+  it('preserves authored development grants with trusted inference and rejects direct credentials and incomplete provenance', () => {
     const turn = createTurnFixture('Reject authority conflict');
     const common = {
       agentSessionId: 'session_reject_1',
       backend: {
         kind: 'openshell' as const,
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_reject_1',
@@ -274,23 +267,138 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     };
 
+    const resolved = resolveAgentEnvironmentPackage({
+      ...common,
+      agentSetup: createTestSetup({
+        network: [
+          {
+            binaries: ['/usr/bin/git'],
+            host: 'github.com',
+            id: 'github-git-read',
+            port: 443,
+            protocol: 'rest',
+            purpose: 'Clone and fetch Git repositories',
+            rules: [
+              { method: 'GET', path: '/**/info/refs*' },
+              { method: 'POST', path: '/**/git-upload-pack' },
+            ],
+            scope: 'session',
+          },
+        ],
+        runtimeBinaries: [
+          { id: 'git', path: '/usr/bin/git' },
+          { id: 'codex-native', path: '/usr/local/lib/codex/bin/codex' },
+        ],
+      }),
+    });
+
+    expect(resolved.schemaVersion).toBe(3);
+    expect(resolved.control).toMatchObject({
+      mode: 'sandbox-integration',
+      bindings: {
+        inference: {
+          pathPrefix: '/inference/',
+          tokenRef: 'runtime://openkit/inference-token',
+        },
+      },
+    });
+    expect(resolved.llm).toEqual({
+      mode: 'gateway',
+      routes: [
+        expect.objectContaining({
+          credentialVisibility: 'placeholder',
+          endpoint: {
+            kind: 'openai-compatible',
+            upstream: {
+              baseUrlRef: 'agent-openrouter',
+              kind: 'nanocore-gateway',
+            },
+          },
+          providerInstanceId: 'agent-openrouter',
+        }),
+      ],
+    });
+    expect(resolved.credentials.declarations).toEqual([]);
+    expect(resolved.policy.network?.rules).toEqual([
+      {
+        action: 'allow',
+        binaries: ['/usr/bin/git'],
+        host: 'github.com',
+        id: 'github-git-read',
+        port: 443,
+        protocol: 'rest',
+        purpose: 'Clone and fetch Git repositories',
+        rules: [
+          { method: 'GET', path: '/**/info/refs*' },
+          { method: 'POST', path: '/**/git-upload-pack' },
+        ],
+        scope: 'session',
+      },
+    ]);
+    const baseBuildSetup = createTestSetup();
+    const buildSetup = {
+      ...baseBuildSetup,
+      manifest: {
+        ...baseBuildSetup.manifest,
+        runtime: {
+          ...baseBuildSetup.manifest.runtime,
+          image: {
+            arguments: { NODE_VERSION: '24.16.0' },
+            contextRef: 'build-context://empty/v1',
+            egress: [{ host: 'registry.npmjs.org', port: 443 }],
+            input: { content: 'FROM node:24.16.0', kind: 'dockerfile' as const },
+            kind: 'build' as const,
+            layerLimit: 128,
+            outputLimitBytes: 21_474_836_480,
+            timeLimitSeconds: 1800,
+          },
+        },
+      },
+    };
+    expect(
+      resolveAgentEnvironmentPackage({ ...common, agentSetup: buildSetup }).runtime.image
+    ).toMatchObject({
+      contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      contextRef: 'build-context://empty/v1',
+      egress: [{ host: 'registry.npmjs.org', port: 443 }],
+      kind: 'build',
+      layerLimit: 128,
+      outputLimitBytes: 21_474_836_480,
+      timeLimitSeconds: 1800,
+    });
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        ...common,
+        agentSetup: {
+          ...buildSetup,
+          manifest: {
+            ...buildSetup.manifest,
+            runtime: {
+              ...buildSetup.manifest.runtime,
+              image: {
+                ...buildSetup.manifest.runtime.image,
+                contextRef: 'workspace://build-context',
+              },
+            },
+          },
+        },
+      })
+    ).toThrow();
     expect(() =>
       resolveAgentEnvironmentPackage({
         ...common,
         agentSetup: createTestSetup({
-          network: [
+          credentialDeclarations: [
             {
-              access: 'read-write',
-              binaries: ['/usr/local/bin/codex'],
-              host: 'api.openai.com',
-              id: 'direct-provider',
-              port: 443,
-              protocol: 'rest',
+              id: 'direct_provider_key',
+              targetEnvVarName: 'OPENAI_API_KEY',
+              vaultGrantId: 'grant_direct_provider_key',
+              visibility: 'runtime-env',
             },
           ],
         }),
       })
-    ).toThrow('Trusted worker inference does not allow direct sandbox network or credentials.');
+    ).toThrow('Trusted worker inference does not allow direct credentials.');
     expect(() =>
       resolveAgentEnvironmentPackage({
         ...common,
@@ -311,7 +419,6 @@ describe('agent environment package resolver', () => {
       agentSessionId: 'session_supply_1',
       backend: {
         kind: 'openshell',
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_supply_1',
@@ -338,7 +445,6 @@ describe('agent environment package resolver', () => {
       agentSessionId: 'session_context_1',
       backend: {
         kind: 'openshell',
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
       createdAt: '2026-07-18T00:00:00.000Z',
       preparedContextPackage: {
@@ -398,7 +504,6 @@ describe('agent environment package resolver', () => {
       agentSessionId: 'session_source_1',
       backend: {
         kind: 'openshell',
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_source_1',
@@ -522,7 +627,6 @@ describe('agent environment package resolver', () => {
         agentSessionId: 'session_direct_1',
         backend: {
           kind: 'openshell',
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         },
         coreDb,
         createdAt: now,
@@ -562,9 +666,132 @@ describe('agent environment package resolver', () => {
         },
       ]);
       expect(JSON.stringify(resolved)).not.toContain('direct_secret_value');
-      expect(listInjectionPlans(coreDb)).toHaveLength(1);
-      expect(listInjectionReceipts(coreDb)).toHaveLength(1);
+      expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
+      expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('previews the exact compatibility key without Vault or credential effects', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-compatibility-preview-'));
+    const coreDb = openCoreDb(dataRoot);
+    const now = '2026-07-18T00:00:00.000Z';
+    const turn = createTurnFixture('Preview compatibility without effects');
+    const declaration: AgentEnvironmentCredentialDeclaration = {
+      id: 'preview_api_key',
+      targetEnvVarName: 'PREVIEW_API_KEY',
+      vaultGrantId: 'grant_preview_api_key',
+      visibility: 'runtime-env',
+    };
+    const agentSetup = createTestSetup({
+      adapter: 'pi',
+      credentialDeclarations: [declaration],
+      network: [
+        {
+          access: 'read-write',
+          binaries: ['/usr/local/bin/node'],
+          host: 'api.example.invalid',
+          id: 'preview-api',
+          port: 443,
+          protocol: 'rest',
+        },
+      ],
+      provider: {
+        model: 'preview-model',
+        origin: 'server-providers',
+        providerId: 'preview-provider',
+        secretRef: null,
+      },
+      requiredCapabilities: [],
+    });
+    let sinkCalls = 0;
+    let vaultBackendCalls = 0;
+
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      now: new Date(now),
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://server/vault/vault_preview_api_key',
+      displayName: 'Preview API key',
+      now: () => now,
+      ownerScope: 'server',
+      referenceId: 'vault_preview_api_key',
+      secretKind: 'provider-api-key',
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['runtime-env'],
+      grantId: 'grant_preview_api_key',
+      lifetime: 'agent-session',
+      now: () => now,
+      ownerScope: 'server',
+      targetAgentSessionId: 'session_preview_1',
+      vaultReferenceId: 'vault_preview_api_key',
+    });
+
+    try {
+      const compatibilityKey = resolveAgentSessionCompatibilityKey({
+        agentSessionId: 'session_preview_1',
+        agentSetup,
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: now,
+        requestId: 'req_preview_1',
+        runtimeEnvCredentialSink: () => {
+          sinkCalls += 1;
+        },
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        vaultBackend: () => {
+          vaultBackendCalls += 1;
+          throw new Error('Compatibility preview must not resolve the Vault backend.');
+        },
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      } as Parameters<typeof resolveAgentSessionCompatibilityKey>[0]);
+
+      expect(compatibilityKey).toMatch(/^sha256:/);
+      expect(sinkCalls).toBe(0);
+      expect(vaultBackendCalls).toBe(0);
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toEqual([]);
+      const keyForContextDigest = (character: string) => {
+        const environmentPackage = resolveAgentEnvironmentPackage({
+          agentSessionId: 'session_context_digest',
+          agentSetup: createTestSetup(),
+          backend: { kind: 'openshell' },
+          createdAt: now,
+          preparedContextPackage: {
+            contentDigest: `sha256:${character.repeat(64)}`,
+            workspaceRoot: {
+              access: 'read-only',
+              id: `context_${turn.id}`,
+              sourceKind: 'materialized-dir',
+              sourcePath: `/private/context-${character}`,
+              workerPath: '/openkit/context',
+            },
+          },
+          requestId: 'req_context_digest',
+          turn,
+          triggerActor: USER_TRIGGER_ACTOR,
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        });
+        return (
+          environmentPackage.extensions.openkit as {
+            sessionWorkspace: SessionWorkspaceMaterializationPlan;
+          }
+        ).sessionWorkspace.compatibilityKey.digest;
+      };
+      expect(keyForContextDigest('a')).toBe(keyForContextDigest('b'));
     } finally {
       coreDb.sqlite.close();
     }
@@ -635,7 +862,6 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_stale_authority',
           backend: {
             kind: 'openshell',
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           },
           coreDb,
           createdAt: now,
@@ -659,8 +885,8 @@ describe('agent environment package resolver', () => {
       expect(error).toMatchObject({ code: 'workspace_access_denied', status: 403 });
       expect(backendCalls).toBe(0);
       expect(runtimeEnvCredentials).toEqual([]);
-      expect(listInjectionPlans(coreDb)).toEqual([]);
-      expect(listInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -769,7 +995,6 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_scope_1',
           backend: {
             kind: 'openshell',
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           },
           coreDb,
           createdAt: now,
@@ -784,8 +1009,8 @@ describe('agent environment package resolver', () => {
         })
       ).toThrow(expectedError);
       expect(runtimeEnvCredentials).toEqual([]);
-      expect(listInjectionPlans(coreDb)).toEqual([]);
-      expect(listInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -862,7 +1087,6 @@ describe('agent environment package resolver', () => {
           agentSessionId: 'session_missing_sink',
           backend: {
             kind: 'openshell',
-            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           },
           coreDb,
           createdAt: now,
@@ -874,16 +1098,16 @@ describe('agent environment package resolver', () => {
           workspaceRoots: [],
         })
       ).toThrow('Runtime-env credential sink is required for declaration: missing_sink');
-      expect(listInjectionPlans(coreDb)).toEqual([]);
-      expect(listInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('requires explicit backend-local inference authority', () => {
-    const turn = createTurnFixture('Use backend-local inference');
+  it('rejects retired backend-local inference inputs', () => {
+    const turn = createTurnFixture('Reject backend-local inference');
     const common = {
       agentSessionId: 'session_backend_local_1',
       createdAt: '2026-07-18T00:00:00.000Z',
@@ -897,27 +1121,14 @@ describe('agent environment package resolver', () => {
     expect(() =>
       resolveAgentEnvironmentPackage({
         ...common,
-        agentSetup: createTestSetup({ requiredCapabilities: [] }),
+        agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
         backend: {
+          inferenceBaseUrl: 'https://inference.local/v1',
           kind: 'openshell',
           workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-        },
+        } as never,
       })
-    ).toThrow('Backend-local inference requires explicit manifest capability.');
-
-    const resolved = resolveAgentEnvironmentPackage({
-      ...common,
-      agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
-      backend: {
-        inferenceBaseUrl: 'https://inference.local/v1',
-        kind: 'openshell',
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-      },
-    });
-
-    expect(resolved.llm.mode).toBe('backend-local');
-    expect(resolved.llm.routes[0]?.endpoint.upstream?.kind).toBe('backend-local');
-    expect(resolved.llm.routes[0]?.endpoint).not.toHaveProperty('workerBaseUrl');
+    ).toThrow();
   });
 
   it('preserves the manifest network grant exact binary scope', () => {
@@ -939,7 +1150,6 @@ describe('agent environment package resolver', () => {
       agentSetup: setup,
       backend: {
         kind: 'openshell',
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       },
       createdAt: '2026-07-18T00:00:00.000Z',
       requestId: 'req_network_defaults_1',

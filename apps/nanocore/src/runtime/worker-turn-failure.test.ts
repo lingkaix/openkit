@@ -6,7 +6,7 @@ import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
-/** Creates one persisted running turn and busy agent session. */
+/** Creates one persisted running turn and busy AgentSession. */
 function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-turn-failure-'));
   const store = createDemoStore({ dataRoot });
@@ -68,7 +68,7 @@ describe('governed worker turn failure projection', () => {
     expect(projectFailure(store)).toEqual({ status: 'missing' });
   });
 
-  it('fails an existing turn when its agent session was not durably created', () => {
+  it('fails an existing turn when its AgentSession was not durably created', () => {
     const store = createDemoStore();
     store.createTurn(
       'ws_demo',
@@ -137,9 +137,9 @@ describe('governed worker turn failure projection', () => {
     turnRead.mockRestore();
 
     const sessionRead = vi.spyOn(store, 'getAgentSession').mockImplementation(() => {
-      throw new Error('agent session store is corrupt');
+      throw new Error('AgentSession store is corrupt');
     });
-    expect(() => projectFailure(store)).toThrow('agent session store is corrupt');
+    expect(() => projectFailure(store)).toThrow('AgentSession store is corrupt');
     sessionRead.mockRestore();
   });
 
@@ -346,7 +346,7 @@ describe('governed worker turn failure projection', () => {
   it('repairs session and terminal-event projections after the failed turn write persisted', () => {
     const { dataRoot, store } = createFixture();
     const sessionWrite = vi.spyOn(store, 'updateAgentSession').mockImplementation(() => {
-      throw new Error('agent session store unavailable');
+      throw new Error('AgentSession store unavailable');
     });
 
     expect(() => projectFailure(store)).toThrow(AggregateError);

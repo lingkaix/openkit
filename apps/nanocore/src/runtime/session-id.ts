@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 /**
- * Generates an RFC 9562 UUIDv7 value for product-visible agent sessions.
+ * Generates an RFC 9562 UUIDv7 value for product-visible AgentSessions.
  *
  * @param date Clock source used for the timestamp prefix.
  * @returns UUIDv7 string with the current millisecond timestamp.

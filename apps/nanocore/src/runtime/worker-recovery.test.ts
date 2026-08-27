@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
@@ -99,7 +99,6 @@ async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
       }),
       agentSessionId: 'as_recovery_provenance',
       backend: {
-        workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-07-13T00:00:00.000Z',
@@ -205,6 +204,17 @@ function runtimeSha256(bytes: Uint8Array): string {
 }
 
 describe('worker recovery materialization', () => {
+  it('accepts the scheduler-owned evidence marker for a failed terminal closeout', () => {
+    const source = readFileSync(new URL('./worker-recovery.ts', import.meta.url), 'utf8');
+    const genericCloseout = source
+      .split('const expectedLeaseStatus =')[1]
+      ?.split("throw new Error('Worker generic closeout contradicts")[0];
+
+    expect(genericCloseout).toContain(
+      "lease.recoveryState !== (expectedTurnStatus === 'failed' ? 'needs-evidence' : null)"
+    );
+  });
+
   it('cleans checkpoints only after terminal worker state is durably saved', async () => {
     const workspaceDb = createWorkspaceDb();
 

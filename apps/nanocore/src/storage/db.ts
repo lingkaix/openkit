@@ -165,6 +165,19 @@ export function openWorkspaceDb(dataRoot: string, workspaceId: string): Workspac
   };
 }
 
+/** Opens an existing Workspace database after the current boot already verified its layout. */
+export function openBootVerifiedWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
+  const sqlite = new Database(workspaceDbPath(dataRoot, workspaceId), { fileMustExist: true });
+
+  return {
+    scope: 'workspace',
+    sqlite,
+    db: drizzle(sqlite, { schema }),
+    dataRoot,
+    workspaceId,
+  };
+}
+
 /**
  * Opens one workspace-scope database under an already resolved workspace root.
  *
@@ -285,7 +298,7 @@ function checkSqliteIntegrity(path: string): { ok: true } | { ok: false; detail:
   let sqlite: Database.Database | undefined;
 
   try {
-    sqlite = new Database(path, { readonly: true, fileMustExist: true });
+    sqlite = new Database(path, { fileMustExist: true });
     const result = sqlite.prepare('PRAGMA quick_check').pluck().get();
 
     return result === 'ok' ? { ok: true } : { ok: false, detail: String(result) };

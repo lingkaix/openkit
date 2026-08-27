@@ -31,7 +31,7 @@ export interface VaultUseRecord {
   readonly planId: string | null;
   /** Injection receipt id when receipt-linked. */
   readonly receiptId: string | null;
-  /** Agent session id when available. */
+  /** AgentSession id when available. */
   readonly agentSessionId: string | null;
   /** Capability call id when available. */
   readonly capabilityCallId: string | null;
@@ -87,7 +87,7 @@ export interface CreateVaultUseRecordInput {
   readonly planId?: string | null;
   /** Injection receipt id when receipt-linked. */
   readonly receiptId?: string | null;
-  /** Agent session id when available. */
+  /** AgentSession id when available. */
   readonly agentSessionId?: string | null;
   /** Capability call id when available. */
   readonly capabilityCallId?: string | null;

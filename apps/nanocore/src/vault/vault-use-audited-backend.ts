@@ -37,7 +37,7 @@ export interface CreateVaultUseAuditedBackendInput {
   readonly planId?: string;
   /** Injection receipt id when available. */
   readonly receiptId?: string;
-  /** Agent session id when available. */
+  /** AgentSession id when available. */
   readonly agentSessionId?: string;
   /** Capability call id when available. */
   readonly capabilityCallId?: string;

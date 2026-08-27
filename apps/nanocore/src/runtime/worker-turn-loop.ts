@@ -251,9 +251,11 @@ export async function runWorkerTurnLoop(
       turnId: turn.turnId,
       stage: workerTurnStageForStopReason(worker.stopReason),
       stopReason: worker.stopReason,
-      diagnosticsSummary:
-        worker.diagnosticsSummary ??
-        createWorkerCheckpointEvidenceDiagnostics(evidence, contextAssembly),
+      diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
+        evidence,
+        contextAssembly,
+        worker.diagnosticsSummary
+      ),
       ...(input.now ? { now: input.now } : {}),
     });
 
@@ -298,6 +300,5 @@ function createContextAssemblySummary(
     contextDigest: prepared.contextPackageDigest,
     contextRefs: prepared.delegationRequest.contextRefs,
     knowledgeSelectionInput: prepared.knowledgeSelectionInput,
-    repositoryResourceId: prepared.repository.resourceId,
   };
 }

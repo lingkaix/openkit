@@ -149,7 +149,6 @@ export function registerMaterialRoutes({
       store.getWorkspace(workspaceId);
       const workspaceDb = openWorkspaceDb(workspaceId);
       try {
-        assertAuthorizedMaterialOwner(c, workspaceDb, materialId);
         return c.json(
           GetWorkspaceMaterialResponseSchema.parse({
             material: getWorkspaceMaterial(workspaceDb, materialId),
@@ -172,7 +171,6 @@ export function registerMaterialRoutes({
       store.getWorkspace(workspaceId);
       const workspaceDb = openWorkspaceDb(workspaceId);
       try {
-        assertAuthorizedMaterialOwner(c, workspaceDb, materialId);
         return c.json(
           ListWorkspaceMaterialRevisionsResponseSchema.parse({
             revisions: listWorkspaceMaterialRevisions(workspaceDb, materialId),
@@ -218,7 +216,6 @@ export function registerMaterialRoutes({
           workspaceDb,
           workspaceTransaction: true,
           execute: () => {
-            assertAuthorizedMaterialOwner(c, workspaceDb, materialId);
             return SaveWorkspaceMaterialRevisionResponseSchema.parse(
               saveWorkspaceMaterialRevision(workspaceDb, {
                 ...input,
@@ -251,7 +248,6 @@ export function registerMaterialRoutes({
       store.getWorkspace(workspaceId);
       const workspaceDb = openWorkspaceDb(workspaceId);
       try {
-        assertAuthorizedMaterialRevision(c, workspaceDb, materialId, revisionId);
         return c.json(
           GetWorkspaceMaterialRevisionResponseSchema.parse({
             revision: getWorkspaceMaterialRevision(workspaceDb, materialId, revisionId),
@@ -272,7 +268,6 @@ export function registerMaterialRoutes({
       const store = requestStore(c);
 
       store.getWorkspace(workspaceId);
-      assertAuthorizedMaterialThread(c, store, workspaceId, threadId);
       requireThreadTarget(store, workspaceId, threadId);
       const workspaceDb = openWorkspaceDb(workspaceId);
       try {
@@ -333,8 +328,6 @@ export function registerMaterialRoutes({
           workspaceDb,
           workspaceTransaction: true,
           execute: () => {
-            assertAuthorizedMaterialThread(c, store, workspaceId, threadId);
-            assertAuthorizedMaterialOwner(c, workspaceDb, materialId);
             requireThreadTarget(store, workspaceId, threadId);
             return BindThreadMaterialResponseSchema.parse(
               bindThreadMaterial(workspaceDb, {
@@ -398,8 +391,6 @@ export function registerMaterialRoutes({
           workspaceDb,
           workspaceTransaction: true,
           execute: () => {
-            assertAuthorizedMaterialThread(c, store, workspaceId, threadId);
-            assertAuthorizedMaterialOwner(c, workspaceDb, materialId);
             requireThreadTarget(store, workspaceId, threadId);
             return UnbindThreadMaterialResponseSchema.parse(
               unbindThreadMaterial(workspaceDb, {
@@ -467,8 +458,6 @@ export function registerMaterialRoutes({
           workspaceDb,
           workspaceTransaction: true,
           execute: () => {
-            assertAuthorizedMaterialThread(c, store, workspaceId, threadId);
-            assertAuthorizedMaterialOwner(c, workspaceDb, materialId);
             requireThreadTarget(store, workspaceId, threadId);
             return ExcludeThreadMaterialResponseSchema.parse(
               excludeThreadMaterial(workspaceDb, {
@@ -535,8 +524,6 @@ export function registerMaterialRoutes({
           workspaceDb,
           workspaceTransaction: true,
           execute: () => {
-            assertAuthorizedMaterialThread(c, store, workspaceId, threadId);
-            assertAuthorizedMaterialOwner(c, workspaceDb, materialId);
             requireThreadTarget(store, workspaceId, threadId);
             return RestoreThreadMaterialResponseSchema.parse(
               restoreThreadMaterial(workspaceDb, {
@@ -673,91 +660,6 @@ function replayMaterialBinding<const Outcome extends BindingOutcome>(
     throw recoveryRequired('The Material binding receipt has no matching owner.');
   }
   return { materialId, threadId, outcome };
-}
-
-/**
- * Verifies one scoped Material owner against the centrally authorized path Workspace.
- *
- * @param context Request context carrying optional central authorization.
- * @param workspaceDb Authorized Workspace database.
- * @param materialId Requested Material identifier.
- * @throws Uniform Workspace denial when the scoped owner is absent or mismatched.
- */
-function assertAuthorizedMaterialOwner(
-  context: Context<{ Variables: AuthVariables }>,
-  workspaceDb: WorkspaceDb,
-  materialId: string
-): void {
-  const access = context.get('workspaceAccess');
-  if (!access) {
-    return;
-  }
-  try {
-    const material = getWorkspaceMaterial(workspaceDb, materialId);
-    assertAuthorizedWorkspaceLineage(access, material.workspaceId);
-  } catch (error) {
-    if ((error as { readonly code?: unknown }).code !== 'stale') {
-      throw error;
-    }
-    assertAuthorizedWorkspaceLineage(access, null);
-  }
-}
-
-/**
- * Verifies one scoped Material revision against the centrally authorized path Workspace.
- *
- * @param context Request context carrying optional central authorization.
- * @param workspaceDb Authorized Workspace database.
- * @param materialId Owning Material identifier.
- * @param revisionId Requested revision identifier.
- * @throws Uniform Workspace denial when the scoped owner is absent or mismatched.
- */
-function assertAuthorizedMaterialRevision(
-  context: Context<{ Variables: AuthVariables }>,
-  workspaceDb: WorkspaceDb,
-  materialId: string,
-  revisionId: string
-): void {
-  const access = context.get('workspaceAccess');
-  if (!access) {
-    return;
-  }
-  try {
-    const revision = getWorkspaceMaterialRevision(workspaceDb, materialId, revisionId);
-    assertAuthorizedWorkspaceLineage(access, revision.workspaceId);
-  } catch (error) {
-    if ((error as { readonly code?: unknown }).code !== 'stale') {
-      throw error;
-    }
-    assertAuthorizedWorkspaceLineage(access, null);
-  }
-}
-
-/**
- * Verifies one scoped Thread owner against the centrally authorized path Workspace.
- *
- * @param context Request context carrying optional central authorization.
- * @param store Existing Thread owner.
- * @param workspaceId Authorized path Workspace.
- * @param threadId Requested Thread identifier.
- * @throws Uniform Workspace denial when the scoped owner is absent or mismatched.
- */
-function assertAuthorizedMaterialThread(
-  context: Context<{ Variables: AuthVariables }>,
-  store: FsStore,
-  workspaceId: string,
-  threadId: string
-): void {
-  const access = context.get('workspaceAccess');
-  if (!access) {
-    return;
-  }
-  try {
-    const thread = store.getThread(workspaceId, threadId);
-    assertAuthorizedWorkspaceLineage(access, thread.workspaceId);
-  } catch {
-    assertAuthorizedWorkspaceLineage(access, null);
-  }
 }
 
 /**

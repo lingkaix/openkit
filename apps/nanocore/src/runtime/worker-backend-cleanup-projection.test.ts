@@ -16,13 +16,14 @@ import {
 } from './workspace-materializer.js';
 import {
   listBackendWorkspaceHandles,
+  listWorkspaceMaterializationRecords,
   recordWorkspaceInputSnapshots,
   recordWorkspaceMaterializationRecords,
   updateBackendWorkspaceHandleCleanupStatus,
 } from './workspace-sync-records.js';
 
 /** Creates one workspace database with a retained package handle. */
-function createFixture() {
+function createFixture(options: { omitBackendStatus?: boolean } = {}) {
   const workspaceDb = openWorkspaceDb(
     mkdtempSync(join(tmpdir(), 'openkit-cleanup-projection-')),
     'ws_demo'
@@ -49,7 +50,9 @@ function createFixture() {
       inputSnapshots,
       materialization: {
         backendKind: 'openshell',
-        backendStatus: { health: 'ready', version: '0.0.80' },
+        ...(options.omitBackendStatus
+          ? {}
+          : { backendStatus: { health: 'ready', version: '0.0.80' } }),
         packageSnapshotId: environmentPackage.snapshotId,
         requiredCapabilities: environmentPackage.backend.requiredCapabilities,
         sandbox: { name: 'openkit-as_cleanup_projection', state: 'created' },
@@ -173,9 +176,54 @@ const exactHandoffTamperCases: ReadonlyArray<
       }));
     },
   ],
+  [
+    'materialization readinessEvidence sandbox ref',
+    (workspaceDb) => {
+      mutateOnlyHandoffPayload(workspaceDb, 'workspace_materialization_records', (payload) => ({
+        ...payload,
+        readinessEvidence: [{ kind: 'sandbox.created', ref: 'foreign-sandbox' }],
+      }));
+    },
+  ],
 ];
 
 describe('worker backend cleanup projection', () => {
+  it('accepts a complete Workspace handoff whose accepted materialization omitted optional backendStatus', () => {
+    const { environmentPackage, workspaceDb } = createFixture({ omitBackendStatus: true });
+    const sandboxOnlyReadiness = [
+      { kind: 'sandbox.created', ref: 'openkit-as_cleanup_projection' },
+    ];
+
+    try {
+      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([
+        expect.objectContaining({ readinessEvidence: sandboxOnlyReadiness }),
+      ]);
+
+      expect(
+        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
+      ).toMatchObject({
+        evidence: { outcome: 'succeeded', phase: 'teardown' },
+        handles: [
+          expect.objectContaining({
+            cleanupStatus: 'cleaned',
+            updatedAt: '2026-07-15T00:01:00.000Z',
+          }),
+        ],
+        workspaceHandoffComplete: true,
+      });
+      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([
+        expect.objectContaining({ readinessEvidence: sandboxOnlyReadiness }),
+      ]);
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+          (record) => record.phase === 'teardown'
+        )
+      ).toHaveLength(1);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('projects successful physical cleanup over a retained transport status', () => {
     const { environmentPackage, workspaceDb } = createFixture();
 

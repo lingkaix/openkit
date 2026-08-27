@@ -205,19 +205,15 @@ describe('scheduler lease watch loop', () => {
     try {
       dispatchLease(coreDb, 'anchored_startup');
       recordWorkerBackendSessionMaterializing(coreDb, {
-        backendVersion: '0.0.80',
+        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+        backendVersion: '0.0.99',
         identity: {
           agentSessionId: 'as_anchored_startup',
           backendKind: 'openshell',
           backendSessionId: 'openkit-as_anchored_startup',
-          backendTarget: {
-            cellTargetId: 'cell-test',
-            gatewayEndpoint: null,
-            gatewayName: 'openshell',
-            placement: 'local',
-          },
           deploymentId: 'deployment-test',
           packageSnapshotId: 'aepsnap_turn_anchored_startup_as_anchored_startup',
+          runtimeTargetId: 'runtime-target-test',
           stagingDirectoryRef:
             'server/runtime/worker-backend-sessions/aepsnap_turn_anchored_startup_as_anchored_startup',
           transientProviderInstanceId: null,
@@ -229,7 +225,6 @@ describe('scheduler lease watch loop', () => {
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: 'lease-binding:lease_anchored_startup',
-        workerImage: 'openkit/worker-codex:dev',
       });
 
       const result = runSchedulerLeaseWatchLoop(coreDb, {

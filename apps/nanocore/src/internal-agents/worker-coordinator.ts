@@ -612,8 +612,10 @@ function isQuickChatPrompt(prompt: string): boolean {
  * @returns True when the prompt has execution intent.
  */
 function requiresWorker(prompt: string): boolean {
-  return /\b(implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug)\b/.test(
-    prompt
+  return (
+    /\b(implement|fix|change|edit|write|create|delete|remove|run|test|build|commit|inspect|refactor|debug)\b/.test(
+      prompt
+    ) || /^use\s+the\s+(?!.*\?[.!]*$)\S/.test(prompt)
   );
 }
 

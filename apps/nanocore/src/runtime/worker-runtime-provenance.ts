@@ -72,15 +72,28 @@ export interface WorkerRuntimeProvenanceBackend {
   version: string | null;
 }
 
-/** Backend-local restricted capture paths. */
-export interface WorkerRuntimeProvenanceCapturePaths {
+/** Backend-local restricted capture files shared by live and retained captures. */
+interface WorkerRuntimeProvenanceCaptureFiles {
   /** Restricted native-origin index path. */
   nativeOriginIndexPath: string | null;
-  /** Directory containing synthetic raw stream files. */
-  rawStreamsRoot: string;
   /** Restricted stream manifest path. */
   streamManifestPath: string | null;
 }
+
+/** Backend-local restricted capture paths. */
+export type WorkerRuntimeProvenanceCapturePaths = WorkerRuntimeProvenanceCaptureFiles &
+  (
+    | {
+        /** Exact backend-local path for every live synthetic stream. */
+        rawStreamPaths: Readonly<Record<string, string>>;
+        rawStreamsRoot?: never;
+      }
+    | {
+        /** Common raw-stream root inside one retained recovery bundle. */
+        rawStreamsRoot: string;
+        rawStreamPaths?: never;
+      }
+  );
 
 /** Input for importing and normalizing one worker runtime provenance capture. */
 export interface ImportWorkerRuntimeProvenanceInput {
@@ -468,8 +481,15 @@ async function verifyRuntimeProvenance(
   let nativeSessionId: string | null = null;
   let retainedStreamBytes = 0;
   for (const stream of manifest.streams) {
-    const sourcePath = join(input.capture.rawStreamsRoot, stream.streamRef);
+    const sourcePath =
+      input.capture.rawStreamPaths === undefined
+        ? join(input.capture.rawStreamsRoot, stream.streamRef)
+        : input.capture.rawStreamPaths[stream.streamRef];
     const relativePath = `raw/${stream.streamRef}`;
+    if (!sourcePath) {
+      errors.push(`Raw stream is missing: ${stream.streamRef}.`);
+      continue;
+    }
     const metadata = await stat(sourcePath).catch(() => null);
     if (!metadata?.isFile()) {
       errors.push(`Raw stream is missing: ${stream.streamRef}.`);

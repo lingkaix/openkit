@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -152,19 +152,53 @@ describe('data-root instance lock', () => {
     }
   });
 
-  it('rejects a lock whose local holder is still alive', () => {
+  it('breaks a stale lock when the acquiring process reused its pid', () => {
     const dataRoot = createDataRoot();
     writeSyntheticLockRecord(dataRoot, {
-      bootId: 'boot_live',
+      bootId: 'boot_previous',
       pid: process.pid,
       updatedAt: '2026-07-04T00:00:00.000Z',
     });
 
-    expect(() =>
-      acquireDataRootLock(dataRoot, {
-        bootId: 'boot_next',
-        now: () => '2026-07-04T00:01:00.000Z',
-      })
-    ).toThrow(DataRootLockError);
+    const lock = acquireDataRootLock(dataRoot, {
+      bootId: 'boot_next',
+      now: () => '2026-07-04T00:01:00.000Z',
+    });
+
+    try {
+      expect(lock.acquisition).toMatchObject({
+        status: 'stale_broken',
+        staleHolder: {
+          bootId: 'boot_previous',
+          pid: process.pid,
+        },
+      });
+    } finally {
+      lock.release();
+    }
   });
+
+  it.runIf(process.platform === 'linux')(
+    'breaks a stale lock when its pid was reused by a process thread',
+    () => {
+      const dataRoot = createDataRoot();
+      const threadPid = readdirSync('/proc/self/task')
+        .map(Number)
+        .find((pid) => pid !== process.pid);
+      expect(threadPid).toBeDefined();
+      writeSyntheticLockRecord(dataRoot, {
+        bootId: 'boot_previous',
+        pid: threadPid!,
+        updatedAt: '2026-07-04T00:00:00.000Z',
+      });
+
+      const lock = acquireDataRootLock(dataRoot, { bootId: 'boot_next' });
+
+      try {
+        expect(lock.acquisition.status).toBe('stale_broken');
+      } finally {
+        lock.release();
+      }
+    }
+  );
 });

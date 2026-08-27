@@ -4,7 +4,7 @@ import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 export type VaultReferenceOwnerScope = 'server' | 'user' | 'workspace';
 
 /** Durable vault reference backend kinds. */
-export type VaultReferenceBackendKind = 'encrypted-file' | 'os-keychain';
+export type VaultReferenceBackendKind = 'encrypted-file';
 
 /** Durable vault reference lifecycle statuses. */
 export type VaultReferenceStatus = 'active' | 'revoked' | 'unbound';

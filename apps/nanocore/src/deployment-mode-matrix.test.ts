@@ -15,10 +15,18 @@ import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
-import { createConfiguredTurnExecutor } from './runtime/turn-executor-factory.js';
+import { inspectNanoHostAgentSessionContinuity } from './runtime/nanohost-harness-records.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from './runtime/nanohost-runtime-target.js';
+import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import type {
+  WorkerGovernanceAgentSessionContinuityDisposition,
+  WorkerGovernanceAgentSessionContinuityInput,
   WorkerGovernanceBackend,
   WorkerGovernanceEvidenceRecord,
   WorkerGovernanceMaterializationContext,
@@ -38,31 +46,33 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 /** NanoCore product deployment mode used by the verification matrix. */
 type CoreDeploymentMode = 'local' | 'server';
 
-/** Container placement used by the deployment verification matrix. */
-type AgentRuntimePlacement = 'local-container' | 'remote-container';
-
 /** One NanoCore deployment matrix case. */
 interface DeploymentModeMatrixCase {
   /** NanoCore product mode selected for the app. */
   coreMode: CoreDeploymentMode;
-  /** Agent runtime placement selected for the turn executor. */
-  runtimePlacement: AgentRuntimePlacement;
+  /** Sole production runtime target selected for the turn executor. */
+  runtimeTargetKind: 'nanohost';
 }
 
 const MATRIX_CASES: DeploymentModeMatrixCase[] = [
-  { coreMode: 'local', runtimePlacement: 'local-container' },
-  { coreMode: 'local', runtimePlacement: 'remote-container' },
-  { coreMode: 'server', runtimePlacement: 'local-container' },
-  { coreMode: 'server', runtimePlacement: 'remote-container' },
+  { coreMode: 'local', runtimeTargetKind: 'nanohost' },
+  { coreMode: 'server', runtimeTargetKind: 'nanohost' },
 ];
 
+/** Deployment id retained by the matrix RuntimeTarget and fake planSession identity. */
+const MATRIX_DEPLOYMENT_ID = 'deployment_matrix';
+/** IntegrationIdentity id for the unique matrix NanoHost RuntimeTarget. */
+const MATRIX_IDENTITY_ID = 'nanohost-matrix';
+/** Scheduler target id retained by the unique matrix RuntimeTarget. */
+const MATRIX_RUNTIME_TARGET_ID = 'runtime-target-matrix';
+
 describe('NanoCore deployment mode matrix', () => {
-  it.each(MATRIX_CASES)('boots diagnostics for core=$coreMode runtime=$runtimePlacement', async ({
+  it.each(MATRIX_CASES)('boots diagnostics for core=$coreMode runtime=$runtimeTargetKind', async ({
     coreMode,
-    runtimePlacement,
+    runtimeTargetKind,
   }) => {
     const coreDb = createCoreDb();
-    const turnExecutor = createMatrixTurnExecutor(runtimePlacement, coreDb);
+    const runtime = createMatrixRuntime(coreDb);
 
     try {
       let authorization: string | undefined;
@@ -81,7 +91,7 @@ describe('NanoCore deployment mode matrix', () => {
           ? { auth: createSignedInAuthStub(), coreDb: coreDb!, mode: 'server' }
           : {}),
         agentManifests: [],
-        turnExecutor,
+        turnExecutor: runtime.turnExecutor,
       });
       const diagnostics = await app.request('/api/diagnostics', {
         ...(authorization ? { headers: { authorization } } : {}),
@@ -93,7 +103,10 @@ describe('NanoCore deployment mode matrix', () => {
         auth: coreMode === 'server' ? { mode: 'server', signedIn: false } : { mode: 'local' },
         mode: coreMode,
       });
-      expect(describeTurnExecutorPlacement(turnExecutor)).toEqual(runtimePlacement);
+      expect((runtime as unknown as { runtimeTargetKind?: string }).runtimeTargetKind).toEqual(
+        runtimeTargetKind
+      );
+      expect(runtime.turnExecutor).not.toHaveProperty('environmentBackend');
     } finally {
       coreDb.sqlite.close();
     }
@@ -101,13 +114,13 @@ describe('NanoCore deployment mode matrix', () => {
 
   it.each(
     MATRIX_CASES
-  )('runs one Goal Mode step loop for core=$coreMode runtime=$runtimePlacement', async ({
+  )('runs one Goal Mode step loop for core=$coreMode runtime=$runtimeTargetKind', async ({
     coreMode,
-    runtimePlacement,
+    runtimeTargetKind,
   }) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_demo', `Loop matrix ${coreMode} ${runtimePlacement}`);
+    const thread = store.createThread('ws_demo', `Loop matrix ${coreMode} ${runtimeTargetKind}`);
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-goal-matrix-repo-'));
     execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
     execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
@@ -122,15 +135,16 @@ describe('NanoCore deployment mode matrix', () => {
     });
 
     try {
-      seedRepositoryAndGoal(coreDb, thread.id, repositoryPath, runtimePlacement);
-      seedThreadContext(store, thread.id, runtimePlacement);
+      seedRepositoryAndGoal(coreDb, thread.id, repositoryPath);
+      seedThreadContext(store, thread.id);
       ensureLocalUser(coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: LOCAL_USER_ID,
         workspaceId: 'ws_demo',
       });
-      const turnExecutor = createMatrixLoopTurnExecutor(runtimePlacement, coreDb);
+      seedReadyNanoHostRuntimeTarget(coreDb);
+      const turnExecutor = createMatrixLoopTurnExecutor(coreDb);
       const app = createApp({
         ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
         agentManifests: [createTestAgentSetup().manifest],
@@ -191,88 +205,53 @@ describe('NanoCore deployment mode matrix', () => {
 });
 
 /**
- * Creates a turn executor for one runtime placement without starting a real worker process.
+ * Creates the configured NanoHost lifecycle without starting a real worker process.
  *
- * @param placement Agent runtime placement to configure.
  * @param coreDb Durable Core database required by the real executor factory.
- * @returns Configured turn executor.
+ * @returns Configured lifecycle runtime.
  */
-function createMatrixTurnExecutor(placement: AgentRuntimePlacement, coreDb: CoreDb): TurnExecutor {
-  const workerControlGateway = new WorkerControlGateway();
-  const remoteEnv =
-    placement === 'remote-container'
-      ? {
-          OPENKIT_OPENSHELL_CELL_SSH_TARGET: 'ubuntu@a1',
-          OPENKIT_OPENSHELL_GATEWAY: 'a1-openkit',
-          OPENKIT_OPENSHELL_GATEWAY_URL: 'http://127.0.0.1:27670',
-        }
-      : {};
-  return createConfiguredTurnExecutor({
+function createMatrixRuntime(coreDb: CoreDb) {
+  return createConfiguredWorkerLifecycleRuntime({
     coreDb,
-    env: {
-      OPENKIT_CONTAINER_BACKEND: 'openshell',
-      OPENKIT_CONTAINER_PLACEMENT: placement === 'remote-container' ? 'remote' : 'local',
-      OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL:
-        placement === 'remote-container'
-          ? 'https://nanocore.example.com/api/worker-control'
-          : 'http://host.openshell.internal:3000/api/worker-control',
-      OPENKIT_WORKER_RUNTIME: 'container',
-      ...remoteEnv,
-    },
-    workerControlGateway,
+    env: {},
+    workerControlGateway: new WorkerControlGateway(),
   });
 }
 
 /**
- * Creates a turn executor that exercises the Goal Mode loop path for one placement.
+ * Creates a turn executor that exercises the Goal Mode loop path for NanoHost.
  *
- * @param placement Agent runtime placement to configure.
  * @param coreDb Core database used by worker-governance executors.
  * @returns Turn executor for the matrix loop test.
  */
-function createMatrixLoopTurnExecutor(
-  placement: AgentRuntimePlacement,
-  coreDb: CoreDb
-): TurnExecutor {
+function createMatrixLoopTurnExecutor(coreDb: CoreDb): TurnExecutor {
   return new WorkerGovernanceTurnExecutor({
-    backend: new MatrixWorkerGovernanceBackend(runtimeCapabilities(placement)),
+    backend: new MatrixWorkerGovernanceBackend(coreDb, runtimeCapabilities()),
     coreDb,
-    createAgentSessionId: () => `as_loop_${placement.replace(/-/g, '_')}`,
-    environmentBackend:
-      placement === 'remote-container'
-        ? {
-            workerControlBaseUrl: 'https://nanocore.example.com/api/worker-control',
-            gatewayUrl: 'http://127.0.0.1:27670',
-            kind: 'openshell',
-            placement: 'remote',
-            sandboxImageRef: 'openkit/worker-codex:dev',
-          }
-        : {
-            workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
-            kind: 'openshell',
-            placement: 'local',
-            sandboxImageRef: 'openkit/worker-codex:dev',
-          },
+    createAgentSessionId: () => 'as_loop_nanohost',
     now: () => new Date(Date.now() + 60_000).toISOString(),
   });
 }
 
 /**
- * Describes the runtime placement selected by one turn executor.
+ * Allocates and proves one unique ready NanoHost RuntimeTarget for matrix admission.
  *
- * @param executor Configured turn executor.
- * @returns Agent runtime placement selected by configuration.
+ * @param coreDb Core database that owns the configured RuntimeTarget.
  */
-function describeTurnExecutorPlacement(executor: TurnExecutor): AgentRuntimePlacement {
-  if (executor instanceof WorkerGovernanceTurnExecutor) {
-    const environmentBackend = (
-      executor as unknown as { environmentBackend: { placement?: string } }
-    ).environmentBackend;
-
-    return environmentBackend.placement === 'remote' ? 'remote-container' : 'local-container';
-  }
-
-  throw new Error(`Unsupported matrix turn executor: ${executor.constructor.name}.`);
+function seedReadyNanoHostRuntimeTarget(coreDb: CoreDb): void {
+  const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: MATRIX_DEPLOYMENT_ID,
+    identityId: MATRIX_IDENTITY_ID,
+    observedAt: '2026-06-28T00:00:00.000Z',
+    targetId: MATRIX_RUNTIME_TARGET_ID,
+  });
+  upsertNanoHostRuntimeTarget(coreDb, {
+    ...allocated,
+    freshEmpty: true,
+    observedAt: '2026-06-28T00:00:02.000Z',
+    predecessorFenced: true,
+    ready: true,
+  });
 }
 
 /**
@@ -293,14 +272,8 @@ function createCoreDb(): CoreDb {
  * @param coreDb Core database to mutate.
  * @param threadId Thread that owns the goal.
  * @param repositoryPath Host-local temporary repository path.
- * @param runtimePlacement Runtime placement label included in the task objective.
  */
-function seedRepositoryAndGoal(
-  coreDb: CoreDb,
-  threadId: string,
-  repositoryPath: string,
-  runtimePlacement: AgentRuntimePlacement
-): void {
+function seedRepositoryAndGoal(coreDb: CoreDb, threadId: string, repositoryPath: string): void {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   try {
     applyScopedMigrations(workspaceDb);
@@ -313,22 +286,22 @@ function seedRepositoryAndGoal(
     });
     createGoalRecord(workspaceDb, {
       workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-      goalId: `goal_loop_${runtimePlacement.replace(/-/g, '_')}`,
+      goalId: 'goal_loop_nanohost',
       workspaceId: 'ws_demo',
       threadId,
-      title: `Loop ${runtimePlacement}`,
-      objective: `Run one loop step through ${runtimePlacement}.`,
+      title: 'Loop NanoHost',
+      objective: 'Run one loop step through NanoHost.',
       status: 'running',
       now: () => '2026-06-28T00:00:00.000Z',
     });
     createGoalTask(workspaceDb, {
       workspaceId: 'ws_demo',
       threadId,
-      goalId: `goal_loop_${runtimePlacement.replace(/-/g, '_')}`,
-      planItemId: `it_goal_plan_${runtimePlacement.replace(/-/g, '_')}`,
-      taskId: `task_loop_${runtimePlacement.replace(/-/g, '_')}`,
-      title: `Step ${runtimePlacement}`,
-      objective: `Produce reviewable evidence through ${runtimePlacement}.`,
+      goalId: 'goal_loop_nanohost',
+      planItemId: 'it_goal_plan_nanohost',
+      taskId: 'task_loop_nanohost',
+      title: 'Step NanoHost',
+      objective: 'Produce reviewable evidence through NanoHost.',
       orderIndex: 0,
       dependsOnTaskIds: [],
       acceptanceCriteria: ['A worker result is available for human review.'],
@@ -348,9 +321,9 @@ function seedRepositoryAndGoal(
     updateGoalStatus(workspaceDb, {
       workspaceId: 'ws_demo',
       threadId,
-      goalId: `goal_loop_${runtimePlacement.replace(/-/g, '_')}`,
+      goalId: 'goal_loop_nanohost',
       status: 'running',
-      planItemId: `it_goal_plan_${runtimePlacement.replace(/-/g, '_')}`,
+      planItemId: 'it_goal_plan_nanohost',
       now: () => '2026-06-28T00:00:00.000Z',
     });
   } finally {
@@ -363,28 +336,23 @@ function seedRepositoryAndGoal(
  *
  * @param store Store to mutate.
  * @param threadId Thread that owns the context item.
- * @param runtimePlacement Runtime placement label included in the context.
  */
-function seedThreadContext(
-  store: FsStore,
-  threadId: string,
-  runtimePlacement: AgentRuntimePlacement
-): void {
-  const turn = store.createTurn('ws_demo', threadId, `Context for ${runtimePlacement}`, {
+function seedThreadContext(store: FsStore, threadId: string): void {
+  const turn = store.createTurn('ws_demo', threadId, 'Context for NanoHost', {
     kind: 'user',
     id: 'user_local',
   });
   const timestamp = turn.startedAt ?? '2026-06-28T00:00:00.000Z';
 
   store.createItem({
-    id: `it_context_${threadId}_${runtimePlacement.replace(/-/g, '_')}`,
+    id: `it_context_${threadId}_nanohost`,
     workspaceId: 'ws_demo',
     threadId,
     turnId: turn.id,
     type: 'user-message',
     status: 'completed',
     actor: { kind: 'user', id: 'user_local' },
-    text: `Use this context for the ${runtimePlacement} loop matrix step.`,
+    text: 'Use this context for the NanoHost loop matrix step.',
     createdAt: timestamp,
     completedAt: timestamp,
   });
@@ -396,39 +364,30 @@ function seedThreadContext(
 }
 
 /**
- * Returns backend capability declarations for one runtime placement.
+ * Returns backend capability declarations for the deterministic NanoHost fixture.
  *
- * @param placement Runtime placement to describe.
  * @returns Backend capability list for the fake governance backend.
  */
-function runtimeCapabilities(placement: AgentRuntimePlacement): string[] {
-  if (placement === 'remote-container') {
-    return [
-      'backend-local-inference',
-      'container',
-      'transcript-sink',
-      'remote-gateway',
-      'backend-service-readiness',
-      'file-upload-download',
-      'git-materialization',
-      'change-set-collection',
-    ];
-  }
+function runtimeCapabilities(): string[] {
   return ['backend-local-inference', 'container', 'transcript-sink'];
 }
 
 /**
- * Worker-governance backend used by deterministic local and remote container loop tests.
+ * Worker-governance backend used by deterministic NanoHost loop tests.
  */
 class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private lastPackage: AgentEnvironmentPackage | null = null;
 
   /**
-   * Creates a fake worker-governance backend.
+   * Creates a fake worker-governance backend that still proves NanoHost RuntimeTarget readiness.
    *
+   * @param coreDb Core database that owns the unique ready RuntimeTarget.
    * @param capabilities Backend capabilities to report.
    */
-  public constructor(private readonly capabilities: string[]) {}
+  public constructor(
+    private readonly coreDb: CoreDb,
+    private readonly capabilities: string[]
+  ) {}
 
   /**
    * Describes backend capabilities.
@@ -455,22 +414,39 @@ class MatrixWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Plans one deterministic fake backend session without external effects. */
   public planSession(environmentPackage: AgentEnvironmentPackage) {
-    const remote = this.capabilities.includes('remote-gateway');
     return {
       agentSessionId: environmentPackage.scope.agentSessionId,
       backendKind: 'openshell' as const,
       backendSessionId: `matrix-${environmentPackage.scope.agentSessionId}`,
-      backendTarget: {
-        cellTargetId: remote ? 'cell-remote-test' : 'cell-local-test',
-        gatewayEndpoint: remote ? 'http://127.0.0.1:27670' : 'http://127.0.0.1:17670',
-        gatewayName: remote ? 'a1-openkit' : 'openshell',
-        placement: remote ? ('remote' as const) : ('local' as const),
-      },
-      deploymentId: 'deployment_matrix',
+      deploymentId: MATRIX_DEPLOYMENT_ID,
       packageSnapshotId: environmentPackage.snapshotId,
+      runtimeTargetId: MATRIX_RUNTIME_TARGET_ID,
       stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
       transientProviderInstanceId: null,
     };
+  }
+
+  /**
+   * Proves the unique ready RuntimeTarget, then inspects durable AgentSession continuity.
+   *
+   * @param input Exact AgentSession continuity inspection requested by the turn executor.
+   * @returns Continuity disposition for fresh admission or retained reuse.
+   */
+  public async prepareAgentSessionContinuity(
+    input: WorkerGovernanceAgentSessionContinuityInput
+  ): Promise<WorkerGovernanceAgentSessionContinuityDisposition> {
+    const target = getNanoHostRuntimeTarget(this.coreDb, MATRIX_RUNTIME_TARGET_ID);
+    if (!target?.predecessorFenced || !target.ready || !target.freshEmpty) {
+      throw new Error('The configured NanoHost RuntimeTarget is not ready for admission.');
+    }
+    const inspection = inspectNanoHostAgentSessionContinuity(this.coreDb, input);
+    if (!inspection) {
+      return 'absent';
+    }
+    if (input.reuseAllowed) {
+      return inspection.reusable ? 'reusable' : 'replacement-required';
+    }
+    throw new Error('The worker backend is not ready for fresh AgentSession admission.');
   }
 
   /** Cleans one deterministic fake backend session. */

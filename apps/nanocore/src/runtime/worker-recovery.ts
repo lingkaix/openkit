@@ -173,7 +173,7 @@ export interface ClearWorkerCheckpointAfterTerminalStateInput {
  * Derives one checkpoint outcome from the complete backend-specific worker owner tuple.
  *
  * @param coreDb Open Core database containing scheduler and worker-control authority.
- * @param store Product store containing the Turn and Agent Session owners.
+ * @param store Product store containing the Turn and AgentSession owners.
  * @param workspaceDb Open workspace database containing the package and checkpoint owners.
  * @param checkpoint Exact request-bound worker checkpoint.
  * @returns Canonical stop reason accepted for the original worker lineage.
@@ -192,21 +192,21 @@ export function recoverWorkerCheckpointStopReason(
     throw new Error('Worker checkpoint is missing its Turn owner.');
   }
   if (!checkpoint.workerSessionId || turn.agentSessionId !== checkpoint.workerSessionId) {
-    throw new Error('Worker checkpoint has no exact Agent Session owner.');
+    throw new Error('Worker checkpoint has no exact AgentSession owner.');
   }
 
   let agentSession: ReturnType<FsStore['getAgentSession']>;
   try {
     agentSession = store.getAgentSession(checkpoint.workerSessionId);
   } catch {
-    throw new Error('Worker checkpoint is missing its Agent Session.');
+    throw new Error('Worker checkpoint is missing its AgentSession.');
   }
   if (
     agentSession.workspaceId !== checkpoint.workspaceId ||
     agentSession.threadId !== checkpoint.threadId ||
     turn.agentId !== agentSession.agentId
   ) {
-    throw new Error('Worker Agent Session contradicts its checkpoint lineage.');
+    throw new Error('Worker AgentSession contradicts its checkpoint lineage.');
   }
 
   const leases = listSchedulerSessionLeasesForTurn(coreDb, {
@@ -298,11 +298,9 @@ export function recoverWorkerCheckpointStopReason(
       (record) => record.agentSessionId === checkpoint.workerSessionId
     ) ||
     environmentPackages.some((record) => record.agentSessionId === checkpoint.workerSessionId) ||
-    Boolean(
-      coreDb.sqlite
-        .prepare('SELECT 1 FROM worker_control_records WHERE agent_session_id = ? LIMIT 1')
-        .get(checkpoint.workerSessionId)
-    )
+    coreDb.sqlite
+      .prepare('SELECT 1 FROM worker_control_records WHERE agent_session_id = ? LIMIT 1')
+      .get(checkpoint.workerSessionId)
   ) {
     throw new Error('In-process worker checkpoint has no complete terminal closeout.');
   }
@@ -341,7 +339,7 @@ export function recoverWorkerCheckpointStopReason(
     turn.status !== expectedTurnStatus ||
     agentSession.status !== expectedAgentSessionStatus ||
     lease.status !== expectedLeaseStatus ||
-    lease.recoveryState !== null ||
+    lease.recoveryState !== (expectedTurnStatus === 'failed' ? 'needs-evidence' : null) ||
     terminalEvents.length !== 1 ||
     terminalEvents[0]?.data.type !== 'turn-completed' ||
     terminalEvents[0].data.stopReason !== stopReason
@@ -553,7 +551,7 @@ export function hasExactActiveHumanGate(
  * Materializes only checkpoints whose existing owners prove an interrupted worker closeout.
  *
  * @param coreDb Open Core database handle containing scheduler authority.
- * @param store App-local product Turn and Agent Session store.
+ * @param store App-local product Turn and AgentSession store.
  * @param workspaceDb Open workspace-scope database handle.
  * @returns Interrupted worker state rows for visible restart recovery.
  */
@@ -581,7 +579,7 @@ export function materializeInterruptedWorkerStates(
  * Derives retry authority from the exact checkpoint, product, and scheduler owners.
  *
  * @param coreDb Open Core database handle containing scheduler authority.
- * @param store App-local product Turn and Agent Session store.
+ * @param store App-local product Turn and AgentSession store.
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Exact Workspace, Thread, and Turn lineage.
  * @returns One non-durable retry authority decision and its source checkpoint when present.

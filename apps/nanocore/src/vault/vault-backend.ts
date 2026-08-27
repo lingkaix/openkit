@@ -1,7 +1,14 @@
 import { Buffer } from 'node:buffer';
 
-/** First-class vault backend kinds supported by the v1 boundary. */
-export type VaultBackendKind = 'encrypted-file' | 'os-keychain';
+import {
+  type ProviderSubscriptionAccountSlotId,
+  ProviderSubscriptionAccountSlotIdSchema,
+  type SubscriptionProviderId,
+  SubscriptionProviderIdSchema,
+} from '@openkit/config-schema';
+
+/** Concrete Vault backend kind supported by NanoCore. */
+export type VaultBackendKind = 'encrypted-file';
 
 /** Owner scope recorded with non-secret vault material metadata. */
 export type VaultOwnerScope = 'server' | 'user' | 'workspace';
@@ -48,6 +55,13 @@ export interface VaultEntryMetadata {
   readonly workspaceId?: string;
   /** User id when ownerScope is user. */
   readonly userId?: string;
+  /** Provider subscription account pair for server-owned subscription credentials. */
+  readonly providerSubscriptionAccount?: {
+    /** Stable provider-scoped account slot id. */
+    readonly accountSlotId: ProviderSubscriptionAccountSlotId;
+    /** Subscription provider that owns the slot. */
+    readonly subscriptionProviderId: SubscriptionProviderId;
+  };
 }
 
 /** Non-secret inventory row returned by list operations. */
@@ -181,14 +195,48 @@ export class VaultBackendError extends Error {
  * @throws VaultBackendError when scope-specific ids are inconsistent.
  */
 export function assertVaultEntryMetadata(metadata: VaultEntryMetadata): void {
+  const value: unknown = metadata;
+
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new VaultBackendError(
+      'backend-unavailable',
+      'Vault entry metadata does not match its owner scope.'
+    );
+  }
+
+  const candidate = value as Partial<VaultEntryMetadata> & Record<string, unknown>;
+  const pairValue: unknown = candidate.providerSubscriptionAccount;
+  const pair =
+    typeof pairValue === 'object' && pairValue !== null && !Array.isArray(pairValue)
+      ? (pairValue as Record<string, unknown>)
+      : undefined;
+  const allowedKeys = [
+    'ownerScope',
+    ...(candidate.ownerScope === 'workspace' ? ['workspaceId'] : []),
+    ...(candidate.ownerScope === 'user' ? ['userId'] : []),
+    ...(pairValue !== undefined ? ['providerSubscriptionAccount'] : []),
+  ].sort();
+  const actualKeys = Object.keys(candidate).sort();
+  const validPair =
+    pairValue === undefined ||
+    (pair !== undefined &&
+      candidate.ownerScope === 'server' &&
+      Object.keys(pair).sort().join(',') === 'accountSlotId,subscriptionProviderId' &&
+      typeof pair.accountSlotId === 'string' &&
+      ProviderSubscriptionAccountSlotIdSchema.safeParse(pair.accountSlotId).success &&
+      typeof pair.subscriptionProviderId === 'string' &&
+      SubscriptionProviderIdSchema.safeParse(pair.subscriptionProviderId).success);
   const valid =
-    (metadata.ownerScope === 'workspace' &&
-      !!metadata.workspaceId &&
-      metadata.userId === undefined) ||
-    (metadata.ownerScope === 'user' && !!metadata.userId && metadata.workspaceId === undefined) ||
-    (metadata.ownerScope === 'server' &&
-      metadata.workspaceId === undefined &&
-      metadata.userId === undefined);
+    validPair &&
+    actualKeys.length === allowedKeys.length &&
+    actualKeys.every((key, index) => key === allowedKeys[index]) &&
+    ((candidate.ownerScope === 'workspace' &&
+      typeof candidate.workspaceId === 'string' &&
+      candidate.workspaceId.length > 0) ||
+      (candidate.ownerScope === 'user' &&
+        typeof candidate.userId === 'string' &&
+        candidate.userId.length > 0) ||
+      candidate.ownerScope === 'server');
 
   if (!valid) {
     throw new VaultBackendError(

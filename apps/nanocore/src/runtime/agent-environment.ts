@@ -1,12 +1,17 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentCredentialDeclaration,
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
-  OPENKIT_WORKER_CONTROL_POST_PATHS,
+  EMPTY_BUILD_CONTEXT_DIGEST,
+  EMPTY_BUILD_CONTEXT_REF,
   planSessionWorkspaceMaterialization,
+  requireCredentialFreeHttpsGitLocator,
   resolveWorkspaceDataSourceReference,
+  type SessionWorkspaceMaterializationPlan,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
   type WorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
@@ -14,18 +19,22 @@ import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protoco
 import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import { createInjectionPlan } from '../injection-plans.js';
-import { createInjectionReceipt } from '../injection-receipts.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import { getVaultGrant, type VaultGrantRecord } from '../vault/vault-grants.js';
 import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
+import { createVaultInjectionPlan } from '../vault-injection-plans.js';
+import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
 import { TurnStartValidationError } from './orchestrator.js';
 
 type Turn = z.infer<typeof TurnSchema>;
+
+/** Session-static policy label for the Turn-specific Context Package workspace root. */
+const CONTEXT_PACKAGE_FILESYSTEM_RULE_ID = 'openkit-context-package';
 
 /**
  * Worker Skill catalog entry owned by NanoCore.
@@ -143,14 +152,6 @@ const WORKER_MCP_CATALOG: Record<string, WorkerMcpCatalogEntry> = {
 export interface ResolveOpenShellAgentEnvironmentBackendInput {
   /** Backend target kind. */
   kind: 'openshell';
-  /** Runtime placement for the OpenShell target. Defaults to `local`. */
-  placement?: 'local' | 'remote';
-  /** Direct NanoCore Worker Control Gateway URL reached by the sandbox. */
-  workerControlBaseUrl: string;
-  /** Remote OpenShell gateway URL retained only as runtime-private configuration. */
-  gatewayUrl?: string;
-  /** Worker-visible OpenAI-compatible inference endpoint. */
-  inferenceBaseUrl?: string;
 }
 
 /**
@@ -202,7 +203,7 @@ export interface PreparedWorkerContextPackage {
 export interface ResolveAgentEnvironmentPackageInput {
   /** Complete manifest and provider selection resolved before materialization. */
   agentSetup: ResolvedAgentSetup;
-  /** Agent session id that the package will govern. */
+  /** AgentSession id that the package will govern. */
   agentSessionId: string;
   /** Container backend target for the package. */
   backend?: ResolveAgentEnvironmentBackendInput;
@@ -238,6 +239,16 @@ export interface ResolveAgentEnvironmentPackageInput {
   runtimeEnvCredentialSink?: (credential: ResolvedAgentEnvironmentRuntimeEnvCredential) => void;
 }
 
+/** Secret-free input used to compute one future Turn's exact AgentSession compatibility key. */
+export type ResolveAgentSessionCompatibilityKeyInput = Omit<
+  ResolveAgentEnvironmentPackageInput,
+  | 'preparedContextPackage'
+  | 'providerCredentialSink'
+  | 'runtimeEnvCredentialSink'
+  | 'runtimeFileCredentialSink'
+  | 'vaultBackend'
+>;
+
 /**
  * Resolves one container Agent Environment Package slice from NanoCore runtime state.
  *
@@ -249,7 +260,7 @@ export function resolveAgentEnvironmentPackage(
   input: ResolveAgentEnvironmentPackageInput
 ): AgentEnvironmentPackage {
   if (input.backend?.kind === 'openshell') {
-    return resolveOpenShellAgentEnvironmentPackage(input, input.backend);
+    return resolveOpenShellAgentEnvironmentPackage(input, input.backend, 'materialize');
   }
 
   if (input.backend && (input.backend as { kind?: string }).kind === 'host') {
@@ -257,6 +268,66 @@ export function resolveAgentEnvironmentPackage(
   }
 
   throw new Error('Agent Environment Package resolution requires a container backend.');
+}
+
+/**
+ * Computes the exact SessionCompatibilityKey from a future Turn's static AEP inputs without secret
+ * resolution or durable Vault effects.
+ *
+ * @param input Future Turn, resolved agent, and static workspace inputs.
+ * @returns Exact compatibility key required by scheduler admission and final launch.
+ */
+export function resolveAgentSessionCompatibilityKey(
+  input: ResolveAgentSessionCompatibilityKeyInput
+): string {
+  if (input.backend?.kind !== 'openshell') {
+    throw new Error('AgentSession compatibility requires a container backend.');
+  }
+  const environmentPackage = resolveOpenShellAgentEnvironmentPackage(
+    input,
+    input.backend,
+    'metadata-only',
+    hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
+  );
+  return (
+    environmentPackage.extensions.openkit as {
+      sessionWorkspace: SessionWorkspaceMaterializationPlan;
+    }
+  ).sessionWorkspace.compatibilityKey.digest;
+}
+
+/** Reads whether the existing durable launch path will prepare a Context Package for this Turn. */
+function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Turn): boolean {
+  if (!coreDb) {
+    return false;
+  }
+  const path = workspaceDbPath(coreDb.dataRoot, turn.workspaceId);
+  if (!existsSync(path)) {
+    return false;
+  }
+  const schema = 'agent_session_compatibility_workspace';
+  coreDb.sqlite.prepare(`ATTACH DATABASE ? AS ${schema}`).run(path);
+  try {
+    const checkpointTable = coreDb.sqlite
+      .prepare(
+        `SELECT 1 FROM ${schema}.sqlite_master
+         WHERE type = 'table' AND name = 'worker_turn_checkpoints'`
+      )
+      .get();
+    if (!checkpointTable) {
+      return false;
+    }
+    return Boolean(
+      coreDb.sqlite
+        .prepare(
+          `SELECT 1 FROM ${schema}.worker_turn_checkpoints
+           WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?`
+        )
+        .get(turn.workspaceId, turn.threadId, turn.id)
+    );
+  } finally {
+    coreDb.sqlite.prepare(`DETACH DATABASE ${schema}`).run();
+  }
 }
 
 /**
@@ -268,8 +339,13 @@ export function resolveAgentEnvironmentPackage(
  */
 function resolveOpenShellAgentEnvironmentPackage(
   input: ResolveAgentEnvironmentPackageInput,
-  backend: ResolveOpenShellAgentEnvironmentBackendInput
+  backend: ResolveOpenShellAgentEnvironmentBackendInput,
+  credentialResolution: 'materialize' | 'metadata-only',
+  includeExpectedContextPackage = false
 ): AgentEnvironmentPackage {
+  if (Object.keys(backend).some((key) => key !== 'kind')) {
+    throw new Error('Agent Environment Package backends cannot select retired placement or URLs.');
+  }
   const triggerActor = ActorRefSchema.parse(input.triggerActor);
   const responsibleUserId =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
@@ -300,27 +376,10 @@ function resolveOpenShellAgentEnvironmentPackage(
   if (!provider?.model) {
     throw new Error('Agent Environment Package resolution requires one provider and model.');
   }
-  if (trustedInferenceRequired && backend.inferenceBaseUrl) {
-    throw new Error(
-      'Trusted worker inference derives its base URL from the worker-control origin.'
-    );
-  }
-  if (
-    trustedInferenceRequired &&
-    (sandboxAccess.network.length > 0 || sandboxAccess.credentialDeclarations.length > 0)
-  ) {
-    throw new Error(
-      'Trusted worker inference does not allow direct sandbox network or credentials.'
-    );
+  if (trustedInferenceRequired && sandboxAccess.credentialDeclarations.length > 0) {
+    throw new Error('Trusted worker inference does not allow direct credentials.');
   }
 
-  const workerControlUrl = new URL(backend.workerControlBaseUrl);
-
-  if (trustedInferenceRequired && !['http:', 'https:'].includes(workerControlUrl.protocol)) {
-    throw new Error('Trusted worker inference requires an HTTP(S) worker-control endpoint.');
-  }
-
-  const workerControlOrigin = workerControlUrl.origin;
   const directCredentialDeclarations = sandboxAccess.credentialDeclarations.filter(
     (declaration) => declaration.visibility === 'runtime-env'
   );
@@ -346,14 +405,7 @@ function resolveOpenShellAgentEnvironmentPackage(
     throw new Error('Backend-local inference requires explicit manifest capability.');
   }
 
-  const inferenceBaseUrl = trustedInferenceRequired
-    ? `${workerControlOrigin}/api/worker-inference/v1`
-    : llmMode === 'backend-local'
-      ? (backend.inferenceBaseUrl ?? 'https://inference.local/v1')
-      : undefined;
-  const inferenceUrl = inferenceBaseUrl ? new URL(inferenceBaseUrl) : null;
   const turnInput = input.turnInput?.trim() || 'Continue the assigned OpenKit turn.';
-  const placement = backend.placement ?? 'local';
   const backendAllowedKinds = backendRequirements?.allowedKinds ?? ['openshell'];
 
   if (!backendAllowedKinds.includes('openshell')) {
@@ -367,10 +419,12 @@ function resolveOpenShellAgentEnvironmentPackage(
       throw new Error(`Agent manifest does not declare required control binary: ${binaryPath}`);
     }
   }
-  const inferenceBinaryPaths = runtimeBinaryPaths.filter(
-    (binaryPath) => !controlBinaryPaths.includes(binaryPath as (typeof controlBinaryPaths)[number])
-  );
-  if (inferenceBinaryPaths.length === 0) {
+  if (
+    !manifest.runtime.binaries.some(
+      (binary) =>
+        binary.id === manifest.runtime.adapter || binary.id === `${manifest.runtime.adapter}-native`
+    )
+  ) {
     throw new Error('Agent manifest does not declare a native inference binary.');
   }
 
@@ -389,6 +443,19 @@ function resolveOpenShellAgentEnvironmentPackage(
         input.preparedContextPackage
       )
     : null;
+  const contextPackageWorkspaceRoot =
+    preparedContextPackage?.workspaceRoot ??
+    (credentialResolution === 'metadata-only' && includeExpectedContextPackage
+      ? {
+          access: 'read-only' as const,
+          id: `context_${input.turn.id}`,
+          sourceKind: 'materialized-dir' as const,
+          sourcePath: '/openkit/context-package-metadata',
+          workerPath: '/openkit/context',
+        }
+      : null);
+  const contextPackageContentDigest =
+    preparedContextPackage?.contentDigest ?? `sha256:${'0'.repeat(64)}`;
   const workspaceInputs = [
     ...input.workspaceRoots.map((root) => ({
       access: root.access,
@@ -398,14 +465,14 @@ function resolveOpenShellAgentEnvironmentPackage(
       source: workspaceInputSource(root, input),
       target: root.workerPath,
     })),
-    ...(preparedContextPackage
+    ...(contextPackageWorkspaceRoot
       ? [
           {
             access: 'read-only' as const,
-            id: preparedContextPackage.workspaceRoot.id,
+            id: contextPackageWorkspaceRoot.id,
             kind: 'generated' as const,
             materialization: {
-              contentDigest: preparedContextPackage.contentDigest,
+              contentDigest: contextPackageContentDigest,
               slotId: 'context',
               strategy: 'filesystem',
             },
@@ -428,6 +495,7 @@ function resolveOpenShellAgentEnvironmentPackage(
     responsibleUserId,
     triggerActor,
     workspaceId: input.turn.workspaceId,
+    credentialResolution,
     ...(input.providerCredentialSink
       ? { providerCredentialSink: input.providerCredentialSink }
       : {}),
@@ -465,7 +533,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   };
 
   const environmentPackage = AgentEnvironmentPackageSchema.parse({
-    schemaVersion: 2,
+    schemaVersion: 3,
     packageId,
     snapshotId,
     createdAt,
@@ -487,11 +555,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       capabilityRequests: [],
     },
     runtime: {
-      image: {
-        kind: 'container-image',
-        pullPolicy: manifest.runtime.image.pullPolicy,
-        ref: manifest.runtime.image.ref,
-      },
+      image: resolveRuntimeImage(manifest.runtime.image),
       binaries: manifest.runtime.binaries,
       command: {
         argv: ['openkit-worker-shim', '--package', workerPackagePath],
@@ -534,7 +598,21 @@ function resolveOpenShellAgentEnvironmentPackage(
     },
     control: {
       protocol: 'openkit-worker-control-v1',
-      mode: 'direct-nanocore',
+      mode: 'sandbox-integration',
+      bindings: {
+        capabilities: {
+          pathPrefix: '/capabilities/',
+          tokenRef: 'runtime://openkit/capability-token',
+        },
+        inference: {
+          pathPrefix: '/inference/',
+          tokenRef: 'runtime://openkit/inference-token',
+        },
+        workerControl: {
+          pathPrefix: '/worker-control/',
+          tokenRef: 'runtime://openkit/worker-control-token',
+        },
+      },
       transcript: {
         root: '/openkit/session',
         eventsPath: '/openkit/session/events.jsonl',
@@ -555,17 +633,6 @@ function resolveOpenShellAgentEnvironmentPackage(
             }
           : {}),
       },
-      endpoint: {
-        baseUrl: backend.workerControlBaseUrl,
-        implementation: 'direct-nanocore',
-        kind: 'direct-url',
-        required: true,
-      },
-      auth: {
-        credentialVisibility: 'environment',
-        kind: 'sandbox-session-token',
-        tokenRef: 'runtime://openkit/control-token',
-      },
       channels: {
         commands: true,
         events: 'batch',
@@ -585,7 +652,6 @@ function resolveOpenShellAgentEnvironmentPackage(
       adapter: {
         kind: 'openkit-worker-shim',
         targetRuntime: manifest.runtime.adapter,
-        targetTransport: workerControlUrl.protocol === 'http:' ? 'outbound-http' : 'outbound-https',
       },
     },
     capabilities: {
@@ -616,12 +682,12 @@ function resolveOpenShellAgentEnvironmentPackage(
             access: root.access,
             workerPath: root.workerPath,
           })),
-          ...(preparedContextPackage
+          ...(contextPackageWorkspaceRoot
             ? [
                 {
-                  access: preparedContextPackage.workspaceRoot.access,
-                  id: preparedContextPackage.workspaceRoot.id,
-                  workerPath: preparedContextPackage.workspaceRoot.workerPath,
+                  access: contextPackageWorkspaceRoot.access,
+                  id: CONTEXT_PACKAGE_FILESYSTEM_RULE_ID,
+                  workerPath: contextPackageWorkspaceRoot.workerPath,
                 },
               ]
             : []),
@@ -646,63 +712,19 @@ function resolveOpenShellAgentEnvironmentPackage(
       network: {
         default: 'deny',
         enforcement: 'openshell',
-        rules: [
-          {
-            action: 'allow',
-            binaries: [...controlBinaryPaths],
-            host: workerControlUrl.hostname,
-            id: 'openkit-worker-control',
-            port: Number(
-              workerControlUrl.port || (workerControlUrl.protocol === 'https:' ? '443' : '80')
-            ),
-            protocol: 'rest',
-            rules: OPENKIT_WORKER_CONTROL_POST_PATHS.map((path) => ({ method: 'POST', path })),
-          },
-          ...(llmMode === 'gateway' && inferenceUrl
-            ? [
-                {
-                  action: 'allow',
-                  binaries: inferenceBinaryPaths,
-                  host: inferenceUrl.hostname,
-                  id: 'openkit-worker-inference',
-                  port: Number(
-                    inferenceUrl.port || (inferenceUrl.protocol === 'https:' ? '443' : '80')
-                  ),
-                  protocol: 'rest',
-                  rules: [
-                    {
-                      method: 'POST',
-                      path: '/api/worker-inference/v1/chat/completions',
-                    },
-                    { method: 'POST', path: '/api/worker-inference/v1/responses' },
-                  ],
-                },
-              ]
-            : llmMode === 'backend-local' && inferenceUrl
-              ? [
-                  {
-                    action: 'allow',
-                    binaries: inferenceBinaryPaths,
-                    host: inferenceUrl.hostname,
-                    id: 'openkit-backend-local-inference',
-                    port: Number(
-                      inferenceUrl.port || (inferenceUrl.protocol === 'https:' ? '443' : '80')
-                    ),
-                  },
-                ]
-              : []),
-          ...sandboxAccess.network.map((grant) => ({
-            access: grant.access,
-            action: 'allow',
-            binaries: grant.binaries,
-            host: grant.host,
-            id: grant.id,
-            port: grant.port,
-            protocol: grant.protocol,
-            purpose: grant.purpose,
-            scope: grant.scope,
-          })),
-        ],
+        rules: sandboxAccess.network.map((grant) => ({
+          action: 'allow' as const,
+          binaries: grant.binaries,
+          host: grant.host,
+          id: grant.id,
+          port: grant.port,
+          protocol: grant.protocol,
+          purpose: grant.purpose,
+          ...('rules' in grant && grant.rules
+            ? { rules: grant.rules.map((rule) => ({ ...rule })) }
+            : { access: grant.access }),
+          scope: grant.scope,
+        })),
       },
       process: {
         default: 'allow',
@@ -745,9 +767,6 @@ function resolveOpenShellAgentEnvironmentPackage(
                     ? 'direct-provider'
                     : 'backend-local',
             },
-            ...(llmMode === 'gateway' && inferenceBaseUrl
-              ? { workerBaseUrl: inferenceBaseUrl }
-              : {}),
           },
           id: 'default',
           model: workerModel,
@@ -772,14 +791,14 @@ function resolveOpenShellAgentEnvironmentPackage(
       preferred: backendRequirements?.preferred ?? 'openshell',
       allowedKinds: backendAllowedKinds,
       requiredCapabilities: uniqueStrings([
-        ...openShellRequiredCapabilities(placement),
+        ...openShellRequiredCapabilities(),
         ...requiredCapabilities,
       ]),
       degrade: {
         hardenedSandbox: true,
       },
       extensions: {
-        openshell: openShellBackendExtension(placement),
+        openshell: openShellBackendExtension(),
       },
     },
     extensions: {
@@ -822,6 +841,49 @@ function resolveOpenShellAgentEnvironmentPackage(
       },
     },
   });
+}
+
+/**
+ * Resolves authored reference or build image authority into the immutable AEP form.
+ *
+ * @param image Authored agent runtime image declaration.
+ * @returns Exact reference selection or content-addressed build declaration.
+ */
+function resolveRuntimeImage(
+  image: ResolvedAgentSetup['manifest']['runtime']['image']
+): AgentEnvironmentPackage['runtime']['image'] {
+  if (image.kind === 'reference') {
+    return image;
+  }
+  if (image.contextRef !== EMPTY_BUILD_CONTEXT_REF) {
+    throw new Error('Agent image build requires the exact V1 empty build context.');
+  }
+
+  const argumentsJson = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(image.arguments).sort(([left], [right]) => left.localeCompare(right))
+    )
+  );
+  return {
+    arguments: image.arguments,
+    argumentsDigest: sha256Digest(argumentsJson),
+    contextDigest: EMPTY_BUILD_CONTEXT_DIGEST,
+    contextRef: image.contextRef,
+    egress: image.egress,
+    input: {
+      ...image.input,
+      digest: sha256Digest(image.input.content),
+    },
+    kind: 'build',
+    layerLimit: image.layerLimit,
+    outputLimitBytes: image.outputLimitBytes,
+    timeLimitSeconds: image.timeLimitSeconds,
+  };
+}
+
+/** Returns the canonical SHA-256 label for deterministic authored image material. */
+function sha256Digest(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 /**
@@ -871,6 +933,45 @@ function workspaceInputSource(
   input: ResolveAgentEnvironmentPackageInput
 ): Record<string, unknown> {
   const sourceRef = input.workspaceSourceRefs?.[root.id];
+
+  if (root.sourceKind === 'remote-git') {
+    if (!sourceRef || !input.workspaceDataSourceCatalog) {
+      throw new Error(
+        `Workspace data source catalog required for sourceRef: ${sourceRef ?? root.id}`
+      );
+    }
+
+    const resolved = resolveWorkspaceDataSourceReference({
+      access: root.access,
+      catalog: input.workspaceDataSourceCatalog,
+      slotKind: 'worktree',
+      sourceRef,
+    });
+    let locator: ReturnType<typeof requireCredentialFreeHttpsGitLocator>;
+    try {
+      locator = requireCredentialFreeHttpsGitLocator(resolved.locator);
+    } catch {
+      throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
+    }
+    if (
+      resolved.sourceKind !== 'git' ||
+      resolved.vaultGrantRef ||
+      locator.commit !== root.sourceCommit
+    ) {
+      throw new Error(`Remote Git source changed after scheduler admission: ${sourceRef}`);
+    }
+
+    return {
+      catalogEntryDigest: resolved.catalogEntryDigest,
+      commit: root.sourceCommit,
+      kind: 'git',
+      sensitivity: resolved.sensitivity,
+      sourceId: resolved.sourceId,
+      sourceRef,
+      url: locator.url,
+    };
+  }
+
   const commit = root.access === 'read-write' ? readWorkspaceGitCommit(root.sourcePath) : null;
 
   if (!sourceRef) {
@@ -1040,12 +1141,14 @@ interface ResolvedWorkerCredentialDeclarationArtifacts {
 interface ResolveWorkerCredentialDeclarationsInput {
   /** Agent receiving the credential injection. */
   readonly agentId: string;
-  /** Agent session receiving the credential injection. */
+  /** AgentSession receiving the credential injection. */
   readonly agentSessionId: string;
   /** Core database that stores vault metadata and injection records. */
   readonly coreDb?: CoreDb;
   /** Credential declarations requested for this package. */
   readonly declarations: readonly AgentEnvironmentCredentialDeclaration[];
+  /** Whether secret material and durable injection effects are allowed. */
+  readonly credentialResolution: 'materialize' | 'metadata-only';
   /** Deterministic clock for created records. */
   readonly now: () => string;
   /** Agent Environment Package snapshot id receiving the declarations. */
@@ -1100,7 +1203,9 @@ function resolveWorkerCredentialDeclarations(
     const grant = requireDeclarationGrant(coreDb, declaration);
     const reference = requireDeclarationReference(coreDb, grant);
     assertCredentialGrantMatchesDeclaration(input, declaration, grant, reference);
-    assertCredentialSinkAvailable(input, declaration);
+    if (input.credentialResolution === 'materialize') {
+      assertCredentialSinkAvailable(input, declaration);
+    }
     const effectAuthority =
       isTargetIssuedEffectAuthority(grant.grantId) &&
       (grant.approvalId === null ||
@@ -1123,9 +1228,20 @@ function resolveWorkerCredentialDeclarations(
         403
       );
     }
+    if (input.credentialResolution === 'metadata-only') {
+      appendCredentialDeclarationArtifacts({
+        artifacts,
+        declaration,
+        grant,
+        input,
+        material: null,
+        reference,
+      });
+      continue;
+    }
     const vaultBackend = requireVaultBackend(input);
 
-    createInjectionPlan(coreDb, {
+    createVaultInjectionPlan(coreDb, {
       backendCapabilityRequirement: injection.backendCapabilityRequirement,
       expirationBehavior: grant.expiresAt ? `expires-at:${grant.expiresAt}` : 'grant-lifetime',
       grantId: grant.grantId,
@@ -1138,7 +1254,7 @@ function resolveWorkerCredentialDeclarations(
       ...(injection.targetPath ? { targetPath: injection.targetPath } : {}),
       now: input.now,
     });
-    createInjectionReceipt(coreDb, {
+    createVaultInjectionReceipt(coreDb, {
       agentSessionId: input.agentSessionId,
       backendSummary: injection.backendSummary,
       expiresAt: grant.expiresAt,
@@ -1237,7 +1353,7 @@ function assertCredentialGrantMatchesDeclaration(
     throw new Error(`Vault grant reference does not match declaration: ${declaration.id}`);
   }
   if (grant.targetAgentSessionId !== null && grant.targetAgentSessionId !== input.agentSessionId) {
-    throw new Error(`Vault grant targets a different agent session: ${declaration.id}`);
+    throw new Error(`Vault grant targets a different AgentSession: ${declaration.id}`);
   }
   if (grant.ownerScope !== reference.ownerScope) {
     throw new Error(`Vault grant owner scope does not match reference: ${declaration.id}`);
@@ -1373,8 +1489,8 @@ interface AppendCredentialDeclarationArtifactsInput {
   readonly grant: VaultGrantRecord;
   /** Original resolver input with backend-private sinks. */
   readonly input: ResolveWorkerCredentialDeclarationsInput;
-  /** Secret material resolved through the vault backend. */
-  readonly material: string;
+  /** Secret material resolved through the vault backend, or null for metadata-only preparation. */
+  readonly material: string | null;
   /** Vault reference authorized by the grant. */
   readonly reference: VaultReferenceRecord;
 }
@@ -1428,6 +1544,9 @@ function appendCredentialDeclarationArtifacts(
       providerInstanceId: declaration.provider.instanceId,
       secretRef: `vault://${reference.referenceId}`,
     });
+    if (input.material === null) {
+      return;
+    }
     input.input.providerCredentialSink?.({
       ...(grant.expiresAt ? { credentialExpiresAt: grant.expiresAt } : {}),
       credentialKey: declaration.provider.credentialKey,
@@ -1443,6 +1562,10 @@ function appendCredentialDeclarationArtifacts(
     kind: 'secret-ref' as const,
     secretRef: `vault://${reference.referenceId}`,
   });
+
+  if (input.material === null) {
+    return;
+  }
 
   if (declaration.visibility === 'runtime-file') {
     input.input.runtimeFileCredentialSink?.({
@@ -1586,10 +1709,8 @@ function assertRuntimeAdapterAllowed(
  * @param placement OpenShell runtime placement selected by NanoCore.
  * @returns Required backend capabilities for package validation.
  */
-function openShellRequiredCapabilities(
-  placement: ResolveOpenShellAgentEnvironmentBackendInput['placement']
-): string[] {
-  const capabilities = [
+function openShellRequiredCapabilities(): string[] {
+  return [
     'container',
     'filesystem-policy',
     'network-policy',
@@ -1599,18 +1720,6 @@ function openShellRequiredCapabilities(
     'nanocore-inference-upstream',
     'audit-export',
   ];
-
-  if (placement === 'remote') {
-    capabilities.push(
-      'remote-gateway',
-      'backend-service-readiness',
-      'file-upload-download',
-      'git-materialization',
-      'change-set-collection'
-    );
-  }
-
-  return capabilities;
 }
 
 /**
@@ -1620,11 +1729,8 @@ function openShellRequiredCapabilities(
  * @param placement Runtime placement selected for this package.
  * @returns Product-safe backend extension metadata.
  */
-function openShellBackendExtension(placement: 'local' | 'remote'): Record<string, unknown> {
-  return {
-    ...(placement === 'remote' ? { gatewayUrlRef: 'runtime://openshell/gateway-url' } : {}),
-    placement,
-  };
+function openShellBackendExtension(): Record<string, unknown> {
+  return {};
 }
 
 /**

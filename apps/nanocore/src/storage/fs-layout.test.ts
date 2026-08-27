@@ -6,7 +6,6 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
@@ -138,7 +137,7 @@ describe('ensureLayout', () => {
     ]);
   });
 
-  it('clears managed Codex runtime scratch before restart validation', async () => {
+  it('preserves managed Codex runtime scratch across repeated layout checks', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-codex-scratch-'));
     const codexHome = join(
       root,
@@ -150,18 +149,14 @@ describe('ensureLayout', () => {
       'default',
       'codex-home'
     );
-    const commandShimRoot = join(codexHome, 'tmp', 'arg0', 'codex-arg0-test');
+    const sentinelPath = join(codexHome, 'tmp', 'sentinel.txt');
+
+    mkdirSync(join(codexHome, 'tmp'), { recursive: true });
+    writeFileSync(sentinelPath, 'preserve managed Codex runtime scratch\n');
 
     ensureLayout(root);
-    mkdirSync(commandShimRoot, { recursive: true });
-    writeFileSync(join(commandShimRoot, '.lock'), '');
-    for (const name of ['apply_patch', 'applypatch', 'codex-execve-wrapper']) {
-      symlinkSync(process.execPath, join(commandShimRoot, name));
-    }
-
-    expect(() => ensureLayout(root)).not.toThrow();
-    expect(existsSync(join(codexHome, 'tmp'))).toBe(false);
-    expect(() => ensureLayout(root)).not.toThrow();
+    ensureLayout(root);
+    expect(readFileSync(sentinelPath, 'utf8')).toBe('preserve managed Codex runtime scratch\n');
   });
 
   it('creates stable distinct deployment identities for fresh data roots', async () => {
@@ -506,6 +501,9 @@ describe('ensureLayout', () => {
       true
     );
     expect(existsSync(join(root, 'config', 'agents', 'codex.agent.jsonc'))).toBe(true);
+    expect(readFileSync(join(root, 'config', 'agents', 'codex.agent.jsonc'), 'utf8')).toContain(
+      '"kind": "reference"'
+    );
     expect(existsSync(join(root, 'server', 'layout.json'))).toBe(false);
   });
 

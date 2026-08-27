@@ -15,6 +15,7 @@ import {
   WorkspaceMaterializationRecordSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
@@ -22,6 +23,7 @@ import {
   STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
   StructuredWorkerDelegationRequestSchema,
 } from '../internal-agents/delegation.js';
+import { chatTaskModeTurnId } from '../runtime/idempotent-command.js';
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
@@ -293,7 +295,7 @@ export interface WorkerContextPackageTrace {
   readonly goalId: string | null;
   /** Goal Task identity for Goal workers, otherwise null. */
   readonly taskId: string | null;
-  /** Exact accepted Agent Session. */
+  /** Exact accepted AgentSession. */
   readonly agentSessionId: string;
   /** Exact accepted AEP snapshot. */
   readonly packageSnapshotId: string;
@@ -349,7 +351,7 @@ export interface WorkerContextPackageAuthorityReader {
     workspaceId: string,
     packageSnapshotId: string
   ) => AgentEnvironmentPackage | null;
-  /** Reads one accepted Agent Session. */
+  /** Reads one accepted AgentSession. */
   readonly readAgentSession: (
     workspaceId: string,
     agentSessionId: string
@@ -442,6 +444,7 @@ export interface WorkerContextPackageAuthorityReader {
     readonly workspaceId: string;
     readonly threadId: string;
     readonly startedAt: string | null;
+    readonly triggerActor: ActorRef;
   } | null;
   /** Reads one existing Workspace Input Snapshot. */
   readonly readWorkspaceInputSnapshot: (
@@ -479,7 +482,7 @@ export interface CreateWorkerContextPackageFilesInput {
 
 /** Input for creating one immutable trace. */
 export interface CreateWorkerContextPackageTraceInput {
-  /** Accepted Agent Session. */
+  /** Accepted AgentSession. */
   readonly agentSessionId: string;
   /** Accepted AEP snapshot. */
   readonly packageSnapshotId: string;
@@ -502,6 +505,29 @@ export interface CreateWorkerContextPackageTraceInput {
   readonly knowledgeExclusions?: readonly WorkerContextPackageKnowledgeExclusion[];
   /** Addressed Material exclusions. */
   readonly materialExclusions?: readonly WorkerContextPackageMaterialExclusion[];
+}
+
+/**
+ * Tests whether one persisted user Turn is the exact Chat-subordinate Task identity.
+ *
+ * @param input Persisted Turn authority and its owning outer Chat request id.
+ * @returns Whether the Turn is subordinate to that exact Chat command tuple.
+ */
+export function isChatSubordinateTaskTurn(input: {
+  readonly requestId: string;
+  readonly turn: {
+    readonly id: string;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly triggerActor: ActorRef;
+  };
+}): boolean {
+  const { turn } = input;
+  return (
+    turn.triggerActor.kind === 'user' &&
+    turn.id ===
+      chatTaskModeTurnId(turn.triggerActor.id, turn.workspaceId, turn.threadId, input.requestId)
+  );
 }
 
 /** Creates deterministic worker-visible Context Package files. */
@@ -704,15 +730,6 @@ export function createWorkerContextPackageTrace(
   }
   if (hasKnowledge && requestKind !== 'structured-delegation') {
     throw new Error('Worker Context Package Knowledge requires structured delegation.');
-  }
-  if (
-    input.goalId === null &&
-    requestKind === 'structured-delegation' &&
-    knowledgeSelectionInput === null
-  ) {
-    throw new Error(
-      'Worker Context Package direct Task lacks its governed Knowledge selection input.'
-    );
   }
   const traceWithoutDigest = {
     agentSessionId: input.agentSessionId,
@@ -1029,10 +1046,9 @@ function verifyWorkerContextPackagePortableOwners(
     session.id !== trace.agentSessionId ||
     session.workspaceId !== trace.workspaceId ||
     session.threadId !== trace.threadId ||
-    session.environmentPackageSnapshotId !== trace.packageSnapshotId ||
     (importedHistory && !session.stale)
   ) {
-    throw new Error('Worker Context Package Agent Session mismatch.');
+    throw new Error('Worker Context Package AgentSession mismatch.');
   }
   let gateContextItemIds: readonly string[] = [];
   if (trace.goalId && trace.taskId) {
@@ -1087,11 +1103,18 @@ function verifyWorkerContextPackagePortableOwners(
   } catch {
     throw new Error('Worker Context Package request Item is not an accepted worker request.');
   }
-  const requiresTaskKnowledgeSelection =
+  const isDirectTask =
     workerRequest.requestKind === 'structured-delegation' && trace.goalId === null;
+  const isChatSubordinateTask =
+    !importedHistory && isDirectTask
+      ? isChatSubordinateTaskTurn({ requestId: trace.requestId, turn })
+      : false;
   if (
-    (requiresTaskKnowledgeSelection && trace.knowledgeSelectionInput === null) ||
-    (!requiresTaskKnowledgeSelection && trace.knowledgeSelectionInput !== null)
+    (!importedHistory &&
+      isDirectTask &&
+      ((isChatSubordinateTask && trace.knowledgeSelectionInput !== null) ||
+        (!isChatSubordinateTask && trace.knowledgeSelectionInput === null))) ||
+    (!isDirectTask && trace.knowledgeSelectionInput !== null)
   ) {
     throw new Error('Worker Context Package Task Knowledge selection authority is contradictory.');
   }
@@ -1367,7 +1390,7 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
     [trace.threadId, 'Thread id'],
     [trace.turnId, 'Turn id'],
     [trace.requestId, 'Request id'],
-    [trace.agentSessionId, 'Agent Session id'],
+    [trace.agentSessionId, 'AgentSession id'],
     [trace.packageSnapshotId, 'AEP snapshot id'],
     [trace.contextPackageId, 'Context Package id'],
     [trace.workerRequestItemId, 'Worker request Item id'],

@@ -1,23 +1,75 @@
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { CoreDb } from '../storage/db.js';
 import type {
-  WorkerBackendSessionPlacement,
   WorkerBackendSessionState,
   WorkerBackendWorkspaceHandoffState,
 } from '../storage/schema/index.js';
-import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 
 export type { WorkerBackendSessionState } from '../storage/schema/index.js';
 
-/** Exact physical backend target persisted before any external effect. */
-export interface WorkerBackendSessionTarget {
-  /** Stable non-secret binding for the exact Cell lifecycle target. */
-  readonly cellTargetId: string;
-  /** Local or remote placement. */
-  readonly placement: WorkerBackendSessionPlacement;
-  /** Exact gateway name. */
-  readonly gatewayName: string;
-  /** Exact direct gateway endpoint, when configured. */
-  readonly gatewayEndpoint: string | null;
+/** Authored reference lineage retained by a durable backend anchor. */
+export interface WorkerBackendReferenceLineage {
+  /** Immutable image reference selected by the AEP. */
+  readonly imageRef: string;
+}
+
+/** NanoHost build-result lineage retained by a durable backend anchor. */
+export interface WorkerBackendBuildLineage {
+  /** Digest of the exact authored build arguments. */
+  readonly buildArgumentsDigest: string;
+  /** Digest of the exact build context. */
+  readonly buildContextDigest: string;
+  /** Digest of the exact Dockerfile input. */
+  readonly buildInputDigest: string;
+  /** Digest of the image produced by NanoHost. */
+  readonly resultingImageDigest: string;
+}
+
+/** Exact reference or NanoHost build-result lineage stored for one backend session. */
+export type WorkerBackendLineage = WorkerBackendReferenceLineage | WorkerBackendBuildLineage;
+
+/**
+ * Projects resolved AEP image authority into the durable backend lineage input.
+ *
+ * @param image Resolved AEP image declaration.
+ * @param resultingImageDigest NanoHost-produced digest required for build lineage.
+ * @returns Exact reference or build-result lineage input.
+ * @throws Error when build authority has no NanoHost result digest.
+ */
+export function workerBackendLineageFromRuntimeImage(
+  image: AgentEnvironmentPackage['runtime']['image'],
+  resultingImageDigest?: string
+): RecordWorkerBackendSessionMaterializingInput['backendLineage'] {
+  if (image.kind === 'reference') {
+    return { imageRef: image.ref, kind: 'reference' };
+  }
+  if (!resultingImageDigest) {
+    throw new Error('NanoHost build result digest is required before backend anchoring.');
+  }
+  return {
+    buildArgumentsDigest: image.argumentsDigest,
+    buildContextDigest: image.contextDigest,
+    buildInputDigest: image.input.digest,
+    kind: 'build',
+    resultingImageDigest,
+  };
+}
+
+/** Returns the effective immutable image identity from persisted backend lineage. */
+export function workerBackendImageIdentity(lineage: WorkerBackendLineage): string {
+  return 'imageRef' in lineage ? lineage.imageRef : lineage.resultingImageDigest;
+}
+
+/** Pre-effect identity owned by one scheduler lease and RuntimeTarget. */
+export interface WorkerBackendSessionIdentity {
+  readonly agentSessionId: string;
+  readonly backendKind: string;
+  readonly backendSessionId: string;
+  readonly deploymentId: string;
+  readonly packageSnapshotId: string;
+  readonly runtimeTargetId: string;
+  readonly stagingDirectoryRef: string;
+  readonly transientProviderInstanceId: string | null;
 }
 
 /** Durable package-scoped physical backend session. */
@@ -30,7 +82,7 @@ export interface WorkerBackendSessionRecord {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;
@@ -40,15 +92,17 @@ export interface WorkerBackendSessionRecord {
   readonly deploymentId: string;
   /** Backend implementation version captured before physical effects. */
   readonly backendVersion: string | null;
-  /** Immutable worker image reference captured from the package. */
-  readonly workerImage: string;
-  /** Exact physical backend target. */
-  readonly backendTarget: WorkerBackendSessionTarget;
+  /** Configured RuntimeTarget that owns execution. */
+  readonly runtimeTargetId: string;
+  /** Exact reference or NanoHost build-result lineage. */
+  readonly backendLineage: WorkerBackendLineage;
+  /** Scheduler-owned sandbox binding. */
+  readonly sandboxBindingRef: string;
   /** Backend-native physical session id. */
   readonly backendSessionId: string;
   /** Data-root-relative backend-private staging directory. */
   readonly stagingDirectoryRef: string;
-  /** Exact transient backend provider removed with the physical Cell epoch. */
+  /** Optional backend-private provider identity owned by the physical session. */
   readonly transientProviderInstanceId: string | null;
   /** Cross-database workspace handle publication phase. */
   readonly workspaceHandoffState: WorkerBackendWorkspaceHandoffState;
@@ -65,11 +119,19 @@ export interface WorkerBackendSessionRecord {
 /** Input for recording the pre-effect backend identity. */
 export interface RecordWorkerBackendSessionMaterializingInput {
   /** One indivisible pure backend plan whose lineage and physical names cannot be mixed. */
-  readonly identity: WorkerGovernanceBackendSessionIdentity;
+  readonly identity: WorkerBackendSessionIdentity;
   /** Backend implementation version captured before physical effects. */
   readonly backendVersion: string | null;
-  /** Immutable worker image reference captured from the package. */
-  readonly workerImage: string;
+  /** Exact reference selection or NanoHost build-result lineage. */
+  readonly backendLineage:
+    | { readonly kind: 'reference'; readonly imageRef: string }
+    | {
+        readonly kind: 'build';
+        readonly buildArgumentsDigest: string;
+        readonly buildContextDigest: string;
+        readonly buildInputDigest: string;
+        readonly resultingImageDigest: string;
+      };
   /** Scheduler-owned product lineage not duplicated by the physical plan. */
   readonly lineage: {
     /** Workspace lineage id. */
@@ -124,11 +186,9 @@ interface WorkerBackendSessionRow {
   readonly backend_kind: string;
   readonly deployment_id: string;
   readonly backend_version: string | null;
-  readonly worker_image: string;
-  readonly cell_target_id: string;
-  readonly placement: WorkerBackendSessionPlacement;
-  readonly gateway_name: string;
-  readonly gateway_endpoint: string | null;
+  readonly runtime_target_id: string;
+  readonly backend_lineage_json: string;
+  readonly sandbox_binding_ref: string;
   readonly backend_session_id: string;
   readonly staging_directory_ref: string;
   readonly transient_provider_instance_id: string | null;
@@ -232,11 +292,11 @@ export function recordWorkerBackendSessionMaterializing(
       .prepare(
         `INSERT INTO worker_backend_sessions (
            lease_id, workspace_id, thread_id, turn_id, agent_session_id,
-           package_snapshot_id, backend_kind, deployment_id, backend_version, worker_image, cell_target_id, placement, gateway_name,
-           gateway_endpoint, backend_session_id,
+           package_snapshot_id, backend_kind, deployment_id, backend_version,
+           backend_session_id, runtime_target_id, backend_lineage_json, sandbox_binding_ref,
            staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
            state, physical_cleaned_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'materializing', NULL, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'materializing', NULL, ?, ?)`
       )
       .run(
         leaseId,
@@ -248,12 +308,10 @@ export function recordWorkerBackendSessionMaterializing(
         input.identity.backendKind,
         input.identity.deploymentId,
         input.backendVersion,
-        input.workerImage,
-        input.identity.backendTarget.cellTargetId,
-        input.identity.backendTarget.placement,
-        input.identity.backendTarget.gatewayName,
-        input.identity.backendTarget.gatewayEndpoint,
         input.identity.backendSessionId,
+        input.identity.runtimeTargetId,
+        JSON.stringify(normalizeBackendLineage(input.backendLineage)),
+        input.sandboxBindingRef,
         input.identity.stagingDirectoryRef,
         input.identity.transientProviderInstanceId,
         timestamp,
@@ -462,8 +520,8 @@ function selectWorkerBackendSession(
 /** Returns the canonical worker backend session select projection. */
 function workerBackendSessionSelectSql(): string {
   return `SELECT lease_id, workspace_id, thread_id, turn_id, agent_session_id,
-                 package_snapshot_id, backend_kind, deployment_id, backend_version, worker_image, cell_target_id, placement, gateway_name,
-                 gateway_endpoint, backend_session_id,
+                 package_snapshot_id, backend_kind, deployment_id, backend_version,
+                 backend_session_id, runtime_target_id, backend_lineage_json, sandbox_binding_ref,
                  staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                  state, physical_cleaned_at, created_at, updated_at
           FROM worker_backend_sessions`;
@@ -497,14 +555,13 @@ function workerBackendSessionMatchesInput(
     record.backendKind === input.identity.backendKind &&
     record.deploymentId === input.identity.deploymentId &&
     record.backendVersion === input.backendVersion &&
-    record.workerImage === input.workerImage &&
+    JSON.stringify(record.backendLineage) ===
+      JSON.stringify(normalizeBackendLineage(input.backendLineage)) &&
+    record.runtimeTargetId === input.identity.runtimeTargetId &&
+    record.sandboxBindingRef === input.sandboxBindingRef &&
     record.backendSessionId === input.identity.backendSessionId &&
     record.stagingDirectoryRef === input.identity.stagingDirectoryRef &&
-    record.transientProviderInstanceId === input.identity.transientProviderInstanceId &&
-    record.backendTarget.cellTargetId === input.identity.backendTarget.cellTargetId &&
-    record.backendTarget.placement === input.identity.backendTarget.placement &&
-    record.backendTarget.gatewayName === input.identity.backendTarget.gatewayName &&
-    record.backendTarget.gatewayEndpoint === input.identity.backendTarget.gatewayEndpoint
+    record.transientProviderInstanceId === input.identity.transientProviderInstanceId
   );
 }
 
@@ -520,13 +577,9 @@ function mapWorkerBackendSessionRow(row: WorkerBackendSessionRow): WorkerBackend
     backendKind: row.backend_kind,
     deploymentId: row.deployment_id,
     backendVersion: row.backend_version,
-    workerImage: row.worker_image,
-    backendTarget: {
-      cellTargetId: row.cell_target_id,
-      placement: row.placement,
-      gatewayName: row.gateway_name,
-      gatewayEndpoint: row.gateway_endpoint,
-    },
+    runtimeTargetId: row.runtime_target_id,
+    backendLineage: parseBackendLineage(row.backend_lineage_json),
+    sandboxBindingRef: row.sandbox_binding_ref,
     backendSessionId: row.backend_session_id,
     stagingDirectoryRef: row.staging_directory_ref,
     transientProviderInstanceId: row.transient_provider_instance_id,
@@ -536,4 +589,42 @@ function mapWorkerBackendSessionRow(row: WorkerBackendSessionRow): WorkerBackend
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/** Removes the input discriminator before persisting the exact lineage payload. */
+function normalizeBackendLineage(
+  lineage: RecordWorkerBackendSessionMaterializingInput['backendLineage']
+): WorkerBackendLineage {
+  if (lineage.kind === 'reference') {
+    return { imageRef: lineage.imageRef };
+  }
+  return {
+    buildArgumentsDigest: lineage.buildArgumentsDigest,
+    buildContextDigest: lineage.buildContextDigest,
+    buildInputDigest: lineage.buildInputDigest,
+    resultingImageDigest: lineage.resultingImageDigest,
+  };
+}
+
+/** Parses one required new-column backend lineage without consulting legacy image columns. */
+function parseBackendLineage(value: string): WorkerBackendLineage {
+  const parsed = JSON.parse(value) as Record<string, unknown>;
+  if (typeof parsed.imageRef === 'string' && Object.keys(parsed).length === 1) {
+    return { imageRef: parsed.imageRef };
+  }
+  const keys = [
+    'buildArgumentsDigest',
+    'buildContextDigest',
+    'buildInputDigest',
+    'resultingImageDigest',
+  ] as const;
+  if (keys.every((key) => typeof parsed[key] === 'string') && Object.keys(parsed).length === 4) {
+    return {
+      buildArgumentsDigest: parsed.buildArgumentsDigest as string,
+      buildContextDigest: parsed.buildContextDigest as string,
+      buildInputDigest: parsed.buildInputDigest as string,
+      resultingImageDigest: parsed.resultingImageDigest as string,
+    };
+  }
+  throw new Error('Worker backend session lineage is invalid.');
 }

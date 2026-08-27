@@ -149,7 +149,7 @@ describe('server-mode auth middleware', () => {
 
     expect(metaRes.status).toBe(200);
     expect(await metaRes.json()).toEqual({
-      protocolVersion: '0.4.0',
+      protocolVersion: '0.5.0',
       capabilities: [],
       eventFamilies: [],
     });

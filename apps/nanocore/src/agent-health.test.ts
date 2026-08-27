@@ -63,7 +63,8 @@ describe('agent health diagnostics app API', () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
+    const payload = await res.json();
+    expect(payload).toMatchObject({
       items: [
         {
           agentId: 'agent_codex_host',
@@ -71,13 +72,8 @@ describe('agent health diagnostics app API', () => {
           checkedAt: expect.any(String),
         },
       ],
-      sessions: [
-        {
-          id: 'session_sim_th_demo',
-          status: 'ready',
-          message: null,
-        },
-      ],
     });
+    expect(payload).not.toHaveProperty('sessions');
+    expect(JSON.stringify(payload)).not.toContain('"sessions"');
   });
 });

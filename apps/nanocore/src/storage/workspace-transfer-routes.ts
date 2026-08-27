@@ -43,8 +43,6 @@ import {
   importWorkspaceEvidenceBundles,
   listWorkspaceEvidenceBundles,
 } from '../evidence-bundles.js';
-import { importInjectionPlans, listExportableInjectionPlans } from '../injection-plans.js';
-import { importInjectionReceipts, listExportableInjectionReceipts } from '../injection-receipts.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -119,6 +117,14 @@ import {
   importWorkspaceVaultUseRecords,
   listExportableWorkspaceVaultUseRecords,
 } from '../vault/vault-use-records.js';
+import {
+  importVaultInjectionPlans,
+  listExportableVaultInjectionPlans,
+} from '../vault-injection-plans.js';
+import {
+  importVaultInjectionReceipts,
+  listExportableVaultInjectionReceipts,
+} from '../vault-injection-receipts.js';
 import {
   importWorkspaceRepositoryResources,
   listExportableWorkspaceRepositoryResources,
@@ -596,8 +602,8 @@ function publishImportedWorkspace(
         importUnboundWorkspaceVaultReference(coreDb, reference);
       }
       importWorkspaceVaultGrants(coreDb, snapshot.vaultGrants);
-      importInjectionPlans(coreDb, snapshot.injectionPlans);
-      importInjectionReceipts(coreDb, snapshot.injectionReceipts);
+      importVaultInjectionPlans(coreDb, snapshot.vaultInjectionPlans);
+      importVaultInjectionReceipts(coreDb, snapshot.vaultInjectionReceipts);
       return imported;
     })();
   } catch (error) {
@@ -652,8 +658,8 @@ export function registerWorkspaceTransferRoutes({
     const workspaceVaultGrants = coreDb
       ? listExportableWorkspaceVaultGrants(coreDb, workspaceId)
       : [];
-    const workspaceInjectionPlans = coreDb
-      ? listExportableInjectionPlans(
+    const workspaceVaultInjectionPlans = coreDb
+      ? listExportableVaultInjectionPlans(
           coreDb,
           workspaceVaultGrants.map((grant) => grant.grantId)
         )
@@ -758,11 +764,11 @@ export function registerWorkspaceTransferRoutes({
       goalReviewRecords: workspaceRowFamilies.goalReviewRecords,
       goalTasks: workspaceRowFamilies.goalTasks,
       goalVerificationRecords: workspaceRowFamilies.goalVerificationRecords,
-      injectionPlans: workspaceInjectionPlans,
-      injectionReceipts: coreDb
-        ? listExportableInjectionReceipts(
+      vaultInjectionPlans: workspaceVaultInjectionPlans,
+      vaultInjectionReceipts: coreDb
+        ? listExportableVaultInjectionReceipts(
             coreDb,
-            workspaceInjectionPlans.map((plan) => plan.planId)
+            workspaceVaultInjectionPlans.map((plan) => plan.planId)
           )
         : [],
       mcpToolSchemaSnapshots: workspaceRowFamilies.mcpToolSchemaSnapshots,

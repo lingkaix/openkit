@@ -1,6 +1,6 @@
 import { accessSync, constants } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   type NanoCoreHarness,
   readTurnEventsUntil,
@@ -8,11 +8,6 @@ import {
   startNanoCoreHarness,
   startTurn,
 } from './_lib/harness.js';
-
-interface SmokePrerequisites {
-  enabled: boolean;
-  reason: string;
-}
 
 let harness: NanoCoreHarness | null = null;
 
@@ -26,64 +21,54 @@ afterEach(async () => {
   }
 });
 
-const prerequisites = readSmokePrerequisites();
-const smokeIt = prerequisites.enabled ? it : it.skip;
+describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')('nanocore e2e real Codex smoke', () => {
+  beforeAll(() => {
+    assertRealCodexPrerequisites();
+  });
 
-describe('nanocore e2e real Codex smoke', () => {
-  smokeIt(
-    prerequisites.enabled
-      ? 'drives one minimal turn through the real Codex agent'
-      : `skips real Codex smoke: ${prerequisites.reason}`,
-    async () => {
-      harness = await startNanoCoreHarness({ useSimulator: false });
+  it('drives one minimal turn through the real Codex agent', async () => {
+    harness = await startNanoCoreHarness({ useSimulator: false });
 
-      const workspaceId = 'ws_demo';
-      const threadId = 'th_demo';
-      const turn = await startTurn(
-        harness.baseUrl,
-        workspaceId,
-        threadId,
-        'Reply with exactly OPENKIT_SMOKE_OK.'
-      );
-      const turnId = String(turn.id);
-      const events = await readTurnEventsUntil(
-        harness.baseUrl,
-        workspaceId,
-        threadId,
-        turnId,
-        (event) => event.event === 'turn.completed',
-        120_000
-      );
+    const workspaceId = 'ws_demo';
+    const threadId = 'th_demo';
+    const turn = await startTurn(
+      harness.baseUrl,
+      workspaceId,
+      threadId,
+      'Reply with exactly OPENKIT_SMOKE_OK.'
+    );
+    const turnId = String(turn.id);
+    const events = await readTurnEventsUntil(
+      harness.baseUrl,
+      workspaceId,
+      threadId,
+      turnId,
+      (event) => event.event === 'turn.completed',
+      120_000
+    );
 
-      expect(events.some((event) => event.event === 'turn.completed')).toBe(true);
-      expect(events.some((event) => isAssistantMessageCompleted(event.data))).toBe(true);
-    },
-    130_000
-  );
+    expect(events.some((event) => event.event === 'turn.completed')).toBe(true);
+    expect(events.some((event) => isAssistantMessageCompleted(event.data))).toBe(true);
+  }, 130_000);
 });
 
 /**
- * Reads the opt-in prerequisites for the real Codex smoke test.
+ * Fails the suite when the host cannot drive a real Codex turn.
  *
- * @returns Whether the smoke should run and the skip reason when it should not.
+ * @throws {Error} When the Codex CLI or a provider credential is absent.
  */
-function readSmokePrerequisites(): SmokePrerequisites {
-  if (process.env.OPENKIT_E2E_REAL_CODEX !== '1') {
-    return { enabled: false, reason: 'set OPENKIT_E2E_REAL_CODEX=1 to opt in' };
-  }
-
+function assertRealCodexPrerequisites(): void {
   if (!runtimeBinaryExists('codex')) {
-    return { enabled: false, reason: '`codex` was not found on PATH' };
+    throw new Error(
+      'The real Codex smoke needs `codex` on PATH. Run it on a host with the Codex CLI installed: the test execution image carries no worker runtime, so `pnpm test:e2e:real-codex` is host-placed.'
+    );
   }
 
   if (!hasCredentialMarker()) {
-    return {
-      enabled: false,
-      reason: 'set OPENAI_API_KEY or OPENKIT_E2E_REAL_CODEX_CREDENTIAL=1 after `codex login`',
-    };
+    throw new Error(
+      'The real Codex smoke needs a provider credential. Set OPENAI_API_KEY, or run `codex login` and set OPENKIT_E2E_REAL_CODEX_CREDENTIAL=1.'
+    );
   }
-
-  return { enabled: true, reason: '' };
 }
 
 /**

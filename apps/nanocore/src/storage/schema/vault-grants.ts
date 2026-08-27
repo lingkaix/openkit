@@ -36,7 +36,7 @@ export const vaultGrants = sqliteTable(
     subjectSummary: text('subject_summary'),
     /** Target agent id when applicable. */
     targetAgentId: text('target_agent_id'),
-    /** Target agent session id when applicable. */
+    /** Target AgentSession id when applicable. */
     targetAgentSessionId: text('target_agent_session_id'),
     /** Target capability id when applicable. */
     targetCapabilityId: text('target_capability_id'),

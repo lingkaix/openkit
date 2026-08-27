@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  AbortNanoHostTransportRotationResponseSchema,
   AcceptWorkspaceInvitationRequestSchema,
   AgentHealthRefreshResponseSchema,
   AppDiagnosticsResponseSchema,
@@ -12,21 +13,18 @@ import {
   BindThreadMaterialResponseSchema,
   CancelGoalSteeringRequestSchema,
   CancelGoalSteeringResponseSchema,
-  CancelOpenAICodexOAuthRequestSchema,
+  CancelProviderSubscriptionAccountLoginRequestSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
-  CodexOAuthAccountSummarySchema,
-  CodexOAuthAccountsPayloadSchema,
-  CodexOAuthStatusPayloadSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
   ConvertGoalSteeringToFollowUpRequestSchema,
   ConvertGoalSteeringToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
-  CreateOpenAICodexOAuthAccountRequestSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
+  CreateProviderSubscriptionAccountRequestSchema,
   CreateThreadGoalPlanRequestSchema,
   CreateThreadGoalPlanResponseSchema,
   CreateWorkspaceInvitationRequestSchema,
@@ -36,8 +34,11 @@ import {
   DataRootBackupVerifyRequestSchema,
   DataRootBackupVerifyResponseSchema,
   DeclineWorkspaceInvitationRequestSchema,
+  DecommissionNanoHostResponseSchema,
   DisableUserRequestSchema,
   DisableUserResponseSchema,
+  EnrollNanoHostRequestSchema,
+  EnrollNanoHostResponseSchema,
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
   ExecuteGitPushRequestSchema,
@@ -54,6 +55,8 @@ import {
   ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactRequestSchema,
   IntroduceWorkspaceArtifactResponseSchema,
+  IssueNanoHostTransportTokenRequestSchema,
+  IssueNanoHostTransportTokenResponseSchema,
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerRequestSchema,
   KnowledgeManagerAnswerResponseSchema,
@@ -80,6 +83,7 @@ import {
   ListKnowledgeConflictsResponseSchema,
   ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
+  ListNanoHostTransportTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
@@ -93,8 +97,6 @@ import {
   ListWorkspaceAuditEventsResponseSchema,
   ListWorkspaceChangeSetsResponseSchema,
   ListWorkspaceEvidenceBundlesResponseSchema,
-  ListWorkspaceInjectionPlansResponseSchema,
-  ListWorkspaceInjectionReceiptsResponseSchema,
   ListWorkspaceInputSnapshotsResponseSchema,
   ListWorkspaceInvitationsResponseSchema,
   ListWorkspaceMaterializationRecordsResponseSchema,
@@ -108,9 +110,16 @@ import {
   ListWorkspaceRuntimeEvidenceResponseSchema,
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
+  ListWorkspaceVaultInjectionPlansResponseSchema,
+  ListWorkspaceVaultInjectionReceiptsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
+  NanoHostRuntimeTargetStatusResponseSchema,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
+  ProviderSubscriptionAccountSchema,
+  ProviderSubscriptionAccountsResponseSchema,
+  ProviderSubscriptionQuotaSchema,
+  ProviderSubscriptionsResponseSchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
   ReadKnowledgeSourceResponseSchema,
@@ -128,7 +137,6 @@ import {
   RequestGitPushApprovalResponseSchema,
   ResolveKnowledgeConflictRequestSchema,
   ResolveKnowledgeConflictResponseSchema,
-  RestartRuntimeConfigStaleSessionResponseSchema,
   RestoreThreadMaterialRequestSchema,
   RestoreThreadMaterialResponseSchema,
   ResumeThreadGoalRequestSchema,
@@ -141,8 +149,11 @@ import {
   ReverseKnowledgeProposalResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
   ReviseThreadGoalPlanResponseSchema,
+  RevokeNanoHostTransportTokenResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
   RevokeWorkspaceInvitationRequestSchema,
+  RotateNanoHostTransportTokenRequestSchema,
+  RotateNanoHostTransportTokenResponseSchema,
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
   RunThreadGoalStepRequestSchema,
@@ -163,7 +174,7 @@ import {
   SetWorkspaceRepositoryResponseSchema,
   StartChatModeRequestSchema,
   StartChatModeResponseSchema,
-  StartOpenAICodexOAuthRequestSchema,
+  StartProviderSubscriptionAccountLoginRequestSchema,
   StartTaskModeRequestSchema,
   StartTaskModeResponseSchema,
   StartThreadGoalRequestSchema,
@@ -182,6 +193,7 @@ import {
   SubmitWorkspaceRecoveryDecisionResponseSchema,
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
+  SubscriptionProviderIdSchema,
   ThreadDashboardResponseSchema,
   ThreadGoalSummaryResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
@@ -189,7 +201,7 @@ import {
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
   UpdateAutomationRequestSchema,
-  UpdateOpenAICodexOAuthAccountRequestSchema,
+  UpdateProviderSubscriptionAccountRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminBootstrapCodexAuthJsonResponseSchema,
   VaultAdminListWorkspaceReferencesResponseSchema,
@@ -213,7 +225,6 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   AgentIdSchema,
-  AgentSessionIdSchema,
   ApiErrorSchema,
   ArtifactIdSchema,
   PROTOCOL_VERSION,
@@ -314,6 +325,18 @@ const PENDING_TURN_ID_PARAMETER = {
   required: true,
   schema: { type: 'string', minLength: 1 },
 } as const;
+const SUBSCRIPTION_PROVIDER_ID_PARAMETER = {
+  name: 'subscriptionProviderId',
+  in: 'path',
+  required: true,
+  schema: toInlineJsonSchema(SubscriptionProviderIdSchema),
+};
+const ACCOUNT_SLOT_ID_PARAMETER = {
+  name: 'accountSlotId',
+  in: 'path',
+  required: true,
+  schema: toInlineJsonSchema(CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId),
+};
 
 /**
  * Builds one authenticated JSON App API operation with the shared error envelope.
@@ -327,6 +350,7 @@ function appJsonOperation<const OperationId extends string>(input: {
   summary: string;
   responseStatus: '200' | '201';
   responseSchema: string;
+  responseDescription?: string;
   requestSchema?: string;
   parameters?: JsonValue[];
   security?: JsonValue[];
@@ -351,7 +375,7 @@ function appJsonOperation<const OperationId extends string>(input: {
       : {}),
     responses: {
       [input.responseStatus]: {
-        description: input.summary,
+        description: input.responseDescription ?? input.summary,
         content: {
           [JSON_CONTENT_TYPE]: {
             schema: { $ref: `#/components/schemas/${input.responseSchema}` },
@@ -937,6 +961,245 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/nanohost/enroll': {
+        post: {
+          operationId: 'enrollNanoHost',
+          tags: ['nanohost'],
+          summary: 'Enroll a NanoHost identity and first transport token.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/EnrollNanoHostRequest' },
+              },
+            },
+          },
+          responses: {
+            '201': {
+              description: 'Redacted NanoHost enrollment result.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/EnrollNanoHostResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/nanohost/runtime-target': {
+        get: appJsonOperation({
+          operationId: 'getNanoHostRuntimeTargetStatus',
+          tag: 'nanohost',
+          summary: 'Read the configured NanoHost RuntimeTarget readiness status.',
+          responseStatus: '200',
+          responseSchema: 'NanoHostRuntimeTargetStatusResponse',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+        }),
+      },
+      '/api/app/nanohost/tokens': {
+        get: {
+          operationId: 'listNanoHostTransportTokens',
+          tags: ['nanohost'],
+          summary: 'List redacted NanoHost transport token records.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          responses: {
+            '200': {
+              description: 'Redacted NanoHost transport token records.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ListNanoHostTransportTokensResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+        post: {
+          operationId: 'issueNanoHostTransportToken',
+          tags: ['nanohost'],
+          summary: 'Issue a NanoHost transport token and deliver it through a named safe sink.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/IssueNanoHostTransportTokenRequest' },
+              },
+            },
+          },
+          responses: {
+            '201': {
+              description: 'Issued NanoHost transport token and redacted record.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/IssueNanoHostTransportTokenResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/nanohost/tokens/{tokenId}/revoke': {
+        post: {
+          operationId: 'revokeNanoHostTransportToken',
+          tags: ['nanohost'],
+          summary: 'Revoke a NanoHost transport token immediately.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            {
+              name: 'tokenId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Revoked NanoHost transport token record.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/RevokeNanoHostTransportTokenResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/nanohost/tokens/{tokenId}/rotate': {
+        post: {
+          operationId: 'rotateNanoHostTransportToken',
+          tags: ['nanohost'],
+          summary:
+            'Rotate a NanoHost transport token and deliver the successor through a named safe sink.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            {
+              name: 'tokenId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/RotateNanoHostTransportTokenRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Rotated NanoHost transport token records and named-sink slot result.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/RotateNanoHostTransportTokenResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/nanohost/tokens/{tokenId}/rotation/abort': {
+        post: {
+          operationId: 'abortNanoHostTransportTokenRotation',
+          tags: ['nanohost'],
+          summary: 'Abort a pending NanoHost transport token rotation.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            {
+              name: 'tokenId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Redacted NanoHost transport rotation abort result.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/AbortNanoHostTransportRotationResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/nanohost/decommission': {
+        post: {
+          operationId: 'decommissionNanoHost',
+          tags: ['nanohost'],
+          summary: 'Decommission the configured NanoHost identity.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          responses: {
+            '200': {
+              description: 'Redacted configured NanoHost decommission result.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/DecommissionNanoHostResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/admin/config/reload': {
         post: {
           operationId: 'reloadRuntimeConfig',
@@ -1141,43 +1404,6 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/RuntimeConfigValidationResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/runtime-config/stale-sessions/{sessionId}/restart': {
-        post: {
-          operationId: 'restartRuntimeConfigStaleSession',
-          tags: ['runtime-config'],
-          summary: 'Retire a stale runtime config worker session.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'sessionId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Stale runtime config session restart result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/RestartRuntimeConfigStaleSessionResponse',
-                  },
                 },
               },
             },
@@ -1406,121 +1632,61 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/oauth/openai-codex/accounts': {
-        get: {
-          operationId: 'listOpenAICodexOAuthAccounts',
-          tags: ['oauth'],
-          summary: 'List server-owned OpenAI Codex OAuth account slots.',
+      '/api/app/provider-subscriptions': {
+        get: appJsonOperation({
+          operationId: 'listSubscriptionProviders',
+          tag: 'provider-subscriptions',
+          summary: 'List supported provider subscriptions.',
           security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Sanitized OpenAI Codex OAuth account slots.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CodexOAuthAccountsPayload' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'createOpenAICodexOAuthAccount',
-          tags: ['oauth'],
-          summary: 'Create one server-owned OpenAI Codex OAuth account slot.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CreateOpenAICodexOAuthAccountRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Created OpenAI Codex OAuth account slot.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CodexOAuthAccountSummary' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionsResponse',
+          responseDescription: 'Fixed supported provider-subscription inventory.',
+        }),
       },
-      '/api/app/oauth/openai-codex/accounts/{accountSlotId}': {
-        patch: {
-          operationId: 'updateOpenAICodexOAuthAccount',
-          tags: ['oauth'],
-          summary: 'Update one server-owned OpenAI Codex OAuth account slot.',
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts': {
+        get: appJsonOperation({
+          operationId: 'listProviderSubscriptionAccounts',
+          tag: 'provider-subscriptions',
+          summary: 'List provider-subscription account slots.',
           security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'accountSlotId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/UpdateOpenAICodexOAuthAccountRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Updated OpenAI Codex OAuth account slot.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CodexOAuthAccountSummary' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionAccountsResponse',
+          responseDescription: 'Sanitized provider-subscription account slots.',
+        }),
+        post: appJsonOperation({
+          operationId: 'createProviderSubscriptionAccount',
+          tag: 'provider-subscriptions',
+          summary: 'Create one provider-subscription account slot.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER],
+          requestSchema: 'CreateProviderSubscriptionAccountRequest',
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionAccount',
+          responseDescription: 'Created provider-subscription account slot.',
+        }),
+      },
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}': {
+        patch: appJsonOperation({
+          operationId: 'updateProviderSubscriptionAccount',
+          tag: 'provider-subscriptions',
+          summary: 'Update one provider-subscription account slot.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
+          requestSchema: 'UpdateProviderSubscriptionAccountRequest',
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionAccount',
+          responseDescription: 'Updated provider-subscription account slot.',
+        }),
         delete: {
-          operationId: 'deleteOpenAICodexOAuthAccount',
-          tags: ['oauth'],
-          summary: 'Delete one server-owned OpenAI Codex OAuth account slot.',
+          operationId: 'deleteProviderSubscriptionAccount',
+          tags: ['provider-subscriptions'],
+          summary: 'Delete one provider-subscription account slot.',
           security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'accountSlotId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
           responses: {
             '204': {
-              description: 'OpenAI Codex OAuth account deleted.',
+              description: 'Provider-subscription account deleted.',
             },
             default: {
               description: 'Protocol error envelope.',
@@ -1533,157 +1699,68 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/oauth/openai-codex/accounts/{accountSlotId}/status': {
-        get: {
-          operationId: 'getOpenAICodexOAuthAccountStatus',
-          tags: ['oauth'],
-          summary: 'Read one OpenAI Codex OAuth account login status.',
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/status': {
+        get: appJsonOperation({
+          operationId: 'getProviderSubscriptionAccountStatus',
+          tag: 'provider-subscriptions',
+          summary: 'Read one provider-subscription account status.',
           security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'accountSlotId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Sanitized OpenAI Codex OAuth login status.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CodexOAuthStatusPayload' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionAccount',
+          responseDescription: 'Sanitized provider-subscription account status.',
+        }),
       },
-      '/api/app/oauth/openai-codex/accounts/{accountSlotId}/start': {
-        post: {
-          operationId: 'startOpenAICodexOAuthAccountLogin',
-          tags: ['oauth'],
-          summary: 'Start one OpenAI Codex OAuth login.',
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login': {
+        post: appJsonOperation({
+          operationId: 'startProviderSubscriptionAccountLogin',
+          tag: 'provider-subscriptions',
+          summary: 'Start one provider-subscription device-code login.',
           security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'accountSlotId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/StartOpenAICodexOAuthRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'OpenAI Codex OAuth login status.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CodexOAuthStatusPayload' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
+          requestSchema: 'StartProviderSubscriptionAccountLoginRequest',
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionAccount',
+          responseDescription: 'Accepted provider-subscription login interaction.',
+        }),
       },
-      '/api/app/oauth/openai-codex/accounts/{accountSlotId}/cancel': {
-        post: {
-          operationId: 'cancelOpenAICodexOAuthAccountLogin',
-          tags: ['oauth'],
-          summary: 'Cancel one pending OpenAI Codex OAuth login.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'accountSlotId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CancelOpenAICodexOAuthRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'OpenAI Codex OAuth login status after cancellation.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CodexOAuthStatusPayload' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login/cancel':
+        {
+          post: appJsonOperation({
+            operationId: 'cancelProviderSubscriptionAccountLogin',
+            tag: 'provider-subscriptions',
+            summary: 'Cancel one provider-subscription login interaction.',
+            security: DEPLOYMENT_ADMIN_SECURITY,
+            parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
+            requestSchema: 'CancelProviderSubscriptionAccountLoginRequest',
+            responseStatus: '200',
+            responseSchema: 'ProviderSubscriptionAccount',
+            responseDescription: 'Provider-subscription account after cancellation.',
+          }),
         },
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/logout': {
+        post: appJsonOperation({
+          operationId: 'logoutProviderSubscriptionAccount',
+          tag: 'provider-subscriptions',
+          summary: 'Log out one provider-subscription account locally.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionAccount',
+          responseDescription: 'Provider-subscription account after local logout.',
+        }),
       },
-      '/api/app/oauth/openai-codex/accounts/{accountSlotId}/logout': {
-        post: {
-          operationId: 'logoutOpenAICodexOAuthAccount',
-          tags: ['oauth'],
-          summary: 'Log out one OpenAI Codex OAuth account.',
+      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/quota': {
+        get: appJsonOperation({
+          operationId: 'getProviderSubscriptionAccountQuota',
+          tag: 'provider-subscriptions',
+          summary: 'Read bounded provider-subscription quota availability.',
           security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'accountSlotId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'OpenAI Codex OAuth login status after logout.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CodexOAuthStatusPayload' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
+          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
+          responseStatus: '200',
+          responseSchema: 'ProviderSubscriptionQuota',
+          responseDescription: 'Bounded provider-subscription quota projection.',
+        }),
       },
       '/api/app/quick-chat': {
         post: {
@@ -4463,7 +4540,7 @@ export function createAppOpenApiDocument() {
       },
       '/api/app/workspaces/{workspaceId}/vault/injection-plans': {
         get: {
-          operationId: 'listWorkspaceInjectionPlans',
+          operationId: 'listWorkspaceVaultInjectionPlans',
           tags: ['vault'],
           summary: 'List non-secret workspace injection plans.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
@@ -4474,7 +4551,7 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: {
-                    $ref: '#/components/schemas/ListWorkspaceInjectionPlansResponse',
+                    $ref: '#/components/schemas/ListWorkspaceVaultInjectionPlansResponse',
                   },
                 },
               },
@@ -4492,7 +4569,7 @@ export function createAppOpenApiDocument() {
       },
       '/api/app/workspaces/{workspaceId}/vault/injection-receipts': {
         get: {
-          operationId: 'listWorkspaceInjectionReceipts',
+          operationId: 'listWorkspaceVaultInjectionReceipts',
           tags: ['vault'],
           summary: 'List non-secret workspace injection receipts.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
@@ -4503,7 +4580,7 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: {
-                    $ref: '#/components/schemas/ListWorkspaceInjectionReceiptsResponse',
+                    $ref: '#/components/schemas/ListWorkspaceVaultInjectionReceiptsResponse',
                   },
                 },
               },
@@ -4830,6 +4907,9 @@ export function createAppOpenApiDocument() {
         },
       },
       schemas: {
+        AbortNanoHostTransportRotationResponse: toJsonSchema(
+          AbortNanoHostTransportRotationResponseSchema
+        ),
         AcceptWorkspaceInvitationRequest: toJsonSchema(AcceptWorkspaceInvitationRequestSchema),
         ChangeWorkspaceMemberAccessRequest: toJsonSchema(ChangeWorkspaceMemberAccessRequestSchema),
         CreateWorkspaceInvitationRequest: toJsonSchema(CreateWorkspaceInvitationRequestSchema),
@@ -4851,7 +4931,6 @@ export function createAppOpenApiDocument() {
         WorkspaceMemberMutationResponse: toJsonSchema(WorkspaceMemberMutationResponseSchema),
         WorkspaceOwnershipMutationResponse: toJsonSchema(WorkspaceOwnershipMutationResponseSchema),
         AgentId: toJsonSchema(AgentIdSchema),
-        AgentSessionId: toJsonSchema(AgentSessionIdSchema),
         ApiError: toJsonSchema(ApiErrorSchema),
         AgentHealthRefreshResponse: toJsonSchema(AgentHealthRefreshResponseSchema),
         ArtifactId: toJsonSchema(ArtifactIdSchema),
@@ -4896,7 +4975,9 @@ export function createAppOpenApiDocument() {
         ApproveThreadGoalPlanRequest: toJsonSchema(ApproveThreadGoalPlanRequestSchema),
         ApproveThreadGoalPlanResponse: toJsonSchema(ApproveThreadGoalPlanResponseSchema),
         AutomationRecord: toJsonSchema(AutomationRecordSchema),
-        CancelOpenAICodexOAuthRequest: toJsonSchema(CancelOpenAICodexOAuthRequestSchema),
+        CancelProviderSubscriptionAccountLoginRequest: toJsonSchema(
+          CancelProviderSubscriptionAccountLoginRequestSchema
+        ),
         CapabilityUsageResponse: toJsonSchema(CapabilityUsageResponseSchema),
         RetryInterruptedWorkerCheckpointRequest: toJsonSchema(
           RetryInterruptedWorkerCheckpointRequestSchema
@@ -4906,9 +4987,6 @@ export function createAppOpenApiDocument() {
         ),
         RetrySchedulerAdmissionResponse: toJsonSchema(RetrySchedulerAdmissionResponseSchema),
         CancelSchedulerAdmissionResponse: toJsonSchema(CancelSchedulerAdmissionResponseSchema),
-        CodexOAuthAccountSummary: toJsonSchema(CodexOAuthAccountSummarySchema),
-        CodexOAuthAccountsPayload: toJsonSchema(CodexOAuthAccountsPayloadSchema),
-        CodexOAuthStatusPayload: toJsonSchema(CodexOAuthStatusPayloadSchema),
         ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(
           ConsumeOpenKitBootstrapTokenRequestSchema
         ),
@@ -4918,14 +4996,17 @@ export function createAppOpenApiDocument() {
         CreateAutomationRequest: toJsonSchema(CreateAutomationRequestSchema),
         CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
         CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
-        CreateOpenAICodexOAuthAccountRequest: toJsonSchema(
-          CreateOpenAICodexOAuthAccountRequestSchema
+        CreateProviderSubscriptionAccountRequest: toJsonSchema(
+          CreateProviderSubscriptionAccountRequestSchema
         ),
         CreateThreadGoalPlanRequest: toJsonSchema(CreateThreadGoalPlanRequestSchema),
         CreateThreadGoalPlanResponse: toJsonSchema(CreateThreadGoalPlanResponseSchema),
         DataRootBackupCreateResponse: toJsonSchema(DataRootBackupCreateResponseSchema),
         DataRootBackupVerifyRequest: toJsonSchema(DataRootBackupVerifyRequestSchema),
         DataRootBackupVerifyResponse: toJsonSchema(DataRootBackupVerifyResponseSchema),
+        DecommissionNanoHostResponse: toJsonSchema(DecommissionNanoHostResponseSchema),
+        EnrollNanoHostRequest: toJsonSchema(EnrollNanoHostRequestSchema),
+        EnrollNanoHostResponse: toJsonSchema(EnrollNanoHostResponseSchema),
         ExecuteGitPushRequest: toJsonSchema(ExecuteGitPushRequestSchema),
         ExecuteGitPushResponse: toJsonSchema(ExecuteGitPushResponseSchema),
         GetAgentCatalogEntryResponse: toJsonSchema(GetAgentCatalogEntryResponseSchema),
@@ -4935,6 +5016,10 @@ export function createAppOpenApiDocument() {
         GetGitPushRecordResponse: toJsonSchema(GetGitPushRecordResponseSchema),
         GetWorkspaceApplyResultResponse: toJsonSchema(GetWorkspaceApplyResultResponseSchema),
         GetWorkspaceSyncReviewResponse: toJsonSchema(GetWorkspaceSyncReviewResponseSchema),
+        IssueNanoHostTransportTokenRequest: toJsonSchema(IssueNanoHostTransportTokenRequestSchema),
+        IssueNanoHostTransportTokenResponse: toJsonSchema(
+          IssueNanoHostTransportTokenResponseSchema
+        ),
         KnowledgeDerivedIndexesResponse: toJsonSchema(KnowledgeDerivedIndexesResponseSchema),
         KnowledgeRetrievalResponse: toJsonSchema(KnowledgeRetrievalResponseSchema),
         KnowledgeManagerAnswerRequest: toJsonSchema(KnowledgeManagerAnswerRequestSchema),
@@ -4974,6 +5059,12 @@ export function createAppOpenApiDocument() {
         ListInterruptedWorkerStatesResponse: toJsonSchema(
           ListInterruptedWorkerStatesResponseSchema
         ),
+        ListNanoHostTransportTokensResponse: toJsonSchema(
+          ListNanoHostTransportTokensResponseSchema
+        ),
+        NanoHostRuntimeTargetStatusResponse: toJsonSchema(
+          NanoHostRuntimeTargetStatusResponseSchema
+        ),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
         ListSchedulerAdmissionsResponse: toJsonSchema(ListSchedulerAdmissionsResponseSchema),
         ListServerAuditEventsResponse: toJsonSchema(ListServerAuditEventsResponseSchema),
@@ -4986,11 +5077,11 @@ export function createAppOpenApiDocument() {
           ListWorkspaceEvidenceBundlesResponseSchema
         ),
         ListWorkspaceVaultGrantsResponse: toJsonSchema(ListWorkspaceVaultGrantsResponseSchema),
-        ListWorkspaceInjectionPlansResponse: toJsonSchema(
-          ListWorkspaceInjectionPlansResponseSchema
+        ListWorkspaceVaultInjectionPlansResponse: toJsonSchema(
+          ListWorkspaceVaultInjectionPlansResponseSchema
         ),
-        ListWorkspaceInjectionReceiptsResponse: toJsonSchema(
-          ListWorkspaceInjectionReceiptsResponseSchema
+        ListWorkspaceVaultInjectionReceiptsResponse: toJsonSchema(
+          ListWorkspaceVaultInjectionReceiptsResponseSchema
         ),
         ListWorkspaceRuntimeEvidenceResponse: toJsonSchema(
           ListWorkspaceRuntimeEvidenceResponseSchema
@@ -5048,9 +5139,6 @@ export function createAppOpenApiDocument() {
         RecordKnowledgeConflictResponse: toJsonSchema(RecordKnowledgeConflictResponseSchema),
         ResolveKnowledgeConflictRequest: toJsonSchema(ResolveKnowledgeConflictRequestSchema),
         ResolveKnowledgeConflictResponse: toJsonSchema(ResolveKnowledgeConflictResponseSchema),
-        RestartRuntimeConfigStaleSessionResponse: toJsonSchema(
-          RestartRuntimeConfigStaleSessionResponseSchema
-        ),
         RecordKnowledgeObservationRequest: toJsonSchema(RecordKnowledgeObservationRequestSchema),
         RecordKnowledgeObservationResponse: toJsonSchema(RecordKnowledgeObservationResponseSchema),
         RegisterKnowledgeSourceRequest: toJsonSchema(RegisterKnowledgeSourceRequestSchema),
@@ -5058,11 +5146,26 @@ export function createAppOpenApiDocument() {
         RetrieveKnowledgeRequest: toJsonSchema(RetrieveKnowledgeRequestSchema),
         PauseThreadGoalRequest: toJsonSchema(PauseThreadGoalRequestSchema),
         PauseThreadGoalResponse: toJsonSchema(PauseThreadGoalResponseSchema),
+        ProviderSubscriptionAccount: toJsonSchema(ProviderSubscriptionAccountSchema),
+        ProviderSubscriptionAccountsResponse: toJsonSchema(
+          ProviderSubscriptionAccountsResponseSchema
+        ),
+        ProviderSubscriptionQuota: toJsonSchema(ProviderSubscriptionQuotaSchema),
+        ProviderSubscriptionsResponse: toJsonSchema(ProviderSubscriptionsResponseSchema),
         ReviseThreadGoalPlanRequest: toJsonSchema(ReviseThreadGoalPlanRequestSchema),
         ReviseThreadGoalPlanResponse: toJsonSchema(ReviseThreadGoalPlanResponseSchema),
         ResumeThreadGoalRequest: toJsonSchema(ResumeThreadGoalRequestSchema),
         ResumeThreadGoalResponse: toJsonSchema(ResumeThreadGoalResponseSchema),
+        RevokeNanoHostTransportTokenResponse: toJsonSchema(
+          RevokeNanoHostTransportTokenResponseSchema
+        ),
         RevokeOpenKitAccessTokenResponse: toJsonSchema(RevokeOpenKitAccessTokenResponseSchema),
+        RotateNanoHostTransportTokenRequest: toJsonSchema(
+          RotateNanoHostTransportTokenRequestSchema
+        ),
+        RotateNanoHostTransportTokenResponse: toJsonSchema(
+          RotateNanoHostTransportTokenResponseSchema
+        ),
         RotateOpenKitAccessTokenRequest: toJsonSchema(RotateOpenKitAccessTokenRequestSchema),
         RotateOpenKitAccessTokenResponse: toJsonSchema(RotateOpenKitAccessTokenResponseSchema),
         RuntimeConfigFileListResponse: toJsonSchema(RuntimeConfigFileListResponseSchema),
@@ -5081,7 +5184,9 @@ export function createAppOpenApiDocument() {
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),
         StartChatModeRequest: toJsonSchema(StartChatModeRequestSchema),
         StartChatModeResponse: toJsonSchema(StartChatModeResponseSchema),
-        StartOpenAICodexOAuthRequest: toJsonSchema(StartOpenAICodexOAuthRequestSchema),
+        StartProviderSubscriptionAccountLoginRequest: toJsonSchema(
+          StartProviderSubscriptionAccountLoginRequestSchema
+        ),
         StartTaskModeRequest: toJsonSchema(StartTaskModeRequestSchema),
         StartTaskModeResponse: toJsonSchema(StartTaskModeResponseSchema),
         StartThreadGoalRequest: toJsonSchema(StartThreadGoalRequestSchema),
@@ -5114,8 +5219,8 @@ export function createAppOpenApiDocument() {
         TurnId: toJsonSchema(TurnIdSchema),
         TurnFeedbackResponse: toJsonSchema(TurnFeedbackResponseSchema),
         UpdateAutomationRequest: toJsonSchema(UpdateAutomationRequestSchema),
-        UpdateOpenAICodexOAuthAccountRequest: toJsonSchema(
-          UpdateOpenAICodexOAuthAccountRequestSchema
+        UpdateProviderSubscriptionAccountRequest: toJsonSchema(
+          UpdateProviderSubscriptionAccountRequestSchema
         ),
         VaultAdminBootstrapCodexAuthJsonRequest: toJsonSchema(
           VaultAdminBootstrapCodexAuthJsonRequestSchema
@@ -5167,6 +5272,18 @@ export const APP_OPENAPI_DOCUMENT = createAppOpenApiDocument();
  */
 function toJsonSchema(schema: z.ZodType): JsonValue {
   return z.toJSONSchema(schema) as JsonValue;
+}
+
+/**
+ * Converts a shared Zod schema into an inline OpenAPI schema fragment.
+ *
+ * @param schema - Source Zod schema from a shared contract package.
+ * @returns JSON Schema projection without the root dialect declaration.
+ */
+function toInlineJsonSchema(schema: z.ZodType): JsonValue {
+  const projection = z.toJSONSchema(schema);
+  delete projection.$schema;
+  return projection as JsonValue;
 }
 
 /**

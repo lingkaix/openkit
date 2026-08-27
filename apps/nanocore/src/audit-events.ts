@@ -33,7 +33,7 @@ export interface RecordServerAuditEventInput {
   subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
   agentId?: string | null;
-  /** Agent session lineage when available. */
+  /** AgentSession lineage when available. */
   agentSessionId?: string | null;
   /** Audit category. */
   category?: AuditEvent['category'];
@@ -87,7 +87,7 @@ export interface RecordWorkspaceAuditEventInput {
   subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
   agentId?: string | null;
-  /** Agent session lineage when available. */
+  /** AgentSession lineage when available. */
   agentSessionId?: string | null;
   /** Audit category. */
   category?: AuditEvent['category'];

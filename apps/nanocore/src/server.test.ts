@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -10,8 +11,15 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import {
+  type ClientHttp2Session,
+  connect as connectHttp2,
+  createServer as createHttp2Server,
+  type ServerHttp2Session,
+} from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getRequestListener } from '@hono/node-server';
 import {
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
@@ -25,13 +33,12 @@ import {
   ListServerVaultUseRecordsResponseSchema,
   ListWorkspaceAuditEventsResponseSchema,
   ListWorkspaceEvidenceBundlesResponseSchema,
-  ListWorkspaceInjectionPlansResponseSchema,
-  ListWorkspaceInjectionReceiptsResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
+  ListWorkspaceVaultInjectionPlansResponseSchema,
+  ListWorkspaceVaultInjectionReceiptsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
-  RestartRuntimeConfigStaleSessionResponseSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
   StartChatModeResponseSchema,
@@ -63,6 +70,8 @@ import {
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
 import { ensureLocalUser } from './auth/identity.js';
+import { createNanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
+import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import {
   computeBootReadinessSnapshot,
   createShutdownReadinessSnapshot,
@@ -78,10 +87,8 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
-import { createInjectionPlan, listInjectionPlans } from './injection-plans.js';
-import { createInjectionReceipt, listInjectionReceipts } from './injection-receipts.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
-import { createWorkerCoordinatorDecision } from './internal-agents/worker-coordinator.js';
+import * as workerCoordinator from './internal-agents/worker-coordinator.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createDemoWorkspaceForUser, FsStore, type FsStoreOptions } from './lib/store.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
@@ -89,8 +96,14 @@ import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
+import {
+  listExportableAgentEnvironmentPackageSnapshots,
+  recordAgentEnvironmentPackageSnapshot,
+} from './runtime/aep-snapshot-ledger.js';
+import {
+  resolveAgentEnvironmentPackage,
+  resolveAgentSessionCompatibilityKey,
+} from './runtime/agent-environment.js';
 import {
   buildFilesystemWorkspaceChangeSet,
   createFilesystemSnapshotManifest,
@@ -118,16 +131,24 @@ import {
   createGoalVerificationRecord,
   listGoalVerificationRecordsForTask,
 } from './runtime/goal-verification-records.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
+import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
+import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import type {
-  AgentSessionReadModel,
+  CommitPreparedAgentSessionForTurnInput,
+  PrepareAgentSessionForTurnInput,
+  PreparedAgentSessionForTurn,
   TurnCommandRuntimeContext,
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './runtime/types.js';
+import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import {
+  createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
   listExportableWorkerCheckpoints,
   parseWorkerCheckpointContextAssembly,
+  parseWorkerCheckpointEvidence,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
@@ -159,6 +180,7 @@ import {
   createSchedulerSessionLease,
   denySchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
+  listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLease,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
@@ -168,9 +190,12 @@ import {
   recordDataRootDeploymentMove,
 } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
+import { readWorkspaceImportSnapshot } from './storage/workspace-import.js';
 import { readWorkspaceKnowledgeRetrievalTrace } from './storage/workspace-portable-file-state.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp as createDeterministicTestApp } from './test-support/app.js';
+import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
@@ -181,6 +206,11 @@ import {
 } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { createVaultUseRecord, listVaultUseRecords } from './vault/vault-use-records.js';
+import { createVaultInjectionPlan, listVaultInjectionPlans } from './vault-injection-plans.js';
+import {
+  createVaultInjectionReceipt,
+  listVaultInjectionReceipts,
+} from './vault-injection-receipts.js';
 import {
   listWorkspaceRepositoryResources,
   upsertWorkspaceRepositoryResource,
@@ -344,6 +374,22 @@ function createDemoStore(options: FsStoreOptions = {}): FsStore {
 }
 
 /**
+ * Returns the local provider registry that matches `createTestAgentSetup()`.
+ *
+ * @returns Registry containing the test OpenRouter profile.
+ */
+function testProviderRegistry(): ProviderRegistry {
+  return new ProviderRegistry([
+    {
+      displayName: 'Agent OpenRouter',
+      id: 'agent-openrouter',
+      kind: 'local',
+      models: ['openai/gpt-5.2'],
+    },
+  ]);
+}
+
+/**
  * Creates a test app with the legacy Demo Workspace fixture.
  *
  * @param options App options.
@@ -374,7 +420,8 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
     }
   }
   return createDeterministicTestApp({
-    agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+    agentManifests: [createTestAgentSetup().manifest],
+    providerRegistry: testProviderRegistry(),
     ...options,
     store,
   });
@@ -576,7 +623,6 @@ function createOpenShellWorkerControlPackage(
       agentSessionId: 'as_dashboard_control_1',
       triggerActor: { kind: 'user', id: 'user_local' },
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-06-16T00:00:00.000Z',
@@ -611,6 +657,34 @@ class FakeTurnExecutor implements TurnExecutor {
     'error',
   ] as const;
   public readonly startContexts: TurnStartRuntimeContext[] = [];
+  private readonly continuity = new SimulatedTurnExecutor();
+
+  /**
+   * Admits one AgentSession using the current compatibility-key preview.
+   *
+   * @param store Store inspected for a current Thread AgentSession.
+   * @param input Static AEP inputs for the future Turn.
+   * @returns Fresh or reusable AgentSession identity and compatibility key.
+   */
+  public prepareAgentSessionForTurn(
+    store: FsStore,
+    input: PrepareAgentSessionForTurnInput
+  ): Promise<PreparedAgentSessionForTurn> {
+    return this.continuity.prepareAgentSessionForTurn(store, input);
+  }
+
+  /**
+   * Revalidates the admitted AgentSession after scheduler dispatch.
+   *
+   * @param store Store mutated when a predecessor must close.
+   * @param input Prepared decision retained after lease acquisition.
+   */
+  public commitPreparedAgentSessionForTurn(
+    store: FsStore,
+    input: CommitPreparedAgentSessionForTurnInput
+  ): Promise<void> {
+    return this.continuity.commitPreparedAgentSessionForTurn(store, input);
+  }
 
   /**
    * Emits a deterministic completed turn for route-level tests.
@@ -629,16 +703,50 @@ class FakeTurnExecutor implements TurnExecutor {
     }
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const requestId = context.requestId ?? null;
-    const agentSession = store.createAgentSession({
-      id: context.agentSessionId ?? `session_${turn.threadId}`,
-      agentId: turn.agentId,
-      workspaceId: turn.workspaceId,
-      threadId: turn.threadId,
-      status: 'busy',
-      message: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
+    let existingAgentSession: ReturnType<FsStore['getAgentSession']> | undefined;
+    try {
+      existingAgentSession = store.getAgentSession(agentSessionId);
+    } catch {
+      existingAgentSession = undefined;
+    }
+    const sessionCompatibilityKey =
+      context.sessionCompatibilityKey ??
+      (context.agentSetup
+        ? resolveAgentSessionCompatibilityKey({
+            agentSessionId,
+            agentSetup: context.agentSetup,
+            backend: { kind: 'openshell' },
+            requestId,
+            turn,
+            turnInput: input,
+            triggerActor: context.triggerActor ?? turn.triggerActor,
+            workspaceCwd: context.workspaceCwd,
+            workspaceRoots: context.workspaceRoots,
+            ...(context.workspaceDataSourceCatalog
+              ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+              : {}),
+            ...(context.workspaceSourceRefs
+              ? { workspaceSourceRefs: context.workspaceSourceRefs }
+              : {}),
+          })
+        : undefined);
+    const agentSession = existingAgentSession
+      ? store.updateAgentSession(existingAgentSession.id, {
+          status: 'busy',
+          updatedAt: timestamp,
+        })
+      : store.createAgentSession({
+          id: agentSessionId,
+          agentId: turn.agentId,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          status: 'busy',
+          message: null,
+          ...(sessionCompatibilityKey ? { sessionCompatibilityKey } : {}),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
     store.updateTurn(turnId, { agentSessionId: agentSession.id });
     const userItem = store.createItem({
       id: `it_user_${turnId}`,
@@ -750,24 +858,6 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       data: { type: 'turn-completed', stopReason: 'aborted', turn },
     });
-  }
-}
-
-class OpenShellDashboardTurnExecutor extends FakeTurnExecutor {
-  private readonly activeSession: AgentSessionReadModel;
-
-  public constructor(activeSession: AgentSessionReadModel) {
-    super();
-    this.activeSession = activeSession;
-  }
-
-  /**
-   * Returns the OpenShell session fixture for dashboard projection tests.
-   *
-   * @returns Active OpenShell session read model fixture.
-   */
-  public getAgentSession(): AgentSessionReadModel {
-    return this.activeSession;
   }
 }
 
@@ -1336,7 +1426,7 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 18,
+      fileCount: 20,
       checkedFiles: [
         'records/agent-sessions.jsonl',
         'records/artifact-reviews.jsonl',
@@ -1350,6 +1440,8 @@ describe('nanocore server', () => {
         'records/threads.jsonl',
         'records/turn-events.jsonl',
         'records/turns.jsonl',
+        'records/vault-injection-plans.jsonl',
+        'records/vault-injection-receipts.jsonl',
         'records/workspace-material-revisions.jsonl',
         'records/workspace-materials.jsonl',
         'records/workspace.json',
@@ -1363,6 +1455,11 @@ describe('nanocore server', () => {
         exportFormatVersion: 2,
       },
     });
+    const exportRoot = workspaceExportRoot(dataRoot, 'ws_demo', body.exportId);
+    expect([
+      readFileSync(join(exportRoot, 'records/vault-injection-plans.jsonl'), 'utf8'),
+      readFileSync(join(exportRoot, 'records/vault-injection-receipts.jsonl'), 'utf8'),
+    ]).toEqual(['', '']);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
   });
 
@@ -1388,7 +1485,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_demo',
       exportedWorkspaceId: 'ws_demo',
       collision: { status: 'collides', workspaceId: 'ws_demo' },
-      verification: { fileCount: 17 },
+      verification: { fileCount: 19 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -1891,8 +1988,8 @@ describe('nanocore server', () => {
       updatedAt: '2026-07-06T00:00:02.000Z',
     });
     const sourceReference = createVaultReference(coreDb, {
-      backendKind: 'os-keychain',
-      backendLocator: 'os-keychain:round-trip-source',
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file:round-trip-source',
       displayName: 'Round trip provider key',
       ownerScope: 'workspace',
       referenceId: 'vault_round_trip_provider',
@@ -1901,13 +1998,14 @@ describe('nanocore server', () => {
       now: () => '2026-07-06T00:00:03.000Z',
     });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-workspace-round-trip-repo-'));
     try {
       upsertWorkspaceRepositoryResource(sourceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         workspaceId: 'ws_demo',
         resourceId: 'repo_round_trip',
         displayName: 'Round trip repository',
-        localPath: dataRoot,
+        localPath: repositoryPath,
         git: {
           allowedPushTargets: ['main'],
           authorEmail: 'openkit@example.com',
@@ -2013,13 +2111,13 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it('imports workspace vault references as unbound metadata', async () => {
+  it('rejects workspace imports containing os-keychain vault references', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const sourceReference = createVaultReference(coreDb, {
-      backendKind: 'os-keychain',
+      backendKind: 'os-keychain' as never,
       backendLocator: 'os-keychain:redacted-source',
       displayName: 'Workspace provider key',
       ownerScope: 'workspace',
@@ -2044,27 +2142,13 @@ describe('nanocore server', () => {
       }),
     });
 
-    expect(importRes.status).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedReferences = listVaultReferences(coreDb).filter(
-      (reference) => reference.workspaceId === body.importedWorkspaceId
-    );
-
-    expect(importedReferences).toEqual([
-      expect.objectContaining({
-        ownerScope: 'workspace',
-        workspaceId: body.importedWorkspaceId,
-        displayName: sourceReference.displayName,
-        secretKind: sourceReference.secretKind,
-        backendKind: sourceReference.backendKind,
-        backendLocator: null,
-        currentVersion: 0,
-        status: 'unbound',
-      }),
-    ]);
-    expect(importedReferences[0]?.referenceId).not.toBe(sourceReference.referenceId);
+    expect(importRes.status, await importRes.clone().text()).toBe(400);
+    expect(
+      listVaultReferences(coreDb).filter(
+        (reference) => reference.workspaceId === 'ws_imported_ws_demo'
+      )
+    ).toEqual([]);
     expect(getVaultReference(coreDb, sourceReference.referenceId)).toEqual(sourceReference);
-    expect(JSON.stringify(importedReferences)).not.toContain('redacted-source');
     coreDb.sqlite.close();
   });
 
@@ -2098,8 +2182,8 @@ describe('nanocore server', () => {
     const coreRowCounts = coreDb.sqlite.prepare(`SELECT
       (SELECT COUNT(*) FROM vault_references) AS vaultReferences,
       (SELECT COUNT(*) FROM vault_grants) AS vaultGrants,
-      (SELECT COUNT(*) FROM injection_plans) AS injectionPlans,
-      (SELECT COUNT(*) FROM injection_receipts) AS injectionReceipts`);
+      (SELECT COUNT(*) FROM vault_injection_plans) AS injectionPlans,
+      (SELECT COUNT(*) FROM vault_injection_receipts) AS injectionReceipts`);
     const beforeCoreRows = coreRowCounts.get();
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
@@ -2294,7 +2378,7 @@ describe('nanocore server', () => {
       })
     ).toMatchObject({ status: 'active', currentVersion: 1 });
     expect(() =>
-      createInjectionPlan(coreDb, {
+      createVaultInjectionPlan(coreDb, {
         backendCapabilityRequirement: 'encrypted-file:resolve',
         expirationBehavior: 'grant-lifetime',
         grantId: importedGrants[0].grantId,
@@ -2340,7 +2424,7 @@ describe('nanocore server', () => {
       policyDecisionId: 'pd_plan_1',
       now: () => '2026-07-06T00:12:00.000Z',
     });
-    createInjectionPlan(coreDb, {
+    createVaultInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_codex_auth',
       grantId: 'grant_ws_demo_codex_auth',
       capabilityId: 'runtime.codex_auth',
@@ -2356,7 +2440,19 @@ describe('nanocore server', () => {
     const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    expect(exported.checkedFiles).toContain('records/injection-plans.jsonl');
+    expect(exported.checkedFiles).toContain('records/vault-injection-plans.jsonl');
+    const verified = verifyWorkspaceExportTree({
+      exportRoot: workspaceExportRoot(dataRoot, 'ws_demo', exported.exportId),
+    });
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        targetWorkspaceId: 'ws_legacy_injection_plan',
+        verified: {
+          ...verified,
+          fileContents: new Map(verified.fileContents).set('records/injection-plans.jsonl', ''),
+        },
+      })
+    ).toThrow('Unsupported workspace export record path: records/injection-plans.jsonl');
 
     const importRes = await app.request('/api/app/workspace-imports', {
       method: 'POST',
@@ -2373,7 +2469,7 @@ describe('nanocore server', () => {
     const importedGrant = listVaultGrants(coreDb).find(
       (grant) => grant.workspaceId === body.importedWorkspaceId
     );
-    const importedPlans = listInjectionPlans(coreDb).filter(
+    const importedPlans = listVaultInjectionPlans(coreDb).filter(
       (plan) => plan.grantId === importedGrant?.grantId
     );
 
@@ -2428,7 +2524,7 @@ describe('nanocore server', () => {
       policyDecisionId: 'pd_receipt_1',
       now: () => '2026-07-06T00:13:00.000Z',
     });
-    createInjectionPlan(coreDb, {
+    createVaultInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_github_receipt',
       grantId: 'grant_ws_demo_github_receipt',
       capabilityId: 'mcp.github.call_tool',
@@ -2439,7 +2535,7 @@ describe('nanocore server', () => {
       backendCapabilityRequirement: 'native-handle',
       now: () => '2026-07-06T00:13:01.000Z',
     });
-    createInjectionReceipt(coreDb, {
+    createVaultInjectionReceipt(coreDb, {
       receiptId: 'receipt_ws_demo_github',
       planId: 'plan_ws_demo_github_receipt',
       grantId: 'grant_ws_demo_github_receipt',
@@ -2474,7 +2570,19 @@ describe('nanocore server', () => {
     const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    expect(exported.checkedFiles).toContain('records/injection-receipts.jsonl');
+    expect(exported.checkedFiles).toContain('records/vault-injection-receipts.jsonl');
+    const verified = verifyWorkspaceExportTree({
+      exportRoot: workspaceExportRoot(dataRoot, 'ws_demo', exported.exportId),
+    });
+    expect(() =>
+      readWorkspaceImportSnapshot({
+        targetWorkspaceId: 'ws_legacy_injection_receipt',
+        verified: {
+          ...verified,
+          fileContents: new Map(verified.fileContents).set('records/injection-receipts.jsonl', ''),
+        },
+      })
+    ).toThrow('Unsupported workspace export record path: records/injection-receipts.jsonl');
 
     const importRes = await app.request('/api/app/workspace-imports', {
       method: 'POST',
@@ -2491,10 +2599,10 @@ describe('nanocore server', () => {
     const importedGrant = listVaultGrants(coreDb).find(
       (grant) => grant.workspaceId === body.importedWorkspaceId
     );
-    const importedPlan = listInjectionPlans(coreDb).find(
+    const importedPlan = listVaultInjectionPlans(coreDb).find(
       (plan) => plan.grantId === importedGrant?.grantId
     );
-    const importedReceipts = listInjectionReceipts(coreDb).filter(
+    const importedReceipts = listVaultInjectionReceipts(coreDb).filter(
       (receipt) => receipt.planId === importedPlan?.planId
     );
     const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
@@ -2674,13 +2782,14 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-repository-repo-'));
     try {
       upsertWorkspaceRepositoryResource(sourceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         workspaceId: 'ws_demo',
         resourceId: 'repo_default',
         displayName: 'OpenKit source',
-        localPath: dataRoot,
+        localPath: repositoryPath,
         git: {
           allowedPushTargets: ['main'],
           authorEmail: 'openkit@example.com',
@@ -3785,7 +3894,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('restarts runtime config stale sessions by retiring the old session record', async () => {
+  it('does not expose runtime config AgentSession restart through App API', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Retire stale session');
     const session = store.createAgentSession({
@@ -3807,6 +3916,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const app = createApp({ coreDb, runtimeConfigManager, store });
+    const sessionBefore = store.getAgentSession(session.id);
 
     try {
       const res = await app.request(
@@ -3814,23 +3924,46 @@ describe('nanocore server', () => {
         { method: 'POST' }
       );
 
-      expect(res.status, await res.clone().text()).toBe(200);
-      expect(RestartRuntimeConfigStaleSessionResponseSchema.parse(await res.json())).toMatchObject({
-        restarted: true,
-        session: {
-          configVersion: 2,
-          id: session.id,
-          stale: false,
-          status: 'interrupted',
-        },
-      });
-      expect(store.getAgentSession(session.id)).toMatchObject({
-        configVersion: 2,
-        status: 'interrupted',
-      });
+      expect(res.status, await res.clone().text()).toBe(404);
+      expect(store.getAgentSession(session.id)).toEqual(sessionBefore);
     } finally {
       coreDb.sqlite.close();
     }
+  });
+
+  it('does not expose AgentSession summaries from ordinary agent health refresh', async () => {
+    const turnExecutor = Object.assign(new FakeTurnExecutor(), {
+      refreshAgentSessions: () => [
+        {
+          id: 'as_health_private',
+          status: 'busy' as const,
+          message: null,
+          configVersion: 1,
+          workspaceRoots: [],
+          stale: false,
+          sandboxSummary: null,
+          backend: {
+            kind: 'openshell' as const,
+            health: 'ready' as const,
+            controlMode: 'sandbox-integration' as const,
+            control: null,
+            runtimeTargetId: 'nanohost-main',
+            sandboxBindingRef: 'sandbox://as-health-private',
+            version: '0.0.63',
+          },
+        },
+      ],
+    });
+    const app = createApp({ store: createDemoStore(), turnExecutor });
+
+    const response = await app.request('/api/app/workspaces/ws_demo/agents/health/refresh', {
+      method: 'POST',
+    });
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body).not.toHaveProperty('sessions');
+    expect(JSON.stringify(body)).not.toContain('as_health_private');
   });
 
   it('releases one authoritatively interrupted goal task and replays its command', async () => {
@@ -4947,7 +5080,7 @@ describe('nanocore server', () => {
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-scheduler-turn-repository-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -5007,27 +5140,16 @@ describe('nanocore server', () => {
       }
       return startTurn(...args);
     });
-    const baseAgentManifest = createTestAgentSetup({ provider: null }).manifest;
-    const opaqueAgentManifest = {
-      ...baseAgentManifest,
-      id: 'agent_fourth_runtime',
+    const opaqueAgentManifest = createTestAgentSetup({
+      adapter: 'fourth-runtime',
+      agentId: 'agent_fourth_runtime',
       displayName: 'Fourth Runtime Agent',
-      runtime: {
-        ...baseAgentManifest.runtime,
-        adapter: 'fourth-runtime',
-        kind: 'fourth-runtime',
-      },
-    };
-    const laterAgentManifest = {
-      ...baseAgentManifest,
-      id: 'agent_zeta_runtime',
+    }).manifest;
+    const laterAgentManifest = createTestAgentSetup({
+      adapter: 'zeta-runtime',
+      agentId: 'agent_zeta_runtime',
       displayName: 'Zeta Runtime Agent',
-      runtime: {
-        ...baseAgentManifest.runtime,
-        adapter: 'zeta-runtime',
-        kind: 'zeta-runtime',
-      },
-    };
+    }).manifest;
     const app = createApp({
       agentManifests: [laterAgentManifest, opaqueAgentManifest],
       coreDb,
@@ -5038,7 +5160,7 @@ describe('nanocore server', () => {
     const requestId = '0190f4c8-0000-7000-8000-000000000301';
     const input = 'Implement the focused Task Mode fix.';
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -5079,7 +5201,7 @@ describe('nanocore server', () => {
         .listThreadItems('ws_demo', 'th_demo')
         .find((item) => item.id === `it_user_${parsed.turn.id}`);
       expect(workerInput?.type).toBe('user-message');
-      const expectedWorkerRequest = createWorkerCoordinatorDecision({
+      const expectedWorkerRequest = workerCoordinator.createWorkerCoordinatorDecision({
         prompt: input,
         readiness: [
           {
@@ -5173,6 +5295,266 @@ describe('nanocore server', () => {
     }
   });
 
+  it.each([
+    {
+      entry: 'direct Task',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
+      requestId: '0190f4c8-0000-7000-8000-000000000321',
+      responseKind: 'task' as const,
+    },
+    {
+      entry: 'Chat-to-Task',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      requestId: '0190f4c8-0000-7000-8000-000000000322',
+      responseKind: 'chat' as const,
+    },
+  ])('starts $entry from one remote Git source without a WorkspaceRepository', async ({
+    path,
+    requestId,
+    responseKind,
+  }) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const remoteCommit = '0123456789abcdef0123456789abcdef01234567';
+    const remoteUrl = 'https://git.example.test/openkit/task-mode.git';
+    const agentManifest = {
+      ...createTestAgentSetup().manifest,
+      workspace: {
+        inputs: [{ access: 'read-write' as const, id: 'repo_remote', sourceRef: 'main-repo' }],
+      },
+    };
+    const catalog = parseWorkspaceDataSourceCatalog({
+      schemaVersion: 1,
+      sources: [
+        {
+          access: 'read-write',
+          allowedSlotKinds: ['worktree'],
+          displayName: 'Task Mode remote repository',
+          id: 'main-repo',
+          kind: 'git',
+          locator: { commit: remoteCommit, url: remoteUrl },
+          sensitivity: 'internal',
+          status: 'active',
+        },
+      ],
+    });
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot: coreDb.dataRoot,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [agentManifest],
+        dataRoot: coreDb.dataRoot,
+        providerRegistry: testProviderRegistry(),
+        workspaceDataSourceCatalogs: [
+          {
+            catalog,
+            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'data-sources.jsonc'),
+            workspaceId: 'ws_demo',
+          },
+        ],
+      }),
+    });
+    let checkpointDiagnostics: string | null = null;
+    const startTurn = executor.startTurn.bind(executor);
+    vi.spyOn(executor, 'startTurn').mockImplementation(async (...args) => {
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        checkpointDiagnostics =
+          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', args[1])?.diagnosticsSummary ??
+          null;
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      return startTurn(...args);
+    });
+    const app = createApp({
+      coreDb,
+      runtimeConfigManager,
+      store,
+      turnExecutor: executor,
+    });
+    const input = 'Implement the focused Task Mode fix.';
+
+    try {
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              'SELECT COUNT(*) AS count FROM workspace_repository_resources WHERE workspace_id = ?'
+            )
+            .get('ws_demo')
+        ).toEqual({ count: 0 });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+
+      const response = await app.request(path, {
+        method: 'POST',
+        body: JSON.stringify({ input, requestId }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const responseBody = await response.json();
+
+      expect(response.status, JSON.stringify(responseBody)).toBe(202);
+      if (responseKind === 'task') {
+        expect(StartTaskModeResponseSchema.parse(responseBody).state).toBe('completed');
+      } else {
+        expect(StartChatModeResponseSchema.parse(responseBody)).toMatchObject({
+          outcome: 'task-handoff',
+          handoff: { targetMode: 'task' },
+        });
+      }
+      expect(executor.startContexts).toHaveLength(1);
+      expect(executor.startContexts[0]).toMatchObject({
+        workspaceCwd: '/workspace/openkit',
+        workspaceRoots: [
+          {
+            access: 'read-write',
+            id: 'repo_remote',
+            sourceCommit: remoteCommit,
+            sourceKind: 'remote-git',
+            workerPath: '/workspace/openkit',
+          },
+        ],
+        workspaceSourceRefs: { repo_remote: 'main-repo' },
+      });
+      const checkpointPayload = JSON.parse(checkpointDiagnostics ?? 'null') as {
+        contextAssembly?: Record<string, unknown>;
+      };
+      expect(checkpointPayload.contextAssembly).toMatchObject({
+        contextDigest: expect.any(String),
+        contextRefs: expect.arrayContaining([{ kind: 'workspace', id: 'ws_demo' }]),
+      });
+      expect(checkpointPayload.contextAssembly).not.toHaveProperty('repositoryResourceId');
+      expect(
+        JSON.stringify({ checkpoint: checkpointPayload, runtime: executor.startContexts[0] })
+      ).not.toContain(coreDb.dataRoot);
+    } finally {
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      entry: 'direct Task',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
+      requestId: '0190f4c8-0000-7000-8000-000000000323',
+    },
+    {
+      entry: 'Chat-to-Task',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      requestId: '0190f4c8-0000-7000-8000-000000000324',
+    },
+  ])('records the product-safe $entry failure in RuntimeEvidence', async ({
+    entry,
+    path,
+    requestId,
+  }) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    vi.spyOn(executor, 'startTurn').mockImplementation(
+      async (runtimeStore, turnId, input, context) => {
+        executor.startContexts.push(context);
+        const turn = runtimeStore.getTurnById(turnId);
+        const completedAt = new Date().toISOString();
+        if (!turn.agentId) {
+          throw new Error('Fake worker turn requires a selected agent id.');
+        }
+        const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
+        const agentSession = runtimeStore.createAgentSession({
+          id: agentSessionId,
+          agentId: turn.agentId,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          status: 'busy',
+          message: null,
+          ...(context.sessionCompatibilityKey
+            ? { sessionCompatibilityKey: context.sessionCompatibilityKey }
+            : {}),
+          createdAt: completedAt,
+          updatedAt: completedAt,
+        });
+        runtimeStore.createItem({
+          id: `it_user_${turnId}`,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId,
+          type: 'user-message',
+          status: 'completed',
+          actor: turn.triggerActor,
+          text: input,
+          createdAt: turn.startedAt ?? completedAt,
+          completedAt,
+        });
+        const failedTurn = runtimeStore.updateTurn(turnId, {
+          agentSessionId: agentSession.id,
+          completedAt,
+          error: { code: 'worker_failed', message: 'Worker process exited with code 1.' },
+          status: 'failed',
+        });
+        runtimeStore.updateAgentSession(agentSession.id, {
+          message: 'Worker process exited with code 1.',
+          status: 'failed',
+          updatedAt: completedAt,
+        });
+        runtimeStore.emitTurnEvent(turnId, {
+          event: 'turn.completed',
+          requestId: context.requestId ?? null,
+          workspaceId: turn.workspaceId,
+          threadId: turn.threadId,
+          turnId,
+          data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
+        });
+      }
+    );
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+
+    try {
+      const response = await app.request(path, {
+        method: 'POST',
+        body: JSON.stringify({
+          input: 'Implement the focused Task Mode fix.',
+          requestId,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(response.status, await response.clone().text()).toBe(202);
+      if (entry === 'direct Task') {
+        const result = StartTaskModeResponseSchema.parse(await response.clone().json());
+        expect(result.state).toBe('failed');
+        const checkpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+        try {
+          expect(
+            getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', result.turn.id)
+          ).toBeNull();
+        } finally {
+          checkpointDb.sqlite.close();
+        }
+      }
+      const failedTurn = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .find((turn) => turn.status === 'failed');
+      expect(failedTurn).toBeDefined();
+
+      const evidenceResponse = await app.request('/api/app/workspaces/ws_demo/runtime-evidence');
+      expect(evidenceResponse.status, await evidenceResponse.clone().text()).toBe(200);
+      const evidence = ListWorkspaceRuntimeEvidenceResponseSchema.parse(
+        await evidenceResponse.json()
+      ).runtimeEvidence.find((record) => record.turnId === failedTurn?.id);
+      expect(evidence).toMatchObject({
+        outcome: 'failed',
+        phase: 'checkpoint',
+        redactedStderrSummary: 'Worker process exited with code 1.',
+      });
+    } finally {
+      vi.restoreAllMocks();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('recovers a direct Task receipt from its terminal checkpoint without another worker turn', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -5182,7 +5564,7 @@ describe('nanocore server', () => {
     const requestId = '0190f4c8-0000-7000-8000-000000000302';
     const input = 'Implement the focused Task receipt recovery fix.';
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -5313,7 +5695,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('fails closed for a direct Task worker Approval without policy authority', async () => {
+  it('keeps a direct Task non-secret Gate on its own task.start closeout contract', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
@@ -5321,7 +5703,7 @@ describe('nanocore server', () => {
     const taskRequestId = '0190f4c8-0000-7000-8000-000000000308';
     const taskInput = 'Implement the bounded Task Mode simulator fix.';
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -5332,51 +5714,6 @@ describe('nanocore server', () => {
         }),
         headers: { 'content-type': 'application/json' },
       });
-
-      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated Task Gate receipt write failure');
-      });
-      const failedRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: taskRequestId,
-          input: taskInput,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      receiptWrite.mockRestore();
-
-      expect(failedRes.status).toBe(409);
-      await expect(failedRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      const turnId = store.listThreadTurns('ws_demo', 'th_demo').at(-1)?.id;
-      expect(turnId).toBeDefined();
-      if (!turnId) {
-        throw new Error('Task Gate Turn was not created.');
-      }
-      const liveCheckpointDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        const checkpoint = getWorkerCheckpoint(liveCheckpointDb, 'ws_demo', 'th_demo', turnId);
-        expect(checkpoint).not.toBeNull();
-        await expect(
-          classifyDirectTaskCheckpointAfterSchedulerRecovery({
-            coreDb,
-            store,
-            workspaceDb: liveCheckpointDb,
-            checkpoint: checkpoint!,
-          })
-        ).resolves.toBe('live');
-        expect(getWorkerCheckpoint(liveCheckpointDb, 'ws_demo', 'th_demo', turnId)).not.toBeNull();
-        expect(
-          store.getCommandRequest(
-            'task.start',
-            taskRequestId,
-            { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
-            liveCheckpointDb
-          )
-        ).not.toBeNull();
-      } finally {
-        liveCheckpointDb.sqlite.close();
-      }
 
       const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
@@ -5393,43 +5730,46 @@ describe('nanocore server', () => {
       expect(parsed.evidence.itemIds).toEqual(
         expect.arrayContaining([
           `it_assistant_${parsed.turn.id}`,
-          `it_approval_request_${parsed.turn.id}`,
+          `it_user_input_request_${parsed.turn.id}`,
         ])
       );
-      expect(parsed.turn.humanGate?.kind).toBe('approval');
-      if (parsed.turn.humanGate?.kind !== 'approval') {
-        throw new Error('Expected the simulator approval Gate.');
+      expect(parsed.turn.humanGate?.kind).toBe('user-input');
+      if (parsed.turn.humanGate?.kind !== 'user-input') {
+        throw new Error('Expected the simulator user-input Gate.');
       }
-      const approvalRes = await app.request(
-        `/api/approvals/${parsed.turn.humanGate.approvalRequestId}/respond`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: '0190f4c8-0000-7000-8000-000000000309',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: parsed.turn.id,
-            decision: 'granted',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-      expect(approvalRes.status).toBe(501);
-      await expect(approvalRes.json()).resolves.toMatchObject({
-        code: 'approvals_not_supported',
+      const close = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: '0190f4c8-0000-7000-8000-000000000309',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: parsed.turn.id,
+          answers: { tone: ['Concise'] },
+        }),
+        headers: { 'content-type': 'application/json' },
       });
-      expect(store.getApproval(parsed.turn.humanGate.approvalRequestId)).toMatchObject({
-        status: 'pending',
-      });
-      expect(store.getTurn('ws_demo', 'th_demo', parsed.turn.id)).toMatchObject({
-        status: 'awaiting_human',
-        humanGate: parsed.turn.humanGate,
-      });
+      expect(close.status, await close.clone().text()).toBe(202);
+      await expect(close.json()).resolves.toMatchObject({ status: 'completed', humanGate: null });
+      expect(
+        store
+          .listAllItems()
+          .filter(
+            (item) =>
+              item.workspaceId === 'ws_demo' &&
+              (item.type === 'approval-request' || item.type === 'approval-decision')
+          )
+      ).toEqual([]);
       const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
       try {
+        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', parsed.turn.id)).toBeNull();
         expect(
-          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', parsed.turn.id)
-        ).toMatchObject({ stage: 'waiting_for_user', stopReason: 'ask_user' });
+          store.getCommandRequest(
+            'task.start',
+            taskRequestId,
+            { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
+            workspaceDb
+          )
+        ).not.toBeNull();
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -5438,7 +5778,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('does not publish an Approval receipt for an unsupported direct Task Gate', async () => {
+  it('recovers a direct Task user-input receipt without duplicating its closeout', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
@@ -5446,7 +5786,7 @@ describe('nanocore server', () => {
     const taskRequestId = '0190f4c8-0000-7000-8000-000000000310';
     const responseRequestId = '0190f4c8-0000-7000-8000-000000000311';
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -5466,40 +5806,35 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
       const task = StartTaskModeResponseSchema.parse(await taskRes.json());
-      if (task.turn.humanGate?.kind !== 'approval') {
-        throw new Error('Expected the simulator approval Gate.');
+      if (task.turn.humanGate?.kind !== 'user-input') {
+        throw new Error('Expected the simulator user-input Gate.');
       }
 
+      const responseBody = {
+        requestId: responseRequestId,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: task.turn.id,
+        answers: { tone: ['Concise'] },
+      };
+
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('simulated approval response receipt write failure');
+        throw new Error('simulated user-input response receipt write failure');
       });
-      const responseRes = await app.request(
-        `/api/approvals/${task.turn.humanGate.approvalRequestId}/respond`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: responseRequestId,
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: task.turn.id,
-            decision: 'granted',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
+      const responseRes = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify(responseBody),
+        headers: { 'content-type': 'application/json' },
+      });
       receiptWrite.mockRestore();
 
-      expect(responseRes.status).toBe(501);
-      await expect(responseRes.json()).resolves.toMatchObject({
-        code: 'approvals_not_supported',
-      });
-      expect(receiptWrite).not.toHaveBeenCalled();
+      expect(responseRes.status).toBe(409);
+      await expect(responseRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(
-        store.getCommandRequest('approval.respond', responseRequestId, {
+        store.getCommandRequest('turn.input.submit', responseRequestId, {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           turnId: task.turn.id,
-          approvalRequestId: task.turn.humanGate.approvalRequestId,
         })
       ).toBeNull();
 
@@ -5511,6 +5846,19 @@ describe('nanocore server', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
+
+      const retry = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify(responseBody),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(retry.status, await retry.clone().text()).toBe(202);
+      await expect(retry.json()).resolves.toMatchObject({ status: 'completed', humanGate: null });
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.turnId === task.turn.id && item.type === 'user-input-response')
+      ).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }
@@ -5614,7 +5962,7 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-review-repository-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -5654,7 +6002,7 @@ describe('nanocore server', () => {
     const requestId = '0190f4c8-0000-7000-8000-000000000305';
     const input = 'Implement the focused Task Mode fix.';
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -5709,7 +6057,7 @@ describe('nanocore server', () => {
       await expect(conflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
       });
-      expect(directTaskRes.status).toBe(202);
+      expect(directTaskRes.status, await directTaskRes.clone().text()).toBe(202);
       const directTask = StartTaskModeResponseSchema.parse(await directTaskRes.json());
       expect(acceptedTurnIds).not.toContain(directTask.turn.id);
       expect(executor.startContexts).toHaveLength(2);
@@ -5722,6 +6070,1018 @@ describe('nanocore server', () => {
           .map((turn) => turn.id)
           .sort()
       ).toEqual([...acceptedTurnIds, directTask.turn.id].sort());
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('closes one deterministic Chat-subordinate non-secret Gate under the sole outer Chat receipt', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = createApp({
+      agentManifests: [createTestAgentSetup().manifest],
+      coreDb,
+      providerRegistry: new ProviderRegistry([
+        {
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Simulator backend inference',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      store,
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+    });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-checkpoint-repository-'));
+    const requestId = '0190f4c8-0000-7000-8000-000000000306';
+    const input = 'Implement the focused Task Mode fix.';
+
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['config', 'user.name', 'Repository Local'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n', 'utf8');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'initial'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+
+    try {
+      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        body: JSON.stringify({
+          displayName: 'Chat checkpoint repository',
+          localPath: repositoryPath,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      const response = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const body = await response.json();
+
+      expect(response.status, JSON.stringify(body)).toBe(202);
+      const accepted = StartChatModeResponseSchema.parse(body);
+      expect(accepted).toMatchObject({
+        outcome: 'task-handoff',
+        handoff: { targetMode: 'task' },
+      });
+      const workerTurns = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .filter((turn) => turn.id !== accepted.turn.id);
+      expect(workerTurns).toHaveLength(1);
+      const workerTurn = workerTurns[0]!;
+      expect(workerTurn).toMatchObject({
+        status: 'awaiting_human',
+        humanGate: { kind: 'user-input' },
+      });
+      expect(workerTurn.id).toMatch(new RegExp(`^turn_${requestId}_`));
+
+      const replay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const conflict = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input: 'Use a conflicting Chat handoff input.' }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(replay.status).toBe(202);
+      expect(StartChatModeResponseSchema.parse(await replay.json())).toEqual(accepted);
+      expect(conflict.status).toBe(409);
+      await expect(conflict.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(
+        store.listThreadTurns('ws_demo', 'th_demo').filter((turn) => turn.id === workerTurn.id)
+      ).toHaveLength(1);
+
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id);
+        expect(checkpoint).toMatchObject({
+          goalId: null,
+          requestId,
+          stage: 'waiting_for_user',
+          stopReason: 'ask_user',
+          taskId: null,
+          turnId: workerTurn.id,
+        });
+        expect(
+          parseWorkerCheckpointContextAssembly(checkpoint?.diagnosticsSummary ?? null)
+        ).toMatchObject({ knowledgeSelectionInput: null });
+        expect(
+          store.getCommandRequest(
+            'task.start',
+            requestId,
+            {
+              actorId: LOCAL_USER_ID,
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            },
+            workspaceDb
+          )
+        ).toBeNull();
+
+        const chatReceiptBefore = store.getCommandRequest(
+          'chat.start',
+          requestId,
+          {
+            actorId: LOCAL_USER_ID,
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          },
+          workspaceDb
+        );
+        expect(chatReceiptBefore).not.toBeNull();
+        const responseBody = {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: workerTurn.id,
+          requestId: '0190f4c8-0000-7000-8000-000000000336',
+          answers: { tone: ['Concise'] },
+        };
+        const close = await app.request('/api/turns', {
+          method: 'POST',
+          body: JSON.stringify(responseBody),
+          headers: { 'content-type': 'application/json' },
+        });
+        const closeBody = await close.json();
+        expect(close.status, JSON.stringify(closeBody)).toBe(202);
+        expect(closeBody).toMatchObject({ id: workerTurn.id, status: 'completed' });
+        const afterClose = {
+          checkpoint: getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id),
+          responseReceipt: store.getCommandRequest('turn.input.submit', responseBody.requestId, {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: workerTurn.id,
+          }),
+          responseItems: store
+            .listThreadItems('ws_demo', 'th_demo')
+            .filter((item) => item.turnId === workerTurn.id && item.type === 'user-input-response'),
+          chatReceipt: store.getCommandRequest(
+            'chat.start',
+            requestId,
+            {
+              actorId: LOCAL_USER_ID,
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            },
+            workspaceDb
+          ),
+          taskReceipt: store.getCommandRequest(
+            'task.start',
+            requestId,
+            {
+              actorId: LOCAL_USER_ID,
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            },
+            workspaceDb
+          ),
+          aepSnapshots: listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo'),
+          backendSessions: listWorkerBackendSessions(coreDb).filter(
+            (session) => session.turnId === workerTurn.id
+          ),
+          leases: listSchedulerSessionLeasesForTurn(coreDb, {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: workerTurn.id,
+          }),
+          capacities: coreDb.sqlite
+            .prepare(
+              `SELECT target_id, in_use_count, queue_depth, version
+                 FROM scheduler_capacity_records
+             ORDER BY target_id`
+            )
+            .all(),
+          pools: coreDb.sqlite
+            .prepare(
+              `SELECT pool_id, current_admitted_session_count, current_queue_depth
+                 FROM scheduler_worker_pools
+             ORDER BY pool_id`
+            )
+            .all(),
+        };
+        expect(afterClose).toMatchObject({
+          checkpoint: null,
+          responseReceipt: {
+            response: { id: workerTurn.id, kind: 'turn' },
+          },
+          responseItems: [
+            expect.objectContaining({ answers: responseBody.answers, turnId: workerTurn.id }),
+          ],
+          chatReceipt: chatReceiptBefore,
+          taskReceipt: null,
+          aepSnapshots: [
+            expect.objectContaining({ turnId: workerTurn.id, workspaceId: 'ws_demo' }),
+          ],
+          backendSessions: [
+            expect.objectContaining({
+              state: 'cleaned',
+              turnId: workerTurn.id,
+              physicalCleanedAt: expect.any(String),
+            }),
+          ],
+          leases: [
+            expect.objectContaining({
+              releaseReason: 'turn-completed',
+              status: 'released',
+              turnId: workerTurn.id,
+            }),
+          ],
+          capacities: [expect.objectContaining({ in_use_count: 0, queue_depth: 0 })],
+          pools: [
+            expect.objectContaining({
+              current_admitted_session_count: 0,
+              current_queue_depth: 0,
+            }),
+          ],
+        });
+
+        const exactReplay = await app.request('/api/turns', {
+          method: 'POST',
+          body: JSON.stringify(responseBody),
+          headers: { 'content-type': 'application/json' },
+        });
+        expect(exactReplay.status).toBe(202);
+        expect(await exactReplay.json()).toEqual(closeBody);
+        expect(
+          store
+            .listThreadItems('ws_demo', 'th_demo')
+            .filter((item) => item.turnId === workerTurn.id && item.type === 'user-input-response')
+        ).toEqual(afterClose.responseItems);
+        expect({
+          checkpoint: getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id),
+          responseReceipt: store.getCommandRequest('turn.input.submit', responseBody.requestId, {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: workerTurn.id,
+          }),
+          aepSnapshots: listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo'),
+          backendSessions: listWorkerBackendSessions(coreDb).filter(
+            (session) => session.turnId === workerTurn.id
+          ),
+          leases: listSchedulerSessionLeasesForTurn(coreDb, {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: workerTurn.id,
+          }),
+          capacities: coreDb.sqlite
+            .prepare(
+              `SELECT target_id, in_use_count, queue_depth, version
+                 FROM scheduler_capacity_records
+             ORDER BY target_id`
+            )
+            .all(),
+          pools: coreDb.sqlite
+            .prepare(
+              `SELECT pool_id, current_admitted_session_count, current_queue_depth
+                 FROM scheduler_worker_pools
+             ORDER BY pool_id`
+            )
+            .all(),
+        }).toEqual({
+          checkpoint: afterClose.checkpoint,
+          responseReceipt: afterClose.responseReceipt,
+          aepSnapshots: afterClose.aepSnapshots,
+          backendSessions: afterClose.backendSessions,
+          leases: afterClose.leases,
+          capacities: afterClose.capacities,
+          pools: afterClose.pools,
+        });
+
+        const changedAnswers = await app.request('/api/turns', {
+          method: 'POST',
+          body: JSON.stringify({ ...responseBody, answers: { tone: ['Detailed'] } }),
+          headers: { 'content-type': 'application/json' },
+        });
+        expect(changedAnswers.status).toBe(409);
+        await expect(changedAnswers.json()).resolves.toMatchObject({
+          code: 'idempotency_key_conflict',
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      expect(
+        existsSync(join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'traces'))
+      ).toBe(false);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    ['baseline', 12],
+    ['direct-task-receipt', 0],
+    ['goal-receipt', 1],
+    ['wrong-actor', 2],
+    ['wrong-workspace', 3],
+    ['wrong-thread', 4],
+    ['wrong-request', 5],
+    ['wrong-hash', 6],
+    ['wrong-result-kind', 7],
+    ['wrong-status', 8],
+    ['wrong-downstream-kind', 9],
+    ['missing-receipt', 10],
+    ['forged-subordinate-turn', 11],
+  ] as const)('validates the Chat-subordinate Gate closeout owner for %s', async (fault, caseIndex) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() });
+    const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-chat-gate-${fault}-`));
+    const requestId = `0190f4c8-0000-7000-8000-00000000034${caseIndex.toString(16)}`;
+    const input = 'Implement the focused Chat-subordinate Gate fix.';
+
+    seedWritableGitRepository(repositoryPath);
+
+    try {
+      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        body: JSON.stringify({ displayName: 'Chat Gate repository', localPath: repositoryPath }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const start = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(start.status, await start.clone().text()).toBe(202);
+      const chat = StartChatModeResponseSchema.parse(await start.json());
+      const workerTurn = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .find((turn) => turn.id !== chat.turn.id);
+      if (!workerTurn) throw new Error('Chat-subordinate Turn was not created.');
+      // Simulator Gate selection is proved separately; every owner fault starts at this exact Gate.
+      const gateItem = store.createItem({
+        id: `it_chat_gate_matrix_${workerTurn.id}`,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: workerTurn.id,
+        type: 'user-input-request',
+        status: 'completed',
+        responsibleUserId: LOCAL_USER_ID,
+        userInputRequestId: `ui_chat_gate_matrix_${workerTurn.id}`,
+        prompt: 'Which summary tone should the worker use?',
+        questions: [
+          {
+            id: 'tone',
+            header: 'Tone',
+            question: 'Which summary tone should the worker use?',
+            options: null,
+            isOther: false,
+            isSecret: false,
+          },
+        ],
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      });
+      const pausedWorkerTurn = store.updateTurn(workerTurn.id, {
+        status: 'awaiting_human',
+        humanGate: {
+          kind: 'user-input',
+          itemId: gateItem.id,
+          userInputRequestId: gateItem.userInputRequestId,
+        },
+      });
+      expect(pausedWorkerTurn).toMatchObject({
+        status: 'awaiting_human',
+        humanGate: { kind: 'user-input' },
+      });
+
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id);
+        expect(checkpoint).not.toBeNull();
+        if (!checkpoint) throw new Error('Chat-subordinate checkpoint was not created.');
+        const originalEvidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+        expect(originalEvidence).not.toBeNull();
+        if (!originalEvidence) throw new Error('Chat-subordinate checkpoint evidence is missing.');
+        const completeCheckpoint = updateWorkerCheckpoint(workspaceDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: workerTurn.id,
+          diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
+            {
+              itemIds: [...new Set([...originalEvidence.itemIds, gateItem.id])],
+              artifactIds: originalEvidence.artifactIds,
+            },
+            parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
+          ),
+        });
+        expect(parseWorkerCheckpointEvidence(completeCheckpoint.diagnosticsSummary)).toMatchObject({
+          itemIds: expect.arrayContaining([gateItem.id]),
+        });
+        const outerReceipt = store.getCommandRequest(
+          'chat.start',
+          requestId,
+          { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
+          workspaceDb
+        );
+        expect(outerReceipt).toMatchObject({
+          inputHash: completeCheckpoint.requestInputHash,
+          response: {
+            chatMetadata: {
+              downstream: { kind: 'task', turnId: workerTurn.id },
+              resultKind: 'task-handoff',
+              status: 202,
+            },
+          },
+        });
+
+        if (fault === 'direct-task-receipt' || fault === 'goal-receipt') {
+          workspaceDb.sqlite
+            .prepare(
+              `DELETE FROM idempotency_requests
+                  WHERE command_name = 'chat.start' AND request_id = ?`
+            )
+            .run(requestId);
+          store.recordCommandRequest(
+            {
+              command: fault === 'direct-task-receipt' ? 'task.start' : 'goal.step',
+              requestId,
+              scope: {
+                actorId: LOCAL_USER_ID,
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+              },
+              inputHash: completeCheckpoint.requestInputHash,
+              response:
+                fault === 'direct-task-receipt'
+                  ? { kind: 'turn', id: workerTurn.id }
+                  : { kind: 'goal', id: 'goal_forged_chat_gate' },
+            },
+            workspaceDb
+          );
+        } else if (fault === 'missing-receipt') {
+          workspaceDb.sqlite
+            .prepare(
+              `DELETE FROM idempotency_requests
+                  WHERE command_name = 'chat.start' AND request_id = ?`
+            )
+            .run(requestId);
+        } else if (fault === 'wrong-request') {
+          workspaceDb.sqlite
+            .prepare(
+              `UPDATE worker_turn_checkpoints
+                    SET request_id = 'req_wrong_chat_gate'
+                  WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?`
+            )
+            .run('ws_demo', 'th_demo', workerTurn.id);
+        } else if (fault === 'wrong-hash') {
+          workspaceDb.sqlite
+            .prepare(
+              `UPDATE idempotency_requests
+                    SET input_hash = 'sha256:wrong-chat-gate-hash'
+                  WHERE command_name = 'chat.start' AND request_id = ?`
+            )
+            .run(requestId);
+        } else if (
+          fault === 'wrong-actor' ||
+          fault === 'wrong-workspace' ||
+          fault === 'wrong-thread'
+        ) {
+          const row = workspaceDb.sqlite
+            .prepare(
+              `SELECT scope_json AS scopeJson
+                   FROM idempotency_requests
+                  WHERE command_name = 'chat.start' AND request_id = ?`
+            )
+            .get(requestId) as { scopeJson: string };
+          const scope = JSON.parse(row.scopeJson) as Record<string, string>;
+          if (fault === 'wrong-actor') scope.actorId = 'user_wrong_chat_gate';
+          if (fault === 'wrong-workspace') scope.workspaceId = 'ws_wrong_chat_gate';
+          if (fault === 'wrong-thread') scope.threadId = 'th_wrong_chat_gate';
+          workspaceDb.sqlite
+            .prepare(
+              `UPDATE idempotency_requests
+                    SET scope_json = ?
+                  WHERE command_name = 'chat.start' AND request_id = ?`
+            )
+            .run(JSON.stringify(scope), requestId);
+        } else {
+          const row = workspaceDb.sqlite
+            .prepare(
+              `SELECT response_json AS responseJson
+                   FROM idempotency_requests
+                  WHERE command_name = 'chat.start' AND request_id = ?`
+            )
+            .get(requestId) as { responseJson: string };
+          const response = JSON.parse(row.responseJson) as {
+            downstream: { kind: string; goalId?: string; turnId?: string } | null;
+            resultKind: string;
+            status: number;
+          };
+          if (fault === 'wrong-result-kind') response.resultKind = 'knowledge-answer';
+          if (fault === 'wrong-status') response.status = 200;
+          if (fault === 'wrong-downstream-kind') {
+            response.downstream = {
+              kind: 'goal',
+              goalId: 'goal_wrong_chat_gate',
+              turnId: workerTurn.id,
+            };
+          }
+          if (fault === 'forged-subordinate-turn') {
+            response.downstream = {
+              kind: 'task',
+              turnId: 'turn_forged_chat_subordinate',
+            };
+          }
+          workspaceDb.sqlite
+            .prepare(
+              `UPDATE idempotency_requests
+                    SET response_json = ?
+                  WHERE command_name = 'chat.start' AND request_id = ?`
+            )
+            .run(JSON.stringify(response), requestId);
+        }
+
+        const storedOuter = workspaceDb.sqlite
+          .prepare(
+            `SELECT scope_json AS scopeJson, input_hash AS inputHash, response_json AS responseJson
+               FROM idempotency_requests
+              WHERE command_name = 'chat.start' AND request_id = ?`
+          )
+          .get(requestId) as
+          | { scopeJson: string; inputHash: string; responseJson: string }
+          | undefined;
+        const storedCheckpoint = getWorkerCheckpoint(
+          workspaceDb,
+          'ws_demo',
+          'th_demo',
+          workerTurn.id
+        );
+        expect(storedCheckpoint).not.toBeNull();
+        if (!storedCheckpoint) throw new Error('The faulted checkpoint must remain readable.');
+        if (fault === 'baseline') {
+          expect(JSON.parse(storedOuter?.responseJson ?? '{}')).toMatchObject({
+            downstream: { kind: 'task', turnId: workerTurn.id },
+            resultKind: 'task-handoff',
+            status: 202,
+          });
+        } else if (fault === 'direct-task-receipt' || fault === 'goal-receipt') {
+          expect(storedOuter).toBeUndefined();
+          expect(
+            store.getCommandRequest(
+              fault === 'direct-task-receipt' ? 'task.start' : 'goal.step',
+              requestId,
+              { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
+              workspaceDb
+            )
+          ).toMatchObject({
+            command: fault === 'direct-task-receipt' ? 'task.start' : 'goal.step',
+          });
+        } else if (fault === 'missing-receipt') {
+          expect(storedOuter).toBeUndefined();
+        } else if (fault === 'wrong-request') {
+          expect(storedCheckpoint.requestId).toBe('req_wrong_chat_gate');
+        } else if (fault === 'wrong-hash') {
+          expect(storedOuter?.inputHash).toBe('sha256:wrong-chat-gate-hash');
+        } else if (
+          fault === 'wrong-actor' ||
+          fault === 'wrong-workspace' ||
+          fault === 'wrong-thread'
+        ) {
+          const scope = JSON.parse(storedOuter?.scopeJson ?? '{}') as Record<string, string>;
+          expect(scope).toMatchObject(
+            fault === 'wrong-actor'
+              ? { actorId: 'user_wrong_chat_gate' }
+              : fault === 'wrong-workspace'
+                ? { workspaceId: 'ws_wrong_chat_gate' }
+                : { threadId: 'th_wrong_chat_gate' }
+          );
+        } else {
+          const response = JSON.parse(storedOuter?.responseJson ?? '{}') as {
+            downstream?: { kind: string; goalId?: string; turnId?: string };
+            resultKind?: string;
+            status?: number;
+          };
+          if (fault === 'wrong-result-kind') expect(response.resultKind).toBe('knowledge-answer');
+          if (fault === 'wrong-status') expect(response.status).toBe(200);
+          if (fault === 'wrong-downstream-kind') {
+            expect(response.downstream).toEqual({
+              kind: 'goal',
+              goalId: 'goal_wrong_chat_gate',
+              turnId: workerTurn.id,
+            });
+          }
+          if (fault === 'forged-subordinate-turn') {
+            expect(response.downstream).toEqual({
+              kind: 'task',
+              turnId: 'turn_forged_chat_subordinate',
+            });
+          }
+        }
+
+        const turnBefore = store.getTurnById(workerTurn.id);
+        const checkpointBefore = storedCheckpoint;
+        const responseItemsBefore = store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.turnId === workerTurn.id && item.type === 'user-input-response');
+        const responseRequestId = `0190f4c8-0000-7000-8000-10000000034${caseIndex.toString(16)}`;
+        const responseReceiptBefore = store.getCommandRequest(
+          'turn.input.submit',
+          responseRequestId,
+          {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: workerTurn.id,
+          },
+          workspaceDb
+        );
+        expect(responseReceiptBefore).toBeNull();
+        const leasesBefore = listSchedulerSessionLeasesForTurn(coreDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: workerTurn.id,
+        });
+        const receiptRead = vi.spyOn(store, 'getCommandRequest');
+        const close = await app.request('/api/turns', {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: responseRequestId,
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: workerTurn.id,
+            answers: { tone: ['Concise'] },
+          }),
+          headers: { 'content-type': 'application/json' },
+        });
+
+        const ownerReceiptReads = receiptRead.mock.calls.map(
+          ([command, commandRequestId, scope]) => ({
+            command,
+            requestId: commandRequestId,
+            scope,
+          })
+        );
+        receiptRead.mockRestore();
+        const expectedChatReceiptRead = {
+          command: 'chat.start',
+          requestId: storedCheckpoint.requestId,
+          scope: { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
+        };
+        if (fault === 'wrong-request') {
+          expect(ownerReceiptReads).not.toContainEqual(expectedChatReceiptRead);
+        } else {
+          expect(ownerReceiptReads).toContainEqual(expectedChatReceiptRead);
+        }
+        if (fault === 'baseline') {
+          expect(close.status, await close.clone().text()).toBe(202);
+          await expect(close.json()).resolves.toMatchObject({
+            id: workerTurn.id,
+            status: 'completed',
+          });
+          expect(
+            store
+              .listThreadItems('ws_demo', 'th_demo')
+              .filter(
+                (item) => item.turnId === workerTurn.id && item.type === 'user-input-response'
+              )
+          ).toHaveLength(responseItemsBefore.length + 1);
+          expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)).toBeNull();
+          expect(
+            listSchedulerSessionLeasesForTurn(coreDb, {
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: workerTurn.id,
+            })
+          ).toEqual([
+            expect.objectContaining({
+              releaseReason: 'turn-completed',
+              status: 'released',
+            }),
+          ]);
+        } else {
+          expect(close.status, await close.clone().text()).toBe(409);
+          await expect(close.json()).resolves.toMatchObject(
+            fault === 'wrong-request'
+              ? {
+                  code: 'recovery_required',
+                  message: 'The worker user-input Gate has no exact human command identity.',
+                }
+              : { code: 'recovery_required' }
+          );
+          expect(store.getTurnById(workerTurn.id)).toEqual(turnBefore);
+          expect(
+            store
+              .listThreadItems('ws_demo', 'th_demo')
+              .filter(
+                (item) => item.turnId === workerTurn.id && item.type === 'user-input-response'
+              )
+          ).toEqual(responseItemsBefore);
+          expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)).toEqual(
+            checkpointBefore
+          );
+          expect(
+            store.getCommandRequest(
+              'turn.input.submit',
+              responseRequestId,
+              {
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+                turnId: workerTurn.id,
+              },
+              workspaceDb
+            )
+          ).toEqual(responseReceiptBefore);
+          expect(
+            listSchedulerSessionLeasesForTurn(coreDb, {
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: workerTurn.id,
+            })
+          ).toEqual(leasesBefore);
+        }
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('fails closed without rerouting a Chat-to-Task owner whose outer receipt was not published', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const coordinator = vi.spyOn(workerCoordinator, 'createWorkerCoordinatorDecision');
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-receipt-gap-'));
+    const requestId = '0190f4c8-0000-7000-8000-000000000307';
+    const input = 'Implement the focused Task Mode fix.';
+
+    seedWritableGitRepository(repositoryPath);
+
+    try {
+      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        body: JSON.stringify({
+          displayName: 'Chat receipt gap repository',
+          localPath: repositoryPath,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated Chat receipt write failure');
+      });
+      const first = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      receiptWrite.mockRestore();
+      const firstBody = await first.json();
+      const turnIdsAfterFirst = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .map((turn) => turn.id)
+        .sort();
+      const workerTurn = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .find((turn) => turn.id.startsWith(`turn_${requestId}_`));
+
+      expect(workerTurn).toBeDefined();
+      if (!workerTurn) {
+        throw new Error('The Chat-subordinate worker Turn was not created.');
+      }
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        expect(
+          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)
+        ).not.toBeNull();
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      expect.soft(first.status, JSON.stringify(firstBody)).toBe(409);
+      expect.soft(firstBody).toMatchObject({ code: 'recovery_required' });
+      expect
+        .soft(
+          store.getCommandRequest('chat.start', requestId, {
+            actorId: LOCAL_USER_ID,
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          })
+        )
+        .toBeNull();
+      expect(coordinator).toHaveBeenCalledTimes(1);
+      expect(executor.startContexts).toHaveLength(1);
+
+      const retry = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const retryBody = await retry.json();
+
+      expect.soft(retry.status, JSON.stringify(retryBody)).toBe(409);
+      expect.soft(retryBody).toMatchObject({ code: 'recovery_required' });
+      expect(coordinator).toHaveBeenCalledTimes(1);
+      expect(executor.startContexts).toHaveLength(1);
+      expect(
+        store
+          .listThreadTurns('ws_demo', 'th_demo')
+          .map((turn) => turn.id)
+          .sort()
+      ).toEqual(turnIdsAfterFirst);
+    } finally {
+      coordinator.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      changedInput: 'help',
+      name: 'clarification',
+      requestId: '0190f4c8-0000-7000-8000-000000000310',
+    },
+    {
+      changedInput: 'search the web',
+      name: 'external-search refusal',
+      requestId: '0190f4c8-0000-7000-8000-000000000311',
+    },
+  ])('rejects $name rerouting after the same Chat-to-Task request lost its outer receipt', async ({
+    changedInput,
+    requestId,
+  }) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const coordinator = vi.spyOn(workerCoordinator, 'createWorkerCoordinatorDecision');
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-reroute-gap-'));
+    const taskInput = 'Implement the focused Task Mode fix.';
+
+    seedWritableGitRepository(repositoryPath);
+
+    try {
+      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        body: JSON.stringify({
+          displayName: 'Chat reroute gap repository',
+          localPath: repositoryPath,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated Chat receipt write failure');
+      });
+      await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input: taskInput }),
+        headers: { 'content-type': 'application/json' },
+      });
+      receiptWrite.mockRestore();
+      const workerTurn = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .find((turn) => turn.id.startsWith(`turn_${requestId}_`));
+      expect(workerTurn).toBeDefined();
+      if (!workerTurn) {
+        throw new Error('The Chat-subordinate worker Turn was not created.');
+      }
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+      try {
+        expect(
+          getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', workerTurn.id)
+        ).not.toBeNull();
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      const turnsBeforeReroute = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .map((turn) => turn.id)
+        .sort();
+      expect(coordinator).toHaveBeenCalledTimes(1);
+      expect(executor.startContexts).toHaveLength(1);
+
+      const reroute = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId, input: changedInput }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const rerouteBody = await reroute.json();
+
+      expect.soft(reroute.status, JSON.stringify(rerouteBody)).toBe(409);
+      expect.soft(rerouteBody).toMatchObject({ code: 'recovery_required' });
+      expect
+        .soft(
+          store.getCommandRequest('chat.start', requestId, {
+            actorId: LOCAL_USER_ID,
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          })
+        )
+        .toBeNull();
+      expect(coordinator).toHaveBeenCalledTimes(1);
+      expect(executor.startContexts).toHaveLength(1);
+      expect(
+        store
+          .listThreadTurns('ws_demo', 'th_demo')
+          .map((turn) => turn.id)
+          .sort()
+      ).toEqual(turnsBeforeReroute);
+    } finally {
+      coordinator.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a forged Chat replay that points at the same-request direct Task Turn', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-task-forged-replay-'));
+    const forgedRequestId = '0190f4c8-0000-7000-8000-000000000309';
+    const input = 'Implement the focused Task Mode fix.';
+
+    seedWritableGitRepository(repositoryPath);
+
+    try {
+      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        body: JSON.stringify({
+          displayName: 'Chat forged replay repository',
+          localPath: repositoryPath,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
+        throw new Error('simulated Chat receipt write failure');
+      });
+      const gapResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId: forgedRequestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      receiptWrite.mockRestore();
+      const gapBody = await gapResponse.json();
+      expect.soft(gapResponse.status, JSON.stringify(gapBody)).toBe(409);
+      expect.soft(gapBody).toMatchObject({ code: 'recovery_required' });
+      const outerChatTurn = store
+        .listThreadTurns('ws_demo', 'th_demo')
+        .find((turn) => turn.items.some((item) => item.id === `it_chat_task_${turn.id}`));
+      expect(outerChatTurn).toBeDefined();
+      if (!outerChatTurn) {
+        throw new Error('The exact-request outer Chat Turn was not created.');
+      }
+      const directTaskResponse = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/task',
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId: forgedRequestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      expect(directTaskResponse.status, await directTaskResponse.clone().text()).toBe(202);
+      const directTask = StartTaskModeResponseSchema.parse(await directTaskResponse.json());
+      expect(directTask.turn.id).toMatch(new RegExp(`^turn_${forgedRequestId}_`));
+
+      store.recordCommandRequest({
+        command: 'chat.start',
+        requestId: forgedRequestId,
+        scope: {
+          actorId: LOCAL_USER_ID,
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        },
+        inputHash: commandInputHash({ input }),
+        response: {
+          kind: 'turn',
+          id: outerChatTurn.id,
+          chatMetadata: {
+            downstream: { kind: 'task', turnId: directTask.turn.id },
+            resultKind: 'task-handoff',
+            status: 202,
+          },
+        },
+      });
+      const startsBeforeReplay = executor.startContexts.length;
+      const turnsBeforeReplay = store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id);
+
+      const replay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+        method: 'POST',
+        body: JSON.stringify({ requestId: forgedRequestId, input }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const replayBody = await replay.json();
+
+      expect(replay.status, JSON.stringify(replayBody)).toBe(409);
+      expect(replayBody).toMatchObject({ code: 'recovery_required' });
+      expect(executor.startContexts).toHaveLength(startsBeforeReplay);
+      expect(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id)).toEqual(
+        turnsBeforeReplay
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -5888,7 +7248,7 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-repository-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
     mkdirSync(join(repositoryPath, 'docs'));
     writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
     writeFileSync(join(repositoryPath, 'docs', 'guide.md'), '# Guide\n');
@@ -6112,7 +7472,7 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-dir-repository-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
     mkdirSync(join(repositoryPath, 'docs'));
     writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
     writeFileSync(join(repositoryPath, 'docs', 'guide.md'), '# Guide\n');
@@ -6176,7 +7536,7 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-file-repository-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
     mkdirSync(join(repositoryPath, 'docs'));
     writeFileSync(
       join(repositoryPath, 'docs', 'guide.md'),
@@ -6243,7 +7603,7 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-boundary-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
     writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
 
     try {
@@ -6277,7 +7637,11 @@ describe('nanocore server', () => {
 
       const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
       try {
-        expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toEqual([]);
+        expect(
+          listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo').filter(
+            (call) => call.capabilityId === 'assistant.repository.read'
+          )
+        ).toEqual([]);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -6549,7 +7913,7 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-turn-model-override-'));
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -6628,6 +7992,8 @@ describe('nanocore server', () => {
 
   it('reports active container worker capabilities in meta by default', async () => {
     const coreDb = createCoreDb();
+    const previousSelfCheckExecutor = process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+    delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
 
     try {
       const app = createNanoCoreApp({ coreDb });
@@ -6638,11 +8004,17 @@ describe('nanocore server', () => {
       const parsed = MetaResponseSchema.parse(await res.json());
 
       expect(parsed.capabilities).toEqual([
+        'core.interrupt',
         'core.artifacts',
         'core.agent_session.visible',
         'core.stream.replay',
       ]);
     } finally {
+      if (previousSelfCheckExecutor === undefined) {
+        delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+      } else {
+        process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = previousSelfCheckExecutor;
+      }
       coreDb.sqlite.close();
     }
   });
@@ -6911,7 +8283,7 @@ describe('nanocore server', () => {
       input: 'Run the idempotent turn',
     };
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
 
     try {
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -6987,7 +8359,7 @@ describe('nanocore server', () => {
       input: 'Apply this to the active turn.',
     };
 
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
     upsertWorkspaceRepositoryResource(workspaceDb, {
       workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
       workspaceId: 'ws_demo',
@@ -8193,7 +9565,6 @@ describe('nanocore server', () => {
         agentSessionId: 'as_aep_readback',
         triggerActor: { kind: 'user', id: 'user_local' },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         requestId: 'req_aep_readback',
@@ -8513,7 +9884,6 @@ describe('nanocore server', () => {
         agentSessionId: 'as_foreign_aep_child_lineage',
         triggerActor: { kind: 'user', id: LOCAL_USER_ID },
         backend: {
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
           kind: 'openshell',
         },
         requestId: 'req_foreign_aep_child_lineage',
@@ -10493,256 +11863,12 @@ describe('nanocore server', () => {
     );
   });
 
-  it('projects live OpenShell worker control status into thread dashboard sessions', async () => {
-    const store = createDemoStore();
-    const turn = store.createTurn('ws_demo', 'th_demo', 'Show worker control status', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const environmentPackage = createOpenShellWorkerControlPackage(store, turn.id);
-    const gateway = new WorkerControlGateway({
-      createToken: () => 'token_dashboard_control_1',
-      now: () => '2026-06-16T00:00:03.000Z',
-    });
-    const registration = gateway.registerSession(environmentPackage);
-    const lineage = {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: environmentPackage.scope.requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    };
-
-    gateway.recordHeartbeat({
-      authorization: `Bearer ${registration.token}`,
-      body: {
-        message: null,
-        status: 'running',
-      },
-      lineage,
-      operation: 'heartbeat',
-      schemaVersion: 1,
-      sequence: 4,
-    });
-    gateway.recordArtifactNotice({
-      artifact: {
-        mediaType: 'text/markdown',
-        path: '/openkit/artifacts/report.md',
-        title: 'Worker report',
-      },
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-      sequence: 5,
-    });
-    gateway.enqueueInterrupt(environmentPackage.snapshotId, 'Stop now');
-    gateway.pollCommands({
-      authorization: `Bearer ${registration.token}`,
-      lineage,
-    });
-
-    const app = createApp({
-      store,
-      turnExecutor: new OpenShellDashboardTurnExecutor({
-        id: environmentPackage.scope.agentSessionId,
-        status: 'busy',
-        message: null,
-        configVersion: 1,
-        workspaceRoots: [],
-        stale: false,
-        sandboxSummary: null,
-        backend: {
-          kind: 'openshell',
-          health: 'ready',
-          controlMode: 'direct-nanocore',
-          control: null,
-          gatewayName: 'openshell',
-          gatewayEndpoint: 'https://127.0.0.1:17670',
-          version: '0.0.63',
-          sandboxName: 'openkit-as-dashboard-control-1',
-        },
-      }),
-      workerControlGateway: gateway,
-    });
-    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/dashboard');
-    const body = (await res.json()) as {
-      activeSession: { backend: { control: Record<string, unknown> | null } };
-    };
-
-    expect(res.status).toBe(200);
-    expect(body.activeSession.backend.control).toMatchObject({
-      heartbeat: {
-        status: 'running',
-        sequence: 4,
-        lastHeartbeatAt: '2026-06-16T00:00:03.000Z',
-      },
-      artifactNoticeCount: 1,
-      queuedCommandCount: 1,
-      deliveredCommandCount: 1,
-    });
-  });
-
-  it('projects worker control status from the active package snapshot when a session id is reused', async () => {
-    const store = createDemoStore();
-    const oldTurn = store.createTurn('ws_demo', 'th_demo', 'Run the old worker package', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const currentTurn = store.createTurn('ws_demo', 'th_demo', 'Run the current worker package', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const oldPackage = createOpenShellWorkerControlPackage(store, oldTurn.id);
-    const currentPackage = createOpenShellWorkerControlPackage(store, currentTurn.id);
-    const gateway = new WorkerControlGateway({
-      createToken: vi
-        .fn()
-        .mockReturnValueOnce('token_dashboard_control_old')
-        .mockReturnValueOnce('token_dashboard_control_current'),
-      now: () => '2026-06-16T00:00:03.000Z',
-    });
-    const oldRegistration = gateway.registerSession(oldPackage);
-    const currentRegistration = gateway.registerSession(currentPackage);
-    const oldLineage = {
-      agentSessionId: oldPackage.scope.agentSessionId,
-      packageSnapshotId: oldPackage.snapshotId,
-      requestId: oldPackage.scope.requestId,
-      threadId: oldPackage.scope.threadId,
-      turnId: oldPackage.scope.turnId,
-      workspaceId: oldPackage.scope.workspaceId,
-    };
-    const currentLineage = {
-      agentSessionId: currentPackage.scope.agentSessionId,
-      packageSnapshotId: currentPackage.snapshotId,
-      requestId: currentPackage.scope.requestId,
-      threadId: currentPackage.scope.threadId,
-      turnId: currentPackage.scope.turnId,
-      workspaceId: currentPackage.scope.workspaceId,
-    };
-
-    gateway.recordHeartbeat({
-      authorization: `Bearer ${oldRegistration.token}`,
-      body: {
-        message: null,
-        status: 'stopping',
-      },
-      lineage: oldLineage,
-      operation: 'heartbeat',
-      schemaVersion: 1,
-      sequence: 1,
-    });
-    gateway.recordArtifactNotice({
-      artifact: {
-        mediaType: 'text/markdown',
-        path: '/openkit/artifacts/old-report.md',
-        title: 'Old worker report',
-      },
-      authorization: `Bearer ${oldRegistration.token}`,
-      lineage: oldLineage,
-      sequence: 2,
-    });
-    gateway.recordHeartbeat({
-      authorization: `Bearer ${currentRegistration.token}`,
-      body: {
-        message: null,
-        status: 'running',
-      },
-      lineage: currentLineage,
-      operation: 'heartbeat',
-      schemaVersion: 1,
-      sequence: 1,
-    });
-    store.createAgentSession({
-      id: currentPackage.scope.agentSessionId,
-      agentId: 'agent_codex_host',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      status: 'busy',
-      message: null,
-      configVersion: 1,
-      environmentPackageSnapshotId: currentPackage.snapshotId,
-      workspaceRoots: [],
-      createdAt: '2026-06-16T00:00:02.000Z',
-      updatedAt: '2026-06-16T00:00:03.000Z',
-    });
-    const app = createApp({
-      store,
-      turnExecutor: new OpenShellDashboardTurnExecutor({
-        id: currentPackage.scope.agentSessionId,
-        status: 'busy',
-        message: null,
-        configVersion: 1,
-        workspaceRoots: [],
-        stale: false,
-        sandboxSummary: null,
-        backend: {
-          kind: 'openshell',
-          health: 'ready',
-          controlMode: 'direct-nanocore',
-          control: null,
-          gatewayName: 'openshell',
-          gatewayEndpoint: 'https://127.0.0.1:17670',
-          version: '0.0.63',
-          sandboxName: 'openkit-as-dashboard-control-current',
-        },
-      }),
-      workerControlGateway: gateway,
-    });
-
-    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/dashboard');
-    const body = (await res.json()) as {
-      activeSession: { backend: { control: Record<string, unknown> | null } };
-    };
-
-    expect(res.status).toBe(200);
-    expect(body.activeSession.backend.control).toMatchObject({
-      heartbeat: {
-        status: 'running',
-        sequence: 1,
-      },
-      artifactNoticeCount: 0,
-    });
-
-    const unavailableTurn = store.createTurn(
-      'ws_demo',
-      'th_demo',
-      'Run an unavailable worker package',
-      { kind: 'user', id: 'user_local' }
-    );
-    const unavailablePackage = createOpenShellWorkerControlPackage(store, unavailableTurn.id);
-    store.updateAgentSession(currentPackage.scope.agentSessionId, {
-      environmentPackageSnapshotId: unavailablePackage.snapshotId,
-    });
-
-    const unavailableRes = await app.request(
-      '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'
-    );
-    const unavailableBody = (await unavailableRes.json()) as {
-      activeSession: { backend: { control: Record<string, unknown> | null } };
-    };
-
-    expect(unavailableRes.status).toBe(200);
-    expect(unavailableBody.activeSession.backend.control).toBeNull();
-  });
-
-  it('passes the selected repository cwd to worker turn startup', async () => {
+  it('passes the configured scheduler epoch to a worker lease', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-turn-ready-repository-'));
-
-    mkdirSync(join(repositoryPath, '.git'));
 
     try {
       const app = createApp({ coreDb, schedulerEpoch: 12, turnExecutor: executor });
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Ready repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
       const turnRes = await app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
@@ -10756,28 +11882,6 @@ describe('nanocore server', () => {
 
       expect(turnRes.status).toBe(202);
       expect(executor.startContexts).toHaveLength(1);
-      expect(executor.startContexts[0]?.workspaceCwd).toBe(repositoryPath);
-      expect(executor.startContexts[0]?.workspaceRoots).toEqual([
-        expect.objectContaining({
-          access: 'read-write',
-          id: 'repo_default',
-          sourceKind: 'host-dir',
-          sourcePath: repositoryPath,
-          workerPath: '/workspace/openkit',
-        }),
-      ]);
-      expect(executor.startContexts[0]?.workspaceSourceRefs).toEqual({
-        repo_default: 'repo_default',
-      });
-      expect(executor.startContexts[0]?.workspaceDataSourceCatalog).toMatchObject({
-        sources: [
-          expect.objectContaining({
-            id: 'repo_default',
-            kind: 'git',
-            locator: { repositoryResourceId: 'repo_default' },
-          }),
-        ],
-      });
       expect(
         coreDb.sqlite
           .prepare('SELECT scheduler_epoch AS schedulerEpoch FROM scheduler_session_leases')
@@ -11643,8 +12747,8 @@ describe('nanocore server', () => {
       } finally {
         authorityDb.sqlite.close();
       }
-      expect(listInjectionPlans(coreDb)).toEqual([]);
-      expect(listInjectionReceipts(coreDb)).toEqual([]);
+      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -11673,7 +12777,7 @@ describe('nanocore server', () => {
       workspaceId: workspace.id,
       now: () => '2026-07-08T00:00:00.000Z',
     });
-    createInjectionPlan(coreDb, {
+    createVaultInjectionPlan(coreDb, {
       backendCapabilityRequirement: 'OpenShell provider attachment.',
       expirationBehavior: 'Expires with turn grant.',
       grantId: 'grant_github_read_route',
@@ -11684,7 +12788,7 @@ describe('nanocore server', () => {
       revocationBehavior: 'Detach provider.',
       now: () => '2026-07-08T00:01:00.000Z',
     });
-    createInjectionReceipt(coreDb, {
+    createVaultInjectionReceipt(coreDb, {
       agentSessionId: 'as_route',
       backendSummary: 'OpenShell provider github attached.',
       grantId: 'grant_github_read_route',
@@ -11708,16 +12812,16 @@ describe('nanocore server', () => {
       items: [{ grantId: 'grant_github_read_route', vaultReferenceId: 'vault_github_read' }],
       workspaceId: workspace.id,
     });
-    expect(ListWorkspaceInjectionPlansResponseSchema.parse(await plans.json())).toMatchObject({
+    expect(ListWorkspaceVaultInjectionPlansResponseSchema.parse(await plans.json())).toMatchObject({
       items: [{ grantId: 'grant_github_read_route', planId: 'plan_github_read_route' }],
       workspaceId: workspace.id,
     });
-    expect(ListWorkspaceInjectionReceiptsResponseSchema.parse(await receipts.json())).toMatchObject(
-      {
-        items: [{ planId: 'plan_github_read_route', receiptId: 'receipt_github_read_route' }],
-        workspaceId: workspace.id,
-      }
-    );
+    expect(
+      ListWorkspaceVaultInjectionReceiptsResponseSchema.parse(await receipts.json())
+    ).toMatchObject({
+      items: [{ planId: 'plan_github_read_route', receiptId: 'receipt_github_read_route' }],
+      workspaceId: workspace.id,
+    });
     coreDb.sqlite.close();
   });
 
@@ -11725,7 +12829,7 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-authored-source-repository-'));
+    const remoteCommit = '0123456789abcdef0123456789abcdef01234567';
     const catalog = parseWorkspaceDataSourceCatalog({
       schemaVersion: 1,
       sources: [
@@ -11733,7 +12837,10 @@ describe('nanocore server', () => {
           id: 'main-repo',
           kind: 'git',
           displayName: 'Main repository',
-          locator: { repositoryResourceId: 'repo_default' },
+          locator: {
+            commit: remoteCommit,
+            url: 'https://git.example.test/openkit/authored-source.git',
+          },
           access: 'read-write',
           sensitivity: 'internal',
           allowedSlotKinds: ['worktree'],
@@ -11748,7 +12855,6 @@ describe('nanocore server', () => {
       'config',
       'data-sources.jsonc'
     );
-    const workspaceConfigDir = join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config');
     const runtimeConfigManager = createRuntimeConfigManager({
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
@@ -11756,32 +12862,12 @@ describe('nanocore server', () => {
         agentManifests: [
           {
             ...createTestAgentSetup().manifest,
-            provider: undefined,
             workspace: {
-              inputs: [{ id: 'repo_root', sourceRef: 'main-repo', target: 'repo' }],
+              inputs: [{ access: 'read-write', id: 'repo_root', sourceRef: 'main-repo' }],
             },
           },
         ],
-        workspaceConfigs: [
-          {
-            workspaceId: 'ws_demo',
-            path: join(workspaceConfigDir, 'workspace.jsonc'),
-            config: {
-              schemaVersion: 1,
-              workspace: {
-                roots: [
-                  {
-                    id: 'repo_root',
-                    kind: 'host-dir',
-                    path: 'repo',
-                    access: 'read-write',
-                    createIfMissing: true,
-                  },
-                ],
-              },
-            },
-          },
-        ],
+        providerRegistry: testProviderRegistry(),
         workspaceDataSourceCatalogs: [
           {
             workspaceId: 'ws_demo',
@@ -11792,10 +12878,6 @@ describe('nanocore server', () => {
       }),
     });
 
-    mkdirSync(join(repositoryPath, '.git'), { recursive: true });
-    mkdirSync(workspaceConfigDir, { recursive: true });
-    writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
-
     try {
       const app = createApp({
         coreDb,
@@ -11804,14 +12886,6 @@ describe('nanocore server', () => {
         runtimeConfigManager,
         schedulerEpoch: 12,
         turnExecutor: executor,
-      });
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Ready repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
       });
       const turnRes = await app.request('/api/turns', {
         method: 'POST',
@@ -11826,24 +12900,20 @@ describe('nanocore server', () => {
 
       expect(turnRes.status).toBe(202);
       expect(executor.startContexts[0]?.workspaceDataSourceCatalog).toMatchObject({
-        sources: [
-          expect.objectContaining({ id: 'main-repo' }),
-          expect.objectContaining({ id: 'repo_default' }),
-        ],
+        sources: [expect.objectContaining({ id: 'main-repo' })],
       });
       expect(executor.startContexts[0]?.workspaceSourceRefs).toEqual({
-        repo_default: 'repo_default',
         repo_root: 'main-repo',
       });
-      expect(executor.startContexts[0]?.workspaceRoots).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            access: 'read-write',
-            id: 'repo_root',
-            sourceKind: 'host-dir',
-          }),
-        ])
-      );
+      expect(executor.startContexts[0]?.workspaceRoots).toEqual([
+        {
+          access: 'read-write',
+          id: 'repo_root',
+          sourceCommit: remoteCommit,
+          sourceKind: 'remote-git',
+          workerPath: '/workspace/openkit',
+        },
+      ]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -11853,7 +12923,6 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-blocked-source-repository-'));
     const catalog = parseWorkspaceDataSourceCatalog({
       schemaVersion: 1,
       sources: [
@@ -11861,7 +12930,10 @@ describe('nanocore server', () => {
           id: 'disabled-repo',
           kind: 'git',
           displayName: 'Disabled repository',
-          locator: { repositoryResourceId: 'repo_disabled' },
+          locator: {
+            commit: '0123456789abcdef0123456789abcdef01234567',
+            url: 'https://git.example.test/openkit/disabled-source.git',
+          },
           access: 'read-write',
           sensitivity: 'internal',
           allowedSlotKinds: ['worktree'],
@@ -11869,8 +12941,13 @@ describe('nanocore server', () => {
         },
       ],
     });
-    const workspaceConfigDir = join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config');
-    const catalogPath = join(workspaceConfigDir, 'data-sources.jsonc');
+    const catalogPath = join(
+      coreDb.dataRoot,
+      'workspaces',
+      'ws_demo',
+      'config',
+      'data-sources.jsonc'
+    );
     const runtimeConfigManager = createRuntimeConfigManager({
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
@@ -11878,32 +12955,12 @@ describe('nanocore server', () => {
         agentManifests: [
           {
             ...createTestAgentSetup().manifest,
-            provider: undefined,
             workspace: {
-              inputs: [{ id: 'repo_root', sourceRef: 'disabled-repo', target: 'repo' }],
+              inputs: [{ access: 'read-write', id: 'repo_root', sourceRef: 'disabled-repo' }],
             },
           },
         ],
-        workspaceConfigs: [
-          {
-            workspaceId: 'ws_demo',
-            path: join(workspaceConfigDir, 'workspace.jsonc'),
-            config: {
-              schemaVersion: 1,
-              workspace: {
-                roots: [
-                  {
-                    id: 'repo_root',
-                    kind: 'host-dir',
-                    path: 'repo',
-                    access: 'read-write',
-                    createIfMissing: true,
-                  },
-                ],
-              },
-            },
-          },
-        ],
+        providerRegistry: testProviderRegistry(),
         workspaceDataSourceCatalogs: [
           {
             workspaceId: 'ws_demo',
@@ -11914,10 +12971,6 @@ describe('nanocore server', () => {
       }),
     });
 
-    mkdirSync(join(repositoryPath, '.git'), { recursive: true });
-    mkdirSync(workspaceConfigDir, { recursive: true });
-    writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
-
     try {
       const app = createApp({
         coreDb,
@@ -11926,14 +12979,6 @@ describe('nanocore server', () => {
         runtimeConfigManager,
         schedulerEpoch: 12,
         turnExecutor: executor,
-      });
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Ready repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
       });
       const turnRes = await app.request('/api/turns', {
         method: 'POST',
@@ -11953,74 +12998,6 @@ describe('nanocore server', () => {
         message: 'Workspace data source disabled: disabled-repo',
       });
       expect(executor.startContexts).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects worker turns before startup when no repository is configured', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-
-    try {
-      const app = createApp({ coreDb, turnExecutor: executor });
-      const turnRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000212',
-          input: 'Work without repository setup',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      expect(turnRes.status).toBe(400);
-      await expect(turnRes.json()).resolves.toMatchObject({
-        code: 'workspace_repository_missing',
-        message: 'Workspace repository is not configured.',
-      });
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects worker turns before startup when repository validation is not ready', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-turn-invalid-repository-'));
-
-    try {
-      const app = createApp({ coreDb, turnExecutor: executor });
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Plain directory',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const turnRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000213',
-          input: 'Work in an invalid repository',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const payloadText = await turnRes.text();
-
-      expect(turnRes.status).toBe(400);
-      expect(JSON.parse(payloadText)).toMatchObject({
-        code: 'workspace_repository_not_ready',
-        message: expect.stringContaining('is not a git repository directory'),
-      });
-      expect(payloadText).not.toContain(repositoryPath);
-      expect(executor.startContexts).toHaveLength(0);
     } finally {
       coreDb.sqlite.close();
     }
@@ -12111,6 +13088,665 @@ describe('nanocore server', () => {
     for (const event of store.getTurnEvents(turn.id)) {
       expect(() => SseEventEnvelopeSchema.parse(event)).not.toThrow();
       expect(event.requestId).toBe('0190f4c8-0000-7000-8000-000000000207');
+    }
+  });
+
+  it('binds authority generations only to native HTTP/2 accepted connections and server close', async () => {
+    const coreDb = createCoreDb();
+    const authority = createNanoHostTransportSessionAuthority();
+    const issued = createNanoHostTransportTokenRecord(coreDb, {
+      deploymentId: 'deployment-main',
+      expiresAt: '2026-09-10T00:00:00.000Z',
+      now: new Date('2026-08-10T00:00:00.000Z'),
+      ownerNanoHostIdentityId: 'integration_nanohost_main',
+      responsibleServerAdminActorId: 'user_admin',
+    });
+    const routeHandler = vi.fn(async () => ({ status: 200 }));
+    const effectHandler = vi.fn(async () => ({ status: 'succeeded' }));
+    const dispatch = createNanoHostSessionDispatch({
+      effectHandler,
+      routeHandler,
+      sessionAuthority: authority,
+    });
+    const app = createNanoCoreApp({
+      coreDb,
+      mode: 'server',
+      nanohostTransportSessionAuthority: authority,
+      nanoHostSessionDispatch: dispatch,
+      openKitConfig: {
+        nanohost: {
+          bind: { host: '127.0.0.1', port: 3001 },
+          credentialRef: 'nanohost-transport:integration_nanohost_main',
+          credentialSlots: {
+            A: {
+              companionPath: '/etc/openkit/nanohost-token-a.json',
+              secretPath: '/etc/openkit/nanohost-token-a',
+            },
+            B: {
+              companionPath: '/etc/openkit/nanohost-token-b.json',
+              secretPath: '/etc/openkit/nanohost-token-b',
+            },
+          },
+          deploymentId: 'deployment-main',
+          identityId: 'integration_nanohost_main',
+          rendezvousUrl: 'http://127.0.0.1:3000',
+        },
+      },
+    });
+    const acceptedSessions: ServerHttp2Session[] = [];
+    const server = createHttp2Server(getRequestListener(app.fetch));
+    server.on('session', (session) => acceptedSessions.push(session));
+    let firstClient: ClientHttp2Session | undefined;
+    let secondClient: ClientHttp2Session | undefined;
+    let thirdClient: ClientHttp2Session | undefined;
+    let fourthClient: ClientHttp2Session | undefined;
+
+    /** Sends the exact empty-body admission request over one accepted H2 connection. */
+    const admit = async (client: ClientHttp2Session) => {
+      const request = client.request({
+        ':method': 'POST',
+        ':path': '/api/nanohost/transport/session/admit',
+        authorization: `Bearer ${issued.secret}`,
+        'content-type': 'application/json',
+      });
+      const chunks: Buffer[] = [];
+      let status = 0;
+      request.on('response', (headers) => {
+        status = Number(headers[':status']);
+      });
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.end('{}');
+      await once(request, 'end');
+      return {
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>,
+        status,
+      };
+    };
+
+    /** Sends one private effect poll or result over the already-admitted connection. */
+    const postEffect = async (
+      client: ClientHttp2Session,
+      path: string,
+      body: string | Buffer = '{}',
+      headers: Readonly<Record<string, string>> = {}
+    ) => {
+      const request = client.request({
+        ':method': 'POST',
+        ':path': path,
+        'content-type': 'application/json',
+        ...headers,
+      });
+      const chunks: Buffer[] = [];
+      const chunkLengths: number[] = [];
+      let responseHeaders: Readonly<Record<string, unknown>> = {};
+      let status = 0;
+      request.on('response', (headers) => {
+        responseHeaders = headers;
+        status = Number(headers[':status']);
+      });
+      request.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+        chunkLengths.push(chunk.byteLength);
+      });
+      request.end(body);
+      await once(request, 'end');
+      const bodyBytes = Buffer.concat(chunks);
+      return {
+        body: bodyBytes.toString('utf8'),
+        bodyBytes,
+        chunkLengths,
+        headers: responseHeaders,
+        status,
+      };
+    };
+
+    try {
+      const synthetic = await app.request('/api/nanohost/transport/session/admit', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${issued.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      expect(synthetic.status).not.toBe(200);
+
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Native HTTP/2 test server did not expose a TCP address.');
+      }
+      const origin = `http://127.0.0.1:${address.port}`;
+      firstClient = connectHttp2(origin);
+      await once(firstClient, 'connect');
+
+      await expect(admit(firstClient)).resolves.toEqual({
+        body: expect.objectContaining({
+          connectionGeneration: 1,
+          identityId: 'integration_nanohost_main',
+          mayCarryWork: true,
+          role: 'authoritative',
+        }),
+        status: 200,
+      });
+      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+        connectionGeneration: 1,
+        freshEmpty: false,
+        predecessorFenced: false,
+        ready: false,
+      });
+      const preReadyPoll = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/sandbox.create'
+      );
+      expect(Math.floor(preReadyPoll.status / 100)).not.toBe(2);
+      const syntheticReadiness = await app.request('/api/nanohost/transport/session/readiness', {
+        method: 'POST',
+        body: '{}',
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(Math.floor(syntheticReadiness.status / 100)).not.toBe(2);
+      const nonemptyReadiness = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/session/readiness',
+        '{"ready":true}'
+      );
+      expect(Math.floor(nonemptyReadiness.status / 100)).not.toBe(2);
+      await expect(
+        postEffect(firstClient, '/api/nanohost/transport/session/readiness')
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+        connectionGeneration: 1,
+        freshEmpty: true,
+        predecessorFenced: true,
+        ready: true,
+      });
+      const dockerfile = 'é'.repeat(965_971);
+      const buildRequestId = 'f'.repeat(64);
+      const dockerfileDigest = `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`;
+      const unavailableBuildInput = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/image.build/input',
+        '{}',
+        { 'x-openkit-request-id': buildRequestId }
+      );
+      expect(unavailableBuildInput.status).toBe(409);
+      const buildEffect = dispatch.effect({
+        input: {
+          arguments: { NODE_VERSION: '24.16.0' },
+          argumentsDigest: `sha256:${'1'.repeat(64)}`,
+          contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+          contextRef: 'build-context://empty/v1',
+          dockerfile,
+          dockerfileDigest,
+          egress: [{ host: 'registry.npmjs.org', port: 443 }],
+          layerLimit: 128,
+          outputLimitBytes: 21_474_836_480,
+          timeLimitSeconds: 1800,
+        },
+        kind: 'image.build',
+        requestId: buildRequestId,
+      });
+      const buildPoll = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/image.build'
+      );
+      expect(buildPoll.status).toBe(200);
+      expect(JSON.parse(buildPoll.body)).toMatchObject({
+        dockerfileByteLength: 1_931_942,
+        dockerfileDigest,
+        requestId: buildRequestId,
+      });
+      expect(JSON.parse(buildPoll.body)).not.toHaveProperty('dockerfile');
+      expect(buildPoll.bodyBytes.byteLength).toBeLessThanOrEqual(512 * 1024);
+      const wrongBuildInput = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/image.build/input',
+        '{}',
+        { 'x-openkit-request-id': '0'.repeat(64) }
+      );
+      expect(wrongBuildInput.status).toBe(409);
+      const buildInput = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/image.build/input',
+        '{}',
+        { 'x-openkit-request-id': buildRequestId }
+      );
+      expect(buildInput.status).toBe(200);
+      expect(buildInput.headers).toEqual(
+        expect.objectContaining({
+          'content-length': '1931942',
+          'content-type': 'application/octet-stream',
+          'x-openkit-byte-length': '1931942',
+          'x-openkit-request-id': buildRequestId,
+          'x-openkit-sha256': dockerfileDigest,
+        })
+      );
+      expect(buildInput.bodyBytes.equals(Buffer.from(dockerfile))).toBe(true);
+      expect(buildInput.chunkLengths.every((length) => length <= 65_536)).toBe(true);
+      await expect(
+        postEffect(firstClient, '/api/nanohost/transport/effects/image.build/input', '{}', {
+          'x-openkit-request-id': buildRequestId,
+        })
+      ).resolves.toMatchObject({ status: 409 });
+      await expect(
+        postEffect(
+          firstClient,
+          '/api/nanohost/transport/effects/image.build/result',
+          JSON.stringify({ failureCode: 'effect_failed', requestId: buildRequestId })
+        )
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(buildEffect).rejects.toThrow(/effect_failed|effect failed/i);
+      await expect(
+        postEffect(firstClient, '/api/nanohost/transport/effects/sandbox.create')
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      const importBytes = Buffer.from('context-data');
+      const importRequestId = 'a'.repeat(64);
+      const importSha256 = `sha256:${createHash('sha256').update(importBytes).digest('hex')}`;
+      let importSettled = false;
+      const importEffect = dispatch
+        .effect({
+          input: {
+            body: importBytes,
+            byteLength: importBytes.byteLength,
+            relativePath: 'context.json',
+            sandboxId: 'sandbox-session-main',
+            sha256: importSha256,
+            slot: 'turn-inputs',
+          },
+          kind: 'reference.import',
+          requestId: importRequestId,
+        })
+        .finally(() => {
+          importSettled = true;
+        });
+      await Promise.resolve();
+      expect(importSettled).toBe(false);
+      const importPoll = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/reference.import'
+      );
+      expect(importPoll.status).toBe(200);
+      expect(importPoll.bodyBytes).toEqual(importBytes);
+      expect(importPoll.headers).toMatchObject({
+        'content-length': String(importBytes.byteLength),
+        'content-type': 'application/octet-stream',
+        'x-openkit-byte-length': String(importBytes.byteLength),
+        'x-openkit-relative-path': 'context.json',
+        'x-openkit-request-id': importRequestId,
+        'x-openkit-sha256': importSha256,
+        'x-openkit-slot': 'turn-inputs',
+      });
+      expect(importSettled).toBe(false);
+      const wrongImportResult = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/reference.import/result',
+        JSON.stringify({ requestId: 'b'.repeat(64) })
+      );
+      expect(Math.floor(wrongImportResult.status / 100)).not.toBe(2);
+      expect(importSettled).toBe(false);
+      await expect(
+        postEffect(firstClient, '/api/nanohost/transport/effects/sandbox.create')
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(
+        postEffect(
+          firstClient,
+          '/api/nanohost/transport/effects/reference.import/result',
+          JSON.stringify({
+            byteLength: importBytes.byteLength,
+            reference: 'sandbox://sandbox-session-main/turn-inputs/context.json',
+            requestId: importRequestId,
+          })
+        )
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(importEffect).resolves.toEqual({
+        byteLength: importBytes.byteLength,
+        reference: 'sandbox://sandbox-session-main/turn-inputs/context.json',
+      });
+      const exportBytes = Buffer.from('worker-output');
+      const exportRequestId = 'c'.repeat(64);
+      const exportSha256 = `sha256:${createHash('sha256').update(exportBytes).digest('hex')}`;
+      const exportEffect = dispatch.effect({
+        input: {
+          maxByteLength: 268_435_456,
+          presence: 'required',
+          relativePath: 'report.md',
+          sandboxId: 'sandbox-session-main',
+          slot: 'turn-outputs',
+          terminalBarrierProved: true,
+        },
+        kind: 'file.export',
+        requestId: exportRequestId,
+      });
+      const exportPoll = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/file.export'
+      );
+      expect(exportPoll.status).toBe(200);
+      expect(JSON.parse(exportPoll.body)).toEqual({
+        maxByteLength: 268_435_456,
+        presence: 'required',
+        relativePath: 'report.md',
+        requestId: exportRequestId,
+        sandboxId: 'sandbox-session-main',
+        slot: 'turn-outputs',
+        terminalBarrierProved: true,
+      });
+      const exportHeaders = {
+        'content-length': String(exportBytes.byteLength),
+        'content-type': 'application/octet-stream',
+        'x-openkit-byte-length': String(exportBytes.byteLength),
+        'x-openkit-relative-path': 'report.md',
+        'x-openkit-request-id': exportRequestId,
+        'x-openkit-sha256': exportSha256,
+        'x-openkit-slot': 'turn-outputs',
+      };
+      await expect(
+        postEffect(firstClient, '/api/nanohost/transport/effects/file.export/result', exportBytes, {
+          ...exportHeaders,
+          'x-openkit-sha256': `sha256:${'d'.repeat(64)}`,
+        })
+      ).resolves.toMatchObject({ status: 409 });
+      await expect(
+        postEffect(
+          firstClient,
+          '/api/nanohost/transport/effects/file.export/result',
+          exportBytes,
+          exportHeaders
+        )
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(exportEffect).resolves.toMatchObject({
+        byteLength: exportBytes.byteLength,
+        sha256: exportSha256,
+      });
+      const unknownResult = await postEffect(
+        firstClient,
+        '/api/nanohost/transport/effects/sandbox.create/result',
+        JSON.stringify({ requestId: 'unknown-request' })
+      );
+      expect(Math.floor(unknownResult.status / 100)).not.toBe(2);
+      await expect(
+        postEffect(firstClient, '/api/nanohost/transport/effects/attempt-session.cleanup')
+      ).resolves.toMatchObject({ status: 404 });
+      secondClient = connectHttp2(origin);
+      await once(secondClient, 'connect');
+      await expect(admit(secondClient)).resolves.toEqual({
+        body: expect.objectContaining({
+          connectionGeneration: 2,
+          identityId: 'integration_nanohost_main',
+          mayCarryWork: false,
+          role: 'candidate',
+        }),
+        status: 200,
+      });
+      expect(acceptedSessions).toHaveLength(2);
+      const firstServerSession = acceptedSessions[0];
+      const secondServerSession = acceptedSessions[1];
+      if (!firstServerSession || !secondServerSession) {
+        throw new Error('Native HTTP/2 server did not retain both accepted sessions.');
+      }
+      expect(authority.mayCarryWork(firstServerSession)).toBe(true);
+      expect(authority.mayCarryWork(secondServerSession)).toBe(false);
+      const candidatePoll = await postEffect(
+        secondClient,
+        '/api/nanohost/transport/effects/sandbox.create'
+      );
+      expect(Math.floor(candidatePoll.status / 100)).not.toBe(2);
+      const candidateReadiness = await postEffect(
+        secondClient,
+        '/api/nanohost/transport/session/readiness'
+      );
+      expect(Math.floor(candidateReadiness.status / 100)).not.toBe(2);
+      await expect(
+        dispatch.route(firstServerSession, {
+          body: new Uint8Array(),
+          credentialClass: 'worker-control',
+          family: 'worker-control',
+          path: '/worker-control/heartbeat',
+        })
+      ).resolves.toEqual({ status: 200 });
+      await expect(
+        dispatch.effect(firstServerSession, {
+          input: {
+            backendSessionId: 'sandbox-session-main',
+            requestId: 'request-sandbox-create-main',
+          },
+          kind: 'sandbox.create',
+        })
+      ).resolves.toEqual({ status: 'succeeded' });
+      await expect(
+        dispatch.effect(secondServerSession, {
+          input: {
+            backendSessionId: 'sandbox-session-candidate',
+            requestId: 'request-sandbox-create-candidate',
+          },
+          kind: 'sandbox.create',
+        })
+      ).rejects.toThrow(/connection|authoritative|fenc/i);
+      await expect(
+        dispatch.effect(firstServerSession, {
+          input: { requestId: 'request-retired-cleanup' },
+          kind: 'attempt-session.cleanup',
+        })
+      ).rejects.toThrow(/effect|operation|enabled/i);
+      expect(routeHandler).toHaveBeenCalledTimes(1);
+      expect(effectHandler).toHaveBeenCalledTimes(1);
+
+      const observedCandidateClose = new Promise<void>((resolve) => {
+        secondServerSession.prependOnceListener('close', () => resolve());
+      });
+      secondClient.destroy();
+      await observedCandidateClose;
+      expect(authority.mayCarryWork(firstServerSession)).toBe(true);
+      expect(authority.mayCarryWork(secondServerSession)).toBe(false);
+      expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(1);
+      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+        connectionGeneration: 2,
+        freshEmpty: false,
+        predecessorFenced: false,
+        ready: false,
+      });
+
+      thirdClient = connectHttp2(origin);
+      await once(thirdClient, 'connect');
+      await expect(admit(thirdClient)).resolves.toEqual({
+        body: expect.objectContaining({
+          connectionGeneration: 3,
+          identityId: 'integration_nanohost_main',
+          mayCarryWork: false,
+          role: 'candidate',
+        }),
+        status: 200,
+      });
+      expect(acceptedSessions).toHaveLength(3);
+      const thirdServerSession = acceptedSessions[2];
+      if (!thirdServerSession) {
+        throw new Error('Native HTTP/2 server did not retain the successor session.');
+      }
+
+      const observedPredecessorClose = once(firstServerSession, 'close');
+      firstClient.destroy();
+      await observedPredecessorClose;
+      expect(authority.mayCarryWork(firstServerSession)).toBe(false);
+      expect(authority.mayCarryWork(thirdServerSession)).toBe(true);
+      expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(3);
+      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+        connectionGeneration: 3,
+        predecessorFenced: true,
+        ready: false,
+      });
+      await expect(
+        postEffect(thirdClient, '/api/nanohost/transport/session/readiness')
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+        connectionGeneration: 3,
+        freshEmpty: true,
+        predecessorFenced: true,
+        ready: true,
+      });
+      await expect(
+        postEffect(
+          thirdClient,
+          '/api/nanohost/transport/effects/file.export/result',
+          exportBytes,
+          exportHeaders
+        )
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(
+        postEffect(
+          thirdClient,
+          '/api/nanohost/transport/effects/file.export/result',
+          Buffer.from('changed-output'),
+          exportHeaders
+        )
+      ).resolves.toMatchObject({ status: 409 });
+
+      const requiredRequestId = '8'.repeat(64);
+      const requiredBytes = Buffer.from('required-output');
+      const requiredSha256 = `sha256:${createHash('sha256').update(requiredBytes).digest('hex')}`;
+      const requiredEffect = dispatch.effect({
+        input: {
+          maxByteLength: 268_435_456,
+          presence: 'required',
+          relativePath: 'required.md',
+          sandboxId: 'sandbox-session-main',
+          slot: 'turn-outputs',
+          terminalBarrierProved: true,
+        },
+        kind: 'file.export',
+        requestId: requiredRequestId,
+      });
+      await expect(
+        postEffect(thirdClient, '/api/nanohost/transport/effects/file.export')
+      ).resolves.toMatchObject({ status: 200 });
+      await expect(
+        postEffect(
+          thirdClient,
+          '/api/nanohost/transport/effects/file.export/result',
+          JSON.stringify({ requestId: requiredRequestId, state: 'absent' })
+        )
+      ).resolves.toMatchObject({ status: 409 });
+      await expect(
+        postEffect(
+          thirdClient,
+          '/api/nanohost/transport/effects/file.export/result',
+          requiredBytes,
+          {
+            'content-length': String(requiredBytes.byteLength),
+            'content-type': 'application/octet-stream',
+            'x-openkit-byte-length': String(requiredBytes.byteLength),
+            'x-openkit-relative-path': 'required.md',
+            'x-openkit-request-id': requiredRequestId,
+            'x-openkit-sha256': requiredSha256,
+            'x-openkit-slot': 'turn-outputs',
+          }
+        )
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(requiredEffect).resolves.toMatchObject({ sha256: requiredSha256 });
+
+      const optionalRequestId = '7'.repeat(64);
+      const optionalEffect = dispatch.effect({
+        input: {
+          maxByteLength: 268_435_456,
+          presence: 'optional',
+          relativePath: 'workspace-changes.json',
+          sandboxId: 'sandbox-session-main',
+          slot: 'turn-outputs',
+          terminalBarrierProved: true,
+        },
+        kind: 'file.export',
+        requestId: optionalRequestId,
+      });
+      const optionalPoll = await postEffect(
+        thirdClient,
+        '/api/nanohost/transport/effects/file.export'
+      );
+      expect(JSON.parse(optionalPoll.body)).toMatchObject({
+        presence: 'optional',
+        requestId: optionalRequestId,
+      });
+      const absenceBody = JSON.stringify({ requestId: optionalRequestId, state: 'absent' });
+      await expect(
+        postEffect(thirdClient, '/api/nanohost/transport/effects/file.export/result', absenceBody, {
+          'x-openkit-slot': 'turn-outputs',
+        })
+      ).resolves.toMatchObject({ status: 400 });
+      await expect(
+        postEffect(thirdClient, '/api/nanohost/transport/effects/file.export/result', absenceBody)
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(optionalEffect).resolves.toEqual({ state: 'absent' });
+      await expect(
+        postEffect(thirdClient, '/api/nanohost/transport/effects/file.export/result', absenceBody)
+      ).resolves.toMatchObject({ status: 409 });
+
+      fourthClient = connectHttp2(origin);
+      await once(fourthClient, 'connect');
+      await expect(admit(fourthClient)).resolves.toEqual({
+        body: expect.objectContaining({
+          connectionGeneration: 4,
+          identityId: 'integration_nanohost_main',
+          mayCarryWork: false,
+          role: 'candidate',
+        }),
+        status: 200,
+      });
+      expect(acceptedSessions).toHaveLength(4);
+      const fourthServerSession = acceptedSessions[3];
+      if (!fourthServerSession) {
+        throw new Error('Native HTTP/2 server did not retain the second successor session.');
+      }
+      const observedThirdClose = once(thirdServerSession, 'close');
+      thirdClient.destroy();
+      await observedThirdClose;
+      expect(authority.mayCarryWork(thirdServerSession)).toBe(false);
+      expect(authority.mayCarryWork(fourthServerSession)).toBe(true);
+      await expect(
+        postEffect(fourthClient, '/api/nanohost/transport/session/readiness')
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(
+        postEffect(fourthClient, '/api/nanohost/transport/effects/file.export/result', absenceBody)
+      ).resolves.toMatchObject({ body: '', status: 204 });
+      await expect(
+        postEffect(fourthClient, '/api/nanohost/transport/effects/file.export/result', absenceBody)
+      ).resolves.toMatchObject({ status: 409 });
+
+      expect(() => authority.closePhysicalConnection(secondServerSession)).not.toThrow();
+      expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(4);
+      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+        connectionGeneration: 4,
+        predecessorFenced: true,
+        ready: false,
+      });
+
+      const observedSoleClose = once(fourthServerSession, 'close');
+      fourthClient.destroy();
+      await observedSoleClose;
+      expect(authority.authoritativeGeneration('integration_nanohost_main')).toBeNull();
+      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+        connectionGeneration: 4,
+        predecessorFenced: true,
+        ready: false,
+      });
+      const productionComposition = `${readFileSync(
+        new URL('./app.ts', import.meta.url),
+        'utf8'
+      )}\n${readFileSync(new URL('./index.ts', import.meta.url), 'utf8')}`;
+      for (const bootstrapOwner of [
+        'workerControlTokenHash',
+        'workerInferenceTokenHash',
+        'starting',
+        'final_status',
+      ]) {
+        expect(productionComposition).toContain(bootstrapOwner);
+      }
+    } finally {
+      firstClient?.destroy();
+      secondClient?.destroy();
+      thirdClient?.destroy();
+      fourthClient?.destroy();
+      server.close();
+      coreDb.sqlite.close();
     }
   });
 });

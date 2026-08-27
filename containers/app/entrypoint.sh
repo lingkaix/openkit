@@ -18,6 +18,7 @@ export OPENKIT_BIND_HOST="${OPENKIT_BIND_HOST:-127.0.0.1}"
 export OPENKIT_DATA_ROOT="${OPENKIT_DATA_ROOT:-/data/openkit}"
 
 nanocore_pid=""
+caddy_pid=""
 
 stop_nanocore() {
   if [[ -n "${nanocore_pid}" ]] && kill -0 "${nanocore_pid}" >/dev/null 2>&1; then
@@ -26,14 +27,24 @@ stop_nanocore() {
   fi
 }
 
-trap stop_nanocore EXIT TERM INT
+stop_processes() {
+  if [[ -n "${caddy_pid}" ]] && kill -0 "${caddy_pid}" >/dev/null 2>&1; then
+    kill "${caddy_pid}" >/dev/null 2>&1 || true
+    wait "${caddy_pid}" || true
+  fi
+  stop_nanocore
+}
+
+trap stop_processes EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 mkdir -p "${OPENKIT_DATA_ROOT}"
 
 node /app/nanocore/dist/index.js &
 nanocore_pid="$!"
 
-for attempt in $(seq 1 30); do
+for attempt in $(seq 1 120); do
   if curl -fsS "http://127.0.0.1:${OPENKIT_HTTP_PORT}/api/health" >/dev/null; then
     break
   fi
@@ -42,13 +53,14 @@ for attempt in $(seq 1 30); do
     wait "${nanocore_pid}"
   fi
 
-  if [[ "${attempt}" -eq 30 ]]; then
-    echo "NanoCore did not become ready on 127.0.0.1:${OPENKIT_HTTP_PORT} within 30 seconds." >&2
+  if [[ "${attempt}" -eq 120 ]]; then
+    echo "NanoCore did not become ready on 127.0.0.1:${OPENKIT_HTTP_PORT} within 120 seconds." >&2
     exit 1
   fi
 
   sleep 1
 done
 
-trap - EXIT TERM INT
-exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+caddy_pid="$!"
+wait "${caddy_pid}"

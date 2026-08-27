@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { SubscriptionProviderId } from '@openkit/config-schema';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type {
   OpenAICompatibleChatCompletionRequest,
@@ -20,7 +21,7 @@ export interface PromptCacheKeyScope {
   readonly workspaceId?: string;
   /** Thread that owns the request, when known. */
   readonly threadId?: string;
-  /** Agent session that owns the request, when known. */
+  /** AgentSession that owns the request, when known. */
   readonly agentSessionId?: string;
   /** Client or app session that owns the request, when known. */
   readonly sessionId?: string;
@@ -41,8 +42,8 @@ export interface PromptCacheKeyResolverOptions {
  * @returns An upstream prompt cache key, product-safe lineage ref, and degradation marker.
  */
 export function resolveWorkerPromptCacheKey(input: {
-  /** Resolved Codex OAuth account slot, or null for providers without one. */
-  readonly codexOAuthAccountSlotId: string | null;
+  /** Resolved provider-scoped subscription account slot, or null. */
+  readonly accountSlotId: string | null;
   /** Provider model selected by the trusted Agent Environment Package. */
   readonly model: string;
   /** Runtime-native cache lineage, when explicitly reported. */
@@ -51,6 +52,8 @@ export function resolveWorkerPromptCacheKey(input: {
   readonly providerId: string;
   /** Runtime adapter family. */
   readonly runtimeFamily: string;
+  /** Resolved subscription provider family, or null for ordinary providers. */
+  readonly subscriptionProviderId: SubscriptionProviderId | null;
   /** Owning workspace id. */
   readonly workspaceId: string;
 }): {
@@ -70,11 +73,12 @@ export function resolveWorkerPromptCacheKey(input: {
   }
 
   const identity = stableStringify({
-    accountSlotId: input.codexOAuthAccountSlotId,
+    accountSlotId: input.accountSlotId,
     model: input.model,
     nativeCacheLineageId: input.nativeCacheLineageId,
     providerId: input.providerId,
     runtimeFamily: input.runtimeFamily,
+    subscriptionProviderId: input.subscriptionProviderId,
     workspaceId: input.workspaceId,
   });
   const promptCacheKeyDigest = createHash('sha256')
@@ -238,11 +242,12 @@ function derivePromptCacheKey(
   const digest = createHash('sha256')
     .update(
       stableStringify({
-        accountSlotId: provider.codexOAuthAccountSlotId ?? null,
+        accountSlotId: provider.accountSlotId ?? null,
         agentSessionId: scope.agentSessionId ?? null,
         model,
         providerId: provider.id,
         sessionId: scope.sessionId ?? null,
+        subscriptionProviderId: provider.subscriptionProviderId ?? null,
         threadId: scope.threadId ?? null,
         workspaceId: scope.workspaceId ?? null,
       })

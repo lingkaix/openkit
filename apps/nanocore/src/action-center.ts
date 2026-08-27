@@ -677,7 +677,6 @@ function workerControlRejectedEvidenceRows(
     workspaceId: evidence.workspaceId,
     threadId: evidence.threadId,
     turnId: evidence.turnId,
-    agentSessionId: evidence.agentSessionId,
     title: 'Worker control evidence was rejected',
     summary: evidence.message,
     severity: 'risk',
@@ -689,7 +688,6 @@ function workerControlRejectedEvidenceRows(
       workspaceId: evidence.workspaceId,
       threadId: evidence.threadId,
       turnId: evidence.turnId,
-      agentSessionId: evidence.agentSessionId,
       packageSnapshotId: evidence.packageSnapshotId,
       route: evidence.route,
       operation: evidence.operation,
@@ -714,8 +712,7 @@ function schedulerOrphanWorkerRows(coreDb: CoreDb, workspaceId: string): HumanAt
     workspaceId: evidence.workspaceId,
     threadId: evidence.threadId,
     turnId: evidence.turnId,
-    agentSessionId: evidence.agentSessionId,
-    title: 'Worker session needs recovery review',
+    title: 'Worker attempt needs recovery review',
     summary: schedulerOrphanWorkerSummary(evidence),
     severity: 'risk',
     createdAt: evidence.recordedAt,
@@ -727,7 +724,6 @@ function schedulerOrphanWorkerRows(coreDb: CoreDb, workspaceId: string): HumanAt
       workspaceId: evidence.workspaceId,
       threadId: evidence.threadId,
       turnId: evidence.turnId,
-      agentSessionId: evidence.agentSessionId,
       packageSnapshotId: evidence.packageSnapshotId,
       reason: evidence.reason,
       schedulerEpoch: evidence.schedulerEpoch,
@@ -743,7 +739,7 @@ function schedulerOrphanWorkerRows(coreDb: CoreDb, workspaceId: string): HumanAt
  * @returns Human-readable summary.
  */
 function schedulerOrphanWorkerSummary(evidence: SchedulerOrphanWorkerEvidenceRecord): string {
-  return `Scheduler restart found an orphaned worker session after ${evidence.heartbeatDeadline}.`;
+  return `Scheduler restart found an orphaned worker attempt after ${evidence.heartbeatDeadline}.`;
 }
 
 /**
@@ -813,7 +809,7 @@ function schedulerAdmissionActions(
  * Projects non-terminal worker checkpoints into checkpoint recovery rows.
  *
  * @param coreDb Open Core database handle.
- * @param store Product store that owns the source Turn and Agent Session.
+ * @param store Product store that owns the source Turn and AgentSession.
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id to inspect.
  * @returns Checkpoint recovery rows.
@@ -832,7 +828,6 @@ function checkpointRows(
       workspaceId,
       threadId: checkpoint.threadId,
       turnId: checkpoint.turnId,
-      agentSessionId: checkpoint.workerSessionId ?? undefined,
       goalId: checkpoint.goalId ?? undefined,
       taskId: checkpoint.taskId ?? undefined,
       title: 'Worker checkpoint needs review',
@@ -1030,47 +1025,51 @@ function goalRow(
 }
 
 /**
- * Projects actionable unresolved goal review records into rows.
+ * Projects a unique actionable unresolved Goal Review into a row.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param goal Goal whose tasks should be inspected.
- * @returns Goal review rows.
+ * @returns The unique actionable row, or none for zero or multiple unresolved Reviews.
  */
 function goalReviewRows(workspaceDb: WorkspaceDb, goal: GoalRecord): HumanAttentionRow[] {
-  return listGoalTasks(workspaceDb, goal).flatMap((task) =>
-    listGoalReviewRecordsForTask(workspaceDb, { ...goal, taskId: task.taskId })
-      .filter((review) => review.taskId === task.taskId)
-      .filter((review) => review.resolvedAt === null)
-      .filter(
-        () =>
-          goal.status === 'reviewing' &&
-          goal.currentTaskId === task.taskId &&
-          task.status === 'reviewing'
-      )
-      .map((review) => ({
-        id: `goal-review:${review.workspaceId}:${review.threadId}:${review.goalId}:${review.reviewId}`,
-        kind: 'artifact_review' as const,
-        workspaceId: review.workspaceId,
-        threadId: review.threadId,
-        turnId: review.turnId,
-        artifactId: review.artifactIds[0] ?? undefined,
-        goalId: review.goalId,
-        taskId: review.taskId,
-        title: 'Review worker output',
-        summary: review.prompt,
-        severity: 'needs_input' as const,
-        createdAt: review.updatedAt,
-        source: {
-          type: 'goal_review',
-          reviewId: review.reviewId,
-          goalId: review.goalId,
-          taskId: review.taskId,
-          workspaceId: review.workspaceId,
-          threadId: review.threadId,
-        },
-        actions: goalReviewActions(review),
-      }))
+  const task = listGoalTasks(workspaceDb, goal).find(
+    (candidate) => candidate.taskId === goal.currentTaskId
   );
+  if (goal.status !== 'reviewing' || task?.status !== 'reviewing') {
+    return [];
+  }
+
+  const unresolvedReviews = listGoalReviewRecordsForTask(workspaceDb, {
+    ...goal,
+    taskId: task.taskId,
+  }).filter((review) => review.resolvedAt === null && review.reviewId.length > 0);
+  if (unresolvedReviews.length !== 1) {
+    return [];
+  }
+
+  return unresolvedReviews.map((review) => ({
+    id: `goal-review:${review.workspaceId}:${review.threadId}:${review.goalId}:${review.reviewId}`,
+    kind: 'artifact_review' as const,
+    workspaceId: review.workspaceId,
+    threadId: review.threadId,
+    turnId: review.turnId,
+    artifactId: review.artifactIds[0] ?? undefined,
+    goalId: review.goalId,
+    taskId: review.taskId,
+    title: 'Review worker output',
+    summary: review.prompt,
+    severity: 'needs_input' as const,
+    createdAt: review.updatedAt,
+    source: {
+      type: 'goal_review',
+      reviewId: review.reviewId,
+      goalId: review.goalId,
+      taskId: review.taskId,
+      workspaceId: review.workspaceId,
+      threadId: review.threadId,
+    },
+    actions: goalReviewActions(review),
+  }));
 }
 
 /**
@@ -1088,7 +1087,6 @@ function agentReadinessRows(store: FsStore, workspaceId: string): HumanAttention
       id: `agent-readiness:${agent.id}`,
       kind: 'agent_readiness',
       workspaceId,
-      agentSessionId: agent.id,
       title: `${agent.name} is ${agent.health.status}`,
       summary: agent.health.message ?? 'Agent readiness needs review.',
       severity:

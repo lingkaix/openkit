@@ -99,7 +99,7 @@ describe('NanoCore boot phase order', () => {
       'const bootstrap = ensureServerBootstrapToken(coreDb)',
       criticalFailureGate
     );
-    const listenerBind = source.indexOf('const server = serve(', criticalFailureGate);
+    const listenerBind = source.indexOf('const appServer = appTlsListen', criticalFailureGate);
 
     expect(coreIntegrityCheck).toBeGreaterThan(migrationsPhase);
     expect(scopedIntegrityCheck).toBeGreaterThan(coreIntegrityCheck);
@@ -108,5 +108,19 @@ describe('NanoCore boot phase order', () => {
     expect(listenerBind).toBeGreaterThan(criticalFailureGate);
     expect(source).not.toContain('storageRecoveryEvents');
     expect(source).not.toContain("code: 'storage.quarantined'");
+  });
+
+  it('starts scheduler recovery maintenance only after constructing the ordinary listener', () => {
+    const source = readEntrypointSource();
+    const listenerConstruction = source.indexOf('const appServer = appTlsListen');
+    const nanoHostListenerConstruction = source.indexOf('const nanoHostServer = nanoHostListener');
+    const maintenanceStart = source.indexOf(
+      'schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {'
+    );
+
+    expect(listenerConstruction).toBeGreaterThan(-1);
+    expect(nanoHostListenerConstruction).toBeGreaterThan(listenerConstruction);
+    expect(maintenanceStart).toBeGreaterThan(listenerConstruction);
+    expect(maintenanceStart).toBeGreaterThan(nanoHostListenerConstruction);
   });
 });

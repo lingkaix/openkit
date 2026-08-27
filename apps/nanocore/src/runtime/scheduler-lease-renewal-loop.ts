@@ -30,7 +30,7 @@ export interface SchedulerLeaseRenewalLoopResult {
 export interface SchedulerLeaseRenewalCandidate {
   /** Original lease acquisition timestamp. */
   readonly acquiredAt: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Current lease expiry timestamp. */
   readonly expiresAt: string;

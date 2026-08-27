@@ -41,11 +41,16 @@ import {
   type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
 import { resolveWorkerPromptCacheKey } from './prompt-cache-key.js';
-import type { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
+import {
+  type LLMGatewayProviderDispatcher,
+  resolveGatewaySubscriptionModels,
+} from './provider-dispatcher.js';
+import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 import {
   readWorkerInferenceRuntimeHint,
   type WorkerInferenceRuntimeHint,
 } from './worker-inference-runtime-hint.js';
+import { isWorkerInferenceToolList } from './worker-inference-tool-policy.js';
 
 const GatewayChatCompletionRequestSchema = z
   .object({
@@ -87,7 +92,7 @@ interface PublicLlmGatewayLineage {
   itemId?: string;
   /** Agent lineage when available. */
   agentId?: string;
-  /** Agent session lineage when available. */
+  /** AgentSession lineage when available. */
   agentSessionId?: string;
   /** Client-supplied request id used for durable idempotency. */
   requestId?: string;
@@ -818,14 +823,6 @@ function sanitizeWorkerInferenceRequest(
   return request;
 }
 
-/** Pinned Codex relay tool declaration types permitted by worker policy. */
-const WORKER_INFERENCE_ALLOWED_TOOL_TYPES = new Set([
-  'custom',
-  'function',
-  'namespace',
-  'tool_search',
-]);
-
 /**
  * Rejects provider-executed tools while preserving local function and shell declarations.
  *
@@ -835,18 +832,8 @@ function rejectProviderExecutedWorkerTools(tools: unknown): void {
   if (tools === undefined) {
     return;
   }
-  if (!Array.isArray(tools)) {
+  if (!isWorkerInferenceToolList(tools)) {
     throw workerInferenceLineageMismatch();
-  }
-
-  for (const tool of tools) {
-    if (!tool || typeof tool !== 'object') {
-      throw workerInferenceLineageMismatch();
-    }
-    const type = (tool as Record<string, unknown>).type;
-    if (typeof type !== 'string' || !WORKER_INFERENCE_ALLOWED_TOOL_TYPES.has(type)) {
-      throw workerInferenceLineageMismatch();
-    }
   }
 }
 
@@ -1016,6 +1003,18 @@ function asOpenAIGatewayError(error: unknown): Response {
   }
 
   if (error instanceof OpenAICompatibleProviderError) {
+    if (error.code === 'model_not_configured') {
+      return Response.json(
+        {
+          error: {
+            message: 'Requested model is not configured for this provider.',
+            type: 'invalid_request_error',
+            code: error.code,
+          },
+        },
+        { status: 400 }
+      );
+    }
     const normalized = classifyGatewayProviderFailure(error, 'provider_error');
 
     return Response.json(
@@ -1375,8 +1374,12 @@ export function registerWorkerInferenceRoutes({
     endpoint: WorkerInferenceEndpoint
   ): Promise<Response> {
     try {
+      const workerInferenceTokenHashAuthentication = {
+        tokenFamily: 'inference',
+      } as const;
       const environmentPackage = workerControlGateway.authenticatePackageToken(
-        c.req.header('authorization') ?? null
+        c.req.header('authorization') ?? null,
+        workerInferenceTokenHashAuthentication
       );
       const route = requireTrustedWorkerInferenceRoute(environmentPackage);
 
@@ -1449,7 +1452,7 @@ export function registerWorkerInferenceRoutes({
         );
       }
       const cache = resolveWorkerPromptCacheKey({
-        codexOAuthAccountSlotId: provider.codexOAuthAccountSlotId ?? null,
+        accountSlotId: provider.accountSlotId ?? null,
         model: route.model,
         ...(runtimeHint?.nativeCacheLineageId
           ? { nativeCacheLineageId: runtimeHint.nativeCacheLineageId }
@@ -1457,6 +1460,7 @@ export function registerWorkerInferenceRoutes({
         providerId: provider.id,
         runtimeFamily:
           runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
+        subscriptionProviderId: provider.subscriptionProviderId ?? null,
         workspaceId: environmentPackage.scope.workspaceId,
       });
       sanitized.prompt_cache_key = cache.promptCacheKey;
@@ -1637,6 +1641,24 @@ function workerInferenceStreamResponse(
 }
 
 /**
+ * Requires authored provider authority for a public Gateway model before subscription work.
+ *
+ * @param provider Resolved provider selected by the route.
+ * @param model Requested model id.
+ * @throws OpenAICompatibleProviderError when the model is not authored on the profile.
+ */
+function assertGatewayModelAuthorized(provider: ResolvedLLMProviderConfig, model: string): void {
+  if (!provider.models.includes(model)) {
+    throw new OpenAICompatibleProviderError({
+      code: 'model_not_configured',
+      message: 'Requested model is not configured for this provider.',
+      status: 400,
+      type: 'invalid_request_error',
+    });
+  }
+}
+
+/**
  * Registers the public OpenAI-compatible LLM Gateway routes.
  *
  * @param dependencies Hono app and current Gateway runtime dependencies.
@@ -1646,6 +1668,7 @@ export function registerLlmGatewayRoutes({
   coreDb,
   gatewayDefaultProviderId,
   llmGatewayDispatcher,
+  providerSubscriptionAccountManager,
   resolveGatewayProvider,
   runtimeConfig,
 }: {
@@ -1653,6 +1676,7 @@ export function registerLlmGatewayRoutes({
   readonly coreDb?: CoreDb;
   readonly gatewayDefaultProviderId: () => string | null;
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
+  readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
@@ -1703,7 +1727,7 @@ export function registerLlmGatewayRoutes({
     }
   }
 
-  app.get('/v1/models', (c) => {
+  app.get('/v1/models', async (c) => {
     if (!isGatewayEnabled()) {
       return c.json(
         {
@@ -1717,21 +1741,41 @@ export function registerLlmGatewayRoutes({
       );
     }
 
+    const data = (
+      await Promise.all(
+        runtimeConfig()
+          .providerRegistry.list()
+          .filter(
+            (provider) =>
+              isGatewayProviderAllowed(provider.id) && isProviderProfileDispatchable(provider)
+          )
+          .map(async (profile) => {
+            if (!profile.extensions?.openkit?.subscriptionAccount) {
+              return profile.models.map((model) => ({
+                id: model,
+                object: 'model',
+                owned_by: profile.id,
+              }));
+            }
+
+            try {
+              const provider = resolveGatewayProvider(profile.id, profile.models[0]!);
+              await resolveGatewaySubscriptionModels(provider, providerSubscriptionAccountManager);
+              return profile.models.map((model) => ({
+                id: model,
+                object: 'model',
+                owned_by: profile.id,
+              }));
+            } catch {
+              return [];
+            }
+          })
+      )
+    ).flat();
+
     return c.json({
       object: 'list',
-      data: runtimeConfig()
-        .providerRegistry.list()
-        .filter(
-          (provider) =>
-            isGatewayProviderAllowed(provider.id) && isProviderProfileDispatchable(provider)
-        )
-        .flatMap((provider) =>
-          provider.models.map((model) => ({
-            id: model,
-            object: 'model',
-            owned_by: provider.id,
-          }))
-        ),
+      data,
     });
   });
 
@@ -1813,6 +1857,11 @@ export function registerLlmGatewayRoutes({
       });
 
       const provider = resolveGatewayProvider(providerId, input.model);
+      assertGatewayModelAuthorized(provider, input.model);
+      const models = await resolveGatewaySubscriptionModels(
+        provider,
+        providerSubscriptionAccountManager
+      );
       const request = {
         ...input,
         messages: input.messages.map((message): OpenAICompatibleChatMessage => {
@@ -1849,6 +1898,7 @@ export function registerLlmGatewayRoutes({
                   provider,
                   usage,
                 }),
+              ...(models ? { models } : {}),
               transport: { signal: c.req.raw.signal },
             }
           );
@@ -1905,6 +1955,7 @@ export function registerLlmGatewayRoutes({
                   provider,
                   usage,
                 }),
+              ...(models ? { models } : {}),
               transport: { signal: c.req.raw.signal },
             }
           );
@@ -2007,6 +2058,11 @@ export function registerLlmGatewayRoutes({
       });
 
       const provider = resolveGatewayProvider(providerId, input.model);
+      assertGatewayModelAuthorized(provider, input.model);
+      const models = await resolveGatewaySubscriptionModels(
+        provider,
+        providerSubscriptionAccountManager
+      );
       const request = {
         ...input,
         stream: input.stream ?? false,
@@ -2036,6 +2092,7 @@ export function registerLlmGatewayRoutes({
                   provider,
                   usage,
                 }),
+              ...(models ? { models } : {}),
               transport: { signal: c.req.raw.signal },
             }
           );
@@ -2086,6 +2143,7 @@ export function registerLlmGatewayRoutes({
                 provider,
                 usage,
               }),
+            ...(models ? { models } : {}),
             transport: { signal: c.req.raw.signal },
           });
         finishDurableLlmGatewayCall(durableCall, 'succeeded');

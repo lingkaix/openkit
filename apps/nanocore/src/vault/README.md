@@ -1,6 +1,6 @@
 # Vault
 
-This directory owns NanoCore's Vault backend contract, concrete encrypted-file and operating-system keychain backends, unlock state, non-secret reference and grant records, audited material resolution, Vault use evidence, and Vault App API routes.
+This directory owns NanoCore's encrypted-file Vault backend contract, unlock state, non-secret reference and grant records, audited material resolution, Vault use evidence, and Vault App API routes.
 
 ## Boundaries
 
@@ -12,9 +12,10 @@ This directory owns NanoCore's Vault backend contract, concrete encrypted-file a
 
 ## File Map
 
-- `vault-backend.ts`, `vault-encrypted-file-*`, `vault-os-keychain-backend.ts`, `vault-key-file.ts`, and `vault-store-directory.ts` own backend contracts and material storage mechanics.
+- `vault-backend.ts`, `vault-encrypted-file-*`, `vault-key-file.ts`, and `vault-store-directory.ts` own the encrypted-file backend contract and material storage mechanics.
 - `vault-unlock-state.ts` owns the process-local locked or available backend state.
 - `vault-references.ts`, `vault-grants.ts`, and `vault-use-records.ts` own non-secret durable Vault records.
+- `vault-references.ts` also owns idempotent insert evidence, active equal-or-next material-version advancement, and atomic dependent-state revocation.
 - `vault-use-audited-backend.ts` owns audited material resolution across server and workspace scopes.
 - `vault-admin-audit-events.ts` and `vault-admin-routes.ts` own administrative audit projection and App API behavior.
 
@@ -29,10 +30,10 @@ This directory owns NanoCore's Vault backend contract, concrete encrypted-file a
 ## Verification
 
 ```bash
-mise exec -- pnpm exec vitest run src/bootstrap/vault.test.ts src/vault/*.test.ts
-mise exec -- pnpm run lint
-mise exec -- pnpm run typecheck
-mise exec -- pnpm run build
+pnpm exec vitest run src/bootstrap/vault.test.ts src/vault/*.test.ts
+pnpm run lint
+pnpm run typecheck
+pnpm run build
 ```
 
 ## Related Design

@@ -7,18 +7,22 @@ import {
   fauxProvider,
   fauxToolCall,
 } from '@earendil-works/pi-ai';
-import { describe, expect, it } from 'vitest';
+import { Hono } from 'hono';
+import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
+import { createAuthMiddleware } from './auth/middleware.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import type { ProviderProfile } from './config/providers-loader.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
-import { CodexResponsesClient, type CodexTokenResolver } from './llm/codex-responses-client.js';
+import { registerLlmGatewayRoutes } from './llm/gateway-routes.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
+import { ProviderSubscriptionAccountError } from './llm/provider-subscription-accounts.js';
+import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -132,28 +136,6 @@ function createPiAiProviderOptions(providerId: 'google' | 'openrouter') {
   );
 }
 
-/** Creates the runtime default-account Codex fixture used by Gateway tests. */
-function createCodexProviderOptions() {
-  return createProviderOptions({
-    baseUrl: 'https://chatgpt.com/backend-api',
-    defaultModel: 'openai-codex/gpt-5.1-codex',
-    displayName: 'OpenAI Codex',
-    extensions: { openkit: { codexOAuth: { accountSlotId: 'default' } } },
-    id: 'openai_codex',
-    kind: 'oauth',
-    models: ['openai-codex/gpt-5.1-codex'],
-    vendor: 'openai_codex',
-  });
-}
-
-function unusedCodexClient(): CodexResponsesClient {
-  return new CodexResponsesClient({
-    tokenResolver: {
-      resolve: async () => ({ accessToken: 'unused', chatgptAccountId: 'unused' }),
-    } satisfies CodexTokenResolver,
-  });
-}
-
 function runtimeProviderRegistry(): ProviderRegistry {
   return new ProviderRegistry([
     {
@@ -164,45 +146,64 @@ function runtimeProviderRegistry(): ProviderRegistry {
       models: ['llama3.2'],
       vendor: 'ollama',
     },
-    {
-      defaultModel: 'openai-codex/gpt-5.1-codex',
-      displayName: 'Codex Team A',
-      extensions: {
-        openkit: {
-          codexOAuth: {
-            accountSlotId: 'team_a',
-          },
-        },
-      },
-      id: 'codex-team-a',
-      kind: 'oauth',
-      models: ['openai-codex/gpt-5.1-codex'],
-      vendor: 'openai_codex',
-    },
-    {
-      defaultModel: 'openai-codex/gpt-5.1-codex',
-      displayName: 'Codex Team B',
-      extensions: {
-        openkit: {
-          codexOAuth: {
-            accountSlotId: 'team_b',
-          },
-        },
-      },
-      id: 'codex-team-b',
-      kind: 'oauth',
-      models: ['openai-codex/gpt-5.1-codex'],
-      vendor: 'openai_codex',
-    },
   ]);
+}
+
+/**
+ * Registers one direct Gateway app without activating production startup composition.
+ *
+ * @param input Runtime profiles, dispatcher, and pair-handle seam used by one test.
+ * @returns Local-authenticated Hono app with only the direct Gateway routes registered.
+ */
+function createDirectGatewayApp(input: {
+  readonly defaultProviderId: string;
+  readonly dispatcher: LLMGatewayProviderDispatcher;
+  readonly getPairHandle: unknown;
+  readonly profiles: ProviderProfile[];
+}): Hono {
+  const providerRegistry = new ProviderRegistry(input.profiles);
+  const snapshot = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: null,
+    openKitConfig: {
+      defaults: {
+        gatewayModel: input.profiles.find((profile) => profile.id === input.defaultProviderId)
+          ?.defaultModel,
+        gatewayProviderId: input.defaultProviderId,
+      },
+    },
+    providerRegistry,
+  });
+  const app = new Hono();
+  app.use('*', createAuthMiddleware('local'));
+  (registerLlmGatewayRoutes as unknown as (dependencies: Record<string, unknown>) => void)({
+    app,
+    gatewayDefaultProviderId: () => input.defaultProviderId,
+    llmGatewayDispatcher: input.dispatcher,
+    providerSubscriptionAccountManager: { getPairHandle: input.getPairHandle },
+    resolveGatewayProvider: (providerId: string) => {
+      const profile = providerRegistry.get(providerId);
+      if (!profile) {
+        throw new Error(`Unknown test provider: ${providerId}`);
+      }
+      return resolveProviderProfileToLLMConfig(profile);
+    },
+    runtimeConfig: () => snapshot,
+  });
+  return app;
 }
 
 describe('OpenAI-compatible agent gateway', () => {
   it('keeps the public Gateway surface on Chat Completions and Responses only', () => {
     const appSource = readFileSync('./src/app.ts', 'utf8');
+    const dispatcherSource = readFileSync('./src/llm/provider-dispatcher.ts', 'utf8');
     const gatewaySource = readFileSync('./src/llm/gateway-routes.ts', 'utf8');
 
     expect(appSource).toContain('registerLlmGatewayRoutes({');
+    expect(appSource).not.toContain('CodexOAuthStore');
+    expect(appSource).not.toContain('CodexAuthTokenResolver');
+    expect(appSource).not.toContain('CodexResponsesClient');
+    expect(appSource).not.toContain('codexOAuthStore');
+    expect(appSource).not.toContain('llmCodexResponsesClient');
     expect(appSource).not.toContain('registerOpenAICompatFacade');
     expect(appSource).not.toContain('/internal/v1/chat/completions');
     expect(appSource).not.toContain("app.get('/v1/models'");
@@ -212,6 +213,7 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(gatewaySource).toContain("app.post('/v1/chat/completions'");
     expect(gatewaySource).toContain("app.post('/v1/responses'");
     expect(gatewaySource).not.toContain("app.post('/v1/completions'");
+    expect(dispatcherSource).not.toContain('codexResponsesClient');
   });
 
   it('does not expose the historical internal Chat Completions facade', async () => {
@@ -253,35 +255,101 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('lists models from the runtime provider registry', async () => {
-    const app = createApp({
-      openKitConfig: {
-        defaults: {
-          gatewayModel: 'llama3.2',
-          gatewayProviderId: 'runtime-ollama',
-        },
+    const profiles: ProviderProfile[] = [
+      {
+        defaultModel: 'llama3.2',
+        displayName: 'Runtime Ollama',
+        id: 'runtime-ollama',
+        kind: 'local',
+        models: ['llama3.2'],
+        vendor: 'ollama',
       },
-      providerRegistry: runtimeProviderRegistry(),
+      {
+        displayName: 'Codex Ready',
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'shared' } } },
+        id: 'openai-codex',
+        kind: 'oauth',
+        models: ['openai-codex/gpt-5.6-sol'],
+      },
+      {
+        displayName: 'xAI Ready',
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'shared' } } },
+        id: 'xai-ready',
+        kind: 'oauth',
+        models: ['grok-4'],
+        vendor: 'xai',
+      },
+      {
+        displayName: 'xAI Missing Auth',
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'missing' } } },
+        id: 'xai-missing',
+        kind: 'oauth',
+        models: ['grok-4-fast'],
+        vendor: 'xai',
+      },
+      {
+        displayName: 'xAI Unavailable',
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'unavailable' } } },
+        id: 'xai-unavailable',
+        kind: 'oauth',
+        models: ['grok-4-latest'],
+        vendor: 'xai',
+      },
+    ];
+    const readyModels = createModels();
+    const missingModels = createModels();
+    vi.spyOn(readyModels, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+    vi.spyOn(missingModels, 'checkAuth').mockResolvedValue(undefined);
+    const getPairHandle = vi.fn(
+      async (pair: { readonly accountSlotId: string; readonly subscriptionProviderId: string }) => {
+        if (pair.accountSlotId === 'unavailable') {
+          throw new ProviderSubscriptionAccountError(
+            'provider_subscription_vault_unavailable',
+            'Provider subscription Vault is unavailable.'
+          );
+        }
+        return {
+          credentials: {} as never,
+          models: pair.accountSlotId === 'missing' ? missingModels : readyModels,
+        };
+      }
+    );
+    const app = createDirectGatewayApp({
+      defaultProviderId: 'runtime-ollama',
+      dispatcher: {} as LLMGatewayProviderDispatcher,
+      getPairHandle,
+      profiles,
     });
 
     const res = await app.request('/v1/models');
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
+    await expect(res.json()).resolves.toEqual({
       object: 'list',
       data: [
         { id: 'llama3.2', object: 'model', owned_by: 'runtime-ollama' },
         {
-          id: 'openai-codex/gpt-5.1-codex',
+          id: 'openai-codex/gpt-5.6-sol',
           object: 'model',
-          owned_by: 'codex-team-a',
+          owned_by: 'openai-codex',
         },
         {
-          id: 'openai-codex/gpt-5.1-codex',
+          id: 'grok-4',
           object: 'model',
-          owned_by: 'codex-team-b',
+          owned_by: 'xai-ready',
         },
       ],
     });
+    expect(getPairHandle).toHaveBeenCalledTimes(4);
+    expect(getPairHandle.mock.calls.map(([pair]) => pair)).toEqual([
+      { accountSlotId: 'shared', subscriptionProviderId: 'openai-codex' },
+      { accountSlotId: 'shared', subscriptionProviderId: 'xai' },
+      { accountSlotId: 'missing', subscriptionProviderId: 'xai' },
+      { accountSlotId: 'unavailable', subscriptionProviderId: 'xai' },
+    ]);
+    expect(readyModels.checkAuth).toHaveBeenNthCalledWith(1, 'openai-codex');
+    expect(readyModels.checkAuth).toHaveBeenNthCalledWith(2, 'xai');
+    expect(missingModels.checkAuth).toHaveBeenCalledWith('xai');
   });
 
   it('lists only explicit models from allowlisted dispatchable provider profiles', async () => {
@@ -506,7 +574,6 @@ describe('OpenAI-compatible agent gateway', () => {
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-        codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
       }),
     });
@@ -539,7 +606,6 @@ describe('OpenAI-compatible agent gateway', () => {
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-        codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
       }),
     });
@@ -596,7 +662,6 @@ describe('OpenAI-compatible agent gateway', () => {
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-        codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
       }),
     });
@@ -637,7 +702,6 @@ describe('OpenAI-compatible agent gateway', () => {
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-        codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
       }),
     });
@@ -682,7 +746,6 @@ describe('OpenAI-compatible agent gateway', () => {
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-        codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
       }),
     });
@@ -717,7 +780,6 @@ describe('OpenAI-compatible agent gateway', () => {
       const app = createApp({
         ...createPiAiProviderOptions(providerId),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
         }),
       });
@@ -866,7 +928,6 @@ describe('OpenAI-compatible agent gateway', () => {
         store,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          codexResponsesClient: unusedCodexClient(),
           piAiClient: piAiClient as PiAiGatewayClient,
         }),
       });
@@ -1114,102 +1175,6 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
-  it('records durable usage for attributed Codex Responses calls', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-codex-usage-'));
-    const coreDb = openCoreDb(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Codex usage');
-
-    try {
-      applyMigrations(coreDb);
-      recordLocalGatewayAuthority(coreDb, workspace.id);
-
-      const app = createApp({
-        coreDb,
-        dataRoot,
-        store,
-        ...createCodexProviderOptions(),
-        llmCodexResponsesClient: {
-          createResponses: async (_provider, request) => ({
-            id: 'resp_codex_usage',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'Codex usage' }],
-              },
-            ],
-            usage: {
-              input_tokens: 11,
-              output_tokens: 3,
-              total_tokens: 14,
-            },
-          }),
-        } as CodexResponsesClient,
-      });
-
-      const res = await app.request('/v1/responses', {
-        method: 'POST',
-        body: JSON.stringify({
-          model: 'openai-codex/gpt-5.1-codex',
-          input: 'Hello',
-          metadata: {
-            openkit: {
-              agentId: 'assistant',
-              requestId: '33333333-3333-4333-8333-333333333333',
-              workspaceId: workspace.id,
-            },
-          },
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const body = await res.text();
-
-      expect(res.status, body).toBe(200);
-
-      const usageRes = await app.request(`/api/app/workspaces/${workspace.id}/capability-usage`);
-      const usageText = await usageRes.text();
-      expect(usageRes.status, usageText).toBe(200);
-
-      expect(JSON.parse(usageText)).toMatchObject({
-        capabilityCalls: [
-          expect.objectContaining({
-            agentId: 'assistant',
-            capabilityId: 'llm.responses',
-            operation: 'responses',
-            providerRef: 'openai_codex',
-            status: 'succeeded',
-          }),
-        ],
-        usageRecords: expect.arrayContaining([
-          expect.objectContaining({
-            category: 'llm',
-            modelId: 'openai-codex/gpt-5.1-codex',
-            providerRef: 'openai_codex',
-            quantity: 11,
-            source: 'llm-gateway-adapter-reported:input',
-            unit: 'tokens',
-            workspaceId: workspace.id,
-          }),
-          expect.objectContaining({
-            category: 'llm',
-            modelId: 'openai-codex/gpt-5.1-codex',
-            providerRef: 'openai_codex',
-            quantity: 3,
-            source: 'llm-gateway-adapter-reported:output',
-            unit: 'tokens',
-            workspaceId: workspace.id,
-          }),
-        ]),
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
   it('records partial durable usage for failed attributed Anthropic Chat Completions through pi-ai', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-failed-usage-'));
     const coreDb = openCoreDb(dataRoot);
@@ -1236,7 +1201,6 @@ describe('OpenAI-compatible agent gateway', () => {
         dataRoot,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
         }),
       });
@@ -1308,7 +1272,6 @@ describe('OpenAI-compatible agent gateway', () => {
         dataRoot,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
         }),
       });
@@ -1388,7 +1351,6 @@ describe('OpenAI-compatible agent gateway', () => {
         dataRoot,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
         }),
       });
@@ -1451,7 +1413,6 @@ describe('OpenAI-compatible agent gateway', () => {
     const app = createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-        codexResponsesClient: unusedCodexClient(),
         piAiClient: new PiAiGatewayClient({ models }),
       }),
     });
@@ -1533,7 +1494,6 @@ describe('OpenAI-compatible agent gateway', () => {
           dataRoot,
           ...createAnthropicProviderOptions(),
           llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-            codexResponsesClient: unusedCodexClient(),
             piAiClient: new PiAiGatewayClient({ models }),
           }),
         });
@@ -1598,7 +1558,6 @@ describe('OpenAI-compatible agent gateway', () => {
         dataRoot,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          codexResponsesClient: unusedCodexClient(),
           piAiClient: new PiAiGatewayClient({ models }),
         }),
       });
@@ -1695,7 +1654,6 @@ describe('OpenAI-compatible agent gateway', () => {
           dataRoot,
           ...createAnthropicProviderOptions(),
           llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-            codexResponsesClient: unusedCodexClient(),
             piAiClient: new PiAiGatewayClient({ models }),
           }),
         });
@@ -1818,7 +1776,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
       expect(rejected.status).toBe(400);
       await expect(rejected.json()).resolves.toMatchObject({
-        error: { code: 'gateway_provider_request_invalid' },
+        error: { code: 'model_not_configured' },
       });
       expect(seenApiKeys).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
@@ -1959,41 +1917,43 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('normalizes Codex HTTP 200 terminal error events before public SSE projection', async () => {
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hi"}\n\n'
-          )
-        );
-        controller.enqueue(
-          encoder.encode(
-            'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded","message":"private quota marker=codex-sse-secret"}}'
-          )
-        );
-        controller.enqueue(encoder.encode('}\n\n'));
-        controller.close();
-      },
+    const profile: ProviderProfile = {
+      defaultModel: 'openai-codex/gpt-5.6-sol',
+      displayName: 'OpenAI Codex',
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'team' } } },
+      id: 'openai-codex',
+      kind: 'oauth',
+      models: ['openai-codex/gpt-5.6-sol'],
+    };
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol', reasoning: true }],
+      tokenSize: { min: 1000, max: 1000 },
     });
-    const app = createApp({
-      ...createCodexProviderOptions(),
-      llmCodexResponsesClient: new CodexResponsesClient({
-        fetch: async () =>
-          new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
-        tokenResolver: {
-          resolve: async () => ({
-            accessToken: 'private-codex-test-token',
-            chatgptAccountId: 'private-codex-test-account',
-          }),
-        },
+    const models = createModels();
+    models.setProvider(faux.provider);
+    vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+    faux.setResponses([
+      fauxAssistantMessage('Hi', {
+        errorMessage: 'rate limit exceeded marker=codex-sse-secret',
+        stopReason: 'error',
       }),
+    ]);
+    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
+    const app = createDirectGatewayApp({
+      defaultProviderId: profile.id,
+      dispatcher: new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient(),
+      }),
+      getPairHandle,
+      profiles: [profile],
     });
 
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'openai-codex/gpt-5.1-codex',
+        model: 'openai-codex/gpt-5.6-sol',
         input: 'Hello',
         stream: true,
       }),
@@ -2008,8 +1968,11 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(body).toContain('"message":"Provider rate limit exceeded."');
     expect(body).toContain('"stopReason":"error"');
     expect(body).toContain('data: [DONE]');
-    expect(body).not.toContain('rate_limit_exceeded');
     expect(body).not.toContain('codex-sse-secret');
+    expect(getPairHandle).toHaveBeenCalledWith({
+      accountSlotId: 'team',
+      subscriptionProviderId: 'openai-codex',
+    });
   });
 
   it('normalizes chat stream read failures into terminal SSE errors', async () => {
@@ -2230,104 +2193,149 @@ describe('OpenAI-compatible agent gateway', () => {
     });
   });
 
-  it('routes OpenAI Codex Responses requests through the subscription Responses client', async () => {
-    const seenRequests: unknown[] = [];
-    const app = createApp({
-      ...createCodexProviderOptions(),
-      llmCodexResponsesClient: {
-        createResponses: async (_provider, request) => {
-          seenRequests.push(request);
-          return {
-            id: 'resp_codex',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'Codex response' }],
-              },
-            ],
-          };
-        },
-      } as CodexResponsesClient,
+  it('injects the exact Codex pair Models before direct Responses dispatch', async () => {
+    const profile: ProviderProfile = {
+      defaultModel: 'openai-codex/gpt-5.6-sol',
+      displayName: 'OpenAI Codex',
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'team' } } },
+      id: 'openai-codex',
+      kind: 'oauth',
+      models: ['openai-codex/gpt-5.6-sol'],
+    };
+    const models = createModels();
+    vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
+    const createResponses = vi.fn(
+      async (
+        _provider: unknown,
+        request: { readonly model: string },
+        _context?: { readonly models?: unknown }
+      ) => {
+        return {
+          id: 'resp_codex',
+          object: 'response' as const,
+          status: 'completed' as const,
+          model: request.model,
+          output: [
+            {
+              type: 'message' as const,
+              role: 'assistant' as const,
+              content: [{ type: 'output_text' as const, text: 'Codex response' }],
+            },
+          ],
+        };
+      }
+    );
+    const app = createDirectGatewayApp({
+      defaultProviderId: profile.id,
+      dispatcher: {
+        createResponses,
+      } as unknown as LLMGatewayProviderDispatcher,
+      getPairHandle,
+      profiles: [profile],
     });
+
+    const rejected = await app.request('/v1/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: 'Hello', model: 'openai-codex/not-configured' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toMatchObject({
+      error: { code: 'model_not_configured' },
+    });
+    expect(getPairHandle).not.toHaveBeenCalled();
+    expect(models.checkAuth).not.toHaveBeenCalled();
+    expect(createResponses).not.toHaveBeenCalled();
 
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'openai-codex/gpt-5.1-codex',
+        model: 'openai-codex/gpt-5.6-sol',
         input: 'Hello',
       }),
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       id: 'resp_codex',
       output: [{ content: [{ text: 'Codex response' }] }],
     });
-    expect(seenRequests).toEqual([
-      {
-        model: 'openai-codex/gpt-5.1-codex',
-        input: 'Hello',
-        prompt_cache_key: expect.stringMatching(/^openkit:responses:request:/),
-        stream: false,
-      },
-    ]);
+    expect(getPairHandle).toHaveBeenCalledWith({
+      accountSlotId: 'team',
+      subscriptionProviderId: 'openai-codex',
+    });
+    expect(models.checkAuth).toHaveBeenCalledWith('openai-codex');
+    expect(createResponses).toHaveBeenCalledOnce();
+    expect(createResponses.mock.calls[0]?.[2]?.models).toBe(models);
   });
 
-  it('bridges chat completions to OpenAI Codex native Responses', async () => {
-    const seenRequests: unknown[] = [];
-    const app = createApp({
-      ...createCodexProviderOptions(),
-      llmCodexResponsesClient: {
-        createResponses: async (_provider, request) => {
-          seenRequests.push(request);
-          return {
-            id: 'resp_codex_bridge',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'Codex bridged chat' }],
-              },
-            ],
-          };
-        },
-      } as CodexResponsesClient,
+  it('injects exact xAI pair Models without changing native Chat capability', async () => {
+    const profile: ProviderProfile = {
+      defaultModel: 'grok-4',
+      displayName: 'xAI Subscription',
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
+      id: 'xai-work',
+      kind: 'oauth',
+      models: ['grok-4'],
+      vendor: 'xai',
+    };
+    const models = createModels();
+    vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
+    const createChatCompletion = vi.fn(
+      async (
+        _provider: unknown,
+        request: { readonly model: string },
+        _context?: { readonly models?: unknown }
+      ) => {
+        return {
+          choices: [
+            {
+              finish_reason: 'stop',
+              index: 0,
+              message: { content: 'xAI native chat', role: 'assistant' as const },
+            },
+          ],
+          created: 1,
+          id: 'chat_xai',
+          model: request.model,
+          object: 'chat.completion' as const,
+        };
+      }
+    );
+    const app = createDirectGatewayApp({
+      defaultProviderId: profile.id,
+      dispatcher: {
+        createChatCompletion,
+      } as unknown as LLMGatewayProviderDispatcher,
+      getPairHandle,
+      profiles: [profile],
     });
 
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'openai-codex/gpt-5.1-codex',
-        messages: [
-          { role: 'developer', content: 'Use one sentence.' },
-          { role: 'user', content: 'Hello' },
-        ],
+        model: 'grok-4',
+        messages: [{ role: 'user', content: 'Hello' }],
       }),
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       object: 'chat.completion',
-      choices: [{ message: { content: 'Codex bridged chat' } }],
+      choices: [{ message: { content: 'xAI native chat' } }],
     });
-    expect(seenRequests).toEqual([
-      {
-        model: 'openai-codex/gpt-5.1-codex',
-        instructions: 'Use one sentence.',
-        input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hello' }] }],
-        prompt_cache_key: expect.stringMatching(/^openkit:responses:request:/),
-        stream: false,
-      },
-    ]);
+    expect(getPairHandle).toHaveBeenCalledWith({
+      accountSlotId: 'work',
+      subscriptionProviderId: 'xai',
+    });
+    expect(models.checkAuth).toHaveBeenCalledWith('xai');
+    expect(createChatCompletion).toHaveBeenCalledOnce();
+    expect(createChatCompletion.mock.calls[0]?.[2]?.models).toBe(models);
   });
 
   it('preserves explicit prompt cache keys for native Responses providers', async () => {
@@ -2548,93 +2556,112 @@ describe('OpenAI-compatible agent gateway', () => {
     ]);
   });
 
-  it('routes runtime Codex provider instances to their configured account slots', async () => {
-    const seenSlots: Array<string | null | undefined> = [];
-    const app = createApp({
-      openKitConfig: {
-        defaults: {
-          gatewayModel: 'openai-codex/gpt-5.1-codex',
-          gatewayProviderId: 'codex-team-b',
-        },
-      },
-      providerRegistry: runtimeProviderRegistry(),
-      llmCodexResponsesClient: {
-        createResponses: async (provider, request) => {
-          seenSlots.push(provider.codexOAuthAccountSlotId);
-          return {
-            id: 'resp_codex_team_b',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'Team B response' }],
-              },
-            ],
-          };
-        },
-      } as CodexResponsesClient,
+  it('maps unavailable subscription pairs before upstream or SSE startup', async () => {
+    const profile: ProviderProfile = {
+      defaultModel: 'grok-4',
+      displayName: 'xAI Subscription',
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'unavailable' } } },
+      id: 'xai-unavailable',
+      kind: 'oauth',
+      models: ['grok-4'],
+      vendor: 'xai',
+    };
+    const getPairHandle = vi.fn(async () => {
+      throw new ProviderSubscriptionAccountError(
+        'provider_subscription_vault_unavailable',
+        'vault detail token=pair-secret'
+      );
+    });
+    const createResponses = vi.fn();
+    const createResponsesStream = vi.fn(async () => new Response('data: [DONE]\n\n').body!);
+    const app = createDirectGatewayApp({
+      defaultProviderId: profile.id,
+      dispatcher: {
+        createResponses,
+        createResponsesStream,
+      } as unknown as LLMGatewayProviderDispatcher,
+      getPairHandle,
+      profiles: [profile],
     });
 
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'openai-codex/gpt-5.1-codex',
+        model: 'grok-4',
         input: 'Hello',
+        stream: true,
       }),
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({ id: 'resp_codex_team_b' });
-    expect(seenSlots).toEqual(['team_b']);
+    expect(res.status, await res.clone().text()).toBe(503);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(res.headers.get('content-type')).not.toContain('text/event-stream');
+    await expect(res.json()).resolves.toEqual({
+      error: {
+        code: 'gateway_provider_unavailable',
+        message: 'Provider is unavailable.',
+        type: 'provider_error',
+      },
+    });
+    expect(getPairHandle).toHaveBeenCalledWith({
+      accountSlotId: 'unavailable',
+      subscriptionProviderId: 'xai',
+    });
+    expect(createResponses).not.toHaveBeenCalled();
+    expect(createResponsesStream).not.toHaveBeenCalled();
   });
 
-  it('bridges runtime chat requests to the Codex account slot selected by the gateway default', async () => {
-    const seenSlots: Array<string | null | undefined> = [];
-    const app = createApp({
-      openKitConfig: {
-        defaults: {
-          gatewayModel: 'openai-codex/gpt-5.1-codex',
-          gatewayProviderId: 'codex-team-a',
-        },
-      },
-      providerRegistry: runtimeProviderRegistry(),
-      llmCodexResponsesClient: {
-        createResponses: async (provider, request) => {
-          seenSlots.push(provider.codexOAuthAccountSlotId);
-          return {
-            id: 'resp_codex_team_a',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'Team A response' }],
-              },
-            ],
-          };
-        },
-      } as CodexResponsesClient,
+  it('maps missing subscription credentials before upstream or SSE startup', async () => {
+    const profile: ProviderProfile = {
+      defaultModel: 'openai-codex/gpt-5.6-sol',
+      displayName: 'OpenAI Codex',
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'logged-out' } } },
+      id: 'openai-codex',
+      kind: 'oauth',
+      models: ['openai-codex/gpt-5.6-sol'],
+    };
+    const models = createModels();
+    vi.spyOn(models, 'checkAuth').mockResolvedValue(undefined);
+    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
+    const createChatCompletion = vi.fn();
+    const createChatCompletionStream = vi.fn(async () => new Response('data: [DONE]\n\n').body!);
+    const app = createDirectGatewayApp({
+      defaultProviderId: profile.id,
+      dispatcher: {
+        createChatCompletion,
+        createChatCompletionStream,
+      } as unknown as LLMGatewayProviderDispatcher,
+      getPairHandle,
+      profiles: [profile],
     });
 
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'openai-codex/gpt-5.1-codex',
+        model: 'openai-codex/gpt-5.6-sol',
         messages: [{ role: 'user', content: 'Hello' }],
+        stream: true,
       }),
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      choices: [{ message: { content: 'Team A response' } }],
+    expect(res.status, await res.clone().text()).toBe(401);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(res.headers.get('content-type')).not.toContain('text/event-stream');
+    await expect(res.json()).resolves.toEqual({
+      error: {
+        code: 'gateway_provider_authentication_failed',
+        message: 'Provider authentication failed.',
+        type: 'provider_error',
+      },
     });
-    expect(seenSlots).toEqual(['team_a']);
+    expect(getPairHandle).toHaveBeenCalledWith({
+      accountSlotId: 'logged-out',
+      subscriptionProviderId: 'openai-codex',
+    });
+    expect(models.checkAuth).toHaveBeenCalledWith('openai-codex');
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(createChatCompletionStream).not.toHaveBeenCalled();
   });
 });

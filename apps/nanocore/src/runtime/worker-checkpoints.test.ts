@@ -42,6 +42,56 @@ describe('worker checkpoint storage', () => {
         artifactIds: ['ar_worker_result'],
       })
     ).toBe('{"itemIds":["it_worker_summary"],"artifactIds":["ar_worker_result"]}');
+    expect(
+      createWorkerCheckpointEvidenceDiagnostics(
+        { itemIds: ['it_worker_failed'], artifactIds: [] },
+        null,
+        'Worker process exited with code 1.'
+      )
+    ).toBe(
+      '{"itemIds":["it_worker_failed"],"artifactIds":[],"failureSummary":"Worker process exited with code 1."}'
+    );
+  });
+
+  it('stores only the closed checkpoint context fields', () => {
+    const workspaceDb = createWorkspaceDb();
+
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_closed_context',
+        requestId: 'req_closed_context',
+        requestInputHash: 'sha256:closed_context',
+        stage: 'running_worker',
+        iteration: 1,
+        diagnosticsSummary: JSON.stringify({
+          itemIds: ['it_context'],
+          artifactIds: [],
+          contextAssembly: {
+            contextDigest: 'sha256:context',
+            contextRefs: [
+              {
+                kind: 'workspace',
+                id: 'ws_demo',
+                authorization: 'Bearer live_secret',
+              },
+            ],
+            knowledgeSelectionInput: null,
+            nativeThreadId: 'native_secret',
+          },
+        }),
+        now: () => '2026-05-31T00:00:00.000Z',
+      });
+
+      expect(checkpoint.diagnosticsSummary).toBe(
+        '{"itemIds":["it_context"],"artifactIds":[],"contextAssembly":{"contextDigest":"sha256:context","contextRefs":[{"kind":"workspace","id":"ws_demo"}],"knowledgeSelectionInput":null}}'
+      );
+      expect(checkpoint.diagnosticsSummary).not.toContain('live_secret');
+      expect(checkpoint.diagnosticsSummary).not.toContain('native_secret');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   });
 
   it('creates and reads request-bound worker checkpoints without replay instructions', () => {
@@ -122,6 +172,14 @@ describe('worker checkpoint storage', () => {
         diagnosticsSummary: 'provider failed',
         updatedAt: '2026-05-31T00:10:00.000Z',
       });
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toMatchObject([
+        {
+          phase: 'checkpoint',
+          turnId: 'turn_demo',
+          outcome: 'failed',
+          redactedStderrSummary: 'provider failed',
+        },
+      ]);
       expect(clearWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_demo')).toBe(true);
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'turn_demo')).toBeNull();
     } finally {
@@ -259,6 +317,7 @@ describe('worker checkpoint storage', () => {
           summary: 'Worker checkpoint terminal: completed.',
           outcome: 'succeeded',
           stopReason: 'completed',
+          redactedStderrSummary: null,
           evidenceBundleIds: [],
           requiredFeatures: ['runtime.evidence.v1'],
           createdAt: '2026-05-31T00:10:00.000Z',
@@ -392,6 +451,11 @@ describe('worker checkpoint storage', () => {
         turnId: 'turn_backend_failure',
         stage: 'failed',
         stopReason: 'error',
+        diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(
+          { itemIds: ['it_failed'], artifactIds: [] },
+          null,
+          'Authorization: Bearer live_secret'
+        ),
         now: () => '2026-05-31T00:10:00.000Z',
       });
 
@@ -409,10 +473,15 @@ describe('worker checkpoint storage', () => {
           agentSessionId: null,
           goalId: 'goal_backend',
           outcome: 'failed',
+          redactedStderrSummary: 'Authorization: Bearer [redacted]',
           stopReason: 'error',
           taskId: 'task_backend',
+          transcriptSummary: '1 item, 0 artifacts',
         }),
       ]);
+      expect(JSON.stringify(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo'))).not.toContain(
+        'live_secret'
+      );
     } finally {
       workspaceDb.sqlite.close();
     }

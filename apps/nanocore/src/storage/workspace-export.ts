@@ -32,6 +32,12 @@ export interface ExportedKnowledgeSourceMaterial {
 /** File name for the root workspace export manifest. */
 export const WORKSPACE_EXPORT_MANIFEST_FILE = 'openkit-workspace-export.json';
 
+/** Legacy Vault injection record paths rejected by the current workspace export format. */
+export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
+  'records/injection-plans.jsonl',
+  'records/injection-receipts.jsonl',
+] as const;
+
 /** Workspace SQLite tables whose portable row families are covered by workspace export/import. */
 export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'artifact_reviews',
@@ -137,7 +143,7 @@ export interface WriteWorkspaceExportTreeInput {
   workspaceMaterialRevisions: readonly unknown[];
   /** Raw Workspace Material owners including private request proof. */
   workspaceMaterials: readonly unknown[];
-  /** Durable agent sessions to export. */
+  /** Durable AgentSessions to export. */
   agentSessions: readonly unknown[];
   /** Retained turn event logs keyed by turn id. */
   turnEvents: readonly (readonly [string, readonly unknown[]])[];
@@ -152,9 +158,9 @@ export interface WriteWorkspaceExportTreeInput {
   /** Non-secret workspace vault grant records to export. */
   vaultGrants?: readonly unknown[];
   /** Non-secret injection plan records linked to workspace vault grants. */
-  injectionPlans?: readonly unknown[];
+  vaultInjectionPlans?: readonly unknown[];
   /** Non-secret injection receipt records linked to exported injection plans. */
-  injectionReceipts?: readonly unknown[];
+  vaultInjectionReceipts?: readonly unknown[];
   /** Non-secret workspace vault use records to export. */
   vaultUseRecords?: readonly unknown[];
   /** Workspace-scoped audit events to export as line-oriented records. */
@@ -444,12 +450,11 @@ export function writeWorkspaceExportTree(
     if (input.vaultGrants?.length) {
       writeJsonl(join(recordsRoot, 'vault-grants.jsonl'), input.vaultGrants);
     }
-    if (input.injectionPlans?.length) {
-      writeJsonl(join(recordsRoot, 'injection-plans.jsonl'), input.injectionPlans);
-    }
-    if (input.injectionReceipts?.length) {
-      writeJsonl(join(recordsRoot, 'injection-receipts.jsonl'), input.injectionReceipts);
-    }
+    writeJsonl(join(recordsRoot, 'vault-injection-plans.jsonl'), input.vaultInjectionPlans ?? []);
+    writeJsonl(
+      join(recordsRoot, 'vault-injection-receipts.jsonl'),
+      input.vaultInjectionReceipts ?? []
+    );
     if (input.vaultUseRecords?.length) {
       writeJsonl(join(recordsRoot, 'vault-use-records.jsonl'), input.vaultUseRecords);
     }
@@ -664,6 +669,11 @@ export function verifyWorkspaceExportTree(
   const manifest = parseWorkspaceExportManifest(JSON.parse(manifestText), {
     supportedFeatures: input.supportedFeatures ?? [],
   });
+  for (const unsupportedPath of UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS) {
+    if (manifest.contentInventory.some((entry) => entry.path === unsupportedPath)) {
+      throw new Error(`Unsupported workspace export record path: ${unsupportedPath}`);
+    }
+  }
   if (manifest.contentDigest !== digestText(JSON.stringify(manifest.contentInventory))) {
     throw new Error('Workspace export manifest content digest does not match its inventory.');
   }

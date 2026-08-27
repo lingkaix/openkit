@@ -19,6 +19,34 @@ const migrations: MigrationFile[] = [
   { id: 'core_0001_workspace_sharing', fileName: '0001_core_workspace_sharing.sql' },
   { id: 'core_0002_scheduler_trigger_actor', fileName: '0002_core_scheduler_trigger_actor.sql' },
   { id: 'core_0003_lifecycle_authority', fileName: '0003_core_lifecycle_authority.sql' },
+  {
+    id: 'core_0004_nanohost_transport_tokens',
+    fileName: '0004_core_nanohost_transport_tokens.sql',
+  },
+  {
+    id: 'core_0005_nanohost_runtime_target',
+    fileName: '0005_core_nanohost_runtime_target.sql',
+  },
+  {
+    id: 'core_0006_nanohost_harness_runtime',
+    fileName: '0006_core_nanohost_harness_runtime.sql',
+  },
+  {
+    id: 'core_0007_nanohost_capacity_authority',
+    fileName: '0007_core_nanohost_capacity_authority.sql',
+  },
+  {
+    id: 'core_0008_drop_session_snapshots',
+    fileName: '0008_core_drop_session_snapshots.sql',
+  },
+  {
+    id: 'core_0009_retire_workspace_readwrite',
+    fileName: '0009_core_retire_workspace_readwrite.sql',
+  },
+  {
+    id: 'core_0010_nanohost_last_fresh_ready',
+    fileName: '0010_core_nanohost_last_fresh_ready.sql',
+  },
 ];
 
 const workspaceMigrations: MigrationFile[] = [
@@ -86,6 +114,20 @@ type ScopedDb = UserDb | WorkspaceDb;
  * @throws BootConfigError when a migration file is missing or fails to apply.
  */
 export function applyMigrations(coreDb: CoreDb): void {
+  const tableLookup = coreDb.sqlite.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+  );
+  const legacyVaultTables = ['injection_plans', 'injection_receipts'].filter((tableName) =>
+    tableLookup.get(tableName)
+  );
+
+  if (legacyVaultTables.length > 0) {
+    throw new BootConfigError(
+      'migration_failed',
+      `Unsupported legacy Vault tables in data root: ${legacyVaultTables.join(', ')}.`
+    );
+  }
+
   const appliedIds = readAppliedMigrationIds(coreDb);
 
   for (const migration of migrations) {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +19,7 @@ import {
 } from './artifact-reviews.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { recordWorkspaceSyncReview } from './runtime/workspace-sync-records.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
@@ -27,6 +28,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -657,7 +659,7 @@ describe('Core artifact routes', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     recordLocalWorkspaceAccess(coreDb, 'ws_demo');
-    const setup = createTestAgentSetup({ provider: null });
+    const setup = createTestAgentSetup();
     const runtimeAgent = {
       id: setup.manifest.id,
       name: setup.manifest.displayName,
@@ -737,10 +739,18 @@ describe('Core artifact routes', () => {
       agentManifests: [setup.manifest],
       coreDb,
       dataRoot,
+      providerRegistry: new ProviderRegistry([
+        {
+          displayName: 'Agent OpenRouter',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
       store,
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-repository-'));
-    mkdirSync(join(repositoryPath, '.git'));
+    seedWritableGitRepository(repositoryPath);
     const decisionPath =
       '/api/app/workspaces/ws_demo/artifacts/ar_review_redo/versions/1/review/decision';
     const request = {

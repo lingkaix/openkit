@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -12,13 +13,15 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import {
+  openBootVerifiedWorkspaceDb,
+  openCoreDb,
   openCoreDbWithIntegrityCheck,
   openUserDb,
   openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from './db.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
-import { applyScopedMigrations } from './migrate.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 
 /**
  * Creates an isolated data root for scoped database tests.
@@ -123,6 +126,18 @@ describe('scoped storage databases', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
+  });
+
+  it('reopens only an existing boot-verified Workspace database without creating layout', () => {
+    const dataRoot = createDataRoot();
+    const created = openWorkspaceDb(dataRoot, 'ws_1');
+    created.sqlite.close();
+
+    const reopened = openBootVerifiedWorkspaceDb(dataRoot, 'ws_1');
+    reopened.sqlite.close();
+
+    expect(() => openBootVerifiedWorkspaceDb(dataRoot, 'ws_missing')).toThrow();
+    expect(existsSync(join(dataRoot, 'workspaces', 'ws_missing'))).toBe(false);
   });
 
   it('stores the three Material authorities with their native graph and binding uniqueness', () => {
@@ -350,6 +365,50 @@ describe('scoped storage databases', () => {
     expect(readFileSync(dbPath)).toEqual(originalBytes);
     expect(readdirSync(dirname(dbPath))).toEqual([basename(dbPath)]);
     expect(existsSync(quarantine(dataRoot))).toBe(false);
+  });
+
+  it('recovers a valid hot rollback journal before checking Core database integrity', () => {
+    const dataRoot = createDataRoot();
+    const dbPath = coreDbPath(dataRoot);
+    const initialized = openCoreDb(dataRoot);
+    applyMigrations(initialized);
+    const originalAppliedAt = initialized.sqlite
+      .prepare('SELECT applied_at FROM schema_migrations WHERE id = ?')
+      .pluck()
+      .get('core_0000_baseline');
+    initialized.sqlite.close();
+    const crashed = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import Database from 'better-sqlite3';
+const sqlite = new Database(process.argv[1]);
+sqlite.exec('BEGIN IMMEDIATE');
+sqlite.prepare('UPDATE schema_migrations SET applied_at = ? WHERE id = ?').run(
+  'uncommitted-crash-write',
+  'core_0000_baseline'
+);
+process.kill(process.pid, 'SIGKILL');`,
+        dbPath,
+      ],
+      { cwd: process.cwd(), encoding: 'utf8' }
+    );
+
+    expect(crashed.signal).toBe('SIGKILL');
+    expect(existsSync(`${dbPath}-journal`)).toBe(true);
+
+    const coreDb = openCoreDbWithIntegrityCheck(dataRoot);
+    try {
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT applied_at FROM schema_migrations WHERE id = ?')
+          .pluck()
+          .get('core_0000_baseline')
+      ).toBe(originalAppliedAt);
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('migrates healthy existing scoped databases during boot scan', () => {

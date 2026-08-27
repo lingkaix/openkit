@@ -463,10 +463,7 @@ export function bindThreadMaterial(
     assertMaterialPointer(workspaceDb, material);
     const existing = findBinding(workspaceDb, input.threadId, input.materialId);
     assertFreshBinding(existing, input.requestId);
-    if (
-      (input.expectedBindingState === 'absent' && existing) ||
-      (input.expectedBindingState === 'unbound' && existing?.bindingState !== 'unbound')
-    ) {
+    if (existing?.bindingState === 'bound') {
       throw materialError('conflict', 'The Material binding state does not match the request.');
     }
     const bound = workspaceDb.sqlite

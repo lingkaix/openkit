@@ -603,7 +603,7 @@ function isDirectTaskCheckpoint(
  * Closes one worker approval Gate without resuming its worker executor.
  *
  * @param coreDb Core database containing scheduler and worker lineage.
- * @param store Product store containing the Approval, Turn, Session, Items, and receipts.
+ * @param store Product store containing the Approval, Turn, AgentSession, Items, and receipts.
  * @param workspaceDb Workspace database containing the worker checkpoint.
  * @param source Sole exact policy decision that opened the Approval.
  * @param input Exact approval command input.

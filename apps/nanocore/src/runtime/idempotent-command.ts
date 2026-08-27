@@ -256,3 +256,28 @@ function stableJson(value: unknown): string {
 export function commandInputHash(input: unknown): string {
   return `sha256:${createHash('sha256').update(stableJson(input)).digest('hex')}`;
 }
+
+/**
+ * Derives one Chat-subordinate Task Turn id without impersonating a direct Task command.
+ *
+ * @param actorId Authenticated actor id.
+ * @param workspaceId Workspace command scope.
+ * @param threadId Thread command scope.
+ * @param requestId Caller-supplied Chat command request id.
+ * @returns Stable Chat-subordinate worker Turn id.
+ */
+export function chatTaskModeTurnId(
+  actorId: string,
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): string {
+  const suffix = commandInputHash({
+    command: 'chat.start.task',
+    actorId,
+    workspaceId,
+    threadId,
+    requestId,
+  }).slice(-16);
+  return `turn_${requestId}_${suffix}`;
+}

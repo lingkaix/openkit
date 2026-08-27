@@ -12,7 +12,7 @@ export interface WorkerControlRejectedEvidenceRecord {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Agent environment package snapshot id. */
   readonly packageSnapshotId: string;

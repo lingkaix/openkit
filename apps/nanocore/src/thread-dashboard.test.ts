@@ -93,15 +93,13 @@ describe('thread dashboard app API', () => {
     const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('activeSession');
+    expect(JSON.stringify(body)).not.toContain('agentSessionId');
+    expect(body).toMatchObject({
       thread: {
         id: thread.id,
         name: 'Dashboard thread',
-      },
-      activeSession: {
-        id: agentSessionId,
-        status: 'busy',
-        message: null,
       },
       turns: [{ id: turn.id, status: 'running' }],
       artifacts: [{ id: artifact.id, title: 'Thread summary' }],
@@ -116,7 +114,7 @@ describe('thread dashboard app API', () => {
     });
   });
 
-  it('does not borrow lineage from a different persisted agent session', async () => {
+  it('does not expose lineage from a different persisted AgentSession', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Fresh simulator session');
     store.createTurn('ws_demo', thread.id, 'Run fresh simulator turn', {
@@ -148,13 +146,7 @@ describe('thread dashboard app API', () => {
     const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      activeSession: {
-        id: `session_sim_${thread.id}`,
-        configVersion: null,
-        workspaceRoots: [],
-      },
-    });
+    expect(await res.json()).not.toHaveProperty('activeSession');
   });
 
   it('hides pending decision affordances from a readonly actor while preserving shared status', async () => {

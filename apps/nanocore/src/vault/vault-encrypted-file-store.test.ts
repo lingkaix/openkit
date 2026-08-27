@@ -1,7 +1,7 @@
 import { lstatSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   openEncryptedFileVaultEntry,
@@ -10,27 +10,32 @@ import {
   writeEncryptedFileVaultEntry,
 } from './vault-encrypted-file-store.js';
 
+const TEST_CIPHERTEXT = Buffer.from('ciphertext').toString('base64');
+const TEST_DATA_KEY = Buffer.alloc(32, 1).toString('base64');
+const TEST_NONCE = Buffer.alloc(12, 2).toString('base64');
+const TEST_TAG = Buffer.alloc(16, 3).toString('base64');
+
 describe('encrypted-file vault store format', () => {
   it('writes and reads a non-secret entry envelope with owner-only files', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-store-format-'));
 
     const entry = writeEncryptedFileVaultEntry({
-      ciphertext: 'ciphertext_base64',
+      ciphertext: TEST_CIPHERTEXT,
       createdAt: '2026-07-05T00:05:00.000Z',
       dataKey: {
         algorithm: 'aes-256-gcm',
-        nonce: 'wrap_nonce_base64',
-        tag: 'wrap_tag_base64',
-        wrapped: 'wrapped_data_key_base64',
+        nonce: TEST_NONCE,
+        tag: TEST_TAG,
+        wrapped: TEST_DATA_KEY,
       },
       metadata: {
         ownerScope: 'workspace',
         workspaceId: 'ws_1',
       },
-      nonce: 'entry_nonce_base64',
+      nonce: TEST_NONCE,
       referenceId: 'vault_github',
       storeDir,
-      tag: 'entry_tag_base64',
+      tag: TEST_TAG,
       version: 1,
     });
 
@@ -56,21 +61,21 @@ describe('encrypted-file vault store format', () => {
 
     expect(() =>
       writeEncryptedFileVaultEntry({
-        ciphertext: 'ciphertext_base64',
+        ciphertext: TEST_CIPHERTEXT,
         createdAt: '2026-07-05T00:05:00.000Z',
         dataKey: {
           algorithm: 'aes-256-gcm',
-          nonce: 'wrap_nonce_base64',
-          tag: 'wrap_tag_base64',
-          wrapped: 'wrapped_data_key_base64',
+          nonce: TEST_NONCE,
+          tag: TEST_TAG,
+          wrapped: TEST_DATA_KEY,
         },
         metadata: {
           ownerScope: 'server',
         },
-        nonce: 'entry_nonce_base64',
+        nonce: TEST_NONCE,
         referenceId: '../vault_github',
         storeDir,
-        tag: 'entry_tag_base64',
+        tag: TEST_TAG,
         version: 1,
       })
     ).toThrow('Vault reference id is not safe for encrypted-file store paths.');
@@ -81,21 +86,21 @@ describe('encrypted-file vault store format', () => {
     const entryPath = join(storeDir, 'entries', 'vault_github', '1.enc');
 
     writeEncryptedFileVaultEntry({
-      ciphertext: 'ciphertext_base64',
+      ciphertext: TEST_CIPHERTEXT,
       createdAt: '2026-07-05T00:05:00.000Z',
       dataKey: {
         algorithm: 'aes-256-gcm',
-        nonce: 'wrap_nonce_base64',
-        tag: 'wrap_tag_base64',
-        wrapped: 'wrapped_data_key_base64',
+        nonce: TEST_NONCE,
+        tag: TEST_TAG,
+        wrapped: TEST_DATA_KEY,
       },
       metadata: {
         ownerScope: 'server',
       },
-      nonce: 'entry_nonce_base64',
+      nonce: TEST_NONCE,
       referenceId: 'vault_github',
       storeDir,
-      tag: 'entry_tag_base64',
+      tag: TEST_TAG,
       version: 1,
     });
 
@@ -138,6 +143,183 @@ describe('encrypted-file vault store format', () => {
     expect(entry.ciphertext).not.toContain('ghp_live_secret');
     expect(entryFile).not.toContain('ghp_live_secret');
     expect(entry.algorithm).toBe('aes-256-gcm');
+  });
+
+  it('zeroes successful GCM update and final buffers after copying the plaintext result', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-store-zeroize-'));
+    const masterKey = Buffer.alloc(32, 7);
+    const material = Buffer.from('payload with a unique non-key-sized plaintext buffer');
+
+    sealEncryptedFileVaultEntry({
+      createdAt: '2026-07-05T00:10:00.000Z',
+      masterKey,
+      material,
+      metadata: { ownerScope: 'server' },
+      referenceId: 'vault_gcm_success',
+      storeDir,
+      version: 1,
+    });
+
+    const fillSpy = vi.spyOn(Buffer.prototype, 'fill');
+
+    try {
+      const opened = openEncryptedFileVaultEntry({
+        masterKey,
+        referenceId: 'vault_gcm_success',
+        storeDir,
+        version: 1,
+      });
+      const filledBuffers = fillSpy.mock.instances.filter((value) => Buffer.isBuffer(value));
+
+      expect(Buffer.from(opened)).toEqual(material);
+      expect
+        .soft(
+          filledBuffers.some(
+            (value) => value.byteLength === material.byteLength && value.every((byte) => byte === 0)
+          )
+        )
+        .toBe(true);
+      expect
+        .soft(
+          new Set(
+            filledBuffers.filter(
+              (value) => value.byteLength === 32 && value.every((byte) => byte === 0)
+            )
+          ).size
+        )
+        .toBeGreaterThanOrEqual(2);
+      expect
+        .soft(filledBuffers.filter((value) => value.byteLength === 0).length)
+        .toBeGreaterThanOrEqual(2);
+    } finally {
+      fillSpy.mockRestore();
+    }
+  });
+
+  it('zeroes the GCM update plaintext when final authentication rejects a tampered tag', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-store-zeroize-'));
+    const masterKey = Buffer.alloc(32, 7);
+    const material = Buffer.from('tampered payload with a unique non-key-sized plaintext buffer');
+    const entryPath = join(storeDir, 'entries', 'vault_gcm_failure', '1.enc');
+
+    sealEncryptedFileVaultEntry({
+      createdAt: '2026-07-05T00:10:00.000Z',
+      masterKey,
+      material,
+      metadata: { ownerScope: 'server' },
+      referenceId: 'vault_gcm_failure',
+      storeDir,
+      version: 1,
+    });
+
+    const envelope = JSON.parse(readFileSync(entryPath, 'utf8')) as { tag: string };
+    envelope.tag = Buffer.alloc(16, 0x7e).toString('base64');
+    writeFileSync(entryPath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+    const fillSpy = vi.spyOn(Buffer.prototype, 'fill');
+
+    try {
+      expect(() =>
+        openEncryptedFileVaultEntry({
+          masterKey,
+          referenceId: 'vault_gcm_failure',
+          storeDir,
+          version: 1,
+        })
+      ).toThrow('Encrypted-file vault entry failed authentication.');
+
+      const filledBuffers = fillSpy.mock.instances.filter((value) => Buffer.isBuffer(value));
+      expect
+        .soft(
+          filledBuffers.some(
+            (value) => value.byteLength === material.byteLength && value.every((byte) => byte === 0)
+          )
+        )
+        .toBe(true);
+      expect
+        .soft(
+          new Set(
+            filledBuffers.filter(
+              (value) => value.byteLength === 32 && value.every((byte) => byte === 0)
+            )
+          ).size
+        )
+        .toBeGreaterThanOrEqual(2);
+      expect.soft(filledBuffers.some((value) => value.byteLength === 0)).toBe(true);
+    } finally {
+      fillSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['top-level', 'createdAt'],
+    ['top-level', 'owner metadata'],
+    ['associated-data', 'createdAt'],
+    ['associated-data', 'owner metadata'],
+    ['associated-data', 'version expirations'],
+    ['associated-data', 'provider account'],
+  ] as const)('rejects entry %s %s tampering', (location, corruption) => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-store-format-'));
+    const masterKey = Buffer.alloc(32, 7);
+    const entryPath = join(storeDir, 'entries', 'vault_subscription', '1.enc');
+
+    sealEncryptedFileVaultEntry({
+      createdAt: '2026-07-05T00:10:00.000Z',
+      masterKey,
+      material: Buffer.from('subscription_secret'),
+      metadata: {
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+          subscriptionProviderId: 'openai-codex',
+        },
+      },
+      referenceId: 'vault_subscription',
+      storeDir,
+      version: 1,
+      versionExpirations: {},
+    } as never);
+
+    const envelope = JSON.parse(readFileSync(entryPath, 'utf8')) as Record<string, unknown>;
+    const associatedData = envelope.associatedData as Record<string, unknown>;
+    const target = location === 'top-level' ? envelope : associatedData;
+
+    if (corruption === 'createdAt') {
+      target.createdAt = '2026-07-05T00:10:01.000Z';
+    } else if (corruption === 'owner metadata') {
+      target.metadata = { ownerScope: 'workspace', workspaceId: 'ws_other' };
+    } else if (corruption === 'version expirations') {
+      target.versionExpirations = { '1': '2026-07-05T00:20:00.000Z' };
+    } else {
+      target.metadata = {
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_2',
+          subscriptionProviderId: 'openai-codex',
+        },
+      };
+    }
+
+    writeFileSync(entryPath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+
+    if (location === 'top-level') {
+      expect
+        .soft(() =>
+          readEncryptedFileVaultEntry({
+            referenceId: 'vault_subscription',
+            storeDir,
+            version: 1,
+          })
+        )
+        .toThrow();
+    }
+    expect(() =>
+      openEncryptedFileVaultEntry({
+        masterKey,
+        referenceId: 'vault_subscription',
+        storeDir,
+        version: 1,
+      })
+    ).toThrow();
   });
 
   it('rejects encrypted entries opened with the wrong master key', () => {

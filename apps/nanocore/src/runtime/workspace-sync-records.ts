@@ -892,15 +892,24 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
             })[0]
           : undefined;
       const canonicalRecord =
-        canonicalSnapshot && expectedBackend && packageInput
+        canonicalSnapshot && expectedBackend && packageInput && record
           ? buildWorkspaceMaterializationRecords({
-              createdAt: record?.createdAt ?? '',
+              createdAt: record.createdAt,
               inputSnapshots: [canonicalSnapshot],
               materialization: {
                 backendKind: WorkspaceSynchronizationBackendKindSchema.parse(
                   expectedBackend.backendKind
                 ),
-                backendStatus: { health: 'ready', version: expectedBackend.backendVersion },
+                ...(record.readinessEvidence.some((evidence) =>
+                  evidence.kind.startsWith('backend.')
+                )
+                  ? {
+                      backendStatus: {
+                        health: 'ready' as const,
+                        version: expectedBackend.backendVersion,
+                      },
+                    }
+                  : {}),
                 packageSnapshotId: environmentPackage.snapshotId,
                 requiredCapabilities: environmentPackage.backend.requiredCapabilities,
                 sandbox: { name: expectedBackend.workerSessionId, state: 'created' },

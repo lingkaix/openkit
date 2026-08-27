@@ -44,7 +44,7 @@ describe('vault use records', () => {
         vaultReferenceId: 'vault_github',
       });
       const duplicate = createVaultUseRecord(coreDb, {
-        backendKind: 'os-keychain',
+        backendKind: 'encrypted-file',
         failureCode: 'vault-locked',
         outcome: 'failed',
         ownerScope: 'server',

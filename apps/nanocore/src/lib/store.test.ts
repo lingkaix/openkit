@@ -675,7 +675,7 @@ describe('FsStore persistence', () => {
     expect.soft(restartedOrphan).toBeNull();
   });
 
-  it('restores thread, turn, event, knowledge, artifact, and agent session history after restart', () => {
+  it('restores thread, turn, event, knowledge, artifact, and AgentSession history after restart', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);
@@ -816,7 +816,7 @@ describe('FsStore persistence', () => {
     ).toEqual([]);
   });
 
-  it('projects agent-session events before returning or notifying listeners', () => {
+  it('projects AgentSession events before returning or notifying listeners', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);

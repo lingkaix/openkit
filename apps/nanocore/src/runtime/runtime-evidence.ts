@@ -59,7 +59,7 @@ export interface RecordWorkerRuntimeProvenanceEvidenceInput {
   threadId: string;
   /** Outer OpenKit turn id. */
   turnId: string;
-  /** Outer worker agent session id. */
+  /** Outer worker AgentSession id. */
   agentSessionId: string;
   /** Governance backend family. */
   backendType: string;
@@ -85,7 +85,7 @@ export interface RecordWorkerRuntimeProvenanceEvidenceInput {
 
 /** Input for one normalized physical worker backend teardown record. */
 export interface RecordWorkerBackendTeardownEvidenceInput {
-  /** Agent session whose backend resources were torn down. */
+  /** AgentSession whose backend resources were torn down. */
   readonly agentSessionId: string;
   /** Governance backend family. */
   readonly backendType: string;
@@ -278,7 +278,10 @@ export function recordWorkerCheckpointRuntimeEvidence(
     errorCode: null,
     errorMessage: null,
     redactedStdoutSummary: null,
-    redactedStderrSummary: null,
+    redactedStderrSummary:
+      checkpoint.stage === 'failed'
+        ? checkpointFailureSummary(checkpoint.diagnosticsSummary)
+        : null,
     evidenceBundleIds: [],
     contentDigests: [digestRuntimeEvidence(checkpoint)],
     requiredFeatures: ['runtime.evidence.v1'],
@@ -443,6 +446,27 @@ function summarizeCheckpointDiagnostics(diagnosticsSummary: string | null): stri
       : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Reads the product-safe failure summary without exposing checkpoint recovery metadata.
+ *
+ * @param diagnosticsSummary Redacted checkpoint diagnostics.
+ * @returns Structured failure summary, legacy redacted text, or null.
+ */
+function checkpointFailureSummary(diagnosticsSummary: string | null): string | null {
+  if (!diagnosticsSummary) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(diagnosticsSummary) as { failureSummary?: unknown } | null;
+    return parsed && typeof parsed.failureSummary === 'string' && parsed.failureSummary.length > 0
+      ? parsed.failureSummary
+      : null;
+  } catch {
+    return diagnosticsSummary;
   }
 }
 

@@ -204,7 +204,6 @@ function createLineageExportInput(
     triggerActor: { kind: 'user', id: 'user_local' },
     userId: 'user_local',
     backend: {
-      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
     },
     requestId: 'request_source',
@@ -2001,8 +2000,7 @@ describe('workspace auxiliary lineage reminting', () => {
         finishedAt: null,
       },
     ];
-    const sourceSnapshotId = (input.agentEnvironmentPackageSnapshots?.[0] as { snapshotId: string })
-      .snapshotId;
+    const sourceSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const imported = importLineage(input);
     const thread = imported.threads[0]!;
     const turn = imported.turns[0]!;
@@ -2048,6 +2046,7 @@ describe('workspace auxiliary lineage reminting', () => {
       policySnapshotId: null,
       sessionCompatibilityKey: null,
       stale: true,
+      status: 'closed',
       workspaceRoots: [],
     });
     expect.soft(JSON.stringify(session)).not.toContain('/private/source/workspace');
@@ -2275,9 +2274,7 @@ describe('workspace auxiliary lineage reminting', () => {
 
   it('exports and remints only the product-safe runtime provenance index', () => {
     const input = createLineageExportInput();
-    const packageSnapshotId = (
-      input.agentEnvironmentPackageSnapshots?.[0] as { snapshotId: string }
-    ).snapshotId;
+    const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const rawBundleId = 'evb_runtime_raw_source';
     const indexBundleId = 'evb_runtime_index_source';
     const runtimeEvidenceId = 'rte_runtime_source';

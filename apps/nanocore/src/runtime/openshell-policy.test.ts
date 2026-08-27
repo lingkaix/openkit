@@ -56,31 +56,29 @@ describe('renderOpenShellWorkerPolicy', () => {
     expect(policy).not.toContain('path: /usr/local/bin/node');
   });
 
-  it('renders narrowly scoped additional network endpoints for research workers', () => {
+  it('renders only AEP-derived network endpoints when no direct control URL exists', () => {
     const policy = renderOpenShellWorkerPolicy({
       additionalNetworkEndpoints: [
         {
-          access: 'read-only',
-          binaries: ['/usr/bin/git', '/usr/bin/curl', '/usr/lib/git-core/git-remote-https'],
-          host: 'github.com',
-          name: 'github_source',
+          access: 'read-write',
+          binaries: ['/usr/local/bin/codex'],
+          host: 'api.example.com',
+          name: 'direct_api',
           port: 443,
           protocol: 'rest',
         },
       ],
       binaries: CONTROL_BINARIES,
-      controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
     });
 
-    expect(policy).toContain('github_source:');
-    expect(policy).toContain('name: github_source');
-    expect(policy).toContain('path: /usr/bin/git');
-    expect(policy).toContain('path: /usr/bin/curl');
-    expect(policy).toContain('path: /usr/lib/git-core/git-remote-https');
-    expect(policy).toContain('host: github.com');
+    expect(policy).not.toContain('openkit_worker_control:');
+    expect(policy).toContain('direct_api:');
+    expect(policy).toContain('name: direct_api');
+    expect(policy).toContain('path: /usr/local/bin/codex');
+    expect(policy).toContain('host: api.example.com');
     expect(policy).toContain('port: 443');
     expect(policy).toContain('protocol: rest');
-    expect(policy).toContain('access: read-only');
+    expect(policy).toContain('access: read-write');
   });
 
   it('renders exact REST allow rules without a broad access preset', () => {
@@ -108,6 +106,34 @@ describe('renderOpenShellWorkerPolicy', () => {
     expect(inferencePolicy).toContain('path: /api/worker-inference/v1/chat/completions');
     expect(inferencePolicy).toContain('path: /api/worker-inference/v1/responses');
     expect(inferencePolicy).not.toContain('access:');
+  });
+
+  it('renders Git Smart HTTP read rules with GET and wildcard paths but no push rule', () => {
+    const policy = renderOpenShellWorkerPolicy({
+      additionalNetworkEndpoints: [
+        {
+          binaries: ['/usr/bin/git'],
+          host: 'github.com',
+          name: 'github_git_read',
+          port: 443,
+          protocol: 'rest',
+          rules: [
+            { method: 'GET', path: '/**/info/refs*' },
+            { method: 'POST', path: '/**/git-upload-pack' },
+          ],
+        },
+      ],
+      binaries: CONTROL_BINARIES,
+      controlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
+    });
+    const gitPolicy = policy.split('  github_git_read:')[1] ?? '';
+
+    expect(gitPolicy).toContain('method: GET');
+    expect(gitPolicy).toContain('path: /**/info/refs*');
+    expect(gitPolicy).toContain('method: POST');
+    expect(gitPolicy).toContain('path: /**/git-upload-pack');
+    expect(gitPolicy).not.toContain('git-receive-pack');
+    expect(gitPolicy).not.toContain('access:');
   });
 
   it('rejects network endpoints that mix exact rules with an access preset', () => {

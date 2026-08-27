@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -260,41 +268,55 @@ describe('runtime config file API', () => {
     expect(
       readFileSync(join(dataRoot, 'config', 'providers', 'new-openrouter.provider.jsonc'), 'utf8')
     ).toContain('"secretRef": "vault://provider_new-openrouter"');
-    expect(
-      readFileSync(join(dataRoot, 'config', 'agents', 'new-agent.agent.jsonc'), 'utf8')
-    ).toContain('"id": "new-agent"');
+    const agentTemplate = readFileSync(
+      join(dataRoot, 'config', 'agents', 'new-agent.agent.jsonc'),
+      'utf8'
+    );
+    expect(agentTemplate).toContain('"id": "new-agent"');
+    expect(agentTemplate).toContain('"kind": "reference"');
   });
 
   it('updates config files with revision guards and rejects stale writes', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({ dataRoot });
-    const readRes = await app.request('/api/admin/config/file?id=server.jsonc');
-    const read = (await readRes.json()) as { file: { revision: string }; content: string };
+    const serverPath = join(dataRoot, 'config', 'server.jsonc');
+    const previousUmask = process.umask(0o022);
+    try {
+      chmodSync(serverPath, 0o600);
+      expect(statSync(serverPath).mode & 0o777).toBe(0o600);
+      const app = createApp({ dataRoot });
+      const readRes = await app.request('/api/admin/config/file?id=server.jsonc');
+      const read = (await readRes.json()) as { file: { revision: string }; content: string };
+      const nextContent = read.content.replace('openai/gpt-5.1', 'openai/gpt-5.2');
 
-    const okRes = await app.request('/api/admin/config/file', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: 'server.jsonc',
-        kind: 'server',
-        content: read.content.replace('openai/gpt-5.1', 'openai/gpt-5.2'),
-        expectedRevision: read.file.revision,
-      }),
-    });
-    const staleRes = await app.request('/api/admin/config/file', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: 'server.jsonc',
-        kind: 'server',
-        content: read.content,
-        expectedRevision: read.file.revision,
-      }),
-    });
+      const okRes = await app.request('/api/admin/config/file', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: 'server.jsonc',
+          kind: 'server',
+          content: nextContent,
+          expectedRevision: read.file.revision,
+        }),
+      });
+      const staleRes = await app.request('/api/admin/config/file', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: 'server.jsonc',
+          kind: 'server',
+          content: read.content,
+          expectedRevision: read.file.revision,
+        }),
+      });
 
-    expect(okRes.status).toBe(200);
-    expect(staleRes.status).toBe(409);
+      expect(okRes.status).toBe(200);
+      expect(readFileSync(serverPath, 'utf8')).toBe(nextContent);
+      expect(statSync(serverPath).mode & 0o777).toBe(0o600);
+      expect(staleRes.status).toBe(409);
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 
   it('rejects path traversal and invalid config writes', async () => {

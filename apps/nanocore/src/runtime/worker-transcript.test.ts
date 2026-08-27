@@ -31,7 +31,6 @@ function createTranscriptFixture() {
     triggerActor: turn.triggerActor,
     userId: 'user_local',
     backend: {
-      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
     },
     createdAt: '2026-06-16T00:00:00.000Z',

@@ -1,29 +1,31 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 import { postJson } from './_lib/http.js';
 
-let harness: NanoCoreHarness | null = null;
+let harnesses: NanoCoreHarness[] = [];
 
 afterEach(async () => {
-  const current = harness;
-  harness = null;
+  const current = harnesses;
+  harnesses = [];
 
-  if (current) {
-    await current.stop();
-    await removeDataRoot(current.dataRoot);
+  for (const harness of current.reverse()) {
+    await harness.stop();
+    await removeDataRoot(harness.dataRoot);
   }
 });
 
 describe('nanocore e2e workspace portability', () => {
-  it('imports a colliding workspace with a reminted id and preserved knowledge', async () => {
-    harness = await startNanoCoreHarness();
+  it('imports a collision into a second fresh data root with lineage and preserved knowledge', async () => {
+    const sourceHarness = await startNanoCoreHarness();
+    harnesses.push(sourceHarness);
 
     const workspaceId = 'ws_demo';
     await expectJson(
-      await postJson(`${harness.baseUrl}/api/workspaces/${workspaceId}/knowledge`, {
+      await postJson(`${sourceHarness.baseUrl}/api/workspaces/${workspaceId}/knowledge`, {
         content: 'L3 workspace portability knowledge survives import.',
         kind: 'project-context',
         requestId: randomUUID(),
@@ -33,37 +35,58 @@ describe('nanocore e2e workspace portability', () => {
     );
 
     const exported = await expectJson(
-      await postJson(`${harness.baseUrl}/api/app/workspaces/${workspaceId}/export`, {}),
+      await postJson(`${sourceHarness.baseUrl}/api/app/workspaces/${workspaceId}/export`, {}),
       { workspaceId }
     );
     const exportId = String(exported.exportId);
+    const targetDataRoot = await mkdtemp(join(tmpdir(), 'openkit-nanocore-portability-target-'));
+    const targetExportRoot = join(
+      targetDataRoot,
+      'server',
+      'exports',
+      'workspaces',
+      workspaceId,
+      exportId
+    );
 
+    await mkdir(dirname(targetExportRoot), { recursive: true });
+    await cp(
+      join(sourceHarness.dataRoot, 'server', 'exports', 'workspaces', workspaceId, exportId),
+      targetExportRoot,
+      { recursive: true }
+    );
+
+    const targetHarness = await startNanoCoreHarness({
+      dataRoot: targetDataRoot,
+      seedDemoWorkspace: true,
+    });
+    harnesses.push(targetHarness);
     await expectJson(
-      await postJson(`${harness.baseUrl}/api/app/workspace-imports/dry-run`, {
+      await postJson(`${targetHarness.baseUrl}/api/app/workspace-imports/dry-run`, {
         exportId,
         sourceWorkspaceId: workspaceId,
       }),
       {
         collision: { status: 'collides', workspaceId },
+        exportedWorkspaceId: workspaceId,
         mode: 'dry-run',
       }
     );
 
     const imported = await expectJson(
-      await postJson(`${harness.baseUrl}/api/app/workspace-imports`, {
+      await postJson(`${targetHarness.baseUrl}/api/app/workspace-imports`, {
         exportId,
         requestId: randomUUID(),
         sourceWorkspaceId: workspaceId,
       }),
       {
         collision: { status: 'collides', workspaceId },
-        importedWorkspaceId: 'ws_imported_ws_demo',
         mode: 'imported',
       }
     );
     const importedWorkspaceId = String(imported.importedWorkspaceId);
     const knowledge = (await expectJson(
-      await fetch(`${harness.baseUrl}/api/workspaces/${importedWorkspaceId}/knowledge`),
+      await fetch(`${targetHarness.baseUrl}/api/workspaces/${importedWorkspaceId}/knowledge`),
       {}
     )) as { items?: Array<{ title?: string }> };
 
@@ -76,7 +99,8 @@ describe('nanocore e2e workspace portability', () => {
   });
 
   it('fails closed on unsupported export features without creating a partial workspace', async () => {
-    harness = await startNanoCoreHarness();
+    const harness = await startNanoCoreHarness();
+    harnesses.push(harness);
 
     const workspaceId = 'ws_demo';
     const exported = await expectJson(
@@ -128,7 +152,8 @@ describe('nanocore e2e workspace portability', () => {
   });
 
   it('rejects tampered export content without creating a partial workspace', async () => {
-    harness = await startNanoCoreHarness();
+    const harness = await startNanoCoreHarness();
+    harnesses.push(harness);
 
     const workspaceId = 'ws_demo';
     const exported = await expectJson(

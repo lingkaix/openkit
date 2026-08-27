@@ -93,21 +93,26 @@ function withoutUserInputResponses(text: string): string {
 /**
  * Writes a minimal export tree fixture.
  *
+ * @param recordPath Export-relative path for the single inventory record.
+ * @param recordText Exact record bytes.
  * @returns Export root path.
  */
-function writeExportTree(): string {
+function writeExportTree(
+  recordPath: string = 'records/workspace.json',
+  recordText: string = '{"id":"ws_demo"}'
+): string {
   const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-'));
   const recordsDir = join(root, 'records');
   const contentInventory = [
     {
-      path: 'records/workspace.json',
-      digest: 'sha256:ab4a13e5a040b76a82521f52dabddd42e7e4d4244c47e16ee8c6e1aa16233f3f',
-      bytes: 16,
+      path: recordPath,
+      digest: `sha256:${createHash('sha256').update(recordText).digest('hex')}`,
+      bytes: Buffer.byteLength(recordText),
     },
   ];
 
   mkdirSync(recordsDir);
-  writeFileSync(join(recordsDir, 'workspace.json'), '{"id":"ws_demo"}');
+  writeFileSync(join(root, recordPath), recordText);
   writeFileSync(
     join(root, WORKSPACE_EXPORT_MANIFEST_FILE),
     JSON.stringify({
@@ -158,6 +163,15 @@ describe('workspace export verifier', () => {
     expect(() => verifyWorkspaceExportTree({ exportRoot: extraRoot })).toThrow(
       'Export file missing from inventory: records/extra.json'
     );
+  });
+
+  it.each([
+    'records/injection-plans.jsonl',
+    'records/injection-receipts.jsonl',
+  ])('rejects the unsupported legacy workspace export record path %s', (recordPath) => {
+    expect(() =>
+      verifyWorkspaceExportTree({ exportRoot: writeExportTree(recordPath, '') })
+    ).toThrow(`Unsupported workspace export record path: ${recordPath}`);
   });
 
   it('writes a verifiable workspace export tree', () => {
@@ -284,6 +298,8 @@ describe('workspace export verifier', () => {
       'records/threads.jsonl',
       'records/turn-events.jsonl',
       'records/turns.jsonl',
+      'records/vault-injection-plans.jsonl',
+      'records/vault-injection-receipts.jsonl',
       'records/workspace-material-revisions.jsonl',
       'records/workspace-materials.jsonl',
       'records/workspace-quarantine-records.jsonl',
@@ -971,7 +987,7 @@ describe('workspace export verifier', () => {
     });
     bindThreadMaterial(workspaceDb, {
       acceptedAt: timestamp,
-      expectedBindingState: 'absent',
+      expectedBindingState: 'not_bound',
       materialId: material.materialId,
       requestId: 'request-material-binding-export',
       threadId: fixture.thread.id,
@@ -1110,7 +1126,7 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_imported_ws_demo',
       },
       verification: {
-        fileCount: 15,
+        fileCount: 17,
         checkedFiles: [
           'records/agent-sessions.jsonl',
           'records/artifact-reviews.jsonl',
@@ -1124,6 +1140,8 @@ describe('workspace export verifier', () => {
           'records/threads.jsonl',
           'records/turn-events.jsonl',
           'records/turns.jsonl',
+          'records/vault-injection-plans.jsonl',
+          'records/vault-injection-receipts.jsonl',
           'records/workspace-material-revisions.jsonl',
           'records/workspace-materials.jsonl',
           'records/workspace.json',

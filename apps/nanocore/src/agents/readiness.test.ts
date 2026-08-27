@@ -22,7 +22,7 @@ function manifest(input: Partial<AgentManifest> = {}): AgentManifest {
         { id: 'node', path: '/usr/local/bin/node' },
         { id: 'custom', path: '/usr/local/bin/custom' },
       ],
-      image: { pullPolicy: 'never', ref: 'openkit/worker-custom:test' },
+      image: { kind: 'reference', pullPolicy: 'never', ref: 'openkit/worker-custom:test' },
       kind: 'custom',
     },
     schemaVersion: 1,

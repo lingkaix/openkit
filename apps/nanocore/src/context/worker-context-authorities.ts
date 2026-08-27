@@ -20,7 +20,7 @@ import type { WorkerContextPackageAuthorityReader } from './worker-context-packa
 export interface WorkerContextPackageAuthorityReaderInput {
   /** Core database that owns scheduler and backend-session authority. */
   readonly coreDb: CoreDb;
-  /** Product store that owns Turn, Item, and Agent Session authority. */
+  /** Product store that owns Turn, Item, and AgentSession authority. */
   readonly store: FsStore;
   /** Workspace database that owns package, Goal, Material, and handoff authority. */
   readonly workspaceDb: WorkspaceDb;

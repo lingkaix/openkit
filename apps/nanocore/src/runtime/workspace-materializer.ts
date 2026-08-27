@@ -265,6 +265,9 @@ export function parseWorkspaceChangeSetManifest(
   options: ParseWorkspaceChangeSetManifestOptions = {}
 ): WorkspaceChangeSet {
   const parsed = WorkspaceChangeSetSchema.parse(JSON.parse(manifestText) as unknown);
+  if (parsed.changedPaths.length === 0) {
+    throw new Error('workspace change manifest is semantically empty');
+  }
   const changeSet = withBinaryReviewPresentations(parsed);
   const allowedPathPrefixes = options.allowedPathPrefixes?.map(normalizeAllowedPrefix) ?? [];
 

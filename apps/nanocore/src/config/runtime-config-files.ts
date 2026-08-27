@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -580,6 +581,8 @@ export class RuntimeConfigFileService {
   /**
    * Writes content to a file through a same-directory temporary file.
    *
+   * Existing regular targets keep `mode & 0o777` on the replacement; nonexistent targets keep the writer default.
+   *
    * @param spec Resolved file spec.
    * @param content Source content to write.
    */
@@ -594,11 +597,21 @@ export class RuntimeConfigFileService {
     } else {
       this.assertInsideConfigRoot(dirname(spec.absolutePath), true);
     }
+    let preservedMode: number | undefined;
+    if (existsSync(spec.absolutePath)) {
+      const current = lstatSync(spec.absolutePath);
+      if (current.isFile()) {
+        preservedMode = current.mode & 0o777;
+      }
+    }
     const tempPath = join(
       dirname(spec.absolutePath),
       `.${basename(spec.absolutePath)}.${Date.now()}.tmp`
     );
     writeFileSync(tempPath, content);
+    if (preservedMode !== undefined) {
+      chmodSync(tempPath, preservedMode);
+    }
     renameSync(tempPath, spec.absolutePath);
   }
 
@@ -682,12 +695,24 @@ export class RuntimeConfigFileService {
     "adapter": "codex",
     "version": "0.144.1",
     "image": {
+      "kind": "reference",
       "ref": "openkit/worker-codex:dev",
       "pullPolicy": "if-not-present"
     },
     "binaries": [
       { "id": "openkit-worker-shim", "path": "/usr/local/bin/openkit-worker-shim" },
       { "id": "node", "path": "/usr/local/bin/node" },
+      { "id": "npm", "path": "/usr/local/bin/npm" },
+      { "id": "npx", "path": "/usr/local/bin/npx" },
+      { "id": "pnpm", "path": "/usr/local/bin/pnpm" },
+      { "id": "pnpx", "path": "/usr/local/bin/pnpx" },
+      { "id": "git", "path": "/usr/bin/git" },
+      { "id": "gh", "path": "/usr/local/bin/gh" },
+      { "id": "uv", "path": "/usr/local/bin/uv" },
+      { "id": "python", "path": "/sandbox/.venv/bin/python" },
+      { "id": "python3", "path": "/sandbox/.venv/bin/python3" },
+      { "id": "pip", "path": "/sandbox/.venv/bin/pip" },
+      { "id": "pip3", "path": "/sandbox/.venv/bin/pip3" },
       { "id": "codex", "path": "/usr/local/bin/codex" },
       { "id": "codex-native", "path": "/usr/local/lib/codex/bin/codex" }
     ]
@@ -703,7 +728,74 @@ export class RuntimeConfigFileService {
   "workspace": { "root": "." },
   "sandbox": {
     "filesystem": [],
-    "network": [],
+    "network": [
+      {
+        "id": "github-git-read",
+        "host": "github.com",
+        "port": 443,
+        "protocol": "rest",
+        "rules": [
+          { "method": "GET", "path": "/**/info/refs*" },
+          { "method": "POST", "path": "/**/git-upload-pack" }
+        ],
+        "purpose": "Clone and fetch GitHub repositories without push authority.",
+        "binaries": ["/usr/bin/git"]
+      },
+      {
+        "id": "github-rest-read",
+        "host": "api.github.com",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Read public GitHub REST resources through GitHub CLI.",
+        "binaries": ["/usr/local/bin/gh"]
+      },
+      {
+        "id": "npm-registry-read",
+        "host": "registry.npmjs.org",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Download Node.js package metadata and archives.",
+        "binaries": [
+          "/usr/local/bin/node",
+          "/usr/local/bin/npm",
+          "/usr/local/bin/npx",
+          "/usr/local/bin/pnpm",
+          "/usr/local/bin/pnpx"
+        ]
+      },
+      {
+        "id": "pypi-index-read",
+        "host": "pypi.org",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Read Python package index metadata.",
+        "binaries": [
+          "/usr/local/bin/uv",
+          "/sandbox/.venv/bin/python",
+          "/sandbox/.venv/bin/python3",
+          "/sandbox/.venv/bin/pip",
+          "/sandbox/.venv/bin/pip3"
+        ]
+      },
+      {
+        "id": "pypi-files-read",
+        "host": "files.pythonhosted.org",
+        "port": 443,
+        "protocol": "rest",
+        "access": "read-only",
+        "purpose": "Download Python package archives.",
+        "binaries": [
+          "/usr/local/bin/uv",
+          "/sandbox/.venv/bin/python",
+          "/sandbox/.venv/bin/python3",
+          "/sandbox/.venv/bin/pip",
+          "/sandbox/.venv/bin/pip3"
+        ]
+      }
+    ],
     "credentialDeclarations": [],
     "backend": {
       "allowedKinds": ["openshell"],

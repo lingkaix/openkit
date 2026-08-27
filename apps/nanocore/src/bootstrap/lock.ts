@@ -5,6 +5,7 @@ import { ensureLayout } from '../storage/fs-layout.js';
 
 const LOCK_FILE_NAME = 'nanocore.lock';
 const HEARTBEAT_MS = 5_000;
+const heldLockPaths = new Set<string>();
 
 /** Input for acquiring the data-root instance lock. */
 export interface DataRootLockInput {
@@ -104,7 +105,7 @@ export function acquireDataRootLock(dataRoot: string, input: DataRootLockInput):
     if (isExistingLockError(error)) {
       const holder = readLockRecord(lockPath);
 
-      if (canBreakDeadLocalLock(holder)) {
+      if (canBreakDeadLocalLock(holder, lockPath)) {
         unlinkSync(lockPath);
         fd = openSync(lockPath, 'wx');
         acquisition = {
@@ -122,6 +123,7 @@ export function acquireDataRootLock(dataRoot: string, input: DataRootLockInput):
 
   writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`);
   closeSync(fd);
+  heldLockPaths.add(lockPath);
 
   const heartbeat = setInterval(() => {
     writeLockRecord(lockPath, { ...record, updatedAt: now() });
@@ -134,8 +136,12 @@ export function acquireDataRootLock(dataRoot: string, input: DataRootLockInput):
     release() {
       clearInterval(heartbeat);
 
-      if (lockStillOwned(lockPath, record.bootId)) {
-        unlinkSync(lockPath);
+      try {
+        if (lockStillOwned(lockPath, record.bootId)) {
+          unlinkSync(lockPath);
+        }
+      } finally {
+        heldLockPaths.delete(lockPath);
       }
     },
   };
@@ -169,14 +175,19 @@ function readLockRecord(lockPath: string): unknown {
  * Checks whether an existing lock belongs to a dead local process.
  *
  * @param holder Existing lock holder metadata.
+ * @param lockPath Existing lockfile path.
  * @returns True when the holder is local and confirmed dead.
  */
-function canBreakDeadLocalLock(holder: unknown): boolean {
-  if (!isDataRootLockRecord(holder) || holder.hostname !== hostname()) {
+function canBreakDeadLocalLock(holder: unknown, lockPath: string): boolean {
+  if (
+    !isDataRootLockRecord(holder) ||
+    holder.hostname !== hostname() ||
+    heldLockPaths.has(lockPath)
+  ) {
     return false;
   }
 
-  return !processIsAlive(holder.pid);
+  return holder.pid === process.pid || !processIsAlive(holder.pid);
 }
 
 /**
@@ -205,12 +216,20 @@ function isDataRootLockRecord(value: unknown): value is DataRootLockRecord {
 }
 
 /**
- * Checks whether a local process id appears alive.
+ * Checks whether a local process id identifies a live process leader.
  *
  * @param pid Process id from the lock holder.
- * @returns True when the process is alive or liveness is indeterminate.
+ * @returns True when the process leader is alive or liveness is indeterminate.
  */
 function processIsAlive(pid: number): boolean {
+  try {
+    const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+    const threadGroupId = /^Tgid:\s+(\d+)$/m.exec(status)?.[1];
+    if (threadGroupId && Number(threadGroupId) !== pid) return false;
+  } catch {
+    // Non-Linux hosts and short-lived processes fall back to the portable probe below.
+  }
+
   try {
     process.kill(pid, 0);
     return true;

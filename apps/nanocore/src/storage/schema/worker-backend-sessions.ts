@@ -29,7 +29,7 @@ export const workerBackendSessions = sqliteTable(
     threadId: text('thread_id').notNull(),
     /** Turn lineage id. */
     turnId: text('turn_id').notNull(),
-    /** Agent session lineage id. */
+    /** AgentSession lineage id. */
     agentSessionId: text('agent_session_id').notNull(),
     /** Agent environment package snapshot id. */
     packageSnapshotId: text('package_snapshot_id').notNull(),
@@ -40,20 +40,20 @@ export const workerBackendSessions = sqliteTable(
     /** Backend implementation version captured before physical effects. */
     backendVersion: text('backend_version'),
     /** Immutable worker image reference captured from the package. */
-    workerImage: text('worker_image').notNull(),
-    /** Stable non-secret binding for the exact Cell lifecycle target. */
-    cellTargetId: text('cell_target_id').notNull(),
+    workerImage: text('worker_image'),
+    /** Stable non-secret binding for the exact runtime target. */
+    cellTargetId: text('cell_target_id'),
     /** Local or remote backend placement. */
-    placement: text('placement').$type<WorkerBackendSessionPlacement>().notNull(),
+    placement: text('placement').$type<WorkerBackendSessionPlacement>(),
     /** Exact gateway name used for physical effects. */
-    gatewayName: text('gateway_name').notNull(),
+    gatewayName: text('gateway_name'),
     /** Exact direct gateway endpoint, when configured. */
     gatewayEndpoint: text('gateway_endpoint'),
     /** Backend-native physical session id. */
     backendSessionId: text('backend_session_id').notNull(),
     /** Data-root-relative directory containing backend-private staging files. */
     stagingDirectoryRef: text('staging_directory_ref').notNull(),
-    /** Exact transient backend provider removed with the physical Cell epoch. */
+    /** Optional backend-private provider identity owned by the physical session. */
     transientProviderInstanceId: text('transient_provider_instance_id'),
     /** Whether the exact workspace handle set was durably published. */
     workspaceHandoffState: text('workspace_handoff_state')
@@ -67,6 +67,12 @@ export const workerBackendSessions = sqliteTable(
     createdAt: text('created_at').notNull(),
     /** Last lifecycle transition timestamp. */
     updatedAt: text('updated_at').notNull(),
+    /** Configured RuntimeTarget selected by the final NanoHost cutover. */
+    runtimeTargetId: text('runtime_target_id'),
+    /** Exact reference-or-build-result lineage written by the final cutover. */
+    backendLineageJson: text('backend_lineage_json'),
+    /** Durable scheduler-owned sandbox binding written by the final cutover. */
+    sandboxBindingRef: text('sandbox_binding_ref'),
   },
   (table) => [
     index('worker_backend_sessions_lineage_idx').on(
@@ -79,6 +85,13 @@ export const workerBackendSessions = sqliteTable(
     index('worker_backend_sessions_state_idx').on(table.state, table.updatedAt),
     uniqueIndex('worker_backend_sessions_package_idx').on(table.packageSnapshotId),
     uniqueIndex('worker_backend_sessions_staging_idx').on(table.stagingDirectoryRef),
+    uniqueIndex('worker_backend_sessions_backend_session_idx').on(table.backendSessionId),
+    uniqueIndex('worker_backend_sessions_sandbox_binding_idx')
+      .on(table.sandboxBindingRef)
+      .where(sql`${table.sandboxBindingRef} IS NOT NULL`),
+    uniqueIndex('worker_backend_sessions_transient_provider_idx')
+      .on(table.transientProviderInstanceId)
+      .where(sql`${table.transientProviderInstanceId} IS NOT NULL`),
     uniqueIndex('worker_backend_sessions_named_target_idx')
       .on(table.backendKind, table.gatewayName, table.backendSessionId)
       .where(sql`${table.gatewayEndpoint} IS NULL`),

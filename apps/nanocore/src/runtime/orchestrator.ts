@@ -30,7 +30,7 @@ import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
  * Input for starting a turn through the minimal orchestrator.
  */
 export interface StartTurnInput {
-  /** Scheduler-owned agent session id used when a lease already reserved lineage. */
+  /** Scheduler-owned AgentSession id used when a lease already reserved lineage. */
   agentSessionId?: string;
   /** Optional dependencies for tests and future orchestration expansion. */
   dependencies?: StartTurnDependencies;
@@ -44,6 +44,8 @@ export interface StartTurnInput {
   requestId?: string | null;
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */
   sandboxBindingRef?: string;
+  /** Exact pre-lease SessionCompatibilityKey committed to the scheduler lease. */
+  sessionCompatibilityKey?: string;
   /** File-backed store for workspace and turn records. */
   store: FsStore;
   /** Thread id that owns the turn. */
@@ -391,6 +393,9 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     ...(input.agentSessionId ? { agentSessionId: input.agentSessionId } : {}),
     ...(agentSetupResult.setup ? { agentSetup: agentSetupResult.setup } : {}),
     requestId: input.requestId ?? null,
+    ...(input.sessionCompatibilityKey
+      ? { sessionCompatibilityKey: input.sessionCompatibilityKey }
+      : {}),
     triggerActor: input.triggerActor,
     ...(input.sandboxBindingRef ? { sandboxBindingRef: input.sandboxBindingRef } : {}),
     ...(input.workspaceDataSourceCatalog

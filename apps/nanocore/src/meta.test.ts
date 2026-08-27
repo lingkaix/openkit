@@ -44,6 +44,8 @@ describe('nanocore metadata', () => {
   it('returns protocol metadata for the default container worker executor', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-meta-real-worker-')));
     applyMigrations(coreDb);
+    const previousSelfCheckExecutor = process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+    delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
 
     try {
       const app = createNanoCoreApp({ coreDb });
@@ -54,14 +56,24 @@ describe('nanocore metadata', () => {
       const parsed = MetaResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
-        protocolVersion: '0.4.0',
-        capabilities: ['core.artifacts', 'core.agent_session.visible', 'core.stream.replay'],
+        protocolVersion: '0.5.0',
+        capabilities: [
+          'core.interrupt',
+          'core.artifacts',
+          'core.agent_session.visible',
+          'core.stream.replay',
+        ],
         itemTypes: ['user-message', 'assistant-message', 'artifact-reference', 'status'],
         itemDeltaKinds: [],
       });
       expect(parsed.eventFamilies).toContain('item.created');
       expect(parsed.eventFamilies).toContain('artifact.created');
     } finally {
+      if (previousSelfCheckExecutor === undefined) {
+        delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+      } else {
+        process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = previousSelfCheckExecutor;
+      }
       coreDb.sqlite.close();
     }
   });

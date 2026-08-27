@@ -1,5 +1,4 @@
 import {
-  RestartRuntimeConfigStaleSessionResponseSchema,
   RuntimeConfigFileWriteRequestSchema,
   RuntimeConfigReloadRequestSchema,
   RuntimeConfigValidationRequestSchema,
@@ -9,8 +8,6 @@ import type { Context, Hono } from 'hono';
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
-import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import type { RuntimeConfigManager } from './runtime-config.js';
 import {
@@ -45,18 +42,16 @@ function requireRuntimeConfigAdminActor(c: Context<{ Variables: AuthVariables }>
 }
 
 /**
- * Registers runtime configuration reload, file, validation, and stale-session routes.
+ * Registers runtime configuration reload, file, and validation routes.
  *
  * @param dependencies Hono app and runtime configuration dependencies.
  */
 export function registerRuntimeConfigRoutes({
   app,
-  requestStore,
   runtimeConfigFileService,
   runtimeConfigManager,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly runtimeConfigFileService: (
     context: Context<{ Variables: AuthVariables }>
   ) => RuntimeConfigFileService;
@@ -182,59 +177,6 @@ export function registerRuntimeConfigRoutes({
       return c.json(runtimeConfigFileService(c).validate(parsed.data));
     } catch (error) {
       return asRuntimeConfigFileError(error);
-    }
-  });
-
-  registerAppApiRoute(app, 'restartRuntimeConfigStaleSession', (c) => {
-    const workspaceId = c.req.param('workspaceId');
-    const sessionId = c.req.param('sessionId');
-    const store = requestStore(c);
-    let session: ReturnType<FsStore['getAgentSession']> | null = null;
-
-    try {
-      session = store.getAgentSession(sessionId);
-    } catch {
-      // Missing global owners retain the existing no-op response.
-    }
-    if (session) {
-      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), session.workspaceId);
-    }
-
-    try {
-      store.getWorkspace(workspaceId);
-
-      if (!session) {
-        return c.json(
-          RestartRuntimeConfigStaleSessionResponseSchema.parse({
-            restarted: false,
-            session: null,
-          })
-        );
-      }
-
-      const updated = store.updateAgentSession(sessionId, {
-        configVersion: runtimeConfigManager.current().version,
-        message: 'Runtime config stale session retired; start a new worker session.',
-        stale: false,
-        status: 'interrupted',
-      });
-
-      return c.json(
-        RestartRuntimeConfigStaleSessionResponseSchema.parse({
-          restarted: true,
-          session: {
-            id: updated.id,
-            status: updated.status,
-            message: updated.message,
-            configVersion: updated.configVersion,
-            workspaceRoots: updated.workspaceRoots,
-            stale: false,
-            sandboxSummary: updated.sandboxSummary,
-          },
-        })
-      );
-    } catch (error) {
-      return asApiError((error as Error).message, 'runtime_config_stale_session_restart_failed');
     }
   });
 }

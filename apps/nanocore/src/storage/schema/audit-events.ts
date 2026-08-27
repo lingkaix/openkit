@@ -45,7 +45,7 @@ export const auditEvents = sqliteTable(
     subjectJson: text('subject_json'),
     /** Agent lineage when available. */
     agentId: text('agent_id'),
-    /** Agent session lineage when available. */
+    /** AgentSession lineage when available. */
     agentSessionId: text('agent_session_id'),
     /** Audit category. */
     category: text('category').$type<AuditEventCategory>().notNull(),

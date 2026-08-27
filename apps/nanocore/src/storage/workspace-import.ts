@@ -88,6 +88,7 @@ import {
 import {
   dryRunWorkspaceImport,
   type ExportedKnowledgeSourceMaterial,
+  UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS,
   type VerifiedWorkspaceExportTree,
   type WorkspaceImportDryRunReport,
 } from './workspace-export.js';
@@ -462,7 +463,7 @@ const ExportedWorkspaceVaultReferenceSchema = z
     sourceReferenceId: z.string().min(1),
     displayName: z.string().min(1),
     secretKind: z.string().min(1),
-    backendKind: z.enum(['encrypted-file', 'os-keychain']),
+    backendKind: z.literal('encrypted-file'),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -502,7 +503,7 @@ const ExportedVaultGrantSchema = z
 
 type ExportedVaultGrant = z.infer<typeof ExportedVaultGrantSchema>;
 
-const ExportedInjectionPlanSchema = z
+const ExportedVaultInjectionPlanSchema = z
   .object({
     planId: z.string().min(1),
     grantId: z.string().min(1),
@@ -527,9 +528,9 @@ const ExportedInjectionPlanSchema = z
   })
   .strict();
 
-type ExportedInjectionPlan = z.infer<typeof ExportedInjectionPlanSchema>;
+type ExportedVaultInjectionPlan = z.infer<typeof ExportedVaultInjectionPlanSchema>;
 
-const ExportedInjectionReceiptSchema = z
+const ExportedVaultInjectionReceiptSchema = z
   .object({
     receiptId: z.string().min(1),
     planId: z.string().min(1),
@@ -544,7 +545,7 @@ const ExportedInjectionReceiptSchema = z
   })
   .strict();
 
-type ExportedInjectionReceipt = z.infer<typeof ExportedInjectionReceiptSchema>;
+type ExportedVaultInjectionReceipt = z.infer<typeof ExportedVaultInjectionReceiptSchema>;
 
 const ExportedVaultUseRecordSchema = z
   .object({
@@ -553,7 +554,7 @@ const ExportedVaultUseRecordSchema = z
     workspaceId: z.string().min(1),
     vaultReferenceId: z.string().min(1),
     materialVersion: z.number().int().nonnegative().nullable(),
-    backendKind: z.enum(['encrypted-file', 'os-keychain']),
+    backendKind: z.literal('encrypted-file'),
     resolvingPath: z.enum(['grant', 'plan', 'admin', 'provider']),
     grantId: z.string().min(1).nullable(),
     planId: z.string().min(1).nullable(),
@@ -601,7 +602,7 @@ export interface WorkspaceImportSnapshot {
   threadMaterialBindings: ImportedThreadMaterialBinding[];
   /** Imported version-keyed Artifact Reviews. */
   artifactReviews: ImportedArtifactReview[];
-  /** Imported durable agent sessions. */
+  /** Imported durable AgentSessions. */
   agentSessions: AgentSession[];
   /** Imported retained turn event logs keyed by reminted turn id. */
   turnEvents: Array<[string, SseEventEnvelope[]]>;
@@ -614,9 +615,9 @@ export interface WorkspaceImportSnapshot {
   /** Imported non-secret workspace vault grants. */
   vaultGrants: ExportedVaultGrant[];
   /** Imported non-secret injection plans. */
-  injectionPlans: ExportedInjectionPlan[];
+  vaultInjectionPlans: ExportedVaultInjectionPlan[];
   /** Imported non-secret injection receipts. */
-  injectionReceipts: ExportedInjectionReceipt[];
+  vaultInjectionReceipts: ExportedVaultInjectionReceipt[];
   /** Imported non-secret workspace vault use records. */
   vaultUseRecords: ExportedVaultUseRecord[];
   /** Imported workspace audit events. */
@@ -860,7 +861,7 @@ interface ImportRemintContext {
   materialIds: Map<string, string>;
   /** Imported Material revision ids keyed by source id. */
   materialRevisionIds: Map<string, string>;
-  /** Imported agent-session ids keyed by source id. */
+  /** Imported AgentSession ids keyed by source id. */
   agentSessionIds: Map<string, string>;
   /** Imported approval-request ids keyed by source id. */
   approvalRequestIds: Map<string, string>;
@@ -907,6 +908,7 @@ export function readWorkspaceImportSnapshot(
     'records/knowledge-context-package-traces.jsonl',
     'records/knowledge-proposals.jsonl',
     'records/knowledge-proposal-reviews.jsonl',
+    ...UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS,
   ]) {
     if (input.verified.fileContents.has(removedPath)) {
       throw new Error(`Unsupported workspace export record path: ${removedPath}`);
@@ -1039,8 +1041,8 @@ export function readWorkspaceImportSnapshot(
     knowledgeSourceMaterials: canonical.knowledgeSourceMaterials,
     vaultReferences: securityRuntime.vaultReferences,
     vaultGrants: securityRuntime.vaultGrants,
-    injectionPlans: securityRuntime.injectionPlans,
-    injectionReceipts: securityRuntime.injectionReceipts,
+    vaultInjectionPlans: securityRuntime.vaultInjectionPlans,
+    vaultInjectionReceipts: securityRuntime.vaultInjectionReceipts,
     vaultUseRecords: securityRuntime.vaultUseRecords,
     auditEvents: securityRuntime.auditEvents,
     capabilityCalls: securityRuntime.capabilityCalls,
@@ -1273,7 +1275,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
       const agentSessionId = requiredMapValue(
         agentSessionIds,
         parsed.agentSessionId,
-        'agent session'
+        'AgentSession'
       );
       const portableSnapshot = z.record(z.string(), z.unknown()).parse(
         rewriteJsonStringReferences(snapshot, [
@@ -1389,7 +1391,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
       threadId: requiredMapValue(threadIds, turn.threadId, 'thread'),
       workspaceId: context.targetWorkspaceId,
       agentSessionId: turn.agentSessionId
-        ? requiredMapValue(agentSessionIds, turn.agentSessionId, 'agent session')
+        ? requiredMapValue(agentSessionIds, turn.agentSessionId, 'AgentSession')
         : turn.agentSessionId,
       humanGate,
       items: turn.items.map((item) =>
@@ -1409,7 +1411,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     (session) =>
       AgentSessionRecordSchema.parse({
         ...session,
-        id: requiredMapValue(agentSessionIds, session.id, 'agent session'),
+        id: requiredMapValue(agentSessionIds, session.id, 'AgentSession'),
         sandboxSummary: null,
         configVersion: null,
         environmentPackageSnapshotId: session.environmentPackageSnapshotId
@@ -1423,6 +1425,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
         policySnapshotId: null,
         sessionCompatibilityKey: null,
         stale: true,
+        status: 'closed',
         workspaceRoots: [],
         workspaceId: context.targetWorkspaceId,
       }) as AgentSession
@@ -1828,7 +1831,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         ? requiredMapValue(approvalRequestIds, grant.approvalId, 'approval request')
         : null,
       targetAgentSessionId: grant.targetAgentSessionId
-        ? requiredMapValue(agentSessionIds, grant.targetAgentSessionId, 'agent session')
+        ? requiredMapValue(agentSessionIds, grant.targetAgentSessionId, 'AgentSession')
         : null,
       vaultReferenceId: requiredMapValue(
         vaultReferenceIds,
@@ -1841,17 +1844,17 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
   const vaultGrantIds = new Map(
     exportedVaultGrants.map((grant, index) => [grant.grantId, vaultGrants[index]!.grantId])
   );
-  const exportedInjectionPlans = readOptionalImportJsonl(
+  const exportedVaultInjectionPlans = readOptionalImportJsonl(
     context.files,
-    'records/injection-plans.jsonl'
-  ).map((record) => ExportedInjectionPlanSchema.parse(record));
-  const injectionPlans = exportedInjectionPlans.map((plan, index) => {
+    'records/vault-injection-plans.jsonl'
+  ).map((record) => ExportedVaultInjectionPlanSchema.parse(record));
+  const vaultInjectionPlans = exportedVaultInjectionPlans.map((plan, index) => {
     const grantId = vaultGrantIds.get(plan.grantId);
     if (!grantId) {
       throw new Error(`Injection plan references missing exported vault grant: ${plan.grantId}`);
     }
 
-    return ExportedInjectionPlanSchema.parse({
+    return ExportedVaultInjectionPlanSchema.parse({
       ...plan,
       planId: `plan_imported_${context.targetWorkspaceId}_${index + 1}`,
       grantId,
@@ -1864,15 +1867,18 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         : null,
     });
   });
-  const injectionPlanIds = new Map(
-    exportedInjectionPlans.map((plan, index) => [plan.planId, injectionPlans[index]!.planId])
+  const vaultInjectionPlanIds = new Map(
+    exportedVaultInjectionPlans.map((plan, index) => [
+      plan.planId,
+      vaultInjectionPlans[index]!.planId,
+    ])
   );
-  const exportedInjectionReceipts = readOptionalImportJsonl(
+  const exportedVaultInjectionReceipts = readOptionalImportJsonl(
     context.files,
-    'records/injection-receipts.jsonl'
-  ).map((record) => ExportedInjectionReceiptSchema.parse(record));
-  const injectionReceipts = exportedInjectionReceipts.map((receipt, index) => {
-    const planId = injectionPlanIds.get(receipt.planId);
+    'records/vault-injection-receipts.jsonl'
+  ).map((record) => ExportedVaultInjectionReceiptSchema.parse(record));
+  const vaultInjectionReceipts = exportedVaultInjectionReceipts.map((receipt, index) => {
+    const planId = vaultInjectionPlanIds.get(receipt.planId);
     if (!planId) {
       throw new Error(
         `Injection receipt references missing exported injection plan: ${receipt.planId}`
@@ -1886,20 +1892,20 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       );
     }
 
-    return ExportedInjectionReceiptSchema.parse({
+    return ExportedVaultInjectionReceiptSchema.parse({
       ...receipt,
       receiptId: `receipt_imported_${context.targetWorkspaceId}_${index + 1}`,
       planId,
       grantId,
       agentSessionId: receipt.agentSessionId
-        ? requiredMapValue(agentSessionIds, receipt.agentSessionId, 'agent session')
+        ? requiredMapValue(agentSessionIds, receipt.agentSessionId, 'AgentSession')
         : null,
     });
   });
-  const injectionReceiptIds = new Map(
-    exportedInjectionReceipts.map((receipt, index) => [
+  const vaultInjectionReceiptIds = new Map(
+    exportedVaultInjectionReceipts.map((receipt, index) => [
       receipt.receiptId,
-      injectionReceipts[index]!.receiptId,
+      vaultInjectionReceipts[index]!.receiptId,
     ])
   );
   const vaultUseRecords = readOptionalImportJsonl(
@@ -1911,16 +1917,16 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     return ExportedVaultUseRecordSchema.parse({
       ...parsed,
       agentSessionId: parsed.agentSessionId
-        ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'agent session')
+        ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'AgentSession')
         : null,
       grantId: parsed.grantId
         ? requiredMapValue(vaultGrantIds, parsed.grantId, 'vault grant')
         : null,
       planId: parsed.planId
-        ? requiredMapValue(injectionPlanIds, parsed.planId, 'injection plan')
+        ? requiredMapValue(vaultInjectionPlanIds, parsed.planId, 'injection plan')
         : null,
       receiptId: parsed.receiptId
-        ? requiredMapValue(injectionReceiptIds, parsed.receiptId, 'injection receipt')
+        ? requiredMapValue(vaultInjectionReceiptIds, parsed.receiptId, 'injection receipt')
         : null,
       workspaceId: context.targetWorkspaceId,
       vaultReferenceId: requiredMapValue(
@@ -1941,7 +1947,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
         itemId: parsed.itemId ? requiredMapValue(itemIds, parsed.itemId, 'item') : null,
         agentSessionId: parsed.agentSessionId
-          ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'agent session')
+          ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'AgentSession')
           : null,
         vaultGrantId: parsed.vaultGrantId
           ? requiredMapValue(vaultGrantIds, parsed.vaultGrantId, 'vault grant')
@@ -2044,7 +2050,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       agentSessionId: requiredMapValue(
         agentSessionIds,
         sourceLineage.agentSessionId,
-        'agent session'
+        'AgentSession'
       ),
       packageSnapshotId: targetPackageSnapshotId,
       requestId: sourceLineage.requestId,
@@ -2109,7 +2115,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
       itemId: parsed.itemId ? requiredMapValue(itemIds, parsed.itemId, 'item') : null,
       agentSessionId: parsed.agentSessionId
-        ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'agent session')
+        ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'AgentSession')
         : null,
       packageSnapshotId,
       runtimeOriginRef,
@@ -2166,7 +2172,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
       goalId: parsed.goalId ? requiredMapValue(goalIds, parsed.goalId, 'goal') : null,
       agentSessionId: parsed.agentSessionId
-        ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'agent session')
+        ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'AgentSession')
         : null,
       rawEvidenceRefs: rewriteEvidenceRefs(parsed.rawEvidenceRefs, context),
       redactedEvidenceRefs: rewriteEvidenceRefs(parsed.redactedEvidenceRefs, context),
@@ -2222,7 +2228,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
         turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
         itemId: parsed.itemId ? requiredMapValue(itemIds, parsed.itemId, 'item') : null,
         agentSessionId: parsed.agentSessionId
-          ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'agent session')
+          ? requiredMapValue(agentSessionIds, parsed.agentSessionId, 'AgentSession')
           : null,
         workspaceId: context.targetWorkspaceId,
       });
@@ -2313,8 +2319,8 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
   return {
     vaultReferences,
     vaultGrants,
-    injectionPlans,
-    injectionReceipts,
+    vaultInjectionPlans,
+    vaultInjectionReceipts,
     vaultUseRecords,
     auditEvents,
     capabilityCalls,
@@ -2760,7 +2766,7 @@ function readWorkResourceImportState(
       agentSessionId: requiredMapValue(
         context.agentSessionIds,
         sourceTrace.agentSessionId,
-        'agent session'
+        'AgentSession'
       ),
       excludedItems: sourceTrace.excludedItems.map((exclusion) => ({
         ...exclusion,
@@ -4383,11 +4389,7 @@ function rewritePortableTurnEvent(
     case 'agent-session-updated':
       rewrittenData = {
         ...data,
-        agentSession: requiredMapValue(
-          records.agentSessions,
-          data.agentSession.id,
-          'agent session'
-        ),
+        agentSession: requiredMapValue(records.agentSessions, data.agentSession.id, 'AgentSession'),
       };
       break;
     case 'artifact-created':
@@ -4465,7 +4467,7 @@ function rewriteEvidenceRefs(
         rewritten = requiredMapValue(context.itemIds, ref.ref, 'item');
         break;
       case 'agent-session':
-        rewritten = requiredMapValue(context.agentSessionIds, ref.ref, 'agent session');
+        rewritten = requiredMapValue(context.agentSessionIds, ref.ref, 'AgentSession');
         break;
     }
     return rewritten === ref.ref ? ref : { ...ref, ref: rewritten };

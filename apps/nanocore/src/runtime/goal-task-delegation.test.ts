@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ItemSchema } from '@openkit/protocol';
@@ -8,7 +8,6 @@ import type { z } from 'zod';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import {
   createGoalRecord,
   createGoalTask,
@@ -55,30 +54,6 @@ function createCoreDb(): CoreDb {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   return coreDb;
-}
-
-/**
- * Adds a ready repository to one workspace.
- *
- * @param coreDb Open Core database handles.
- * @param workspaceId Workspace id that owns the repository.
- */
-function addReadyRepository(coreDb: CoreDb, workspaceId: string): void {
-  const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-goal-task-delegation-repo-'));
-  mkdirSync(join(repositoryPath, '.git'));
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
-  try {
-    applyScopedMigrations(workspaceDb);
-    upsertWorkspaceRepositoryResource(workspaceDb, {
-      workspaceExists: (candidateWorkspaceId) => candidateWorkspaceId === workspaceId,
-      workspaceId,
-      displayName: 'OpenKit',
-      localPath: repositoryPath,
-      now: () => '2026-05-31T00:00:00.000Z',
-    });
-  } finally {
-    workspaceDb.sqlite.close();
-  }
 }
 
 /**
@@ -162,10 +137,9 @@ describe('goal task delegation preparation', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      addReadyRepository(coreDb, 'ws_demo');
       addReadyGoalTask(workspaceDb);
 
-      const prepared = prepareGoalTaskDelegation(coreDb, workspaceDb, {
+      const prepared = prepareGoalTaskDelegation(workspaceDb, {
         store: createDemoStore(),
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
@@ -174,7 +148,6 @@ describe('goal task delegation preparation', () => {
         threadItems: threadItems(),
       });
 
-      expect(prepared.repository.resourceId).toBe('repo_default');
       expect(prepared.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
       expect(prepared).toMatchObject({
         objective: 'Run the release verification checks.',
@@ -205,56 +178,6 @@ describe('goal task delegation preparation', () => {
     }
   });
 
-  it('uses the request user workspace database when preparing repository context', () => {
-    const coreDb = createCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
-
-    try {
-      applyScopedMigrations(workspaceDb);
-      addReadyRepository(coreDb, 'ws_demo');
-      addReadyGoalTask(workspaceDb);
-
-      const prepared = prepareGoalTaskDelegation(coreDb, workspaceDb, {
-        store: createDemoStore(),
-        workspaceId: 'ws_demo',
-        userId: 'user_owner',
-        threadId: 'th_demo',
-        goalId: 'goal_demo',
-        taskId: 'task_demo',
-        threadItems: threadItems(),
-      });
-
-      expect(prepared.repository.workspaceId).toBe('ws_demo');
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('fails preparation when the workspace repository is missing', () => {
-    const coreDb = createCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
-
-    try {
-      applyScopedMigrations(workspaceDb);
-      addReadyGoalTask(workspaceDb);
-
-      expect(() =>
-        prepareGoalTaskDelegation(coreDb, workspaceDb, {
-          store: createDemoStore(),
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          goalId: 'goal_demo',
-          taskId: 'task_demo',
-          threadItems: threadItems(),
-        })
-      ).toThrow('Workspace repository not ready: ws_demo');
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
   it('rejects a Task whose immutable Plan lineage differs from its Goal', () => {
     const coreDb = createCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
@@ -264,7 +187,7 @@ describe('goal task delegation preparation', () => {
       addReadyGoalTask(workspaceDb, 'it_other_plan');
 
       expect(() =>
-        prepareGoalTaskDelegation(coreDb, workspaceDb, {
+        prepareGoalTaskDelegation(workspaceDb, {
           store: createDemoStore(),
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
@@ -285,7 +208,6 @@ describe('goal task delegation preparation', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      addReadyRepository(coreDb, 'ws_demo');
       addReadyGoalTask(workspaceDb);
       updateGoalTask(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -337,7 +259,7 @@ describe('goal task delegation preparation', () => {
       ];
 
       expect(() =>
-        prepareGoalTaskDelegation(coreDb, workspaceDb, {
+        prepareGoalTaskDelegation(workspaceDb, {
           store: createDemoStore(),
           workspaceId: 'ws_demo',
           threadId: 'th_demo',

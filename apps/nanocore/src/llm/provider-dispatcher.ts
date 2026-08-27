@@ -1,8 +1,7 @@
+import type { Models } from '@earendil-works/pi-ai';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import type { CodexResponsesClient } from './codex-responses-client.js';
 import {
   convertChatCompletionResponseToResponsesResponse,
-  convertChatCompletionStreamToResponsesStream,
   convertChatCompletionToResponsesRequest,
   convertResponsesRequestToChatCompletionRequest,
   convertResponsesResponseToChatCompletionResponse,
@@ -21,19 +20,20 @@ import {
   type OpenAICompatibleResponsesRequest,
   type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
-import { PiAiGatewayClient } from './pi-ai-client.js';
+import { assertCodexResponsesRequestAdmission, PiAiGatewayClient } from './pi-ai-client.js';
 import { PromptCacheKeyResolver, type PromptCacheKeyScope } from './prompt-cache-key.js';
+import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 
 /**
  * Construction options for the gateway provider dispatcher.
  */
 export interface LLMGatewayProviderDispatcherOptions {
-  /** ChatGPT Codex Responses-only adapter. */
-  readonly codexResponsesClient: CodexResponsesClient;
   /** pi-ai-backed provider adapter for non-native provider families. */
   readonly piAiClient?: PiAiGatewayClient;
   /** Prompt cache key resolver used before native Responses wire calls. */
   readonly promptCacheKeyResolver?: PromptCacheKeyResolver;
+  /** Provider-neutral subscription account manager used to resolve pair-scoped Models. */
+  readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Process-local usage tracker used for diagnostics. */
   readonly usageTracker?: GatewayUsageTracker;
 }
@@ -58,6 +58,8 @@ export interface LLMGatewayDispatchContext {
   readonly usageEndpoint?: GatewayUsageEndpoint;
   /** Stable OpenKit scope used to derive prompt cache keys. */
   readonly promptCacheScope?: PromptCacheKeyScope;
+  /** Pair-scoped pi-ai model collection for subscription-backed dispatch. */
+  readonly models?: Models;
   /** Optional side-effect observer for adapter-reported usage payloads. */
   readonly onUsage?: GatewayUsageRecordInput['onUsage'];
   /** Optional provider transport state for cancellation and Codex continuity. */
@@ -68,9 +70,11 @@ export interface LLMGatewayDispatchContext {
  * Capability-aware dispatcher for agent-facing LLM Gateway requests.
  */
 export class LLMGatewayProviderDispatcher {
-  private readonly codexResponsesClient: CodexResponsesClient;
   private readonly piAiClient: PiAiGatewayClient;
   private readonly promptCacheKeyResolver: PromptCacheKeyResolver;
+  private readonly providerSubscriptionAccountManager:
+    | ProviderSubscriptionAccountManager
+    | undefined;
   private readonly usageTracker: GatewayUsageTracker;
 
   /**
@@ -79,9 +83,9 @@ export class LLMGatewayProviderDispatcher {
    * @param options Provider clients used for native and bridged calls.
    */
   public constructor(options: LLMGatewayProviderDispatcherOptions) {
-    this.codexResponsesClient = options.codexResponsesClient;
     this.piAiClient = options.piAiClient ?? new PiAiGatewayClient();
     this.promptCacheKeyResolver = options.promptCacheKeyResolver ?? new PromptCacheKeyResolver();
+    this.providerSubscriptionAccountManager = options.providerSubscriptionAccountManager;
     this.usageTracker = options.usageTracker ?? new GatewayUsageTracker();
   }
 
@@ -98,28 +102,13 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleChatCompletionResponse> {
     this.assertConfiguredModel(provider, request.model);
+    const models = await resolveGatewaySubscriptionModels(
+      provider,
+      this.providerSubscriptionAccountManager,
+      context.models
+    );
     const capability = provider.gatewayCapabilities.chatCompletions;
     const endpoint = context.usageEndpoint ?? 'chat_completions';
-
-    if (provider.backend === 'codex-oauth') {
-      if (capability === 'bridged' && provider.gatewayCapabilities.responses === 'native') {
-        const responsesRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-          provider,
-          convertChatCompletionToResponsesRequest(request),
-          context.promptCacheScope
-        );
-        const response = await this.codexResponsesClient.createResponses(
-          provider,
-          responsesRequest,
-          context.transport
-        );
-        this.recordUsage(provider, request.model, endpoint, response.usage, context.onUsage);
-
-        return convertResponsesResponseToChatCompletionResponse(response, request.model);
-      }
-
-      throw new GatewayUnsupportedFeatureError('chat completions');
-    }
 
     if (capability === 'native') {
       const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
@@ -131,7 +120,8 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport
+        context.transport,
+        models
       );
 
       return response;
@@ -146,7 +136,8 @@ export class LLMGatewayProviderDispatcher {
         provider,
         responsesRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport
+        context.transport,
+        models
       );
 
       return convertResponsesResponseToChatCompletionResponse(response, request.model);
@@ -168,33 +159,13 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.assertConfiguredModel(provider, request.model);
+    const models = await resolveGatewaySubscriptionModels(
+      provider,
+      this.providerSubscriptionAccountManager,
+      context.models
+    );
     const capability = provider.gatewayCapabilities.chatCompletions;
     const endpoint = context.usageEndpoint ?? 'chat_completions';
-
-    if (provider.backend === 'codex-oauth') {
-      if (capability === 'bridged' && provider.gatewayCapabilities.responses === 'native') {
-        const responsesRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-          provider,
-          convertChatCompletionToResponsesRequest({
-            ...request,
-            stream: true,
-          }),
-          context.promptCacheScope
-        );
-        const stream = await this.codexResponsesClient.createResponsesStream(
-          provider,
-          responsesRequest,
-          context.transport
-        );
-
-        return convertResponsesStreamToChatCompletionStream(
-          this.observeUsage(stream, provider, request.model, endpoint, context.onUsage),
-          request.model
-        );
-      }
-
-      throw new GatewayUnsupportedFeatureError('chat completions stream');
-    }
 
     if (capability === 'native') {
       const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
@@ -206,7 +177,8 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport
+        context.transport,
+        models
       );
     }
     if (capability === 'bridged' && provider.gatewayCapabilities.responses === 'native') {
@@ -223,7 +195,8 @@ export class LLMGatewayProviderDispatcher {
           provider,
           responsesRequest,
           (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-          context.transport
+          context.transport,
+          models
         ),
         request.model
       );
@@ -244,29 +217,17 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleResponsesRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleResponsesResponse> {
+    if (provider.subscriptionProviderId === 'openai-codex') {
+      assertCodexResponsesRequestAdmission(request, false);
+    }
     this.assertConfiguredModel(provider, request.model);
+    const models = await resolveGatewaySubscriptionModels(
+      provider,
+      this.providerSubscriptionAccountManager,
+      context.models
+    );
     const capability = provider.gatewayCapabilities.responses;
     const endpoint = context.usageEndpoint ?? 'responses';
-
-    if (provider.backend === 'codex-oauth') {
-      if (capability === 'native') {
-        const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-          provider,
-          request,
-          context.promptCacheScope
-        );
-        const response = await this.codexResponsesClient.createResponses(
-          provider,
-          keyedRequest,
-          context.transport
-        );
-        this.recordUsage(provider, request.model, endpoint, response.usage, context.onUsage);
-
-        return response;
-      }
-
-      throw new GatewayUnsupportedFeatureError('responses');
-    }
 
     if (capability === 'native') {
       const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
@@ -278,7 +239,8 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport
+        context.transport,
+        models
       );
 
       return response;
@@ -293,7 +255,8 @@ export class LLMGatewayProviderDispatcher {
         provider,
         chatRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport
+        context.transport,
+        models
       );
 
       return convertChatCompletionResponseToResponsesResponse(response);
@@ -314,30 +277,22 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleResponsesRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
+    if (provider.subscriptionProviderId === 'openai-codex') {
+      assertCodexResponsesRequestAdmission(request, true);
+    }
     this.assertConfiguredModel(provider, request.model);
+    const models = await resolveGatewaySubscriptionModels(
+      provider,
+      this.providerSubscriptionAccountManager,
+      context.models
+    );
     const capability = provider.gatewayCapabilities.responses;
     const endpoint = context.usageEndpoint ?? 'responses';
 
-    if (provider.backend === 'codex-oauth') {
-      if (capability === 'native') {
-        const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-          provider,
-          request,
-          context.promptCacheScope
-        );
-        const stream = await this.codexResponsesClient.createResponsesStream(
-          provider,
-          keyedRequest,
-          context.transport
-        );
-
-        return this.observeUsage(stream, provider, request.model, endpoint, context.onUsage);
-      }
-
-      throw new GatewayUnsupportedFeatureError('responses stream');
-    }
-
-    if (capability === 'native') {
+    if (
+      capability === 'native' ||
+      (capability === 'bridged' && provider.gatewayCapabilities.chatCompletions === 'native')
+    ) {
       const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
         provider,
         request,
@@ -347,25 +302,8 @@ export class LLMGatewayProviderDispatcher {
         provider,
         keyedRequest,
         (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport
-      );
-    }
-    if (capability === 'bridged' && provider.gatewayCapabilities.chatCompletions === 'native') {
-      const chatRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-        provider,
-        convertResponsesRequestToChatCompletionRequest({
-          ...request,
-          stream: true,
-        }),
-        context.promptCacheScope
-      );
-      return convertChatCompletionStreamToResponsesStream(
-        await this.piAiClient.createChatCompletionStream(
-          provider,
-          chatRequest,
-          (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-          context.transport
-        )
+        context.transport,
+        models
       );
     }
 
@@ -390,21 +328,6 @@ export class LLMGatewayProviderDispatcher {
     }
   }
 
-  private observeUsage(
-    stream: ReadableStream<Uint8Array>,
-    provider: ResolvedLLMProviderConfig,
-    model: string,
-    endpoint: GatewayUsageEndpoint,
-    onUsage?: GatewayUsageRecordInput['onUsage']
-  ): ReadableStream<Uint8Array> {
-    return this.usageTracker.observeSseUsage(stream, {
-      endpoint,
-      model,
-      ...(onUsage ? { onUsage } : {}),
-      provider,
-    });
-  }
-
   private recordUsage(
     provider: ResolvedLLMProviderConfig,
     model: string,
@@ -420,4 +343,72 @@ export class LLMGatewayProviderDispatcher {
       usage,
     });
   }
+}
+
+/**
+ * Resolves and locally authenticates the exact pair-scoped pi-ai model collection.
+ *
+ * @param provider Resolved provider selected by authored model authority.
+ * @param manager Optional provider-subscription account manager.
+ * @param models Explicitly resolved model collection from an upstream authorization boundary.
+ * @returns Explicit or pair-scoped models for subscription profiles, otherwise undefined.
+ * @throws OpenAICompatibleProviderError with fixed unavailable or authentication failures.
+ */
+export async function resolveGatewaySubscriptionModels(
+  provider: ResolvedLLMProviderConfig,
+  manager?: ProviderSubscriptionAccountManager,
+  models?: Models
+): Promise<Models | undefined> {
+  if (models) {
+    return models;
+  }
+  if (!provider.subscriptionProviderId || !provider.accountSlotId) {
+    return undefined;
+  }
+  if (!manager) {
+    throw new OpenAICompatibleProviderError({
+      code: 'gateway_provider_unavailable',
+      message: 'Provider is unavailable.',
+      status: 503,
+      type: 'provider_error',
+    });
+  }
+
+  let resolvedModels: Models;
+  try {
+    const handle = await manager.getPairHandle({
+      accountSlotId: provider.accountSlotId,
+      subscriptionProviderId: provider.subscriptionProviderId,
+    });
+    resolvedModels = handle.models;
+  } catch {
+    throw new OpenAICompatibleProviderError({
+      code: 'gateway_provider_unavailable',
+      message: 'Provider is unavailable.',
+      status: 503,
+      type: 'provider_error',
+    });
+  }
+
+  let auth: Awaited<ReturnType<Models['checkAuth']>>;
+  try {
+    auth = await resolvedModels.checkAuth(provider.subscriptionProviderId);
+  } catch {
+    throw new OpenAICompatibleProviderError({
+      code: 'gateway_provider_unavailable',
+      message: 'Provider is unavailable.',
+      status: 503,
+      type: 'provider_error',
+    });
+  }
+  if (!auth) {
+    throw new OpenAICompatibleProviderError({
+      code: 'gateway_provider_authentication_failed',
+      message: 'Provider authentication failed.',
+      status: 401,
+      type: 'provider_error',
+    });
+  }
+
+  return resolvedModels;
 }

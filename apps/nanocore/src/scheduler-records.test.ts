@@ -1106,20 +1106,15 @@ describe('scheduler records', () => {
     try {
       createDispatchedLease(coreDb, 'lease_cleanup_barrier');
       recordWorkerBackendSessionMaterializing(coreDb, {
-        backendVersion: '0.0.80',
-        workerImage: 'openkit/worker-codex:dev',
+        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+        backendVersion: '0.0.99',
         identity: {
           agentSessionId: 'session_cleanup_barrier',
           backendKind: 'openshell',
           backendSessionId: 'openkit-session_cleanup_barrier',
-          backendTarget: {
-            cellTargetId: 'cell-test',
-            gatewayEndpoint: null,
-            gatewayName: 'openshell',
-            placement: 'local',
-          },
           deploymentId: 'deployment-test',
           packageSnapshotId: 'pkg_demo',
+          runtimeTargetId: 'runtime-target-test',
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/pkg_demo',
           transientProviderInstanceId: null,
         },
@@ -1283,20 +1278,15 @@ describe('scheduler records', () => {
     try {
       createDispatchedLease(coreDb, 'lease_cleanup_grace');
       recordWorkerBackendSessionMaterializing(coreDb, {
-        backendVersion: '0.0.80',
-        workerImage: 'openkit/worker-codex:dev',
+        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+        backendVersion: '0.0.99',
         identity: {
           agentSessionId: 'session_cleanup_grace',
           backendKind: 'openshell',
           backendSessionId: 'openkit-session_cleanup_grace',
-          backendTarget: {
-            cellTargetId: 'cell-test',
-            gatewayEndpoint: null,
-            gatewayName: 'openshell',
-            placement: 'local',
-          },
           deploymentId: 'deployment-test',
           packageSnapshotId: 'pkg_demo',
+          runtimeTargetId: 'runtime-target-test',
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/pkg_demo',
           transientProviderInstanceId: null,
         },
@@ -1489,19 +1479,15 @@ describe('scheduler records', () => {
     try {
       createDispatchedLease(coreDb, 'lease_anchored_startup_timeout');
       recordWorkerBackendSessionMaterializing(coreDb, {
-        backendVersion: '0.0.80',
+        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+        backendVersion: '0.0.99',
         identity: {
           agentSessionId: 'session_anchored_startup_timeout',
           backendKind: 'openshell',
           backendSessionId: 'openkit-session_anchored_startup_timeout',
-          backendTarget: {
-            cellTargetId: 'cell-test',
-            gatewayEndpoint: null,
-            gatewayName: 'openshell',
-            placement: 'local',
-          },
           deploymentId: 'deployment-test',
           packageSnapshotId: 'pkg_demo',
+          runtimeTargetId: 'runtime-target-test',
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/pkg_demo',
           transientProviderInstanceId: null,
         },
@@ -1512,7 +1498,6 @@ describe('scheduler records', () => {
         },
         now: () => '2026-07-05T00:00:03.000Z',
         sandboxBindingRef: 'lease-binding:lease_anchored_startup_timeout',
-        workerImage: 'openkit/worker-codex:dev',
       });
 
       const timedOut = transitionStartupTimedOutSchedulerLeases(coreDb, {
@@ -1933,7 +1918,7 @@ describe('scheduler records', () => {
   it.each([
     'local',
     'remote',
-  ] as const)('creates the %s baseline with one disposable Cell slot', (placement) => {
+  ] as const)('creates the %s baseline with one scheduler slot', (placement) => {
     const coreDb = createMigratedCoreDb();
 
     try {

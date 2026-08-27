@@ -36,7 +36,6 @@ import {
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { goalStartOwnerIds, startGoalModeObjective } from './goal-routes.js';
 import {
-  type StructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from './internal-agents/delegation.js';
@@ -59,6 +58,7 @@ import { registerAppApiRoute } from './openapi.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { getGoalRecord } from './runtime/goal-store.js';
 import {
+  chatTaskModeTurnId,
   commandInputHash,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -290,7 +290,8 @@ function replayChatModeCommand(
         downstreamTurn.id === currentTurn.id ||
         downstreamTurn.workspaceId !== workspaceId ||
         downstreamTurn.threadId !== threadId ||
-        !downstreamTurn.id.startsWith(`turn_${record.requestId}`) ||
+        downstreamTurn.id !==
+          chatTaskModeTurnId(actorId, workspaceId, threadId, record.requestId) ||
         !downstreamTurn.items.some(
           (item) =>
             item.id === `it_user_${downstreamTurn.id}` &&
@@ -894,6 +895,32 @@ function directTaskModeTurnId(
     requestId,
   }).slice(-16);
   return `turn_${requestId}_${suffix}`;
+}
+
+/**
+ * Detects one Chat-subordinate worker checkpoint whose owning Chat receipt is absent.
+ *
+ * @param store Store that owns the outer Chat command receipt.
+ * @param workspaceDb Workspace database that owns the worker checkpoint.
+ * @param actorId Authenticated actor id.
+ * @param workspaceId Workspace command scope.
+ * @param threadId Thread command scope.
+ * @param requestId Caller-supplied Chat command request id.
+ * @returns Whether the exact checkpoint exists without its outer receipt.
+ */
+function hasChatTaskCheckpointWithoutReceipt(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  actorId: string,
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): boolean {
+  const turnId = chatTaskModeTurnId(actorId, workspaceId, threadId, requestId);
+  return (
+    getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId) !== null &&
+    store.getCommandRequest('chat.start', requestId, { actorId, workspaceId, threadId }) === null
+  );
 }
 
 /**
@@ -1588,54 +1615,6 @@ function taskModeEvidenceForTurn(
 }
 
 /**
- * Starts one Task Mode worker attempt through the shared app composition callback.
- *
- * @param input Task Mode selection and runtime callback.
- * @returns Started Task Mode projection for the selected worker.
- */
-async function startTaskModeAttempt(input: {
-  readonly triggerActor: ActorRef;
-  readonly store: FsStore;
-  readonly workspaceId: string;
-  readonly threadId: string;
-  readonly modelId?: string | undefined;
-  readonly requestId: string;
-  readonly decision: TaskDelegationDecision;
-  readonly workerRequest: StructuredWorkerDelegationRequest;
-  readonly startModeWorkerTurn: (input: {
-    readonly triggerActor: ActorRef;
-    readonly store: FsStore;
-    readonly workspaceId: string;
-    readonly threadId: string;
-    readonly prompt: string;
-    readonly modelId?: string | undefined;
-    readonly requestId: string;
-    readonly requestedAgentId: string;
-  }) => Promise<z.infer<typeof TurnSchema>>;
-}): Promise<{
-  readonly decision: TaskDelegationDecision;
-  readonly state: ReturnType<typeof taskModeStateForTurn>;
-  readonly turn: z.infer<typeof TurnSchema>;
-}> {
-  const turn = await input.startModeWorkerTurn({
-    triggerActor: input.triggerActor,
-    store: input.store,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    prompt: serializeStructuredWorkerDelegationRequest(input.workerRequest),
-    modelId: input.modelId,
-    requestId: input.requestId,
-    requestedAgentId: input.decision.worker.agentId,
-  });
-
-  return {
-    decision: input.decision,
-    state: taskModeStateForTurn(turn.status),
-    turn,
-  };
-}
-
-/**
  * Requires one Thread to belong to the centrally authorized path Workspace.
  *
  * @param context Request context carrying optional central authorization in Core-backed mode.
@@ -1710,6 +1689,7 @@ export function registerQuickAndChatModeRoutes({
     readonly modelId?: string | undefined;
     readonly requestId: string;
     readonly requestedAgentId: string;
+    readonly reservedTurnId?: string | undefined;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
@@ -2089,6 +2069,30 @@ export function registerQuickAndChatModeRoutes({
         });
       };
 
+      if (coreDb) {
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        try {
+          if (
+            hasChatTaskCheckpointWithoutReceipt(
+              store,
+              workspaceDb,
+              actorId,
+              workspaceId,
+              threadId,
+              chatInput.requestId
+            )
+          ) {
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The Chat Task checkpoint is missing its outer Chat command receipt.',
+              409
+            );
+          }
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
+
       if (isClarificationChatPrompt(chatInput.input)) {
         return {
           body: createClarificationResponse(),
@@ -2122,20 +2126,83 @@ export function registerQuickAndChatModeRoutes({
           });
 
       if (delegation?.taskDecision && delegation.coordinator.workerRequest) {
-        const attempt = await startTaskModeAttempt({
-          triggerActor,
-          store,
+        const taskDecision = delegation.taskDecision;
+        const workerRequest = delegation.coordinator.workerRequest;
+        if (!coreDb) {
+          throw new TurnStartValidationError(
+            'scheduler_unavailable',
+            'Durable scheduler storage is required to start Task Mode.',
+            503
+          );
+        }
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        const reservedTurnId = chatTaskModeTurnId(
+          actorId,
           workspaceId,
           threadId,
-          requestId: chatInput.requestId,
-          decision: delegation.taskDecision,
-          workerRequest: delegation.coordinator.workerRequest,
-          startModeWorkerTurn,
-        });
+          chatInput.requestId
+        );
+
+        try {
+          await runWorkerTurnLoop({
+            coreDb,
+            triggerActor,
+            workspaceDb,
+            workspaceId,
+            threadId,
+            requestId: chatInput.requestId,
+            requestInputHash: commandInputHash({ input: chatInput.input }),
+            reviewRequired: false,
+            remainingWorkerIterations: 0,
+            prepare: () => ({
+              delegationRequest: workerRequest,
+              contextPackageDigest: commandInputHash(workerRequest),
+              knowledgeSelectionInput: null,
+            }),
+            reserveTurn: () => ({ turnId: reservedTurnId }),
+            startWorker: async ({ turnId, prepared }) => {
+              const turn = await startModeWorkerTurn({
+                triggerActor,
+                store,
+                workspaceId,
+                threadId,
+                prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+                requestId: chatInput.requestId,
+                requestedAgentId: taskDecision.worker.agentId,
+                reservedTurnId: turnId,
+              });
+              return { workerSessionId: turn.agentSessionId ?? null };
+            },
+            awaitWorker: ({ turnId }) => {
+              const turn = store.getTurn(workspaceId, threadId, turnId);
+              const stopReason = taskModeTerminalStopReason(store, turnId);
+              if (!stopReason) {
+                throw new Error('Task worker Turn has no unique terminal outcome.');
+              }
+              const evidence = taskModeEvidenceForTurn(
+                store,
+                workspaceDb,
+                workspaceId,
+                threadId,
+                turn
+              );
+              return {
+                stopReason,
+                itemIds: evidence.itemIds,
+                artifactIds: evidence.artifactIds,
+                diagnosticsSummary:
+                  turn.error?.message ??
+                  (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
+              };
+            },
+          });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
 
         return {
-          body: createHandoffResponse('task', delegation.taskDecision.rationale),
-          downstream: { kind: 'task', turnId: attempt.turn.id },
+          body: createHandoffResponse('task', taskDecision.rationale),
+          downstream: { kind: 'task', turnId: reservedTurnId },
           resultKind: 'task-handoff',
           status: 202,
         };
@@ -2457,6 +2524,37 @@ export function registerQuickAndChatModeRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
+      if (
+        !(error instanceof TurnStartValidationError) &&
+        !(error instanceof OpenAICompatibleProviderError) &&
+        !(error instanceof IdempotencyKeyConflictError) &&
+        coreDb
+      ) {
+        const workspaceId = c.req.param('workspaceId');
+        const threadId = c.req.param('threadId');
+        const store = requestStore(c);
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        try {
+          if (
+            hasChatTaskCheckpointWithoutReceipt(
+              store,
+              workspaceDb,
+              actorId,
+              workspaceId,
+              threadId,
+              chatInput.requestId
+            )
+          ) {
+            return asApiError(
+              'The Chat Task checkpoint is missing its outer Chat command receipt.',
+              'recovery_required',
+              409
+            );
+          }
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
       if (error instanceof TurnStartValidationError) {
         return asApiError(redactInternalAgentText(error.message), error.code, error.status);
       }
@@ -2640,14 +2738,6 @@ export function registerTaskModeRoute({
 
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
-        const repository = getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId);
-        if (!repository || repository.diagnosticsStatus !== 'ready') {
-          throw new TurnStartValidationError(
-            'workspace_repository_unavailable',
-            'Task Mode requires a ready workspace repository.',
-            409
-          );
-        }
         await runWorkerTurnLoop({
           coreDb,
           triggerActor,
@@ -2695,7 +2785,6 @@ export function registerTaskModeRoute({
             }
 
             return {
-              repository,
               delegationRequest: workerRequest,
               contextPackageDigest: commandInputHash(workerRequest),
               knowledgeSelectionInput,
@@ -2733,6 +2822,9 @@ export function registerTaskModeRoute({
               stopReason,
               itemIds: evidence.itemIds,
               artifactIds: evidence.artifactIds,
+              diagnosticsSummary:
+                turn.error?.message ??
+                (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
             };
           },
         });

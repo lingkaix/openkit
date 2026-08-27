@@ -14,7 +14,7 @@ import {
 import { registerRuntimeConfigRoutes } from './runtime-config-routes.js';
 
 describe('runtime config routes', () => {
-  it('denies a cross-Workspace AgentSession before mutation while preserving missing behavior', async () => {
+  it('does not mutate a foreign AgentSession when the retired restart route is absent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-config-session-lineage-'));
     const store = createDemoStore({ dataRoot });
     const foreignWorkspace = store.createWorkspace('Foreign session workspace');
@@ -63,13 +63,8 @@ describe('runtime config routes', () => {
       { method: 'POST' }
     );
 
-    expect(missing.status).toBe(200);
-    await expect(missing.json()).resolves.toEqual({
-      restarted: false,
-      session: null,
-    });
-    expect(foreign.status).toBe(403);
-    await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    expect(missing.status).toBe(404);
+    expect(foreign.status).toBe(404);
     expect(updateAgentSession).not.toHaveBeenCalled();
     expect(store.getAgentSession(foreignSession.id)).toMatchObject({
       configVersion: 1,

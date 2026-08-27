@@ -23,6 +23,7 @@ function agentConfig(overrides: Partial<AuthoredAgentConfig> = {}): AuthoredAgen
         { id: 'codex', path: '/usr/local/bin/codex' },
       ],
       image: {
+        kind: 'reference',
         pullPolicy: 'if-not-present',
         ref: 'ghcr.io/openkit/worker-codex:test',
       },
@@ -81,6 +82,7 @@ describe('resolveAgentSetup', () => {
           { id: 'future-runtime', path: '/opt/future/bin/runtime' },
         ],
         image: {
+          kind: 'reference',
           pullPolicy: 'never',
           ref: 'registry.example.com/openkit/worker-future:1.0.0',
         },

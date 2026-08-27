@@ -46,7 +46,7 @@ describe('nanocore e2e config loading', () => {
           kind: 'custom',
           adapter: 'custom-http',
           version: '0.0.2',
-          image: { ref: 'openkit/worker-e2e:dev', pullPolicy: 'never' },
+          image: { kind: 'reference', ref: 'openkit/worker-e2e:dev', pullPolicy: 'never' },
           binaries: [{ id: 'node', path: '/usr/local/bin/node' }],
         },
         readiness: { status: 'ready' },
@@ -94,7 +94,6 @@ describe('nanocore e2e config loading', () => {
         schemaVersion: 1,
         vault: {
           encryptedFile: { keyFilePath: vaultKeyFilePath },
-          localDefaultBackend: 'encrypted-file',
         },
       })
     );

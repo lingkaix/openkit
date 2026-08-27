@@ -5,10 +5,13 @@ import {
   createModels,
   createProvider,
   type Model,
+  type Models,
   type MutableModels,
+  modelsAreEqual,
   type Provider,
   type ProviderStreams,
   type StreamOptions,
+  type ToolCall,
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
@@ -37,6 +40,7 @@ import type {
 } from './openai-compatible-client.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
+import { isWorkerAdditionalToolsItem } from './worker-inference-tool-policy.js';
 
 const ZERO_USAGE = {
   input: 0,
@@ -165,21 +169,23 @@ export class PiAiGatewayClient {
    * @param request Chat Completions request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
+   * @param models Per-call model collection, normally the exact subscription pair runtime.
    * @returns OpenAI-compatible Chat Completions response.
    */
   public async createChatCompletion(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest,
     onUsage?: (usage: unknown) => void,
-    transport: LLMGatewayTransportContext = {}
+    transport: LLMGatewayTransportContext = {},
+    models: Models = this.models
   ): Promise<OpenAICompatibleChatCompletionResponse> {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: false });
 
-    const model = this.resolveModel(provider, request.model);
+    const model = this.resolveModel(provider, request.model, models);
     const response = await raceProviderWithSignal(
       () =>
-        this.models.complete(
+        models.complete(
           model,
           this.toContext(request, model),
           this.toStreamOptions(provider, request, transport)
@@ -207,23 +213,25 @@ export class PiAiGatewayClient {
    * @param request Chat Completions request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
+   * @param models Per-call model collection, normally the exact subscription pair runtime.
    * @returns OpenAI-compatible Chat Completions SSE stream.
    */
   public async createChatCompletionStream(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest,
     onUsage?: (usage: unknown) => void,
-    transport: LLMGatewayTransportContext = {}
+    transport: LLMGatewayTransportContext = {},
+    models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: true });
 
-    const model = this.resolveModel(provider, request.model);
+    const model = this.resolveModel(provider, request.model, models);
     const localAbortController = new AbortController();
     const signal = transport.signal
       ? AbortSignal.any([transport.signal, localAbortController.signal])
       : localAbortController.signal;
-    const events = this.models.stream(
+    const events = models.stream(
       model,
       this.toContext(request, model),
       this.toStreamOptions(provider, request, { ...transport, signal })
@@ -242,22 +250,49 @@ export class PiAiGatewayClient {
    * @param request Responses request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
+   * @param models Per-call model collection, normally the exact subscription pair runtime.
    * @returns OpenAI-compatible Responses response.
    */
   public async createResponses(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
     onUsage?: (usage: unknown) => void,
-    transport: LLMGatewayTransportContext = {}
+    transport: LLMGatewayTransportContext = {},
+    models: Models = this.models
   ): Promise<OpenAICompatibleResponsesResponse> {
-    return convertChatCompletionResponseToResponsesResponse(
-      await this.createChatCompletion(
-        provider,
-        convertResponsesRequestToChatCompletionRequest(request),
-        onUsage,
-        transport
-      )
+    if (provider.subscriptionProviderId === 'openai-codex') {
+      const additionalTools = assertCodexResponsesRequestAdmission(request, false);
+      this.assertExplicitCredential(provider);
+      const model = this.resolveModel(provider, request.model, models);
+      const response = await raceProviderWithSignal(
+        () =>
+          models.complete(
+            model,
+            toPiResponsesContext(request, model, additionalTools),
+            this.toCodexResponsesOptions(request, model, transport, additionalTools)
+          ),
+        transport.signal
+      );
+      onUsage?.(response.usage);
+      if (response.stopReason === 'error' || response.stopReason === 'aborted') {
+        throw new OpenAICompatibleProviderError({
+          code: 'provider_error',
+          message: response.errorMessage ?? 'pi-ai provider failed',
+          status: 502,
+          type: 'provider_error',
+        });
+      }
+      return toResponsesResponse(response, request.model, additionalTools);
+    }
+
+    const response = await this.createChatCompletion(
+      provider,
+      convertResponsesRequestToChatCompletionRequest(request),
+      onUsage,
+      transport,
+      models
     );
+    return convertChatCompletionResponseToResponsesResponse(response);
   }
 
   /**
@@ -267,22 +302,121 @@ export class PiAiGatewayClient {
    * @param request Responses request.
    * @param onUsage Optional observer for the provider-native terminal usage payload.
    * @param transport Optional gateway transport state; pi-ai consumes only cancellation.
+   * @param models Per-call model collection, normally the exact subscription pair runtime.
    * @returns OpenAI-compatible Responses SSE stream.
    */
   public async createResponsesStream(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleResponsesRequest,
     onUsage?: (usage: unknown) => void,
-    transport: LLMGatewayTransportContext = {}
+    transport: LLMGatewayTransportContext = {},
+    models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
+    const codexProvider = provider.subscriptionProviderId === 'openai-codex';
+    const additionalTools = codexProvider
+      ? assertCodexResponsesRequestAdmission(request, true)
+      : readResponsesAdditionalTools(request.input);
+    if (codexProvider || additionalTools) {
+      if (!codexProvider) {
+        assertCodexResponsesRequestAdmission(request, true);
+      }
+      this.assertExplicitCredential(provider);
+      const model = this.resolveModel(provider, request.model, models);
+      const localAbortController = new AbortController();
+      const signal = transport.signal
+        ? AbortSignal.any([transport.signal, localAbortController.signal])
+        : localAbortController.signal;
+      const events = models.stream(
+        model,
+        toPiResponsesContext(request, model, additionalTools),
+        codexProvider
+          ? this.toCodexResponsesOptions(request, model, { ...transport, signal }, additionalTools)
+          : this.toBridgedResponsesOptions(provider, request, { ...transport, signal })
+      );
+      const iterator = events[Symbol.asyncIterator]();
+      let first: IteratorResult<AssistantMessageEvent>;
+      try {
+        first = await raceProviderWithSignal(() => iterator.next(), signal);
+      } catch (error) {
+        localAbortController.abort(error);
+        await iterator.return?.();
+        throw error;
+      }
+
+      return toResponsesSseStream(
+        iterator,
+        first,
+        request.model,
+        additionalTools,
+        Array.isArray(request.include) && request.include.includes('reasoning.encrypted_content'),
+        onUsage,
+        signal,
+        (reason) => localAbortController.abort(reason)
+      );
+    }
+
     return convertChatCompletionStreamToResponsesStream(
       await this.createChatCompletionStream(
         provider,
         convertResponsesRequestToChatCompletionRequest({ ...request, stream: true }),
         onUsage,
-        transport
+        transport,
+        models
       )
     );
+  }
+
+  /**
+   * Maps admitted Responses Lite options onto a Chat Completions transport.
+   *
+   * @param provider Resolved OpenKit provider config.
+   * @param request Admitted Responses Lite request.
+   * @param transport Gateway cancellation state.
+   * @returns pi-ai Chat Completions options without native Responses fields.
+   */
+  private toBridgedResponsesOptions(
+    provider: ResolvedLLMProviderConfig,
+    request: OpenAICompatibleResponsesRequest,
+    transport: LLMGatewayTransportContext
+  ): StreamOptions & Record<string, unknown> {
+    const maxOutputTokens = request.max_output_tokens;
+    const parallelToolCalls = request.parallel_tool_calls;
+    if (
+      maxOutputTokens !== undefined &&
+      (!Number.isInteger(maxOutputTokens) || (maxOutputTokens as number) <= 0)
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai max_output_tokens');
+    }
+    if (parallelToolCalls !== undefined && typeof parallelToolCalls !== 'boolean') {
+      throw new GatewayUnsupportedFeatureError('pi-ai parallel_tool_calls');
+    }
+
+    const options = this.toStreamOptions(
+      provider,
+      {
+        messages: [],
+        model: request.model,
+        max_tokens: maxOutputTokens,
+        prompt_cache_key: request.prompt_cache_key,
+        prompt_cache_retention: request.prompt_cache_retention,
+        tool_choice: request.tool_choice,
+      },
+      transport
+    );
+    const reasoning = readRecord(request.reasoning);
+    if (typeof reasoning?.effort === 'string') {
+      options.reasoningEffort = reasoning.effort;
+    }
+    if (parallelToolCalls !== undefined) {
+      options.onPayload = (payload) => {
+        const record = readRecord(payload);
+        if (!record) {
+          throw new GatewayUnsupportedFeatureError('pi-ai Responses payload');
+        }
+        return { ...record, parallel_tool_calls: parallelToolCalls };
+      };
+    }
+    return options;
   }
 
   /**
@@ -290,9 +424,32 @@ export class PiAiGatewayClient {
    *
    * @param provider Resolved OpenKit provider config.
    * @param modelId Requested model id.
+   * @param models Per-call model collection.
    * @returns pi-ai model record.
    */
-  private resolveModel(provider: ResolvedLLMProviderConfig, modelId: string): Model<string> {
+  private resolveModel(
+    provider: ResolvedLLMProviderConfig,
+    modelId: string,
+    models: Models
+  ): Model<string> {
+    if (models !== this.models) {
+      const providerId = provider.subscriptionProviderId;
+      const exact = providerId ? models.getModel(providerId, modelId) : undefined;
+      const prefix = providerId ? `${providerId}/` : '';
+      const stripped =
+        !exact && prefix && modelId.startsWith(prefix)
+          ? models.getModel(providerId!, modelId.slice(prefix.length))
+          : undefined;
+      const pairModel = exact ?? stripped;
+
+      if (!pairModel) {
+        throw new PiAiGatewayConfigurationError(
+          `Provider ${provider.id} does not expose model ${modelId}.`
+        );
+      }
+      return pairModel;
+    }
+
     const model = this.registerConfiguredProviderModel(
       provider,
       modelId,
@@ -321,10 +478,6 @@ export class PiAiGatewayClient {
     modelId: string,
     template: { readonly model: Model<string>; readonly provider: Provider } | null
   ): Model<string> | null {
-    if (provider.backend !== 'pi-ai') {
-      return null;
-    }
-
     let model: Model<string>;
     let api: ProviderStreams;
 
@@ -467,6 +620,130 @@ export class PiAiGatewayClient {
     if (toolChoice !== undefined) {
       options.toolChoice = toolChoice;
     }
+
+    return options;
+  }
+
+  /**
+   * Converts native Responses inputs into the bounded Codex pi-ai options.
+   *
+   * @param request OpenAI-compatible Responses request.
+   * @param selectedModel Exact pair model selected for dispatch.
+   * @param transport Gateway cancellation and turn-state transport.
+   * @returns pi-ai options with SSE, continuity, and validated payload overlays.
+   */
+  private toCodexResponsesOptions(
+    request: OpenAICompatibleResponsesRequest,
+    selectedModel: Model<string>,
+    transport: LLMGatewayTransportContext,
+    additionalTools: ResponsesAdditionalTools | undefined
+  ): StreamOptions & Record<string, unknown> {
+    const options: StreamOptions & Record<string, unknown> = {
+      env: {},
+      transport: 'sse',
+    };
+    const cacheRetention = this.cacheRetention(request.prompt_cache_retention);
+    const reasoning = readRecord(request.reasoning);
+    const text = readRecord(request.text);
+    const maxOutputTokens = request.max_output_tokens;
+    const parallelToolCalls = request.parallel_tool_calls;
+
+    if (
+      additionalTools !== undefined &&
+      request.tools !== undefined &&
+      (!Array.isArray(request.tools) || request.tools.length > 0)
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools conflict');
+    }
+
+    if (
+      maxOutputTokens !== undefined &&
+      (!Number.isInteger(maxOutputTokens) || (maxOutputTokens as number) <= 0)
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai max_output_tokens');
+    }
+    if (parallelToolCalls !== undefined && typeof parallelToolCalls !== 'boolean') {
+      throw new GatewayUnsupportedFeatureError('pi-ai parallel_tool_calls');
+    }
+    if (cacheRetention) {
+      options.cacheRetention = cacheRetention;
+    }
+    if (typeof request.prompt_cache_key === 'string') {
+      options.sessionId = request.prompt_cache_key;
+    }
+    if (transport.signal) {
+      options.signal = transport.signal;
+    }
+    if (transport.codexTurnState) {
+      options.headers = { 'x-codex-turn-state': transport.codexTurnState };
+    }
+    if (reasoning) {
+      if (typeof reasoning.effort === 'string') {
+        options.reasoningEffort = reasoning.effort;
+      }
+      if (typeof reasoning.summary === 'string' || reasoning.summary === null) {
+        options.reasoningSummary = reasoning.summary;
+      }
+    }
+    if (text) {
+      options.textVerbosity = text.verbosity;
+    }
+    if (
+      request.tool_choice === 'auto' ||
+      request.tool_choice === 'none' ||
+      request.tool_choice === 'required'
+    ) {
+      options.toolChoice = request.tool_choice;
+    } else if (request.tool_choice !== undefined) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses tool_choice');
+    }
+
+    options.onPayload = (payload) => {
+      if (
+        maxOutputTokens === undefined &&
+        parallelToolCalls === undefined &&
+        additionalTools === undefined &&
+        reasoning?.context === undefined
+      ) {
+        return undefined;
+      }
+      const record = readRecord(payload);
+      if (!record) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses payload');
+      }
+      if (additionalTools && !Array.isArray(record.input)) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses payload input');
+      }
+      return {
+        ...record,
+        ...(additionalTools
+          ? { input: [additionalTools.item, ...(record.input as unknown[])] }
+          : {}),
+        ...(additionalTools ? { tools: additionalTools.item.tools } : {}),
+        ...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
+        ...(parallelToolCalls !== undefined ? { parallel_tool_calls: parallelToolCalls } : {}),
+        ...(reasoning?.context === 'all_turns'
+          ? {
+              reasoning: {
+                ...(readRecord(record.reasoning) ?? {}),
+                context: 'all_turns',
+              },
+            }
+          : {}),
+      };
+    };
+    options.onResponse = (response, responseModel) => {
+      if (
+        response.status >= 200 &&
+        response.status < 300 &&
+        modelsAreEqual(selectedModel, responseModel)
+      ) {
+        const turnState = response.headers['x-codex-turn-state'];
+        if (turnState) {
+          transport.onCodexTurnState?.(turnState);
+        }
+      }
+    };
 
     return options;
   }
@@ -809,6 +1086,1016 @@ export class PiAiGatewayClient {
   }
 }
 
+type ResponsesToolKind = 'custom' | 'function';
+
+interface ResponsesAdditionalTools {
+  /** Exact message-anchored item replayed through pi-ai's payload hook. */
+  readonly item: {
+    readonly role: 'developer';
+    readonly tools: readonly Record<string, unknown>[];
+    readonly type: 'additional_tools';
+  };
+  /** Tool kind keyed by namespace and name for public response reconstruction. */
+  readonly kinds: ReadonlyMap<string, ResponsesToolKind>;
+  /** Stock pi-ai grammar declarations used only to replay prior custom-call history. */
+  readonly replayTools: NonNullable<Context['tools']>;
+}
+
+const CODEX_RESPONSES_REQUEST_FIELDS = new Set([
+  'include',
+  'input',
+  'instructions',
+  'max_output_tokens',
+  'model',
+  'parallel_tool_calls',
+  'prompt_cache_key',
+  'prompt_cache_retention',
+  'reasoning',
+  'store',
+  'stream',
+  'text',
+  'tool_choice',
+  'tools',
+]);
+
+/**
+ * Rejects native Codex request fields that stock pi-ai cannot preserve.
+ *
+ * @param request Responses request admitted for Codex dispatch.
+ * @param allowStream Whether this call owns a streaming response.
+ * @returns Validated message-anchored local tool declarations when present.
+ */
+export function assertCodexResponsesRequestAdmission(
+  request: OpenAICompatibleResponsesRequest,
+  allowStream: boolean
+): ResponsesAdditionalTools | undefined {
+  for (const key of Object.keys(request)) {
+    if (!CODEX_RESPONSES_REQUEST_FIELDS.has(key)) {
+      throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${key}`);
+    }
+  }
+  if (request.stream === true && !allowStream) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses stream');
+  }
+  if (request.store !== undefined && request.store !== false) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses store');
+  }
+  if (request.instructions !== undefined && typeof request.instructions !== 'string') {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses instructions');
+  }
+  if (request.prompt_cache_key !== undefined && typeof request.prompt_cache_key !== 'string') {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses prompt_cache_key');
+  }
+  if (
+    request.include !== undefined &&
+    (!Array.isArray(request.include) ||
+      request.include.length !== 1 ||
+      request.include[0] !== 'reasoning.encrypted_content')
+  ) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses include');
+  }
+  const text = readRecord(request.text);
+  if (
+    request.text !== undefined &&
+    (!text ||
+      Object.keys(text).some((key) => key !== 'verbosity') ||
+      (text.verbosity !== 'low' && text.verbosity !== 'medium' && text.verbosity !== 'high'))
+  ) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses text');
+  }
+  const reasoning = readRecord(request.reasoning);
+  const efforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+  const summaries = new Set(['auto', 'concise', 'detailed', 'off', 'on']);
+  if (
+    request.reasoning !== undefined &&
+    (!reasoning ||
+      Object.keys(reasoning).some(
+        (key) => key !== 'context' && key !== 'effort' && key !== 'summary'
+      ) ||
+      (reasoning.context !== undefined && reasoning.context !== 'all_turns') ||
+      (reasoning.effort !== undefined && !efforts.has(reasoning.effort as string)) ||
+      (reasoning.summary !== undefined &&
+        reasoning.summary !== null &&
+        !summaries.has(reasoning.summary as string)))
+  ) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning');
+  }
+  const additionalTools = readResponsesAdditionalTools(request.input);
+  assertResponsesToolHistoryDeclarations(request.input, additionalTools);
+  return additionalTools;
+}
+
+/** Rejects undeclared or type-conflicting tool history before credential or provider access. */
+function assertResponsesToolHistoryDeclarations(
+  input: OpenAICompatibleResponsesRequest['input'],
+  additionalTools: ResponsesAdditionalTools | undefined
+): void {
+  if (!Array.isArray(input)) {
+    return;
+  }
+  const calls = new Map<string, ResponsesToolKind[]>();
+  const carriers = new Set<string>();
+  for (const value of input) {
+    const item = readRecord(value);
+    if (item?.type === 'function_call' || item?.type === 'custom_tool_call') {
+      const kind = item.type === 'custom_tool_call' ? 'custom' : 'function';
+      const namespace = typeof item.namespace === 'string' ? item.namespace : undefined;
+      const declaredKind =
+        typeof item.name === 'string'
+          ? additionalTools?.kinds.get(responsesToolKey(item.name, namespace))
+          : undefined;
+      if (
+        typeof item.call_id !== 'string' ||
+        !item.call_id ||
+        typeof item.name !== 'string' ||
+        !item.name ||
+        (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
+        (item.namespace !== undefined && !namespace) ||
+        (kind === 'custom'
+          ? typeof item.input !== 'string'
+          : parseToolArguments(item.arguments) === undefined) ||
+        (additionalTools && declaredKind !== kind) ||
+        (!additionalTools && kind === 'custom')
+      ) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} declaration`);
+      }
+      const carrier = typeof item.id === 'string' ? `${item.call_id}|${item.id}` : item.call_id;
+      if (carriers.has(carrier)) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} declaration`);
+      }
+      carriers.add(carrier);
+      const queue = calls.get(item.call_id) ?? [];
+      queue.push(kind);
+      calls.set(item.call_id, queue);
+      continue;
+    }
+    if (item?.type === 'function_call_output' || item?.type === 'custom_tool_call_output') {
+      const kind = item.type === 'custom_tool_call_output' ? 'custom' : 'function';
+      const queue = typeof item.call_id === 'string' ? calls.get(item.call_id) : undefined;
+      if (!item.call_id || queue?.shift() !== kind) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
+      }
+      readResponsesTextContent(item.output);
+    }
+  }
+}
+
+/**
+ * Converts a native Responses request into the pi-ai context consumed by Codex.
+ *
+ * @param request OpenAI-compatible Responses request.
+ * @param model Exact pi-ai model selected for assistant history.
+ * @returns Text, function history, instructions, and tools without a Chat conversion.
+ */
+function toPiResponsesContext(
+  request: OpenAICompatibleResponsesRequest,
+  model: AssistantModel,
+  additionalTools: ResponsesAdditionalTools | undefined
+): Context {
+  const messages: Context['messages'] = [];
+  const instructions = typeof request.instructions === 'string' ? [request.instructions] : [];
+  const toolCalls = new Map<
+    string,
+    Array<{ readonly carrierId: string; readonly kind: ResponsesToolKind; readonly name: string }>
+  >();
+  const input =
+    typeof request.input === 'string' ? [{ role: 'user', content: request.input }] : request.input;
+
+  for (const [index, item] of input.entries()) {
+    const record = readRecord(item);
+    if (!record) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses input');
+    }
+    const timestamp = index + 1;
+
+    if (record === additionalTools?.item) {
+      continue;
+    }
+
+    if (record.type === 'function_call' || record.type === 'custom_tool_call') {
+      const kind = record.type === 'custom_tool_call' ? 'custom' : 'function';
+      if (
+        typeof record.call_id !== 'string' ||
+        !record.call_id ||
+        typeof record.name !== 'string' ||
+        !record.name ||
+        (record.id !== undefined && (typeof record.id !== 'string' || !record.id)) ||
+        (record.namespace !== undefined &&
+          (typeof record.namespace !== 'string' || !record.namespace))
+      ) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type}`);
+      }
+      const carrierId =
+        typeof record.id === 'string' ? `${record.call_id}|${record.id}` : record.call_id;
+      const declaredKind = additionalTools?.kinds.get(
+        responsesToolKey(
+          record.name,
+          typeof record.namespace === 'string' ? record.namespace : undefined
+        )
+      );
+      if ((additionalTools && declaredKind !== kind) || (!additionalTools && kind === 'custom')) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type} declaration`);
+      }
+      const argumentsValue =
+        kind === 'custom'
+          ? typeof record.input === 'string'
+            ? { input: record.input }
+            : undefined
+          : parseToolArguments(record.arguments);
+      if (!argumentsValue) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses custom_tool_call input');
+      }
+      const calls = toolCalls.get(record.call_id) ?? [];
+      calls.push({ carrierId, kind, name: record.name });
+      toolCalls.set(record.call_id, calls);
+      messages.push({
+        role: 'assistant',
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        content: [
+          {
+            type: 'toolCall',
+            id: carrierId,
+            name: record.name,
+            arguments: argumentsValue,
+            ...(typeof record.namespace === 'string' ? { namespace: record.namespace } : {}),
+          },
+        ],
+        stopReason: 'toolUse',
+        timestamp,
+        usage: ZERO_USAGE,
+      });
+      continue;
+    }
+
+    if (record.type === 'function_call_output' || record.type === 'custom_tool_call_output') {
+      if (typeof record.call_id !== 'string' || !record.call_id) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type}`);
+      }
+      const call = toolCalls.get(record.call_id)?.shift();
+      const kind = record.type === 'custom_tool_call_output' ? 'custom' : 'function';
+      if (!call || call.kind !== kind) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type} lineage`);
+      }
+      messages.push({
+        role: 'toolResult',
+        toolCallId: call.carrierId,
+        toolName: call.name,
+        content: [{ type: 'text', text: readResponsesTextContent(record.output) }],
+        isError: false,
+        timestamp,
+      });
+      continue;
+    }
+
+    if (record.type === 'reasoning') {
+      if (
+        (record.id !== undefined && (typeof record.id !== 'string' || !record.id)) ||
+        (record.encrypted_content !== undefined &&
+          record.encrypted_content !== null &&
+          typeof record.encrypted_content !== 'string')
+      ) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning item');
+      }
+      messages.push({
+        role: 'assistant',
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        content: [
+          {
+            type: 'thinking',
+            thinking: readResponsesReasoningText(record),
+            thinkingSignature: JSON.stringify(record),
+          },
+        ],
+        stopReason: 'stop',
+        timestamp,
+        usage: ZERO_USAGE,
+      });
+      continue;
+    }
+
+    if (record.role === 'system' || record.role === 'developer') {
+      instructions.push(readResponsesTextContent(record.content));
+      continue;
+    }
+    if (record.role === 'user') {
+      messages.push({
+        role: 'user',
+        content: responsesUserContent(record.content),
+        timestamp,
+      });
+      continue;
+    }
+    if (record.role === 'assistant') {
+      messages.push({
+        role: 'assistant',
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        content: [{ type: 'text', text: readResponsesTextContent(record.content) }],
+        stopReason: 'stop',
+        timestamp,
+        usage: ZERO_USAGE,
+      });
+      continue;
+    }
+
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses input role');
+  }
+
+  const tools = additionalTools?.replayTools ?? toPiTools(request.tools);
+  return {
+    messages,
+    ...(instructions.filter(Boolean).length > 0
+      ? { systemPrompt: instructions.filter(Boolean).join('\n\n') }
+      : {}),
+    ...(tools.length > 0 ? { tools } : {}),
+  };
+}
+
+/**
+ * Reads the exact Codex Responses Lite tool prefix and its client-executed tool kinds.
+ *
+ * @param input Responses input candidate.
+ * @returns The first additional-tools item when present.
+ */
+function readResponsesAdditionalTools(
+  input: OpenAICompatibleResponsesRequest['input']
+): ResponsesAdditionalTools | undefined {
+  if (!Array.isArray(input) || input.length === 0) {
+    return undefined;
+  }
+  const record = readRecord(input[0]);
+  if (record?.type !== 'additional_tools') {
+    return undefined;
+  }
+  if (!isWorkerAdditionalToolsItem(record)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools');
+  }
+  const kinds = new Map<string, ResponsesToolKind>();
+  const replayTools: NonNullable<Context['tools']> = [];
+  for (const tool of record.tools) {
+    if (tool.type === 'namespace') {
+      for (const child of tool.tools as readonly Record<string, unknown>[]) {
+        if (child.type === 'custom' || child.type === 'function') {
+          kinds.set(responsesToolKey(child.name as string, tool.name as string), child.type);
+        }
+      }
+    } else if (tool.type === 'custom' || tool.type === 'function') {
+      kinds.set(responsesToolKey(tool.name as string), tool.type);
+      if (tool.type === 'custom') {
+        replayTools.push({
+          constrainedSampling: { type: 'grammar', variants: { openai_regex: '.*' } },
+          description: typeof tool.description === 'string' ? tool.description : '',
+          name: tool.name as string,
+          parameters: {
+            additionalProperties: false,
+            properties: { input: { type: 'string' } },
+            required: ['input'],
+            type: 'object',
+          },
+        });
+      }
+    }
+  }
+  return { item: record, kinds, replayTools };
+}
+
+/**
+ * Converts Responses user content into pi-ai text blocks without flattening an authored array.
+ *
+ * @param value Responses message content.
+ * @returns A string or text-block array accepted by pi-ai.
+ */
+function responsesUserContent(value: unknown): string | Array<{ type: 'text'; text: string }> {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses user content');
+  }
+
+  return value.map((part) => {
+    const record = readRecord(part);
+    if (
+      !record ||
+      (record.type !== 'input_text' && record.type !== 'output_text') ||
+      typeof record.text !== 'string'
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses non-text content');
+    }
+    return { type: 'text', text: record.text };
+  });
+}
+
+/**
+ * Reads text-only Responses content and tool output.
+ *
+ * @param value Responses content candidate.
+ * @returns Concatenated text.
+ */
+function readResponsesTextContent(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses text content');
+  }
+
+  return value
+    .map((part) => {
+      const record = readRecord(part);
+      if (
+        !record ||
+        (record.type !== 'input_text' && record.type !== 'output_text') ||
+        typeof record.text !== 'string'
+      ) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses non-text content');
+      }
+      return record.text;
+    })
+    .join('');
+}
+
+/** Reads the display text from one opaque Responses reasoning item. */
+function readResponsesReasoningText(record: Record<string, unknown>): string {
+  for (const key of ['summary', 'content'] as const) {
+    const parts = record[key];
+    if (parts === undefined) {
+      continue;
+    }
+    if (!Array.isArray(parts)) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning content');
+    }
+    const text = parts
+      .map((part) => {
+        const content = readRecord(part);
+        if (
+          !content ||
+          (content.type !== 'summary_text' && content.type !== 'reasoning_text') ||
+          typeof content.text !== 'string'
+        ) {
+          throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning content');
+        }
+        return content.text;
+      })
+      .join('\n\n');
+    if (text) {
+      return text;
+    }
+  }
+  return '';
+}
+
+/**
+ * Converts a final pi-ai assistant message into a native Responses payload.
+ *
+ * @param message Final pi-ai assistant message.
+ * @param requestModel Model id authored by the caller.
+ * @returns OpenAI-compatible Responses payload.
+ */
+function toResponsesResponse(
+  message: AssistantMessage,
+  requestModel: string,
+  additionalTools?: ResponsesAdditionalTools
+): OpenAICompatibleResponsesResponse {
+  return {
+    id: message.responseId ?? `resp_pi_${message.timestamp}`,
+    object: 'response',
+    status: 'completed',
+    model: requestModel,
+    created_at: Math.floor(message.timestamp / 1000),
+    output: message.content.map((block, index): Record<string, unknown> => {
+      if (block.type === 'thinking') {
+        return responsesReasoningItem(block, `reasoning_${index}`);
+      }
+      if (block.type === 'toolCall') {
+        return responsesToolCallItem(block, additionalTools, 'completed');
+      }
+      return {
+        id: `message_${index}`,
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: block.text }],
+      };
+    }),
+    usage: toResponsesUsage(message.usage),
+  };
+}
+
+/** Restores one pi-ai reasoning block to its opaque native Responses item. */
+function responsesReasoningItem(
+  block: Extract<AssistantMessage['content'][number], { type: 'thinking' }>,
+  fallbackId: string
+): Record<string, unknown> {
+  let persisted: Record<string, unknown> | undefined;
+  try {
+    persisted = readRecord(JSON.parse(block.thinkingSignature ?? ''));
+  } catch {
+    persisted = undefined;
+  }
+  const native = persisted?.type === 'reasoning' ? persisted : undefined;
+  return {
+    ...native,
+    id: typeof native?.id === 'string' && native.id ? native.id : fallbackId,
+    type: 'reasoning',
+    status: 'completed',
+    summary:
+      block.thinking || !Array.isArray(native?.summary)
+        ? block.thinking
+          ? [{ type: 'summary_text', text: block.thinking }]
+          : []
+        : native.summary,
+  };
+}
+
+/**
+ * Reconstructs one public Responses tool item from pi-ai's semantic tool-call block.
+ *
+ * @param block pi-ai tool-call block.
+ * @param additionalTools Message-anchored tool kinds for custom-call recovery.
+ * @param status Public item lifecycle status.
+ * @param empty Whether to emit the streaming start shape.
+ * @returns Function or custom Responses output item.
+ */
+function responsesToolCallItem(
+  block: ToolCall,
+  additionalTools: ResponsesAdditionalTools | undefined,
+  status: 'completed' | 'in_progress',
+  empty = false
+): Record<string, unknown> {
+  const [callId, itemId] = splitResponsesToolCallId(block.id);
+  const kind = additionalTools?.kinds.get(responsesToolKey(block.name, block.namespace));
+  if (kind === 'custom') {
+    const input = empty ? '' : block.arguments.input;
+    if (typeof input !== 'string') {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses custom tool input');
+    }
+    return {
+      call_id: callId,
+      id: itemId,
+      input,
+      name: block.name,
+      ...(block.namespace ? { namespace: block.namespace } : {}),
+      status,
+      type: 'custom_tool_call',
+    };
+  }
+  return {
+    arguments: empty ? '' : JSON.stringify(block.arguments ?? {}),
+    call_id: callId,
+    id: itemId,
+    name: block.name,
+    ...(block.namespace ? { namespace: block.namespace } : {}),
+    status,
+    type: 'function_call',
+  };
+}
+
+/** Splits pi-ai's lossless `call_id|item_id` carrier while retaining legacy single ids. */
+function splitResponsesToolCallId(id: string): readonly [string, string] {
+  const separator = id.indexOf('|');
+  return separator > 0 && separator < id.length - 1
+    ? [id.slice(0, separator), id.slice(separator + 1)]
+    : [id, id];
+}
+
+/** Builds one collision-free lookup key for an optional namespace and tool name. */
+function responsesToolKey(name: string, namespace?: string): string {
+  return `${namespace ?? ''}\0${name}`;
+}
+
+/**
+ * Normalizes pi-ai usage into the public Responses usage vocabulary.
+ *
+ * @param usage Provider-native pi-ai usage.
+ * @returns OpenAI-compatible terminal usage.
+ */
+function toResponsesUsage(usage: unknown): Record<string, unknown> {
+  const record = readRecord(usage) ?? {};
+  const input = readNumber(record.input) ?? 0;
+  const output = readNumber(record.output) ?? 0;
+  const cacheRead = readNumber(record.cacheRead) ?? readNumber(record.cache_read) ?? 0;
+
+  return {
+    input_tokens: input + cacheRead,
+    input_tokens_details: { cached_tokens: cacheRead },
+    output_tokens: output,
+    output_tokens_details: { reasoning_tokens: readNumber(record.reasoning) ?? 0 },
+    total_tokens: readNumber(record.totalTokens) ?? input + cacheRead + output,
+  };
+}
+
+/**
+ * Creates an internal stream failure with non-secret pi-ai terminal fields.
+ *
+ * `code` distinguishes bare iterator exhaustion from a package `error` inside this client,
+ * and `stopReason` records the package terminal reason when present. The public Gateway
+ * classifier has no direct mapping for these internal codes and does not read `stopReason`,
+ * so absent a separate message match they normalize to `gateway_stream_failed`. OpenKit
+ * also forces Codex transport to SSE, so stock pi-ai's WebSocket-only
+ * `provider_transport_failure` diagnostic is not produced on the production Codex path.
+ *
+ * @param message Failure message that also feeds the classifier's text signal.
+ * @param code Stable non-secret failure category.
+ * @param stopReason Closed pi-ai terminal stop reason, when pi-ai reported one.
+ * @returns Error carrying the internal fields used by downstream normalization.
+ */
+function piAiStreamFailure(message: string, code: string, stopReason?: string): Error {
+  return Object.assign(new Error(message), {
+    code,
+    ...(stopReason === undefined ? {} : { stopReason }),
+  });
+}
+
+/**
+ * Converts prefetched pi-ai events into native Responses SSE while preserving cancellation.
+ *
+ * @param iterator Remaining pi-ai event iterator.
+ * @param first Prefetched first iterator result, replayed exactly once.
+ * @param requestModel Model id authored by the caller.
+ * @param additionalTools Message-anchored tool kinds used to recover custom calls.
+ * @param requireEncryptedReasoning Whether stateless reasoning replay requires terminal backfill.
+ * @param onUsage Optional raw terminal usage observer.
+ * @param signal Combined caller and downstream cancellation signal.
+ * @param abortUpstream Aborts provider work when the downstream stream stops.
+ * @returns Native Responses SSE stream.
+ */
+function toResponsesSseStream(
+  iterator: AsyncIterator<AssistantMessageEvent>,
+  first: IteratorResult<AssistantMessageEvent>,
+  requestModel: string,
+  additionalTools: ResponsesAdditionalTools | undefined,
+  requireEncryptedReasoning: boolean,
+  onUsage: ((usage: unknown) => void) | undefined,
+  signal: AbortSignal,
+  abortUpstream: (reason?: unknown) => void
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let pending: IteratorResult<AssistantMessageEvent> | undefined = first;
+  let cancelled = false;
+  let sequenceNumber = 0;
+  let terminal = false;
+  let usageObserved = false;
+  const pendingReasoning = new Set<number>();
+  const encodeEvent = (event: Record<string, unknown>) =>
+    encoder.encode(responsesStreamEvent({ ...event, sequence_number: sequenceNumber++ }));
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (cancelled || terminal) {
+        return;
+      }
+
+      try {
+        while (!cancelled && !terminal) {
+          const result = pending ?? (await raceProviderWithSignal(() => iterator.next(), signal));
+          pending = undefined;
+          if (result.done) {
+            terminal = true;
+            controller.error(
+              piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated')
+            );
+            await iterator.return?.();
+            return;
+          }
+
+          const event = result.value;
+          if (event.type === 'start') {
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.created',
+                response: {
+                  ...toResponsesResponse(event.partial, requestModel, additionalTools),
+                  output: [],
+                  status: 'in_progress',
+                },
+              })
+            );
+            return;
+          }
+          if (event.type === 'text_start') {
+            const itemId = `message_${event.contentIndex}`;
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.output_item.added',
+                output_index: event.contentIndex,
+                item: {
+                  id: itemId,
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'in_progress',
+                  content: [],
+                },
+              })
+            );
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.content_part.added',
+                item_id: itemId,
+                output_index: event.contentIndex,
+                content_index: 0,
+                part: { type: 'output_text', text: '', annotations: [], logprobs: [] },
+              })
+            );
+            return;
+          }
+          if (event.type === 'text_delta') {
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.output_text.delta',
+                delta: event.delta,
+                item_id: `message_${event.contentIndex}`,
+                output_index: event.contentIndex,
+                content_index: 0,
+              })
+            );
+            return;
+          }
+          if (event.type === 'text_end') {
+            const itemId = `message_${event.contentIndex}`;
+            const part = {
+              type: 'output_text',
+              text: event.content,
+              annotations: [],
+              logprobs: [],
+            };
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.output_text.done',
+                item_id: itemId,
+                output_index: event.contentIndex,
+                content_index: 0,
+                text: event.content,
+                logprobs: [],
+              })
+            );
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.content_part.done',
+                item_id: itemId,
+                output_index: event.contentIndex,
+                content_index: 0,
+                part,
+              })
+            );
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.output_item.done',
+                output_index: event.contentIndex,
+                item: {
+                  id: itemId,
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [part],
+                },
+              })
+            );
+            return;
+          }
+          if (event.type === 'thinking_start') {
+            continue;
+          }
+          if (event.type === 'thinking_delta') {
+            continue;
+          }
+          if (event.type === 'thinking_end') {
+            const block = event.partial.content[event.contentIndex];
+            if (!block || block.type !== 'thinking') {
+              throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning stream');
+            }
+            const item = responsesReasoningItem(block, `reasoning_${event.contentIndex}`);
+            const itemId = item.id as string;
+            const part = { type: 'summary_text', text: event.content };
+            // pi-ai exposes the opaque reasoning id only at thinking_end.
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.output_item.added',
+                output_index: event.contentIndex,
+                item: { id: itemId, type: 'reasoning', status: 'in_progress', summary: [] },
+              })
+            );
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.reasoning_summary_part.added',
+                item_id: itemId,
+                output_index: event.contentIndex,
+                summary_index: 0,
+                part: { type: 'summary_text', text: '' },
+              })
+            );
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.reasoning_summary_text.delta',
+                delta: event.content,
+                item_id: itemId,
+                output_index: event.contentIndex,
+                summary_index: 0,
+              })
+            );
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.reasoning_summary_text.done',
+                item_id: itemId,
+                output_index: event.contentIndex,
+                summary_index: 0,
+                text: event.content,
+              })
+            );
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.reasoning_summary_part.done',
+                item_id: itemId,
+                output_index: event.contentIndex,
+                summary_index: 0,
+                part,
+              })
+            );
+            if (
+              requireEncryptedReasoning &&
+              block.thinkingSignature &&
+              typeof item.encrypted_content !== 'string'
+            ) {
+              pendingReasoning.add(event.contentIndex);
+              return;
+            }
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.output_item.done',
+                output_index: event.contentIndex,
+                item,
+              })
+            );
+            return;
+          }
+          if (event.type === 'toolcall_start') {
+            const block = readStreamToolCall(event.partial, event.contentIndex);
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.output_item.added',
+                output_index: event.contentIndex,
+                item: responsesToolCallItem(block, additionalTools, 'in_progress', true),
+              })
+            );
+            return;
+          }
+          if (event.type === 'toolcall_delta') {
+            const block = readStreamToolCall(event.partial, event.contentIndex);
+            const [callId, itemId] = splitResponsesToolCallId(block.id);
+            if (
+              additionalTools?.kinds.get(responsesToolKey(block.name, block.namespace)) === 'custom'
+            ) {
+              continue;
+            }
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.function_call_arguments.delta',
+                call_id: callId,
+                delta: event.delta,
+                item_id: itemId,
+                output_index: event.contentIndex,
+              })
+            );
+            return;
+          }
+          if (event.type === 'toolcall_end') {
+            const kind = additionalTools?.kinds.get(
+              responsesToolKey(event.toolCall.name, event.toolCall.namespace)
+            );
+            const [, itemId] = splitResponsesToolCallId(event.toolCall.id);
+            if (kind === 'custom') {
+              const input = event.toolCall.arguments.input;
+              if (typeof input !== 'string') {
+                throw new GatewayUnsupportedFeatureError('pi-ai Responses custom tool input');
+              }
+              if (input) {
+                controller.enqueue(
+                  encodeEvent({
+                    delta: input,
+                    item_id: itemId,
+                    output_index: event.contentIndex,
+                    type: 'response.custom_tool_call_input.delta',
+                  })
+                );
+              }
+              controller.enqueue(
+                encodeEvent({
+                  input,
+                  item_id: itemId,
+                  output_index: event.contentIndex,
+                  type: 'response.custom_tool_call_input.done',
+                })
+              );
+            } else {
+              controller.enqueue(
+                encodeEvent({
+                  arguments: JSON.stringify(event.toolCall.arguments ?? {}),
+                  item_id: itemId,
+                  name: event.toolCall.name,
+                  output_index: event.contentIndex,
+                  type: 'response.function_call_arguments.done',
+                })
+              );
+            }
+            controller.enqueue(
+              encodeEvent({
+                item: responsesToolCallItem(event.toolCall, additionalTools, 'completed'),
+                output_index: event.contentIndex,
+                type: 'response.output_item.done',
+              })
+            );
+            return;
+          }
+          if (event.type === 'error') {
+            if (!usageObserved) {
+              usageObserved = true;
+              onUsage?.(event.error.usage);
+            }
+            terminal = true;
+            controller.error(
+              piAiStreamFailure(
+                event.error.errorMessage ?? 'pi-ai stream failed',
+                event.error.diagnostics?.[0]?.type ?? 'provider_stream_failed',
+                event.error.stopReason
+              )
+            );
+            await iterator.return?.();
+            return;
+          }
+          if (event.type === 'done') {
+            if (!usageObserved) {
+              usageObserved = true;
+              onUsage?.(event.message.usage);
+            }
+            for (const contentIndex of pendingReasoning) {
+              const block = event.message.content[contentIndex];
+              if (!block || block.type !== 'thinking') {
+                throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning stream');
+              }
+              const item = responsesReasoningItem(block, `reasoning_${contentIndex}`);
+              if (typeof item.encrypted_content !== 'string') {
+                throw new GatewayUnsupportedFeatureError(
+                  'pi-ai Responses reasoning encrypted content'
+                );
+              }
+              controller.enqueue(
+                encodeEvent({
+                  item,
+                  output_index: contentIndex,
+                  type: 'response.output_item.done',
+                })
+              );
+            }
+            pendingReasoning.clear();
+            controller.enqueue(
+              encodeEvent({
+                type: 'response.completed',
+                response: toResponsesResponse(event.message, requestModel, additionalTools),
+              })
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            terminal = true;
+            controller.close();
+            await iterator.return?.();
+            return;
+          }
+        }
+      } catch (error) {
+        if (cancelled || terminal) {
+          return;
+        }
+        terminal = true;
+        abortUpstream(error);
+        controller.error(error);
+        await iterator.return?.();
+      }
+    },
+    async cancel(reason) {
+      if (cancelled || terminal) {
+        return;
+      }
+      cancelled = true;
+      abortUpstream(reason);
+      await iterator.return?.();
+    },
+  });
+}
+
+/**
+ * Encodes one Responses event as an SSE data frame.
+ *
+ * @param event OpenAI-compatible Responses event.
+ * @returns Encoded SSE text.
+ */
+function responsesStreamEvent(event: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
+
 interface AssistantModel {
   /** pi-ai API family for assistant-history replay. */
   api: string;
@@ -879,7 +2166,7 @@ function toPiTools(value: unknown): NonNullable<Context['tools']> {
 
   return value.map((tool) => {
     const record = readRecord(tool);
-    const fn = readRecord(record?.function);
+    const fn = record?.type === 'function' ? (readRecord(record.function) ?? record) : undefined;
     if (record?.type !== 'function' || !fn || typeof fn.name !== 'string' || !fn.name) {
       throw new GatewayUnsupportedFeatureError('pi-ai chat tools');
     }

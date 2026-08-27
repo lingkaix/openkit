@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
 import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
+  bindSchedulerLeaseRouteTokenHashes,
   createSchedulerAdmissionEntry,
   createSchedulerPlacementPlan,
   createSchedulerSessionLease,
@@ -19,7 +20,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
-import { WorkerControlGateway } from './worker-control-gateway.js';
+import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
 
 interface RestorableWorkerControlFixture {
@@ -27,8 +28,12 @@ interface RestorableWorkerControlFixture {
   readonly coreDb: CoreDb;
   /** Durable package expected to hydrate into the gateway. */
   readonly environmentPackage: AgentEnvironmentPackage;
-  /** Sandbox binding used as the restored bearer token. */
-  readonly token: string;
+  /** Non-secret sandbox binding restored independently from route credentials. */
+  readonly sandboxBindingRef: string;
+  /** Raw worker-control token retained by the restarted client. */
+  readonly workerControlToken: string;
+  /** Raw worker-inference token retained by the restarted client. */
+  readonly workerInferenceToken: string;
 }
 
 /**
@@ -43,7 +48,7 @@ function createRestorableWorkerControlFixture(
     readonly admissionRequestId?: string | null;
     /** Exact trigger actor stored on the originating admission. */
     readonly admissionTriggerActor?: ActorRef;
-    /** Agent session stored on the lease instead of the AEP lineage. */
+    /** AgentSession stored on the lease instead of the AEP lineage. */
     readonly leaseAgentSessionId?: string;
     /** Whether to persist the owning AEP snapshot. */
     readonly recordSnapshot?: boolean;
@@ -63,7 +68,6 @@ function createRestorableWorkerControlFixture(
       agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_restore_1',
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-07-13T00:00:00.000Z',
@@ -122,7 +126,9 @@ function createRestorableWorkerControlFixture(
     selectedPoolId: 'pool_local',
     selectedTargetId: 'target_local',
   });
-  const token = 'lease-binding:restore_1';
+  const sandboxBindingRef = 'lease-binding:restore_1';
+  const workerControlToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const workerInferenceToken = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 
   createSchedulerSessionLease(coreDb, {
     agentSessionId: options.leaseAgentSessionId ?? environmentPackage.scope.agentSessionId,
@@ -132,12 +138,25 @@ function createRestorableWorkerControlFixture(
     now: () => '2026-07-13T00:00:04.000Z',
     packageSnapshotId: environmentPackage.snapshotId,
     planId: 'plan_restore_1',
-    sandboxTokenBindingRef: token,
+    sandboxTokenBindingRef: sandboxBindingRef,
     sessionCompatibilityKey: 'sha256:restore-1',
     startupDeadline: '2026-07-13T00:02:04.000Z',
   });
+  bindSchedulerLeaseRouteTokenHashes(coreDb, {
+    leaseId: 'lease_restore_1',
+    now: () => '2026-07-13T00:00:05.000Z',
+    sandboxBindingRef,
+    workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
+    workerInferenceTokenHash: hashWorkerRouteToken(workerInferenceToken),
+  });
 
-  return { coreDb, environmentPackage, token };
+  return {
+    coreDb,
+    environmentPackage,
+    sandboxBindingRef,
+    workerControlToken,
+    workerInferenceToken,
+  };
 }
 
 describe('worker control gateway restart hydration', () => {
@@ -161,9 +180,19 @@ describe('worker control gateway restart hydration', () => {
     try {
       rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
 
-      expect(gateway.authenticatePackageToken(`Bearer ${fixture.token}`)).toEqual(
+      expect(gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)).toEqual(
         redactAgentEnvironmentPackageSnapshot(fixture.environmentPackage)
       );
+      expect(() =>
+        gateway.authenticatePackageToken(`Bearer ${fixture.workerInferenceToken}`)
+      ).toThrow();
+      expect(() =>
+        gateway.authenticatePackageToken(`Bearer ${fixture.sandboxBindingRef}`)
+      ).toThrow();
+      const source = readFileSync(new URL('./worker-control-rebuild.ts', import.meta.url), 'utf8');
+      expect(source).toContain('workerControlTokenHash');
+      expect(source).toContain('workerInferenceTokenHash');
+      expect(source).not.toContain('token: lease.sandboxBindingRef');
     } finally {
       fixture.coreDb.sqlite.close();
     }
@@ -246,7 +275,7 @@ describe('worker control gateway restart hydration', () => {
 
       expect(
         gateway.pollCommands({
-          authorization: `Bearer ${fixture.token}`,
+          authorization: `Bearer ${fixture.workerControlToken}`,
           lineage,
         }).commands
       ).toEqual([{ ...interrupt, deliveredAt: expect.any(String) }]);
@@ -273,7 +302,9 @@ describe('worker control gateway restart hydration', () => {
 
       try {
         expect(() => rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway)).toThrow();
-        expect(() => gateway.authenticatePackageToken(`Bearer ${fixture.token}`)).toThrow();
+        expect(() =>
+          gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)
+        ).toThrow();
       } finally {
         fixture.coreDb.sqlite.close();
       }

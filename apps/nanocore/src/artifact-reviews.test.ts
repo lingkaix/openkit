@@ -262,7 +262,7 @@ describe('Artifact Review authority', () => {
       ] as const) {
         bindThreadMaterial(workspaceDb, {
           acceptedAt: '2026-07-19T02:00:02.000Z',
-          expectedBindingState: 'absent',
+          expectedBindingState: 'not_bound',
           materialId: material.materialId,
           requestId,
           threadId,

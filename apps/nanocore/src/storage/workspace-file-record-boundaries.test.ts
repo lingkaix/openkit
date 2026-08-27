@@ -85,7 +85,7 @@ describe('workspace file-record write and load boundaries', () => {
   });
 
   it.each([
-    'agent session',
+    'AgentSession',
     'artifact',
     'knowledge source',
   ] as const)('rejects a cross-workspace duplicate %s id without replacing its owner', (family) => {
@@ -94,7 +94,7 @@ describe('workspace file-record write and load boundaries', () => {
     const secondTimestamp = second.turn.startedAt ?? new Date().toISOString();
 
     switch (family) {
-      case 'agent session': {
+      case 'AgentSession': {
         const id = 'as_cross_workspace_boundary';
         const original = store.createAgentSession({
           id,
@@ -603,7 +603,7 @@ describe('workspace file-record write and load boundaries', () => {
     'workspaceId',
     'threadId',
     'createdAt',
-  ] as const)('rejects an agent-session update that changes immutable %s without altering memory or reload', (field) => {
+  ] as const)('rejects an AgentSession update that changes immutable %s without altering memory or reload', (field) => {
     const { dataRoot, first, second, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const session = store.createAgentSession({
@@ -633,9 +633,103 @@ describe('workspace file-record write and load boundaries', () => {
     }).not.toThrow();
   });
 
+  it('rejects a second current AgentSession for the same Thread without a projection', () => {
+    const { dataRoot, first, store } = createBoundaryFixture();
+    const timestamp = first.turn.startedAt ?? new Date().toISOString();
+    const firstSession = store.createAgentSession({
+      id: 'as_current_boundary_first',
+      agentId: 'agent_codex_host',
+      workspaceId: first.workspace.id,
+      threadId: first.thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const secondSessionId = 'as_current_boundary_second';
+
+    expect
+      .soft(() =>
+        store.createAgentSession({
+          id: secondSessionId,
+          agentId: 'agent_codex_host',
+          workspaceId: first.workspace.id,
+          threadId: first.thread.id,
+          status: 'idle',
+          message: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+      )
+      .toThrow();
+    expect
+      .soft(store.listThreadAgentSessions(first.workspace.id, first.thread.id))
+      .toEqual([firstSession]);
+    expect.soft(() => store.getAgentSession(secondSessionId)).toThrow();
+    expect
+      .soft(
+        existsSync(join(first.root, 'runtime', 'agent-sessions', secondSessionId, 'session.json'))
+      )
+      .toBe(false);
+    expect
+      .soft(new FsStore({ dataRoot }).listThreadAgentSessions(first.workspace.id, first.thread.id))
+      .toEqual([firstSession]);
+  });
+
+  it('creates a successor AgentSession after the predecessor becomes terminal', () => {
+    const { first, store } = createBoundaryFixture();
+    const timestamp = first.turn.startedAt ?? new Date().toISOString();
+    const predecessor = store.createAgentSession({
+      id: 'as_successor_boundary_predecessor',
+      agentId: 'agent_codex_host',
+      workspaceId: first.workspace.id,
+      threadId: first.thread.id,
+      status: 'idle',
+      message: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const closedPredecessor = store.updateAgentSession(predecessor.id, { status: 'closed' });
+    const successor = store.createAgentSession({
+      id: 'as_successor_boundary_current',
+      agentId: 'agent_codex_host',
+      workspaceId: first.workspace.id,
+      threadId: first.thread.id,
+      status: 'created',
+      message: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    expect(store.listThreadAgentSessions(first.workspace.id, first.thread.id)).toEqual([
+      closedPredecessor,
+      successor,
+    ]);
+  });
+
+  it('does not reopen a terminal AgentSession', () => {
+    const { dataRoot, first, store } = createBoundaryFixture();
+    const timestamp = first.turn.startedAt ?? new Date().toISOString();
+    const session = store.createAgentSession({
+      id: 'as_terminal_boundary',
+      agentId: 'agent_codex_host',
+      workspaceId: first.workspace.id,
+      threadId: first.thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const terminal = store.updateAgentSession(session.id, { status: 'interrupted' });
+
+    expect.soft(() => store.updateAgentSession(session.id, { status: 'ready' })).toThrow();
+    expect.soft(store.getAgentSession(session.id)).toEqual(terminal);
+    expect.soft(new FsStore({ dataRoot }).getAgentSession(session.id)).toEqual(terminal);
+  });
+
   it.each([
-    ['agent session', 'missing thread'],
-    ['agent session', 'cross-workspace thread'],
+    ['AgentSession', 'missing thread'],
+    ['AgentSession', 'cross-workspace thread'],
     ['artifact', 'missing thread'],
     ['artifact', 'missing turn'],
     ['artifact', 'cross-workspace lineage'],
@@ -658,14 +752,14 @@ describe('workspace file-record write and load boundaries', () => {
           ? second.turn.id
           : null;
     const id =
-      family === 'agent session'
+      family === 'AgentSession'
         ? 'as_invalid_create_lineage'
         : family === 'artifact'
           ? 'ar_invalid_create_lineage'
           : 'ks_invalid_create_lineage';
 
     const operation = () => {
-      if (family === 'agent session') {
+      if (family === 'AgentSession') {
         store.createAgentSession({
           id,
           agentId: 'agent_codex_host',
@@ -734,7 +828,7 @@ describe('workspace file-record write and load boundaries', () => {
   it.each([
     'item',
     'artifact',
-    'agent session',
+    'AgentSession',
   ] as const)('rejects a persisted %s event whose nested payload lineage differs from its envelope', (family) => {
     const { dataRoot, first, second, store } = createBoundaryFixture();
     const timestamp = second.turn.startedAt ?? new Date().toISOString();
@@ -796,7 +890,7 @@ describe('workspace file-record write and load boundaries', () => {
         break;
       }
 
-      case 'agent session': {
+      case 'AgentSession': {
         const agentSession = store.createAgentSession({
           id: 'as_cross_lineage_event',
           agentId: 'agent_codex_host',
@@ -845,7 +939,7 @@ describe('workspace file-record write and load boundaries', () => {
 
   it.each([
     'artifact',
-    'agent session',
+    'AgentSession',
   ] as const)('rejects a persisted event that references a missing %s record', (family) => {
     const { dataRoot, first, store } = createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();

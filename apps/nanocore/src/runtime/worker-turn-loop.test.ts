@@ -45,17 +45,6 @@ function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 /** Returns the shared prepared worker input used by loop boundary tests. */
 function preparedWorkerTurn(reviewRequired: boolean) {
   return {
-    repository: {
-      id: 'repo_default',
-      workspaceId: 'ws_demo',
-      displayName: 'OpenKit',
-      localPath: '/repo/openkit',
-      isDefault: true,
-      diagnosticsStatus: 'ready' as const,
-      diagnosticsSummary: null,
-      createdAt: '2026-05-31T00:00:00.000Z',
-      updatedAt: '2026-05-31T00:00:00.000Z',
-    },
     delegationRequest: {
       schemaVersion: 1 as const,
       objective: 'Run the selected task.',

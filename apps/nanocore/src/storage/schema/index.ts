@@ -22,12 +22,20 @@ export { goalPlanRecords, goalRecords, goalTasks } from './goal-records.js';
 export { goalReviewRecords } from './goal-review-records.js';
 export type { GoalVerificationStatus } from './goal-verification-records.js';
 export { goalVerificationRecords } from './goal-verification-records.js';
-export type { InjectionPlanStatus, InjectionVisibility } from './injection-plans.js';
-export { injectionPlans } from './injection-plans.js';
-export type { InjectionReceiptRevocationStatus } from './injection-receipts.js';
-export { injectionReceipts } from './injection-receipts.js';
 export type { McpToolSchemaSnapshotSource } from './mcp-tool-schema-snapshots.js';
 export { mcpToolSchemaSnapshots } from './mcp-tool-schema-snapshots.js';
+export {
+  agentSessionRuntimeBindings,
+  harnessInstanceRecords,
+  sandboxRuntimeRecords,
+} from './nanohost-harness-runtime.js';
+export { nanohostRuntimeTargets } from './nanohost-runtime-targets.js';
+export type {
+  NanoHostTransportTokenScope,
+  NanoHostTransportTokenStatus,
+  NanoHostTransportTokenType,
+} from './nanohost-transport-tokens.js';
+export { nanohostTransportTokens } from './nanohost-transport-tokens.js';
 export type { PermissionDecisionResult } from './permission-decisions.js';
 export { permissionDecisions } from './permission-decisions.js';
 export type {
@@ -58,8 +66,6 @@ export type { SchedulerSessionLeaseStatus } from './scheduler-session-leases.js'
 export { schedulerSessionLeases } from './scheduler-session-leases.js';
 export { schemaMigrations } from './schema-migrations.js';
 export { serverSettings } from './server-settings.js';
-export type { SessionSnapshotKind, SessionSnapshotStatus } from './session-snapshots.js';
-export { sessionSnapshots } from './session-snapshots.js';
 export type {
   VaultAdminAuditOutcome,
   VaultAdminAuditSeverity,
@@ -71,6 +77,10 @@ export type {
   VaultGrantStatus,
 } from './vault-grants.js';
 export { vaultGrants } from './vault-grants.js';
+export type { InjectionVisibility, VaultInjectionPlanStatus } from './vault-injection-plans.js';
+export { vaultInjectionPlans } from './vault-injection-plans.js';
+export type { VaultInjectionReceiptRevocationStatus } from './vault-injection-receipts.js';
+export { vaultInjectionReceipts } from './vault-injection-receipts.js';
 export type {
   VaultReferenceBackendKind,
   VaultReferenceOwnerScope,

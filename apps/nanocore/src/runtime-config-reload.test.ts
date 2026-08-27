@@ -7,10 +7,12 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -91,7 +93,7 @@ describe('runtime config reload API', () => {
     expect(diagnostics.providers.registry[0]?.models).toContain('openai/gpt-5.1');
   });
 
-  it('marks active sessions stale after reload without interrupting them', async () => {
+  it('keeps the active AgentSession suspended across a restart-required provider reload', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -101,17 +103,34 @@ describe('runtime config reload API', () => {
       ownerUserId: 'user_local',
       workspaceId: 'ws_demo',
     });
+    const store = createDemoStore({ dataRoot });
+    const agentSetup = createTestAgentSetup({
+      provider: {
+        model: 'openai/gpt-5.1',
+        origin: 'server-providers',
+        providerId: 'agent-openrouter',
+        secretRef: null,
+      },
+    });
     const app = createApp({
-      agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+      agentManifests: [agentSetup.manifest],
       coreDb,
       dataRoot,
-      store: createDemoStore({ dataRoot }),
+      providerRegistry: new ProviderRegistry([
+        {
+          displayName: 'Agent OpenRouter',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.1'],
+        },
+      ]),
+      store,
       turnExecutor: new SimulatedTurnExecutor(),
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-runtime-reload-repository-'));
 
     try {
-      mkdirSync(join(repositoryPath, '.git'));
+      seedWritableGitRepository(repositoryPath);
       await app.request('/api/app/workspaces/ws_demo/repositories/default', {
         method: 'PUT',
         body: JSON.stringify({
@@ -134,22 +153,43 @@ describe('runtime config reload API', () => {
       const turn = (await turnRes.json()) as { configVersion: number };
 
       expect(turn.configVersion, JSON.stringify(turn)).toBe(1);
+      expect(turn).not.toHaveProperty('agentSessionId');
+      const sessionsBeforeReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
+      expect(sessionsBeforeReload).toEqual([
+        expect.objectContaining({ configVersion: 1, stale: false, status: 'suspended' }),
+      ]);
 
       writeServerConfig(dataRoot, 'openai/gpt-5.2');
-      await app.request('/api/admin/config/reload', {
+      const reloadRes = await app.request('/api/admin/config/reload', {
         method: 'POST',
         body: JSON.stringify({ mode: 'safe' }),
         headers: { 'content-type': 'application/json' },
       });
 
+      expect(reloadRes.status).toBe(200);
+      const reload = (await reloadRes.json()) as {
+        runtimeConfig: { pendingRestart: Array<{ path: string }> };
+        plan: { requiresRestart: Array<{ path: string }> };
+      };
+      expect(reload.plan.requiresRestart).toContainEqual(
+        expect.objectContaining({ path: 'providers' })
+      );
+      expect(reload.runtimeConfig.pendingRestart).toContainEqual(
+        expect.objectContaining({ path: 'providers' })
+      );
+
       const dashboardRes = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'
       );
-      const dashboard = (await dashboardRes.json()) as {
-        activeSession: { configVersion: number | null; stale: boolean } | null;
-      };
+      const dashboard = await dashboardRes.json();
+      const sessionsAfterReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
 
-      expect(dashboard.activeSession).toMatchObject({ configVersion: 1, stale: true });
+      expect(dashboardRes.status).toBe(200);
+      expect(JSON.stringify(dashboard)).not.toMatch(/agentSession/i);
+      expect(sessionsAfterReload).toEqual(sessionsBeforeReload);
+      expect(
+        store.listThreadTurns('ws_demo', 'th_demo').some((item) => item.status === 'interrupted')
+      ).toBe(false);
     } finally {
       coreDb.sqlite.close();
     }

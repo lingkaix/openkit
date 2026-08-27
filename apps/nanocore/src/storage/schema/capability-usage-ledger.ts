@@ -29,7 +29,7 @@ export const capabilityCalls = sqliteTable(
     itemId: text('item_id'),
     /** Agent lineage when available. */
     agentId: text('agent_id'),
-    /** Agent session lineage when available. */
+    /** AgentSession lineage when available. */
     agentSessionId: text('agent_session_id'),
     /** Agent Environment Package snapshot that authorized the call. */
     packageSnapshotId: text('package_snapshot_id'),
@@ -95,7 +95,7 @@ export const usageRecords = sqliteTable(
     requestId: text('request_id'),
     /** Agent lineage when available. */
     agentId: text('agent_id'),
-    /** Agent session lineage when available. */
+    /** AgentSession lineage when available. */
     agentSessionId: text('agent_session_id'),
     /** Immutable responsible-user attribution for this measurement. */
     responsibleUserId: text('responsible_user_id'),

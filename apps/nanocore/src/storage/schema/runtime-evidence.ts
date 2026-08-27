@@ -36,7 +36,7 @@ export const runtimeEvidence = sqliteTable(
     goalId: text('goal_id'),
     /** Goal task lineage when available. */
     taskId: text('task_id'),
-    /** Agent session lineage when available. */
+    /** AgentSession lineage when available. */
     agentSessionId: text('agent_session_id'),
     /** Worker backend type when known. */
     backendType: text('backend_type'),

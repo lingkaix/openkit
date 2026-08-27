@@ -372,7 +372,12 @@ describe('workspace portable file state', () => {
     });
 
     const importedRetrievalRows = readOptionalJsonl(
-      join(importedRoot, 'knowledge', 'traces', '202607.jsonl')
+      join(
+        importedRoot,
+        'knowledge',
+        'traces',
+        `${retrieval.createdAt.slice(0, 7).replace('-', '')}.jsonl`
+      )
     );
     expect.soft(importedRetrievalRows).toEqual([
       expect.objectContaining({

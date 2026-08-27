@@ -6,6 +6,7 @@ import type {
   AgentSessionStatus,
   ApprovalRequestSchema,
   AgentSession as ProtocolAgentSession,
+  TurnSchema,
   UserInputResponseItemSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -114,6 +115,18 @@ export interface TurnExecutor {
    */
   readonly itemDeltaKinds?: readonly RuntimeItemDeltaKind[];
 
+  /** Previews exact AgentSession reuse or replacement without Store or backend effects. */
+  prepareAgentSessionForTurn?(
+    store: FsStore,
+    input: PrepareAgentSessionForTurnInput
+  ): Promise<PreparedAgentSessionForTurn>;
+
+  /** Revalidates a prepared AgentSession decision after lease acquisition and commits replacement. */
+  commitPreparedAgentSessionForTurn?(
+    store: FsStore,
+    input: CommitPreparedAgentSessionForTurnInput
+  ): Promise<void>;
+
   /**
    * Starts executing one turn.
    */
@@ -150,22 +163,79 @@ export interface TurnExecutor {
   ): Promise<unknown>;
 
   /**
-   * Returns the agent session bound to one thread, if the runtime has materialized it.
+   * Returns the AgentSession bound to one thread, if the runtime has materialized it.
    */
   getAgentSession?(
     store: FsStore,
     workspaceId: string,
     threadId: string
   ): AgentSessionReadModel | null;
+}
 
-  /**
-   * Returns refreshed agent session read models for one workspace.
-   */
-  refreshAgentSessions?(store: FsStore, workspaceId: string): AgentSessionReadModel[];
+/** Static future-Turn inputs required for pre-lease AgentSession preparation. */
+export interface PrepareAgentSessionForTurnInput {
+  /** Complete selected agent setup used by the final AEP resolution. */
+  readonly agentSetup: ResolvedAgentSetup;
+  /** Fresh AgentSession id reserved for replacement or first creation. */
+  readonly freshAgentSessionId: string;
+  /** Client request id associated with the future Turn. */
+  readonly requestId: string | null;
+  /** Non-durable future Turn scope used by static AEP planning. */
+  readonly turn: z.infer<typeof TurnSchema>;
+  /** Exact input that the future Turn will execute. */
+  readonly turnInput: string;
+  /** Host-local cwd selected for the future worker. */
+  readonly workspaceCwd: string | null;
+  /** Materialized roots captured by scheduler admission. */
+  readonly workspaceRoots: MaterializedWorkspaceRoot[];
+  /** Optional data-source catalog for sourceRef-backed roots. */
+  readonly workspaceDataSourceCatalog?: WorkspaceDataSourceCatalog;
+  /** Optional sourceRef bindings captured by admission. */
+  readonly workspaceSourceRefs?: Record<string, string>;
+}
+
+/** Immutable current AgentSession fields retained for post-dispatch compare-and-set validation. */
+export interface PreparedCurrentAgentSession {
+  /** Stable current AgentSession identity. */
+  readonly id: string;
+  /** Agent identity selected when the current AgentSession was created. */
+  readonly agentId: string;
+  /** Launch-policy snapshot required for exact reuse. */
+  readonly policySnapshotId: string | null;
+  /** Compatibility key retained by the current AgentSession. */
+  readonly sessionCompatibilityKey: string | null;
+  /** Whether durable configuration invalidated the current AgentSession. */
+  readonly stale: boolean;
+  /** Current lifecycle status observed before dispatch. */
+  readonly status: AgentSessionStatus;
+  /** Last durable mutation timestamp used as the compare-and-set token. */
+  readonly updatedAt: string;
+}
+
+/** Runtime-owned AgentSession identity and exact key accepted before lease acquisition. */
+export interface PreparedAgentSessionForTurn {
+  /** Reused or fresh AgentSession id authorized for the future Turn. */
+  readonly agentSessionId: string;
+  /** Current predecessor snapshot, or null when the Thread had no current AgentSession. */
+  readonly currentAgentSession: PreparedCurrentAgentSession | null;
+  /** Whether post-dispatch commit must close the current predecessor before starting the Turn. */
+  readonly replacementRequired: boolean;
+  /** Exact SessionCompatibilityKey that the lease and final AEP must retain. */
+  readonly sessionCompatibilityKey: string;
+}
+
+/** Post-dispatch input for exact AgentSession revalidation and replacement commit. */
+export interface CommitPreparedAgentSessionForTurnInput {
+  /** Exact scheduler lease acquired from the prepared identity and key. */
+  readonly leaseId: string;
+  /** Read-only decision and compare-and-set token produced before dispatch. */
+  readonly prepared: PreparedAgentSessionForTurn;
+  /** Original static inputs whose compatibility key must remain unchanged. */
+  readonly preparation: PrepareAgentSessionForTurnInput;
 }
 
 /**
- * Product-safe app-local backend summary for one live agent session.
+ * Product-safe app-local backend summary for one live AgentSession.
  */
 export interface AgentSessionBackendSummary {
   /** Worker governance backend family selected for this session. */
@@ -184,14 +254,12 @@ export interface AgentSessionBackendSummary {
   controlMode: AgentEnvironmentPackage['control']['mode'] | null;
   /** Product-safe live worker control summary, when a control session is active. */
   control: AgentSessionBackendControlSummary | null;
-  /** OpenShell gateway name when known and product-safe. */
-  gatewayName: string | null;
-  /** OpenShell gateway endpoint when known and product-safe. */
-  gatewayEndpoint: string | null;
+  /** NanoHost runtime target that owns the active sandbox session. */
+  runtimeTargetId: string | null;
+  /** Opaque NanoHost sandbox binding for the active worker session. */
+  sandboxBindingRef: string | null;
   /** Backend distribution version when known. */
   version: string | null;
-  /** Product-safe sandbox name when known. */
-  sandboxName: string | null;
 }
 
 /**
@@ -245,7 +313,7 @@ export interface AgentSessionReadModel {
  * Runtime context captured when one turn is accepted.
  */
 export interface TurnStartRuntimeContext {
-  /** Scheduler-owned agent session id used when a lease already reserved lineage. */
+  /** Scheduler-owned AgentSession id used when a lease already reserved lineage. */
   agentSessionId?: string;
   /** Complete selected manifest and resolved provider inputs for governed workers. */
   agentSetup?: ResolvedAgentSetup;
@@ -257,6 +325,8 @@ export interface TurnStartRuntimeContext {
   workspaceSourceRefs?: Record<string, string>;
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */
   sandboxBindingRef?: string;
+  /** Exact pre-lease SessionCompatibilityKey committed to the scheduler lease. */
+  sessionCompatibilityKey?: string;
   /** Host-local worker working directory selected for this turn. */
   workspaceCwd?: string | null;
   /** Request id for the client command that accepted this turn. */

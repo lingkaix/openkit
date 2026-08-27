@@ -2,7 +2,7 @@ import type { FsStore } from '../lib/store.js';
 
 /** Input for idempotently projecting one governed-worker terminal outcome. */
 export interface TerminalizeGovernedWorkerTurnInput {
-  /** Agent session created for the worker, when its write completed. */
+  /** AgentSession created for the worker, when its write completed. */
   readonly agentSessionId: string | null;
   /** Canonical terminal completion timestamp. */
   readonly completedAt: string;
@@ -288,7 +288,7 @@ function readTurn(store: FsStore, turnId: string): ReturnType<FsStore['getTurnBy
   }
 }
 
-/** Reads one optional agent session without treating an absent setup write as corruption. */
+/** Reads one optional AgentSession without treating an absent setup write as corruption. */
 function readAgentSession(
   store: FsStore,
   agentSessionId: string
@@ -296,7 +296,7 @@ function readAgentSession(
   try {
     return store.getAgentSession(agentSessionId);
   } catch (error) {
-    if (error instanceof Error && error.message === `Agent session not found: ${agentSessionId}`) {
+    if (error instanceof Error && error.message === `AgentSession not found: ${agentSessionId}`) {
       return null;
     }
     throw error;

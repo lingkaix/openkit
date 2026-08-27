@@ -79,7 +79,7 @@ export function registerWorkerControlRoutes({
     try {
       return c.json({
         heartbeat: workerControlGateway.recordHeartbeat({
-          authorization: c.req.header('authorization') ?? null,
+          ...workerControlTokenHashAuthentication(c),
           ...parsed.data,
         }),
       });
@@ -106,7 +106,7 @@ export function registerWorkerControlRoutes({
       return c.json({
         artifact: workerControlGateway.recordArtifactNotice({
           artifact: parsed.data.artifact,
-          authorization: c.req.header('authorization') ?? null,
+          ...workerControlTokenHashAuthentication(c),
           lineage: parsed.data.lineage,
           sequence: parsed.data.sequence,
         }),
@@ -133,7 +133,7 @@ export function registerWorkerControlRoutes({
     try {
       return c.json(
         workerControlGateway.pollCommands({
-          authorization: c.req.header('authorization') ?? null,
+          ...workerControlTokenHashAuthentication(c),
           lineage: parsed.data.lineage,
         })
       );
@@ -159,7 +159,7 @@ export function registerWorkerControlRoutes({
     try {
       return c.json({
         command: workerControlGateway.acknowledgeCommand({
-          authorization: c.req.header('authorization') ?? null,
+          ...workerControlTokenHashAuthentication(c),
           commandId: parsed.data.commandId,
           lineage: parsed.data.lineage,
         }),
@@ -186,7 +186,7 @@ export function registerWorkerControlRoutes({
     try {
       return c.json(
         workerControlGateway.appendEvent({
-          authorization: c.req.header('authorization') ?? null,
+          ...workerControlTokenHashAuthentication(c),
           lineage: parsed.data.lineage,
           record: parsed.data.record,
         })
@@ -223,7 +223,7 @@ export function registerWorkerControlRoutes({
     try {
       return c.json(
         workerControlGateway.recordFinalStatus({
-          authorization: c.req.header('authorization') ?? null,
+          ...workerControlTokenHashAuthentication(c),
           ...(body.data.diagnostics ? { diagnostics: body.data.diagnostics } : {}),
           evidenceManifestDigests: body.data.evidenceManifestDigests,
           lineage: parsed.data.lineage,
@@ -265,7 +265,7 @@ export function registerWorkerControlRoutes({
 
     try {
       const supplyRefreshAck = workerControlGateway.recordSupplyRefreshAck({
-        authorization: c.req.header('authorization') ?? null,
+        ...workerControlTokenHashAuthentication(c),
         lineage: parsed.data.lineage,
         message: body.data.message ?? null,
         refreshId: body.data.refreshId,
@@ -325,7 +325,7 @@ export function registerWorkerControlRoutes({
     try {
       return c.json({
         response: workerControlGateway.recordCapabilitySummary({
-          authorization: c.req.header('authorization') ?? null,
+          ...workerControlTokenHashAuthentication(c),
           lineage: parsed.data.lineage,
           summary: body.data,
         }),
@@ -372,6 +372,22 @@ function quarantineWorkerControlRejection(input: {
     rejectedAt: new Date().toISOString(),
     route: input.route,
   });
+}
+
+/**
+ * Selects the worker-control hash family for one semantic route request.
+ *
+ * @param c Worker-control HTTP request context.
+ * @returns Authorization input explicitly bound to the worker-control family.
+ */
+function workerControlTokenHashAuthentication(c: Context): {
+  readonly authorization: string | null;
+  readonly tokenFamily: 'worker-control';
+} {
+  return {
+    authorization: c.req.header('authorization') ?? null,
+    tokenFamily: 'worker-control',
+  };
 }
 
 /**

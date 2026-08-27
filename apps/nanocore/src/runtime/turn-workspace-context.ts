@@ -1,187 +1,165 @@
-import { execFileSync } from 'node:child_process';
-import { type MaterializedWorkspaceRoot, materializeWorkspaceRoots } from '@openkit/config-schema';
+import {
+  type MaterializedWorkspaceRoot,
+  materializeWorkspaceRoots,
+  requireCredentialFreeHttpsGitLocator,
+  resolveWorkspaceDataSourceReference,
+} from '@openkit/config-schema';
 
+import type { AgentManifest } from '../agents/manifest.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
-import { syncRepositoryDataSourceCatalog } from '../workspace/repository-data-source-catalog.js';
-import {
-  getDefaultWorkspaceRepositoryResource,
-  type WorkspaceRepositoryResourceRecord,
-} from '../workspace/repository-store.js';
-import { validateRepositoryPath } from '../workspace/repository-validation.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { TurnStartRuntimeContext } from './types.js';
 
-/**
- * Resolves the repository resource that should back a worker turn.
- *
- * @param coreDb Optional repository database handles for workspace repository links.
- * @param workspaceId Workspace id that owns the turn.
- * @returns Ready repository resource for internal worker startup, or null when repository storage is disabled.
- * @throws TurnStartValidationError when repository setup is missing or not ready.
- */
-export function resolveWorkspaceRepositoryForTurn(
-  coreDb: CoreDb | undefined,
-  workspaceId: string
-): WorkspaceRepositoryResourceRecord | null {
-  if (!coreDb) {
-    return null;
-  }
-
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
-  let repository: WorkspaceRepositoryResourceRecord | null;
-  try {
-    applyScopedMigrations(workspaceDb);
-    repository = getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId);
-  } finally {
-    workspaceDb.sqlite.close();
-  }
-
-  if (!repository) {
-    throw new TurnStartValidationError(
-      'workspace_repository_missing',
-      'Workspace repository is not configured.'
-    );
-  }
-
-  const validation = validateRepositoryPath(repository.localPath);
-
-  if (!validation.ok || validation.status !== 'ready') {
-    throw new TurnStartValidationError(
-      'workspace_repository_not_ready',
-      `Workspace repository is not ready: ${validation.summary}`
-    );
-  }
-
-  return repository;
-}
+const REMOTE_GIT_WORKER_ROOT = '/workspace/openkit';
 
 /**
- * Materializes workspace roots for a turn from the current effective runtime snapshot.
+ * Resolves configured NanoCore roots plus the selected Agent's remote Git input.
  *
- * @param snapshot Runtime config snapshot captured for the turn.
+ * @param snapshot Runtime config snapshot captured for the Turn.
  * @param store Shared product store that contains the Workspace.
- * @param workspaceId Workspace id that owns the turn.
- * @param repository Optional ready repository selected for the turn.
- * @returns Worker launch roots for the accepted turn.
+ * @param workspaceId Workspace id that owns the Turn.
+ * @param selectedManifest Explicit Agent selected before workspace resolution.
+ * @returns Worker launch roots for the accepted Turn.
+ * @throws TurnStartValidationError when the selected source is unavailable or unsafe.
  */
 export function materializeWorkspaceRootsForTurn(
   snapshot: RuntimeConfigSnapshot,
   store: FsStore,
   workspaceId: string,
-  repository: WorkspaceRepositoryResourceRecord | null = null
+  selectedManifest: AgentManifest
+): MaterializedWorkspaceRoot[] {
+  const inputs = selectedManifest.workspace?.inputs ?? [];
+  let remoteRoot: MaterializedWorkspaceRoot | null = null;
+  if (inputs.length > 1) {
+    throw blockedWorkspaceSource('Exactly one Agent workspace input is supported.');
+  }
+  if (inputs.length === 1) {
+    const input = inputs[0];
+    if (
+      typeof input?.id !== 'string' ||
+      typeof input.sourceRef !== 'string' ||
+      (input.access !== 'read-only' && input.access !== 'read-write')
+    ) {
+      throw blockedWorkspaceSource('Agent workspace input requires id, sourceRef, and access.');
+    }
+    if (input.access !== 'read-write') {
+      throw blockedWorkspaceSource('Remote Git workspace input must be read-write.');
+    }
+    if (
+      findWorkspaceConfig(snapshot, workspaceId)?.config.workspace?.roots.some(
+        (root) => root.id === input.id
+      )
+    ) {
+      throw blockedWorkspaceSource(
+        `Workspace input id conflicts with a configured root: ${input.id}`
+      );
+    }
+
+    const catalog = workspaceDataSourceCatalog(snapshot, workspaceId);
+    if (!catalog) {
+      throw blockedWorkspaceSource(
+        `Workspace data source catalog required for sourceRef: ${input.sourceRef}`
+      );
+    }
+
+    let resolved: ReturnType<typeof resolveWorkspaceDataSourceReference>;
+    try {
+      resolved = resolveWorkspaceDataSourceReference({
+        access: input.access,
+        catalog,
+        slotKind: 'worktree',
+        sourceRef: input.sourceRef,
+      });
+    } catch (error) {
+      throw blockedWorkspaceSource(error instanceof Error ? error.message : String(error));
+    }
+    if (resolved.sourceKind !== 'git' || resolved.vaultGrantRef) {
+      throw blockedWorkspaceSource('Workspace source must be credential-free remote Git.');
+    }
+
+    let locator: ReturnType<typeof requireCredentialFreeHttpsGitLocator>;
+    try {
+      locator = requireCredentialFreeHttpsGitLocator(resolved.locator);
+    } catch (error) {
+      throw blockedWorkspaceSource(error instanceof Error ? error.message : String(error));
+    }
+    remoteRoot = {
+      access: input.access,
+      id: input.id,
+      sourceCommit: locator.commit,
+      sourceKind: 'remote-git',
+      workerPath: REMOTE_GIT_WORKER_ROOT,
+    };
+  }
+
+  const configuredRoots = materializeConfiguredWorkspaceRoots(snapshot, store, workspaceId);
+  return remoteRoot ? [remoteRoot, ...configuredRoots] : configuredRoots;
+}
+
+/**
+ * Builds immutable sourceRef context for the selected remote Git root.
+ *
+ * @param snapshot Runtime config snapshot captured for the Turn.
+ * @param workspaceId Workspace id that owns the Turn.
+ * @param workspaceRoots Worker roots captured for the Turn.
+ * @param selectedManifest Explicit Agent selected before workspace resolution.
+ * @returns Optional AEP catalog and sourceRef context.
+ */
+export function workspaceSourceContextForTurn(
+  snapshot: RuntimeConfigSnapshot,
+  workspaceId: string,
+  workspaceRoots: MaterializedWorkspaceRoot[],
+  selectedManifest: AgentManifest
+): Pick<TurnStartRuntimeContext, 'workspaceDataSourceCatalog' | 'workspaceSourceRefs'> {
+  const catalog = workspaceDataSourceCatalog(snapshot, workspaceId);
+  const remoteRootIds = new Set(
+    workspaceRoots.filter((root) => root.sourceKind === 'remote-git').map((root) => root.id)
+  );
+  const workspaceSourceRefs = Object.fromEntries(
+    (selectedManifest.workspace?.inputs ?? []).flatMap((input) =>
+      typeof input.id === 'string' &&
+      typeof input.sourceRef === 'string' &&
+      remoteRootIds.has(input.id)
+        ? [[input.id, input.sourceRef]]
+        : []
+    )
+  );
+
+  return {
+    ...(catalog ? { workspaceDataSourceCatalog: catalog } : {}),
+    ...(Object.keys(workspaceSourceRefs).length > 0 ? { workspaceSourceRefs } : {}),
+  };
+}
+
+/** Resolves bounded host-local roots owned by Workspace configuration. */
+function materializeConfiguredWorkspaceRoots(
+  snapshot: RuntimeConfigSnapshot,
+  store: FsStore,
+  workspaceId: string
 ): MaterializedWorkspaceRoot[] {
   const dataRoot = store.getDataRoot();
   const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId);
-  const sourceCommit = repository ? readRepositoryHeadCommit(repository.localPath) : null;
-  const repositoryRoot = repository
-    ? {
-        access: 'read-write' as const,
-        id: repository.resourceId,
-        ...(sourceCommit ? { sourceCommit } : {}),
-        sourceKind: 'host-dir' as const,
-        sourcePath: repository.localPath,
-        workerPath: '/workspace/openkit',
-      }
-    : null;
-
   if (!dataRoot || !workspaceConfig) {
-    return repositoryRoot ? [repositoryRoot] : [];
+    return [];
   }
 
   const layout = ensureWorkspaceLayout(dataRoot, workspaceId);
-  const configuredRoots = materializeWorkspaceRoots({
+  return materializeWorkspaceRoots({
     config: workspaceConfig.config,
     workspaceRoot: layout.root,
     createMissing: true,
   });
-
-  if (
-    !repositoryRoot ||
-    configuredRoots.some(
-      (root) => root.id === repositoryRoot.id || root.sourcePath === repositoryRoot.sourcePath
-    )
-  ) {
-    return configuredRoots;
-  }
-
-  return [repositoryRoot, ...configuredRoots];
 }
 
-/**
- * Captures one linked repository HEAD without loading user Git configuration.
- *
- * @param repositoryPath Ready linked repository path.
- * @returns Full Git object id for the current HEAD commit, or null when the linked path has no commit.
- */
-function readRepositoryHeadCommit(repositoryPath: string): string | null {
-  try {
-    const commit = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
-      cwd: repositoryPath,
-      encoding: 'utf8',
-      env: {
-        GIT_CONFIG_COUNT: '0',
-        GIT_CONFIG_GLOBAL: '/dev/null',
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_OPTIONAL_LOCKS: '0',
-        LC_ALL: 'C',
-        PATH: process.env.PATH ?? '',
-      },
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 20_000,
-    }).trim();
-
-    if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) {
-      return commit;
-    }
-  } catch {
-    // Unavailable Git state stays unpinned and remains fail-closed at worker review ingress.
-  }
-
-  return null;
+/** Returns the selected Workspace catalog snapshot, when configured. */
+function workspaceDataSourceCatalog(snapshot: RuntimeConfigSnapshot, workspaceId: string) {
+  return snapshot.workspaceDataSourceCatalogs.find((entry) => entry.workspaceId === workspaceId)
+    ?.catalog;
 }
 
-/**
- * Builds sourceRef context for repository-backed worker launches.
- *
- * @param coreDb Optional repository database handles for workspace source synchronization.
- * @param snapshot Runtime config snapshot captured for the turn.
- * @param workspaceId Workspace id that owns the turn.
- * @param repository Repository selected for the worker, when any.
- * @param workspaceRoots Worker roots captured for the turn.
- * @returns Optional Agent Environment Package sourceRef context.
- * @throws Error when a selected repository has no configured Core database.
- */
-export function workspaceSourceContextForTurn(
-  coreDb: CoreDb | undefined,
-  snapshot: RuntimeConfigSnapshot,
-  workspaceId: string,
-  repository: WorkspaceRepositoryResourceRecord | null,
-  workspaceRoots: MaterializedWorkspaceRoot[]
-): Pick<TurnStartRuntimeContext, 'workspaceDataSourceCatalog' | 'workspaceSourceRefs'> {
-  let workspaceDataSourceCatalog = snapshot.workspaceDataSourceCatalogs.find(
-    (entry) => entry.workspaceId === workspaceId
-  )?.catalog;
-
-  if (!repository || !workspaceRoots.some((root) => root.id === repository.resourceId)) {
-    return workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {};
-  }
-
-  if (!coreDb) {
-    throw new Error('Repository storage is unavailable for this NanoCore instance.');
-  }
-
-  workspaceDataSourceCatalog = syncRepositoryDataSourceCatalog({
-    dataRoot: coreDb.dataRoot,
-    workspaceId,
-    record: repository,
-  });
-
-  return {
-    workspaceDataSourceCatalog,
-    workspaceSourceRefs: { [repository.resourceId]: repository.resourceId },
-  };
+/** Creates the product-safe pre-admission source failure. */
+function blockedWorkspaceSource(message: string): TurnStartValidationError {
+  return new TurnStartValidationError('workspace_data_source_blocked', message, 409);
 }

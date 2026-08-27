@@ -28,7 +28,7 @@ interface ContainerImageEntry {
   /** Docker build context path relative to the repository root. */
   readonly context: string;
   /** Product role for the image. */
-  readonly kind: 'app' | 'worker' | 'dev';
+  readonly kind: 'app' | 'worker' | 'test';
   /** Whether version-tag releases publish this image. */
   readonly release: boolean;
   /** Target build platforms. */
@@ -45,6 +45,8 @@ interface ContainerImageEntry {
   readonly baseImage?: string;
   /** Worker execution contract implemented by the image. */
   readonly workerContract?: string;
+  /** Docker build target for a shared multi-target Dockerfile. */
+  readonly target?: string;
 }
 
 describe('container image manifest', () => {
@@ -58,7 +60,7 @@ describe('container image manifest', () => {
       'worker-codex',
       'worker-opencode',
       'worker-pi',
-      'dev-e2e',
+      'test-env',
     ]);
 
     for (const image of manifest.images) {
@@ -80,10 +82,22 @@ describe('container image manifest', () => {
     const workers = manifest.images.filter((image) => image.kind === 'worker');
 
     expect(workers.map((image) => image.runtime)).toEqual(['codex', 'opencode', 'pi']);
+    expect(workers.map((image) => image.dockerfile)).toEqual([
+      'containers/workers/Dockerfile',
+      'containers/workers/Dockerfile',
+      'containers/workers/Dockerfile',
+    ]);
+    expect(workers.map((image) => image.target)).toEqual([
+      'worker-codex',
+      'worker-opencode',
+      'worker-pi',
+    ]);
+    expect(new Set(workers.map((image) => image.target)).size).toBe(workers.length);
     for (const worker of workers) {
       expect(worker).toMatchObject({
         kind: 'worker',
         release: true,
+        target: worker.id,
         workerContract: 'openkit-worker-v1',
       });
       expect(worker.baseImage).toBeTruthy();
@@ -102,12 +116,12 @@ describe('container image manifest', () => {
     }
   });
 
-  it('does not publish dev/e2e images by default', () => {
+  it('does not publish the test execution image on release tags', () => {
     const manifest = readManifest();
-    const devE2e = manifest.images.find((image) => image.id === 'dev-e2e');
+    const testEnv = manifest.images.find((image) => image.id === 'test-env');
 
-    expect(devE2e).toMatchObject({
-      kind: 'dev',
+    expect(testEnv).toMatchObject({
+      kind: 'test',
       release: false,
     });
   });

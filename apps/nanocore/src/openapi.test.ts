@@ -1,10 +1,13 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { CapabilityUsageResponseSchema } from '@openkit/app-api-schemas';
+import {
+  CapabilityUsageResponseSchema,
+  CreateProviderSubscriptionAccountRequestSchema,
+  SubscriptionProviderIdSchema,
+} from '@openkit/app-api-schemas';
 import {
   AgentIdSchema,
-  AgentSessionIdSchema,
   ArtifactIdSchema,
   PROTOCOL_VERSION,
   ThreadIdSchema,
@@ -35,6 +38,8 @@ const NON_APP_API_ROUTE_PATTERNS = [
   /^\/internal(?:\/|$)/,
   /^\/api\/worker-control(?:\/|$)/,
   /^\/api\/worker-inference(?:\/|$)/,
+  /^\/api\/nanohost\/transport\/session\/admit$/,
+  /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|bridge\.(?:open|close)|image\.(?:acquire|build)|file\.export|reference\.import)(?:\/result)?$/,
   /^\/api\/workspaces(?:\/|$)/,
   /^\/api\/approvals(?:\/|$)/,
   /^\/(?:api\/)?health$/,
@@ -57,6 +62,14 @@ const DEPLOYMENT_ADMIN_ROUTES = new Set([
   'POST /api/app/auth/tokens',
   'POST /api/app/auth/tokens/{tokenId}/revoke',
   'POST /api/app/auth/tokens/{tokenId}/rotate',
+  'POST /api/app/nanohost/enroll',
+  'GET /api/app/nanohost/runtime-target',
+  'GET /api/app/nanohost/tokens',
+  'POST /api/app/nanohost/tokens',
+  'POST /api/app/nanohost/tokens/{tokenId}/revoke',
+  'POST /api/app/nanohost/tokens/{tokenId}/rotate',
+  'POST /api/app/nanohost/tokens/{tokenId}/rotation/abort',
+  'POST /api/app/nanohost/decommission',
   'POST /api/admin/config/reload',
   'GET /api/admin/config/files',
   'GET /api/admin/config/file',
@@ -64,14 +77,16 @@ const DEPLOYMENT_ADMIN_ROUTES = new Set([
   'PUT /api/admin/config/file',
   'GET /api/admin/config/schemas',
   'POST /api/admin/config/validate',
-  'GET /api/app/oauth/openai-codex/accounts',
-  'POST /api/app/oauth/openai-codex/accounts',
-  'PATCH /api/app/oauth/openai-codex/accounts/{accountSlotId}',
-  'DELETE /api/app/oauth/openai-codex/accounts/{accountSlotId}',
-  'GET /api/app/oauth/openai-codex/accounts/{accountSlotId}/status',
-  'POST /api/app/oauth/openai-codex/accounts/{accountSlotId}/start',
-  'POST /api/app/oauth/openai-codex/accounts/{accountSlotId}/cancel',
-  'POST /api/app/oauth/openai-codex/accounts/{accountSlotId}/logout',
+  'GET /api/app/provider-subscriptions',
+  'GET /api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
+  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
+  'PATCH /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
+  'DELETE /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
+  'GET /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/status',
+  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login',
+  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login/cancel',
+  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/logout',
+  'GET /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/quota',
   'GET /api/app/audit/events',
   'GET /api/app/permission-decisions',
   'POST /api/app/data-root/backups',
@@ -84,6 +99,19 @@ const DEPLOYMENT_ADMIN_ROUTES = new Set([
   'GET /api/app/workspaces/{workspaceId}/access-recovery',
   'POST /api/app/workspaces/{workspaceId}/access-recovery',
   'POST /api/app/users/{userId}/disable',
+]);
+const PRIVATE_NANOHOST_EFFECT_ROUTES = [
+  'sandbox.create',
+  'sandbox.delete',
+  'bridge.open',
+  'bridge.close',
+  'image.acquire',
+  'image.build',
+  'file.export',
+  'reference.import',
+].flatMap((operation) => [
+  `POST /api/nanohost/transport/effects/${operation}`,
+  `POST /api/nanohost/transport/effects/${operation}/result`,
 ]);
 const SESSION_COOKIE_ONLY_ROUTES = new Set([
   'GET /api/app/workspace-invitations',
@@ -180,6 +208,38 @@ function isProjectedAppApiRoute(method: string, path: string): boolean {
 }
 
 describe('app api openapi projection', () => {
+  it('keeps AgentSession continuity out of ordinary App API operations and schemas', () => {
+    const document = createAppOpenApiDocument();
+    const restartPath =
+      '/api/app/workspaces/{workspaceId}/runtime-config/stale-sessions/{sessionId}/restart';
+
+    expect(document.paths[restartPath]).toBeUndefined();
+    expect(document.components.schemas.ThreadDashboardResponse).not.toHaveProperty(
+      'properties.activeSession'
+    );
+    expect(JSON.stringify(document.components.schemas.ThreadDashboardResponse)).not.toContain(
+      'agentSessionId'
+    );
+    expect(JSON.stringify(document.components.schemas.StartChatModeResponse)).not.toContain(
+      'agentSessionId'
+    );
+    expect(JSON.stringify(document.components.schemas.StartTaskModeResponse)).not.toContain(
+      'agentSessionId'
+    );
+    expect(
+      JSON.stringify(document.components.schemas.ListWorkspaceRuntimeEvidenceResponse)
+    ).toContain('agentSessionId');
+    expect(JSON.stringify(document)).not.toContain('"staleSessions"');
+    expect(JSON.stringify(document)).not.toContain('restartRuntimeConfigStaleSession');
+  });
+
+  it('keeps AgentSession identity out of ordinary agent health refresh OpenAPI', () => {
+    const schema = createAppOpenApiDocument().components.schemas.AgentHealthRefreshResponse;
+
+    expect(schema).not.toHaveProperty('properties.sessions');
+    expect(JSON.stringify(schema)).not.toContain('AgentSession');
+  });
+
   it('does not expose arbitrary worker terminal commands', () => {
     const document = createAppOpenApiDocument();
     const serialized = JSON.stringify(document);
@@ -207,6 +267,117 @@ describe('app api openapi projection', () => {
       expect(schemas[name]).not.toHaveProperty('properties.providerId');
       expect(schemas[name]).not.toHaveProperty('properties.model');
     }
+  });
+
+  it('projects encrypted-file as the only Vault backend kind', () => {
+    const schemas = createAppOpenApiDocument().components.schemas;
+
+    for (const name of [
+      'VaultAdminStatusResponse',
+      'VaultAdminUnlockResponse',
+      'VaultAdminLockResponse',
+      'VaultAdminBootstrapCodexAuthJsonResponse',
+      'VaultAdminRebindWorkspaceReferenceResponse',
+    ] as const) {
+      expect(schemas[name]).toMatchObject({
+        properties: { backendKind: { enum: ['encrypted-file'] } },
+      });
+    }
+    expect(schemas.VaultAdminListWorkspaceReferencesResponse).toMatchObject({
+      properties: {
+        items: {
+          items: { properties: { backendKind: { enum: ['encrypted-file'] } } },
+        },
+      },
+    });
+    for (const name of [
+      'ListWorkspaceVaultUseRecordsResponse',
+      'ListServerVaultUseRecordsResponse',
+    ] as const) {
+      expect(schemas[name]).toMatchObject({
+        properties: {
+          vaultUseRecords: {
+            items: { properties: { backendKind: { enum: ['encrypted-file'] } } },
+          },
+        },
+      });
+    }
+  });
+
+  it('sources provider-subscription path parameters from shared schemas', () => {
+    const document = createAppOpenApiDocument();
+    const operation = jsonObject(
+      document.paths[
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}'
+      ]?.patch
+    );
+    const providerSchema = z.toJSONSchema(SubscriptionProviderIdSchema);
+    const accountSlotSchema = z.toJSONSchema(
+      CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId
+    );
+    delete providerSchema.$schema;
+    delete accountSlotSchema.$schema;
+
+    expect(operation?.parameters).toEqual([
+      {
+        name: 'subscriptionProviderId',
+        in: 'path',
+        required: true,
+        schema: providerSchema,
+      },
+      {
+        name: 'accountSlotId',
+        in: 'path',
+        required: true,
+        schema: accountSlotSchema,
+      },
+    ]);
+
+    const source = readFileSync(new URL('./openapi.ts', import.meta.url), 'utf8');
+    const providerParameterSource = source.match(
+      /const SUBSCRIPTION_PROVIDER_ID_PARAMETER = \{[\s\S]*?\n\};/u
+    )?.[0];
+    const accountSlotParameterSource = source.match(
+      /const ACCOUNT_SLOT_ID_PARAMETER = \{[\s\S]*?\n\};/u
+    )?.[0];
+    const providerSchemaValue =
+      /\bschema:\s*[A-Za-z_$][\w$]*\(\s*SubscriptionProviderIdSchema\s*\)\s*,?/u;
+    const accountSlotSchemaValue =
+      /\bschema:\s*[A-Za-z_$][\w$]*\(\s*CreateProviderSubscriptionAccountRequestSchema\.shape\.accountSlotId\s*\)\s*,?/u;
+    const localProviderSchema = /\bz\.enum\s*\(/u;
+    const localAccountSlotSchema = /\.regex\s*\(/u;
+    const inlineProviderEnum = /\benum\s*:\s*\[\s*['"]openai-codex['"]\s*,\s*['"]xai['"]\s*\]/u;
+    const inlineAccountSlotPattern = /\bpattern\s*:\s*(['"])\^\[a-z0-9\]\[a-z0-9_-\]\{0,63\}\$\1/u;
+    const adversarialProviderParameter =
+      "schema: project(z.enum(['openai-codex', 'xai'])), // SubscriptionProviderIdSchema";
+    const adversarialAccountSlotParameter =
+      'schema: project(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/)), // CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId';
+
+    expect({
+      accountSlot:
+        accountSlotSchemaValue.test(adversarialAccountSlotParameter) &&
+        !localAccountSlotSchema.test(adversarialAccountSlotParameter) &&
+        !inlineAccountSlotPattern.test(adversarialAccountSlotParameter),
+      provider:
+        providerSchemaValue.test(adversarialProviderParameter) &&
+        !localProviderSchema.test(adversarialProviderParameter) &&
+        !inlineProviderEnum.test(adversarialProviderParameter),
+    }).toEqual({ accountSlot: false, provider: false });
+
+    expect({
+      accountSlot: Boolean(
+        accountSlotParameterSource &&
+          accountSlotSchemaValue.test(accountSlotParameterSource) &&
+          !localAccountSlotSchema.test(accountSlotParameterSource) &&
+          !inlineAccountSlotPattern.test(accountSlotParameterSource)
+      ),
+      provider: Boolean(
+        providerParameterSource &&
+          providerSchemaValue.test(providerParameterSource) &&
+          !localProviderSchema.test(providerParameterSource) &&
+          !inlineProviderEnum.test(providerParameterSource)
+      ),
+    }).toEqual({ accountSlot: true, provider: true });
   });
 
   it('projects the storage layout report route from shared schemas', () => {
@@ -396,147 +567,140 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.components.schemas.CodexOAuthAccountsPayload).toMatchObject({
+    expect(document.components.schemas.ProviderSubscriptionsResponse).toMatchObject({
       type: 'object',
-      required: ['accounts', 'defaultAccountSlotId'],
+      required: ['providers'],
     });
-    expect(document.paths['/api/app/oauth/openai-codex/accounts']?.get).toMatchObject({
-      operationId: 'listOpenAICodexOAuthAccounts',
-      tags: ['oauth'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CodexOAuthAccountsPayload',
-              },
-            },
-          },
-        },
-      },
+    expect(document.components.schemas.ProviderSubscriptionAccountsResponse).toMatchObject({
+      type: 'object',
+      required: ['accounts'],
     });
-    expect(document.paths['/api/app/oauth/openai-codex/accounts']?.post).toMatchObject({
-      operationId: 'createOpenAICodexOAuthAccount',
-      tags: ['oauth'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/CreateOpenAICodexOAuthAccountRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CodexOAuthAccountSummary',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/oauth/openai-codex/accounts/{accountSlotId}']?.patch
-    ).toMatchObject({
-      operationId: 'updateOpenAICodexOAuthAccount',
-      tags: ['oauth'],
-      parameters: [expect.objectContaining({ name: 'accountSlotId', in: 'path', required: true })],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/UpdateOpenAICodexOAuthAccountRequest',
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/oauth/openai-codex/accounts/{accountSlotId}']?.delete
-    ).toMatchObject({
-      operationId: 'deleteOpenAICodexOAuthAccount',
-      tags: ['oauth'],
-      responses: {
-        '204': {
-          description: 'OpenAI Codex OAuth account deleted.',
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/oauth/openai-codex/accounts/{accountSlotId}/status']?.get
-    ).toMatchObject({
-      operationId: 'getOpenAICodexOAuthAccountStatus',
-      tags: ['oauth'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CodexOAuthStatusPayload',
-              },
-            },
-          },
-        },
-      },
-    });
-    for (const route of [
+    for (const schemaName of [
+      'CancelOpenAICodexOAuthRequest',
+      'CodexOAuthAccountSummary',
+      'CodexOAuthAccountsPayload',
+      'CodexOAuthStatusPayload',
+      'CreateOpenAICodexOAuthAccountRequest',
+      'StartOpenAICodexOAuthRequest',
+      'UpdateOpenAICodexOAuthAccountRequest',
+    ]) {
+      expect(document.components.schemas).not.toHaveProperty(schemaName);
+    }
+    for (const [path, method, operationId, requestSchema, responseSchema] of [
       [
-        '/api/app/oauth/openai-codex/accounts/{accountSlotId}/start',
-        'startOpenAICodexOAuthAccountLogin',
-        'StartOpenAICodexOAuthRequest',
+        '/api/app/provider-subscriptions',
+        'get',
+        'listSubscriptionProviders',
+        null,
+        'ProviderSubscriptionsResponse',
       ],
       [
-        '/api/app/oauth/openai-codex/accounts/{accountSlotId}/cancel',
-        'cancelOpenAICodexOAuthAccountLogin',
-        'CancelOpenAICodexOAuthRequest',
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
+        'get',
+        'listProviderSubscriptionAccounts',
+        null,
+        'ProviderSubscriptionAccountsResponse',
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
+        'post',
+        'createProviderSubscriptionAccount',
+        'CreateProviderSubscriptionAccountRequest',
+        'ProviderSubscriptionAccount',
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
+        'patch',
+        'updateProviderSubscriptionAccount',
+        'UpdateProviderSubscriptionAccountRequest',
+        'ProviderSubscriptionAccount',
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
+        'delete',
+        'deleteProviderSubscriptionAccount',
+        null,
+        null,
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/status',
+        'get',
+        'getProviderSubscriptionAccountStatus',
+        null,
+        'ProviderSubscriptionAccount',
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login',
+        'post',
+        'startProviderSubscriptionAccountLogin',
+        'StartProviderSubscriptionAccountLoginRequest',
+        'ProviderSubscriptionAccount',
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login/cancel',
+        'post',
+        'cancelProviderSubscriptionAccountLogin',
+        'CancelProviderSubscriptionAccountLoginRequest',
+        'ProviderSubscriptionAccount',
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/logout',
+        'post',
+        'logoutProviderSubscriptionAccount',
+        null,
+        'ProviderSubscriptionAccount',
+      ],
+      [
+        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/quota',
+        'get',
+        'getProviderSubscriptionAccountQuota',
+        null,
+        'ProviderSubscriptionQuota',
       ],
     ] as const) {
-      expect(document.paths[route[0]]?.post).toMatchObject({
-        operationId: route[1],
-        tags: ['oauth'],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: `#/components/schemas/${route[2]}`,
-              },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/CodexOAuthStatusPayload',
+      const operation = jsonObject(document.paths[path]?.[method]);
+      const expectedParameterNames = [...path.matchAll(/\{([^}]+)\}/g)].map(([, name]) => name);
+
+      expect(operation?.parameters ?? []).toEqual(
+        expectedParameterNames.map((name) =>
+          expect.objectContaining({ in: 'path', name, required: true })
+        )
+      );
+      expect(operation).toMatchObject({
+        operationId,
+        tags: ['provider-subscriptions'],
+        ...(requestSchema
+          ? {
+              requestBody: {
+                content: {
+                  'application/json': {
+                    schema: {
+                      $ref: `#/components/schemas/${requestSchema}`,
+                    },
+                  },
                 },
               },
-            },
-          },
-        },
-      });
-    }
-    expect(
-      document.paths['/api/app/oauth/openai-codex/accounts/{accountSlotId}/logout']?.post
-    ).toMatchObject({
-      operationId: 'logoutOpenAICodexOAuthAccount',
-      tags: ['oauth'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CodexOAuthStatusPayload',
+            }
+          : {}),
+        responses: responseSchema
+          ? {
+              '200': {
+                content: {
+                  'application/json': {
+                    schema: {
+                      $ref: `#/components/schemas/${responseSchema}`,
+                    },
+                  },
+                },
+              },
+            }
+          : {
+              '204': {
+                description: 'Provider-subscription account deleted.',
               },
             },
-          },
-        },
-      },
-    });
+      });
+    }
     expect(document.components.schemas.RuntimeConfigReloadResponse).toMatchObject({
       type: 'object',
       required: ['status', 'runtimeConfig', 'plan'],
@@ -2143,14 +2307,14 @@ describe('app api openapi projection', () => {
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/vault/injection-plans']?.get
     ).toMatchObject({
-      operationId: 'listWorkspaceInjectionPlans',
+      operationId: 'listWorkspaceVaultInjectionPlans',
       tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspaceInjectionPlansResponse',
+                $ref: '#/components/schemas/ListWorkspaceVaultInjectionPlansResponse',
               },
             },
           },
@@ -2160,14 +2324,14 @@ describe('app api openapi projection', () => {
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/vault/injection-receipts']?.get
     ).toMatchObject({
-      operationId: 'listWorkspaceInjectionReceipts',
+      operationId: 'listWorkspaceVaultInjectionReceipts',
       tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspaceInjectionReceiptsResponse',
+                $ref: '#/components/schemas/ListWorkspaceVaultInjectionReceiptsResponse',
               },
             },
           },
@@ -2553,6 +2717,12 @@ describe('app api openapi projection', () => {
         });
       }
     }
+
+    expect(document.components?.schemas?.BindThreadMaterialRequest).toMatchObject({
+      properties: {
+        expectedBindingState: { enum: ['not_bound'] },
+      },
+    });
   });
 
   it('projects the Stage 4 Artifact Review operations from shared schemas', () => {
@@ -2837,6 +3007,15 @@ describe('app api openapi projection', () => {
     expect(duplicateLiveOperations).toEqual([]);
     expect(staleExclusions).toEqual([]);
     expect(projectedLiveOperations).toEqual(documentedOperations);
+    expect(app.routes.map(({ method, path }) => `${method} ${path}`)).not.toContain(
+      'POST /api/nanohost/transport/session/fence'
+    );
+    expect(
+      app.routes
+        .filter(({ path }) => path.startsWith('/api/nanohost/transport/effects/'))
+        .map(({ method, path }) => `${method} ${path}`)
+        .sort()
+    ).toEqual([...PRIVATE_NANOHOST_EFFECT_ROUTES].sort());
   });
 
   it('keeps the direct Core and Gateway access inventory aligned with live routes', () => {
@@ -3033,7 +3212,6 @@ describe('app api openapi projection', () => {
 
     for (const [name, schema] of Object.entries({
       AgentId: AgentIdSchema,
-      AgentSessionId: AgentSessionIdSchema,
       ArtifactId: ArtifactIdSchema,
       ThreadId: ThreadIdSchema,
       TurnId: TurnIdSchema,
@@ -3230,6 +3408,14 @@ describe('app api openapi projection', () => {
       'createOpenKitAccessToken',
       'revokeOpenKitAccessToken',
       'rotateOpenKitAccessToken',
+      'enrollNanoHost',
+      'getNanoHostRuntimeTargetStatus',
+      'listNanoHostTransportTokens',
+      'issueNanoHostTransportToken',
+      'revokeNanoHostTransportToken',
+      'rotateNanoHostTransportToken',
+      'abortNanoHostTransportTokenRotation',
+      'decommissionNanoHost',
       'getVaultAdminStatus',
       'listServerVaultUseRecords',
       'unlockVaultAdminBackend',
@@ -3238,14 +3424,16 @@ describe('app api openapi projection', () => {
       'listWorkspaceVaultReferences',
       'listWorkspaceVaultUseRecords',
       'lockVaultAdminBackend',
-      'listOpenAICodexOAuthAccounts',
-      'createOpenAICodexOAuthAccount',
-      'updateOpenAICodexOAuthAccount',
-      'deleteOpenAICodexOAuthAccount',
-      'getOpenAICodexOAuthAccountStatus',
-      'startOpenAICodexOAuthAccountLogin',
-      'cancelOpenAICodexOAuthAccountLogin',
-      'logoutOpenAICodexOAuthAccount',
+      'listSubscriptionProviders',
+      'listProviderSubscriptionAccounts',
+      'createProviderSubscriptionAccount',
+      'updateProviderSubscriptionAccount',
+      'deleteProviderSubscriptionAccount',
+      'getProviderSubscriptionAccountStatus',
+      'startProviderSubscriptionAccountLogin',
+      'cancelProviderSubscriptionAccountLogin',
+      'logoutProviderSubscriptionAccount',
+      'getProviderSubscriptionAccountQuota',
       'getAppDiagnostics',
       'getSetupDiagnostics',
       'getStorageLayoutReport',
@@ -3261,7 +3449,6 @@ describe('app api openapi projection', () => {
       'updateRuntimeConfigFile',
       'getRuntimeConfigSchemas',
       'validateRuntimeConfig',
-      'restartRuntimeConfigStaleSession',
       'quickChat',
       'startChatMode',
       'listThreadItems',
@@ -3301,8 +3488,8 @@ describe('app api openapi projection', () => {
       'listServerAuditEvents',
       'listWorkspacePermissionDecisions',
       'listWorkspaceVaultGrants',
-      'listWorkspaceInjectionPlans',
-      'listWorkspaceInjectionReceipts',
+      'listWorkspaceVaultInjectionPlans',
+      'listWorkspaceVaultInjectionReceipts',
       'listServerPermissionDecisions',
       'getWorkspaceDashboard',
       'getThreadDashboard',

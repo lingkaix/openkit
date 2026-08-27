@@ -153,8 +153,6 @@ export interface WorkerCheckpointContextAssemblySummary {
   readonly contextRefs: readonly { readonly kind: string; readonly id: string }[];
   /** Governed Knowledge selection consumed by a direct Task, or null when not requested. */
   readonly knowledgeSelectionInput: { readonly retrievalTraceId: string } | null;
-  /** Workspace repository resource selected for the worker turn. */
-  readonly repositoryResourceId: string;
 }
 
 /**
@@ -174,17 +172,23 @@ export function createWorkerCheckpointContextDiagnostics(
  *
  * @param evidence Terminal evidence ids returned by a worker.
  * @param contextAssembly Product-safe context assembly summary to preserve for recovery.
+ * @param failureSummary Product-safe worker failure summary to preserve for RuntimeEvidence.
  * @returns JSON diagnostics summary, or null when there is no evidence.
  */
 export function createWorkerCheckpointEvidenceDiagnostics(
   evidence: WorkerCheckpointEvidenceRefs,
-  contextAssembly?: WorkerCheckpointContextAssemblySummary | null
+  contextAssembly?: WorkerCheckpointContextAssemblySummary | null,
+  failureSummary?: string | null
 ): string | null {
-  return evidence.itemIds.length > 0 || evidence.artifactIds.length > 0 || contextAssembly
+  return evidence.itemIds.length > 0 ||
+    evidence.artifactIds.length > 0 ||
+    contextAssembly ||
+    failureSummary
     ? JSON.stringify({
         itemIds: evidence.itemIds,
         artifactIds: evidence.artifactIds,
         ...(contextAssembly ? { contextAssembly } : {}),
+        ...(failureSummary ? { failureSummary: redactInternalAgentText(failureSummary) } : {}),
       })
     : null;
 }
@@ -203,24 +207,58 @@ export function parseWorkerCheckpointContextAssembly(
   }
 
   try {
-    const parsed = JSON.parse(diagnosticsSummary) as {
-      contextAssembly?: WorkerCheckpointContextAssemblySummary;
-    };
+    const parsed = JSON.parse(diagnosticsSummary) as { contextAssembly?: unknown };
     const summary = parsed.contextAssembly;
-    const knowledgeSelectionInput = summary?.knowledgeSelectionInput;
+    if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
+      return null;
+    }
 
-    return summary &&
-      typeof summary.contextDigest === 'string' &&
-      typeof summary.repositoryResourceId === 'string' &&
-      Array.isArray(summary.contextRefs) &&
-      (knowledgeSelectionInput === null ||
-        (typeof knowledgeSelectionInput === 'object' &&
-          Object.keys(knowledgeSelectionInput).length === 1 &&
-          /^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-            knowledgeSelectionInput.retrievalTraceId
-          )))
-      ? summary
-      : null;
+    const record = summary as Record<string, unknown>;
+    const contextRefs = record.contextRefs;
+    if (typeof record.contextDigest !== 'string' || !Array.isArray(contextRefs)) {
+      return null;
+    }
+
+    const normalizedContextRefs: { kind: string; id: string }[] = [];
+    for (const reference of contextRefs) {
+      if (reference === null || typeof reference !== 'object' || Array.isArray(reference)) {
+        return null;
+      }
+      const ref = reference as Record<string, unknown>;
+      if (typeof ref.kind !== 'string' || typeof ref.id !== 'string') {
+        return null;
+      }
+      normalizedContextRefs.push({ kind: ref.kind, id: ref.id });
+    }
+
+    const knowledgeSelectionInput = record.knowledgeSelectionInput;
+    let normalizedKnowledgeSelectionInput: { retrievalTraceId: string } | null = null;
+    if (knowledgeSelectionInput !== null) {
+      if (
+        typeof knowledgeSelectionInput !== 'object' ||
+        Array.isArray(knowledgeSelectionInput) ||
+        Object.keys(knowledgeSelectionInput).length !== 1
+      ) {
+        return null;
+      }
+      const retrievalTraceId = (knowledgeSelectionInput as Record<string, unknown>)
+        .retrievalTraceId;
+      if (
+        typeof retrievalTraceId !== 'string' ||
+        !/^krt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          retrievalTraceId
+        )
+      ) {
+        return null;
+      }
+      normalizedKnowledgeSelectionInput = { retrievalTraceId };
+    }
+
+    return {
+      contextDigest: record.contextDigest,
+      contextRefs: normalizedContextRefs,
+      knowledgeSelectionInput: normalizedKnowledgeSelectionInput,
+    };
   } catch {
     return null;
   }
@@ -700,7 +738,21 @@ function requireWorkerCheckpoint(
  * @returns Redacted diagnostics text or null.
  */
 function redactOptionalText(value: string | null | undefined): string | null {
-  return value === undefined || value === null ? null : redactInternalAgentText(value);
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const evidence = parseWorkerCheckpointEvidence(value);
+  const contextAssembly = parseWorkerCheckpointContextAssembly(value);
+  if (evidence) {
+    const parsed = JSON.parse(value) as { failureSummary?: unknown };
+    const failureSummary = typeof parsed.failureSummary === 'string' ? parsed.failureSummary : null;
+    return createWorkerCheckpointEvidenceDiagnostics(evidence, contextAssembly, failureSummary);
+  }
+  if (contextAssembly) {
+    return createWorkerCheckpointContextDiagnostics(contextAssembly);
+  }
+  return redactInternalAgentText(value);
 }
 
 /**

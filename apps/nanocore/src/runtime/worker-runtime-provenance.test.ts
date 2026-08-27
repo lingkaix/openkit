@@ -795,7 +795,6 @@ function createImportFixture(prefix: string): ImportFixture {
       agentSessionId: 'as_runtime_provenance_1',
       triggerActor: turn.triggerActor,
       backend: {
-        workerControlBaseUrl: 'http://host.openshell.internal:3000/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-07-13T00:00:00.000Z',

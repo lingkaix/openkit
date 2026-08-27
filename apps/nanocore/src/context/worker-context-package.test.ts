@@ -19,6 +19,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
+import { chatTaskModeTurnId, commandInputHash } from '../runtime/idempotent-command.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
@@ -95,8 +96,24 @@ function sha256(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }
 
-/** Creates deterministic package bytes for one Goal worker Turn. */
-function createPackage(workspaceRoot: string, writeFiles = true): WorkerContextPackageFiles {
+/** Recomputes the canonical trace digest after a test changes immutable trace fields. */
+function rewriteTrace(
+  trace: WorkerContextPackageTrace,
+  changes: Partial<Omit<WorkerContextPackageTrace, 'contextPackageDigest'>>
+): WorkerContextPackageTrace {
+  const { contextPackageDigest: _priorDigest, ...traceWithoutDigest } = { ...trace, ...changes };
+  return {
+    ...traceWithoutDigest,
+    contextPackageDigest: `ctxpkg_sha256_${commandInputHash(traceWithoutDigest).slice('sha256:'.length)}`,
+  };
+}
+
+/** Creates deterministic package bytes for one worker Turn. */
+function createPackage(
+  workspaceRoot: string,
+  writeFiles = true,
+  turnId = 'tu_context'
+): WorkerContextPackageFiles {
   const packageFiles = createWorkerContextPackageFiles({
     contextBudgetTokens: 4_096,
     includedItemIds: ['it_request', 'it_prior', 'it_gate_request', 'it_gate_response'],
@@ -125,7 +142,7 @@ function createPackage(workspaceRoot: string, writeFiles = true): WorkerContextP
       },
     ],
     threadId: 'th_context',
-    turnId: 'tu_context',
+    turnId,
     workerRequestBytes: WORKER_REQUEST_BYTES,
     workerRequestItemId: 'it_request',
     workspaceId: 'ws_context',
@@ -139,7 +156,8 @@ function createPackage(workspaceRoot: string, writeFiles = true): WorkerContextP
 
 /** Creates one resolved AEP carrying the exact dedicated generated context input. */
 function createEnvironmentPackage(
-  packageFiles: WorkerContextPackageFiles
+  packageFiles: WorkerContextPackageFiles,
+  requestId = 'req_context'
 ): AgentEnvironmentPackage {
   const unresolved = resolveAgentEnvironmentPackage({
     agent: {
@@ -176,22 +194,21 @@ function createEnvironmentPackage(
     triggerActor: { kind: 'user', id: 'user_local' },
     backend: {
       kind: 'openshell',
-      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
     },
-    requestId: 'req_context',
+    requestId,
     turn: {
       completedAt: null,
       configVersion: null,
       durationMs: null,
       error: null,
       humanGate: null,
-      id: 'tu_context',
+      id: packageFiles.turnId,
       items: [],
       startedAt: TURN_STARTED_AT,
       status: 'running',
-      threadId: 'th_context',
+      threadId: packageFiles.threadId,
       triggerActor: { kind: 'user', id: 'user_local' },
-      workspaceId: 'ws_context',
+      workspaceId: packageFiles.workspaceId,
     },
     turnInput: WORKER_REQUEST_BYTES,
     userId: 'user_context',
@@ -207,8 +224,8 @@ function createEnvironmentPackage(
       inputs: [
         buildWorkerContextPackageWorkspaceInput({
           packageRootDigest: packageFiles.packageRootDigest,
-          threadId: 'th_context',
-          turnId: 'tu_context',
+          threadId: packageFiles.threadId,
+          turnId: packageFiles.turnId,
         }),
       ],
     },
@@ -216,13 +233,18 @@ function createEnvironmentPackage(
 }
 
 /** Creates an accepted trace and every dependency used by the shared verifier. */
-function createAcceptedFixture(workspaceRoot: string): {
+function createAcceptedFixture(
+  workspaceRoot: string,
+  options: { readonly requestId?: string; readonly turnId?: string } = {}
+): {
   authorities: WorkerContextPackageAuthorityReader;
   packageFiles: WorkerContextPackageFiles;
   trace: WorkerContextPackageTrace;
 } {
-  const packageFiles = createPackage(workspaceRoot);
-  const environmentPackage = createEnvironmentPackage(packageFiles);
+  const requestId = options.requestId ?? 'req_context';
+  const turnId = options.turnId ?? 'tu_context';
+  const packageFiles = createPackage(workspaceRoot, true, turnId);
+  const environmentPackage = createEnvironmentPackage(packageFiles, requestId);
   const trace = createWorkerContextPackageTrace({
     agentSessionId: 'as_context',
     excludedItems: [{ itemId: 'it_excluded', reason: 'policy_excluded' }],
@@ -237,7 +259,7 @@ function createAcceptedFixture(workspaceRoot: string): {
     ],
     packageFiles,
     packageSnapshotId: environmentPackage.snapshotId,
-    requestId: 'req_context',
+    requestId,
     taskId: 'task_context',
   });
   const requiredCapabilities = environmentPackage.backend.requiredCapabilities;
@@ -252,8 +274,8 @@ function createAcceptedFixture(workspaceRoot: string): {
     generatedFiles: [],
     id: trace.workspaceInputSnapshotId,
     ignoredPaths: [],
-    pathScope: ['context_tu_context'],
-    resourceId: 'context_tu_context',
+    pathScope: [`context_${turnId}`],
+    resourceId: `context_${turnId}`,
     resourceKind: 'filesystem' as const,
     strategy: 'filesystem' as const,
     workspaceId: 'ws_context',
@@ -309,10 +331,10 @@ function createAcceptedFixture(workspaceRoot: string): {
   ]);
   const authorities: WorkerContextPackageAuthorityReader = {
     readAdmission: () => ({
-      requestId: 'req_context',
+      requestId,
       status: 'admitted',
       threadId: 'th_context',
-      turnId: 'tu_context',
+      turnId,
       workspaceId: 'ws_context',
     }),
     readAgentEnvironmentPackage: () => environmentPackage,
@@ -330,7 +352,7 @@ function createAcceptedFixture(workspaceRoot: string): {
       packageSnapshotId: environmentPackage.snapshotId,
       readinessEvidence,
       threadId: 'th_context',
-      turnId: 'tu_context',
+      turnId,
       workspaceHandoffState: 'complete',
       workspaceId: 'ws_context',
     }),
@@ -395,7 +417,7 @@ function createAcceptedFixture(workspaceRoot: string): {
         status: 'completed',
         text: WORKER_REQUEST_BYTES,
         threadId: 'th_context',
-        turnId: 'tu_context',
+        turnId,
         type: 'user-message',
         actor: { kind: 'user', id: 'user_local' },
         workspaceId: 'ws_context',
@@ -403,9 +425,10 @@ function createAcceptedFixture(workspaceRoot: string): {
     ],
     readTurn: () => ({
       agentSessionId: 'as_context',
-      id: 'tu_context',
+      id: turnId,
       startedAt: TURN_STARTED_AT,
       threadId: 'th_context',
+      triggerActor: { kind: 'user', id: 'user_local' },
       workspaceId: 'ws_context',
     }),
     readWorkspaceInputSnapshot: () => workspaceInputSnapshot,
@@ -420,9 +443,13 @@ function createAcceptedFixture(workspaceRoot: string): {
  * Creates one reminted imported-history trace with matching portable owners and runtime lookalikes.
  *
  * @param workspaceRoot Temporary Workspace root that receives exact package files.
+ * @param directLike Whether the portable trace omits Goal and Task lineage with null Knowledge.
  * @returns Imported trace authorities, trace, and a counter for forbidden runtime-owner reads.
  */
-function createImportedHistoryFixture(workspaceRoot: string): {
+function createImportedHistoryFixture(
+  workspaceRoot: string,
+  directLike = false
+): {
   authorities: WorkerContextPackageAuthorityReader;
   runtimeAuthorityReads: () => number;
   trace: WorkerContextPackageTrace;
@@ -432,7 +459,7 @@ function createImportedHistoryFixture(workspaceRoot: string): {
   const packageSnapshotId = 'aepsnap_imported_ws_context_1';
   const agentSessionId = 'as_imported_ws_context_1';
   const historicalWorkerSessionId = `import-history-worker_${packageSnapshotId}`;
-  const trace = createWorkerContextPackageTrace({
+  const importedTrace = createWorkerContextPackageTrace({
     agentSessionId,
     excludedItems: accepted.trace.excludedItems,
     goalId: accepted.trace.goalId,
@@ -442,6 +469,9 @@ function createImportedHistoryFixture(workspaceRoot: string): {
     requestId,
     taskId: accepted.trace.taskId,
   });
+  const trace = directLike
+    ? rewriteTrace(importedTrace, { goalId: null, taskId: null })
+    : importedTrace;
   const sourceEnvironmentPackage = accepted.authorities.readAgentEnvironmentPackage(
     accepted.trace.workspaceId,
     accepted.trace.packageSnapshotId
@@ -520,6 +550,41 @@ function createImportedHistoryFixture(workspaceRoot: string): {
     },
     runtimeAuthorityReads: () => runtimeAuthorityReads,
     trace,
+  };
+}
+
+/**
+ * Creates a complete live trace fixture whose structured request carries null Knowledge.
+ *
+ * @param workspaceRoot Temporary Workspace root that receives the package bytes.
+ * @param options Exact Turn identity and persisted trigger actor.
+ * @returns Strict-verifier authorities and a digest-valid null-Knowledge trace.
+ */
+function createLiveNullKnowledgeFixture(
+  workspaceRoot: string,
+  options: {
+    readonly turnId: string;
+    readonly triggerActor?: {
+      readonly id: string;
+      readonly kind: 'agent' | 'user';
+      readonly responsibleUserId?: string | null;
+    };
+  }
+): {
+  authorities: WorkerContextPackageAuthorityReader;
+  trace: WorkerContextPackageTrace;
+} {
+  const fixture = createAcceptedFixture(workspaceRoot, { turnId: options.turnId });
+  const triggerActor = options.triggerActor ?? { kind: 'user' as const, id: 'user_local' };
+  return {
+    authorities: {
+      ...fixture.authorities,
+      readTurn: (...args) => {
+        const turn = fixture.authorities.readTurn(...args);
+        return turn ? { ...turn, triggerActor } : null;
+      },
+    },
+    trace: rewriteTrace(fixture.trace, { goalId: null, taskId: null }),
   };
 }
 
@@ -679,13 +744,91 @@ describe('worker Context Package owner', () => {
         taskId: 'task_context',
       })
     ).toThrow();
-    expect(() =>
+    expect(
       createWorkerContextPackageTrace({
         ...traceInput,
         knowledgeSelectionInput: null,
         packageFiles: createPackage(workspaceRoot, false),
       })
-    ).toThrow('direct Task lacks its governed Knowledge selection input');
+    ).toMatchObject({
+      goalId: null,
+      knowledgeExclusions: [],
+      knowledgeSelectionInput: null,
+      knowledgeSelections: [],
+      taskId: null,
+    });
+  });
+
+  it('accepts null Knowledge only for the exact persisted user Chat-subordinate Turn', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-chat-task-'));
+    const turnId = chatTaskModeTurnId('user_local', 'ws_context', 'th_context', 'req_context');
+    const fixture = createLiveNullKnowledgeFixture(workspaceRoot, { turnId });
+
+    expect(
+      writeWorkerContextPackageTrace({
+        authorities: fixture.authorities,
+        trace: fixture.trace,
+        workspaceRoot,
+      })
+    ).toEqual(fixture.trace);
+    expect(
+      existsSync(join(workspaceRoot, `threads/th_context/turns/${turnId}/context-package.json`))
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'ordinary direct Task',
+      turnId: `turn_req_context_${commandInputHash({
+        actorId: 'user_local',
+        command: 'task.start',
+        requestId: 'req_context',
+        threadId: 'th_context',
+        workspaceId: 'ws_context',
+      }).slice(-16)}`,
+    },
+    {
+      name: 'non-user trigger',
+      triggerActor: {
+        id: 'agent_context',
+        kind: 'agent' as const,
+        responsibleUserId: 'user_local',
+      },
+      turnId: chatTaskModeTurnId('agent_context', 'ws_context', 'th_context', 'req_context'),
+    },
+    {
+      name: 'actor mismatch',
+      turnId: chatTaskModeTurnId('user_other', 'ws_context', 'th_context', 'req_context'),
+    },
+    {
+      name: 'Workspace mismatch',
+      turnId: chatTaskModeTurnId('user_local', 'ws_other', 'th_context', 'req_context'),
+    },
+    {
+      name: 'Thread mismatch',
+      turnId: chatTaskModeTurnId('user_local', 'ws_context', 'th_other', 'req_context'),
+    },
+    {
+      name: 'request mismatch',
+      turnId: chatTaskModeTurnId('user_local', 'ws_context', 'th_context', 'req_other'),
+    },
+  ])('rejects null Knowledge for $name before immutable trace write', ({
+    triggerActor,
+    turnId,
+  }) => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-chat-reject-'));
+    const fixture = createLiveNullKnowledgeFixture(workspaceRoot, { triggerActor, turnId });
+
+    expect(() =>
+      writeWorkerContextPackageTrace({
+        authorities: fixture.authorities,
+        trace: fixture.trace,
+        workspaceRoot,
+      })
+    ).toThrow();
+    expect(
+      existsSync(join(workspaceRoot, `threads/th_context/turns/${turnId}/context-package.json`))
+    ).toBe(false);
   });
 
   it('persists one immutable trace and verifies every durable owner without a checkpoint', () => {
@@ -790,7 +933,7 @@ describe('worker Context Package owner', () => {
 
   it('accepts exact imported history without promoting matching runtime lookalikes', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-history-'));
-    const fixture = createImportedHistoryFixture(workspaceRoot);
+    const fixture = createImportedHistoryFixture(workspaceRoot, true);
 
     expect(
       verifyImportedWorkerContextPackageTrace({
@@ -799,6 +942,7 @@ describe('worker Context Package owner', () => {
         workspaceRoot,
       })
     ).toEqual(fixture.trace);
+    expect(fixture.trace.knowledgeSelectionInput).toBeNull();
     expect(
       verifyPortableWorkerContextPackageTrace({
         authorities: fixture.authorities,
@@ -889,7 +1033,7 @@ describe('worker Context Package owner', () => {
       }),
     },
     {
-      name: 'non-stale Agent Session',
+      name: 'non-stale AgentSession',
       alter: (
         fixture: ReturnType<typeof createImportedHistoryFixture>,
         _workspaceRoot: string
@@ -1002,7 +1146,7 @@ describe('worker Context Package owner', () => {
           }),
       ],
       [
-        'Turn Agent Session',
+        'Turn AgentSession',
         () =>
           verify({
             ...fixture.authorities,

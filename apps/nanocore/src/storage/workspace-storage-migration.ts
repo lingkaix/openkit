@@ -152,7 +152,7 @@ interface AepSnapshotDigestMapping {
   readonly path: string;
   /** V1 enclosing snapshot-record content digest. */
   readonly sourceContentDigest: string;
-  /** V2 enclosing snapshot-record content digest. */
+  /** V3 enclosing snapshot-record content digest. */
   readonly targetContentDigest: string;
 }
 
@@ -170,7 +170,7 @@ interface WorkspaceMigrationReportEntry {
 
 /** Evidence-only report written after a verified predecessor backup exists. */
 interface WorkspaceStorageMigrationReport {
-  /** Deterministic V1-to-V2 AEP snapshot digest rewrites. */
+  /** Deterministic V1-to-V3 AEP snapshot digest rewrites. */
   readonly aepSnapshots: AepSnapshotDigestMapping[];
   /** Verified predecessor backup identity and digest. */
   readonly backup: {
@@ -207,7 +207,7 @@ interface WorkspaceStorageMigrationReport {
 
 /** Input used to build one success or failure evidence report. */
 interface CreateMigrationReportInput {
-  /** Deterministic V1-to-V2 AEP snapshot digest rewrites. */
+  /** Deterministic V1-to-V3 AEP snapshot digest rewrites. */
   readonly aepSnapshots: AepSnapshotDigestMapping[];
   /** Verified predecessor cold backup. */
   readonly backup: VerifiedDataRootBackupManifest;
@@ -912,7 +912,7 @@ function migrateStagedAepSnapshots(
           ? snapshot.schemaVersion
           : undefined;
 
-      if (schemaVersion === 2) {
+      if (schemaVersion === 3) {
         continue;
       }
       if (schemaVersion !== 1) {
@@ -933,13 +933,13 @@ function migrateStagedAepSnapshots(
 }
 
 /**
- * Rewrites one V1 AEP snapshot record into the exact redacted V2 schema.
+ * Rewrites one V1 AEP snapshot record into the exact redacted V3 schema.
  *
  * @param path Staged snapshot record path.
  * @param reportPath Canonical successor path relative to the data root.
  * @param value Parsed V1 snapshot record.
  * @returns Predecessor and successor record-content digests.
- * @throws Error when V1 lineage, identity, digest, or final V2 validation fails.
+ * @throws Error when V1 lineage, identity, digest, or final V3 validation fails.
  */
 function migrateLegacyAepSnapshotRecord(
   path: string,
@@ -971,16 +971,56 @@ function migrateLegacyAepSnapshotRecord(
   delete successorScope.automationId;
   delete successorScope.organizationId;
 
+  const legacyRuntime = legacySnapshot.runtime as Record<string, unknown>;
+  const legacyImage = legacyRuntime.image as Record<string, unknown>;
+  const legacyControl = legacySnapshot.control as Record<string, unknown>;
+  const legacyAdapter = legacyControl.adapter as Record<string, unknown>;
+  const successorAdapter = { ...legacyAdapter };
+  delete successorAdapter.targetTransport;
+  const successorControl: Record<string, unknown> = {
+    ...legacyControl,
+    adapter: successorAdapter,
+    bindings: {
+      capabilities: {
+        pathPrefix: '/capabilities/',
+        tokenRef: 'runtime://openkit/capability-token',
+      },
+      inference: {
+        pathPrefix: '/inference/',
+        tokenRef: 'runtime://openkit/inference-token',
+      },
+      workerControl: {
+        pathPrefix: '/worker-control/',
+        tokenRef: 'runtime://openkit/worker-control-token',
+      },
+    },
+    mode: 'sandbox-integration',
+  };
+  delete successorControl.endpoint;
+  delete successorControl.auth;
+
   const snapshot = AgentEnvironmentPackageSchema.parse({
     ...legacySnapshot,
-    schemaVersion: 2,
+    control: successorControl,
+    runtime: {
+      ...legacyRuntime,
+      image:
+        legacyImage.kind === 'reference'
+          ? legacyImage
+          : {
+              kind: 'reference',
+              pullPolicy: legacyImage.pullPolicy,
+              ref: legacyImage.ref,
+            },
+    },
+    schemaVersion: 3,
     scope: successorScope,
   });
   const redactedSnapshot = AgentEnvironmentPackageSchema.parse(
     redactAgentEnvironmentPackageSnapshot(snapshot)
   );
   if (JSON.stringify(snapshot) !== JSON.stringify(redactedSnapshot)) {
-    throw new Error('AEP migration V1 snapshot is not a redacted durable record.');
+    throw new Error('AEP migration V1 snapshot is not a redacted durable V3 record.');
   }
 
   const targetContentDigest = digestJson(snapshot);
@@ -995,10 +1035,10 @@ function migrateLegacyAepSnapshotRecord(
 }
 
 /**
- * Maps legacy AEP identity fields to one exact V2 trigger actor.
+ * Maps legacy AEP identity fields to one exact V3 trigger actor.
  *
  * @param scope Parsed V1 scope object.
- * @returns Deterministic V2 trigger actor.
+ * @returns Deterministic V3 trigger actor.
  * @throws Error when legacy identity is ambiguous, malformed, or absent.
  */
 function legacyAepTriggerActor(scope: Record<string, unknown>):

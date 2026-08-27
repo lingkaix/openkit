@@ -3,10 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { VaultBackendError } from './vault-backend.js';
-import type {
-  OsKeychainVaultAdapter,
-  OsKeychainVaultItemInput,
-} from './vault-os-keychain-backend.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 describe('vault unlock state', () => {
@@ -124,49 +120,4 @@ describe('vault unlock state', () => {
       state: 'locked',
     });
   });
-
-  it('starts os-keychain state from the platform adapter without encrypted-file unlock', () => {
-    const state = createVaultUnlockState({
-      adapter: new MemoryKeychainAdapter(),
-      backendKind: 'os-keychain',
-      deploymentId: 'dev',
-    });
-
-    expect(state.backend().health()).toEqual({
-      diagnostic: 'os-keychain vault backend is available',
-      kind: 'os-keychain',
-      state: 'available',
-    });
-    expect(() => state.unlock({ masterKey: Buffer.alloc(32, 9) })).toThrow(
-      'os-keychain vault backend does not use encrypted-file unlock keys.'
-    );
-    expect(state.lock().health()).toMatchObject({
-      kind: 'os-keychain',
-      state: 'available',
-    });
-  });
 });
-
-class MemoryKeychainAdapter implements OsKeychainVaultAdapter {
-  private readonly items = new Map<string, string>();
-
-  public health(): ReturnType<OsKeychainVaultAdapter['health']> {
-    return { diagnostic: 'memory keychain available', state: 'available' };
-  }
-
-  public get(input: OsKeychainVaultItemInput): string | null {
-    return this.items.get(this.key(input)) ?? null;
-  }
-
-  public set(input: OsKeychainVaultItemInput & { value: string }): void {
-    this.items.set(this.key(input), input.value);
-  }
-
-  public delete(input: OsKeychainVaultItemInput): void {
-    this.items.delete(this.key(input));
-  }
-
-  private key(input: OsKeychainVaultItemInput): string {
-    return `${input.service}:${input.account}`;
-  }
-}

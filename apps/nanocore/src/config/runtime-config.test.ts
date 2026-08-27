@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createRuntimeConfigManager,
-  createRuntimeConfigStaleSession,
   diffRuntimeConfig,
   loadRuntimeConfig,
 } from './runtime-config.js';
@@ -51,6 +50,7 @@ function writeAgentConfig(dataRoot: string, displayName: string): void {
         "kind": "future-runtime",
         "adapter": "future-adapter",
         "image": {
+          "kind": "reference",
           "ref": "ghcr.io/openkit/worker-future:test",
           "pullPolicy": "if-not-present"
         },
@@ -124,33 +124,6 @@ function serverConfig(model: string, extra = ''): string {
 }
 
 describe('runtime config loading and reload planning', () => {
-  it('adds recovery choices to stale session diagnostics', () => {
-    expect(
-      createRuntimeConfigStaleSession({
-        sessionId: 'as_stale',
-        threadId: 'th_demo',
-        agentId: 'agent_codex_host',
-        capturedVersion: 1,
-        currentVersion: 2,
-        reasons: ['runtime-config'],
-      }).choices
-    ).toEqual([
-      {
-        kind: 'inspect',
-        label: 'Inspect stale session details',
-        recommended: true,
-      },
-      {
-        kind: 'restart_session',
-        label: 'Restart the stale session before continuing',
-      },
-      {
-        kind: 'request_human',
-        label: 'Ask the user how to handle the stale session',
-      },
-    ]);
-  });
-
   it('loads one immutable runtime config snapshot from canonical config inputs', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
@@ -331,7 +304,7 @@ describe('runtime config loading and reload planning', () => {
         'openai/gpt-5.2',
         `,
     "server": { "bind": { "host": "0.0.0.0", "port": 4000 } },
-    "vault": { "localDefaultBackend": "encrypted-file" }`
+    "vault": { "encryptedFile": { "keyFilePath": "/run/secrets/openkit-vault.key" } }`
       )
     );
 

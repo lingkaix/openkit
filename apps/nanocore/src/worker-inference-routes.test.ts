@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -21,7 +21,7 @@ import type {
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
-import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import { hashWorkerRouteToken, WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -215,6 +215,10 @@ interface WorkerInferenceRouteFixture {
   readonly expireLease: () => void;
   /** Durable worker bearer token. */
   readonly token: string;
+  /** Non-secret binding owned independently from the route credentials. */
+  readonly sandboxBindingRef: string;
+  /** Worker-control token paired with the inference bearer. */
+  readonly workerControlToken: string;
   /** Worker-control gateway retaining the authenticated package session. */
   readonly workerControlGateway: WorkerControlGateway;
 }
@@ -287,7 +291,6 @@ function createWorkerInferenceRouteFixture(
       agentSetup,
       agentSessionId: trustedRelay ? 'as_worker_inference_1' : 'as_direct_worker_1',
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       createdAt: '2026-07-13T00:00:00.000Z',
@@ -302,7 +305,15 @@ function createWorkerInferenceRouteFixture(
       workspaceRoots: [],
     })
   );
-  const token = trustedRelay ? 'lease-binding:worker_inference_1' : 'lease-binding:direct_worker_1';
+  const sandboxBindingRef = trustedRelay
+    ? 'lease-binding:worker_inference_1'
+    : 'lease-binding:direct_worker_1';
+  const workerControlToken = trustedRelay
+    ? 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    : 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+  const workerInferenceToken = trustedRelay
+    ? 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+    : 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD';
   let leaseLive = true;
   const workerControlGateway = new WorkerControlGateway({
     resolveTokenBinding: () =>
@@ -310,7 +321,11 @@ function createWorkerInferenceRouteFixture(
   });
   const dispatcher = new FakeWorkerInferenceDispatcher();
 
-  workerControlGateway.registerSession(environmentPackage, { sandboxBindingRef: token });
+  workerControlGateway.registerSession(environmentPackage, {
+    sandboxBindingRef,
+    workerControlToken,
+    workerInferenceToken,
+  });
 
   return {
     app: createApp({
@@ -354,7 +369,9 @@ function createWorkerInferenceRouteFixture(
     expireLease: () => {
       leaseLive = false;
     },
-    token,
+    sandboxBindingRef,
+    token: workerInferenceToken,
+    workerControlToken,
     workerControlGateway,
   };
 }
@@ -720,6 +737,60 @@ describe('worker inference routes', () => {
       messages: [{ content: null, role: 'assistant', tool_calls: toolCalls }],
       tools: [{ function: { name: 'read_file' }, type: 'function' }],
     });
+  });
+
+  it('rejects duplicate Chat and Responses callable keys before provider dispatch', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    const cases = [
+      {
+        body: {
+          messages: [{ content: 'Hello', role: 'user' }],
+          model: 'openai/gpt-5.2',
+          tools: [
+            { function: { name: 'read_file' }, type: 'function' },
+            { function: { name: 'read_file' }, type: 'function' },
+          ],
+        },
+        path: '/api/worker-inference/v1/chat/completions',
+      },
+      {
+        body: {
+          input: 'Hello',
+          model: 'openai/gpt-5.2',
+          tools: [
+            { name: 'read_file', parameters: { type: 'object' }, type: 'function' },
+            { name: 'read_file', parameters: { type: 'object' }, type: 'function' },
+          ],
+        },
+        path: '/api/worker-inference/v1/responses',
+      },
+      {
+        body: {
+          input: 'Hello',
+          model: 'openai/gpt-5.2',
+          tools: [{ type: 'tool_search' }, { type: 'tool_search' }],
+        },
+        path: '/api/worker-inference/v1/responses',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await fixture.app.request(testCase.path, {
+        body: JSON.stringify(testCase.body),
+        headers: {
+          authorization: `Bearer ${fixture.token}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'worker_inference_lineage_mismatch' },
+      });
+    }
+    expect(fixture.dispatcher.chatCalls).toEqual([]);
+    expect(fixture.dispatcher.responseCalls).toEqual([]);
   });
 
   it('preserves Chat Completions and Responses SSE bytes', async () => {
@@ -1226,7 +1297,9 @@ describe('worker inference routes', () => {
         workspaceId: scope.workspaceId,
       },
       registeredAt: '2026-07-13T00:00:01.000Z',
-      token: unhydrated.token,
+      sandboxBindingRef: unhydrated.sandboxBindingRef,
+      workerControlTokenHash: hashWorkerRouteToken(unhydrated.workerControlToken),
+      workerInferenceTokenHash: hashWorkerRouteToken(unhydrated.token),
     });
     const unhydratedResponse = await postWorkerResponses(unhydrated, {
       input: 'Hello',
@@ -1275,6 +1348,25 @@ describe('worker inference routes', () => {
       { sourceId: 'source-caller' },
       { tools: [{ server_url: 'https://attacker.example/mcp', type: 'mcp' }] },
       { tools: [{ type: 'web_search_preview' }] },
+      {
+        tools: [
+          {
+            name: 'remote',
+            tools: [{ type: 'web_search_preview' }],
+            type: 'namespace',
+          },
+        ],
+      },
+      {
+        tools: [
+          {
+            name: 'local',
+            parameters: { type: 'object' },
+            server_url: 'https://attacker.example/mcp',
+            type: 'function',
+          },
+        ],
+      },
       { tools: [{}] },
       { tools: [{ type: 7 }] },
     ];
@@ -1537,5 +1629,13 @@ describe('worker inference routes', () => {
       });
     }
     expect(fixture.dispatcher.responseCalls).toEqual([]);
+  });
+
+  it('authenticates only the worker-inference token family', () => {
+    const source = readFileSync(new URL('./llm/gateway-routes.ts', import.meta.url), 'utf8');
+
+    expect(source).toContain('workerInferenceTokenHash');
+    expect(source).toContain("tokenFamily: 'inference'");
+    expect(source).not.toContain('authenticatePackageToken(authorization)');
   });
 });

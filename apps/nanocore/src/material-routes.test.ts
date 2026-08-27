@@ -12,11 +12,12 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { ensureLocalUser } from './auth/identity.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { createWorkspaceMaterial } from './workspace-materials.js';
+import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -30,13 +31,36 @@ function contentDigest(content: string): string {
 }
 
 describe('Workspace Material app API', () => {
-  it('denies a Material whose scoped owner is outside the authorized path Workspace', async () => {
+  it('keeps opaque target misses stale after path authorization and rejects them without writes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-material-lineage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
+    const localThread = store.createThread('ws_demo', 'Authorized Material Thread');
     const foreignWorkspace = store.createWorkspace('Foreign Material Workspace');
+    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Material Thread');
+    const localDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    applyScopedMigrations(localDb);
+    const localMaterial = createWorkspaceMaterial(localDb, {
+      acceptedAt: '2026-07-19T00:00:00.000Z',
+      actorId: 'user_local',
+      kind: 'markdown',
+      requestId: 'local-material-create',
+      sensitivity: 'internal',
+      title: 'Authorized Material',
+    });
+    const localContent = '# Authorized Material\n';
+    saveWorkspaceMaterialRevision(localDb, {
+      acceptedAt: '2026-07-19T00:00:01.000Z',
+      actorId: 'user_local',
+      content: localContent,
+      contentDigest: contentDigest(localContent),
+      expectedRevisionId: null,
+      materialId: localMaterial.materialId,
+      requestId: 'local-material-save',
+    });
+    localDb.sqlite.close();
     const foreignDb = openWorkspaceDb(dataRoot, foreignWorkspace.id);
     applyScopedMigrations(foreignDb);
     const foreignMaterial = createWorkspaceMaterial(foreignDb, {
@@ -47,6 +71,16 @@ describe('Workspace Material app API', () => {
       sensitivity: 'internal',
       title: 'Foreign Material',
     });
+    const foreignContent = '# Foreign Material\n';
+    const foreignRevision = saveWorkspaceMaterialRevision(foreignDb, {
+      acceptedAt: '2026-07-19T00:00:01.000Z',
+      actorId: 'user_local',
+      content: foreignContent,
+      contentDigest: contentDigest(foreignContent),
+      expectedRevisionId: null,
+      materialId: foreignMaterial.materialId,
+      requestId: 'foreign-material-save',
+    });
     foreignDb.sqlite.close();
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -56,12 +90,64 @@ describe('Workspace Material app API', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const response = await app.request(
-        `/api/app/workspaces/ws_demo/materials/${foreignMaterial.materialId}`
-      );
+      const stalePaths = [
+        '/api/app/workspaces/ws_demo/materials/material_missing',
+        `/api/app/workspaces/ws_demo/materials/${foreignMaterial.materialId}`,
+        `/api/app/workspaces/ws_demo/materials/${localMaterial.materialId}/revisions/revision_missing`,
+        `/api/app/workspaces/ws_demo/materials/${localMaterial.materialId}/revisions/${foreignRevision.revisionId}`,
+        '/api/app/workspaces/ws_demo/threads/thread_missing/material',
+        `/api/app/workspaces/ws_demo/threads/${foreignThread.id}/material`,
+      ];
 
-      expect(response.status).toBe(403);
-      await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      for (const path of stalePaths) {
+        const response = await app.request(path);
+        const body = (await response.json()) as { readonly code?: unknown };
+        expect.soft({ status: response.status, code: body.code }, path).toEqual({
+          status: 409,
+          code: 'stale',
+        });
+      }
+
+      const deniedPath = await app.request(
+        `/api/app/workspaces/${foreignWorkspace.id}/materials/${foreignMaterial.materialId}`
+      );
+      expect(deniedPath.status).toBe(403);
+      await expect(deniedPath.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+
+      for (const [requestId, materialId] of [
+        ['bind-unknown-material', 'material_missing'],
+        ['bind-foreign-material', foreignMaterial.materialId],
+      ] as const) {
+        const response = await app.request(
+          `/api/app/workspaces/ws_demo/threads/${localThread.id}/materials/${materialId}/bind`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ requestId, expectedBindingState: 'not_bound' }),
+          }
+        );
+        const body = (await response.json()) as { readonly code?: unknown };
+        expect.soft({ status: response.status, code: body.code }, requestId).toEqual({
+          status: 409,
+          code: 'stale',
+        });
+      }
+
+      const inspectionDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      applyScopedMigrations(inspectionDb);
+      try {
+        expect(
+          inspectionDb.sqlite
+            .prepare(`SELECT
+              (SELECT COUNT(*) FROM workspace_materials) AS materials,
+              (SELECT COUNT(*) FROM workspace_material_revisions) AS revisions,
+              (SELECT COUNT(*) FROM thread_material_bindings) AS bindings,
+              (SELECT COUNT(*) FROM idempotency_requests) AS receipts`)
+            .get()
+        ).toEqual({ materials: 1, revisions: 1, bindings: 0, receipts: 0 });
+      } finally {
+        inspectionDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -88,14 +174,6 @@ describe('Workspace Material app API', () => {
     };
 
     try {
-      const missingThread = await app.request(
-        '/api/app/workspaces/ws_demo/threads/thread_missing/material'
-      );
-      expect(missingThread.status).toBe(403);
-      await expect(missingThread.json()).resolves.toMatchObject({
-        code: 'workspace_access_denied',
-      });
-
       const createResponse = await app.request('/api/app/workspaces/ws_demo/materials', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -143,7 +221,7 @@ describe('Workspace Material app API', () => {
       );
 
       const bindPath = `/api/app/workspaces/ws_demo/threads/${thread.id}/materials/${created.materialId}/bind`;
-      const bindRequest = { requestId: 'material-bind-1', expectedBindingState: 'absent' };
+      const bindRequest = { requestId: 'material-bind-1', expectedBindingState: 'not_bound' };
       const bindResponse = await app.request(bindPath, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -155,6 +233,49 @@ describe('Workspace Material app API', () => {
         threadId: thread.id,
         outcome: 'bound',
       });
+
+      const bindReceiptDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      applyScopedMigrations(bindReceiptDb);
+      try {
+        expect(
+          bindReceiptDb.sqlite
+            .prepare(
+              `SELECT input_hash FROM idempotency_requests
+               WHERE command_name = 'material.bind' AND request_id = ?`
+            )
+            .pluck()
+            .get(bindRequest.requestId)
+        ).toBe(commandInputHash({ expectedBindingState: 'not_bound' }));
+      } finally {
+        bindReceiptDb.sqlite.close();
+      }
+
+      const exactBindReplay = await app.request(bindPath, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(bindRequest),
+      });
+      expect(exactBindReplay.status).toBe(200);
+      expect(BindThreadMaterialResponseSchema.parse(await exactBindReplay.json())).toEqual({
+        materialId: created.materialId,
+        threadId: thread.id,
+        outcome: 'bound',
+      });
+
+      for (const removedLiteral of ['absent', 'unbound']) {
+        const removedLiteralResponse = await app.request(bindPath, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: `material-bind-removed-${removedLiteral}`,
+            expectedBindingState: removedLiteral,
+          }),
+        });
+        expect(removedLiteralResponse.status).toBe(400);
+        await expect(removedLiteralResponse.json()).resolves.toMatchObject({
+          code: 'invalid_request',
+        });
+      }
 
       const threadResponse = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/material`
@@ -201,6 +322,66 @@ describe('Workspace Material app API', () => {
         await secondSaveResponse.json()
       );
       expect(secondSaved.revisionId).not.toBe(firstSaved.revisionId);
+
+      const excludeResponse = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/materials/${created.materialId}/exclude`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'material-exclude-before-rebind',
+            expectedBindingState: 'bound',
+            expectedInclusionState: 'included',
+            expectedQueuedRevisionId: secondSaved.revisionId,
+          }),
+        }
+      );
+      expect(excludeResponse.status).toBe(200);
+
+      const unbindResponse = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/materials/${created.materialId}/unbind`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'material-unbind-before-rebind',
+            expectedBindingState: 'bound',
+          }),
+        }
+      );
+      expect(unbindResponse.status).toBe(200);
+
+      const unboundThreadResponse = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/material`
+      );
+      expect(unboundThreadResponse.status).toBe(200);
+      expect(GetThreadMaterialResponseSchema.parse(await unboundThreadResponse.json())).toEqual({
+        material: null,
+      });
+
+      const rebindResponse = await app.request(bindPath, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'material-rebind-after-refresh',
+          expectedBindingState: 'not_bound',
+        }),
+      });
+      expect(rebindResponse.status).toBe(200);
+
+      const reboundThreadResponse = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/material`
+      );
+      expect(reboundThreadResponse.status).toBe(200);
+      expect(
+        GetThreadMaterialResponseSchema.parse(await reboundThreadResponse.json())
+      ).toMatchObject({
+        material: {
+          inclusionState: 'included',
+          latestQueuedRevisionId: secondSaved.revisionId,
+          resource: { materialId: created.materialId },
+        },
+      });
 
       const receiptDb = openWorkspaceDb(dataRoot, 'ws_demo');
       applyScopedMigrations(receiptDb);

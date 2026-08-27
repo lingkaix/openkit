@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -11,6 +13,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
+  hashWorkerRouteToken,
   WorkerControlGateway,
   type WorkerControlGatewayError,
   type WorkerControlLineage,
@@ -35,7 +38,6 @@ function createWorkerControlFixture(): {
     agentSessionId: 'as_control_1',
     triggerActor: { kind: 'user', id: 'user_local' },
     backend: {
-      workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
       kind: 'openshell',
     },
     createdAt: '2026-06-16T00:00:00.000Z',
@@ -56,6 +58,22 @@ function createWorkerControlFixture(): {
       workspaceId: 'ws_demo',
     },
   };
+}
+
+const WORKER_CONTROL_TOKEN = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const WORKER_INFERENCE_TOKEN = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+
+/** Registers one accepted session with a non-secret binding and distinct raw route tokens. */
+function registerAcceptedWorkerSession(
+  gateway: WorkerControlGateway,
+  environmentPackage: AgentEnvironmentPackage,
+  sandboxBindingRef: string
+) {
+  return gateway.registerSession(environmentPackage, {
+    sandboxBindingRef,
+    workerControlToken: WORKER_CONTROL_TOKEN,
+    workerInferenceToken: WORKER_INFERENCE_TOKEN,
+  });
 }
 
 /**
@@ -414,7 +432,11 @@ describe('WorkerControlGateway', () => {
         }
       },
     });
-    const registration = gateway.registerSession(environmentPackage);
+    const registration = registerAcceptedWorkerSession(
+      gateway,
+      environmentPackage,
+      'lease-binding:heartbeat_projection'
+    );
     const heartbeat = heartbeatRequest(`Bearer ${registration.token}`, lineage, 1);
 
     expect(() => gateway.recordHeartbeat(heartbeat)).toThrow('heartbeat projection unavailable');
@@ -630,7 +652,11 @@ describe('WorkerControlGateway', () => {
         return { status: 'accepted' };
       },
     });
-    const registration = gateway.registerSession(environmentPackage);
+    const registration = registerAcceptedWorkerSession(
+      gateway,
+      environmentPackage,
+      'lease-binding:control_1'
+    );
 
     gateway.recordHeartbeat(heartbeatRequest(`Bearer ${registration.token}`, lineage, 1));
 
@@ -638,6 +664,8 @@ describe('WorkerControlGateway', () => {
       {
         lineage,
         sandboxBindingRef: 'lease-binding:control_1',
+        token: WORKER_CONTROL_TOKEN,
+        tokenFamily: 'worker-control',
       },
     ]);
   });
@@ -654,7 +682,11 @@ describe('WorkerControlGateway', () => {
         return { status: 'accepted' };
       },
     });
-    const registration = gateway.registerSession(environmentPackage);
+    const registration = registerAcceptedWorkerSession(
+      gateway,
+      environmentPackage,
+      'lease-binding:inference_1'
+    );
 
     expect(gateway.authenticatePackageToken(`Bearer ${registration.token}`)).toEqual(
       environmentPackage
@@ -663,6 +695,8 @@ describe('WorkerControlGateway', () => {
       {
         lineage,
         sandboxBindingRef: 'lease-binding:inference_1',
+        token: WORKER_CONTROL_TOKEN,
+        tokenFamily: 'worker-control',
       },
     ]);
   });
@@ -677,10 +711,12 @@ describe('WorkerControlGateway', () => {
       environmentPackage,
       lineage,
       registeredAt: '2026-06-16T00:00:01.000Z',
-      token: 'lease-binding:restored_inference_1',
+      sandboxBindingRef: 'lease-binding:restored_inference_1',
+      workerControlTokenHash: hashWorkerRouteToken(WORKER_CONTROL_TOKEN),
+      workerInferenceTokenHash: hashWorkerRouteToken(WORKER_INFERENCE_TOKEN),
     });
 
-    expect(gateway.authenticatePackageToken('Bearer lease-binding:restored_inference_1')).toEqual(
+    expect(gateway.authenticatePackageToken(`Bearer ${WORKER_CONTROL_TOKEN}`)).toEqual(
       environmentPackage
     );
   });
@@ -694,15 +730,15 @@ describe('WorkerControlGateway', () => {
     gateway.restoreSession({
       lineage,
       registeredAt: '2026-06-16T00:00:01.000Z',
-      token: 'lease-binding:restored_without_package_1',
+      sandboxBindingRef: 'lease-binding:restored_without_package_1',
+      workerControlTokenHash: hashWorkerRouteToken(WORKER_CONTROL_TOKEN),
+      workerInferenceTokenHash: hashWorkerRouteToken(WORKER_INFERENCE_TOKEN),
     });
 
     expect(() => gateway.authenticatePackageToken('Bearer invalid')).toThrowError(
       expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 }) as Error
     );
-    expect(() =>
-      gateway.authenticatePackageToken('Bearer lease-binding:restored_without_package_1')
-    ).toThrowError(
+    expect(() => gateway.authenticatePackageToken(`Bearer ${WORKER_CONTROL_TOKEN}`)).toThrowError(
       expect.objectContaining({
         code: 'worker_control_package_unavailable',
         status: 409,
@@ -741,7 +777,9 @@ describe('WorkerControlGateway', () => {
         environmentPackage,
         lineage: { ...lineage, requestId: 'req_other' },
         registeredAt: '2026-06-16T00:00:01.000Z',
-        token: 'lease-binding:restore_mismatch_1',
+        sandboxBindingRef: 'lease-binding:restore_mismatch_1',
+        workerControlTokenHash: hashWorkerRouteToken(WORKER_CONTROL_TOKEN),
+        workerInferenceTokenHash: hashWorkerRouteToken(WORKER_INFERENCE_TOKEN),
       })
     ).toThrowError(
       expect.objectContaining({
@@ -751,21 +789,14 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('uses a scheduler-owned sandbox binding ref as the registered control token', () => {
-    const { environmentPackage, lineage } = createWorkerControlFixture();
-    const gateway = new WorkerControlGateway({
-      createToken: () => {
-        throw new Error('random token generator should not run');
-      },
-      resolveTokenBinding: () => ({ status: 'accepted' }),
-    });
-    const registration = gateway.registerSession(environmentPackage, {
-      sandboxBindingRef: 'lease-binding:control_1',
-    });
+  it('binds worker control only to its distinct raw token and durable hash family', () => {
+    const source = readFileSync(new URL('./worker-control-gateway.ts', import.meta.url), 'utf8');
 
-    gateway.recordHeartbeat(heartbeatRequest(`Bearer ${registration.token}`, lineage, 1));
-
-    expect(registration.token).toBe('lease-binding:control_1');
+    expect(source).toContain('workerControlTokenHash');
+    expect(source).toContain('workerInferenceTokenHash');
+    expect(source).toContain('timingSafeEqual');
+    expect(source).not.toContain('const token = options.sandboxBindingRef');
+    expect(source).not.toContain('Sandbox-local bearer token injected through runtime secrets.');
   });
 
   it('rejects registered sandbox tokens when the durable lease binding is not live', () => {
@@ -774,7 +805,11 @@ describe('WorkerControlGateway', () => {
       createToken: () => 'lease-binding:control_1',
       resolveTokenBinding: () => ({ status: 'rejected', reason: 'lease-not-live' }),
     });
-    const registration = gateway.registerSession(environmentPackage);
+    const registration = registerAcceptedWorkerSession(
+      gateway,
+      environmentPackage,
+      'lease-binding:control_1'
+    );
 
     expect(() =>
       gateway.recordHeartbeat(heartbeatRequest(`Bearer ${registration.token}`, lineage, 1))
@@ -796,7 +831,11 @@ describe('WorkerControlGateway', () => {
       onFinalStatusCommitted: (input) => committedInputs.push(input),
       resolveFinalStatusTokenBinding: () => ({ replayOnly: false, status: 'accepted' }),
     });
-    const registration = gateway.registerSession(environmentPackage);
+    const registration = registerAcceptedWorkerSession(
+      gateway,
+      environmentPackage,
+      'lease-binding:final_status_1'
+    );
 
     gateway.recordFinalStatus({
       authorization: `Bearer ${registration.token}`,
@@ -809,7 +848,7 @@ describe('WorkerControlGateway', () => {
     const expectedInput = {
       eventType: 'turn.completed',
       lineage,
-      sandboxBindingRef: registration.token,
+      sandboxBindingRef: 'lease-binding:final_status_1',
     };
     expect(acceptedInputs).toEqual([expectedInput]);
     expect(committedInputs).toEqual([expectedInput]);

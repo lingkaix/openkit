@@ -66,6 +66,7 @@ export function createTestAgentSetup(
           { id: adapter, path: `/usr/local/bin/${adapter}` },
         ],
         image: {
+          kind: 'reference',
           pullPolicy: 'if-not-present',
           ref: options.imageRef ?? `openkit/worker-${adapter}:dev`,
         },
@@ -116,7 +117,6 @@ export function recordTestAgentEnvironmentPackage(
       agentSessionId: `as_${input.suffix}`,
       triggerActor: input.triggerActor,
       backend: {
-        workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
         kind: 'openshell',
       },
       requestId: `request_${input.suffix}`,

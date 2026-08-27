@@ -221,7 +221,7 @@ describe('data-root backup manifest', () => {
     });
     bindThreadMaterial(workspaceDb, {
       acceptedAt: timestamp,
-      expectedBindingState: 'absent',
+      expectedBindingState: 'not_bound',
       materialId: material.materialId,
       requestId: 'backup-material-bind',
       threadId: 'th_backup',

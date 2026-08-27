@@ -31,17 +31,6 @@ function createWorkspaceDb(): WorkspaceDb {
  */
 function preparedFixture(): PreparedNextTurn {
   return {
-    repository: {
-      workspaceId: 'ws_demo',
-      resourceId: 'repo_default',
-      type: 'git_repository',
-      displayName: 'OpenKit',
-      localPath: '/tmp/openkit',
-      diagnosticsStatus: 'ready',
-      createdAt: '2026-05-31T00:00:00.000Z',
-      updatedAt: '2026-05-31T00:00:00.000Z',
-      validation: null,
-    },
     delegationRequest: {
       schemaVersion: 1,
       objective: 'Run release verification.',

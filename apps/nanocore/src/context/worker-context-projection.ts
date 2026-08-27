@@ -48,7 +48,7 @@ export interface ThreadMaterialTraceProjection {
 export interface WorkerContextProjectionInput {
   /** Core scheduler and backend-session owner. */
   readonly coreDb: CoreDb;
-  /** Product Turn, Item, and Agent Session owner. */
+  /** Product Turn, Item, and AgentSession owner. */
   readonly store: FsStore;
   /** Workspace-owned Goal, Material, package, and steering owner. */
   readonly workspaceDb: WorkspaceDb;

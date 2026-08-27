@@ -2,11 +2,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-import { createInjectionPlan, listInjectionPlans } from '../injection-plans.js';
-import { createInjectionReceipt, listInjectionReceipts } from '../injection-receipts.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
+import {
+  createVaultInjectionReceipt,
+  listVaultInjectionReceipts,
+} from '../vault-injection-receipts.js';
 import {
   createVaultGrant,
   getVaultGrant,
@@ -167,14 +169,14 @@ describe('vault grants', () => {
       });
 
       expect(revoked.status).toBe('revoked');
-      expect(listInjectionPlans(coreDb)).toEqual([
+      expect(listVaultInjectionPlans(coreDb)).toEqual([
         expect.objectContaining({
           grantId: 'grant_github_turn',
           planId: 'plan_github_file',
           status: 'revoked',
         }),
       ]);
-      expect(listInjectionReceipts(coreDb)).toEqual([
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([
         expect.objectContaining({
           grantId: 'grant_github_turn',
           receiptId: 'receipt_github_file',
@@ -208,7 +210,7 @@ function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): void {
     vaultReferenceId: 'vault_github',
     workspaceId: 'ws_1',
   });
-  createInjectionPlan(coreDb, {
+  createVaultInjectionPlan(coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
     expirationBehavior: 'delete-on-turn-end',
     grantId: 'grant_github_turn',
@@ -218,7 +220,7 @@ function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): void {
     revocationBehavior: 'mark-session-stale',
     targetPath: '/openkit/secrets/github-token',
   });
-  createInjectionReceipt(coreDb, {
+  createVaultInjectionReceipt(coreDb, {
     agentSessionId: 'session_1',
     backendSummary: 'encrypted-file:vault_github:v1',
     grantId: 'grant_github_turn',

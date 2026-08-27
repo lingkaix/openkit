@@ -7,7 +7,7 @@ import {
   type LlmProjectionPolicy,
 } from '../context/projection-policy.js';
 import type { FsStore } from '../lib/store.js';
-import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import { GoalReviewResolutionError, listGoalReviewRecordsForTask } from './goal-review-records.js';
 import { getGoalRecord, listGoalTasks } from './goal-store.js';
 import { type PreparedNextTurnContext, prepareNextTurnContext } from './prepare-next-turn.js';
@@ -46,14 +46,12 @@ export interface PrepareGoalTaskDelegationInput {
 /**
  * Prepares one selected goal task for worker delegation without starting it.
  *
- * @param coreDb Open Core database handles for repository context.
  * @param workspaceDb Open workspace-scope database handle for goal task state.
  * @param input Goal task delegation input.
  * @returns Authorized Task facts and context prepared for Coordinator composition.
- * @throws Error when the goal, task, repository, or context package is unavailable.
+ * @throws Error when the goal, task, or context package is unavailable.
  */
 export function prepareGoalTaskDelegation(
-  coreDb: CoreDb,
   workspaceDb: WorkspaceDb,
   input: PrepareGoalTaskDelegationInput
 ): PreparedNextTurnContext {
@@ -88,7 +86,7 @@ export function prepareGoalTaskDelegation(
     taskId: task.taskId,
   });
 
-  const prepared = prepareNextTurnContext(coreDb, {
+  const prepared = prepareNextTurnContext({
     workspaceId: input.workspaceId,
     ...(input.userId === undefined ? {} : { userId: input.userId }),
     threadId: input.threadId,

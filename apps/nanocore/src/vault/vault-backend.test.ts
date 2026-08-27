@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertVaultEntryMetadata,
   createLockedVaultBackend,
   VaultBackendError,
   type VaultSecretMaterial,
@@ -47,5 +48,112 @@ describe('vault backend boundary', () => {
     }
 
     throw new Error('Expected locked vault store to fail.');
+  });
+
+  it.each([
+    { accountSlotId: 'a', boundary: 'lowercase first character' },
+    { accountSlotId: '0', boundary: 'numeric first character' },
+    { accountSlotId: `a${'_'.repeat(63)}`, boundary: '64-character maximum' },
+  ])('accepts the provider account slot $boundary boundary', ({ accountSlotId }) => {
+    expect(() =>
+      assertVaultEntryMetadata({
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId,
+          subscriptionProviderId: 'openai-codex',
+        },
+      } as never)
+    ).not.toThrow();
+  });
+
+  it.each([
+    { accountSlotId: '_slot', boundary: 'underscore first character' },
+    { accountSlotId: '-slot', boundary: 'hyphen first character' },
+    { accountSlotId: `a${'_'.repeat(64)}`, boundary: '65-character overflow' },
+  ])('rejects the provider account slot $boundary boundary', ({ accountSlotId }) => {
+    expect(() =>
+      assertVaultEntryMetadata({
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId,
+          subscriptionProviderId: 'openai-codex',
+        },
+      } as never)
+    ).toThrow('backend-unavailable');
+  });
+
+  it('strictly validates provider-subscription inventory metadata', () => {
+    expect(() =>
+      assertVaultEntryMetadata({
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+          subscriptionProviderId: 'openai-codex',
+        },
+      } as never)
+    ).not.toThrow();
+
+    for (const metadata of [
+      {
+        ownerScope: 'workspace',
+        workspaceId: 'ws_demo',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+          subscriptionProviderId: 'openai-codex',
+        },
+      },
+      {
+        ownerScope: 'user',
+        userId: 'user_demo',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+          subscriptionProviderId: 'xai',
+        },
+      },
+      {
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId: 'Slot.Invalid',
+          subscriptionProviderId: 'openai-codex',
+        },
+      },
+      {
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+          subscriptionProviderId: 'unsupported',
+        },
+      },
+      {
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          subscriptionProviderId: 'xai',
+        },
+      },
+      {
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+        },
+      },
+      {
+        ownerScope: 'server',
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+          extra: true,
+          subscriptionProviderId: 'xai',
+        },
+      },
+      {
+        ownerScope: 'server',
+        extra: true,
+        providerSubscriptionAccount: {
+          accountSlotId: 'slot_1',
+          subscriptionProviderId: 'xai',
+        },
+      },
+    ]) {
+      expect(() => assertVaultEntryMetadata(metadata as never)).toThrow('backend-unavailable');
+    }
   });
 });

@@ -9,20 +9,20 @@ import type { BootPhaseOutcome } from './phases.js';
  * @returns Ready when the backend is available, otherwise non-critical degraded readiness.
  */
 export function checkBootVaultBackend(input: {
+  readonly dataRoot: string;
   readonly keyFilePath?: string;
   readonly vaultUnlockState: VaultUnlockState;
 }): BootPhaseOutcome {
   const initialHealth = input.vaultUnlockState.backend().health();
 
-  if (
-    initialHealth.kind === 'encrypted-file' &&
-    initialHealth.state !== 'available' &&
-    input.keyFilePath
-  ) {
+  if (initialHealth.state !== 'available' && input.keyFilePath) {
     let masterKey: Buffer | undefined;
 
     try {
-      masterKey = loadEncryptedFileVaultKeyFile({ keyFilePath: input.keyFilePath });
+      masterKey = loadEncryptedFileVaultKeyFile({
+        dataRoot: input.dataRoot,
+        keyFilePath: input.keyFilePath,
+      });
       input.vaultUnlockState.unlock({ masterKey });
     } catch {
       // Vault key failures remain a redacted, non-critical degraded boot condition.

@@ -1902,9 +1902,6 @@ function createDeterministicPreparedGoalTask(task: GoalTaskRecord): PreparedNext
       objective: task.objective,
     } as PreparedNextTurn['delegationRequest'],
     knowledgeSelectionInput: null,
-    repository: {
-      resourceId: 'repo_deterministic',
-    } as PreparedNextTurn['repository'],
   };
 }
 
@@ -3402,7 +3399,7 @@ export function registerGoalRoutes({
               reviewRequired,
               remainingWorkerIterations: 0,
               prepare: () => {
-                const preparedContext = prepareGoalTaskDelegation(coreDb!, workspaceDb, {
+                const preparedContext = prepareGoalTaskDelegation(workspaceDb, {
                   store,
                   workspaceId,
                   userId: c.get('actor').userId,
@@ -3437,7 +3434,6 @@ export function registerGoalRoutes({
 
                 workerCoordinator = coordinator;
                 return {
-                  repository: preparedContext.repository,
                   delegationRequest: coordinator.workerRequest,
                   contextPackageDigest: preparedContext.contextPackageDigest,
                   knowledgeSelectionInput: null,

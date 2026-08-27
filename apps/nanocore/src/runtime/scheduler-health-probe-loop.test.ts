@@ -62,7 +62,7 @@ function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix
 }
 
 describe('scheduler health probe loop', () => {
-  it('keeps the configured remote Cell target healthy with the default probe', () => {
+  it('keeps the configured remote scheduler target healthy with the default probe', () => {
     const coreDb = createMigratedCoreDb();
 
     try {

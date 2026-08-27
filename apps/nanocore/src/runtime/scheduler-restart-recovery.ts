@@ -15,11 +15,42 @@ import {
   markWorkerBackendWorkspaceHandoffComplete,
   transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
+  workerBackendImageIdentity,
 } from './worker-backend-sessions.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 
-const WORKER_RECONNECT_WINDOW_MS = 60_000;
+const WORKER_RECONNECT_WINDOW_MS = 300_000;
+
+/** Exact reconnect lineage required to adopt one already-running worker. */
+export interface SchedulerRestartLineage {
+  readonly agentSessionId: string;
+  readonly backendSessionId: string;
+  readonly buildLineage: {
+    readonly argumentsDigest: string;
+    readonly contextDigest: string;
+    readonly inputDigest: string;
+    readonly resultingImageDigest: string;
+  };
+  readonly leaseId: string;
+  readonly nextSequence: number;
+  readonly packageSnapshotId: string;
+  readonly processKeyHash: string;
+}
+
+/**
+ * Validates all reconnect authority before an existing process can be adopted.
+ *
+ * @param expected Durable reconnect lineage.
+ * @param observed Lineage presented by the reconnecting worker.
+ * @returns Closed acceptance result.
+ */
+export function validateSchedulerRestartLineage(
+  expected: SchedulerRestartLineage,
+  observed: SchedulerRestartLineage
+): { readonly accepted: boolean } {
+  return { accepted: isDeepStrictEqual(expected, observed) };
+}
 
 /** Product turn state established by restart recovery projection. */
 export type RecoveredTurnStatus = 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'missing';
@@ -34,7 +65,7 @@ export interface PreAnchorRecoveryContext {
   readonly threadId: string;
   /** Turn lineage id. */
   readonly turnId: string;
-  /** Agent session lineage id. */
+  /** AgentSession lineage id. */
   readonly agentSessionId: string;
   /** Package snapshot lineage id. */
   readonly packageSnapshotId: string;
@@ -48,13 +79,11 @@ export interface RunSchedulerRestartRecoveryInput {
   ) => Promise<void>;
   /** Optional deterministic clock. */
   readonly now?: () => string;
+  /** Registers exact cleanup result identities without awaiting or dispatching effects. */
+  readonly prepareBackendCleanup?: (session: WorkerGovernanceBackendSessionIdentity) => void;
   /** Projects one recovered product turn and returns its authoritative terminal state. */
   readonly projectRecoveredTurn: (
     subject: WorkerBackendSessionRecord | PreAnchorRecoveryContext
-  ) => Promise<{ readonly status: RecoveredTurnStatus }>;
-  /** Resumes the existing closeout path when final status was durable before the restart. */
-  readonly reconcileAcceptedFinalStatus?: (
-    session: WorkerBackendSessionRecord
   ) => Promise<{ readonly status: RecoveredTurnStatus }>;
   /** Restores read-only access to one exact backend session before reconnect is armed. */
   readonly restoreBackendSession?: (session: WorkerBackendSessionRecord) => Promise<void>;
@@ -95,11 +124,11 @@ interface RecoveryFailure {
 }
 
 /**
- * Arms eligible live leases for bounded reconnect and closes every other durable owner at boot.
+ * Arms eligible live leases and transfers every other durable owner without external effects.
  *
  * @param coreDb Open Core database handle.
- * @param input Physical cleanup, product projection, and deterministic clock dependencies.
- * @returns New scheduler epoch and pre-anchor leases terminalized during recovery.
+ * @param input Read-only restoration, product projection, and deterministic clock dependencies.
+ * @returns New scheduler epoch and pre-anchor leases terminalized during classification.
  * @throws AggregateError after attempting every independent recovery row when any invariant fails.
  */
 export async function runSchedulerRestartRecovery(
@@ -114,7 +143,7 @@ export async function runSchedulerRestartRecovery(
 
   for (const orphan of listOrphanBackendSessions(coreDb)) {
     try {
-      await cleanupPhysicalSession(coreDb, orphan, now, input.cleanupBackendSession);
+      moveSessionToCleanupPending(coreDb, orphan, now());
       failures.push({
         error: new Error(
           `Worker backend session ${orphan.leaseId} has no non-terminal scheduler lease owner.`
@@ -138,7 +167,7 @@ export async function runSchedulerRestartRecovery(
         continue;
       }
 
-      await recoverAnchoredLease(coreDb, row, session, schedulerEpoch, now, input);
+      await classifyAnchoredLease(coreDb, row, session, schedulerEpoch, now, input);
     } catch (error) {
       failures.push({ error, leaseId: row.leaseId });
     }
@@ -153,27 +182,29 @@ export async function runSchedulerRestartRecovery(
 }
 
 /**
- * Cleans only reconnect candidates whose one boot-armed deadline has expired.
+ * Drains effect-owning restart work after the ordinary listener is available.
  *
  * @param coreDb Open Core database handle.
+ * @param schedulerEpoch Current process scheduler epoch minted by the pre-listen scan.
  * @param input Existing cleanup, projection, and final-status closeout dependencies.
  */
-export async function runExpiredSchedulerReconnectCleanup(
+export async function runSchedulerRecoveryMaintenance(
   coreDb: CoreDb,
+  schedulerEpoch: number,
   input: RunSchedulerRestartRecoveryInput
 ): Promise<void> {
   const timestamp = (input.now ?? (() => new Date().toISOString()))();
   const failures: RecoveryFailure[] = [];
-  const rows = listNonTerminalLeaseRows(coreDb).filter(
+  const expiredRows = listNonTerminalLeaseRows(coreDb).filter(
     (row) =>
       row.recoveryState === 'awaiting-reconnect' &&
       row.recoveryDeadline !== null &&
       row.recoveryDeadline <= timestamp
   );
 
-  for (const row of rows) {
+  for (const row of expiredRows) {
     try {
-      const claimed = coreDb.sqlite
+      coreDb.sqlite
         .prepare(
           `UPDATE scheduler_session_leases
            SET recovery_state = 'needs-evidence', recovery_deadline = NULL
@@ -184,21 +215,30 @@ export async function runExpiredSchedulerReconnectCleanup(
              AND recovery_deadline <= ?`
         )
         .run(row.leaseId, row.schedulerEpoch, row.recoveryDeadline, timestamp);
-      if (claimed.changes !== 1) {
-        continue;
-      }
+    } catch (error) {
+      failures.push({ error, leaseId: row.leaseId });
+    }
+  }
+
+  for (const row of listNonTerminalLeaseRows(coreDb)) {
+    try {
       const session = getWorkerBackendSession(coreDb, row.leaseId);
       if (!session) {
-        throw new Error(`Scheduler lease ${row.leaseId} has no durable backend session anchor.`);
+        continue;
       }
-      await recoverAnchoredLease(
-        coreDb,
-        { ...row, recoveryDeadline: null, recoveryState: 'needs-evidence' },
-        session,
-        row.schedulerEpoch,
-        () => timestamp,
-        input
-      );
+      const acceptedFinalStatus = hasAcceptedFinalStatus(coreDb, row, session);
+      const cleanupOwned = ['cleanup-pending', 'cleanup-failed'].includes(session.state);
+      if (
+        acceptedFinalStatus &&
+        !cleanupOwned &&
+        !['physical-cleaned', 'cleaned'].includes(session.state)
+      ) {
+        continue;
+      }
+      if (!acceptedFinalStatus && !cleanupOwned && row.recoveryState !== 'needs-evidence') {
+        continue;
+      }
+      await recoverAnchoredLease(coreDb, row, session, schedulerEpoch, () => timestamp, input);
     } catch (error) {
       failures.push({ error, leaseId: row.leaseId });
     }
@@ -309,6 +349,103 @@ async function recoverPreAnchorLease(
   terminalizeRecoveredLease(coreDb, row, status, schedulerEpoch, 'pre-anchor');
 }
 
+/** Classifies one anchored lease without waiting for a NanoHost or product-closeout effect. */
+async function classifyAnchoredLease(
+  coreDb: CoreDb,
+  row: LeaseRecoveryRow,
+  originalSession: WorkerBackendSessionRecord,
+  schedulerEpoch: number,
+  now: () => string,
+  input: RunSchedulerRestartRecoveryInput
+): Promise<void> {
+  const acceptedFinalStatus = hasAcceptedFinalStatus(coreDb, row, originalSession);
+  if (['cleanup-pending', 'cleanup-failed'].includes(originalSession.state)) {
+    if (acceptedFinalStatus) {
+      clearAcceptedFinalStatusRecoveryState(coreDb, row);
+    }
+    const fenced =
+      originalSession.state === 'cleanup-failed'
+        ? originalSession
+        : moveSessionToCleanupPending(coreDb, originalSession, now());
+    assertSessionMatchesLease(fenced, row);
+    input.prepareBackendCleanup?.(toRestartBackendIdentity(fenced));
+    return;
+  }
+  if (acceptedFinalStatus) {
+    clearAcceptedFinalStatusRecoveryState(coreDb, row);
+    if (['physical-cleaned', 'cleaned'].includes(originalSession.state)) {
+      await recoverAnchoredLease(coreDb, row, originalSession, schedulerEpoch, now, input);
+    } else {
+      const fenced = moveSessionToCleanupPending(coreDb, originalSession, now());
+      assertSessionMatchesLease(fenced, row);
+      input.prepareBackendCleanup?.(toRestartBackendIdentity(fenced));
+      await input.projectRecoveredTurn(originalSession);
+    }
+    return;
+  }
+  if (['physical-cleaned', 'cleaned'].includes(originalSession.state)) {
+    await recoverAnchoredLease(coreDb, row, originalSession, schedulerEpoch, now, input);
+    return;
+  }
+  if (hasReconnectAuthority(row, originalSession)) {
+    let backendRestored = false;
+    try {
+      await input.restoreBackendSession?.(originalSession);
+      backendRestored = input.restoreBackendSession !== undefined;
+    } catch {
+      // An unrestorable handle transfers to the existing fenced cleanup owner.
+    }
+    if (backendRestored) {
+      const timestamp = now();
+      if (
+        row.expiresAt > timestamp &&
+        (row.recoveryDeadline === null || row.recoveryDeadline > timestamp)
+      ) {
+        const recoveryDeadline =
+          row.recoveryDeadline ??
+          new Date(
+            Math.min(Date.parse(row.expiresAt), Date.parse(timestamp) + WORKER_RECONNECT_WINDOW_MS)
+          ).toISOString();
+        const armed = coreDb.sqlite
+          .prepare(
+            `UPDATE scheduler_session_leases
+             SET recovery_state = 'awaiting-reconnect', recovery_deadline = ?
+             WHERE lease_id = ? AND scheduler_epoch = ? AND status IN ('active', 'idle')
+               AND last_worker_sequence IS NOT NULL AND worker_process_key_hash IS NOT NULL`
+          )
+          .run(recoveryDeadline, row.leaseId, row.schedulerEpoch);
+        if (armed.changes !== 1) {
+          throw new Error(`Scheduler lease ${row.leaseId} changed while arming reconnect.`);
+        }
+        return;
+      }
+    }
+  }
+
+  const fenced = moveSessionToCleanupPending(coreDb, originalSession, now());
+  assertSessionMatchesLease(fenced, row);
+  input.prepareBackendCleanup?.(toRestartBackendIdentity(fenced));
+}
+
+/** Clears the generic evidence marker after exact accepted final-status ownership is proved. */
+function clearAcceptedFinalStatusRecoveryState(coreDb: CoreDb, row: LeaseRecoveryRow): void {
+  const result = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_session_leases
+       SET recovery_state = NULL, recovery_deadline = NULL
+       WHERE lease_id = ?
+         AND status = 'releasing'
+         AND release_reason = 'worker-final-status'
+         AND recovery_state IS NOT NULL`
+    )
+    .run(row.leaseId);
+  if (row.recoveryState !== null && result.changes !== 1) {
+    throw new Error(
+      `Scheduler lease ${row.leaseId} changed while accepting final-status recovery.`
+    );
+  }
+}
+
 /** Cleans, projects, and terminalizes one anchored backend session. */
 async function recoverAnchoredLease(
   coreDb: CoreDb,
@@ -318,25 +455,6 @@ async function recoverAnchoredLease(
   now: () => string,
   input: RunSchedulerRestartRecoveryInput
 ): Promise<void> {
-  const acceptedFinalStatus = await reconcileAcceptedFinalStatus(
-    coreDb,
-    row,
-    originalSession,
-    input
-  );
-  if (acceptedFinalStatus) {
-    if (acceptedFinalStatus.status === 'missing') {
-      throw new Error(`Anchored scheduler lease ${row.leaseId} has no recoverable product turn.`);
-    }
-    terminalizeRecoveredLease(
-      coreDb,
-      row,
-      acceptedFinalStatus.status,
-      schedulerEpoch,
-      acceptedFinalStatus.status === 'interrupted' ? 'accepted-final-status' : 'backend-cleanup'
-    );
-    return;
-  }
   if (hasReconnectAuthority(row, originalSession)) {
     let backendRestored = false;
     try {
@@ -433,37 +551,30 @@ function hasReconnectAuthority(
   );
 }
 
-/** Re-enters normal closeout only when an exact durable final status already exists. */
-async function reconcileAcceptedFinalStatus(
+/** Returns whether exact durable final-status evidence is ready for ordinary closeout. */
+function hasAcceptedFinalStatus(
   coreDb: CoreDb,
   row: LeaseRecoveryRow,
-  session: WorkerBackendSessionRecord,
-  input: RunSchedulerRestartRecoveryInput
-): Promise<{ readonly status: RecoveredTurnStatus } | null> {
-  if (row.status !== 'releasing' || row.releaseReason !== 'worker-final-status') {
-    return null;
-  }
-  if (!sameRecoveryLineage(row, session)) {
-    return null;
+  session: WorkerBackendSessionRecord
+): boolean {
+  if (
+    row.status !== 'releasing' ||
+    row.releaseReason !== 'worker-final-status' ||
+    !sameRecoveryLineage(row, session)
+  ) {
+    return false;
   }
   const { requestId } = requireSchedulerSessionLeaseAdmissionContext(coreDb, row.leaseId);
-  const accepted = getWorkerControlAcceptedFinalStatus(coreDb, {
-    agentSessionId: row.agentSessionId,
-    packageSnapshotId: row.packageSnapshotId,
-    requestId,
-    threadId: row.threadId,
-    turnId: row.turnId,
-    workspaceId: row.workspaceId,
-  });
-  if (!accepted) {
-    return null;
-  }
-  if (!input.reconcileAcceptedFinalStatus) {
-    throw new Error(
-      `Scheduler lease ${row.leaseId} requires accepted final-status reconciliation.`
-    );
-  }
-  return input.reconcileAcceptedFinalStatus(session);
+  return Boolean(
+    getWorkerControlAcceptedFinalStatus(coreDb, {
+      agentSessionId: row.agentSessionId,
+      packageSnapshotId: row.packageSnapshotId,
+      requestId,
+      threadId: row.threadId,
+      turnId: row.turnId,
+      workspaceId: row.workspaceId,
+    })
+  );
 }
 
 /** Cleans one exact durable physical identity and records the stable completion instant. */
@@ -476,20 +587,28 @@ async function cleanupPhysicalSession(
   if (['physical-cleaned', 'cleaned'].includes(originalSession.state)) {
     return originalSession;
   }
-  const session = moveSessionToCleanupPending(coreDb, originalSession, now());
+  let session =
+    originalSession.state === 'cleanup-failed'
+      ? originalSession
+      : moveSessionToCleanupPending(coreDb, originalSession, now());
   if (!cleanupBackendSession) {
     throw new Error('Scheduler restart recovery requires a backend cleanup implementation.');
   }
   try {
     await cleanupBackendSession(toRestartBackendIdentity(session));
   } catch (error) {
-    transitionWorkerBackendSessionState(coreDb, {
-      fromState: 'cleanup-pending',
-      leaseId: session.leaseId,
-      now,
-      toState: 'cleanup-failed',
-    });
+    if (session.state === 'cleanup-pending') {
+      transitionWorkerBackendSessionState(coreDb, {
+        fromState: 'cleanup-pending',
+        leaseId: session.leaseId,
+        now,
+        toState: 'cleanup-failed',
+      });
+    }
     throw error;
+  }
+  if (session.state === 'cleanup-failed') {
+    session = moveSessionToCleanupPending(coreDb, session, now());
   }
   return transitionWorkerBackendSessionState(coreDb, {
     fromState: 'cleanup-pending',
@@ -507,9 +626,9 @@ function toRestartBackendIdentity(
     agentSessionId: session.agentSessionId,
     backendKind: parseRestartBackendKind(session.backendKind),
     backendSessionId: session.backendSessionId,
-    backendTarget: session.backendTarget,
     deploymentId: session.deploymentId,
     packageSnapshotId: session.packageSnapshotId,
+    runtimeTargetId: session.runtimeTargetId,
     stagingDirectoryRef: session.stagingDirectoryRef,
     transientProviderInstanceId: session.transientProviderInstanceId,
   };
@@ -593,10 +712,10 @@ function projectCleanup(
     outcome: 'succeeded',
     environmentPackage,
     packageSnapshotId: session.packageSnapshotId,
-    placement: session.backendTarget.placement,
+    placement: 'local',
     threadId: session.threadId,
     turnId: session.turnId,
-    workerImage: session.workerImage,
+    workerImage: workerBackendImageIdentity(session.backendLineage),
     workspaceHandoffState: session.workspaceHandoffState,
     workspaceId: session.workspaceId,
   });
@@ -644,12 +763,28 @@ function assertEnvironmentPackageMatchesSession(
     scope.turnId !== session.turnId ||
     scope.agentSessionId !== session.agentSessionId ||
     environmentPackage.backend.preferred !== session.backendKind ||
-    environmentPackage.runtime.image.ref !== session.workerImage
+    !runtimeImageMatchesBackendLineage(environmentPackage.runtime.image, session.backendLineage)
   ) {
     throw new Error(
       `Agent environment package ${environmentPackage.snapshotId} does not match backend session lineage.`
     );
   }
+}
+
+/** Checks immutable AEP reference/build inputs against the persisted backend lineage. */
+function runtimeImageMatchesBackendLineage(
+  image: AgentEnvironmentPackage['runtime']['image'],
+  lineage: WorkerBackendSessionRecord['backendLineage']
+): boolean {
+  if (image.kind === 'reference') {
+    return 'imageRef' in lineage && lineage.imageRef === image.ref;
+  }
+  return (
+    'buildArgumentsDigest' in lineage &&
+    lineage.buildArgumentsDigest === image.argumentsDigest &&
+    lineage.buildContextDigest === image.contextDigest &&
+    lineage.buildInputDigest === image.input.digest
+  );
 }
 
 /** Applies the authoritative recovered turn outcome and releases scheduler capacity atomically. */

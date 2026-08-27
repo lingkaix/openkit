@@ -76,7 +76,7 @@ function createAgentManifest(overrides: Partial<AgentManifest> = {}): AgentManif
         { id: 'node', path: '/usr/local/bin/node' },
         { id: 'codex', path: '/usr/local/bin/codex' },
       ],
-      image: { pullPolicy: 'never', ref: 'openkit/worker-codex:test' },
+      image: { kind: 'reference', pullPolicy: 'never', ref: 'openkit/worker-codex:test' },
       kind: 'codex',
     },
     schemaVersion: 1,
@@ -168,7 +168,6 @@ describe('Settings diagnostics app API', () => {
       providers: {
         registry: [
           {
-            dispatchFamily: 'provider-api',
             baseUrl: 'https://example.com/v1',
             defaultModel: 'llama3.2',
             displayName: 'Ollama',
@@ -182,13 +181,11 @@ describe('Settings diagnostics app API', () => {
       defaults: {
         gateway: { providerId: null, model: null },
       },
-      oauth: {
-        openaiCodexAccounts: {
-          accounts: [expect.objectContaining({ accountSlotId: 'default', status: 'logged_out' })],
-          defaultAccountSlotId: 'default',
-        },
-      },
     });
+    expect(body).not.toHaveProperty('oauth');
+    for (const provider of body.providers.registry) {
+      expect(provider).not.toHaveProperty('dispatchFamily');
+    }
     expect(body.providers.registry).not.toEqual([
       {
         providerId: 'ollama',
@@ -224,7 +221,6 @@ describe('Settings diagnostics app API', () => {
       expect(res.status).toBe(200);
       expect(body.providers.registry).toEqual([
         {
-          dispatchFamily: 'provider-api',
           baseUrl: 'https://openrouter.ai/api/v1',
           displayName: 'OpenRouter',
           gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
@@ -233,6 +229,7 @@ describe('Settings diagnostics app API', () => {
           models: ['openai/gpt-5.1'],
         },
       ]);
+      expect(body).not.toHaveProperty('oauth');
       expect(JSON.stringify(body)).not.toContain('OPENROUTER_API_KEY');
       expect(JSON.stringify(body)).not.toContain('sk-openrouter-secret');
       expect(JSON.stringify(body)).not.toContain('user:password');
@@ -351,12 +348,6 @@ describe('Settings diagnostics app API', () => {
       defaults: {
         gateway: { providerId: null, model: null },
       },
-      oauth: {
-        openaiCodexAccounts: {
-          accounts: [expect.objectContaining({ accountSlotId: 'default', status: 'logged_out' })],
-          defaultAccountSlotId: 'default',
-        },
-      },
       capabilities: expect.any(Array),
       defaultProviders: {
         core: {
@@ -369,6 +360,10 @@ describe('Settings diagnostics app API', () => {
         },
       },
     });
+    expect(body).not.toHaveProperty('oauth');
+    for (const provider of body.providers.registry) {
+      expect(provider).not.toHaveProperty('dispatchFamily');
+    }
     expect(body).not.toHaveProperty('defaultProvider');
   });
 

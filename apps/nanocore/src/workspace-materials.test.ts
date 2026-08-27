@@ -183,7 +183,7 @@ describe('Workspace Material authority', () => {
       expect(
         bindThreadMaterial(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:05.000Z',
-          expectedBindingState: 'absent',
+          expectedBindingState: 'not_bound',
           materialId: first.materialId,
           requestId: 'request_bind_one',
           threadId: 'thread_one',
@@ -192,21 +192,23 @@ describe('Workspace Material authority', () => {
       expect(
         bindThreadMaterial(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:06.000Z',
-          expectedBindingState: 'absent',
+          expectedBindingState: 'not_bound',
           materialId: first.materialId,
           requestId: 'request_bind_two',
           threadId: 'thread_two',
         })
       ).toEqual({ materialId: first.materialId, threadId: 'thread_two', outcome: 'bound' });
+      const beforeCompetingBind = materialAuthoritySnapshot(workspaceDb);
       expect(() =>
         bindThreadMaterial(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:07.000Z',
-          expectedBindingState: 'absent',
+          expectedBindingState: 'not_bound',
           materialId: second.materialId,
           requestId: 'request_competing_bind',
           threadId: 'thread_one',
         })
       ).toThrowError(expect.objectContaining({ code: 'conflict' }));
+      expect(materialAuthoritySnapshot(workspaceDb)).toEqual(beforeCompetingBind);
       expect(getThreadMaterial(workspaceDb, 'thread_one')?.resource.materialId).toBe(
         first.materialId
       );
@@ -373,6 +375,20 @@ describe('Workspace Material authority', () => {
         })
       ).toEqual({ materialId: first.materialId, threadId: 'thread_one', outcome: 'unbound' });
       expect(getThreadMaterial(workspaceDb, 'thread_one')).toBeNull();
+      expect(
+        workspaceDb.sqlite
+          .prepare(`SELECT
+            binding_state AS bindingState,
+            inclusion_state AS inclusionState,
+            latest_queued_revision_id AS latestQueuedRevisionId
+            FROM thread_material_bindings
+            WHERE workspace_id = ? AND thread_id = ? AND material_id = ?`)
+          .get('ws_materials', 'thread_one', first.materialId)
+      ).toEqual({
+        bindingState: 'unbound',
+        inclusionState: 'included',
+        latestQueuedRevisionId: null,
+      });
       expect(() =>
         unbindThreadMaterial(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:15.000Z',
@@ -386,7 +402,7 @@ describe('Workspace Material authority', () => {
       expect(
         bindThreadMaterial(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:16.000Z',
-          expectedBindingState: 'absent',
+          expectedBindingState: 'not_bound',
           materialId: second.materialId,
           requestId: 'request_bind_second',
           threadId: 'thread_one',
@@ -409,7 +425,7 @@ describe('Workspace Material authority', () => {
       expect(
         bindThreadMaterial(workspaceDb, {
           acceptedAt: '2026-07-18T00:00:18.000Z',
-          expectedBindingState: 'unbound',
+          expectedBindingState: 'not_bound',
           materialId: first.materialId,
           requestId: 'request_rebind_first',
           threadId: 'thread_one',
@@ -494,7 +510,7 @@ describe('Workspace Material authority', () => {
       });
       bindThreadMaterial(workspaceDb, {
         acceptedAt: '2026-07-18T01:00:02.000Z',
-        expectedBindingState: 'absent',
+        expectedBindingState: 'not_bound',
         materialId: material.materialId,
         requestId: 'request_bind_handoff',
         threadId: 'thread_handoff',

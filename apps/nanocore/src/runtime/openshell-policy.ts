@@ -2,17 +2,17 @@ import { OPENKIT_WORKER_CONTROL_POST_PATHS } from '@openkit/config-schema';
 import { assertOpenShellPolicyConformant } from '@openkit/openshell-schema-snapshot';
 
 /**
- * Input used to render an OpenShell sandbox policy for direct OpenKit worker control.
+ * Input used to render an OpenShell sandbox policy from resolved AEP grants.
  */
 export interface RenderOpenShellWorkerPolicyInput {
   /** Additional filesystem grants derived from the Agent Environment Package policy. */
   additionalFilesystemGrants?: OpenShellFilesystemGrant[] | undefined;
   /** Additional outbound endpoints allowed for selected worker binaries. */
   additionalNetworkEndpoints?: OpenShellNetworkEndpoint[] | undefined;
-  /** Direct NanoCore Worker Control Gateway URL. */
-  controlBaseUrl: string;
-  /** Executable paths allowed to use the worker control endpoint. */
-  binaries: string[];
+  /** Legacy direct worker-control URL, omitted by strict local Integration packages. */
+  controlBaseUrl?: string | undefined;
+  /** Executable paths allowed to use the optional legacy direct endpoint. */
+  binaries?: string[] | undefined;
 }
 
 /**
@@ -41,23 +41,109 @@ export interface OpenShellNetworkEndpoint {
   port: number;
   /** Endpoint protocol label understood by OpenShell. */
   protocol?: string | undefined;
-  /** Exact POST requests allowed instead of a broad access preset. */
+  /** Bounded HTTP requests allowed instead of a broad access preset. */
   rules?: Array<{
     /** HTTP method allowed by the rule. */
-    method: 'POST';
-    /** Exact absolute HTTP path allowed by the rule. */
+    method: 'GET' | 'POST';
+    /** Absolute HTTP path or OpenShell path pattern allowed by the rule. */
     path: string;
   }>;
 }
 
 /**
+ * Projects the pinned OpenShell sandbox policy as structured create input.
+ *
+ * @param input Resolved filesystem and network grants.
+ * @returns Structured policy accepted by the NanoHost carriage boundary.
+ */
+export function projectOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyInput) {
+  renderOpenShellWorkerPolicy(input);
+  const networkPolicies = Object.fromEntries(
+    (input.additionalNetworkEndpoints ?? []).map((entry) => {
+      const protocol = entry.protocol ?? 'rest';
+      const rules = entry.rules ?? [];
+      return [
+        entry.name,
+        {
+          binaries: entry.binaries.map((path) => ({ path })),
+          endpoints: [
+            {
+              ...(rules.length > 0
+                ? { rules: rules.map((rule) => ({ allow: { ...rule } })) }
+                : { access: entry.access ?? 'read-only' }),
+              enforcement: 'enforce',
+              host: entry.host,
+              port: entry.port,
+              protocol,
+            },
+          ],
+          name: entry.name,
+        },
+      ];
+    })
+  );
+  const filesystemGrants = input.additionalFilesystemGrants ?? [];
+  return {
+    filesystem: {
+      includeWorkdir: true,
+      readOnly: [
+        '/usr',
+        '/lib',
+        '/proc',
+        '/dev/urandom',
+        '/app',
+        '/etc',
+        '/var/log',
+        ...filesystemGrants
+          .filter((grant) => grant.access === 'read-only')
+          .map((grant) => grant.path),
+      ],
+      readWrite: [
+        '/sandbox',
+        '/tmp',
+        '/dev/null',
+        ...filesystemGrants
+          .filter((grant) => grant.access === 'read-write')
+          .map((grant) => grant.path),
+      ],
+    },
+    landlock: { compatibility: 'best_effort' },
+    networkMiddlewares: {},
+    networkPolicies,
+    process: { runAsGroup: 'sandbox', runAsUser: 'sandbox' },
+    version: 1,
+  };
+}
+
+/**
  * Renders the OpenShell policy schema accepted by the installed distribution.
  *
- * @param input Direct worker control target.
+ * @param input Resolved filesystem and network grants.
  * @returns YAML policy text for `openshell sandbox create --policy`.
  */
 export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyInput): string {
-  const endpoint = resolveControlEndpoint(input.controlBaseUrl);
+  const directControlEndpoint = input.controlBaseUrl
+    ? resolveControlEndpoint(input.controlBaseUrl)
+    : null;
+  const directControlPolicy = directControlEndpoint
+    ? [
+        '  openkit_worker_control:',
+        '    name: openkit_worker_control',
+        '    binaries:',
+        ...(input.binaries ?? []).map((binary) => `      - path: ${binary}`),
+        '    endpoints:',
+        `      - host: ${directControlEndpoint.host}`,
+        `        port: ${directControlEndpoint.port}`,
+        '        protocol: rest',
+        '        enforcement: enforce',
+        '        rules:',
+        ...OPENKIT_WORKER_CONTROL_POST_PATHS.flatMap((path) => [
+          '          - allow:',
+          '              method: POST',
+          `              path: ${path}`,
+        ]),
+      ]
+    : [];
   const additionalNetworkPolicies = (input.additionalNetworkEndpoints ?? []).flatMap((entry) =>
     renderNetworkPolicyEntry(entry)
   );
@@ -92,21 +178,7 @@ export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyIn
     '  run_as_user: sandbox',
     '  run_as_group: sandbox',
     'network_policies:',
-    '  openkit_worker_control:',
-    '    name: openkit_worker_control',
-    '    binaries:',
-    ...input.binaries.map((binary) => `      - path: ${binary}`),
-    '    endpoints:',
-    `      - host: ${endpoint.host}`,
-    `        port: ${endpoint.port}`,
-    '        protocol: rest',
-    '        enforcement: enforce',
-    '        rules:',
-    ...OPENKIT_WORKER_CONTROL_POST_PATHS.flatMap((path) => [
-      '          - allow:',
-      '              method: POST',
-      `              path: ${path}`,
-    ]),
+    ...directControlPolicy,
     ...additionalNetworkPolicies,
     '',
   ].join('\n');
@@ -162,11 +234,13 @@ function renderNetworkPolicyEntry(entry: OpenShellNetworkEndpoint): string[] {
     throw new Error('OpenShell exact HTTP rules require the rest protocol.');
   }
   for (const rule of rules) {
-    if (rule.method !== 'POST') {
-      throw new Error('OpenShell worker inference rules only support POST.');
+    if (rule.method !== 'GET' && rule.method !== 'POST') {
+      throw new Error('OpenShell exact REST rules only support GET or POST.');
     }
-    if (!rule.path.startsWith('/') || /[\r\n*?]/.test(rule.path)) {
-      throw new Error('OpenShell exact REST rule paths must be absolute and contain no globs.');
+    if (!rule.path.startsWith('/') || /[\r\n]/.test(rule.path)) {
+      throw new Error(
+        'OpenShell exact REST rule paths must be absolute and contain no line breaks.'
+      );
     }
   }
 
@@ -194,11 +268,11 @@ function renderNetworkPolicyEntry(entry: OpenShellNetworkEndpoint): string[] {
 }
 
 /**
- * Resolves an HTTP URL into the host and port OpenShell policy expects.
+ * Resolves one explicitly supplied legacy HTTP endpoint into policy coordinates.
  *
- * @param controlBaseUrl Direct worker control URL.
- * @returns Host and numeric port.
- * @throws Error when the URL is not HTTP(S).
+ * @param controlBaseUrl Direct worker-control URL retained only for the unselectable legacy path.
+ * @returns Host and numeric port used by the OpenShell policy schema.
+ * @throws Error when the URL is not HTTP or HTTPS.
  */
 function resolveControlEndpoint(controlBaseUrl: string): { host: string; port: number } {
   const url = new URL(controlBaseUrl);

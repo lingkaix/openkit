@@ -75,6 +75,7 @@ import {
   assertSafeWorkspacePathSegment,
   assertTurnEventPayloadLineage,
   deleteWorkspaceKnowledgeRecord,
+  isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
@@ -128,7 +129,7 @@ const UNRESOLVED_KNOWLEDGE_CONFLICT_STATUSES = new Set<KnowledgeConflictStatus>(
   'stale',
 ]);
 
-/** Durable app-local agent session stored beside protocol-safe session fields. */
+/** Durable app-local AgentSession stored beside protocol-safe session fields. */
 export type AgentSession = ProtocolAgentSession & {
   configVersion: number | null;
   environmentPackageSnapshotId: string | null;
@@ -1662,7 +1663,7 @@ export class FsStore {
     }
     for (const session of history.agentSessions) {
       if (this.agentSessions.has(session.id)) {
-        throw new Error(`Agent session already exists: ${session.id}`);
+        throw new Error(`AgentSession already exists: ${session.id}`);
       }
     }
 
@@ -2496,13 +2497,13 @@ export class FsStore {
   public createAgentSession(input: AgentSessionInput): AgentSession {
     this.getWorkspace(input.workspaceId);
     if (!input.threadId) {
-      throw new Error(`Agent session requires a thread: ${input.id}`);
+      throw new Error(`AgentSession requires a thread: ${input.id}`);
     }
     this.getThread(input.workspaceId, input.threadId);
     const existing = this.agentSessions.get(input.id);
 
-    if (existing && existing.workspaceId !== input.workspaceId) {
-      throw new Error(`Agent session id belongs to another workspace: ${input.id}`);
+    if (existing) {
+      throw new Error(`AgentSession id already exists: ${input.id}`);
     }
 
     const workspaceRoots = input.workspaceRoots ?? [];
@@ -2517,22 +2518,31 @@ export class FsStore {
       ...input,
     }) as AgentSession;
 
+    if (
+      isCurrentAgentSessionStatus(agentSession.status) &&
+      this.listThreadAgentSessions(agentSession.workspaceId, input.threadId).some((candidate) =>
+        isCurrentAgentSessionStatus(candidate.status)
+      )
+    ) {
+      throw new Error(`Thread already has a current AgentSession: ${input.threadId}`);
+    }
+
     this.agentSessions.set(agentSession.id, agentSession);
     this.persist(agentSession.workspaceId);
     return agentSession;
   }
 
   /**
-   * Return one agent session by id.
+   * Return one AgentSession by id.
    *
-   * @param agentSessionId Agent session id to load.
-   * @returns Stored agent session.
+   * @param agentSessionId AgentSession id to load.
+   * @returns Stored AgentSession.
    */
   public getAgentSession(agentSessionId: string): AgentSession {
     const agentSession = this.agentSessions.get(agentSessionId);
 
     if (!agentSession) {
-      throw new Error(`Agent session not found: ${agentSessionId}`);
+      throw new Error(`AgentSession not found: ${agentSessionId}`);
     }
 
     return agentSession;
@@ -2565,7 +2575,14 @@ export class FsStore {
         ].includes(field)
     );
     if (unsupportedField) {
-      throw new Error(`Agent session update cannot change field: ${unsupportedField}`);
+      throw new Error(`AgentSession update cannot change field: ${unsupportedField}`);
+    }
+    if (
+      input.status &&
+      !isCurrentAgentSessionStatus(agentSession.status) &&
+      isCurrentAgentSessionStatus(input.status)
+    ) {
+      throw new Error(`Terminal AgentSession cannot become current again: ${agentSessionId}`);
     }
     const updated = AgentSessionRecordSchema.parse({
       ...agentSession,
@@ -2578,11 +2595,11 @@ export class FsStore {
   }
 
   /**
-   * List agent sessions for one thread in durable creation order.
+   * List AgentSessions for one thread in durable creation order.
    *
    * @param workspaceId Workspace that owns the thread.
-   * @param threadId Thread whose agent sessions should be returned.
-   * @returns Agent sessions recorded for the thread.
+   * @param threadId Thread whose AgentSessions should be returned.
+   * @returns AgentSessions recorded for the thread.
    */
   public listThreadAgentSessions(workspaceId: string, threadId: string): AgentSession[] {
     this.getThread(workspaceId, threadId);
@@ -2593,10 +2610,10 @@ export class FsStore {
   }
 
   /**
-   * Lists every durable agent session for one workspace.
+   * Lists every durable AgentSession for one workspace.
    *
    * @param workspaceId Workspace whose sessions should be returned.
-   * @returns Workspace-owned agent sessions.
+   * @returns Workspace-owned AgentSessions.
    */
   public listWorkspaceAgentSessions(workspaceId: string): AgentSession[] {
     this.getWorkspace(workspaceId);

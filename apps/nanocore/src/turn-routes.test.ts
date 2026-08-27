@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,7 +10,12 @@ import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
+import { ProviderRegistry } from './providers/registry.js';
+import { resolveAgentSessionCompatibilityKey } from './runtime/agent-environment.js';
 import type {
+  CommitPreparedAgentSessionForTurnInput,
+  PrepareAgentSessionForTurnInput,
+  PreparedAgentSessionForTurn,
   TurnCommandRuntimeContext,
   TurnExecutor,
   TurnStartRuntimeContext,
@@ -21,9 +26,26 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
+
+/**
+ * Returns the local provider registry that matches `createTestAgentSetup()`.
+ *
+ * @returns Registry containing the test OpenRouter profile.
+ */
+function testProviderRegistry(): ProviderRegistry {
+  return new ProviderRegistry([
+    {
+      displayName: 'Agent OpenRouter',
+      id: 'agent-openrouter',
+      kind: 'local',
+      models: ['openai/gpt-5.2'],
+    },
+  ]);
+}
 
 /** Minimal turn executor that records route calls and applies deterministic turn transitions. */
 class RecordingTurnExecutor implements TurnExecutor {
@@ -50,6 +72,52 @@ class RecordingTurnExecutor implements TurnExecutor {
       workspaceKnowledgeEditing: false,
     };
     this.completeStarts = options.completeStarts ?? true;
+  }
+
+  /**
+   * Admits one fresh AgentSession for a Thread that has no current runtime owner.
+   *
+   * @param _store Store inspected by runtime-owned executors; unused for this fresh fixture.
+   * @param input Static AEP inputs for the future Turn.
+   * @returns Fresh AgentSession identity and compatibility key.
+   */
+  public async prepareAgentSessionForTurn(
+    _store: FsStore,
+    input: PrepareAgentSessionForTurnInput
+  ): Promise<PreparedAgentSessionForTurn> {
+    return {
+      agentSessionId: input.freshAgentSessionId,
+      currentAgentSession: null,
+      replacementRequired: false,
+      sessionCompatibilityKey: resolveAgentSessionCompatibilityKey({
+        agentSessionId: input.freshAgentSessionId,
+        agentSetup: input.agentSetup,
+        backend: { kind: 'openshell' },
+        requestId: input.requestId,
+        turn: input.turn,
+        turnInput: input.turnInput,
+        triggerActor: input.turn.triggerActor,
+        workspaceCwd: input.workspaceCwd,
+        workspaceRoots: input.workspaceRoots,
+        ...(input.workspaceDataSourceCatalog
+          ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+          : {}),
+        ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+      }),
+    };
+  }
+
+  /**
+   * No-op post-dispatch commit for this recording executor, which never replaces a predecessor.
+   *
+   * @param _store Store mutated by replacement commits; unused here.
+   * @param _input Prepared decision retained after lease acquisition.
+   */
+  public async commitPreparedAgentSessionForTurn(
+    _store: FsStore,
+    _input: CommitPreparedAgentSessionForTurnInput
+  ): Promise<void> {
+    return;
   }
 
   /**
@@ -101,7 +169,7 @@ class RecordingTurnExecutor implements TurnExecutor {
  *
  * @param executor Turn executor installed in the app.
  * @param slug Stable temporary-directory label.
- * @param workerPlacement Configured worker Cell placement.
+ * @param workerPlacement Configured scheduler placement.
  * @returns App, stores, databases, and repository fixture.
  */
 async function createSchedulerFixture(
@@ -120,14 +188,15 @@ async function createSchedulerFixture(
     workspaceId: 'ws_demo',
   });
   const app = createApp({
-    agentManifests: [createTestAgentSetup({ provider: null, requiredCapabilities: [] }).manifest],
+    agentManifests: [createTestAgentSetup().manifest],
     coreDb,
+    providerRegistry: testProviderRegistry(),
     store,
     turnExecutor: executor,
     workerPlacement,
   });
   const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-turn-repository-${slug}-`));
-  mkdirSync(join(repositoryPath, '.git'));
+  seedWritableGitRepository(repositoryPath);
 
   const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
     method: 'PUT',
@@ -190,15 +259,16 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
 
   const store = createDemoStore();
   const app = createApp({
-    agentManifests: [createTestAgentSetup({ provider: null, requiredCapabilities: [] }).manifest],
+    agentManifests: [createTestAgentSetup().manifest],
     auth: createHeaderAuthStub(),
     coreDb,
     mode: 'server',
+    providerRegistry: testProviderRegistry(),
     store,
     turnExecutor: executor,
   });
   const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-turn-shared-repository-${slug}-`));
-  mkdirSync(join(repositoryPath, '.git'));
+  seedWritableGitRepository(repositoryPath);
   const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
     method: 'PUT',
     body: JSON.stringify({
@@ -270,6 +340,20 @@ describe('generic turn routes', () => {
       ...turn,
       contextPackageDigest: null,
     });
+  });
+
+  it('omits AgentSession identity from ordinary turn reads while the durable Turn retains it', async () => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Hide AgentSession identity', LOCAL_ACTOR);
+    store.updateTurn(turn.id, { agentSessionId: 'as_hidden' });
+    const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
+
+    const response = await app.request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}`);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(body)).not.toContain('agentSessionId');
+    expect(store.getTurn('ws_demo', 'th_demo', turn.id).agentSessionId).toBe('as_hidden');
   });
 
   it('does not read a turn through a different workspace or thread path', async () => {
@@ -540,7 +624,7 @@ describe('generic turn routes', () => {
     }
   });
 
-  it('admits a remote product turn into the configured remote Cell target', async () => {
+  it('admits a remote product turn into the configured remote scheduler target', async () => {
     const executor = new RecordingTurnExecutor();
     const fixture = await createSchedulerFixture(executor, 'remote-placement', 'remote');
 
@@ -548,7 +632,7 @@ describe('generic turn routes', () => {
       const response = await fixture.app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
-          input: 'Run in the remote Cell',
+          input: 'Run on the remote target',
           requestId: '00000000-0000-4000-8000-000000000309',
           threadId: 'th_demo',
           workspaceId: 'ws_demo',

@@ -720,7 +720,7 @@ function requireCurrentReviewedArtifact(
  * Verifies a non-null proposal against the source Turn's strict accepted S39 trace.
  *
  * @param coreDb Core scheduler and worker-session authority.
- * @param store Product Turn and Agent Session owner.
+ * @param store Product Turn and AgentSession owner.
  * @param workspaceDb Workspace Review, Material, and package owner.
  * @param review Review whose immutable proposal must be present exactly once.
  * @throws ArtifactAuthorityError when strict trace proof is absent or contradictory.

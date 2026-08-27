@@ -1240,6 +1240,41 @@ describe('FsStore canonical reload', () => {
     );
   });
 
+  it('rejects duplicate-current AgentSessions during canonical reload', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-duplicate-current-session-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Duplicate current AgentSession workspace');
+    const thread = store.createThread(workspace.id, 'Duplicate current AgentSession thread');
+    const current = store.createAgentSession({
+      id: 'as_reload_current_first',
+      agentId: 'agent_codex_host',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      status: 'idle',
+      message: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const duplicate = {
+      ...current,
+      id: 'as_reload_current_second',
+      status: 'ready' as const,
+    };
+    const duplicateRoot = join(
+      dataRoot,
+      'workspaces',
+      workspace.id,
+      'runtime',
+      'agent-sessions',
+      duplicate.id
+    );
+
+    mkdirSync(duplicateRoot, { recursive: true });
+    writeFileSync(join(duplicateRoot, 'session.json'), `${JSON.stringify(duplicate, null, 2)}\n`);
+
+    expect(() => new FsStore({ dataRoot })).toThrow();
+  });
+
   it('rejects canonical record directories missing required records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-missing-identity-'));
     const store = new FsStore({ dataRoot });
@@ -1425,7 +1460,7 @@ describe('FsStore canonical reload', () => {
     ['stale turn items', /Turn items/],
     ['non-contiguous events', /Turn event .* invalid lineage/],
     ['batch duplicate thread', /Duplicate .*thread/i],
-    ['null-thread agent session', /Agent session .* invalid lineage/],
+    ['null-thread AgentSession', /AgentSession .* invalid lineage/],
     ['orphan turn-bound artifact', /artifact-reference/i],
   ] as const)('rejects imported workspace history with %s', (violation, expectedError) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-import-history-'));
@@ -1465,7 +1500,7 @@ describe('FsStore canonical reload', () => {
       case 'batch duplicate thread':
         input.threads = [...input.threads, input.threads[0]!];
         break;
-      case 'null-thread agent session':
+      case 'null-thread AgentSession':
         input.agentSessions = [
           {
             id: 'as_null_thread_import',

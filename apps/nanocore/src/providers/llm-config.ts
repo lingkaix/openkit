@@ -1,5 +1,8 @@
+import {
+  resolveProviderSubscriptionFamily,
+  type SubscriptionProviderId,
+} from '@openkit/config-schema';
 import type { ProviderProfile } from '../config/providers-loader.js';
-import { isCodexOAuthProviderProfile, readCodexOAuthAccountSlotId } from './codex-oauth-profile.js';
 import {
   gatewayCapabilitiesForProfile,
   normalizeProviderId,
@@ -15,8 +18,6 @@ export interface ResolvedLLMProviderConfig {
   readonly adapterId: string;
   /** Resolved credential, never returned through app APIs. */
   readonly apiKey: string | null;
-  /** Runtime backend used for dispatch. */
-  readonly backend: 'codex-oauth' | 'pi-ai';
   /** Effective provider endpoint. */
   readonly baseUrl: string | null;
   /** Human-readable provider name. */
@@ -29,8 +30,10 @@ export interface ResolvedLLMProviderConfig {
   readonly models: readonly string[];
   /** Whether dispatch requires an explicit credential. */
   readonly requiresApiKey: boolean;
-  /** Codex OAuth account slot for subscription providers. */
-  readonly codexOAuthAccountSlotId?: string;
+  /** Provider-neutral subscription family for strict OAuth account profiles. */
+  readonly subscriptionProviderId?: SubscriptionProviderId;
+  /** Exact provider-scoped account slot for strict OAuth account profiles. */
+  readonly accountSlotId?: string;
 }
 
 /**
@@ -48,23 +51,26 @@ export function resolveProviderProfileToLLMConfig(
     throw new Error(`LLM provider is not dispatchable: ${profile.id}`);
   }
 
-  const baseUrl = profile.baseUrl ?? null;
-  const isCodexOAuth = isCodexOAuthProviderProfile(profile);
-  const adapterId = isCodexOAuth ? 'openai_codex' : readProviderAdapterId(profile);
+  const subscriptionProviderId = resolveProviderSubscriptionFamily(profile);
+  const accountSlotId = profile.extensions?.openkit?.subscriptionAccount?.accountSlotId;
+  const isSubscriptionProfile =
+    profile.kind === 'oauth' &&
+    subscriptionProviderId !== null &&
+    accountSlotId !== undefined &&
+    profile.secretRef === undefined &&
+    profile.baseUrl === undefined;
   const apiKey = resolveProviderSecretRef(profile, credentialResolver);
-  const codexOAuthAccountSlotId = readCodexOAuthAccountSlotId(profile);
 
   return {
-    adapterId,
+    adapterId: isSubscriptionProfile ? subscriptionProviderId : readProviderAdapterId(profile),
     apiKey,
-    backend: isCodexOAuth ? 'codex-oauth' : 'pi-ai',
-    baseUrl,
+    baseUrl: profile.baseUrl ?? null,
     displayName: profile.displayName,
     gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
     id: profile.id,
     models: [...profile.models],
-    requiresApiKey: isCodexOAuth ? false : providerRequiresCredentials(profile),
-    ...(codexOAuthAccountSlotId ? { codexOAuthAccountSlotId } : {}),
+    requiresApiKey: isSubscriptionProfile ? false : providerRequiresCredentials(profile),
+    ...(isSubscriptionProfile ? { accountSlotId, subscriptionProviderId } : {}),
   };
 }
 

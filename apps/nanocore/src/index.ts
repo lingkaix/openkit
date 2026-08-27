@@ -1,3 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
+import {
+  createServer as createHttp2Server,
+  createSecureServer as createSecureHttp2Server,
+} from 'node:http2';
+import { createServer as createHttpsServer } from 'node:https';
+
 import { serve } from '@hono/node-server';
 
 import {
@@ -11,6 +19,12 @@ import {
   writeServerBootstrapTokenEmission,
 } from './auth/bootstrap-token.js';
 import { ensureLocalUser } from './auth/identity.js';
+import {
+  bindRequiresServerAuthenticatedTls,
+  createNanoHostTransportSessionAuthority,
+  type NanoHostTransportListener,
+  resolveNanoHostTransportListener,
+} from './auth/nanohost-transport-session.js';
 import {
   recordBootAuditEvent,
   recordBootStartAuditEvent,
@@ -36,6 +50,8 @@ import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
 import { createVaultProviderCredentialResolver } from './providers/vault-credential-resolver.js';
+import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
+import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import {
   type OpenShellRefreshStatusCollector,
   type OpenShellRefreshStatusPollingService,
@@ -55,7 +71,7 @@ import {
 } from './runtime/scheduler-lease-maintenance-service.js';
 import {
   type RunSchedulerRestartRecoveryInput,
-  runExpiredSchedulerReconnectCleanup,
+  runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
 } from './runtime/scheduler-restart-recovery.js';
 import {
@@ -75,8 +91,8 @@ import {
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
+  openBootVerifiedWorkspaceDb,
   openCoreDbWithIntegrityCheck,
-  openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from './storage/db.js';
 import {
@@ -111,14 +127,22 @@ let schedulerLeaseMaintenance: SchedulerLeaseMaintenanceService | null = null;
 let schedulerEpoch = 1;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
+let bindHost: string | undefined;
 let bindPort: number | undefined;
+let appTlsListen: NativeTlsListenOptions | null | undefined;
+let nanoHostListener: NanoHostTransportListener | null | undefined;
+let nanoHostTlsListen: NativeTlsListenOptions | null | undefined;
 let coreDb: CoreDb | undefined;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
 let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
-let cleanupExpiredReconnects: (() => Promise<void>) | undefined;
+let runRecoveryMaintenance: (() => Promise<void>) | undefined;
 let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
+const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
+const nanoHostSessionDispatch = createNanoHostSessionDispatch({
+  sessionAuthority: nanohostTransportSessionAuthority,
+});
 
 process.once('exit', releaseProcessResources);
 
@@ -136,6 +160,20 @@ const bootResult = await runBootPhases({
         resolveBetterAuthSecret(process.env, mode);
         ensureConfigTemplateSurface(dataRoot);
         runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 });
+        bindHost = resolveBindHost(process.env, mode, runtimeConfigSnapshot.openKitConfig);
+        bindPort = resolveBindPort(process.env, runtimeConfigSnapshot.openKitConfig);
+        nanoHostListener = resolveNanoHostTransportListener(
+          runtimeConfigSnapshot.openKitConfig.nanohost,
+          bindPort
+        );
+        appTlsListen = resolveNativeTlsListenOptions(bindHost, process.env);
+        nanoHostTlsListen = nanoHostListener
+          ? resolveNativeTlsListenOptions(
+              nanoHostListener.hostname,
+              process.env,
+              nanoHostListener.secure
+            )
+          : null;
 
         for (const diagnostic of runtimeConfigSnapshot.diagnostics) {
           console.warn(diagnostic.message);
@@ -220,12 +258,10 @@ const bootResult = await runBootPhases({
         vaultUnlockState = createDefaultVaultUnlockState({
           dataRoot,
           mode: requireBootValue(mode, 'Core mode was not resolved.'),
-          ...(config.vault?.localDefaultBackend
-            ? { localDefaultBackend: config.vault.localDefaultBackend }
-            : {}),
         });
 
         return checkBootVaultBackend({
+          dataRoot,
           ...(config.vault?.encryptedFile?.keyFilePath
             ? { keyFilePath: config.vault.encryptedFile.keyFilePath }
             : {}),
@@ -251,6 +287,7 @@ const bootResult = await runBootPhases({
       critical: true,
       run: async () => {
         const recoveryCoreDb = requireBootValue(coreDb, 'Core database was not initialized.');
+        fenceNanoHostRuntimeTargetAfterRestart(recoveryCoreDb, new Date().toISOString());
         sharedStore ??= new FsStore({ dataRoot });
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
@@ -259,6 +296,7 @@ const bootResult = await runBootPhases({
         );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
           coreDb: recoveryCoreDb,
+          nanoHostSessionDispatch,
           store: recoveryStore,
           vaultBackend: () =>
             requireBootValue(vaultUnlockState, 'Vault unlock state was not initialized.').backend(),
@@ -300,18 +338,15 @@ const bootResult = await runBootPhases({
 
             return { status: result.status };
           },
-          reconcileAcceptedFinalStatus: async (session) => {
-            const result = await recoveryRuntime.reconcileAcceptedFinalStatus(session);
-            return { status: result.status };
-          },
+          prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
           restoreBackendSession: recoveryRuntime.restoreBackendSession,
         } satisfies RunSchedulerRestartRecoveryInput;
         schedulerEpoch = (await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput))
           .schedulerEpoch;
         const checkpointRecoveryFailures =
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
-        cleanupExpiredReconnects = () =>
-          runExpiredSchedulerReconnectCleanup(recoveryCoreDb, recoveryInput);
+        runRecoveryMaintenance = () =>
+          runSchedulerRecoveryMaintenance(recoveryCoreDb, schedulerEpoch, recoveryInput);
         for (const row of recoveryCoreDb.sqlite
           .prepare(
             `SELECT package_snapshot_id AS packageSnapshotId
@@ -398,10 +433,11 @@ const turnExecutor = requireBootValue(
   workerLifecycleRuntime,
   'Worker lifecycle runtime was not initialized.'
 ).turnExecutor;
-const workerPlacement = requireBootValue(
+const activeWorkerLifecycleRuntime = requireBootValue(
   workerLifecycleRuntime,
   'Worker lifecycle runtime was not initialized.'
-).placement;
+);
+const workerPlacement = 'local' as const;
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 
@@ -430,27 +466,94 @@ const app = createApp({
   dataRoot,
   getBootReadiness: () => bootReadiness,
   mode,
+  nanoHostSessionDispatch,
+  nanohostTransportSessionAuthority,
   runtimeConfigManager,
   schedulerEpoch,
   store,
   turnExecutor,
   vaultUnlockState: activeVaultUnlockState,
+  workerLifecycleRuntime: activeWorkerLifecycleRuntime,
   workerControlGateway,
   workerPlacement,
 });
-const hostname = resolveBindHost(process.env, mode, runtimeConfigSnapshot.openKitConfig);
+const hostname = requireBootValue(bindHost, 'HTTP bind host was not resolved.');
 const port = requireBootValue(bindPort, 'HTTP bind port was not resolved.');
+if (
+  appTlsListen === undefined ||
+  nanoHostListener === undefined ||
+  nanoHostTlsListen === undefined
+) {
+  throw new Error('NanoCore listener configuration was not resolved during boot.');
+}
+/** Returns whether one request belongs exclusively to the private NanoHost listener. */
+const isNanoHostPrivateRequest = (request: Request) => {
+  const path = new URL(request.url).pathname;
+  return (
+    path.startsWith('/api/nanohost/transport/') ||
+    path.startsWith('/worker-control/') ||
+    path.startsWith('/inference/')
+  );
+};
+const appFetch: typeof app.fetch = async (request, env, executionContext) =>
+  isNanoHostPrivateRequest(request)
+    ? new Response(null, { status: 404 })
+    : app.fetch(request, env, executionContext);
+const nanoHostFetch: typeof app.fetch = async (request, env, executionContext) =>
+  isNanoHostPrivateRequest(request)
+    ? app.fetch(request, env, executionContext)
+    : new Response(null, { status: 404 });
 
-const server = serve(
-  {
-    fetch: app.fetch,
-    hostname,
-    port,
-  },
-  (info) => {
-    console.log(`Server is running on http://${info.address}:${info.port}`);
-  }
-);
+const appServer = appTlsListen
+  ? serve(
+      {
+        createServer: createHttpsServer,
+        fetch: appFetch,
+        hostname,
+        port,
+        serverOptions: appTlsListen,
+      },
+      (info) => {
+        console.log(`App server is running on https://${info.address}:${info.port}`);
+      }
+    )
+  : serve(
+      {
+        createServer: createHttpServer,
+        fetch: appFetch,
+        hostname,
+        port,
+      },
+      (info) => {
+        console.log(`App server is running on http://${info.address}:${info.port}`);
+      }
+    );
+const nanoHostServer = nanoHostListener
+  ? nanoHostTlsListen
+    ? serve(
+        {
+          createServer: createSecureHttp2Server,
+          fetch: nanoHostFetch,
+          hostname: nanoHostListener.hostname,
+          port: nanoHostListener.port,
+          serverOptions: nanoHostTlsListen,
+        },
+        (info) => {
+          console.log(`NanoHost server is running on https://${info.address}:${info.port}`);
+        }
+      )
+    : serve(
+        {
+          createServer: createHttp2Server,
+          fetch: nanoHostFetch,
+          hostname: nanoHostListener.hostname,
+          port: nanoHostListener.port,
+        },
+        (info) => {
+          console.log(`NanoHost server is running on http://${info.address}:${info.port}`);
+        }
+      )
+  : null;
 
 schedulerDispatchRetry = startSchedulerDispatchRetryService({
   agentManifests: runtimeConfigManager.current().agentManifests,
@@ -476,9 +579,9 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   },
 });
 schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {
-  cleanupExpiredReconnects: requireBootValue(
-    cleanupExpiredReconnects,
-    'Expired reconnect cleanup was not initialized.'
+  runRecoveryMaintenance: requireBootValue(
+    runRecoveryMaintenance,
+    'Scheduler recovery maintenance was not initialized.'
   ),
   intervalMs: SCHEDULER_LEASE_MAINTENANCE_INTERVAL_MS,
   maxTotalLeaseMs: SCHEDULER_LEASE_MAX_TOTAL_MS,
@@ -516,7 +619,7 @@ if (refreshStatusCollector) {
   });
 }
 
-/** Schedules at most one process-local closeout for an accepted worker final status. */
+/** Schedules at most one process-local closeout for an accepted `final_status`. */
 function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcceptedInput): void {
   const database = coreDb;
   const runtime = workerLifecycleRuntime;
@@ -565,11 +668,24 @@ function shutdown(signal: NodeJS.Signals): void {
     'openshell.refresh-status-polling.stop',
   ];
   closeWithDeadline({
-    close: (onClosed) => server.close(onClosed),
+    close: closeNanoCoreListeners,
     deadlineMs: SHUTDOWN_DEADLINE_MS,
     onClosed: () => finishShutdown(signal, [...stepsCompleted, 'http-server.close'], false, 0),
     onDeadline: () => finishShutdown(signal, [...stepsCompleted, 'shutdown.deadline'], true, 1),
   });
+}
+
+/** Closes both process listeners before completing orderly shutdown. */
+function closeNanoCoreListeners(onClosed: () => void): void {
+  let remaining = nanoHostServer ? 2 : 1;
+  const markClosed = () => {
+    remaining -= 1;
+    if (remaining === 0) {
+      onClosed();
+    }
+  };
+  appServer.close(markClosed);
+  nanoHostServer?.close(markClosed);
 }
 
 /**
@@ -612,6 +728,67 @@ function requireBootValue<T>(value: T | null | undefined, message: string): T {
 }
 
 /**
+ * Environment shape used to resolve native server-authenticated TLS material.
+ */
+interface TlsListenEnv {
+  /** Absolute or process-relative path to the PEM certificate chain. */
+  OPENKIT_TLS_CERT_FILE?: string;
+  /** Absolute or process-relative path to the PEM private key. */
+  OPENKIT_TLS_KEY_FILE?: string;
+}
+
+/** Native TLS material shared by the two process listeners when required. */
+interface NativeTlsListenOptions {
+  /** PEM certificate chain bytes. */
+  readonly cert: Buffer;
+  /** PEM private-key bytes. */
+  readonly key: Buffer;
+}
+
+/**
+ * Resolves native TLS listen options for the NanoCore process listener.
+ *
+ * Non-loopback binds require server-authenticated TLS and therefore PEM cert
+ * plus key paths. Exact same-host loopback may remain plaintext. Missing TLS
+ * material on a TLS-required bind fails closed with no plaintext downgrade.
+ *
+ * @param bindHost Resolved NanoCore bind host.
+ * @param env Process environment carrying optional TLS file paths.
+ * @returns HTTPS server options when TLS is required, otherwise null.
+ * @throws Error when a non-loopback bind lacks readable TLS material.
+ */
+function resolveNativeTlsListenOptions(
+  bindHost: string,
+  env: TlsListenEnv,
+  required = bindRequiresServerAuthenticatedTls(bindHost)
+): NativeTlsListenOptions | null {
+  if (!required) {
+    return null;
+  }
+
+  const certPath = env.OPENKIT_TLS_CERT_FILE?.trim();
+  const keyPath = env.OPENKIT_TLS_KEY_FILE?.trim();
+  if (!certPath || !keyPath) {
+    throw new Error(
+      `TLS listener for bind host "${bindHost}" requires OPENKIT_TLS_CERT_FILE and OPENKIT_TLS_KEY_FILE.`
+    );
+  }
+
+  try {
+    return {
+      cert: readFileSync(certPath),
+      key: readFileSync(keyPath),
+    };
+  } catch (error) {
+    throw new Error(
+      `Failed to load NanoCore TLS listen material from OPENKIT_TLS_CERT_FILE / OPENKIT_TLS_KEY_FILE: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
+/**
  * Classifies every persisted worker checkpoint after scheduler fencing has completed.
  *
  * @param recoveryCoreDb Fenced Core database containing scheduler authority.
@@ -624,9 +801,9 @@ async function classifyWorkerCheckpointsAfterSchedulerRecovery(
   const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 
   for (const { workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
-    let workspaceDb: ReturnType<typeof openWorkspaceDb> | null = null;
+    let workspaceDb: ReturnType<typeof openBootVerifiedWorkspaceDb> | null = null;
     try {
-      workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
       for (const checkpoint of listExportableWorkerCheckpoints(workspaceDb, workspaceId)) {
         try {
           if (checkpoint.goalId === null && checkpoint.taskId === null) {

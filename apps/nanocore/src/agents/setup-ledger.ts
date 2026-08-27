@@ -291,10 +291,15 @@ function redactResolvedAgentSetup(
           id: binary.id,
           path: binary.path,
         })),
-        image: {
-          pullPolicy: manifest.runtime.image.pullPolicy,
-          ref: manifest.runtime.image.ref,
-        },
+        image:
+          manifest.runtime.image.kind === 'reference'
+            ? { ...manifest.runtime.image }
+            : {
+                ...manifest.runtime.image,
+                arguments: { ...manifest.runtime.image.arguments },
+                egress: manifest.runtime.image.egress.map((destination) => ({ ...destination })),
+                input: { ...manifest.runtime.image.input },
+              },
         kind: manifest.runtime.kind,
         ...(manifest.runtime.version ? { version: manifest.runtime.version } : {}),
       },
@@ -331,13 +336,14 @@ function redactResolvedAgentSetup(
           }
         ),
         network: (manifest.sandbox?.network ?? []).map((grant) => ({
-          access: grant.access,
           binaries: [...(grant.binaries ?? [])],
           host: grant.host,
           id: grant.id,
           port: grant.port,
-          protocol: grant.protocol,
           purpose: grant.purpose,
+          ...('rules' in grant && grant.rules
+            ? { protocol: 'rest' as const, rules: grant.rules.map((rule) => ({ ...rule })) }
+            : { access: grant.access, protocol: grant.protocol }),
           scope: grant.scope,
         })),
       },

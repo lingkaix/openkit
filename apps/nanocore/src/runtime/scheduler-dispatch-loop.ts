@@ -1,19 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import {
-  type AgentSessionContinuitySelectionResult,
-  type LiveSessionCandidate,
-  type ResumeHandleCandidate,
-  type SnapshotCandidate,
-  selectAgentSessionContinuity,
-} from '../agent-session-continuity.js';
+import { TurnSchema } from '@openkit/protocol';
 import type { AgentManifest } from '../agents/manifest.js';
+import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
+import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
-  completeSchedulerSessionLease,
+  completeSchedulerTurnLease,
   denySchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
+  findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerSessionLease,
   requireSchedulerSessionLeaseAdmissionContext,
@@ -21,6 +18,8 @@ import {
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
+import { resolveAgentSessionCompatibilityKey } from './agent-environment.js';
 import {
   type StartTurnDependencies,
   startTurn,
@@ -28,7 +27,11 @@ import {
   TurnStartValidationError,
 } from './orchestrator.js';
 import { generateUuidV7 } from './session-id.js';
-import type { TurnExecutor } from './types.js';
+import type {
+  PrepareAgentSessionForTurnInput,
+  PreparedAgentSessionForTurn,
+  TurnExecutor,
+} from './types.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 
@@ -38,7 +41,7 @@ export interface RunSchedulerDispatchLoopInput {
   agentManifests: AgentManifest[];
   /** Open Core database handle. */
   coreDb: CoreDb;
-  /** Deterministic agent-session id factory for tests. */
+  /** Deterministic AgentSession id factory for tests. */
   createAgentSessionId?: () => string;
   /** Deterministic lease id factory for tests. */
   createLeaseId?: () => string;
@@ -64,10 +67,6 @@ export interface RunSchedulerDispatchLoopInput {
   providerRegistry: ProviderRegistry;
   /** Scheduler epoch recorded on placement and lease records. */
   schedulerEpoch: number;
-  /** Session workspace compatibility digest used by future reuse gates. */
-  sessionCompatibilityKey?: string | null;
-  /** Optional continuity candidates used by strict V1 session selection. */
-  sessionContinuityCandidates?: SchedulerDispatchSessionContinuityCandidates;
   /** Startup timeout in milliseconds. */
   startupTimeoutMs: number;
   /** File-backed product store. */
@@ -90,8 +89,6 @@ export interface RunSchedulerDispatchLoopInput {
 export interface SchedulerDispatchLoopStartedTurn {
   /** Dispatch result that acquired the lease. */
   dispatch: Extract<SchedulerDispatchResult, { status: 'dispatched' }>;
-  /** Strict V1 continuity selection used for this dispatch. */
-  continuity: AgentSessionContinuitySelectionResult;
   /** Start-turn handle returned by the orchestrator. */
   handle: TurnHandle;
 }
@@ -111,16 +108,6 @@ interface LoopLimitResult {
   readonly reason: 'max-dispatches';
 }
 
-/** Candidate sets used by strict V1 scheduler session selection. */
-export interface SchedulerDispatchSessionContinuityCandidates {
-  /** Reusable live session candidates. */
-  readonly liveSessions?: readonly LiveSessionCandidate[];
-  /** Resume-handle candidates. */
-  readonly resumeHandles?: readonly ResumeHandleCandidate[];
-  /** Snapshot candidates. */
-  readonly snapshots?: readonly SnapshotCandidate[];
-}
-
 /**
  * Dispatches queued scheduler entries and starts their worker turns through the normal orchestrator.
  *
@@ -134,7 +121,8 @@ export async function runSchedulerDispatchLoop(
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
 
   while (startedTurns.length < maxDispatches) {
-    const staleEntry = listQueuedSchedulerAdmissionEntries(input.coreDb).find(
+    const queuedEntries = listQueuedSchedulerAdmissionEntries(input.coreDb);
+    const staleEntry = queuedEntries.find(
       (entry) =>
         !currentWorkspaceAuthority(
           input.coreDb,
@@ -156,15 +144,57 @@ export async function runSchedulerDispatchLoop(
         },
       };
     }
+    const entry = findNextDispatchableSchedulerAdmissionEntry(input.coreDb);
+    if (!entry) {
+      return {
+        startedTurns,
+        terminalResult: {
+          status: 'queued',
+          reason: queuedEntries.length === 0 ? 'no-queued-entry' : 'thread-busy',
+        },
+      };
+    }
+    const freshAgentSessionId = (input.createAgentSessionId ?? generateUuidV7)();
+    const timestamp = input.now?.() ?? new Date().toISOString();
+    const setup = resolveDispatchAgentSetup(input, entry.requestedAgentId);
+    const workspaceRoots =
+      entry.workspaceRoots.length > 0 ? entry.workspaceRoots : (input.workspaceRoots ?? []);
+    const futureTurn = TurnSchema.parse({
+      completedAt: null,
+      configVersion: input.configVersion ?? null,
+      durationMs: null,
+      error: null,
+      humanGate: null,
+      id: entry.turnId,
+      items: [],
+      startedAt: timestamp,
+      status: 'running',
+      threadId: entry.threadId,
+      triggerActor: entry.triggerActor,
+      workspaceId: entry.workspaceId,
+    });
+    const prepareInput = {
+      agentSetup: setup,
+      freshAgentSessionId,
+      requestId: entry.requestId,
+      turn: futureTurn,
+      turnInput: entry.turnInput,
+      workspaceCwd: entry.workspaceCwd ?? input.workspaceCwd ?? null,
+      workspaceRoots,
+      ...(input.workspaceDataSourceCatalog
+        ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+        : {}),
+      ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+    };
+    const preparedAgentSession = input.turnExecutor.prepareAgentSessionForTurn
+      ? await input.turnExecutor.prepareAgentSessionForTurn(input.store, prepareInput)
+      : prepareFreshAgentSessionWithoutRuntimeOwner(input, prepareInput);
     const leaseId = (input.createLeaseId ?? createLeaseId)();
-    const continuity = selectDispatchContinuity(input);
-    const agentSessionId =
-      selectedContinuityAgentSessionId(continuity) ??
-      (input.createAgentSessionId ?? generateUuidV7)();
     const dispatch = dispatchNextSchedulerEntry(input.coreDb, {
-      agentSessionId,
+      agentSessionId: preparedAgentSession.agentSessionId,
       expectedControlMode: input.expectedControlMode,
       expectedDataPlaneMode: input.expectedDataPlaneMode,
+      expectedQueueEntryId: entry.queueEntryId,
       heartbeatIntervalMs: input.heartbeatIntervalMs,
       heartbeatTimeoutMs: input.heartbeatTimeoutMs,
       leaseDurationMs: input.leaseDurationMs,
@@ -172,7 +202,7 @@ export async function runSchedulerDispatchLoop(
       planId: (input.createPlanId ?? createPlanId)(),
       sandboxBindingRef: `lease-binding:${leaseId}`,
       schedulerEpoch: input.schedulerEpoch,
-      sessionCompatibilityKey: input.sessionCompatibilityKey ?? null,
+      sessionCompatibilityKey: preparedAgentSession.sessionCompatibilityKey,
       startupTimeoutMs: input.startupTimeoutMs,
       ...(input.now ? { now: input.now } : {}),
     });
@@ -183,6 +213,30 @@ export async function runSchedulerDispatchLoop(
 
     const store = input.store;
     try {
+      if (
+        dispatch.entry.queueEntryId !== entry.queueEntryId ||
+        dispatch.lease.agentSessionId !== preparedAgentSession.agentSessionId ||
+        dispatch.lease.sessionCompatibilityKey !== preparedAgentSession.sessionCompatibilityKey
+      ) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Scheduler dispatch changed the prepared AgentSession lineage.',
+          409
+        );
+      }
+      if (input.turnExecutor.commitPreparedAgentSessionForTurn) {
+        await input.turnExecutor.commitPreparedAgentSessionForTurn(store, {
+          leaseId: dispatch.lease.leaseId,
+          prepared: preparedAgentSession,
+          preparation: prepareInput,
+        });
+      } else if (preparedAgentSession.replacementRequired) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The runtime cannot commit prepared AgentSession replacement.',
+          409
+        );
+      }
       const agentSetupWorkspaceDb = openWorkspaceDb(
         input.coreDb.dataRoot,
         dispatch.entry.workspaceId
@@ -198,6 +252,7 @@ export async function runSchedulerDispatchLoop(
           providerRegistry: input.providerRegistry,
           requestId: dispatch.entry.requestId,
           sandboxBindingRef: dispatch.lease.sandboxBindingRef,
+          sessionCompatibilityKey: preparedAgentSession.sessionCompatibilityKey,
           store,
           threadId: dispatch.entry.threadId,
           triggerActor: dispatch.entry.triggerActor,
@@ -216,7 +271,7 @@ export async function runSchedulerDispatchLoop(
           ...(input.configVersion !== undefined ? { configVersion: input.configVersion } : {}),
           ...(input.dependencies ? { dependencies: input.dependencies } : {}),
         });
-        startedTurns.push({ continuity, dispatch, handle });
+        startedTurns.push({ dispatch, handle });
       } finally {
         agentSetupWorkspaceDb.sqlite.close();
       }
@@ -227,8 +282,10 @@ export async function runSchedulerDispatchLoop(
         store,
         error
       );
-      completeSchedulerSessionLease(input.coreDb, {
-        leaseId: dispatch.lease.leaseId,
+      completeSchedulerTurnLease(input.coreDb, {
+        workspaceId: dispatch.entry.workspaceId,
+        threadId: dispatch.entry.threadId,
+        turnId: dispatch.entry.turnId,
         recoveryState: 'needs-evidence',
         releaseReason: humanGateFallback ? 'worker-human-gate-unavailable' : 'turn-start-failed',
         terminalStatus: humanGateFallback ? 'released' : 'failed',
@@ -313,41 +370,79 @@ function isExactUnavailableHumanGateCloseout(
   }
 }
 
-/**
- * Selects continuity for one dispatch attempt.
- *
- * @param input Dispatch loop input.
- * @returns Strict V1 continuity selection.
- */
-function selectDispatchContinuity(
-  input: RunSchedulerDispatchLoopInput
-): AgentSessionContinuitySelectionResult {
-  if (!input.sessionCompatibilityKey) {
-    return { rejectedCandidates: [], selected: { kind: 'fresh-session' } };
+/** Resolves the exact authored setup needed by pre-lease static AEP planning. */
+function resolveDispatchAgentSetup(input: RunSchedulerDispatchLoopInput, requestedAgentId: string) {
+  const manifest = input.agentManifests.find((candidate) => candidate.id === requestedAgentId);
+  if (!manifest) {
+    throw new TurnStartValidationError(
+      'agent_not_found',
+      `Agent not found: ${requestedAgentId}.`,
+      409
+    );
   }
-
-  return selectAgentSessionContinuity({
-    liveSessions: input.sessionContinuityCandidates?.liveSessions ?? [],
-    now: input.now?.() ?? new Date().toISOString(),
-    requestedCompatibilityKey: input.sessionCompatibilityKey,
-    resumeHandles: input.sessionContinuityCandidates?.resumeHandles ?? [],
-    snapshots: input.sessionContinuityCandidates?.snapshots ?? [],
-  });
+  const readinessDependencies = input.dependencies?.providerCredentialResolver
+    ? { providerCredentialResolver: input.dependencies.providerCredentialResolver }
+    : {};
+  const readiness = computeReadiness(manifest, input.providerRegistry, readinessDependencies);
+  if (!isAgentLaunchable(readiness, manifest, input.providerRegistry, readinessDependencies)) {
+    throw new TurnStartValidationError(
+      'agent_not_ready',
+      `Agent ${requestedAgentId} readiness is ${readiness.status}.`,
+      409
+    );
+  }
+  const resolved = resolveAgentSetup(manifest, { providerRegistry: input.providerRegistry });
+  if (!resolved.setup || resolved.diagnostics.length > 0) {
+    throw new TurnStartValidationError(
+      'agent_not_ready',
+      resolved.diagnostics.map((diagnostic) => diagnostic.message).join('\n') ||
+        `Agent ${requestedAgentId} setup is unavailable.`,
+      409
+    );
+  }
+  return resolved.setup;
 }
 
 /**
- * Returns the selected reusable agent session id, when the selected path reuses one.
- *
- * @param continuity Continuity selection result.
- * @returns Existing agent session id or null when a new session is required.
+ * Prepares a fresh AgentSession only when no current runtime-owned continuity needs inspection.
  */
-function selectedContinuityAgentSessionId(
-  continuity: AgentSessionContinuitySelectionResult
-): string | null {
-  if (continuity.selected.kind === 'live-session' || continuity.selected.kind === 'resume-handle') {
-    return continuity.selected.agentSessionId;
+function prepareFreshAgentSessionWithoutRuntimeOwner(
+  input: RunSchedulerDispatchLoopInput,
+  preparation: PrepareAgentSessionForTurnInput
+): PreparedAgentSessionForTurn {
+  const current = input.store
+    .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
+    .find((candidate) => isCurrentAgentSessionStatus(candidate.status));
+  if (current) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'The current AgentSession requires runtime-owned reuse or replacement preparation.',
+      409
+    );
   }
-  return null;
+  return {
+    agentSessionId: preparation.freshAgentSessionId,
+    currentAgentSession: null,
+    replacementRequired: false,
+    sessionCompatibilityKey: resolveAgentSessionCompatibilityKey({
+      agentSessionId: preparation.freshAgentSessionId,
+      agentSetup: preparation.agentSetup,
+      backend: { kind: 'openshell' },
+      coreDb: input.coreDb,
+      requestId: preparation.requestId,
+      turn: preparation.turn,
+      turnInput: preparation.turnInput,
+      triggerActor: preparation.turn.triggerActor,
+      workspaceCwd: preparation.workspaceCwd,
+      workspaceRoots: preparation.workspaceRoots,
+      ...(preparation.workspaceDataSourceCatalog
+        ? { workspaceDataSourceCatalog: preparation.workspaceDataSourceCatalog }
+        : {}),
+      ...(preparation.workspaceSourceRefs
+        ? { workspaceSourceRefs: preparation.workspaceSourceRefs }
+        : {}),
+    }),
+  };
 }
 
 /**

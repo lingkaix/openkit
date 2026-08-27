@@ -102,33 +102,32 @@ describe('loadProviderRegistryFromDataRoot', () => {
     ]);
   });
 
-  it('reports file-backed Codex OAuth missing account-slot diagnostics once', () => {
-    const { dataRoot, providersRoot } = createProviderRoot();
-    writeFileSync(
-      join(providersRoot, 'openai-codex.provider.jsonc'),
-      JSON.stringify({
-        defaultModel: 'gpt-5.1',
-        displayName: 'OpenAI Codex',
-        id: 'openai_codex',
-        kind: 'gateway',
-        models: ['gpt-5.1'],
-        vendor: 'openai_codex',
-      })
-    );
+  it('preserves a server-config Codex subscription account without legacy slot blocking', () => {
+    const { dataRoot } = createProviderRoot();
+    const config: OpenKitConfig = {
+      providers: [
+        {
+          displayName: 'OpenAI Codex',
+          extensions: {
+            openkit: {
+              subscriptionAccount: { accountSlotId: 'default' },
+            },
+          },
+          id: 'openai_codex',
+          kind: 'oauth',
+          models: ['openai-codex/gpt-5.6-sol'],
+          vendor: 'openai_codex',
+        },
+      ],
+    };
+    const configuredProfile = config.providers?.[0];
 
-    const result = loadProviderRegistryFromDataRoot(dataRoot);
-    const missingSlotDiagnostics = result.providerDiagnostics.summaries.filter(
-      (summary) => summary.code === 'provider.missing_codex_oauth_account_slot'
-    );
+    const result = loadProviderRegistryFromDataRoot(dataRoot, config);
+    const registeredProfile = result.providerRegistry.get('openai_codex');
 
-    expect(missingSlotDiagnostics).toEqual([
-      expect.objectContaining({
-        code: 'provider.missing_codex_oauth_account_slot',
-        profileId: 'openai_codex',
-        source: 'config/providers/openai-codex.provider.jsonc',
-        status: 'blocked',
-      }),
-    ]);
+    expect.soft(result.providerDiagnostics.summaries).toEqual([]);
+    expect.soft(registeredProfile).toEqual(configuredProfile);
+    expect(registeredProfile).not.toHaveProperty('readiness');
   });
 
   it('redacts server config provider secrets from diagnostics snapshots', () => {
