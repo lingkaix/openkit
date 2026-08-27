@@ -1,0 +1,127 @@
+/* ============================================================================
+   OpenKit Tailwind v4 theme — the code side of the token bridge.
+   Imports the Spectrum-derived semantic tokens (tokens.css) and exposes them to
+   Tailwind as `@theme` custom properties so utilities (bg-canvas, text-fg,
+   rounded-ok, shadow-ok-card, bg-worker-scout, …) resolve to the semantic tokens
+   at runtime. Because the mapping is `inline`, swapping a theme class on an
+   ancestor retints every utility with no rebuild. Component markup consumes ONLY
+   these utilities — never a raw `--spectrum-*` token or a hard-coded literal.
+   See DESIGN.md §4.6 and docs/specs/20260710-web_ui_rebuild_stack.md.
+   ============================================================================ */
+
+@import "tailwindcss";
+@import "./tokens.css";
+
+@theme inline {
+  /* ---- Type ramp (DESIGN.md §5) ------------------------------------------- */
+  --font-sans: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Source Code Pro", ui-monospace, "SFMono-Regular", monospace;
+  /* Named type roles so markup never hard-codes a font-size/tracking literal.
+     Body is the 14px base (see the base layer); these cover the distinctive roles. */
+  --text-title: 26px; /* page/section title */
+  --text-title--line-height: 1.23;
+  --text-eyebrow: 11px; /* eyebrows, micro labels, chips, counts */
+  --text-eyebrow--line-height: 1.3;
+  --tracking-eyebrow: 0.06em; /* all-caps eyebrows/kickers */
+
+  /* ---- Accent ------------------------------------------------------------- */
+  --color-accent: var(--accent-background-color-default);
+  --color-accent-hover: var(--accent-background-color-hover);
+  --color-accent-down: var(--accent-background-color-down);
+  --color-accent-content: var(--accent-content-color-default);
+  --color-on-accent: var(--text-color-on-accent);
+  --color-focus: var(--focus-indicator-color);
+
+  /* ---- Surfaces ----------------------------------------------------------- */
+  --color-canvas: var(--surface-page);
+  --color-card: var(--surface-card);
+  --color-sunken: var(--surface-sunken);
+  --color-elevated: var(--background-elevated-color);
+  --color-layer-1: var(--background-layer-1-color);
+  --color-layer-2: var(--background-layer-2-color);
+  --color-skeleton: var(--surface-skeleton);
+
+  /* ---- Text --------------------------------------------------------------- */
+  --color-fg: var(--text-color-default);
+  --color-fg-strong: var(--text-color-primary);
+  --color-fg-muted: var(--text-color-secondary);
+  --color-fg-disabled: var(--text-color-disabled);
+
+  /* ---- Lines + control tones ---------------------------------------------- */
+  --color-border: var(--border-color-default);
+  --color-border-hover: var(--border-color-hover);
+  --color-border-strong: var(--border-color-strong);
+  --color-separator: var(--separator-color);
+  --color-selected: var(--highlight-selected);
+  --color-selected-hover: var(--highlight-selected-hover);
+  --color-overlay: var(--overlay-hover);
+  --color-overlay-down: var(--overlay-down);
+  --color-disabled-bg: var(--disabled-background-color);
+  --color-disabled-fg: var(--disabled-content-color);
+  --color-disabled-border: var(--disabled-border-color);
+
+  /* ---- Status families (DESIGN.md §4.2) ----------------------------------- */
+  --color-info-bg: var(--ok-informative-bg);
+  --color-info-fg: var(--ok-informative-fg);
+  --color-notice-bg: var(--ok-notice-bg);
+  --color-notice-fg: var(--ok-notice-fg);
+  --color-positive-bg: var(--ok-positive-bg);
+  --color-positive-fg: var(--ok-positive-fg);
+  --color-negative-bg: var(--ok-negative-bg);
+  --color-negative-fg: var(--ok-negative-fg);
+  --color-neutral-bg: var(--ok-neutral-bg);
+  --color-neutral-fg: var(--ok-neutral-fg);
+
+  /* ---- Diff ink + toast --------------------------------------------------- */
+  --color-diff-add: var(--ok-diff-add);
+  --color-diff-del: var(--ok-diff-del);
+  --color-toast-bg: var(--ok-toast-bg);
+  --color-toast-fg: var(--ok-toast-fg);
+
+  /* ---- Worker identity hues (theme-invariant, DESIGN.md §4.3) ------------- */
+  --color-worker-scout: var(--ok-worker-scout-bg);
+  --color-worker-scout-fg: var(--ok-worker-scout-fg);
+  --color-worker-quill: var(--ok-worker-quill-bg);
+  --color-worker-quill-fg: var(--ok-worker-quill-fg);
+  --color-worker-ledger: var(--ok-worker-ledger-bg);
+  --color-worker-ledger-fg: var(--ok-worker-ledger-fg);
+  --color-worker-pixel: var(--ok-worker-pixel-bg);
+  --color-worker-pixel-fg: var(--ok-worker-pixel-fg);
+  --color-worker-you: var(--ok-worker-you-bg);
+  --color-worker-you-fg: var(--ok-worker-you-fg);
+
+  /* ---- Brand quad (theme-invariant) --------------------------------------- */
+  --color-brand-1: var(--ok-brand-1);
+  --color-brand-2: var(--ok-brand-2);
+  --color-brand-3: var(--ok-brand-3);
+  --color-brand-4: var(--ok-brand-4);
+
+  /* ---- Radius (DESIGN.md §6) ---------------------------------------------- */
+  --radius-ok-sm: 4px;
+  --radius-ok: 8px;
+  --radius-ok-lg: 10px;
+  --radius-ok-xl: 16px;
+
+  /* ---- Elevation + motion (theme-invariant, DESIGN.md §7) ----------------- */
+  --shadow-ok-card: var(--ok-shadow-card);
+  --shadow-ok-menu: var(--ok-shadow-menu);
+  --shadow-ok-modal: var(--ok-shadow-modal);
+  --ease-ok: var(--ok-ease);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text-color-default);
+    background: var(--surface-page);
+    -webkit-font-smoothing: antialiased;
+  }
+}

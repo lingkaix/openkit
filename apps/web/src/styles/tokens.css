@@ -1,0 +1,275 @@
+/* ============================================================================
+   OpenKit token bridge — Spectrum-derived semantic tokens (the code side).
+   The SAME values back the Claude Design (Spectrum) side; see
+   docs/specs/20260710-web_ui_rebuild_stack.md (token-bridge contract) and
+   DESIGN.md §4. Component markup references ONLY these semantic tokens — never a
+   raw Spectrum palette swatch (`--spectrum-*`) and never a hard-coded literal.
+
+   Three themes, all scoped overrides of the same semantic tokens:
+     - Spectrum  (default, light)   → :root  (+ explicit .ok-theme-spectrum reset)
+     - Paper     (light, warm)      → .ok-theme-paper
+     - Noir      (dark)             → .ok-theme-noir
+   Nothing applied → the Spectrum default. Worker-identity hues, the brand quad,
+   elevation, and motion are theme-invariant (DESIGN.md §4.3, §4.5, §7): they are
+   declared once at :root and never overridden by a theme.
+
+   Value provenance: every value below is the resolved Spectrum step used by the
+   Claude Design boards (see temp export themes.css / _ds palette). When Spectrum
+   changes, this file is the single point of update.
+   ============================================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Theme-invariant: worker identity hues (DESIGN.md §4.3) --------------
+     Each named worker keeps ONE hue on every surface and in every theme. Human
+     = circle (You/blue); worker = rounded-square. Never overridden per theme. */
+  --ok-worker-scout-bg: #65dad2; /* seafoam-400 */
+  --ok-worker-scout-fg: #053f27; /* green-1200 */
+  --ok-worker-quill-bg: #dbbbfe; /* purple-400 */
+  --ok-worker-quill-fg: #7326d3; /* purple-1000 */
+  --ok-worker-ledger-bg: #c1c4ff; /* indigo-400 */
+  --ok-worker-ledger-fg: #4046ca; /* indigo-1000 */
+  --ok-worker-pixel-bg: #fdd291; /* orange-300 */
+  --ok-worker-pixel-fg: #612300; /* orange-1200 */
+  --ok-worker-you-bg: #cae8ff; /* blue-200 */
+  --ok-worker-you-fg: #004491; /* blue-1100 */
+
+  /* ---- Theme-invariant: brand quad (DESIGN.md §3.1, §4.5) ------------------ */
+  --ok-brand-1: #0265dc; /* blue-900 */
+  --ok-brand-2: #00a19a; /* seafoam-700 */
+  --ok-brand-3: #686df4; /* indigo-800 */
+  --ok-brand-4: #f68511; /* orange-600 */
+
+  /* ---- Theme-invariant: elevation + motion (DESIGN.md §7) ------------------ */
+  --ok-shadow-card: 0 1px 4px rgba(0, 0, 0, 0.09);
+  --ok-shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.14);
+  --ok-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.24);
+  --ok-ease: cubic-bezier(0.45, 0, 0.4, 1);
+  --ok-dur-micro: 130ms;
+  --ok-dur-control: 160ms;
+  --ok-dur-overlay: 190ms;
+  --ok-focus-ring-width: 2px;
+  --ok-focus-ring-offset: 2px;
+
+  /* ---- Accent -------------------------------------------------------------- */
+  --accent-background-color-default: #0265dc;
+  --accent-background-color-hover: #0054b6;
+  --accent-background-color-down: #004491;
+  --accent-content-color-default: #0265dc; /* links / active nav text */
+  --text-color-on-accent: #ffffff;
+  --focus-indicator-color: #0265dc;
+
+  /* ---- Text ---------------------------------------------------------------- */
+  --text-color-primary: #000000;
+  --text-color-default: #222222;
+  --text-color-secondary: #464646;
+  --text-color-disabled: #b1b1b1;
+
+  /* ---- Surfaces ------------------------------------------------------------ */
+  --surface-page: #ffffff;
+  --surface-card: #ffffff;
+  --surface-sunken: #f8f8f8;
+  --background-elevated-color: #ffffff; /* menus / popovers */
+  --background-layer-1-color: #fdfdfd; /* aux rail, kanban columns */
+  --background-layer-2-color: #f8f8f8;
+  --surface-skeleton: #e6e6e6;
+
+  /* ---- Lines + overlays ---------------------------------------------------- */
+  --separator-color: #e6e6e6;
+  --border-color-default: #d5d5d5;
+  --border-color-hover: #b1b1b1;
+  --border-color-strong: #222222;
+  --highlight-selected: rgba(2, 101, 220, 0.1);
+  --highlight-selected-hover: rgba(2, 101, 220, 0.18);
+  --overlay-hover: rgba(0, 0, 0, 0.04);
+  --overlay-down: rgba(0, 0, 0, 0.08);
+
+  /* ---- Disabled control surfaces ------------------------------------------- */
+  --disabled-background-color: #e6e6e6;
+  --disabled-content-color: #b1b1b1;
+  --disabled-border-color: #d5d5d5;
+
+  /* ---- Status families (semantic; text + color per DESIGN.md §4.2) --------- */
+  --ok-informative-bg: #e0f2ff; /* blue-100 */
+  --ok-informative-fg: #0054b6; /* blue-1000 */
+  --ok-notice-bg: #ffeccc; /* orange-100 */
+  --ok-notice-fg: #7a2f00; /* orange-1100 */
+  --ok-positive-bg: #cef8e0; /* green-100 */
+  --ok-positive-fg: #00653e; /* green-1000 */
+  --ok-negative-bg: #ffebe7; /* red-100 */
+  --ok-negative-fg: #b40000; /* red-1000 */
+  --ok-neutral-bg: #e6e6e6; /* gray-200 */
+  --ok-neutral-fg: #464646; /* gray-700 */
+
+  /* ---- Diff / provenance ink (artifact rows §9.9, phase-done §9.5) --------- */
+  --ok-diff-add: #007a4d; /* green-900 */
+  --ok-diff-del: #d31510; /* red-900 */
+
+  /* ---- Toast (the only floating dark layer, §9.10) ------------------------- */
+  --ok-toast-bg: #222222;
+  --ok-toast-fg: #ffffff;
+}
+
+/* ===========================================================================
+   SPECTRUM — explicit reset back to the stock light theme. Only needed so a
+   Spectrum preview card can sit INSIDE a page already scoped to Paper/Noir
+   (e.g. the Settings → Appearance theme picker) and still render the true light
+   look. Mirrors the :root semantic values (DESIGN.md §4.5).
+   =========================================================================== */
+.ok-theme-spectrum {
+  color-scheme: light;
+  color: var(--text-color-default);
+
+  --accent-background-color-default: #0265dc;
+  --accent-background-color-hover: #0054b6;
+  --accent-background-color-down: #004491;
+  --accent-content-color-default: #0265dc;
+  --text-color-on-accent: #ffffff;
+  --focus-indicator-color: #0265dc;
+
+  --text-color-primary: #000000;
+  --text-color-default: #222222;
+  --text-color-secondary: #464646;
+  --text-color-disabled: #b1b1b1;
+
+  --surface-page: #ffffff;
+  --surface-card: #ffffff;
+  --surface-sunken: #f8f8f8;
+  --background-elevated-color: #ffffff;
+  --background-layer-1-color: #fdfdfd;
+  --background-layer-2-color: #f8f8f8;
+  --surface-skeleton: #e6e6e6;
+
+  --separator-color: #e6e6e6;
+  --border-color-default: #d5d5d5;
+  --border-color-hover: #b1b1b1;
+  --border-color-strong: #222222;
+  --highlight-selected: rgba(2, 101, 220, 0.1);
+  --highlight-selected-hover: rgba(2, 101, 220, 0.18);
+  --overlay-hover: rgba(0, 0, 0, 0.04);
+  --overlay-down: rgba(0, 0, 0, 0.08);
+
+  --disabled-background-color: #e6e6e6;
+  --disabled-content-color: #b1b1b1;
+  --disabled-border-color: #d5d5d5;
+
+  --ok-informative-bg: #e0f2ff;
+  --ok-informative-fg: #0054b6;
+  --ok-notice-bg: #ffeccc;
+  --ok-notice-fg: #7a2f00;
+  --ok-positive-bg: #cef8e0;
+  --ok-positive-fg: #00653e;
+  --ok-negative-bg: #ffebe7;
+  --ok-negative-fg: #b40000;
+  --ok-neutral-bg: #e6e6e6;
+  --ok-neutral-fg: #464646;
+
+  --ok-diff-add: #007a4d;
+  --ok-diff-del: #d31510;
+
+  --ok-toast-bg: #222222;
+  --ok-toast-fg: #ffffff;
+}
+
+/* ===========================================================================
+   PAPER — light, cozy. Warm paper canvas (#E6DDC7), deep pine-green accent.
+   Status hues and diff ink are inherited from :root (they read as meaning on
+   the warm canvas). Only surfaces, text, borders, accent, and overlays retint.
+   =========================================================================== */
+.ok-theme-paper {
+  color-scheme: light;
+  color: var(--text-color-default);
+
+  --accent-background-color-default: #2e5d45;
+  --accent-background-color-hover: #244b37;
+  --accent-background-color-down: #1b3a2b;
+  --accent-content-color-default: #2e5d45;
+  --text-color-on-accent: #ffffff;
+  --focus-indicator-color: #2e5d45;
+
+  --text-color-primary: #1f1d10;
+  --text-color-default: #322f1e;
+  --text-color-secondary: #4e462f;
+  --text-color-disabled: #9c9070;
+
+  --surface-page: #e6ddc7;
+  --surface-card: #efe9d9;
+  --surface-sunken: #d9ceb5;
+  --background-elevated-color: #f4efe2;
+  --background-layer-1-color: #ede5d3;
+  --background-layer-2-color: #d9ceb5;
+  --surface-skeleton: #cbbfa6;
+
+  --separator-color: #cbbfa6;
+  --border-color-default: #bbaf93;
+  --border-color-hover: #9c9070;
+  --border-color-strong: #322f1e;
+  --highlight-selected: rgba(46, 93, 69, 0.12);
+  --highlight-selected-hover: rgba(46, 93, 69, 0.2);
+  --overlay-hover: rgba(52, 40, 16, 0.05);
+  --overlay-down: rgba(52, 40, 16, 0.1);
+
+  --disabled-background-color: #d9ceb5;
+  --disabled-content-color: #9c9070;
+  --disabled-border-color: #bbaf93;
+}
+
+/* ===========================================================================
+   NOIR — dark. Warm charcoal canvas (#1E1B14), gold ink + accent. Status tints
+   and diff ink are retuned to a warm auxiliary palette in harmony with the gold.
+   =========================================================================== */
+.ok-theme-noir {
+  color-scheme: dark;
+  color: var(--text-color-default);
+
+  --accent-background-color-default: #c6a24c;
+  --accent-background-color-hover: #d6b45e;
+  --accent-background-color-down: #b48b3a;
+  --accent-content-color-default: #d8bc6a; /* gold links / active nav text */
+  --text-color-on-accent: #1e1b14; /* dark ink on gold fills */
+  --focus-indicator-color: #c6a24c;
+
+  --text-color-primary: #ebce7a;
+  --text-color-default: #d4b15a;
+  --text-color-secondary: #a18c52;
+  --text-color-disabled: #6b6249;
+
+  --surface-page: #1e1b14;
+  --surface-card: #2a251b;
+  --surface-sunken: #2c271d;
+  --background-elevated-color: #332e22;
+  --background-layer-1-color: #252118;
+  --background-layer-2-color: #2c271d;
+  --surface-skeleton: #3a3427;
+
+  --separator-color: #3a3427;
+  --border-color-default: #4e4735;
+  --border-color-hover: #6b6249;
+  --border-color-strong: #8f897a;
+  --highlight-selected: rgba(198, 162, 76, 0.16);
+  --highlight-selected-hover: rgba(198, 162, 76, 0.26);
+  --overlay-hover: rgba(244, 236, 214, 0.06);
+  --overlay-down: rgba(244, 236, 214, 0.11);
+
+  --disabled-background-color: #2c271d;
+  --disabled-content-color: #6b6249;
+  --disabled-border-color: #3a3427;
+
+  --ok-informative-bg: #20303c;
+  --ok-informative-fg: #93aac0;
+  --ok-notice-bg: #33300e;
+  --ok-notice-fg: #dcd654;
+  --ok-positive-bg: #282f14;
+  --ok-positive-fg: #aec163;
+  --ok-negative-bg: #331f22;
+  --ok-negative-fg: #cfa4ab;
+  --ok-neutral-bg: #3a3427;
+  --ok-neutral-fg: #a18c52;
+
+  --ok-diff-add: #9db456;
+  --ok-diff-del: #c99aa0;
+
+  --ok-toast-bg: #38332a;
+  --ok-toast-fg: #ffffff;
+}

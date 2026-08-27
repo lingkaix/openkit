@@ -1,73 +1,139 @@
-# web
+# @openkit/web
 
-`web` is the Solid SPA used to validate the workspace protocol and product UI.
+The OpenKit Web UI — a React SPA that projects stable NanoCore / App API
+contracts as a supervisor's workbench. This is the rebuilt app; the previous
+SolidJS + daisyUI implementation is retired and is not a current reference tree.
 
 ## Scope
 
-- workspace selection and configuration
-- thread and turn workflow
-- live streaming items
-- approvals
-- unified Human Attention Action Center
-- artifacts
-- agent session visibility
-- Goal Mode start, plan review, progress, terminal evidence, artifacts, risks, and next-step visibility
-- Codex ChatGPT subscription login controls
-- LLM Gateway endpoint and provider capability diagnostics
-- runtime config editing for server, provider, agent, and workspace config files
-- protocol inspection mode
+The Web UI is a **projection** over NanoCore read models, not a source of kernel
+semantics (see [`docs/specs/20260628-web_product_surface_projection.md`](../../docs/specs/20260628-web_product_surface_projection.md)).
+It consumes the server only through the composed `@openkit/core-client`
+sub-clients. Design intent — information architecture, the three themes, the
+component grammar, and the weak-interaction interaction model — is owned by the
+canonical [`DESIGN.md`](../../DESIGN.md) at the repo root.
+
+The AI interface screen reads the fixed OpenAI Codex and xAI subscription
+provider inventory, provider-scoped account status, and quota posture through
+`client.providerSubscriptions`. This projection is status-only and exposes no
+account mutation controls.
+
+The accepted ordinary Workspace Vault placement is read-only and uses exactly `client.app.listWorkspaceVaultReferences`, `client.app.listWorkspaceVaultGrants`, and `client.app.listWorkspaceVaultUseRecords` for the selected Workspace. It does not request or project deployment-admin backend status; that status is deferred to a separately accepted future server-admin Web surface. The permission and multi-user Workspace specifications own that authority separation.
+
+The live Tier-A board-17 **Usage & audit** screen is implemented as a read-only projection scoped to the selected Workspace. It uses exactly `client.app.getCapabilityUsage`, `client.app.listWorkspaceAuditEvents`, and `client.app.listWorkspacePermissionDecisions` with that validated Workspace, and it never calls or projects `client.app.listServerAuditEvents`. Deployment-admin server audit is deferred to a separately accepted future admin surface.
+
+The live Tier-A board-19 **Repositories** screen projects selected-Workspace repository resources, diagnostics, durable push records, and the existing approval-gated Git push workflow through `client.repositories`. It requests approval for one exact target, executes only a matching granted approval, and re-reads the authoritative push record without adding an API or external-effect owner. Its approval response remains TanStack mutation data, and its route appears once beneath the successfully discovered, authorized Workspace name instead of in global primary navigation. Worker-proposed-file Workspace Sync review-to-apply UX and the complete collapsible Workspace/thread tree remain unimplemented and outside this surface. Focused tests cover this Web projection; no browser proof or real external push is claimed here.
+
+Surfaces that run ahead of a stable kernel contract are built but shipped behind
+a disable flag as concept demos (DESIGN.md §11); they are never wired as if live.
+
+## Stack
+
+Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md):
+
+- **React** (Vite) — scaffolded with the official `create-vite` `react-ts` template.
+- **React Aria Components** — accessible behavior for the primitive tier.
+- **Spectrum-derived semantic tokens → Tailwind CSS v4** — the current hand-maintained token bridge in `src/styles/`
+  (`tokens.css` = semantic tokens for the three themes; `theme.css` = the Tailwind
+  `@theme` mapping). Component markup references semantic tokens only. Direct use
+  of Adobe's token package remains a stack-conformance gap.
+- **Zustand** — UI-only state. **TanStack Query** — server state over `core-client`.
+  The two never overlap.
+- **React Router** — routing.
+- **A2UI-like local renderer** — Tier-C declarative render shell (whitelisted primitives only; flag-disabled). The official A2UI React renderer is not yet installed.
+- **Iconify + Remix Icon** — icons for the primitive and screen tiers.
+- **Biome** — lint/format (repo-wide config). **Vitest** + Testing Library — unit.
+  **Playwright** — e2e.
 
 ## Commands
 
 ```bash
-pnpm --filter @openkit/web dev
-pnpm --filter @openkit/web test
-pnpm --filter @openkit/web e2e
-pnpm --filter @openkit/web e2e:staging
-pnpm --filter @openkit/web e2e:stories
-pnpm --filter @openkit/web typecheck
-pnpm --filter @openkit/web build
-pnpm -w verify:release
-pnpm -w verify:full
+pnpm --filter @openkit/web dev         # Vite dev server (proxies /api → VITE_CORE_BASE_URL or :3000)
+pnpm --filter @openkit/web build       # tsc -b && vite build
+pnpm --filter @openkit/web test        # vitest run
+pnpm --filter @openkit/web typecheck   # tsc -b
+pnpm --filter @openkit/web lint        # biome check .
+pnpm --filter @openkit/web e2e         # L4 Playwright smoke (isolated NanoCore + Vite)
 ```
 
-## Local Integration
-
-Use this app together with `apps/nanocore` for the default product validation loop.
-
-Start the core first:
+For single-file focused evidence, invoke the installed Vitest entry point directly:
 
 ```bash
-mise exec -- pnpm --filter @openkit/nanocore dev
+pnpm --filter @openkit/web exec vitest run src/primitives/primitives.test.tsx
 ```
 
-Then start the SPA:
+Use the settings test file as the focused package check for the Vault surface:
 
 ```bash
-mise exec -- pnpm --filter @openkit/web dev
+pnpm --filter @openkit/web exec vitest run src/screens/settings/settings.test.tsx
 ```
 
-Notes:
+This command provides focused package evidence for the Vault assertions; it does not replace the required independent strict-risk review and verification.
 
-- the SPA uses same-origin `/api` requests in the browser
-- Vite proxies `/api` to `http://localhost:3000`
-- if you need a different backend origin, set `VITE_CORE_URL` for direct client calls outside the
-  browser-dev proxy path
-- run `pnpm --filter @openkit/web e2e` for the headless browser e2e surface
-- run `pnpm --filter @openkit/web e2e:stories` for the deterministic L6 story acceptance surface backed by `tests/stories/`
-- Goal Mode appears in the thread workbench when a thread is selected. Users can start a goal from an objective, draft and review a plan, approve the plan, run one real bounded worker step, observe current task and progress counts, see pending human attention, and inspect terminal verification evidence, artifact references, risks, and suggested next work. Active steering remains hidden until NanoCore can prove delivery through the real worker Context Package path.
-- Settings Diagnostics includes the Codex ChatGPT account-slot panel for adding, renaming, deleting, browser login, device-code login, cancellation, and logout through nanocore
-- Settings Portability includes local repository re-binding and imported workspace vault reference re-binding for restored or imported workspaces
-- Settings Diagnostics shows LLM Gateway endpoints, provider capability chips such as `chat native`, `responses native`, and `responses bridged`, and provider-reported cache-read and cache-write token quantities when available
-- run `scripts/docker/e2e-app.sh` after building `openkit/app:dev` to execute `pnpm --filter @openkit/web e2e:staging` through the public Caddy route
-- run `pnpm -w verify:full` for explicit full local validation: L0-L2 verification, nanocore e2e, web Playwright e2e, built-artifact smoke tests, and deterministic story acceptance tests
-- GitHub CI keeps web e2e and story acceptance manual to avoid spending browser resources on normal pull requests or branch pushes
-- v0.0.2 browser validation uses fresh data roots and does not migrate v0.0.1 JSON snapshot data
+The package `test` command remains the full-suite command. Adding `-- <file>` to it has been observed to run the full suite, so do not use that form as focused evidence.
 
-## E2E Surface
+`e2e` expects a built NanoCore (`pnpm --filter @openkit/nanocore build`). Specs start an isolated stack on dynamic ports via `e2e/_lib/servers.ts` and set `VITE_CORE_BASE_URL` so the SPA talks to that Core.
 
-The Playwright suite covers Workspace and Thread creation, Knowledge editing and reload, visible Goal Mode planning, deterministic fixture completion through the test supervise endpoint, settings diagnostics, server-mode email/password sign-up and sign-in, unauthenticated API rejection, logout, diagnostics redaction, and the packaged-route worker-entry smoke path.
+Run the self-contained root gate with `pnpm -w test:e2e:web`; it builds NanoCore before invoking the Web `e2e` command.
 
-Server-mode specs start isolated NanoCore and Vite processes on dynamic ports and use disposable temporary data roots so runs do not depend on local persisted state.
+Run alongside NanoCore for the product loop:
 
-The story suite uses `apps/web/playwright.stories.config.ts` to execute Markdown story artifacts from `tests/stories/` through deterministic Playwright adapters in `tests/story-runner/`. The deterministic Web story verifies local Workspace and Thread setup plus diagnostics without real Codex, real provider credentials, a worker runtime, or external network access.
+```bash
+pnpm --filter @openkit/nanocore dev   # start the core first
+pnpm --filter @openkit/web dev        # then the SPA
+```
+
+## Structure
+
+```
+src/
+  main.tsx            app entry — mounts <AppProviders><App/></AppProviders>
+  App.tsx             root app element
+  app/                shell, routes, providers, flags, theme store, core-client
+  screens/
+    chat/             Tier-A chat/task threads
+    goal/             Tier-A goal lenses + artifact review
+    material/         Tier-A live Plane 1 Material, Thread binding, delivery, and proposal-comparison surfaces
+    workspace/        Tier-A Overview, Agents, Knowledge, First-run, Repositories
+    settings/         Tier-A General + AI interface + read-only Workspace Vault and Usage & audit
+    demos/            Tier-B concept demos — Automations and Channels
+    generative/       Tier-C A2UI render shell + three-state fallback
+  primitives/         React Aria + Spectrum-tokened primitive tier
+  styles/
+    tokens.css        token bridge — Spectrum-derived semantic tokens × 3 themes
+    theme.css         Tailwind v4 @theme mapping + base layer
+  test/
+    setup.ts          jest-dom matchers
+    tokens.test.ts    token-bridge parity anchor
+e2e/                  L4 Playwright smoke + isolated stack helpers
+playwright.config.ts
+```
+
+## Status
+
+The current React baseline includes the app shell, three-theme token bridge,
+primitive gallery, live Chat, Task, Goal, Overview, Agents, Knowledge, core
+Settings surfaces including read-only Workspace Vault and Usage & audit, and the bounded live Plane 1 Material surface, plus
+flag-disabled concept demos and the generative render shell. The Material
+surface includes identity, editing, immutable-revision history and comparison;
+one singular Thread binding with inclusion and queue state; active-turn
+exact-revision delivery and terminal outcomes; and version-keyed Artifact
+Review proposal, base, and current comparison with conflict-safe decisions and
+historical decision evidence. The Claude Design board inventory is a
+non-exhaustive visual reference, not evidence that every product surface is
+implemented.
+
+Chat and Task Thread streams render every non-secret user-input Gate as accessible inline text or option controls and submit one complete answer map through the existing Core Client Turn command. Pending submission is disabled, a failed command retains its exact map for retry, and secret-bearing, connection-checking, or disconnected Gates remain visible without a submit action. The isolated Playwright stack can restart only NanoCore on its existing port and data root while keeping the Web process live, and its final stop still owns complete process and temporary-root cleanup.
+
+Board 19 is live as a Tier-A selected-Workspace repository resources, diagnostics, durable push records, and approval-gated push projection. The old Repositories demo, fixture, and export are absent. Existing Core Client and NanoCore contracts remain the owners; this Web package adds no API or external-effect owner. Worker-proposed-file Workspace Sync review-to-apply UX remains deferred, and browser or real external-push proof is not claimed here.
+
+The current account boundary uses `client.app.listAuthorizedWorkspaces()` for admission, opens the account gate only for the exact typed `401 core.auth.unauthenticated`, offers the existing email/password sign-up and sign-in operations, and exposes sign-out on the authenticated Account route; this is focused-test evidence only, not browser or real-use proof.
+
+Selected-Workspace owner member administration, owner-issued invitation administration, the membership-independent account-level My invitations direct read with pending accept and decline decisions plus terminal rows, and selected active non-owner self-leave are focused-test-backed implementations through the existing Account route; browser, real-auth, real-use, and program-exit proof remain pending. Contract-backed gaps remain for further live Goal, Knowledge, and Vault operations already admitted by their owning specifications. The stack specification remains `Partial` because the current generative shell and token bridge are local implementations and their required official direct dependencies are absent. Follow the current design→code loop in [`docs/cookbooks/claude-design-web-ui-loop.md`](../../docs/cookbooks/claude-design-web-ui-loop.md).
+
+## Related docs
+
+- Canonical design guide — [`DESIGN.md`](../../DESIGN.md)
+- Web stack + token-bridge contract — [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md)
+- Product-surface projection — [`docs/specs/20260628-web_product_surface_projection.md`](../../docs/specs/20260628-web_product_surface_projection.md)
+- Client boundary — `@openkit/core-client`
