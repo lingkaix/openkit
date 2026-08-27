@@ -4,9 +4,8 @@ Read `README.md` first. This file contains only local agent execution rules for 
 
 ## Local Agent Rules
 
-- Keep this package limited to pinned OpenShell boundary snapshots and conformance helpers.
-- Do not add NanoCore worker backend business logic here.
-- Do not add OpenKit public protocol schemas here.
+- Treat this legacy package and its source, tests, snapshots, and metadata as immutable until deletion with its current consumers at cutover.
+- Do not refresh, repair, regenerate, or extend the snapshot or its conformance helpers.
+- Do not add NanoCore worker backend business logic or OpenKit public protocol schemas here.
 - Runtime boot must not fetch live OpenShell schemas or CLI metadata.
-- Refresh snapshots only through explicit maintenance work with a reviewed snapshot diff.
-- Keep `metadata.json` checksums in sync with snapshot artifacts.
+- Keep the target OpenShell pin with the consuming NanoHost application, not in this package.

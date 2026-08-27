@@ -16,13 +16,14 @@ import {
   type WorkerControlCommandPoll,
   type WorkerControlFetch,
 } from './control-client.js';
+import { openSandboxIntegration, type SandboxIntegrationClient } from './integration-client.js';
 import {
   type WorkerLineage,
   type WorkerTerminalOutcomeInput,
   WorkerTranscriptWriter,
 } from './transcript.js';
 import {
-  prepareWorkspaceGitSnapshots,
+  materializeWorkspaceGitInputs,
   publishWorkspaceGitSnapshots,
   type WorkspaceGitInput,
 } from './workspace-git.js';
@@ -82,8 +83,6 @@ export interface WorkerShimEnvironment {
   NO_PROXY?: string | undefined;
   /** Enables environment-proxy support for Node child processes. */
   NODE_USE_ENV_PROXY?: string | undefined;
-  /** NanoCore worker-control route base URL. */
-  OPENKIT_CONTROL_BASE_URL?: string | undefined;
   /** Internal launcher descriptor containing the sandbox bearer token. */
   OPENKIT_CONTROL_TOKEN_FD?: string | undefined;
   /** Retired Codex command override rejected before native launch. */
@@ -94,7 +93,7 @@ export interface WorkerShimEnvironment {
   OPENKIT_THREAD_ID?: string | undefined;
   /** Turn id bound to the worker session. */
   OPENKIT_TURN_ID?: string | undefined;
-  /** Agent session id bound to the sandbox. */
+  /** AgentSession id bound to the sandbox. */
   OPENKIT_AGENT_SESSION_ID?: string | undefined;
   /** Agent Environment Package snapshot id. */
   OPENKIT_PACKAGE_SNAPSHOT_ID?: string | undefined;
@@ -171,6 +170,16 @@ export interface WorkerShimRunOptions {
   fetch?: WorkerControlFetch | undefined;
   /** Optional parent cancellation signal. */
   signal?: AbortSignal | undefined;
+  /** Existing Harness-lifetime Integration client. */
+  integration?: SandboxIntegrationClient | undefined;
+  /** AgentSession-private native state root retained across sequential Turns. */
+  sessionStateRoot?: string | undefined;
+  /** Turn-private native output directory removed after collection. */
+  nativeTurnDirectory?: string | undefined;
+  /** Notification after the native child is supervised and Turn routes are bound. */
+  onNativeStart?: (() => void) | undefined;
+  /** Notification after child absence, collection, publication, and route revocation. */
+  onTurnBarrier?: (() => void) | undefined;
 }
 
 /**
@@ -197,7 +206,12 @@ type DirectWorkerControlCommand = {
 
 /** Minimal immutable AEP projection consumed by the worker shim. */
 interface WorkerShimPackageManifest {
-  /** Direct worker-control and selected adapter declaration. */
+  /** Package-owned lineage fields consumed by the worker supervisor. */
+  scope?: {
+    /** Request that owns this worker Turn, when present. */
+    requestId?: unknown;
+  };
+  /** Sandbox Integration bindings and selected adapter declaration. */
   control?: {
     /** Static worker-side adapter selector. */
     adapter?: {
@@ -206,7 +220,9 @@ interface WorkerShimPackageManifest {
       /** Opaque static registry key. */
       targetRuntime?: unknown;
     };
-    /** Required direct NanoCore control mode. */
+    /** Fixed sandbox-local Integration route bindings. */
+    bindings?: unknown;
+    /** Required Sandbox Integration control mode. */
     mode?: unknown;
     /** Durable transcript and optional provenance declaration. */
     transcript?: {
@@ -255,6 +271,8 @@ interface WorkerShimPackageManifest {
   workspace?: {
     /** Materialized worker inputs. */
     inputs?: unknown;
+    /** Declared worker workspace root. */
+    root?: unknown;
   };
 }
 
@@ -414,9 +432,10 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   const environment = options.environment ?? process.env;
   const packageManifest = await readWorkerShimPackage(options.args.packagePath);
 
-  if (packageManifest.control?.mode !== 'direct-nanocore') {
-    throw new Error('Worker shim requires control.mode to be direct-nanocore.');
+  if (packageManifest.control?.mode !== 'sandbox-integration') {
+    throw new Error('Worker shim requires control.mode to be sandbox-integration.');
   }
+  validateSandboxIntegrationBindings(packageManifest.control.bindings);
   rejectRetiredWorkerOverrides(packageManifest, environment);
   validateWorkerShimCommand(packageManifest);
   const adapterId = resolveWorkerAdapterId(packageManifest);
@@ -427,12 +446,13 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   const llmRoute = resolveWorkerLlmRoute(packageManifest);
   const turnInput = resolveWorkerTurnInput(packageManifest);
   const cwd = resolveWorkerWorkingDirectory(packageManifest);
+  const workspaceInputs = resolveWorkspaceInputs(packageManifest);
 
   if (options.args.dryRun) {
     const stateRoot = join(options.args.sessionDir, 'native-state');
     await rm(stateRoot, { force: true, recursive: true });
     try {
-      await adapter.prepare({
+      await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
         childEnvironment: workerChildEnvironment(packageManifest, environment, llmRoute),
         llmRoute,
         sessionDirectory: options.args.sessionDir,
@@ -450,41 +470,51 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     };
   }
 
-  const controlBaseUrl = environment.OPENKIT_CONTROL_BASE_URL?.trim();
-
-  if (!controlBaseUrl) {
-    throw new Error('Missing required OPENKIT_CONTROL_BASE_URL environment variable.');
-  }
-
+  await mkdir(options.args.sessionDir, { recursive: true });
+  await writeFile(join(options.args.sessionDir, 'events.jsonl'), '', 'utf8');
+  await writeFile(join(options.args.sessionDir, 'items.jsonl'), '', 'utf8');
+  await writeFile(join(options.args.sessionDir, 'artifacts.jsonl'), '', 'utf8');
   await materializeRuntimeSupply(packageManifest);
-  const workspaceInputs = resolveWorkspaceInputs(packageManifest);
-  const workspaceBases = await prepareWorkspaceGitSnapshots(
+  const workspaceRoot = packageManifest.workspace?.root;
+  if (
+    workspaceInputs.length > 0 &&
+    (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0)
+  ) {
+    throw new Error('Git workspace materialization requires workspace.root.');
+  }
+  const workspaceBases = await materializeWorkspaceGitInputs(
     workspaceInputs,
+    typeof workspaceRoot === 'string' ? workspaceRoot : cwd,
     options.args.sessionDir
   );
-  const lineage = workerLineageFromEnvironment(environment);
+  const lineage = workerLineageFromEnvironment(environment, packageManifest.scope?.requestId);
   const provenanceDeclaration = parseRuntimeProvenanceDeclaration(
     packageManifest.control?.transcript?.runtimeProvenance
   );
   const childEnvironment = workerChildEnvironment(packageManifest, environment, llmRoute);
   const credentialValues = workerCredentialValues(packageManifest, childEnvironment, llmRoute);
-  const stateRoot = join(options.args.sessionDir, 'native-state');
-  await rm(stateRoot, { force: true, recursive: true });
+  const stateRoot = options.sessionStateRoot ?? join(options.args.sessionDir, 'native-state');
+  if (!options.sessionStateRoot) {
+    await rm(stateRoot, { force: true, recursive: true });
+  }
   let launchPlan: WorkerAdapterLaunchPlan;
   try {
-    launchPlan = await adapter.prepare({
+    launchPlan = await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
       childEnvironment,
       llmRoute,
       ...(provenanceDeclaration
         ? { runtimeProvenance: { ...provenanceDeclaration, lineage } }
         : {}),
       sessionDirectory: options.args.sessionDir,
+      ...(options.nativeTurnDirectory ? { nativeTurnDirectory: options.nativeTurnDirectory } : {}),
       stateRoot,
       turnInput,
       workingDirectory: cwd,
     });
   } catch (error) {
-    await rm(stateRoot, { force: true, recursive: true });
+    if (!options.sessionStateRoot) {
+      await rm(stateRoot, { force: true, recursive: true });
+    }
     throw error;
   }
   let controlSession: WorkerControlClient | null = null;
@@ -501,13 +531,14 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     lineage,
     sessionDir: options.args.sessionDir,
   });
-  let failureReason = 'worker-supervisor-failed';
   let terminalOutcomeAttempted = false;
   let workerControlReady = false;
   const controlAbortController = new AbortController();
   const workerAbortController = new AbortController();
   let interrupted = false;
   let acceptsWorkerCommands = true;
+  let integration = options.integration ?? null;
+  const ownsIntegration = !options.integration;
   /** Cancels the control and native child under the shared supervisor lifecycle. */
   const abortChildren = (reason?: unknown) => {
     controlSession?.disablePostLaunchRecovery();
@@ -525,11 +556,25 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
 
   try {
     const controlToken = requireWorkerControlToken(options.controlToken);
+    let workerControlFetch = options.fetch;
+    const inferenceToken = environment.OPENKIT_WORKER_INFERENCE_TOKEN?.trim();
+    if (!workerControlFetch || inferenceToken) {
+      integration ??= await openSandboxIntegration({
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      await integration.ready;
+      integration.bindTurnRouteTokens({
+        controlToken,
+        inferenceToken:
+          inferenceToken ?? requireEnvironmentValue(environment, 'OPENKIT_WORKER_INFERENCE_TOKEN'),
+      });
+      workerControlFetch ??= integration.workerControlFetch;
+    }
     const session = new WorkerControlClient({
-      ...(options.fetch ? { fetch: options.fetch } : {}),
+      fetch: workerControlFetch,
       lineage,
       token: controlToken,
-      baseUrl: controlBaseUrl,
+      baseUrl: '/worker-control',
     });
     controlSession = session;
     const seenCommandIds = new Set<string>();
@@ -539,7 +584,6 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       workerAbortController.abort();
     };
 
-    failureReason = 'worker-control-readiness-failed';
     let initialCommandPoll: WorkerControlCommandPoll | null = null;
     try {
       initialCommandPoll = await waitForWorkerControlReadiness(
@@ -553,7 +597,6 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       }
     }
 
-    failureReason = 'worker-control-runtime-failed';
     if (initialCommandPoll) {
       try {
         await handleWorkerControlCommands(
@@ -575,7 +618,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       terminalOutcomeAttempted = true;
       await writeAndReportTerminalOutcome(writer, workerControlReady ? session : null, {
         status: 'interrupted',
-        stopReason: interrupted ? 'worker-interrupt-command' : 'worker-parent-aborted',
+        stopReason: 'aborted',
       });
       return {
         exitCode: null,
@@ -584,7 +627,6 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       };
     }
 
-    failureReason = 'worker-runtime-failed';
     let result: WorkerProcessRunResult;
     let processPromise: Promise<WorkerProcessRunResult> | null = null;
     let controlPromise: Promise<void> | null = null;
@@ -628,6 +670,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
           (error: unknown) => Promise.reject(error)
         ),
       ]);
+      options.onNativeStart?.();
       session.enablePostLaunchRecovery();
       await writer.writeAndAppendEvent({
         data: {
@@ -648,10 +691,6 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       result = await superviseWorkerProcess(processPromise, controlPromise, {
         workerAbortController,
         isInterrupted: () => interrupted || Boolean(options.signal?.aborted),
-        onFailureOwner: (owner) => {
-          failureReason =
-            owner === 'control' ? 'worker-control-runtime-failed' : 'worker-runtime-failed';
-        },
         controlAbortController,
       });
     } catch (error) {
@@ -671,7 +710,6 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       },
       type: 'worker.heartbeat',
     });
-    failureReason = 'worker-result-collection-failed';
     const returnedStdout = Buffer.from(result.stdout, 'utf8');
     const stdout =
       stdoutChunks.length > 0 ? Buffer.concat(stdoutChunks, stdoutBytes) : returnedStdout;
@@ -686,10 +724,18 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       stderr: result.stderr,
       stdout: launchPlan.captureStdout ? stdout : new Uint8Array(),
     };
-    const adapterResult = await adapter.collect({ launchPlan, processResult: nativeResult });
-    failureReason = 'worker-runtime-failed';
+    const adapterResult =
+      adapter.mode === 'bounded-turn'
+        ? await adapter.collect({ launchPlan, processResult: nativeResult })
+        : await adapter.collectTurn({
+            launchPlan,
+            processResult: nativeResult,
+            stateRoot,
+          });
     await launchPlan.finalize?.();
-    await rm(stateRoot, { force: true, recursive: true });
+    if (!options.sessionStateRoot) {
+      await rm(stateRoot, { force: true, recursive: true });
+    }
     await publishWorkspaceGitSnapshots({
       bases: workspaceBases,
       credentialValues,
@@ -699,12 +745,8 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     });
     acceptsWorkerCommands = false;
     controlAbortController.abort();
-    try {
-      await controlPromise;
-    } catch (error) {
-      failureReason = 'worker-control-runtime-failed';
-      throw error;
-    }
+    await controlPromise;
+    options.onTurnBarrier?.();
     options.signal?.removeEventListener('abort', abortForParent);
     const assistantOutputRejected = containsExactCredentialValue(
       adapterResult.assistantText,
@@ -739,13 +781,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
         : {}),
       status,
       stopReason:
-        status === 'interrupted'
-          ? interrupted
-            ? 'worker-interrupt-command'
-            : 'worker-parent-aborted'
-          : assistantOutputRejected
-            ? 'worker-assistant-output-rejected'
-            : adapterResult.stopReason,
+        status === 'completed' ? 'completed' : status === 'interrupted' ? 'aborted' : 'error',
     };
     terminalOutcomeAttempted = true;
     const terminalRecord = await writer.writeTerminalOutcome(terminalInput);
@@ -779,14 +815,25 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       terminalOutcomeAttempted = true;
       await writeAndReportTerminalOutcome(writer, workerControlReady ? controlSession : null, {
         status: 'failed',
-        stopReason: failureReason,
+        stopReason: 'error',
       }).catch(() => undefined);
     }
     throw error;
   } finally {
     options.signal?.removeEventListener('abort', abortForParent);
     abortChildren();
-    await rm(stateRoot, { force: true, recursive: true }).catch(() => undefined);
+    integration?.clearTurnRouteTokens();
+    if (ownsIntegration) {
+      await integration?.close().catch(() => undefined);
+    }
+    if (!options.sessionStateRoot) {
+      await rm(stateRoot, { force: true, recursive: true }).catch(() => undefined);
+    }
+    if (options.nativeTurnDirectory) {
+      await rm(options.nativeTurnDirectory, { force: true, recursive: true }).catch(
+        () => undefined
+      );
+    }
   }
 }
 
@@ -828,8 +875,6 @@ async function superviseWorkerProcess(
     workerAbortController: AbortController;
     /** Returns whether an external or worker interrupt owns cancellation. */
     isInterrupted: () => boolean;
-    /** Records whether the process or control path owns a frozen failure. */
-    onFailureOwner: (owner: 'runtime' | 'control') => void;
     /** Controller that terminates control polling and in-flight requests. */
     controlAbortController: AbortController;
   }
@@ -856,7 +901,6 @@ async function superviseWorkerProcess(
     if (interruptedAtWinner) {
       return interruptedWorkerProcessResult();
     }
-    supervision.onFailureOwner('runtime');
     throw first.error;
   }
 
@@ -874,10 +918,8 @@ async function superviseWorkerProcess(
       : interruptedWorkerProcessResult();
   }
   if (first.kind === 'control-failed') {
-    supervision.onFailureOwner('control');
     throw first.error;
   }
-  supervision.onFailureOwner('control');
   throw new Error('Worker control stopped before the native process completed.');
 }
 
@@ -1144,7 +1186,9 @@ async function terminateChildProcess(
   }
   if (!graceful || !(await waitForProcessGroupExit(groupId, 1000))) {
     signalProcessGroup(groupId, 'SIGKILL');
-    await waitForProcessGroupExit(groupId, 1000);
+    if (!(await waitForProcessGroupExit(groupId, 1000))) {
+      throw new Error('Worker process group remained addressable after SIGKILL.');
+    }
   }
 
   const killed = await waitForChildProcessClose(close, 1000);
@@ -1249,6 +1293,48 @@ async function settleChildProcessDrains(
  */
 async function readWorkerShimPackage(packagePath: string): Promise<WorkerShimPackageManifest> {
   return JSON.parse(await readFile(packagePath, 'utf8')) as WorkerShimPackageManifest;
+}
+
+/**
+ * Validates the three fixed local Integration route families and distinct token references.
+ *
+ * @param value Untrusted AEP control bindings.
+ * @throws When any route or token reference differs from the closed local contract.
+ */
+function validateSandboxIntegrationBindings(value: unknown): void {
+  const expected = {
+    capabilities: '/capabilities/',
+    inference: '/inference/',
+    workerControl: '/worker-control/',
+  } as const;
+
+  if (!isRecord(value) || Object.keys(value).length !== 3) {
+    throw new Error('Worker shim requires the three Sandbox Integration bindings.');
+  }
+  const declaredTokenRefs = Object.keys(expected).map((family) => {
+    const binding = value[family];
+    return isRecord(binding) && typeof binding.tokenRef === 'string' ? binding.tokenRef : null;
+  });
+  if (new Set(declaredTokenRefs).size !== 3) {
+    throw new Error('Worker shim requires distinct Integration token references.');
+  }
+  const tokenRefs = new Set<string>();
+  for (const [family, pathPrefix] of Object.entries(expected)) {
+    const binding = value[family];
+    if (
+      !isRecord(binding) ||
+      binding.pathPrefix !== pathPrefix ||
+      typeof binding.tokenRef !== 'string' ||
+      !binding.tokenRef.startsWith('runtime://openkit/') ||
+      Object.keys(binding).length !== 2
+    ) {
+      throw new Error(`Worker shim requires the fixed ${family} Integration binding.`);
+    }
+    tokenRefs.add(binding.tokenRef);
+  }
+  if (tokenRefs.size !== 3) {
+    throw new Error('Worker shim requires distinct Integration token references.');
+  }
 }
 
 /**
@@ -1538,8 +1624,7 @@ function resolveWorkspaceInputs(packageManifest: WorkerShimPackageManifest): Wor
 
   return inputs
     .map((input) => readWorkspaceInput(input))
-    .filter((input): input is WorkspaceGitInput => input !== null)
-    .filter((input) => input.access === 'read-write' && input.materialization?.strategy === 'git');
+    .filter((input): input is WorkspaceGitInput => input !== null);
 }
 
 /**
@@ -1561,13 +1646,19 @@ function readWorkspaceInput(value: unknown): WorkspaceGitInput | null {
       ? (record.materialization as Record<string, unknown>)
       : {};
 
+  if (materialization.strategy !== 'git') {
+    return null;
+  }
+
   if (
     typeof record.id !== 'string' ||
     typeof record.target !== 'string' ||
-    (record.access !== 'read-only' && record.access !== 'read-write')
+    record.access !== 'read-write'
   ) {
-    return null;
+    throw new Error('Git workspace input requires id, target, and read-write access.');
   }
+
+  const source = readRemoteGitWorkspaceSource(record.source);
 
   return {
     access: record.access,
@@ -1576,7 +1667,72 @@ function readWorkspaceInput(value: unknown): WorkspaceGitInput | null {
       changeSetManifestPath: materialization.changeSetManifestPath,
       strategy: materialization.strategy,
     },
+    source,
     target: record.target,
+  };
+}
+
+/** Reads the one exact remote Git source shape accepted by the worker materializer. */
+function readRemoteGitWorkspaceSource(value: unknown): WorkspaceGitInput['source'] {
+  if (!isRecord(value)) {
+    throw new Error('Git workspace input requires one resolved remote source.');
+  }
+  const keys = Object.keys(value).sort();
+  const expectedKeys = [
+    'catalogEntryDigest',
+    'commit',
+    'kind',
+    'sensitivity',
+    'sourceId',
+    'sourceRef',
+    'url',
+  ];
+  const sensitivity = value.sensitivity;
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index]) ||
+    typeof value.catalogEntryDigest !== 'string' ||
+    !/^sha256:[0-9a-f]{64}$/.test(value.catalogEntryDigest) ||
+    typeof value.commit !== 'string' ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value.commit) ||
+    value.kind !== 'git' ||
+    (sensitivity !== 'public' &&
+      sensitivity !== 'internal' &&
+      sensitivity !== 'confidential' &&
+      sensitivity !== 'restricted') ||
+    typeof value.sourceId !== 'string' ||
+    value.sourceId.length === 0 ||
+    typeof value.sourceRef !== 'string' ||
+    value.sourceRef.length === 0 ||
+    typeof value.url !== 'string'
+  ) {
+    throw new Error('Git workspace input source shape is invalid.');
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value.url);
+  } catch {
+    throw new Error('Git workspace input URL must be valid HTTPS.');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw new Error('Git workspace input URL must be credential-free HTTPS without query or hash.');
+  }
+
+  return {
+    catalogEntryDigest: value.catalogEntryDigest,
+    commit: value.commit,
+    kind: 'git',
+    sensitivity,
+    sourceId: value.sourceId,
+    sourceRef: value.sourceRef,
+    url: value.url,
   };
 }
 
@@ -1603,6 +1759,17 @@ function workerChildEnvironment(
     if (typeof value === 'string' && value.length > 0) {
       selected[key] = value;
     }
+  }
+
+  for (const key of ['NO_PROXY', 'no_proxy'] as const) {
+    const entries = (selected[key] ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (!entries.includes('127.0.0.1')) {
+      entries.push('127.0.0.1');
+    }
+    selected[key] = entries.join(',');
   }
 
   return selected;
@@ -2009,16 +2176,42 @@ function isInterruptCommand(
 }
 
 /**
- * Builds worker lineage from sandbox environment variables.
+ * Builds worker lineage from AEP request authority and sandbox environment identities.
  *
  * @param environment Control environment.
+ * @param packageRequestId Request lineage parsed from the Agent Environment Package.
  * @returns Worker lineage.
  */
-function workerLineageFromEnvironment(environment: WorkerShimEnvironment): WorkerLineage {
+function workerLineageFromEnvironment(
+  environment: WorkerShimEnvironment,
+  packageRequestId: unknown
+): WorkerLineage {
+  const environmentRequestId = environment.OPENKIT_REQUEST_ID;
+  if (
+    (packageRequestId !== undefined &&
+      packageRequestId !== null &&
+      (typeof packageRequestId !== 'string' || packageRequestId.length === 0)) ||
+    environmentRequestId === ''
+  ) {
+    throw new Error('Worker request lineage is invalid.');
+  }
+  if (
+    environmentRequestId !== undefined &&
+    ((packageRequestId === null && environmentRequestId.length > 0) ||
+      (typeof packageRequestId === 'string' && packageRequestId !== environmentRequestId))
+  ) {
+    throw new Error('Worker request lineage contradicts the Agent Environment Package.');
+  }
+
   return {
     agentSessionId: requireEnvironmentValue(environment, 'OPENKIT_AGENT_SESSION_ID'),
     packageSnapshotId: requireEnvironmentValue(environment, 'OPENKIT_PACKAGE_SNAPSHOT_ID'),
-    requestId: environment.OPENKIT_REQUEST_ID ?? null,
+    requestId:
+      typeof packageRequestId === 'string'
+        ? packageRequestId
+        : packageRequestId === null
+          ? null
+          : (environmentRequestId ?? null),
     threadId: requireEnvironmentValue(environment, 'OPENKIT_THREAD_ID'),
     turnId: requireEnvironmentValue(environment, 'OPENKIT_TURN_ID'),
     workspaceId: requireEnvironmentValue(environment, 'OPENKIT_WORKSPACE_ID'),

@@ -1,0 +1,11 @@
+{
+  "name": "@openkit/nanohost",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "cargo build",
+    "test": "cargo test",
+    "lint": "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings",
+    "format": "cargo fmt"
+  }
+}

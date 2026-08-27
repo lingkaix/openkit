@@ -1,0 +1,448 @@
+#!/usr/bin/env node
+
+import { createHash, randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { link, lstat, mkdir, open, unlink } from 'node:fs/promises';
+import { isAbsolute, join, posix } from 'node:path';
+import { once } from 'node:events';
+import { pathToFileURL } from 'node:url';
+
+const MAX_FILE_BYTES = 268_435_456;
+const MAX_PATH_BYTES = 4096;
+const IO_CHUNK_BYTES = 65_536;
+const FAILURE_DIAGNOSTIC = 'File effect rejected.\n';
+
+/** Fixed sandbox roots for the ten canonical session-workspace slots. */
+const CANONICAL_WORKSPACE_SLOT_ROOTS = Object.freeze({
+  'artifact-input': '/workspace/artifacts/in',
+  cache: '/workspace/.openkit/cache',
+  context: '/openkit/context',
+  'external-data': '/workspace/data',
+  instructions: '/openkit/instructions',
+  'main-worktree': '/workspace/worktrees/main',
+  scratch: '/workspace/scratch',
+  session: '/openkit/session',
+  'turn-inputs': '/workspace/inputs',
+  'turn-output': '/workspace/outputs',
+});
+
+/** Fixed installed roots for workspace effects and the sole image-private package import. */
+export const CANONICAL_SLOT_ROOTS = Object.freeze({
+  ...CANONICAL_WORKSPACE_SLOT_ROOTS,
+  'package-config': '/openkit/config',
+});
+
+const IMPORT_SLOTS = new Set([
+  'artifact-input',
+  'context',
+  'external-data',
+  'instructions',
+  'turn-inputs',
+]);
+const PACKAGE_CONFIG_SLOTS = new Set(['package-config']);
+const EXPORT_SLOTS = new Set([
+  'cache',
+  'main-worktree',
+  'scratch',
+  'session',
+  'turn-output',
+]);
+
+/**
+ * Runs one fixed file effect against process-like streams.
+ *
+ * @param {{argv: string[], stdin: AsyncIterable<Uint8Array | string>, stdout: NodeJS.WritableStream, stderr: NodeJS.WritableStream, slotRoots: Record<string, string>}} input Exact CLI arguments, streams, and the test-injected canonical root projection.
+ * @returns {Promise<number>} Zero for a present result, two for proved optional absence, otherwise one.
+ */
+export async function runFileEffect({ argv, stdin, stdout, stderr, slotRoots }) {
+  try {
+    const command = parseCommand(argv, slotRoots);
+    if (command.operation === 'reference.import') {
+      await importReference(command, stdin, stdout);
+    } else {
+      const present = await exportFile(command, stdout);
+      if (!present) {
+        return 2;
+      }
+    }
+    return 0;
+  } catch {
+    try {
+      await writeStream(stderr, FAILURE_DIAGNOSTIC);
+    } catch {
+      // The fixed nonzero result remains authoritative when diagnostics cannot be written.
+    }
+    return 1;
+  }
+}
+
+/**
+ * Parses the one Rust-owned argument form and resolves its fixed slot root.
+ *
+ * @param {string[]} argv CLI arguments after the executable name.
+ * @param {Record<string, string>} slotRoots Canonical slot-to-root projection.
+ * @returns {{operation: 'reference.import', root: string, relativePath: string, length: number, digest: string} | {operation: 'file.export', root: string, relativePath: string, allowMissing: boolean}}
+ */
+function parseCommand(argv, slotRoots) {
+  if (!Array.isArray(argv) || !slotRoots || typeof slotRoots !== 'object') {
+    throw new Error('invalid invocation');
+  }
+
+  if (
+    argv.length === 9 &&
+    argv[0] === 'reference.import' &&
+    argv[1] === '--slot' &&
+    argv[3] === '--path' &&
+    argv[5] === '--length' &&
+    argv[7] === '--sha256'
+  ) {
+    const relativePath = parseRelativePath(argv[4]);
+    const slot = argv[2];
+    const root =
+      slot === 'package-config'
+        ? resolvePackageConfigRoot(slotRoots, relativePath)
+        : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
+    const length = parseBoundedDecimal(argv[6]);
+    const digest = argv[8];
+    if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
+      throw new Error('invalid digest');
+    }
+    return { digest, length, operation: 'reference.import', relativePath, root };
+  }
+
+  if (
+    (argv.length === 7 || (argv.length === 8 && argv[7] === '--allow-missing')) &&
+    argv[0] === 'file.export' &&
+    argv[1] === '--slot' &&
+    argv[3] === '--path' &&
+    argv[5] === '--max-length' &&
+    argv[6] === String(MAX_FILE_BYTES)
+  ) {
+    const slot = argv[2];
+    const root = resolveSlotRoot(slotRoots, slot, EXPORT_SLOTS);
+    const relativePath = parseRelativePath(argv[4]);
+    return { allowMissing: argv.length === 8, operation: 'file.export', relativePath, root };
+  }
+
+  throw new Error('invalid arguments');
+}
+
+/**
+ * Resolves the one image-private package destination without creating a generic config slot.
+ *
+ * @param {Record<string, string>} slotRoots Slot root projection.
+ * @param {string} relativePath Validated import path.
+ * @returns {string} Fixed package-config root.
+ */
+function resolvePackageConfigRoot(slotRoots, relativePath) {
+  if (relativePath !== 'package.json') {
+    throw new Error('invalid package path');
+  }
+  return resolveSlotRoot(slotRoots, 'package-config', PACKAGE_CONFIG_SLOTS);
+}
+
+/**
+ * Resolves one operation-compatible canonical slot root.
+ *
+ * @param {Record<string, string>} slotRoots Slot root projection.
+ * @param {string} slot Requested canonical slot id.
+ * @param {Set<string>} allowedSlots Slot ids allowed for the operation.
+ * @returns {string} Absolute normalized slot root.
+ */
+function resolveSlotRoot(slotRoots, slot, allowedSlots) {
+  if (!allowedSlots.has(slot) || !Object.prototype.hasOwnProperty.call(slotRoots, slot)) {
+    throw new Error('invalid slot');
+  }
+  const root = slotRoots[slot];
+  if (typeof root !== 'string' || !isAbsolute(root) || posix.normalize(root) !== root) {
+    throw new Error('invalid root');
+  }
+  return root;
+}
+
+/**
+ * Validates one canonical normalized slot-relative UTF-8 path.
+ *
+ * @param {string} value Candidate relative path.
+ * @returns {string} The accepted path unchanged.
+ */
+function parseRelativePath(value) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.includes('\\') ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    Buffer.byteLength(value, 'utf8') > MAX_PATH_BYTES ||
+    posix.isAbsolute(value) ||
+    posix.normalize(value) !== value
+  ) {
+    throw new Error('invalid path');
+  }
+  const segments = value.split('/');
+  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
+    throw new Error('invalid path');
+  }
+  return value;
+}
+
+/**
+ * Parses one canonical decimal byte count within the fixed file ceiling.
+ *
+ * @param {string} value Candidate decimal string.
+ * @returns {number} Parsed byte count.
+ */
+function parseBoundedDecimal(value) {
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error('invalid length');
+  }
+  const length = Number(value);
+  if (!Number.isSafeInteger(length) || length > MAX_FILE_BYTES) {
+    throw new Error('invalid length');
+  }
+  return length;
+}
+
+/**
+ * Imports one verified stdin body through private fsynced no-overwrite placement.
+ *
+ * @param {{root: string, relativePath: string, length: number, digest: string}} command Parsed import command.
+ * @param {AsyncIterable<Uint8Array | string>} stdin Import body stream.
+ * @param {NodeJS.WritableStream} stdout Result stream.
+ * @returns {Promise<void>}
+ */
+async function importReference(command, stdin, stdout) {
+  const { parent, target } = await prepareImportTarget(command.root, command.relativePath);
+  const partial = join(parent, `.openkit-file-effect-${randomUUID()}.partial`);
+  let partialHandle;
+  let placed = false;
+
+  try {
+    partialHandle = await open(
+      partial,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600
+    );
+    await partialHandle.chmod(0o600);
+    const hash = createHash('sha256');
+    let received = 0;
+
+    if (command.length > 0) {
+      for await (const inputChunk of stdin) {
+        const chunk = Buffer.from(inputChunk);
+        if (received + chunk.length > command.length) {
+          throw new Error('body exceeds length');
+        }
+        for (let offset = 0; offset < chunk.length; offset += IO_CHUNK_BYTES) {
+          const part = chunk.subarray(offset, Math.min(offset + IO_CHUNK_BYTES, chunk.length));
+          await writeFileChunk(partialHandle, part);
+          hash.update(part);
+        }
+        received += chunk.length;
+        if (received === command.length) {
+          break;
+        }
+      }
+    }
+
+    if (received !== command.length || `sha256:${hash.digest('hex')}` !== command.digest) {
+      throw new Error('body integrity mismatch');
+    }
+
+    await partialHandle.sync();
+    await partialHandle.close();
+    partialHandle = undefined;
+    await link(partial, target);
+    placed = true;
+    await unlink(partial);
+    await syncDirectory(parent);
+
+    const admitted = await lstat(target);
+    if (!admitted.isFile() || admitted.isSymbolicLink() || admitted.nlink !== 1) {
+      throw new Error('invalid admitted file');
+    }
+    await writeStream(stdout, `${command.digest} ${command.length}\n`);
+  } catch (error) {
+    if (partialHandle) {
+      await partialHandle.close().catch(() => undefined);
+    }
+    if (placed) {
+      await unlink(target).catch(() => undefined);
+    }
+    await unlink(partial).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Resolves and creates an import parent without accepting a symlink or existing target.
+ *
+ * @param {string} root Canonical slot root.
+ * @param {string} relativePath Validated slot-relative path.
+ * @returns {Promise<{parent: string, target: string}>} Secured parent and target paths.
+ */
+async function prepareImportTarget(root, relativePath) {
+  await requireDirectory(root);
+  const segments = relativePath.split('/');
+  let parent = root;
+  for (const segment of segments.slice(0, -1)) {
+    parent = join(parent, segment);
+    try {
+      await mkdir(parent, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') {
+        throw error;
+      }
+    }
+    await requireDirectory(parent);
+  }
+
+  const target = join(parent, segments.at(-1));
+  try {
+    await lstat(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { parent, target };
+    }
+    throw error;
+  }
+  throw new Error('target exists');
+}
+
+/**
+ * Exports exactly one bounded no-follow regular file to stdout.
+ *
+ * @param {{root: string, relativePath: string, allowMissing: boolean}} command Parsed export command.
+ * @param {NodeJS.WritableStream} stdout Result stream.
+ * @returns {Promise<boolean>} Whether the declared regular file was present.
+ */
+async function exportFile(command, stdout) {
+  const target = await resolveExistingTarget(command.root, command.relativePath);
+  let before;
+  try {
+    before = await lstat(target);
+  } catch (error) {
+    if (command.allowMissing && error?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
+    throw new Error('invalid export target');
+  }
+
+  const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      stat.size > MAX_FILE_BYTES ||
+      stat.dev !== before.dev ||
+      stat.ino !== before.ino
+    ) {
+      throw new Error('invalid export file');
+    }
+
+    const buffer = Buffer.allocUnsafe(IO_CHUNK_BYTES);
+    let offset = 0;
+    while (offset < stat.size) {
+      const requested = Math.min(buffer.length, stat.size - offset);
+      const { bytesRead } = await handle.read(buffer, 0, requested, offset);
+      if (bytesRead === 0) {
+        throw new Error('incomplete export file');
+      }
+      await writeStream(stdout, buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+  return true;
+}
+
+/**
+ * Resolves an existing target after rejecting every slot-relative symlink ancestor.
+ *
+ * @param {string} root Canonical slot root.
+ * @param {string} relativePath Validated slot-relative path.
+ * @returns {Promise<string>} Absolute target path.
+ */
+async function resolveExistingTarget(root, relativePath) {
+  await requireDirectory(root);
+  const segments = relativePath.split('/');
+  let current = root;
+  for (const segment of segments.slice(0, -1)) {
+    current = join(current, segment);
+    await requireDirectory(current);
+  }
+  return join(current, segments.at(-1));
+}
+
+/**
+ * Requires one path to be a real directory rather than a symlink.
+ *
+ * @param {string} path Directory path.
+ * @returns {Promise<void>}
+ */
+async function requireDirectory(path) {
+  const stat = await lstat(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('invalid directory');
+  }
+}
+
+/**
+ * Writes one complete file chunk, accounting for short writes.
+ *
+ * @param {import('node:fs/promises').FileHandle} handle Open output file.
+ * @param {Buffer} chunk Bounded bytes to write.
+ * @returns {Promise<void>}
+ */
+async function writeFileChunk(handle, chunk) {
+  let offset = 0;
+  while (offset < chunk.length) {
+    const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
+    if (bytesWritten === 0) {
+      throw new Error('incomplete write');
+    }
+    offset += bytesWritten;
+  }
+}
+
+/**
+ * Fsyncs the directory containing an admitted import.
+ *
+ * @param {string} path Directory path.
+ * @returns {Promise<void>}
+ */
+async function syncDirectory(path) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Writes a complete output chunk while respecting stream backpressure.
+ *
+ * @param {NodeJS.WritableStream} stream Destination stream.
+ * @param {string | Uint8Array} chunk Output bytes.
+ * @returns {Promise<void>}
+ */
+async function writeStream(stream, chunk) {
+  if (!stream.write(chunk)) {
+    await once(stream, 'drain');
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = await runFileEffect({
+    argv: process.argv.slice(2),
+    stderr: process.stderr,
+    stdin: process.stdin,
+    stdout: process.stdout,
+    slotRoots: CANONICAL_SLOT_ROOTS,
+  });
+}

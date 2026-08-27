@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 import type { WorkerLineage } from './transcript.js';
@@ -26,6 +26,23 @@ export interface WorkspaceGitInput {
   target: string;
   /** Worker access mode. */
   access: 'read-only' | 'read-write';
+  /** Exact credential-free remote Git source resolved by NanoCore. */
+  source: {
+    /** Stable digest of the selected catalog entry. */
+    catalogEntryDigest: string;
+    /** Exact remote commit selected for this Turn. */
+    commit: string;
+    /** Closed source kind consumed by this materializer. */
+    kind: 'git';
+    /** Catalog sensitivity classification. */
+    sensitivity: 'public' | 'internal' | 'confidential' | 'restricted';
+    /** Stable catalog source id. */
+    sourceId: string;
+    /** Manifest-authored source reference. */
+    sourceRef: string;
+    /** Credential-free HTTPS Git URL. */
+    url: string;
+  };
   /** Git change-set publication settings. */
   materialization?: {
     /** Worker-visible manifest path. */
@@ -33,6 +50,181 @@ export interface WorkspaceGitInput {
     /** Materialization strategy. */
     strategy?: unknown;
   };
+}
+
+/**
+ * Materializes exact remote Git commits into their declared worktree targets.
+ *
+ * @param inputs Validated remote Git inputs selected for this Turn.
+ * @param workspaceRoot Worker-visible root that contains every target.
+ * @param sessionDir Worker session directory used for the scrubbed Git environment.
+ * @returns Clean exact base commits keyed by workspace input id.
+ * @throws When a target escapes the workspace root or Git cannot produce the exact commit.
+ */
+export async function materializeWorkspaceGitInputs(
+  inputs: readonly WorkspaceGitInput[],
+  workspaceRoot: string,
+  sessionDir: string
+): Promise<Map<string, string>> {
+  if (inputs.length > 1) {
+    throw new Error('Only one writable Git workspace input is supported per worker session.');
+  }
+  if (inputs.length === 0) {
+    return new Map();
+  }
+
+  const root = resolve(workspaceRoot);
+
+  for (const input of inputs) {
+    const target = resolve(input.target);
+    const targetRelative = relative(root, target);
+    if (
+      targetRelative === '' ||
+      isAbsolute(targetRelative) ||
+      targetRelative === '..' ||
+      targetRelative.startsWith(`..${sep}`)
+    ) {
+      throw new Error('Git workspace target must stay beneath the declared workspace root.');
+    }
+
+    await prepareWorkspaceTargetParent(root, dirname(target));
+
+    await rm(target, { force: true, recursive: true });
+    try {
+      await mkdir(target, { recursive: true });
+      await requireGitText(
+        target,
+        sessionDir,
+        ['init', `--object-format=${input.source.commit.length === 64 ? 'sha256' : 'sha1'}`],
+        {},
+        'Remote Git workspace initialization failed.'
+      );
+      await requireGitText(
+        target,
+        sessionDir,
+        ['remote', 'add', 'origin', input.source.url],
+        {},
+        'Remote Git origin configuration failed.'
+      );
+      await requireGitText(
+        target,
+        sessionDir,
+        ['fetch', '--no-tags', '--depth=1', 'origin', input.source.commit],
+        {},
+        'Remote Git commit fetch failed.'
+      );
+      await requireGitText(
+        target,
+        sessionDir,
+        ['checkout', '--detach', input.source.commit],
+        {},
+        'Remote Git commit checkout failed.'
+      );
+      if (
+        (await requireGitCommit(
+          target,
+          sessionDir,
+          'HEAD',
+          'Remote Git workspace HEAD is unavailable.'
+        )) !== input.source.commit
+      ) {
+        throw new Error('Remote Git workspace HEAD does not match the declared commit.');
+      }
+      return await prepareWorkspaceGitSnapshots(inputs, sessionDir);
+    } catch (error) {
+      try {
+        await rm(target, { force: true, recursive: true });
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'Remote Git workspace materialization and cleanup failed.'
+        );
+      }
+      throw error;
+    }
+  }
+
+  return new Map();
+}
+
+/** Creates only missing target-parent directories after the complete lexical chain is safe. */
+async function prepareWorkspaceTargetParent(root: string, targetParent: string): Promise<void> {
+  const chain = await inspectWorkspaceDirectoryChain(root, targetParent);
+  for (const path of chain) {
+    const status = await lstatIfExists(path);
+    if (!status) {
+      await mkdir(path);
+    }
+    await assertPlainDirectory(path);
+  }
+}
+
+/** Returns the lexical trusted-ancestor chain after rejecting existing links and non-directories. */
+async function inspectWorkspaceDirectoryChain(
+  root: string,
+  targetParent: string
+): Promise<string[]> {
+  let trustedRoot = root;
+  while (!(await lstatIfExists(trustedRoot))) {
+    const parent = dirname(trustedRoot);
+    if (parent === trustedRoot) {
+      throw new Error('Git workspace root has no existing directory ancestor.');
+    }
+    trustedRoot = parent;
+  }
+
+  const targetRelative = relative(trustedRoot, targetParent);
+  if (
+    isAbsolute(targetRelative) ||
+    targetRelative === '..' ||
+    targetRelative.startsWith(`..${sep}`)
+  ) {
+    throw new Error('Git workspace target parent escapes the declared workspace root.');
+  }
+
+  const chain = [trustedRoot];
+  let current = trustedRoot;
+  for (const segment of targetRelative.split(sep).filter(Boolean)) {
+    current = resolve(current, segment);
+    chain.push(current);
+  }
+  for (const path of chain) {
+    const status = await lstatIfExists(path);
+    if (status) {
+      assertPlainDirectoryStatus(path, status);
+    }
+  }
+  return chain;
+}
+
+/** Requires one path to remain an existing ordinary directory. */
+async function assertPlainDirectory(path: string): Promise<void> {
+  const status = await lstatIfExists(path);
+  if (!status) {
+    throw new Error('Git workspace directory disappeared during materialization.');
+  }
+  assertPlainDirectoryStatus(path, status);
+}
+
+/** Rejects one inspected directory status when it could redirect or block containment. */
+function assertPlainDirectoryStatus(path: string, status: Awaited<ReturnType<typeof lstat>>): void {
+  if (status.isSymbolicLink() || !status.isDirectory()) {
+    throw new Error(
+      `Git workspace path must stay beneath the declared workspace root without symbolic-link ancestors: ${path}`
+    );
+  }
+}
+
+/** Returns link-preserving filesystem status without treating an absent path as failure. */
+async function lstatIfExists(path: string): Promise<Awaited<ReturnType<typeof lstat>> | null> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -803,8 +995,18 @@ function gitEnvironment(sessionDir: string, overrides: NodeJS.ProcessEnv): NodeJ
     SSH_ASKPASS: '',
     XDG_CONFIG_HOME: sessionDir,
   };
+  if (process.env.SSL_CERT_FILE) {
+    environment.GIT_SSL_CAINFO = process.env.SSL_CERT_FILE;
+  }
 
   for (const key of [
+    'ALL_PROXY',
+    'HTTPS_PROXY',
+    'HTTP_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
     'PATH',
     'PATHEXT',
     'SystemRoot',

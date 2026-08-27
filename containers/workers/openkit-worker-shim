@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bootstrap_error() {
+  printf '%s\n' "$1" >&2
+  exit 64
+}
+
+runtime_env=(
+  "ALL_PROXY=${ALL_PROXY:-}"
+  "COLORTERM=${COLORTERM:-}"
+  "HOME=${HOME:-/sandbox}"
+  "HTTPS_PROXY=${HTTPS_PROXY:-}"
+  "HTTP_PROXY=${HTTP_PROXY:-}"
+  "LANG=${LANG:-C.UTF-8}"
+  "LC_ALL=${LC_ALL:-}"
+  "LC_CTYPE=${LC_CTYPE:-}"
+  "LOGNAME=${LOGNAME:-sandbox}"
+  "NODE_USE_ENV_PROXY=1"
+  "NPM_CONFIG_AUDIT=${NPM_CONFIG_AUDIT:-false}"
+  "NPM_CONFIG_FUND=${NPM_CONFIG_FUND:-false}"
+  "NPM_CONFIG_UPDATE_NOTIFIER=${NPM_CONFIG_UPDATE_NOTIFIER:-false}"
+  "OPENKIT_ARTIFACT_DIR=${OPENKIT_ARTIFACT_DIR:-/openkit/artifacts}"
+  "OPENKIT_SESSION_DIR=${OPENKIT_SESSION_DIR:-/openkit/session}"
+  "NO_PROXY=${NO_PROXY:-}"
+  "PATH=${PATH:-/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin}"
+  "PIP_DISABLE_PIP_VERSION_CHECK=${PIP_DISABLE_PIP_VERSION_CHECK:-1}"
+  "PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}"
+  "PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}"
+  "SHELL=${SHELL:-/bin/bash}"
+  "SSL_CERT_DIR=${SSL_CERT_DIR:-}"
+  "SSL_CERT_FILE=${SSL_CERT_FILE:-}"
+  "TEMP=${TEMP:-}"
+  "TERM=${TERM:-}"
+  "TMP=${TMP:-}"
+  "TMPDIR=${TMPDIR:-/tmp}"
+  "USER=${USER:-sandbox}"
+  "UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR:-/opt/uv/python}"
+  "VIRTUAL_ENV=${VIRTUAL_ENV:-/sandbox/.venv}"
+  "XDG_CACHE_HOME=${XDG_CACHE_HOME:-/sandbox/.cache}"
+  "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/sandbox/.config}"
+  "XDG_DATA_HOME=${XDG_DATA_HOME:-/sandbox/.local/share}"
+  "XDG_STATE_HOME=${XDG_STATE_HOME:-/sandbox/.local/state}"
+  "http_proxy=${http_proxy:-}"
+  "https_proxy=${https_proxy:-}"
+  "no_proxy=${no_proxy:-}"
+)
+
+if (( $# == 0 )); then
+  exec env -i "${runtime_env[@]}" node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-worker-shim.js
+fi
+
+worker_control_token=''
+if ! IFS= read -r worker_control_token; then
+  if [[ -z "${worker_control_token}" ]]; then
+    bootstrap_error 'Worker bootstrap input is missing.'
+  fi
+  bootstrap_error 'Worker bootstrap input is invalid.'
+fi
+
+worker_inference_token=''
+if ! IFS= read -r worker_inference_token; then
+  if [[ -z "${worker_inference_token}" ]]; then
+    bootstrap_error 'Worker bootstrap input is missing.'
+  fi
+  bootstrap_error 'Worker bootstrap input is invalid.'
+fi
+
+token_pattern='^[A-Za-z0-9_-]{43}$'
+if [[ ! "${worker_control_token}" =~ ${token_pattern} ]] ||
+  [[ ! "${worker_inference_token}" =~ ${token_pattern} ]] ||
+  [[ "${worker_control_token}" == "${worker_inference_token}" ]]; then
+  bootstrap_error 'Worker bootstrap input is invalid.'
+fi
+
+trailing_input=''
+if IFS= read -r trailing_input || [[ -n "${trailing_input}" ]]; then
+  bootstrap_error 'Worker bootstrap input has trailing data.'
+fi
+
+exec 3<<<"${worker_control_token}"
+
+runtime_env+=(
+  "OPENKIT_AGENT_SESSION_ID=${OPENKIT_AGENT_SESSION_ID:-}"
+  "OPENKIT_CONTROL_TOKEN_FD=3"
+  "OPENKIT_PACKAGE_SNAPSHOT_ID=${OPENKIT_PACKAGE_SNAPSHOT_ID:-}"
+  "OPENKIT_REQUEST_ID=${OPENKIT_REQUEST_ID:-}"
+  "OPENKIT_THREAD_ID=${OPENKIT_THREAD_ID:-}"
+  "OPENKIT_TURN_ID=${OPENKIT_TURN_ID:-}"
+  "OPENKIT_WORKER_INFERENCE_TOKEN=${worker_inference_token}"
+  "OPENKIT_WORKSPACE_ID=${OPENKIT_WORKSPACE_ID:-}"
+)
+
+if [[ -f /usr/local/lib/openkit/allow-anthropic-api-key ]]; then
+  runtime_env+=("ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
+fi
+
+exec env -i "${runtime_env[@]}" node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-worker-shim.js "$@"

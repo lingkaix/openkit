@@ -1,9 +1,8 @@
 import { constants } from 'node:fs';
-import { mkdir, open, unlink } from 'node:fs/promises';
+import { mkdir, open, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type {
-  WorkerAdapter,
   WorkerAdapterCollectInput,
   WorkerAdapterLaunchPlan,
   WorkerAdapterLlmRoute,
@@ -11,7 +10,10 @@ import type {
   WorkerAdapterResult,
   WorkerNativeProcessResult,
 } from '../adapter-registry.js';
-import { CodexRuntimeProvenanceCapture } from '../codex-runtime-provenance.js';
+import {
+  CodexRuntimeProvenanceCapture,
+  proveCodexNativeConversation,
+} from '../codex-runtime-provenance.js';
 
 /** Maximum accepted Codex final-message size. */
 const FINAL_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
@@ -21,15 +23,18 @@ const RELAY_PROVIDER_ID = 'openkit-worker-inference';
 
 /** Codex environment key containing the OpenShell-injected relay placeholder. */
 const RELAY_TOKEN_ENV_KEY = 'OPENKIT_WORKER_INFERENCE_TOKEN';
-
+/** Fixed sandbox-local native inference endpoint consumed by Codex. */
+const INTEGRATION_INFERENCE_BASE_URL = 'http://127.0.0.1:17892/inference/v1';
 /** Maximum product-safe diagnostic summary length. */
 const DIAGNOSTIC_MAX_CHARACTERS = 1000;
 
 /** Worker-visible session path prefix used by the fixed provenance declaration. */
 const SESSION_PATH_PREFIX = '/openkit/session/';
+const NATIVE_HANDLE_FILE = 'native-conversation-handle';
+const CODEX_THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * Validates and returns the exact worker-visible trusted-relay base URL.
+ * Validates the URL-free local Integration route and returns its fixed worker-visible base URL.
  *
  * @param route NanoCore-resolved LLM route.
  * @returns Exact worker-visible relay base URL.
@@ -40,35 +45,15 @@ function relayBaseUrl(route: WorkerAdapterLlmRoute): string {
     throw new Error('Codex direct-provider routes are unsupported.');
   }
 
-  const baseUrl = route.endpoint.workerBaseUrl;
   if (
     route.credentialVisibility !== 'placeholder' ||
     route.endpoint.kind !== 'openai-compatible' ||
     route.endpoint.upstream?.kind !== 'nanocore-gateway' ||
-    !baseUrl
+    route.endpoint.workerBaseUrl !== undefined
   ) {
-    throw new Error('Codex requires one trusted NanoCore relay route.');
+    throw new Error('Codex requires one URL-free local Integration route.');
   }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new Error('Codex requires one trusted NanoCore relay route.');
-  }
-  if (
-    !['http:', 'https:'].includes(parsed.protocol) ||
-    !parsed.hostname ||
-    parsed.username ||
-    parsed.password ||
-    parsed.pathname !== '/api/worker-inference/v1' ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new Error('Codex requires one trusted NanoCore relay route.');
-  }
-
-  return baseUrl;
+  return INTEGRATION_INFERENCE_BASE_URL;
 }
 
 /**
@@ -114,7 +99,9 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
   }
 
   await mkdir(input.stateRoot, { mode: 0o700, recursive: true });
-  const finalMessagePath = join(input.sessionDirectory, 'final-message.txt');
+  const nativeTurnDirectory = input.nativeTurnDirectory ?? input.sessionDirectory;
+  await mkdir(nativeTurnDirectory, { mode: 0o700, recursive: true });
+  const finalMessagePath = join(nativeTurnDirectory, 'final-message.txt');
   await unlink(finalMessagePath).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== 'ENOENT') {
       throw error;
@@ -141,16 +128,16 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
         ),
       })
     : null;
+  const nativeHandle = await readNativeHandle(input.stateRoot);
+  const command = nativeHandle ? ['codex', 'exec', 'resume'] : ['codex', 'exec'];
 
   return {
     argv: [
-      'codex',
-      'exec',
+      ...command,
       '--json',
       '--ignore-user-config',
       '--ignore-rules',
       '--strict-config',
-      ...(provenance ? [] : ['--ephemeral']),
       '--output-last-message',
       finalMessagePath,
       '--cd',
@@ -172,9 +159,10 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
       '--model',
       input.llmRoute.model,
       '--dangerously-bypass-approvals-and-sandbox',
+      ...(nativeHandle ? [nativeHandle] : []),
       input.turnInput,
     ],
-    captureStdout: false,
+    captureStdout: true,
     environment: {
       ...input.childEnvironment,
       CODEX_HOME: input.stateRoot,
@@ -188,6 +176,57 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
         }
       : {}),
   };
+}
+
+/** Reads the restricted raw Codex UUID, or returns pending when none exists yet. */
+async function readNativeHandle(stateRoot: string): Promise<string | null> {
+  let file: Awaited<ReturnType<typeof open>>;
+  try {
+    file = await open(
+      join(stateRoot, NATIVE_HANDLE_FILE),
+      constants.O_RDONLY | constants.O_NOFOLLOW
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+  try {
+    const metadata = await file.stat();
+    if (!metadata.isFile() || metadata.size !== 36) {
+      throw new Error('Codex native conversation handle is invalid.');
+    }
+    const buffer = Buffer.alloc(36);
+    const { bytesRead } = await file.read(buffer, 0, buffer.byteLength, 0);
+    const value = buffer.toString('ascii', 0, bytesRead);
+    if (bytesRead !== 36 || !CODEX_THREAD_ID_PATTERN.test(value)) {
+      throw new Error('Codex native conversation handle is invalid.');
+    }
+    return value;
+  } finally {
+    await file.close();
+  }
+}
+
+/** Atomically retains one exact UUID inside only its AgentSession-private root. */
+async function writeNativeHandle(stateRoot: string, nativeHandle: string): Promise<void> {
+  const existing = await readNativeHandle(stateRoot);
+  if (existing && existing !== nativeHandle) {
+    throw new Error('Codex native conversation handle changed.');
+  }
+  if (existing) {
+    return;
+  }
+  const target = join(stateRoot, NATIVE_HANDLE_FILE);
+  const staged = `${target}.staged`;
+  await unlink(staged).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') {
+      throw error;
+    }
+  });
+  await writeFile(staged, nativeHandle, { flag: 'wx', mode: 0o600 });
+  await rename(staged, target);
 }
 
 /**
@@ -357,8 +396,67 @@ async function collectCodex(input: WorkerAdapterCollectInput): Promise<WorkerAda
   }
 }
 
-/** Codex 0.144.1 bounded-turn worker adapter. */
+/** Creates one empty AgentSession-private Codex root without launching a process. */
+async function openCodexSession(input: { readonly stateRoot: string }) {
+  await rm(input.stateRoot, { force: true, recursive: true });
+  await mkdir(input.stateRoot, { mode: 0o700, recursive: true });
+  return {
+    nativeHandle: null,
+    nativeHandleDigest: null,
+    nativeHandleState: 'pending' as const,
+  };
+}
+
+/** Collects one Codex Turn and establishes or verifies its exact native UUID. */
+async function collectCodexTurn(input: WorkerAdapterCollectInput & { readonly stateRoot: string }) {
+  const result = await collectCodex(input);
+  if (result.status !== 'completed') {
+    return {
+      ...result,
+      nativeHandle: null,
+      nativeHandleDigest: null,
+      nativeHandleState: 'unknown' as const,
+    };
+  }
+  const proof = await proveCodexNativeConversation({
+    adapterVersion: '0.144.1',
+    codexHome: input.stateRoot,
+    stdout: input.processResult.stdout,
+  });
+  await writeNativeHandle(input.stateRoot, proof.nativeHandle);
+  return { ...result, ...proof, nativeHandleState: 'ready' as const };
+}
+
+/** Proves the current private handle and rollout without selecting ambient state. */
+async function inspectCodexSession(input: { readonly stateRoot: string }) {
+  const nativeHandle = await readNativeHandle(input.stateRoot);
+  if (!nativeHandle) {
+    return { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
+  }
+  const proof = await proveCodexNativeConversation({
+    adapterVersion: '0.144.1',
+    codexHome: input.stateRoot,
+    stdout: Buffer.from(`${JSON.stringify({ thread_id: nativeHandle, type: 'thread.started' })}\n`),
+  });
+  return { nativeHandleDigest: proof.nativeHandleDigest, nativeHandleState: 'ready' as const };
+}
+
+/** Removes one exact AgentSession's native root and Turn-local outputs. */
+async function closeCodexSession(input: {
+  readonly sessionDirectory: string;
+  readonly stateRoot: string;
+}) {
+  await rm(input.stateRoot, { force: true, recursive: true });
+  await rm(input.sessionDirectory, { force: true, recursive: true });
+  return { privateState: 'absent' as const };
+}
+
+/** Codex 0.144.1 session-continuity worker adapter. */
 export const codexAdapter = {
-  collect: collectCodex,
-  prepare: prepareCodex,
-} satisfies WorkerAdapter;
+  closeSession: closeCodexSession,
+  collectTurn: collectCodexTurn,
+  inspectSession: inspectCodexSession,
+  mode: 'session-continuity' as const,
+  openSession: openCodexSession,
+  prepareTurn: prepareCodex,
+};

@@ -59,7 +59,7 @@ describe('WorkerControlClient', () => {
       fetch,
       lineage,
       token: 'token_control_1',
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
     });
 
     await client.recordHeartbeat({ message: 'Worker running.', status: 'running' });
@@ -86,7 +86,7 @@ describe('WorkerControlClient', () => {
           sequence: 0,
         },
         headers: expect.objectContaining({ authorization: 'Bearer token_control_1' }),
-        url: 'https://nanocore.local/api/worker-control/heartbeat',
+        url: '/worker-control/heartbeat',
       }),
       expect.objectContaining({
         body: expect.objectContaining({
@@ -95,7 +95,7 @@ describe('WorkerControlClient', () => {
           sequence: 2,
         }),
         headers: expect.objectContaining({ authorization: 'Bearer token_control_1' }),
-        url: 'https://nanocore.local/api/worker-control/artifacts',
+        url: '/worker-control/artifacts',
       }),
     ]);
   });
@@ -118,7 +118,7 @@ describe('WorkerControlClient', () => {
       fetch,
       lineage,
       token: 'token_control_1',
-      baseUrl: 'https://nanocore.local/api/worker-control/',
+      baseUrl: '/worker-control/',
     });
 
     const poll = await client.pollCommands();
@@ -127,13 +127,13 @@ describe('WorkerControlClient', () => {
       expect.objectContaining({ commandId: 'term_1', kind: 'terminal-command' }),
     ]);
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe('https://nanocore.local/api/worker-control/commands/poll');
+    expect(requests[0]?.url).toBe('/worker-control/commands/poll');
   });
 
   it('posts interrupt acknowledgements with bearer lineage', async () => {
     const { fetch, requests } = createFetchFixture([{ body: { acknowledged: true } }]);
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch,
       lineage,
       token: 'token_control_1',
@@ -148,7 +148,7 @@ describe('WorkerControlClient', () => {
           authorization: 'Bearer token_control_1',
           'content-type': 'application/json',
         },
-        url: 'https://nanocore.local/api/worker-control/commands/ack',
+        url: '/worker-control/commands/ack',
       },
     ]);
   });
@@ -161,7 +161,7 @@ describe('WorkerControlClient', () => {
       fetch,
       lineage,
       token: 'token_control_1',
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
     });
     const record: WorkerCanonicalEventRecord = {
       event: {
@@ -185,7 +185,7 @@ describe('WorkerControlClient', () => {
       expect.objectContaining({
         body: { lineage, record },
         headers: expect.objectContaining({ authorization: 'Bearer token_control_1' }),
-        url: 'https://nanocore.local/api/worker-control/events/append',
+        url: '/worker-control/events/append',
       }),
     ]);
   });
@@ -214,7 +214,7 @@ describe('WorkerControlClient', () => {
   ])('rejects canonical event append with $label', async ({ expectedCode, response }) => {
     const { fetch, requests } = createFetchFixture([response]);
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch,
       lineage,
       token: 'token_control_1',
@@ -242,7 +242,7 @@ describe('WorkerControlClient', () => {
       { body: { accepted: true, diagnostics: [], nextExpectedSequence: 5, schemaVersion: 1 } },
     ]);
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch,
       lineage,
       token: 'token_control_1',
@@ -275,7 +275,7 @@ describe('WorkerControlClient', () => {
           authorization: 'Bearer token_control_1',
           'content-type': 'application/json',
         },
-        url: 'https://nanocore.local/api/worker-control/final-status',
+        url: '/worker-control/final-status',
       },
     ]);
   });
@@ -304,7 +304,7 @@ describe('WorkerControlClient', () => {
   ])('rejects final status delivery with $label', async ({ expectedCode, response }) => {
     const { fetch, requests } = createFetchFixture([response, response, response]);
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch,
       lineage,
       token: 'token_control_1',
@@ -325,7 +325,7 @@ describe('WorkerControlClient', () => {
     const requests: string[] = [];
     const ambiguousFailure = new TypeError('socket closed after request write');
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch: async (_url, init) => {
         requests.push(init.body);
         if (requests.length === 1) {
@@ -374,7 +374,7 @@ describe('WorkerControlClient', () => {
       { body: { accepted: true, diagnostics: [], schemaVersion: 1 } },
     ]);
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch,
       lineage,
       token: 'token_control_1',
@@ -396,7 +396,7 @@ describe('WorkerControlClient', () => {
     let fetchCalls = 0;
     controller.abort(abortReason);
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch: async () => {
         fetchCalls += 1;
         return { ok: true, status: 200, text: async () => '{}' };
@@ -421,7 +421,7 @@ describe('WorkerControlClient', () => {
       fetch,
       lineage,
       token: 'bad',
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
     });
 
     await expect(client.recordHeartbeat({ status: 'running' })).rejects.toThrowError(
@@ -434,7 +434,7 @@ describe('WorkerControlClient', () => {
     let attempts = 0;
     try {
       const client = new WorkerControlClient({
-        baseUrl: 'https://nanocore.local/api/worker-control',
+        baseUrl: '/worker-control',
         fetch: async () => {
           attempts += 1;
           if (attempts === 1) {
@@ -469,9 +469,9 @@ describe('WorkerControlClient', () => {
     let pollAttempts = 0;
     let reconnected = false;
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch: async (url, init) => {
-        const path = new URL(url).pathname;
+        const path = url;
         const body = JSON.parse(init.body) as Record<string, unknown>;
 
         requests.push({ body, path });
@@ -517,17 +517,17 @@ describe('WorkerControlClient', () => {
     const [initial, firstPoll, secondPoll, reconnect, replayedFirstPoll, replayedSecondPoll] =
       requests;
     expect(requests.map(({ path }) => path)).toEqual([
-      '/api/worker-control/heartbeat',
-      '/api/worker-control/commands/poll',
-      '/api/worker-control/commands/poll',
-      '/api/worker-control/heartbeat',
-      '/api/worker-control/commands/poll',
-      '/api/worker-control/commands/poll',
+      '/worker-control/heartbeat',
+      '/worker-control/commands/poll',
+      '/worker-control/commands/poll',
+      '/worker-control/heartbeat',
+      '/worker-control/commands/poll',
+      '/worker-control/commands/poll',
     ]);
     expect(reconnect?.body).toMatchObject({ lineage, operation: 'heartbeat', sequence: 1 });
     expect(replayedFirstPoll?.body).toEqual(firstPoll?.body);
     expect(replayedSecondPoll?.body).toEqual(secondPoll?.body);
-    const processKeyHash = (initial?.body.body as { processKeyHash?: unknown }).processKeyHash;
+    const processKeyHash = (initial!.body.body as { processKeyHash?: unknown }).processKeyHash;
     const reconnectKey = reconnect?.body.reconnectKey;
 
     expect(processKeyHash).toEqual(expect.any(String));
@@ -543,9 +543,9 @@ describe('WorkerControlClient', () => {
     let reconnectAttempts = 0;
     let reconnected = false;
     const client = new WorkerControlClient({
-      baseUrl: 'https://nanocore.local/api/worker-control',
+      baseUrl: '/worker-control',
       fetch: async (url, init) => {
-        const path = new URL(url).pathname;
+        const path = url;
         const body = JSON.parse(init.body) as Record<string, unknown>;
         if (path.endsWith('/heartbeat') && body.sequence === 0) {
           return { ok: true, status: 200, text: async () => '{}' };

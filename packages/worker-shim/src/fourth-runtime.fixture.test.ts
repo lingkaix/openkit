@@ -6,6 +6,7 @@ import { parseWorkerShimArgs, runWorkerShim } from './cli.js';
 import type { WorkerControlFetch } from './control-client.js';
 
 const fourthAdapter = vi.hoisted(() => ({
+  mode: 'bounded-turn' as const,
   /** Returns a native Node launch plan without runtime-specific shared behavior. */
   prepare(input: { childEnvironment: Record<string, string> }) {
     return {
@@ -75,7 +76,21 @@ describe('fourth worker runtime fixture', () => {
         agent: { runtimeKind: 'descriptive-value-that-must-not-select-code' },
         control: {
           adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-fourth' },
-          mode: 'direct-nanocore',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/fourth-capability-token',
+            },
+            inference: {
+              pathPrefix: '/inference/',
+              tokenRef: 'runtime://openkit/fourth-inference-token',
+            },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/fourth-worker-control-token',
+            },
+          },
+          mode: 'sandbox-integration',
         },
         extensions: { openkit: { turnInput: 'Run the fixture.' } },
         llm: {
@@ -85,7 +100,6 @@ describe('fourth worker runtime fixture', () => {
               credentialVisibility: 'none',
               endpoint: {
                 kind: 'openai-compatible',
-                workerBaseUrl: 'https://inference.local/v1',
               },
               id: 'worker-inference',
               model: 'fixture-model',

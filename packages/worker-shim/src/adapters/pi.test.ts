@@ -22,7 +22,7 @@ function piInput(): WorkerAdapterPrepareInput {
       credentialVisibility: 'environment',
       endpoint: {
         kind: 'provider-compatible',
-        upstream: { baseUrlRef: 'provider://anthropic', kind: 'direct-provider' },
+        upstream: { kind: 'direct-provider' },
       },
       id: 'worker-inference',
       model: 'claude-sonnet-4-5',
@@ -134,8 +134,11 @@ describe('Pi worker adapter', () => {
       PI_SKIP_VERSION_CHECK: '1',
       PI_TELEMETRY: '0',
     });
+    expect(plan.environment).not.toHaveProperty('OPENAI_API_KEY');
+    expect(plan.environment).not.toHaveProperty('OPENAI_BASE_URL');
+    expect(plan.environment).not.toHaveProperty('OPENKIT_WORKER_INFERENCE_TOKEN');
     expect(plan.environment.PI_CODING_AGENT_DIR).toContain(input.stateRoot);
-    expect(plan.argv).not.toContain('provider-credential-value');
+    expect(plan.argv).not.toContain('openshell-placeholder-value');
     expect(plan.argv).not.toContain('--api-key');
     expect(plan).not.toHaveProperty('configArtifacts');
   });
@@ -153,7 +156,7 @@ describe('Pi worker adapter', () => {
         ...input,
         childEnvironment: { PATH: process.env.PATH ?? '' },
       }),
-      name: 'a missing standard provider credential',
+      name: 'a missing direct-provider credential',
     },
     {
       change: (input: WorkerAdapterPrepareInput) => ({
@@ -163,41 +166,38 @@ describe('Pi worker adapter', () => {
           PATH: process.env.PATH ?? '',
         },
       }),
-      name: 'the wrong standard provider credential',
+      name: 'the wrong direct provider credential',
     },
     {
       change: (input: WorkerAdapterPrepareInput) => ({
         ...input,
         childEnvironment: {
-          OPENKIT_WORKER_INFERENCE_TOKEN: 'openshell-placeholder-value',
+          ANTHROPIC_API_KEY: 'provider-credential-value',
+          OPENKIT_WORKER_INFERENCE_TOKEN: 'extra-relay-authority',
+          PATH: process.env.PATH ?? '',
+        },
+      }),
+      name: 'extra relay authority on the direct-provider route',
+    },
+    {
+      change: (input: WorkerAdapterPrepareInput) => ({
+        ...input,
+        childEnvironment: {
+          OPENKIT_WORKER_INFERENCE_TOKEN: 'relay-placeholder',
           PATH: process.env.PATH ?? '',
         },
         llmRoute: {
           credentialVisibility: 'placeholder' as const,
           endpoint: {
             kind: 'openai-compatible' as const,
-            upstream: {
-              baseUrlRef: 'runtime://nanocore/worker-inference/v1',
-              kind: 'nanocore-gateway' as const,
-            },
-            workerBaseUrl: 'https://nanocore.local/api/worker-inference/v1',
+            upstream: { kind: 'nanocore-gateway' as const },
           },
           id: 'worker-inference',
           model: 'claude-sonnet-4-5',
           providerInstanceId: 'anthropic',
         },
       }),
-      name: 'trusted-relay authority',
-    },
-    {
-      change: (input: WorkerAdapterPrepareInput) => ({
-        ...input,
-        childEnvironment: {
-          ...input.childEnvironment,
-          OPENKIT_WORKER_INFERENCE_TOKEN: 'extra-relay-authority',
-        },
-      }),
-      name: 'extra relay authority on a direct route',
+      name: 'placeholder NanoCore-gateway authority',
     },
   ])('rejects $name before launch', async ({ change }) => {
     await expect(piAdapter.prepare(change(piInput()))).rejects.toThrow(/unsupported/i);

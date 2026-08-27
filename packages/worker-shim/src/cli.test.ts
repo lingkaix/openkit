@@ -1,17 +1,15 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { getEventListeners } from 'node:events';
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
   renameSync,
-  unlinkSync,
   writeFileSync as writeRawFileSync,
 } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +22,10 @@ import {
   type WorkerShimRunOptions,
 } from './cli.js';
 import type { WorkerControlFetch } from './control-client.js';
+
+type WorkspaceGitModule = typeof import('./workspace-git.js');
+type MaterializeWorkspaceGitInputs = WorkspaceGitModule['materializeWorkspaceGitInputs'];
+type PublishWorkspaceGitSnapshots = WorkspaceGitModule['publishWorkspaceGitSnapshots'];
 
 /** Optional deterministic barriers used by focused shared-lifecycle tests. */
 const processFixtureLifecycle = vi.hoisted(() => ({
@@ -40,7 +42,22 @@ const processFixtureLifecycle = vi.hoisted(() => ({
   prepareFailure: null as ((stateRoot: string) => Promise<never>) | null,
 }));
 
+/** Deterministic route-readiness barrier for the Sandbox Integration seam. */
+const integrationFixtureLifecycle = vi.hoisted(() => ({
+  opens: 0,
+  ready: null as Promise<void> | null,
+}));
+
+/** Optional wrappers around the real workspace-Git owner used by one orchestration test. */
+const workspaceGitFixtureLifecycle = vi.hoisted(() => ({
+  materialize: null as MaterializeWorkspaceGitInputs | null,
+  publish: null as PublishWorkspaceGitSnapshots | null,
+}));
+
+const CODEX_TEST_UUID = '0198a0b1-c2d3-74e5-8f60-123456789abc';
+
 const processFixtureAdapter = vi.hoisted(() => ({
+  mode: 'bounded-turn' as const,
   /** Returns one fixed native Node command for process-supervisor tests. */
   async prepare(input: {
     childEnvironment: Record<string, string>;
@@ -86,6 +103,41 @@ vi.mock('./adapter-registry.js', async (importOriginal) => {
   };
 });
 
+vi.mock('./integration-client.js', () => ({
+  SANDBOX_INTEGRATION_ROUTE_NAMESPACES: ['/worker-control/', '/inference/', '/capabilities/'],
+  // Fixture-only value; the production target is frozen only by loopback shape and cross-projection equality.
+  SANDBOX_INTEGRATION_TARGET: '127.0.0.1:17891',
+  openSandboxIntegration: async () => {
+    integrationFixtureLifecycle.opens += 1;
+    return {
+      bindTurnRouteTokens: () => undefined,
+      clearTurnRouteTokens: () => undefined,
+      close: async () => undefined,
+      ready: integrationFixtureLifecycle.ready ?? Promise.resolve(),
+    };
+  },
+}));
+
+vi.mock('./workspace-git.js', async (importOriginal) => {
+  const actual = await importOriginal<WorkspaceGitModule>();
+
+  return {
+    ...actual,
+    materializeWorkspaceGitInputs: (
+      ...args: Parameters<MaterializeWorkspaceGitInputs>
+    ): ReturnType<MaterializeWorkspaceGitInputs> =>
+      workspaceGitFixtureLifecycle.materialize
+        ? workspaceGitFixtureLifecycle.materialize(...args)
+        : actual.materializeWorkspaceGitInputs(...args),
+    publishWorkspaceGitSnapshots: (
+      ...args: Parameters<PublishWorkspaceGitSnapshots>
+    ): ReturnType<PublishWorkspaceGitSnapshots> =>
+      workspaceGitFixtureLifecycle.publish
+        ? workspaceGitFixtureLifecycle.publish(...args)
+        : actual.publishWorkspaceGitSnapshots(...args),
+  };
+});
+
 describe('worker shim CLI parsing', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', async (input: unknown) => {
@@ -104,12 +156,16 @@ describe('worker shim CLI parsing', () => {
   });
 
   afterEach(() => {
+    integrationFixtureLifecycle.opens = 0;
+    integrationFixtureLifecycle.ready = null;
     processFixtureLifecycle.collectBarrier = null;
     processFixtureLifecycle.collectResult = null;
     processFixtureLifecycle.finalizeBarrier = null;
     processFixtureLifecycle.markCollectStarted = null;
     processFixtureLifecycle.markFinalizeStarted = null;
     processFixtureLifecycle.prepareFailure = null;
+    workspaceGitFixtureLifecycle.materialize = null;
+    workspaceGitFixtureLifecycle.publish = null;
     vi.unstubAllGlobals();
   });
 
@@ -164,7 +220,7 @@ describe('worker shim CLI parsing', () => {
     ).toThrow('Unsupported worker shim argument: --artifact-dir');
   });
 
-  it('validates the direct control mode before completing a dry run', async () => {
+  it('validates the local Integration bootstrap before completing a dry run', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-dry-run-control-'));
     const packagePath = join(sessionDir, 'package.json');
     writeRawFileSync(
@@ -172,7 +228,21 @@ describe('worker shim CLI parsing', () => {
       JSON.stringify({
         control: {
           adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
-          mode: 'direct-nanocore',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: {
+              pathPrefix: '/inference/',
+              tokenRef: 'runtime://openkit/inference-token',
+            },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+          mode: 'sandbox-integration',
         },
         extensions: { openkit: { turnInput: 'Validate the image.' } },
         llm: { routes: [workerLlmRoute()] },
@@ -198,11 +268,15 @@ describe('worker shim CLI parsing', () => {
         environment: { OPENKIT_WORKER_INFERENCE_TOKEN: 'image-smoke-placeholder' },
       })
     ).resolves.toEqual({ exitCode: 0, signal: null, status: 'completed' });
+    expect(existsSync(join(sessionDir, 'events.jsonl'))).toBe(false);
+    expect(existsSync(join(sessionDir, 'items.jsonl'))).toBe(false);
+    expect(existsSync(join(sessionDir, 'artifacts.jsonl'))).toBe(false);
   });
 
-  it('rejects missing or unsupported direct control modes during a dry run', async () => {
+  it('rejects missing, direct NanoCore, or shared Integration credentials', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-dry-run-mode-'));
     const missingModePath = join(sessionDir, 'missing-mode.json');
+    const sharedCredentialPath = join(sessionDir, 'shared-credential.json');
     const unsupportedModePath = join(sessionDir, 'unsupported-mode.json');
     writeRawFileSync(
       missingModePath,
@@ -212,7 +286,31 @@ describe('worker shim CLI parsing', () => {
     writeRawFileSync(
       unsupportedModePath,
       JSON.stringify({
-        control: { mode: 'sidecar' },
+        control: { mode: 'direct-nanocore' },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+    writeRawFileSync(
+      sharedCredentialPath,
+      JSON.stringify({
+        control: {
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/shared-token',
+            },
+            inference: {
+              pathPrefix: '/inference/',
+              tokenRef: 'runtime://openkit/shared-token',
+            },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/shared-token',
+            },
+          },
+          mode: 'sandbox-integration',
+        },
         runtime: { command: { workingDirectory: sessionDir } },
       }),
       'utf8'
@@ -223,13 +321,19 @@ describe('worker shim CLI parsing', () => {
         args: parseWorkerShimArgs(['--package', missingModePath, '--dry-run']),
         environment: {},
       })
-    ).rejects.toThrow('Worker shim requires control.mode to be direct-nanocore.');
+    ).rejects.toThrow('Worker shim requires control.mode to be sandbox-integration.');
     await expect(
       runWorkerShim({
         args: parseWorkerShimArgs(['--package', unsupportedModePath, '--dry-run']),
         environment: {},
       })
-    ).rejects.toThrow('Worker shim requires control.mode to be direct-nanocore.');
+    ).rejects.toThrow('Worker shim requires control.mode to be sandbox-integration.');
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs(['--package', sharedCredentialPath, '--dry-run']),
+        environment: {},
+      })
+    ).rejects.toThrow(/distinct.*token|token.*distinct/i);
   });
 
   it.each([
@@ -324,7 +428,6 @@ describe('worker shim CLI parsing', () => {
       args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
       environment: {
         ...workerShimEnvironment(),
-        OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
       },
       fetch,
       runner,
@@ -344,6 +447,56 @@ describe('worker shim CLI parsing', () => {
         (record) => (record as { sequence: number }).sequence
       )
     ).toEqual([0, 1, 2, 3]);
+  });
+
+  it('does not start the native process before the route-bound Integration session is ready', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-integration-ready-'));
+    const packagePath = join(sessionDir, 'package.json');
+    let releaseIntegration: (() => void) | undefined;
+    let releaseWorker: (() => void) | undefined;
+    integrationFixtureLifecycle.ready = new Promise<void>((resolve) => {
+      releaseIntegration = resolve;
+    });
+    const workerRelease = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+    const runnerCalls: Array<Parameters<WorkerProcessRunner['run']>[0]> = [];
+    const runner: WorkerProcessRunner = {
+      async run(input) {
+        runnerCalls.push(input);
+        input.onStart?.();
+        await workerRelease;
+        return { exitCode: 0, signal: null, stderr: '', stdout: '' };
+      },
+    };
+    writeFileSync(
+      packagePath,
+      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
+      'utf8'
+    );
+    const run = runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: workerShimEnvironment(),
+      fetch: async (url) => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(workerControlSuccessBody(url)),
+      }),
+      runner,
+    });
+
+    try {
+      await vi.waitFor(() => expect(integrationFixtureLifecycle.opens).toBe(1));
+      expect(runnerCalls).toEqual([]);
+      releaseIntegration?.();
+      await vi.waitFor(() => expect(runnerCalls).toHaveLength(1));
+      releaseWorker?.();
+      await expect(run).resolves.toMatchObject({ status: 'completed' });
+    } finally {
+      releaseIntegration?.();
+      releaseWorker?.();
+      await run.catch(() => undefined);
+    }
   });
 
   it('does not start the native process when initial worker-control readiness fails', async () => {
@@ -367,7 +520,6 @@ describe('worker shim CLI parsing', () => {
         args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
         environment: {
           ...workerShimEnvironment(),
-          OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
         },
         fetch: async () => ({
           ok: false,
@@ -391,7 +543,7 @@ describe('worker shim CLI parsing', () => {
             data: {
               evidenceManifestDigests: {},
               status: 'failed',
-              stopReason: 'worker-control-readiness-failed',
+              stopReason: 'error',
             },
             type: 'turn.failed',
           },
@@ -427,7 +579,6 @@ describe('worker shim CLI parsing', () => {
         args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
         environment: {
           ...workerShimEnvironment(),
-          OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
         },
         fetch: async (_url, init) =>
           new Promise((_resolve, reject) => {
@@ -475,7 +626,6 @@ describe('worker shim CLI parsing', () => {
         args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
         environment: {
           ...workerShimEnvironment(),
-          OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
         },
         fetch: async (url) => {
           if (url.endsWith('/heartbeat')) {
@@ -689,7 +839,7 @@ describe('worker shim CLI parsing', () => {
     }
   });
 
-  it('fails closed when a direct-control package has no control base URL', async () => {
+  it('uses the fixed Integration control origin without a caller base URL', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-control-missing-'));
     const packagePath = join(sessionDir, 'package.json');
     const runner = new FakeWorkerProcessRunner({
@@ -698,12 +848,11 @@ describe('worker shim CLI parsing', () => {
       stderr: '',
       stdout: '',
     });
-    const environment = workerShimEnvironment();
-    delete environment.OPENKIT_CONTROL_BASE_URL;
+    const requests: string[] = [];
     writeFileSync(
       packagePath,
       JSON.stringify({
-        control: { mode: 'direct-nanocore' },
+        control: workerIntegrationControl(),
         runtime: { command: { workingDirectory: sessionDir } },
       }),
       'utf8'
@@ -712,11 +861,20 @@ describe('worker shim CLI parsing', () => {
     await expect(
       runWorkerShim({
         args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment,
+        environment: workerShimEnvironment(),
+        fetch: async (url) => {
+          requests.push(url);
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(workerControlSuccessBody(url)),
+          };
+        },
         runner,
       })
-    ).rejects.toThrow('OPENKIT_CONTROL_BASE_URL');
-    expect(runner.calls).toEqual([]);
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(runner.calls).toHaveLength(1);
+    expect(requests.every((url) => url.startsWith('/worker-control/'))).toBe(true);
   });
 
   it.each([undefined, 'control-control'])('rejects unsupported control mode %s', async (mode) => {
@@ -743,7 +901,7 @@ describe('worker shim CLI parsing', () => {
         environment: workerShimEnvironment(),
         runner,
       })
-    ).rejects.toThrow('direct-nanocore');
+    ).rejects.toThrow('sandbox-integration');
     expect(runner.calls).toEqual([]);
   });
 
@@ -827,7 +985,7 @@ describe('worker shim CLI parsing', () => {
     writeFileSync(
       packagePath,
       JSON.stringify({
-        control: { mode: 'direct-nanocore' },
+        control: workerIntegrationControl(),
         runtime: { command: { workingDirectory: sessionDir } },
       }),
       'utf8'
@@ -837,7 +995,6 @@ describe('worker shim CLI parsing', () => {
       args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
       environment: {
         ...workerShimEnvironment(),
-        OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
       },
       fetch: async (_url, init) =>
         new Promise((_resolve, reject) => {
@@ -860,7 +1017,7 @@ describe('worker shim CLI parsing', () => {
           event: expect.objectContaining({
             data: expect.objectContaining({
               status: 'interrupted',
-              stopReason: 'worker-parent-aborted',
+              stopReason: 'aborted',
             }),
             type: 'turn.failed',
           }),
@@ -889,7 +1046,6 @@ describe('worker shim CLI parsing', () => {
       args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
       environment: {
         ...workerShimEnvironment(),
-        OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
       },
       fetch,
       runner,
@@ -941,7 +1097,6 @@ describe('worker shim CLI parsing', () => {
       args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
       environment: {
         ...workerShimEnvironment(),
-        OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
       },
       fetch,
       runner,
@@ -998,7 +1153,6 @@ describe('worker shim CLI parsing', () => {
       args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
       environment: {
         ...workerShimEnvironment(),
-        OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
       },
       fetch: async (url) => ({
         ok: true,
@@ -1020,6 +1174,14 @@ describe('worker shim CLI parsing', () => {
       expect(readFileSync(descendantMarkerPath, 'utf8')).toContain(':term');
       expect(processIsRunning(childPid)).toBe(false);
       expect(processIsRunning(descendantPid)).toBe(false);
+      const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+      const termination = source
+        .split('async function terminateChildProcess')[1]
+        ?.split('function signalProcessGroup')[0];
+      expect(termination).toBeDefined();
+      expect(termination).toMatch(
+        /SIGKILL[\s\S]*waitForProcessGroupExit[\s\S]*(?:throw|return false)/
+      );
     } finally {
       controller.abort();
       await run.catch(() => undefined);
@@ -1058,8 +1220,7 @@ describe('worker shim CLI parsing', () => {
       packagePath,
       JSON.stringify({
         control: {
-          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' },
-          mode: 'direct-nanocore',
+          ...workerIntegrationControl('fixture-process'),
         },
         extensions: { openkit: { turnInput: childScript } },
         llm: { mode: 'gateway', routes: [workerLlmRoute()] },
@@ -1140,7 +1301,6 @@ describe('worker shim CLI parsing', () => {
         args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
         environment: {
           ...workerShimEnvironment(),
-          OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
         },
         fetch,
         runner,
@@ -1154,18 +1314,18 @@ describe('worker shim CLI parsing', () => {
       expect.arrayContaining([
         expect.objectContaining({
           body: expect.objectContaining({ commandId: 'interrupt_1' }),
-          url: 'https://nanocore.local/api/worker-control/commands/ack',
+          url: '/worker-control/commands/ack',
         }),
         expect.objectContaining({
           body: expect.objectContaining({
             body: expect.objectContaining({
               status: 'interrupted',
-              stopReason: 'worker-interrupt-command',
+              stopReason: 'aborted',
             }),
             operation: 'final_status',
             sequence: terminalRecord.sequence,
           }),
-          url: 'https://nanocore.local/api/worker-control/final-status',
+          url: '/worker-control/final-status',
         }),
       ])
     );
@@ -1180,7 +1340,7 @@ describe('worker shim CLI parsing', () => {
     {
       exitCode: 7,
       expectedStatus: 'failed' as const,
-      expectedStopReason: 'Codex process exited with code 7.',
+      expectedStopReason: 'error',
     },
   ])('reports one $expectedStatus final status with the terminal transcript sequence', async ({
     exitCode,
@@ -1264,7 +1424,7 @@ describe('worker shim CLI parsing', () => {
           schemaVersion: 1,
           sequence: terminalRecord?.sequence,
         },
-        url: 'https://nanocore.local/api/worker-control/final-status',
+        url: '/worker-control/final-status',
       },
     ]);
     expect(terminalRecord?.event.data).toMatchObject({
@@ -1512,7 +1672,7 @@ describe('worker shim CLI parsing', () => {
         body: expect.objectContaining({
           body: expect.objectContaining({
             status: 'interrupted',
-            stopReason: 'worker-parent-aborted',
+            stopReason: 'aborted',
           }),
           operation: 'final_status',
           sequence: terminalRecord.sequence,
@@ -1684,7 +1844,7 @@ describe('worker shim CLI parsing', () => {
           event: expect.objectContaining({
             data: expect.objectContaining({
               status: 'failed',
-              stopReason: 'worker-control-runtime-failed',
+              stopReason: 'error',
             }),
             type: 'turn.failed',
           }),
@@ -1739,7 +1899,7 @@ describe('worker shim CLI parsing', () => {
     const packagePath = join(sessionDir, 'package.json');
     const primary = Buffer.from(
       [
-        '{"type":"thread.started","thread_id":"thread-root","label":"café"}',
+        `{"type":"thread.started","thread_id":"${CODEX_TEST_UUID}","label":"café"}`,
         '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
         '',
       ].join('\n'),
@@ -1748,7 +1908,7 @@ describe('worker shim CLI parsing', () => {
     const firstNewline = primary.indexOf('\n'.charCodeAt(0));
     const utf8Split = primary.indexOf(Buffer.from('é')) + 1;
     const rollout = [
-      '{"timestamp":"2026-07-13T00:00:00.000Z","type":"session_meta","payload":{"session_id":"session-root","id":"thread-root","timestamp":"2026-07-13T00:00:00.000Z","cwd":"/workspace/openkit","originator":"codex_cli_rs","cli_version":"0.144.1","source":"exec"}}',
+      `{"timestamp":"2026-07-13T00:00:00.000Z","type":"session_meta","payload":{"session_id":"${CODEX_TEST_UUID}","id":"${CODEX_TEST_UUID}","timestamp":"2026-07-13T00:00:00.000Z","cwd":"/workspace/openkit","originator":"codex_cli_rs","cli_version":"0.144.1","source":"exec"}}`,
       '{"timestamp":"2026-07-13T00:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-native-root"}}',
       '{"timestamp":"2026-07-13T00:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}',
       '',
@@ -1851,7 +2011,7 @@ describe('worker shim CLI parsing', () => {
         byteOffset: 0,
         eventKind: 'thread.started',
         frameSequence: 0,
-        nativeThreadId: 'thread-root',
+        nativeThreadId: CODEX_TEST_UUID,
         parseStatus: 'parsed',
         streamRef: 'stream-0000.jsonl',
       }),
@@ -1859,22 +2019,22 @@ describe('worker shim CLI parsing', () => {
         byteOffset: firstNewline + 1,
         eventKind: 'item.completed',
         frameSequence: 1,
-        nativeThreadId: 'thread-root',
+        nativeThreadId: CODEX_TEST_UUID,
         parseStatus: 'parsed',
         streamRef: 'stream-0000.jsonl',
       }),
       expect.objectContaining({
         eventKind: 'session_meta',
         frameSequence: 0,
-        nativeSessionId: 'session-root',
-        nativeThreadId: 'thread-root',
+        nativeSessionId: CODEX_TEST_UUID,
+        nativeThreadId: CODEX_TEST_UUID,
         parseStatus: 'parsed',
         streamRef: 'stream-0001.jsonl',
       }),
       expect.objectContaining({
         eventKind: 'turn_context',
         frameSequence: 1,
-        nativeThreadId: 'thread-root',
+        nativeThreadId: CODEX_TEST_UUID,
         nativeTurnId: 'turn-native-root',
         parseStatus: 'parsed',
         streamRef: 'stream-0001.jsonl',
@@ -1882,7 +2042,7 @@ describe('worker shim CLI parsing', () => {
       expect.objectContaining({
         eventKind: 'response_item',
         frameSequence: 2,
-        nativeThreadId: 'thread-root',
+        nativeThreadId: CODEX_TEST_UUID,
         nativeTurnId: 'turn-native-root',
         parseStatus: 'parsed',
         streamRef: 'stream-0001.jsonl',
@@ -1917,14 +2077,14 @@ describe('worker shim CLI parsing', () => {
     const rolloutDir = join(codexHome, 'sessions', '2026', '07', '13');
     const packagePath = join(sessionDir, 'package.json');
     const manifestPath = join(sessionDir, 'runtime', 'raw-streams.json');
-    const primary = Buffer.from('{"type":"thread.started","thread_id":"thread-root"}\n');
+    const primary = Buffer.from(`{"type":"thread.started","thread_id":"${CODEX_TEST_UUID}"}\n`);
     const rollout = `${JSON.stringify({
       payload: {
         cli_version: '0.144.1',
         cwd: sessionDir,
-        id: 'thread-root',
+        id: CODEX_TEST_UUID,
         originator: 'codex_exec',
-        session_id: 'session-root',
+        session_id: CODEX_TEST_UUID,
         source: 'exec',
         timestamp: '2026-07-13T00:00:00.000Z',
       },
@@ -1935,6 +2095,7 @@ describe('worker shim CLI parsing', () => {
       packagePath,
       JSON.stringify({
         control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
           transcript: {
             runtimeProvenance: {
               maxStreamCount: 8,
@@ -2041,6 +2202,7 @@ describe('worker shim CLI parsing', () => {
       packagePath,
       JSON.stringify({
         control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
           transcript: {
             runtimeProvenance: {
               maxStreamCount: 8,
@@ -2104,7 +2266,16 @@ describe('worker shim CLI parsing', () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-prepare-state-failure-'));
     const packagePath = join(sessionDir, 'package.json');
     const stateRoot = join(sessionDir, 'native-state');
+    const eventsPath = join(sessionDir, 'events.jsonl');
+    const itemsPath = join(sessionDir, 'items.jsonl');
+    const artifactsPath = join(sessionDir, 'artifacts.jsonl');
+    writeFileSync(eventsPath, 'stale-events-canary\n', 'utf8');
+    writeFileSync(itemsPath, 'stale-items-canary\n', 'utf8');
+    writeFileSync(artifactsPath, 'stale-artifacts-canary\n', 'utf8');
     processFixtureLifecycle.prepareFailure = async (root) => {
+      expect(readFileSync(eventsPath, 'utf8')).toBe('');
+      expect(readFileSync(itemsPath, 'utf8')).toBe('');
+      expect(readFileSync(artifactsPath, 'utf8')).toBe('');
       mkdirSync(root, { recursive: true });
       writeRawFileSync(join(root, 'partial-state'), 'partial', 'utf8');
       throw new Error('fixture-prepare-failed');
@@ -2135,9 +2306,30 @@ describe('worker shim CLI parsing', () => {
       })
     ).rejects.toThrow('fixture-prepare-failed');
     expect(existsSync(stateRoot)).toBe(false);
+    expect(readFileSync(eventsPath, 'utf8')).toBe('');
+    expect(readFileSync(itemsPath, 'utf8')).toBe('');
+    expect(readFileSync(artifactsPath, 'utf8')).toBe('');
   });
 
-  it('keeps the CLI control descriptor secret out of the supervisor and native environments', async () => {
+  it.each([
+    {
+      missingKey: 'no_proxy',
+      proxyEnvironment: { NO_PROXY: 'uppercase.example,localhost' },
+      retainedEntries: ['uppercase.example', 'localhost'],
+      retainedKey: 'NO_PROXY',
+    },
+    {
+      missingKey: 'NO_PROXY',
+      proxyEnvironment: { no_proxy: 'lowercase.example,localhost' },
+      retainedEntries: ['lowercase.example', 'localhost'],
+      retainedKey: 'no_proxy',
+    },
+  ])('keeps control secrets out and creates the missing $missingKey loopback proxy exclusion', async ({
+    missingKey,
+    proxyEnvironment,
+    retainedEntries,
+    retainedKey,
+  }) => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-supervisor-env-'));
     const packagePath = join(sessionDir, 'package.json');
     const childEnvironmentPath = join(sessionDir, 'child-environment.json');
@@ -2166,6 +2358,7 @@ describe('worker shim CLI parsing', () => {
     const controlTokenDescriptor = openSync(controlTokenPath, 'r');
     const injectedEnvironment: Record<string, string> = {
       ...workerShimEnvironment(),
+      ...proxyEnvironment,
       OPENKIT_CONTROL_TOKEN_FD: String(controlTokenDescriptor),
       OPENKIT_PARENT_ONLY_SECRET: parentSecret,
       OPENKIT_WORKER_INFERENCE_TOKEN: inferencePlaceholder,
@@ -2174,6 +2367,7 @@ describe('worker shim CLI parsing', () => {
     for (const [key, value] of Object.entries(injectedEnvironment)) {
       vi.stubEnv(key, value);
     }
+    vi.stubEnv(missingKey, undefined);
 
     try {
       await expect(
@@ -2190,6 +2384,17 @@ describe('worker shim CLI parsing', () => {
     expect(captured.childEnvironment).not.toHaveProperty('OPENKIT_CONTROL_TOKEN');
     expect(captured.childEnvironment).not.toHaveProperty('OPENKIT_PARENT_ONLY_SECRET');
     expect(captured.childEnvironment.OPENKIT_WORKER_INFERENCE_TOKEN).toBe(inferencePlaceholder);
+    for (const key of ['NO_PROXY', 'no_proxy']) {
+      expect(captured.childEnvironment).toHaveProperty(key);
+      expect(captured.childEnvironment[key]?.split(',').map((entry) => entry.trim())).toContain(
+        '127.0.0.1'
+      );
+    }
+    for (const entry of retainedEntries) {
+      expect(
+        captured.childEnvironment[retainedKey]?.split(',').map((value) => value.trim())
+      ).toContain(entry);
+    }
     if (process.platform === 'linux') {
       expect(captured.parentEnvironment).not.toContain(controlToken);
       expect(captured.parentEnvironment).not.toContain(parentSecret);
@@ -2406,9 +2611,10 @@ describe('worker shim CLI parsing', () => {
       };
     };
 
-    expect(existsSync(join(sessionDir, 'items.jsonl'))).toBe(false);
+    expect(readFileSync(join(sessionDir, 'items.jsonl'), 'utf8')).toBe('');
+    expect(readFileSync(join(sessionDir, 'artifacts.jsonl'), 'utf8')).toBe('');
     expect(transcript).not.toContain(credential);
-    expect(terminalRecord.event.data.stopReason).toBe('worker-assistant-output-rejected');
+    expect(terminalRecord.event.data.stopReason).toBe('error');
     expect(terminalRecord.event.data.diagnostics.adapter).toBe(
       'unsafe adapter diagnostic [redacted]'
     );
@@ -2487,7 +2693,7 @@ describe('worker shim CLI parsing', () => {
       packagePath,
       JSON.stringify({
         control: {
-          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture-process' },
         },
         extensions: {
           openkit: {
@@ -2545,507 +2751,29 @@ describe('worker shim CLI parsing', () => {
     expect(existsSync(mcpTargetPath)).toBe(false);
   });
 
-  it('writes a git workspace change manifest after a successful native process', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-workspace-'));
-    const repoDir = join(sessionDir, 'repo');
+  it('orders Git materialization, native execution, and publication with one lineage', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-git-orchestration-'));
+    const workspaceRoot = join(sessionDir, 'workspace');
+    const target = join(workspaceRoot, 'worktrees', 'main');
     const packagePath = join(sessionDir, 'package.json');
-    let outputPublishedBeforeFinalStatus = false;
-    vi.stubGlobal('fetch', async (input: unknown) => {
-      const url = String(input);
-      if (url.endsWith('/final-status')) {
-        outputPublishedBeforeFinalStatus =
-          existsSync(join(sessionDir, 'workspace-changes.json')) &&
-          existsSync(join(sessionDir, 'workspace.patch'));
-      }
-      return new Response(JSON.stringify(workerControlSuccessBody(url)), { status: 200 });
-    });
-    mkdirSync(repoDir);
-    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'worker@example.com'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'Worker'], { cwd: repoDir, stdio: 'ignore' });
-    writeFileSync(join(repoDir, 'README.md'), '# Demo\n', 'utf8');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
-    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repoDir,
-      encoding: 'utf8',
-    }).trim();
-    const runner = new FakeWorkerProcessRunner(
-      {
-        exitCode: 0,
-        signal: null,
-        stderr: '',
-        stdout: '',
-      },
-      () => {
-        mkdirSync(join(repoDir, 'temp', 'research'), { recursive: true });
-        writeFileSync(join(repoDir, 'README.md'), '# Demo\n\nUpdated by worker.\n', 'utf8');
-        writeFileSync(
-          join(repoDir, 'temp', 'research', 'worker-report.md'),
-          '# Worker Report\n',
-          'utf8'
-        );
-      }
-    );
-    writeFileSync(
-      packagePath,
-      JSON.stringify({
-        runtime: {
-          command: {
-            workingDirectory: repoDir,
-          },
-        },
-        workspace: {
-          root: repoDir,
-          inputs: [
-            {
-              access: 'read-write',
-              id: 'repo',
-              kind: 'directory',
-              materialization: {
-                changeSetManifestPath: '/openkit/session/workspace-changes.json',
-                strategy: 'git',
-              },
-              source: { kind: 'host-dir', pathRef: 'workspace-root://repo' },
-              target: repoDir,
-            },
-          ],
-        },
-      }),
-      'utf8'
-    );
-
-    await runWorkerShim({
-      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-      environment: workerShimEnvironment(),
-      runner,
-    });
-
-    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
-    const patch = readFileSync(join(sessionDir, 'workspace.patch'), 'utf8');
-
-    expect(manifest).toMatchObject({
-      base: { commit: baseCommit, contentDigest: null },
-      changedPaths: [
-        { binary: false, path: 'README.md', status: 'modified' },
-        { binary: false, path: 'temp/research/worker-report.md', status: 'added' },
-      ],
-      evidenceRefs: [{ kind: 'worker', ref: 'turn_codex' }],
-      inputSnapshotId: 'wis_pkg_codex_1_repo',
-      materializationRecordId: 'wmr_pkg_codex_1_repo',
-      patch: {
-        bytes: expect.any(Number),
-        digest: expect.stringMatching(/^sha256:/),
-        ref: 'worker-session://workspace.patch',
-      },
-      resourceId: 'repo',
-      strategy: 'git',
-      workspaceId: 'ws_codex',
-    });
-    expect(outputPublishedBeforeFinalStatus).toBe(true);
-    expect(patch.endsWith('\n')).toBe(true);
-  });
-
-  it.each([
-    {
-      after: (credential: string) => Buffer.from(`# After\n${credential}\n`),
-      before: Buffer.from('# Before\n'),
-      credential: 'multiline-credential-first\nmultiline-credential-second',
-      label: 'multiline text',
-      path: 'README.md',
-    },
-    {
-      after: (credential: string) =>
-        Buffer.concat([
-          Buffer.from([0, 255]),
-          Buffer.from(credential, 'utf8'),
-          Buffer.from([0, 1]),
-        ]),
-      before: Buffer.from([0, 1]),
-      credential: 'binary-credential-秘密-canary',
-      label: 'binary',
-      path: 'artifact.bin',
-    },
-  ])('rejects an injected credential in staged $label bytes', async ({
-    after,
-    before,
-    credential,
-    path,
-  }) => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-workspace-secret-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(repoDir, { [path]: before });
+    const order: string[] = [];
+    const bases = new Map([['repo', '0123456789abcdef0123456789abcdef01234567']]);
+    let published: Parameters<PublishWorkspaceGitSnapshots>[0] | null = null;
+    workspaceGitFixtureLifecycle.materialize = async () => {
+      order.push('materialize');
+      return bases;
+    };
+    workspaceGitFixtureLifecycle.publish = async (input) => {
+      order.push('publish');
+      published = input;
+    };
     const runner = new FakeWorkerProcessRunner(
       { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => writeFileSync(join(repoDir, path), after(credential))
+      () => order.push('native')
     );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: {
-          ...workerShimEnvironment(),
-          OPENKIT_WORKER_INFERENCE_TOKEN: credential,
-        },
-        runner,
-      })
-    ).rejects.toThrow('Git workspace staged content contains an injected credential.');
-
-    expect(runner.calls[0]?.env.OPENKIT_WORKER_INFERENCE_TOKEN).toBe(credential);
-    expect(
-      [
-        'workspace.patch',
-        'workspace.patch.tmp',
-        'workspace-changes.json',
-        'workspace-changes.json.tmp',
-        'workspace-git.index',
-        'workspace-git.index.lock',
-      ].map((name) => existsSync(join(sessionDir, name)))
-    ).toEqual([false, false, false, false, false, false]);
-    const transcript = [
-      ...readJsonl(join(sessionDir, 'events.jsonl')),
-      ...(existsSync(join(sessionDir, 'items.jsonl'))
-        ? readJsonl(join(sessionDir, 'items.jsonl'))
-        : []),
-    ] as Array<{ event?: { data?: { status?: string }; type?: string } }>;
-    expect(transcript).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          event: expect.objectContaining({
-            data: expect.objectContaining({ status: 'failed' }),
-            type: 'turn.failed',
-          }),
-        }),
-      ])
-    );
-    const transcriptText = ['events.jsonl', 'items.jsonl']
-      .filter((name) => existsSync(join(sessionDir, name)))
-      .map((name) => readFileSync(join(sessionDir, name), 'utf8'))
-      .join('\n');
-    expect(transcriptText).not.toContain(credential);
-    expect(transcriptText).not.toContain(JSON.stringify(credential).slice(1, -1));
-  });
-
-  it('writes exact binary blob and chmod metadata for NanoCore review staging', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-git-metadata-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const nextBinary = Buffer.from([0, 1, 2, 3, 255, 254, 253, 0]);
-    mkdirSync(repoDir);
-    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'worker@example.com'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'Worker'], { cwd: repoDir, stdio: 'ignore' });
-    writeFileSync(join(repoDir, 'artifact.bin'), Buffer.from([0, 1, 2, 3]));
-    writeFileSync(join(repoDir, 'content.sh'), '#!/bin/sh\necho before\n', 'utf8');
-    writeFileSync(join(repoDir, 'deleted.txt'), 'Delete me.\n', 'utf8');
-    writeFileSync(join(repoDir, 'rename-before.txt'), 'Rename me.\n', 'utf8');
-    writeFileSync(join(repoDir, 'run.sh'), '#!/bin/sh\nexit 0\n', 'utf8');
-    chmodSync(join(repoDir, 'content.sh'), 0o644);
-    chmodSync(join(repoDir, 'run.sh'), 0o644);
-    execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
-    const runner = new FakeWorkerProcessRunner(
-      {
-        exitCode: 0,
-        signal: null,
-        stderr: '',
-        stdout: '',
-      },
-      () => {
-        writeFileSync(join(repoDir, 'artifact.bin'), nextBinary);
-        writeFileSync(join(repoDir, 'content.sh'), '#!/bin/sh\necho after\n', 'utf8');
-        chmodSync(join(repoDir, 'content.sh'), 0o755);
-        unlinkSync(join(repoDir, 'deleted.txt'));
-        renameSync(join(repoDir, 'rename-before.txt'), join(repoDir, 'rename-after.txt'));
-        chmodSync(join(repoDir, 'run.sh'), 0o755);
-      }
-    );
-    writeFileSync(
-      packagePath,
-      JSON.stringify({
-        runtime: { command: { workingDirectory: repoDir } },
-        workspace: {
-          inputs: [
-            {
-              access: 'read-write',
-              id: 'repo',
-              kind: 'directory',
-              materialization: {
-                changeSetManifestPath: '/openkit/session/workspace-changes.json',
-                strategy: 'git',
-              },
-              source: { kind: 'host-dir', pathRef: 'workspace-root://repo' },
-              target: repoDir,
-            },
-          ],
-          root: repoDir,
-        },
-      }),
-      'utf8'
-    );
-
-    await runWorkerShim({
-      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-      environment: workerShimEnvironment(),
-      runner,
-    });
-
-    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
-    const digest = `sha256:${createHash('sha256').update(nextBinary).digest('hex')}`;
-    expect(manifest.changedPaths).toHaveLength(5);
-    expect(manifest.changedPaths).toEqual(
-      expect.arrayContaining([
-        {
-          binary: true,
-          binaryReview: {
-            bytes: nextBinary.byteLength,
-            digest,
-            mediaType: 'application/octet-stream',
-            mode: 'artifact-only',
-            reason: 'binary-path',
-            summary: expect.any(String),
-          },
-          digest,
-          path: 'artifact.bin',
-          size: nextBinary.byteLength,
-          status: 'modified',
-        },
-        {
-          binary: false,
-          newPermissions: '0755',
-          oldPermissions: '0644',
-          path: 'content.sh',
-          status: 'modified',
-        },
-        { binary: false, path: 'deleted.txt', status: 'deleted' },
-        {
-          binary: false,
-          oldPath: 'rename-before.txt',
-          path: 'rename-after.txt',
-          status: 'renamed',
-        },
-        {
-          binary: false,
-          newPermissions: '0755',
-          oldPermissions: '0644',
-          path: 'run.sh',
-          status: 'mode_changed',
-        },
-      ])
-    );
-  });
-
-  it('collects worker commits as a complete patch against the captured base', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-committed-workspace-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const baseCommit = initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
-    let workerCommit = '';
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => {
-        writeFileSync(join(repoDir, 'README.md'), '# After worker commit\n', 'utf8');
-        execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
-        execFileSync('git', ['commit', '-m', 'worker change'], { cwd: repoDir, stdio: 'ignore' });
-        workerCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-          cwd: repoDir,
-          encoding: 'utf8',
-        }).trim();
-      }
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await runWorkerShim({
-      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-      environment: workerShimEnvironment(),
-      runner,
-    });
-
-    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
-    const patch = readFileSync(join(sessionDir, 'workspace.patch'), 'utf8');
-    const verificationDir = join(sessionDir, 'verification');
-    expect(manifest).toMatchObject({
-      base: { commit: baseCommit },
-      changedPaths: [{ binary: false, path: 'README.md', status: 'modified' }],
-      head: { commit: workerCommit },
-    });
-    execFileSync('git', ['worktree', 'add', '--detach', verificationDir, baseCommit], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['apply', '--check', '-'], {
-      cwd: verificationDir,
-      input: patch,
-      stdio: ['pipe', 'ignore', 'pipe'],
-    });
-  });
-
-  it('preserves trailing spaces on the final changed patch line', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-trailing-spaces-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => writeFileSync(join(repoDir, 'README.md'), '# After   \n', 'utf8')
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await runWorkerShim({
-      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-      environment: workerShimEnvironment(),
-      runner,
-    });
-
-    expect(readFileSync(join(sessionDir, 'workspace.patch'), 'utf8')).toContain('+# After   \n');
-  });
-
-  it('describes binary changes with canonical Git blob bytes after EOL conversion', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-canonical-binary-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const nextBinary = Buffer.from([0, 98, 13, 10]);
-    initializeGitRepository(repoDir, {
-      '.gitattributes': 'artifact.bin text eol=lf\n',
-      'artifact.bin': Buffer.from([0, 97, 10]),
-    });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => writeFileSync(join(repoDir, 'artifact.bin'), nextBinary)
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await runWorkerShim({
-      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-      environment: workerShimEnvironment(),
-      runner,
-    });
-
-    const objectId = execFileSync(
-      'git',
-      ['hash-object', '-w', '--path=artifact.bin', 'artifact.bin'],
-      { cwd: repoDir, encoding: 'utf8' }
-    ).trim();
-    const canonicalBlob = execFileSync('git', ['cat-file', 'blob', objectId], { cwd: repoDir });
-    const digest = `sha256:${createHash('sha256').update(canonicalBlob).digest('hex')}`;
-    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
-    expect(canonicalBlob.equals(nextBinary)).toBe(false);
-    expect(manifest.changedPaths).toEqual([
-      expect.objectContaining({
-        binary: true,
-        binaryReview: expect.objectContaining({ bytes: canonicalBlob.byteLength, digest }),
-        digest,
-        path: 'artifact.bin',
-        size: canonicalBlob.byteLength,
-        status: 'modified',
-      }),
+    writeGitWorkspacePackage(packagePath, workspaceRoot, [
+      { id: 'repo', source: remoteGitTestSource('repo'), target },
     ]);
-  });
-
-  it('fails closed when a changed path uses a custom Git clean filter', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-clean-filter-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(repoDir, {
-      '.gitattributes': 'artifact.bin filter=openkit-review -text\n',
-      'artifact.bin': Buffer.from([0, 1]),
-    });
-    execFileSync('git', ['config', 'filter.openkit-review.clean', 'cat'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'filter.openkit-review.smudge', 'cat'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'filter.openkit-review.required', 'true'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => writeFileSync(join(repoDir, 'artifact.bin'), Buffer.from([0, 2]))
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).rejects.toThrow(/filter/i);
-  });
-
-  it('rejects a custom clean filter without executing it', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-filter-side-effect-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const markerPath = join(sessionDir, 'filter-ran');
-    initializeGitRepository(repoDir, {
-      '.gitattributes': 'artifact.bin filter=openkit-review -text\n',
-      'artifact.bin': Buffer.from([0, 1]),
-    });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => {
-        execFileSync('git', ['config', 'filter.openkit-review.clean', 'tee ../filter-ran'], {
-          cwd: repoDir,
-          stdio: 'ignore',
-        });
-        execFileSync('git', ['config', 'filter.openkit-review.required', 'true'], {
-          cwd: repoDir,
-          stdio: 'ignore',
-        });
-        writeFileSync(join(repoDir, 'artifact.bin'), Buffer.from([0, 2]));
-      }
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).rejects.toThrow(/filter/i);
-    expect(runner.calls).toHaveLength(1);
-    expect(existsSync(markerPath)).toBe(false);
-  });
-
-  it('does not execute a clean filter on an unchanged path while collecting another change', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-unchanged-filter-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const markerPath = join(sessionDir, 'filter-ran');
-    initializeGitRepository(repoDir, {
-      '.gitattributes': 'unchanged.bin filter=openkit-review -text\n',
-      'changed.txt': 'Before\n',
-      'unchanged.bin': Buffer.from([0, 1]),
-    });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => {
-        execFileSync('git', ['config', 'filter.openkit-review.clean', 'tee ../filter-ran'], {
-          cwd: repoDir,
-          stdio: 'ignore',
-        });
-        execFileSync('git', ['config', 'filter.openkit-review.required', 'true'], {
-          cwd: repoDir,
-          stdio: 'ignore',
-        });
-        writeFileSync(join(repoDir, 'changed.txt'), 'After\n', 'utf8');
-      }
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
 
     await expect(
       runWorkerShim({
@@ -3054,25 +2782,100 @@ describe('worker shim CLI parsing', () => {
         runner,
       })
     ).resolves.toMatchObject({ status: 'completed' });
-    expect(existsSync(markerPath)).toBe(false);
+
+    expect(order).toEqual(['materialize', 'native', 'publish']);
+    expect(published?.bases).toBe(bases);
+    expect(published?.inputs).toEqual([expect.objectContaining({ id: 'repo', target })]);
+    expect(published?.lineage).toEqual({
+      agentSessionId: 'as_codex_1',
+      packageSnapshotId: 'pkg_codex_1',
+      requestId: 'req_codex_1',
+      threadId: 'th_codex',
+      turnId: 'turn_codex',
+      workspaceId: 'ws_codex',
+    });
   });
 
-  it('rejects multiple writable Git workspace inputs before starting the worker', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-multiple-git-inputs-'));
-    const firstRepoDir = join(sessionDir, 'first');
-    const secondRepoDir = join(sessionDir, 'second');
+  it.each([
+    { kind: 'query', suffix: '?ref=private-review' },
+    { kind: 'fragment', suffix: '#private-review' },
+  ])('rejects a $kind-bearing remote Git URL before transport or target writes', async ({
+    suffix,
+  }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-git-url-boundary-'));
+    const workspaceRoot = join(sessionDir, 'workspace');
+    const target = join(workspaceRoot, 'worktrees', 'main');
     const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(firstRepoDir, { 'README.md': '# First\n' });
-    initializeGitRepository(secondRepoDir, { 'README.md': '# Second\n' });
+    let connections = 0;
+    const server = createServer((socket) => {
+      connections += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Git URL boundary fixture did not bind a TCP port.');
+    }
     const runner = new FakeWorkerProcessRunner({
       exitCode: 0,
       signal: null,
       stderr: '',
       stdout: '',
     });
-    writeGitWorkspacePackage(packagePath, firstRepoDir, [
-      { id: 'first', target: firstRepoDir },
-      { id: 'second', target: secondRepoDir },
+    writeGitWorkspacePackage(packagePath, workspaceRoot, [
+      {
+        id: 'repo',
+        source: {
+          ...remoteGitTestSource('repo'),
+          url: `https://127.0.0.1:${address.port}/repository.git${suffix}`,
+        },
+        target,
+      },
+    ]);
+
+    try {
+      await expect(
+        runWorkerShim({
+          args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+          environment: workerShimEnvironment(),
+          runner,
+        })
+      ).rejects.toThrow();
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+
+    expect(connections).toBe(0);
+    expect(runner.calls).toHaveLength(0);
+    expect(existsSync(workspaceRoot)).toBe(false);
+  });
+
+  it('rejects multiple writable Git workspace inputs before starting the worker', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-multiple-git-inputs-'));
+    const workspaceRoot = join(sessionDir, 'workspace');
+    const packagePath = join(sessionDir, 'package.json');
+    const runner = new FakeWorkerProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeGitWorkspacePackage(packagePath, workspaceRoot, [
+      {
+        id: 'first',
+        source: remoteGitTestSource('first'),
+        target: join(workspaceRoot, 'worktrees', 'first'),
+      },
+      {
+        id: 'second',
+        source: remoteGitTestSource('second'),
+        target: join(workspaceRoot, 'worktrees', 'second'),
+      },
     ]);
 
     await expect(
@@ -3085,218 +2888,64 @@ describe('worker shim CLI parsing', () => {
     expect(runner.calls).toHaveLength(0);
   });
 
-  it('rejects an unavailable Git base before starting the worker', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-missing-base-'));
-    const repoDir = join(sessionDir, 'repo');
+  it('attempts the declared HTTPS Git source before requiring a local checkout', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-remote-git-order-'));
+    const workspaceRoot = join(sessionDir, 'workspace');
+    const repoDir = join(workspaceRoot, 'worktrees', 'main');
     const packagePath = join(sessionDir, 'package.json');
-    mkdirSync(repoDir);
-    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+    const commit = '0123456789abcdef0123456789abcdef01234567';
+    let connections = 0;
+    const server = createServer((socket) => {
+      connections += 1;
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Remote Git order fixture did not bind a TCP port.');
+    }
     const runner = new FakeWorkerProcessRunner({
       exitCode: 0,
       signal: null,
       stderr: '',
       stdout: '',
     });
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).rejects.toThrow(/base|commit|HEAD/i);
-    expect(runner.calls).toHaveLength(0);
-  });
-
-  it('rejects a dirty writable Git workspace before starting the worker', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-dirty-workspace-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
-    writeFileSync(join(repoDir, 'README.md'), '# Preexisting change\n', 'utf8');
-    const runner = new FakeWorkerProcessRunner({
-      exitCode: 0,
-      signal: null,
-      stderr: '',
-      stdout: '',
-    });
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).rejects.toThrow(/clean|dirty|preexisting|uncommitted/i);
-    expect(runner.calls).toHaveLength(0);
-  });
-
-  it('accepts a clean Git workspace after tar transport changes filesystem metadata', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-transported-git-'));
-    const sourceRepoDir = join(sessionDir, 'source-repo');
-    const repoDir = join(sessionDir, 'repo');
-    const bundlePath = join(sessionDir, 'repo.tar');
-    const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(sourceRepoDir, { 'README.md': '# Clean transported repository\n' });
-    mkdirSync(repoDir);
-    execFileSync('tar', ['-cf', bundlePath, '-C', sourceRepoDir, '.'], { stdio: 'ignore' });
-    execFileSync('tar', ['-xf', bundlePath, '-C', repoDir], { stdio: 'ignore' });
-    const runner = new FakeWorkerProcessRunner({
-      exitCode: 0,
-      signal: null,
-      stderr: '',
-      stdout: '',
-    });
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).resolves.toMatchObject({ status: 'completed' });
-    expect(runner.calls).toHaveLength(1);
-  });
-
-  it.each([
-    '--assume-unchanged',
-    '--skip-worktree',
-  ] as const)('rejects dirty workspace state hidden by %s before starting the worker', async (flag) => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-hidden-dirty-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
-    execFileSync('git', ['update-index', flag, 'README.md'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    writeFileSync(join(repoDir, 'README.md'), '# Hidden preexisting change\n', 'utf8');
-    const runner = new FakeWorkerProcessRunner({
-      exitCode: 0,
-      signal: null,
-      stderr: '',
-      stdout: '',
-    });
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).rejects.toThrow(/clean|hide|index|lineage/i);
-    expect(runner.calls).toHaveLength(0);
-  });
-
-  it('ignores ambient GIT_DIR when inspecting a writable workspace', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-ambient-git-dir-'));
-    const repoDir = join(sessionDir, 'repo');
-    const redirectRepoDir = join(sessionDir, 'redirect-repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const baseCommit = initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
-    initializeGitRepository(redirectRepoDir, { 'DECOY.md': '# Wrong repository\n' });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => writeFileSync(join(repoDir, 'README.md'), '# After\n', 'utf8')
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-    const previousGitDir = process.env.GIT_DIR;
-    process.env.GIT_DIR = join(redirectRepoDir, '.git');
+    writeGitWorkspacePackage(packagePath, workspaceRoot, [
+      {
+        id: 'repo',
+        source: {
+          catalogEntryDigest: `sha256:${'1'.repeat(64)}`,
+          commit,
+          kind: 'git',
+          sensitivity: 'internal',
+          sourceId: 'main-repo',
+          sourceRef: 'main-repo',
+          url: `https://127.0.0.1:${address.port}/repository.git`,
+        },
+        target: repoDir,
+      },
+    ]);
 
     try {
-      await runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      });
+      await expect(
+        runWorkerShim({
+          args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+          environment: workerShimEnvironment(),
+          runner,
+        })
+      ).rejects.toThrow();
     } finally {
-      if (previousGitDir === undefined) {
-        delete process.env.GIT_DIR;
-      } else {
-        process.env.GIT_DIR = previousGitDir;
-      }
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
 
-    const manifest = JSON.parse(readFileSync(join(sessionDir, 'workspace-changes.json'), 'utf8'));
-    expect(manifest.base.commit).toBe(baseCommit);
-    expect(runner.calls).toHaveLength(1);
-  });
-
-  it('fails closed when the worker changes .gitattributes', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-attributes-change-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => writeFileSync(join(repoDir, '.gitattributes'), '*.txt text eol=lf\n', 'utf8')
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).rejects.toThrow(/gitattributes|attribute/i);
-    expect(runner.calls).toHaveLength(1);
-  });
-
-  it('removes stale review outputs when a reused session has no changes', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-reused-session-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const patchPath = join(sessionDir, 'workspace.patch');
-    const manifestPath = join(sessionDir, 'workspace-changes.json');
-    initializeGitRepository(repoDir, { 'README.md': '# Unchanged\n' });
-    writeFileSync(patchPath, 'stale patch\n', 'utf8');
-    writeFileSync(manifestPath, '{"stale":true}\n', 'utf8');
-    const runner = new FakeWorkerProcessRunner({
-      exitCode: 0,
-      signal: null,
-      stderr: '',
-      stdout: '',
-    });
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await runWorkerShim({
-      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-      environment: workerShimEnvironment(),
-      runner,
-    });
-
-    expect([existsSync(patchPath), existsSync(manifestPath)]).toEqual([false, false]);
-  });
-
-  it('removes review outputs when manifest publication fails', async () => {
-    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-manifest-failure-'));
-    const repoDir = join(sessionDir, 'repo');
-    const packagePath = join(sessionDir, 'package.json');
-    const patchPath = join(sessionDir, 'workspace.patch');
-    const manifestPath = join(sessionDir, 'workspace-changes.json');
-    initializeGitRepository(repoDir, { 'README.md': '# Before\n' });
-    const runner = new FakeWorkerProcessRunner(
-      { exitCode: 0, signal: null, stderr: '', stdout: '' },
-      () => {
-        writeFileSync(join(repoDir, 'README.md'), '# After\n', 'utf8');
-        mkdirSync(manifestPath);
-      }
-    );
-    writeGitWorkspacePackage(packagePath, repoDir, [{ id: 'repo', target: repoDir }]);
-
-    await expect(
-      runWorkerShim({
-        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
-        environment: workerShimEnvironment(),
-        runner,
-      })
-    ).rejects.toThrow();
-    expect([existsSync(patchPath), existsSync(manifestPath)]).toEqual([false, false]);
+    expect(connections).toBeGreaterThan(0);
+    expect(runner.calls).toHaveLength(0);
+    expect(existsSync(repoDir)).toBe(false);
   });
 
   it.each([
@@ -3371,6 +3020,7 @@ describe('worker shim CLI parsing', () => {
       packagePath,
       JSON.stringify({
         control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
           transcript: {
             runtimeProvenance: {
               maxStreamCount: 8,
@@ -3503,30 +3153,17 @@ class AbortAwareWorkerProcessRunner implements WorkerProcessRunner {
   }
 }
 
-/**
- * Creates one committed Git repository for worker workspace tests.
- *
- * @param repoDir Repository directory.
- * @param files Initial file contents keyed by repository-relative path.
- * @returns Initial commit id.
- */
-function initializeGitRepository(
-  repoDir: string,
-  files: Readonly<Record<string, string | Buffer>>
-): string {
-  mkdirSync(repoDir, { recursive: true });
-  execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'worker@example.com'], {
-    cwd: repoDir,
-    stdio: 'ignore',
-  });
-  execFileSync('git', ['config', 'user.name', 'Worker'], { cwd: repoDir, stdio: 'ignore' });
-  for (const [path, content] of Object.entries(files)) {
-    writeFileSync(join(repoDir, path), content);
-  }
-  execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
-  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim();
+/** Creates one exact credential-free remote Git source fixture. */
+function remoteGitTestSource(sourceId: string): Readonly<Record<string, unknown>> {
+  return {
+    catalogEntryDigest: `sha256:${'1'.repeat(64)}`,
+    commit: '0123456789abcdef0123456789abcdef01234567',
+    kind: 'git',
+    sensitivity: 'internal',
+    sourceId,
+    sourceRef: sourceId,
+    url: `https://git.example.test/${sourceId}.git`,
+  };
 }
 
 /**
@@ -3539,7 +3176,11 @@ function initializeGitRepository(
 function writeGitWorkspacePackage(
   packagePath: string,
   workspaceRoot: string,
-  inputs: ReadonlyArray<{ readonly id: string; readonly target: string }>
+  inputs: ReadonlyArray<{
+    readonly id: string;
+    readonly source: Readonly<Record<string, unknown>>;
+    readonly target: string;
+  }>
 ): void {
   writeFileSync(
     packagePath,
@@ -3554,7 +3195,7 @@ function writeGitWorkspacePackage(
             changeSetManifestPath: '/openkit/session/workspace-changes.json',
             strategy: 'git',
           },
-          source: { kind: 'host-dir', pathRef: `workspace-root://${input.id}` },
+          source: input.source,
           target: input.target,
         })),
         root: workspaceRoot,
@@ -3575,14 +3216,34 @@ function workerLlmRoute(): Record<string, unknown> {
     endpoint: {
       kind: 'openai-compatible',
       upstream: {
-        baseUrlRef: 'runtime://nanocore/worker-inference/v1',
         kind: 'nanocore-gateway',
       },
-      workerBaseUrl: 'https://nanocore.local/api/worker-inference/v1',
     },
     id: 'worker-inference',
     model: 'gpt-5',
     providerInstanceId: 'provider_openai',
+  };
+}
+
+/** Creates the fixed local Integration control projection used by shim fixtures. */
+function workerIntegrationControl(targetRuntime = 'fixture-process'): Record<string, unknown> {
+  return {
+    adapter: { kind: 'openkit-worker-shim', targetRuntime },
+    bindings: {
+      capabilities: {
+        pathPrefix: '/capabilities/',
+        tokenRef: 'runtime://openkit/capability-token',
+      },
+      inference: {
+        pathPrefix: '/inference/',
+        tokenRef: 'runtime://openkit/inference-token',
+      },
+      workerControl: {
+        pathPrefix: '/worker-control/',
+        tokenRef: 'runtime://openkit/worker-control-token',
+      },
+    },
+    mode: 'sandbox-integration',
   };
 }
 
@@ -3594,7 +3255,6 @@ function workerLlmRoute(): Record<string, unknown> {
 function workerShimEnvironment(): WorkerShimEnvironment {
   return {
     OPENKIT_AGENT_SESSION_ID: 'as_codex_1',
-    OPENKIT_CONTROL_BASE_URL: 'https://nanocore.local/api/worker-control',
     OPENKIT_PACKAGE_SNAPSHOT_ID: 'pkg_codex_1',
     OPENKIT_REQUEST_ID: 'req_codex_1',
     OPENKIT_THREAD_ID: 'th_codex',
@@ -3663,8 +3323,12 @@ function writeFileSync(path: string, data: string | Buffer, encoding?: BufferEnc
         ...parsed,
         control: {
           ...control,
-          adapter: control.adapter ?? { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
-          mode: 'direct-nanocore',
+          adapter: control.adapter ?? {
+            kind: 'openkit-worker-shim',
+            targetRuntime: 'fixture-process',
+          },
+          bindings: workerIntegrationControl().bindings,
+          mode: 'sandbox-integration',
         },
         extensions: {
           ...extensions,

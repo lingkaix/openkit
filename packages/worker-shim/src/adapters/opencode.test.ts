@@ -23,10 +23,8 @@ function opencodeInput(): WorkerAdapterPrepareInput {
       endpoint: {
         kind: 'openai-compatible',
         upstream: {
-          baseUrlRef: 'runtime://nanocore/worker-inference/v1',
           kind: 'nanocore-gateway',
         },
-        workerBaseUrl: 'https://nanocore.local/api/worker-inference/v1',
       },
       id: 'worker-inference',
       model: 'gpt-5',
@@ -143,7 +141,7 @@ describe('OpenCode worker adapter', () => {
           npm: '@ai-sdk/openai',
           options: {
             apiKey: '{env:OPENKIT_WORKER_INFERENCE_TOKEN}',
-            baseURL: 'https://nanocore.local/api/worker-inference/v1',
+            baseURL: 'http://127.0.0.1:17892/inference/v1',
           },
         },
       },
@@ -174,7 +172,7 @@ describe('OpenCode worker adapter', () => {
     ).rejects.toThrow(/OpenCode direct-provider routes are unsupported/i);
   });
 
-  it('rejects a tampered worker URL on a claimed NanoCore relay route', async () => {
+  it('rejects a caller-selected URL on a local Integration route', async () => {
     const input = opencodeInput();
 
     await expect(
@@ -188,7 +186,7 @@ describe('OpenCode worker adapter', () => {
           },
         },
       })
-    ).rejects.toThrow(/trusted NanoCore relay/i);
+    ).rejects.toThrow(/local Integration/i);
   });
 
   it('collects only completed text for the tracked assistant step', async () => {

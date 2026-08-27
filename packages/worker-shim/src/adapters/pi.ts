@@ -6,11 +6,10 @@ import type {
   WorkerNativeProcessResult,
 } from '../adapter-registry.js';
 
-/** Exact direct provider supported by the pinned Pi image. */
-const PI_PROVIDER = 'anthropic';
+/** Exact resolved provider instance preserved as upstream authority. */
+const PI_PROVIDER_INSTANCE = 'anthropic';
 /** Exact model supported by the pinned Pi image. */
 const PI_MODEL = 'claude-sonnet-4-5';
-
 /** Pi assistant-message subset needed for terminal correlation. */
 interface PiAssistantMessage extends Record<string, unknown> {
   /** Native message content blocks. */
@@ -30,7 +29,7 @@ interface PiAssistantMessage extends Record<string, unknown> {
  *
  * @param input Resolved adapter input.
  * @returns Native Pi launch plan.
- * @throws Error when the route is not the accepted direct Anthropic pair.
+ * @throws Error when the route is not the accepted legacy direct provider pair.
  */
 async function preparePi(input: WorkerAdapterPrepareInput) {
   const route = input.llmRoute;
@@ -39,7 +38,8 @@ async function preparePi(input: WorkerAdapterPrepareInput) {
     route.credentialVisibility === 'environment' &&
     route.endpoint.kind === 'provider-compatible' &&
     route.endpoint.upstream?.kind === 'direct-provider' &&
-    route.providerInstanceId === PI_PROVIDER &&
+    route.endpoint.workerBaseUrl === undefined &&
+    route.providerInstanceId === PI_PROVIDER_INSTANCE &&
     route.model === PI_MODEL &&
     Boolean(credential) &&
     !input.childEnvironment.OPENKIT_WORKER_INFERENCE_TOKEN;
@@ -47,7 +47,6 @@ async function preparePi(input: WorkerAdapterPrepareInput) {
   if (!supported) {
     throw new Error('Unsupported Pi provider route.');
   }
-
   return {
     argv: [
       'pi',
@@ -62,7 +61,7 @@ async function preparePi(input: WorkerAdapterPrepareInput) {
       '--no-context-files',
       '--offline',
       '--provider',
-      PI_PROVIDER,
+      PI_PROVIDER_INSTANCE,
       '--model',
       PI_MODEL,
       input.turnInput,
@@ -151,7 +150,7 @@ async function collectPi(input: {
   if (!settled || !candidate || !turnMatched || !agentMatched) {
     return failedPiResult('failed', 'pi-terminal-correlation-failed');
   }
-  if (candidate.provider !== PI_PROVIDER || candidate.model !== PI_MODEL) {
+  if (candidate.provider !== PI_PROVIDER_INSTANCE || candidate.model !== PI_MODEL) {
     return failedPiResult('failed', 'pi-route-mismatch');
   }
 
@@ -237,5 +236,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Pinned Pi 0.80.7 worker adapter. */
 export const piAdapter: WorkerAdapter = {
   collect: collectPi,
+  mode: 'bounded-turn',
   prepare: preparePi,
 };

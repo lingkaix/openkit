@@ -1,0 +1,9 @@
+[package]
+name = "nanohost-client-probe"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+openshell-sdk = { path = "../src/openshell/crates/openshell-sdk" }
+tokio = { version = "1", features = ["rt", "macros"] }
+tokio-stream = "0.1"

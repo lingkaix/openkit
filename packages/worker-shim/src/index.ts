@@ -32,6 +32,13 @@ export {
   type WorkerControlFinalStatusInput,
   type WorkerControlHeartbeatInput,
 } from './control-client.js';
+export { runWorkerHarness, WorkerHarness, type WorkerHarnessOptions } from './harness.js';
+export {
+  openSandboxIntegration,
+  SANDBOX_INTEGRATION_ROUTE_NAMESPACES,
+  SANDBOX_INTEGRATION_TARGET,
+  type SandboxIntegrationClient,
+} from './integration-client.js';
 export {
   type WorkerArtifactInput,
   type WorkerAssistantMessageInput,

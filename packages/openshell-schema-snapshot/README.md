@@ -1,27 +1,23 @@
 # `@openkit/openshell-schema-snapshot`
 
-This package stores the exact stock OpenShell `0.0.80` boundary snapshot used by NanoCore's OpenShell worker backend.
+This legacy package stores the exact stock OpenShell `0.0.80` boundary snapshot retained solely for the current NanoCore OpenShell policy renderer's YAML conformance check.
 
-It is intentionally separate from NanoCore implementation code. NanoCore may validate generated OpenShell artifacts against this package, but OpenKit product records remain the source of truth.
+It is immutable and is not refreshed. It is not the current runtime pin and grants no CLI, Gateway, Cell, or execution authority; the NanoHost application owns the current stock OpenShell `0.0.99` pin. Delete this package only when the policy owner migrates its remaining conformance consumer.
 
 ## Contents
 
 - `snapshots/2026-07-11/metadata.json` records the pinned OpenShell release provenance, mapping version, exact required gateway version, source paths, and artifact checksums.
 - `snapshots/2026-07-11/provider-profile-surface.json` separates the upstream provider surface from OpenKit's exact OpenShell 0.0.80 inference-relay profile shape and pins snake-case fields, array declarations, placeholder resolution, and the two exact worker-inference POST rules.
 - `snapshots/2026-07-11/policy-surface.json` separates the upstream protocol, enforcement, and access surface from OpenKit's narrower emitted sandbox policy mapping and pins exact REST `method` and `path` allow rules.
-- `snapshots/2026-07-11/cli-surface.json` records the exact stock `0.0.80` version requirement and CLI command surface consumed by NanoCore: Gateway inspection, Providers v2 settings inspection and enablement, immutable provider-profile export/import, provider upsert and redacted inspection, sandbox create/list/exec/download, and runtime provider detach for grant revocation. Resource deletion and host-doctor commands are outside the product surface; teardown recycles the complete disposable Cell.
+- `snapshots/2026-07-11/cli-surface.json` records the historical stock `0.0.80` CLI command surface consumed by the deleted Cell path. It is retained evidence and does not describe a current NanoCore runtime capability.
 - `src/index.ts` exports small conformance helpers for generated OpenShell artifacts.
 
-## Refresh Procedure
+## Legacy Retention Rules
 
-1. Confirm the intended exact OpenShell CLI and Gateway version; OpenKit currently accepts only unmodified `0.0.80`.
-2. Inspect the upstream profile, provider, policy, and CLI behavior that NanoCore consumes.
-3. Update the dated snapshot files or create a new dated directory, keeping upstream capabilities separate from OpenKit-emitted mappings.
-4. Update `metadata.json` release tag, resolved commit, reviewed source paths, checksums, mapping version, and exact required version; do not introduce a version range.
-5. Review the snapshot diff as an external boundary update before changing NanoCore behavior.
-6. Run `pnpm --filter @openkit/openshell-schema-snapshot test`, `pnpm --filter @openkit/openshell-schema-snapshot build`, and dependent NanoCore tests.
-
-Do not refresh this snapshot during NanoCore boot or routine test execution.
+- Do not refresh, repair, regenerate, or otherwise modify the package source, tests, snapshots, or metadata.
+- Retain the package only while `apps/nanocore/src/runtime/openshell-policy.ts` uses its conformance helper.
+- Delete the package when that policy consumer moves to a current owner; do not move the NanoHost pin here.
+- Run the retained commands only to validate the immutable historical package.
 
 ## Commands
 

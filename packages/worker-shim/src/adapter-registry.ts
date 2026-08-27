@@ -55,6 +55,8 @@ export interface WorkerAdapterPrepareInput {
   readonly llmRoute: WorkerAdapterLlmRoute;
   /** Durable OpenKit session directory. */
   readonly sessionDirectory: string;
+  /** Optional private directory for one Turn's native-only outputs. */
+  readonly nativeTurnDirectory?: string | undefined;
   /** Optional separately owned bounded native provenance capture input. */
   readonly runtimeProvenance?: WorkerAdapterRuntimeProvenance | undefined;
   /** Fresh turn-scoped native state root. */
@@ -117,8 +119,10 @@ export interface WorkerAdapterResult {
   readonly stopReason: string;
 }
 
-/** Worker-side native adapter with the accepted two-operation contract. */
-export interface WorkerAdapter {
+/** Worker-side bounded-turn adapter with the accepted two-operation contract. */
+export interface WorkerBoundedTurnAdapter {
+  /** Closed adapter lifecycle mode. */
+  readonly mode: 'bounded-turn';
   /**
    * Builds one native launch plan from resolved runtime-neutral input.
    *
@@ -136,6 +140,43 @@ export interface WorkerAdapter {
    */
   collect(input: WorkerAdapterCollectInput): WorkerAdapterResult | Promise<WorkerAdapterResult>;
 }
+
+/** Worker-side session-continuity adapter with the accepted five-operation contract. */
+export interface WorkerSessionContinuityAdapter {
+  /** Closed adapter lifecycle mode. */
+  readonly mode: 'session-continuity';
+  /** Creates one private native Session root without launching a process. */
+  openSession(input: { readonly stateRoot: string }): Promise<{
+    readonly nativeHandle: string | null;
+    readonly nativeHandleDigest: string | null;
+    readonly nativeHandleState: 'pending' | 'ready';
+  }>;
+  /** Builds one fresh native process plan against the private Session state. */
+  prepareTurn(
+    input: WorkerAdapterPrepareInput
+  ): WorkerAdapterLaunchPlan | Promise<WorkerAdapterLaunchPlan>;
+  /** Normalizes one Turn and proves its restricted native handle. */
+  collectTurn(input: WorkerAdapterCollectInput & { readonly stateRoot: string }): Promise<
+    WorkerAdapterResult & {
+      readonly nativeHandle: string | null;
+      readonly nativeHandleDigest: string | null;
+      readonly nativeHandleState: 'ready' | 'unknown';
+    }
+  >;
+  /** Proves the current private native handle without launching a process. */
+  inspectSession(input: { readonly stateRoot: string }): Promise<{
+    readonly nativeHandleDigest: string | null;
+    readonly nativeHandleState: 'pending' | 'ready';
+  }>;
+  /** Removes the complete private Session state and Turn-local outputs. */
+  closeSession(input: {
+    readonly sessionDirectory: string;
+    readonly stateRoot: string;
+  }): Promise<{ readonly privateState: 'absent' }>;
+}
+
+/** Closed production adapter lifecycle modes. */
+export type WorkerAdapter = WorkerBoundedTurnAdapter | WorkerSessionContinuityAdapter;
 
 /** Static production adapter registry bundled into every governed worker image. */
 export const WORKER_ADAPTERS: Readonly<Record<string, WorkerAdapter>> = {

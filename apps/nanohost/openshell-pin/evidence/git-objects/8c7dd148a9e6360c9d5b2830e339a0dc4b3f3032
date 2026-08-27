@@ -1,0 +1,114 @@
+tree f5ff3de82cf9753391bec5239b34e6d44bbba0c8
+parent 490f66f47af4c225fabeb2dc48ea51c67154827c
+author Jim Meyer <jim@meyer4hire.com> 1785866353 -0700
+committer GitHub <noreply@github.com> 1785866353 +0000
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJqciiBCRC1aQ7uu5UhlAAAekIQAAV0g8oFB/Vpv0wA6r9zLHyQ
+ sp/asD3G3jXNbC6xHyDKLdDMNmbcgahScUILWkCuR+1vNGal0s2F2+67NvLdwNYg
+ vJfOyWqFpuiQher4dMgvXLBkCIQfZS8vWi01PR5qlHRyOsEpS9ZRpezNomb5Sscf
+ PxcMb81cWnR/4a+csy9mfLAuF7CXIW6/57kMTnVuhmmMnmHCBfA1ZUQnCWlrdud9
+ 1uHEhGRVhiaioIwyiKPK62sTVicYRD5djtFn79Hm+9rknJFD5vZKjleiCgCqRGyT
+ w2yekc8511PQTar7nqvnbhPW/mWBXhP00JKNWuNyLUKxEPvvaXWTlBQXqPlC7C/S
+ F/5/rxOlgRJNlumI9Xj7JjqCUAu/lGATvr+A13V4m05LYuz9uvrUgBlmDbH++yOL
+ JGYyq/ftWQouvIfN58fwQANNct8aUTs6/vnOmjsywnXKIKKL05HXz9gggskn4FmC
+ 8B8SAUm4KLxbem+r4ABJ9LxxzuMWI28APPU7zLcHSC+eRPN5im3pA4d37NxxVyJJ
+ mBWm+WgRxlyX98DH5fM/B9EbmEX9CLkpP7qRp5b99pFCiYDDWMllXlDbLGAzP5r1
+ v3DHmGv2z8yRzzdmiAIEYglyGl+/Vx7J3VcQlKqphqwlNGRFzxA7KAQdVl2it2tY
+ DgVE0d0Ac4De+Pv+mkaL
+ =V6vA
+ -----END PGP SIGNATURE-----
+ 
+
+perf(net): set TCP_NODELAY on latency-sensitive TCP hops (#2220)
+
+* perf(net): set TCP_NODELAY on all tunnel and proxy TCP hops
+
+The sandbox tunnel added ~44 ms of latency to every small
+request/response because no socket in the path disabled Nagle's
+algorithm, so sub-MSS writes waited on delayed ACKs at each hop.
+
+Set TCP_NODELAY on every latency-sensitive TCP socket:
+
+- gateway: accepted connections on the public listener (gRPC relay
+  frames and WS tunnel writes)
+- CLI: edge tunnel local accept + underlying WebSocket TCP stream,
+  insecure TLS connector (tonic's default connector already does
+  this), and service-forward accepted sockets
+- supervisor: direct-tcpip connect into the sandbox netns, TCP relay
+  target dials, egress proxy accepted connections, and all upstream
+  CONNECT/HTTP dials (via a new connect_upstream helper)
+
+Setting TCP_NODELAY on connect is best-effort: a failure only costs
+latency, so we log and continue rather than fail the connection.
+
+The sandbox SSH transport rides a unix domain socket and gRPC client
+channels use tonic defaults (nodelay on), so no change is needed there.
+
+Fixes #2219
+
+Signed-off-by: Jim Meyer <jim@meyer4hire.com>
+
+* refactor(net): house TCP_NODELAY helper in a shared net module
+
+Address review feedback on the TCP_NODELAY change:
+
+- Move the shared set-nodelay helper out of supervisor_session into a
+  new crate-private `net` module in openshell-supervisor-process, so
+  ssh and supervisor_session no longer reach across modules through a
+  pub(crate) item.
+- Make the best-effort comments at each call site terse and consistent.
+
+No behavior change; the benchmark ladder reproduces the same numbers.
+
+Signed-off-by: Jim Meyer <jim@meyer4hire.com>
+
+* refactor(net): consolidate TCP_NODELAY helpers into openshell_core::net
+
+Move the best-effort TCP_NODELAY helpers into the shared openshell_core::net
+module so every crate dials and configures sockets the same way:
+
+- Add set_tcp_nodelay_best_effort (accepted/existing streams) and
+  connect_tcp_nodelay_best_effort (dial + set) with unit tests.
+- Migrate all call sites in openshell-cli, openshell-server, and the
+  supervisor crates to the shared helpers.
+- Remove the crate-private net module from openshell-supervisor-process.
+- Document socket guidance in AGENTS.md (Network Sockets).
+
+Signed-off-by: Jim Meyer <jim@meyer4hire.com>
+
+* perf(net): set TCP_NODELAY on exec bridge and metadata server
+
+The gateway-side single-use SSH-over-relay loopback bridge and the
+sandbox IMDS metadata server were missed latency-sensitive TCP hops.
+Set TCP_NODELAY on the accepted client connection and both russh client
+dials of the exec bridge — interactive keystrokes and line-buffered PTY
+output are the most tinygram-heavy traffic in the system — and on the
+metadata server's accepted connections.
+
+Also log unrecognized MaybeTlsStream variants in the edge tunnel so a
+future TLS-backend change surfaces a silent TCP_NODELAY miss instead of
+skipping it quietly.
+
+Signed-off-by: Jim Meyer <jim@meyer4hire.com>
+
+* perf(net): set TCP_NODELAY on openshell-sdk socket paths
+
+The openshell-sdk crate landed on main with its own copies of the CLI's
+hand-rolled sockets, which the CLI and TUI are meant to consume. Give
+them the same treatment as the CLI equivalents:
+
+- edge_tunnel: the accepted local tunnel connection and the WebSocket's
+  underlying TCP socket (plain and rustls variants).
+- transport: the dial in InsecureTlsConnector, tonic's custom-connector
+  path.
+
+Only these hand-rolled sockets need it. Tonic's own connector defaults
+tcp_nodelay to true and applies it itself, so plain Endpoint::connect
+callers were already covered.
+
+Signed-off-by: Jim Meyer <jim@meyer4hire.com>
+
+---------
+
+Signed-off-by: Jim Meyer <jim@meyer4hire.com>

@@ -9,9 +9,10 @@ import type {
 
 /** Fixed OpenCode-native provider id for the trusted worker-inference relay. */
 const OPENCODE_PROVIDER = 'openkit-worker-inference';
-
+/** Fixed sandbox-local native inference endpoint consumed by OpenCode. */
+const INTEGRATION_INFERENCE_BASE_URL = 'http://127.0.0.1:17892/inference/v1';
 /**
- * Validates and returns the exact worker-visible trusted-relay base URL.
+ * Validates the URL-free local Integration route and returns its fixed worker-visible base URL.
  *
  * @param route NanoCore-resolved LLM route.
  * @returns Exact worker-visible relay base URL.
@@ -22,35 +23,15 @@ function relayBaseUrl(route: WorkerAdapterLlmRoute): string {
     throw new Error('OpenCode direct-provider routes are unsupported.');
   }
 
-  const baseUrl = route.endpoint.workerBaseUrl;
   if (
     route.credentialVisibility !== 'placeholder' ||
     route.endpoint.kind !== 'openai-compatible' ||
     route.endpoint.upstream?.kind !== 'nanocore-gateway' ||
-    !baseUrl
+    route.endpoint.workerBaseUrl !== undefined
   ) {
-    throw new Error('OpenCode requires one trusted NanoCore relay route.');
+    throw new Error('OpenCode requires one URL-free local Integration route.');
   }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new Error('OpenCode requires one trusted NanoCore relay route.');
-  }
-  if (
-    !['http:', 'https:'].includes(parsed.protocol) ||
-    !parsed.hostname ||
-    parsed.username ||
-    parsed.password ||
-    parsed.pathname !== '/api/worker-inference/v1' ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new Error('OpenCode requires one trusted NanoCore relay route.');
-  }
-
-  return baseUrl;
+  return INTEGRATION_INFERENCE_BASE_URL;
 }
 
 /**
@@ -268,5 +249,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Pinned OpenCode 1.18.1 worker adapter. */
 export const opencodeAdapter: WorkerAdapter = {
   collect: collectOpenCode,
+  mode: 'bounded-turn',
   prepare: prepareOpenCode,
 };

@@ -28,6 +28,7 @@ const MAX_ROLLOUT_SCAN_ENTRIES = 2048;
 const MAX_RETAINED_FRAMES = 4096;
 const MAX_NATIVE_INDEX_VALUE_BYTES = 512;
 const MAX_EVENT_KIND_BYTES = 128;
+const CODEX_THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type WorkerRuntimeCaptureStatus = WorkerRuntimeRawStreamManifest['captureStatus'];
 type WorkerRuntimeRawStream = WorkerRuntimeRawStreamManifest['streams'][number];
@@ -82,6 +83,77 @@ interface RolloutCandidate {
   threadId: string;
   /** Whether duplicated parent fields disagreed. */
   valid: boolean;
+}
+
+/** Exact native-conversation proof retained only by the AgentSession adapter. */
+export interface CodexNativeConversationProof {
+  /** Lowercase SHA-256 digest safe for private Harness results. */
+  readonly nativeHandleDigest: string;
+  /** Raw Codex UUID restricted to the AgentSession-private adapter state. */
+  readonly nativeHandle: string;
+}
+
+/**
+ * Proves one exact Codex `thread.started` UUID against its pinned root rollout metadata.
+ *
+ * @param options Pinned adapter version, private Codex home, and exact exec JSONL bytes.
+ * @returns Restricted raw handle plus its result-safe digest.
+ */
+export async function proveCodexNativeConversation(options: {
+  readonly adapterVersion: string;
+  readonly codexHome: string;
+  readonly stdout: Uint8Array;
+}): Promise<CodexNativeConversationProof> {
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(options.stdout);
+  const started: string[] = [];
+  for (const line of text.split('\n')) {
+    if (!line) {
+      continue;
+    }
+    const value = JSON.parse(line) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Codex exec emitted a malformed JSONL event.');
+    }
+    const record = value as Record<string, unknown>;
+    if (record.type === 'thread.started') {
+      const threadId = record.thread_id;
+      if (typeof threadId !== 'string' || !CODEX_THREAD_ID_PATTERN.test(threadId)) {
+        throw new Error('Codex exec emitted an invalid thread.started identity.');
+      }
+      started.push(threadId);
+    }
+  }
+  if (started.length !== 1) {
+    throw new Error('Codex exec must emit exactly one thread.started identity.');
+  }
+
+  const nativeHandle = started[0] as string;
+  const discovered = await listRolloutFiles(join(options.codexHome, 'sessions'));
+  if (discovered.truncated) {
+    throw new Error('Codex rollout discovery exceeded its fixed proof bound.');
+  }
+  const matches: RolloutCandidate[] = [];
+  for (const path of discovered.paths) {
+    const candidate = await readRolloutCandidate(path, options.adapterVersion);
+    if (candidate?.threadId === nativeHandle) {
+      matches.push(candidate);
+    }
+  }
+  const candidate = matches[0];
+  if (
+    matches.length !== 1 ||
+    !candidate ||
+    !candidate.adapterVersionValid ||
+    !candidate.valid ||
+    candidate.parentThreadId ||
+    candidate.sessionId !== nativeHandle
+  ) {
+    throw new Error('Codex root rollout does not prove the exact native conversation.');
+  }
+  return {
+    nativeHandle,
+    nativeHandleDigest: createHash('sha256').update(nativeHandle).digest('hex'),
+  };
 }
 
 /** Mutable attribution inherited by physical frames within one raw stream. */

@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenKit NanoHost
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/openkit/nanohost.env
+PrivateMounts=yes
+InaccessiblePaths=/run/docker.sock
+ExecStart=/usr/lib/openkit/nanohost
+ExecStop=/usr/bin/systemctl stop --no-block openkit-nanohost.slice
+ExecStopPost=/usr/bin/systemctl stop --no-block openkit-nanohost.slice
+Slice=openkit-nanohost.slice
+KillMode=control-group
+Restart=no
+TimeoutStopSec=30s
