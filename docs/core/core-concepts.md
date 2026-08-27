@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Core Concepts
-
-Status: Accepted
 
 This document owns the shared root concepts that every OpenKit aspect projects: `CoreServer`, `Workspace`, `Thread`, `Turn`, `Item`, `Artifact`, `ApprovalRequest`, `Channel`, and `TriggerSource`.
 
@@ -31,7 +32,7 @@ TriggerSource -- causes --> Turn
 Artifact and ApprovalRequest -- anchored by --> Item history
 ```
 
-Identity links actors and members to this model. Runtime assigns agents and agent sessions to turns. Those relationships do not make Identity or Runtime children of Workspace in a competing ownership tree.
+Identity links actors and members to this model. Runtime assigns Agents and AgentSessions to Turns. Those relationships do not make Identity or Runtime children of Workspace in a competing ownership tree.
 
 ## Layer Boundary
 
@@ -61,11 +62,19 @@ Cross-workspace execution, knowledge sharing, vault sharing, and artifact moveme
 
 ### Thread
 
-`Thread` is a durable container for related work inside one workspace.
+`Thread` is one durable narrative for related work inside exactly one workspace.
 
-A thread groups turns, items, artifacts, approvals, and agent activity over time. It may involve multiple agents and agent sessions, parallel turns, handoffs, review, redo, and refinement.
+A conversational Thread is addressed to exactly one conversational counterpart. A worker-execution Thread has no conversational counterpart: it is classified by its execution purpose and remains reachable through lineage and reference Items rather than being presented as an addressed conversation.
 
-Thread is not a runtime session, workflow engine, or scheduling implementation. Runtime and workflow owners decide how work inside a thread is scheduled and coordinated.
+A Thread groups sequential Turns, Items, Artifacts, Approvals, and Agent activity over time. It may involve different Agents and historical AgentSessions across those sequential Turns, but it has at most one current AgentSession and one Turn in flight. Parallel work uses parallel Threads rather than parallel Turns in one Thread.
+
+A Thread carries `threadSource` and optional `parentThreadId`. `threadSource` identifies whether the Thread originated as a user conversation, worker execution, or another accepted execution class. `parentThreadId` preserves causal Thread lineage without moving or copying history. These fields are fixed when the Thread is created; a missing or inaccessible parent leaves lineage unresolved and MUST NOT authorize access, execution, or mutation.
+
+A handoff always creates a new Thread in the Workspace that will own the receiving execution. The originating Thread retains an append-only handoff Item referencing the new Thread; it does not change addressee or move history, and neither Thread spans two Workspaces. Review, redo, refinement, retry, and recovery remain in the existing Thread only while its Workspace and addressee remain unchanged; otherwise they create a new linked Thread.
+
+Thread creation fixes its Workspace, addressee or execution classification, and lineage before its first Turn is admitted. Later updates append ordered history. Archive prevents new Turns under its owning contract without rewriting existing history. Restart reconstructs the Thread from Core-owned records, never from an AgentSession or runtime-private conversation. Conflicting, stale, replayed, or mis-scoped mutations MUST be rejected before they append history or start a Turn.
+
+Thread is not a runtime session, workflow engine, scheduling implementation, or container for concurrent writers. Runtime and workflow owners decide how sequential work inside a Thread is admitted and coordinated.
 
 ### Turn
 
@@ -74,6 +83,20 @@ Thread is not a runtime session, workflow engine, or scheduling implementation. 
 Runtime governs the assignment of an executing Turn to an Agent and AgentSession. Durable work history preserves that exact relationship rather than inferring it from unrelated thread activity.
 
 Turn replaces the need for default `AgentRun` or `TaskRun` objects. Runtime-private task graphs, retries, and telemetry remain private unless an owning document promotes a stable projection.
+
+A Turn is created only after its input and exact Thread are accepted while that Thread has no Turn in flight. Its updates are its ordered Items and lifecycle changes. A terminal Turn is immutable and never reopened: retry, recovery, redo, and refinement create a new Turn, preserving the prior Turn and its Items. Missing dependencies block creation; stale, replayed, conflicting, or wrong-Thread commands MUST NOT create, retarget, or update a Turn. Protocol owns the lifecycle states, interruption behavior, and externally observable terminal proof.
+
+### Cardinalities
+
+| Relationship | Cardinality | Stable constraint |
+| --- | --- | --- |
+| Thread to active Turn | `1 -> 0..1` | A Thread has at most one Turn in flight. |
+| Thread to historical Turn | `1 -> 0..N` | Turns remain ordered and sequential. |
+| AgentSession to Thread | `N -> 1` | Each AgentSession belongs to exactly one Thread for its whole life. |
+| Thread to historical AgentSession | `1 -> 0..N` | Distinct sequential Turns may use distinct replacement AgentSessions over time. |
+| Thread to current AgentSession | `1 -> 0..1` | Only the sole current AgentSession may receive a newly authorized worker Turn for the Thread. |
+| AgentSession to active Turn | `1 -> 0..1` | One AgentSession never executes concurrent Turns. |
+| Worker Turn to AgentSession | `1 -> 1` | A worker-executed Turn has exactly one AgentSession; the accepted Core-local exception has none. |
 
 ### Item
 
@@ -135,6 +158,11 @@ The owning protocol schema and accepted design define concrete ID fields, encodi
 - The default durable work backbone MUST remain `Workspace -> Thread -> Turn -> Item[]` unless an accepted Core revision replaces it.
 - Every durable work record MUST belong to one workspace; any other scope MUST be explicit in its owning aspect.
 - Runtime MUST preserve the exact assignment relationship of an executing Turn.
+- A Thread MUST have at most one Turn in flight; parallel work MUST use distinct Threads.
+- A Thread MUST have at most one current AgentSession; historical predecessors MUST remain terminal and non-reusable.
+- A conversational Thread MUST have exactly one addressee for its whole life, while a worker-execution Thread MUST remain classified rather than represented as an addressed conversation.
+- A handoff MUST preserve its originating history and create a referenced Thread in the Workspace that owns the receiving execution.
+- Thread classification, lineage, archive, retry, and recovery MUST NOT move history across Workspaces or infer continuity from runtime-private state.
 - Item identity and lineage MUST remain immutable, and materialized records MUST NOT create a competing communication log.
 - Artifact and approval projections MUST remain traceable to item-backed history.
 - Approval MUST NOT absorb ordinary questions or user choices.

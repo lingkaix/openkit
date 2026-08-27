@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-18
+current-guidance: "`docs/core/agent-supply.md`, `docs/specs/20260616-agent_environment_package.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, `docs/specs/20260629-worker_runtime_communication_model.md`"
+decision-evidence: "`docs/core/agent-supply.md`, `docs/specs/20260616-agent_environment_package.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, `docs/specs/20260629-worker_runtime_communication_model.md`"
+---
 # Agent Setup And Runtime Supply Contract
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-18
-Current Guidance: `docs/core/agent-supply.md`, `docs/specs/20260616-agent_environment_package.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, `docs/specs/20260629-worker_runtime_communication_model.md`
-Decision Evidence: `docs/changes/202607160036500001-worker_agent_adapter_boundary.md`
 
 ## Lifecycle Reason
 

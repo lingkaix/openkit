@@ -1,15 +1,16 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Pi AI Unified LLM Backend
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
-This spec is the sole owner of non-Codex LLM backend selection and provider routing, including request, response, streaming, provider-error, usage, credential, provider-capability, and cache-scope mapping through `@earendil-works/pi-ai`. It also owns removal of the hand-written OpenAI-compatible provider client from dispatch, the accepted native pi-ai Responses target, and the provider-agnostic cache-scope input contract for separately authorized Internal Core Role calls, public Gateway callers, and worker agents.
+This spec is the sole owner of NanoCore LLM provider transport and routing through `@earendil-works/pi-ai`, including request, response, streaming, provider-error, usage, provider-capability, credential-input, native Responses, Codex turn-state, and cache-scope mapping. It also owns removal of the dedicated Codex Responses client and every other parallel general-purpose provider transport from production dispatch.
 
 ## Does Not Own
 
-This spec does not own the public Gateway HTTP contract, which remains with `docs/specs/20260526-llm_gateway_responses_api.md`; pi-ai adoption, exact pinning, public-vocabulary isolation, or models.dev reconciliation, which remain with `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; Codex subscription login and account-slot semantics; durable capability and usage record schemas or lifecycle; worker capability semantics; or authorization for an Internal Core Role to call a provider, which must come from that role's owning specification.
+This spec does not own the public Gateway HTTP contract, which remains with `docs/specs/20260526-llm_gateway_responses_api.md`; subscription account slots, login, refresh persistence, logout, or quota projection, which remain with `docs/specs/20260721-provider_subscription_accounts.md`; pi-ai pinning, public-vocabulary isolation, or catalog reconciliation, which remain with `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; durable capability and usage records; worker capability semantics; or authorization for a caller to use a provider.
 
 ## Core References
 
@@ -21,7 +22,11 @@ This spec does not own the public Gateway HTTP contract, which remains with `doc
 
 Related specs:
 
+
+## Related Docs
+
 - `docs/specs/20260526-llm_gateway_responses_api.md`
+- `docs/specs/20260721-provider_subscription_accounts.md`
 - `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260704-chat_mode_assistant.md`
@@ -31,86 +36,79 @@ Related specs:
 
 ## Summary
 
-NanoCore uses one LLM provider backend model: Codex OAuth traffic uses the dedicated Codex client because it is a subscription-backed ChatGPT/Codex account path, and every other LLM provider route uses pi-ai. The public OpenAI-compatible Gateway remains `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health`; NanoCore does not maintain a second generic OpenAI-compatible HTTP transport beside pi-ai.
+NanoCore uses one LLM provider backend: every hosted, subscription-backed, gateway, local, and custom provider route dispatches through stock pi-ai. Codex and xAI subscription profiles first resolve an explicit OpenKit account slot and then select the slot-scoped pi-ai `Models` instance defined by the subscription-account spec; they do not select a separate backend. The `codex-oauth` backend discriminator, dedicated Codex Responses client, app-server refresh path, and hand-written generic OpenAI-compatible transport are absent from the clean target.
 
-Native pi-ai Responses routing remains an accepted part of this contract but is not implemented: the current pi-ai Responses methods bridge through Chat Completions. WP-5A deliberately excludes native Responses fidelity work, so this bounded gap keeps the implementation alignment `Partial` without changing the accepted backend boundary.
+Pi-ai native Responses is required where its selected model API supports Responses. In particular, Codex subscription inference uses pi-ai's native Codex Responses adapter rather than the current OpenKit Codex client or a Chat Completions bridge. OpenKit accepts stock pi-ai's internal `originator` value and provider request defaults instead of maintaining a fork to preserve private wire details.
 
-The cache contract is provider-agnostic: NanoCore supplies a bounded cache scope to the adapter and observes provider-reported cache-read and cache-write quantities when available. Cache scope is input, not proof that a specific wire field was sent or that a provider produced a cache hit.
+OpenKit keeps its cache optimization above the adapter. NanoCore derives one non-secret cache scope from trusted request context, configured provider, model, and optional subscription slot, hashes it before provider-facing use, passes it to pi-ai as supported session and retention input, and records only provider-reported cache-read and cache-write usage as effectiveness evidence.
 
 ## Decision
 
-NanoCore routes all non-Codex-OAuth providers through pi-ai and does not expose a generic `openai-compatible` backend in provider dispatch.
+- `PiAiGatewayClient` is the only production LLM transport owner.
+- The internal `codex-oauth` backend kind is removed rather than retained as an alias; a subscription-backed profile is still a normal pi-ai provider profile with an explicit account-slot binding.
+- OpenAI, Codex, Anthropic, Google, OpenRouter, xAI, custom OpenAI-compatible endpoints, and future accepted providers use the corresponding pi-ai adapter family.
+- OpenAI-compatible custom endpoints default to pi-ai `openai-completions` and may use `openai-responses` only when OpenKit configuration declares native Responses support.
+- Native pi-ai Responses is mandatory for a provider family whose accepted contract is Responses-native. A lossy Chat Completions bridge is not an acceptable Codex implementation.
+- Provider discovery never grants authority. The OpenKit profile, readiness state, model allowlist, caller authorization, and explicit credential path must all allow the call before pi-ai is invoked.
+- Pi-ai receives no ambient credential. API-key providers use explicitly resolved Vault material, and subscription providers use the exact slot-scoped `Models` instance selected before dispatch.
+- No automatic provider fallback, account fallback, or cross-provider handoff occurs.
 
-- `codex-oauth` remains a special backend because it resolves ChatGPT/Codex subscription credentials, account slots, and Codex-specific Responses behavior.
-- `pi-ai` becomes the only general hosted, gateway, local, and custom LLM backend.
-- OpenAI API providers use pi-ai's OpenAI API families; native `openai-responses` remains required where the selected model and endpoint support Responses, but is the bounded unimplemented part of this accepted contract.
-- OpenAI-compatible custom endpoints use pi-ai `openai-completions` by default and may opt into pi-ai `openai-responses` only when NanoCore provider config declares Responses support explicitly.
-- Provider configuration authors still write OpenKit provider profiles under the vocabulary boundary owned by S41, and the public Gateway keeps the OpenAI-compatible request and response shapes owned by S40.
+## Goals / Non-goals
 
-## Goals
+### Goals
 
-- Delete the steady-state need for NanoCore to maintain a generic OpenAI-compatible HTTP provider client.
-- Use pi-ai for OpenAI, OpenAI-compatible custom endpoints, Anthropic, Google, OpenRouter, xAI, and other future provider families.
-- Keep Codex OAuth separate and explicit.
-- Preserve `/v1/chat/completions` and `/v1/responses` as stable public Gateway entry points.
-- Support native OpenAI Responses behavior through pi-ai instead of bridging every Responses request through Chat Completions.
-- Keep cache-scope input consistent across separately authorized provider-backed Internal Core Role calls, worker agents, and public Gateway callers without promising wire fidelity or a hit.
-- Preserve durable usage evidence for input, output, cache read, cache write, cost estimates, provider, model, and server-owned attribution where available.
-- Fail closed when pi-ai cannot represent an unsupported request field without semantic loss.
+- Maintain one provider mapping, streaming, usage, error, and cancellation implementation.
+- Remove NanoCore's dedicated Codex inference transport and its runtime dependency on Codex app-server.
+- Add Grok subscription inference without creating a dedicated xAI backend.
+- Preserve the public Chat Completions and Responses entry points while using native provider adapters where required.
+- Preserve Codex turn-state continuity and the existing provider-cache optimization through stock pi-ai extension points.
+- Keep credentials explicit, slot-isolated, and Vault-backed.
+- Fail typed when pi-ai cannot represent a requested public Gateway shape without semantic loss.
 
-## Non-goals
+### Non-goals
 
 - Do not change the public Gateway route names or basic OpenAI-compatible shapes.
-- Do not merge Codex OAuth into pi-ai.
-- Do not introduce a standalone cache service, local KV-cache, prompt snapshot store, or prewarming scheduler in this slice.
-- Do not expose raw ownership ids, provider credential ids, prompt text, tool arguments, or raw cache input in provider-visible values or public logs and diagnostics. Durable records may retain caller-asserted public labels only as explicitly non-authoritative metadata; server-owned attribution is the only authority under S43.
-- Do not guarantee cache hits. Providers own actual cache storage, expiry, pricing, routing, and overflow behavior.
-- Do not implement automatic provider fallback or cross-provider handoff.
+- Do not add a plugin framework around pi-ai or maintain a private pi-ai distribution.
+- Do not introduce a standalone cache service, local KV-cache, prompt snapshot store, or prewarming scheduler.
+- Do not guarantee cache hits, provider retention, pricing, or routing behavior.
+- Do not expose raw ownership ids, credential ids, prompt text, tool arguments, raw cache input, pi-ai vocabulary, or upstream response bodies through public logs or errors.
+- Do not implement automatic fallback or quota-aware account switching.
 
 ## Target Backend Model
 
-The final backend split is:
+The clean target is:
 
 ```text
-Codex OAuth provider profiles
-  -> Codex Responses client
-
-All other provider profiles
+OpenKit provider profile + explicit model + authorized caller
+  -> optional subscription account-slot resolution
   -> PiAiGatewayClient
-  -> pi-ai provider registry or NanoCore-synthesized pi-ai custom provider
+  -> slot-scoped pi-ai Models instance or explicit API-key options
+  -> stock pi-ai provider adapter
 ```
 
-The provider registry does not expose `openai-compatible` as a backend. A non-Codex provider uses `pi-ai` unless it is deliberately unsupported. Backend selection never supersedes provider-profile authority: readiness omitted, `ready`, and `degraded` are runnable, `blocked`, `disabled`, and `unknown` fail before credential resolution, and only models explicitly listed by the selected profile may reach pi-ai.
+There is no production backend branch before `PiAiGatewayClient`. If a provider is deliberately unsupported, readiness or capability validation fails before credential resolution. Omitted readiness, `ready`, and `degraded` are runnable; `blocked`, `disabled`, and `unknown` fail closed. The requested model must exactly match one model explicitly listed by the selected OpenKit profile.
 
-The retired `OpenAICompatibleChatClient` migration fixture is removed. Shared OpenAI-compatible wire types and normalized provider errors remain independent of transport selection.
-
-## Current Implementation Projection
-
-Every non-Codex-OAuth provider profile resolves to the pi-ai backend, and production Gateway dispatch no longer uses the hand-written OpenAI-compatible transport. Chat Completions, custom-provider synthesis, streaming conversion, provider-error normalization, and provider-reported usage mapping are implemented through `PiAiGatewayClient`.
-
-Native pi-ai Responses is not implemented. `PiAiGatewayClient.createResponses` and `createResponsesStream` currently convert Responses input to Chat Completions, call the pi-ai Chat path, and convert the result back. This bridge remains valid only for the bounded shapes accepted by S40; unsupported shapes fail explicitly. WP-5A does not implement native Responses, content-index or thinking projection, expanded stop-reason handling, or cancellation partial-usage work, so this bounded native-Responses fidelity gap keeps the spec at `Implementation: Partial`.
+The internal resolved-provider shape does not need a backend discriminator once migration completes. Provider family, endpoint capability, base URL, configured models, optional explicit credential reference, and optional subscription account binding are sufficient to resolve one pi-ai model and invocation path.
 
 ## Request Routing Contract
 
 ### Chat Completions
 
-`POST /v1/chat/completions` requests route to `PiAiGatewayClient` for every non-Codex-OAuth provider. The adapter maps system, developer, user, assistant, and tool messages into pi-ai `Context`, maps function tools to pi-ai tools, maps supported sampling and max-token fields into pi-ai options, and rejects unsupported fields that pi-ai cannot preserve.
+`POST /v1/chat/completions` maps supported system, developer, user, assistant, and tool messages into pi-ai `Context`, maps function tools and supported generation options, and maps output back to the public OpenAI-compatible envelope. When the selected provider is Responses-native, the dispatcher may bridge a Chat Completions request through native Responses only for the bounded text and function-tool shapes named by the public Gateway spec.
 
 ### Responses
 
-`POST /v1/responses` requests must use a native pi-ai Responses route when the resolved provider model and configured endpoint capability speak an OpenAI Responses-compatible API family. This remains the accepted but unimplemented criterion that keeps this spec partial.
+`POST /v1/responses` uses the selected pi-ai native Responses API whenever the model adapter declares Responses support. `openai-codex` subscription profiles use pi-ai's native Codex Responses adapter. OpenAI or compatible profiles use native `openai-responses` only when their resolved capability says `native`.
 
-If a provider is chat-native only, Responses may be bridged through pi-ai Chat Completions only when the request is text-only and the bridge preserves the requested semantics. Built-in Responses tools, file inputs, computer use, remote MCP tools, image inputs, or other shapes that cannot be represented through the bridge must fail with `unsupported_gateway_feature`.
+A chat-native provider may serve a Responses request through pi-ai Chat Completions only when the request is text-only and conversion preserves instructions, function tools, tool results, sampling, reasoning effort, streaming order, and terminal usage semantics. Built-in Responses tools, remote MCP tools, computer use, file input, image input, or another unrepresentable shape fails with `unsupported_gateway_feature` before the provider effect.
 
 ### Custom OpenAI-Compatible Endpoints
 
-Runtime custom provider profiles synthesize a pi-ai provider when no pi-ai catalog entry exists. The default synthesized API family is `openai-completions`.
-
-A custom endpoint may use `openai-responses` only if the provider profile explicitly declares Responses-native support. NanoCore must not guess Responses support from URL shape or model name.
+When no stock pi-ai catalog provider represents a configured custom endpoint, NanoCore synthesizes one bounded pi-ai provider definition from the OpenKit profile. The default API family is `openai-completions`; `openai-responses` requires an explicit OpenKit capability declaration. NanoCore must not guess capability from URL shape or model name.
 
 ### Provider Capability Matrix
 
-Provider endpoint capability remains explicit:
+Endpoint capability remains OpenKit-owned configuration vocabulary:
 
 ```ts
 {
@@ -119,85 +117,130 @@ Provider endpoint capability remains explicit:
 }
 ```
 
-The capability matrix is still OpenKit configuration vocabulary. The pi-ai model registry may inform adapter selection and metadata only after NanoCore proves the profile dispatchable and the request model explicitly configured; it must not silently enable a provider, model, endpoint family, or credential path that OpenKit config did not enable. The same predicate filters `/v1/models` together with the Gateway provider allowlist, so discovery never advertises blocked, disabled, unknown, disallowed, or adapter-discovered supply.
+Pi-ai catalog data may select an internal adapter only after the profile and model are authorized. It must not silently enable a provider, model, endpoint family, base URL, or credential path. The same dispatchability predicate filters `/v1/models`.
 
-Every provider failure crossing the public JSON or SSE boundary uses a stable OpenKit code and fixed generic message. Upstream error text, provider-native codes and types, response bodies, pi-ai vocabulary, and stack traces remain internal even when the error classifier uses them to select authentication, rate-limit, context-overflow, invalid-request, provider-unavailable, or generic failure classes.
+### Keyless Local Endpoints
 
-### Keyless local endpoints
+Hosted profiles that require a credential fail before pi-ai when no explicit credential resolves. NanoCore never lets pi-ai read ambient provider credentials.
 
-Hosted provider profiles that require a credential fail before pi-ai when NanoCore cannot resolve their explicit configured secret. NanoCore never lets pi-ai read ambient provider credentials.
+When a configured local or private endpoint explicitly requires no API key, the adapter may supply the fixed non-secret placeholder `openkit-keyless` only when the stock pi-ai adapter rejects a missing option before contacting that endpoint. The placeholder carries no authority, may be sent only to that configured endpoint, is never persisted, and does not authorize provider-specific headers or a second transport.
 
-When a configured local or private provider explicitly requires no API key, `PiAiGatewayClient` supplies the fixed non-secret value `openkit-keyless` only because the stock pi-ai OpenAI Completions adapter rejects a missing API-key option before contacting a keyless endpoint. This value carries no authorization or credential authority, is never persisted or exposed through public logs or evidence, and may be sent only to the profile's configured endpoint. The endpoint must accept or ignore it; rejection remains an ordinary provider failure. This bounded dependency compromise does not authorize ambient credential fallback, provider-specific headers, or a second transport.
+## Subscription Provider Mapping
+
+Subscription-backed profiles follow `docs/specs/20260721-provider_subscription_accounts.md`. Dispatch resolves `(subscriptionProviderId, accountSlotId)` before model lookup and uses only that pair's pi-ai `Models` instance. The credential store rejects any provider or slot mismatch. Concurrent requests for different accounts therefore share adapter code but not credential state or refresh locks.
+
+Only a profile selected by the provider-subscription specification's deterministic recognized-family algorithm, with `kind: oauth`, a strict `extensions.openkit.subscriptionAccount` binding, and no `secretRef` or `baseUrl`, enters this slot path. A recognized normalized vendor wins over id, a recognized id is used when vendor is unrecognized, and conflicting recognized families are invalid. Ordinary xAI `direct`, `gateway`, and `custom` profiles stay on their explicit API-key or provider path and never acquire subscription credentials implicitly.
+
+Pi-ai performs login-time and inference-time refresh through the slot-scoped store. The Gateway does not start Codex app-server, read `CODEX_HOME`, inspect `auth.json`, or maintain a second refresh implementation. Authentication failure for one slot fails that request and marks only that slot unavailable; it never falls through to another account.
+
+Stock pi-ai request identity is accepted for provider-private headers such as `originator`. OpenKit must not fork or patch pi-ai to send `originator: openkit`; the currently accepted stock value is `pi`. This field is not public OpenKit vocabulary or an authority boundary.
+
+## Codex Turn-State Continuity
+
+Codex may return opaque `x-codex-turn-state` response metadata that must be supplied on the next request in the same provider conversation. NanoCore stores that opaque value only in the bounded process/session continuity owner already used by the Gateway; it never parses it, logs it, returns it publicly, or treats it as credential or durable work provenance.
+
+Codex Responses Lite message-anchored tools remain client-executed declarations, not provider effect authority. NanoCore accepts only top-level local `custom` and `function` tools, function-only `namespace` children, and the exact top-level `tool_search` declaration; it rejects duplicate callable keys, provider-executed tools, and malformed declarations before credential or provider access, then forwards the accepted prefix through stock pi-ai. Pi-ai owns provider parsing and preserves semantic tool-call blocks; NanoCore only reconstructs and replays the public Responses item id, call id, namespace, function arguments, custom input, and matching tool output. Unknown native request fields fail with `unsupported_gateway_feature` rather than being silently dropped.
+
+The pi-ai call supplies an existing state through the generic request-header option and captures the next state through pi-ai's generic response callback. A new value is accepted only from a successful `2xx` response for the same provider, model, account slot, and authorized cache/session scope. Errors, redirects, and another slot's response cannot replace it.
+
+The initial Codex implementation forces pi-ai's SSE transport because the reviewed WebSocket adapter does not expose handshake response headers through the required callback. WebSocket may be enabled only after the pinned pi-ai version provides equivalent response-metadata capture and focused tests prove turn-state parity. This is a bounded transport selection, not a second Codex client.
 
 ## Prompt Cache Contract
 
-### Cache scope input
+### Cache Scope Input
 
-OpenKit provides one normalized cache scope to `PiAiGatewayClient`. The scope is adapter input only; it does not prove that pi-ai or an upstream provider emitted a particular wire field, retained a cache entry, or produced a cache hit.
-
-The scope may use the following non-secret values when their owner can prove them:
+NanoCore's `PromptCacheKeyResolver` remains the unique owner of normalized cache scope. It may use the following non-secret inputs when their authority is proven:
 
 ```text
 providerId
 model
-codexOAuthAccountSlotId when relevant
-workspaceId
-threadId
+subscriptionProviderId when subscription-backed
+accountSlotId when subscription-backed
+authorized workspaceId
+server-resolved threadId
 agentSessionId
 sessionId
+explicit prompt_cache_key or authorized public hint
 ```
 
-For a separately authorized Internal Core Role or worker call, trusted attribution must come from server-owned request identity, the authenticated actor and authorized Workspace, a server-resolved thread, and AEP-owned turn, agent, and agent-session records when available. Public request metadata must never supply or override those owners, although caller-asserted values may be retained separately as best-effort labels. This cache contract constrains an already-authorized call and never authorizes one.
+The resolver hashes normalized scope before any provider-facing use. Raw workspace, thread, subscription-provider, account-slot, session, credential, prompt, or user identifiers must not cross the provider or public diagnostics boundary. The full `(subscriptionProviderId, accountSlotId)` pair participates in the scope so equal slot ids under different providers or accounts cannot share a cache or Codex turn-state lineage accidentally.
 
-Public Gateway callers may optionally provide `prompt_cache_key` or `metadata.openkit.*` as cache-scope or diagnostic hints. A caller-supplied Workspace id is only requested scope until the authenticated actor is authorized for that Workspace. Other caller-supplied lineage may be retained as caller-asserted best-effort labels but never becomes trusted provenance or authority. Calls with no Workspace scope still dispatch and produce process-local diagnostics only; a supplied unauthorized Workspace fails closed before provider dispatch.
+For Internal Core Role and worker calls, trusted attribution comes only from server-owned identity, authorization, Workspace, thread, turn, agent, and AgentSession records. Public Gateway metadata is advisory: an explicit Workspace id must be authorized before use, other fields remain caller-asserted labels, and a call without Workspace scope remains dispatchable with process-local diagnostics.
 
-Server-owned scope takes precedence for trusted attribution. When no stable cache hint or server-owned scope is available, NanoCore uses request-scoped cache input. Any provider-facing derivative must not expose raw workspace, thread, session, account, provider credential, prompt, or user identifiers.
+### Pi Mapping
 
-### Provider mapping
+`PiAiGatewayClient` passes the derived value through pi-ai's supported `sessionId` and `cacheRetention` inputs when present. Provider-family adapters may translate those generic inputs differently or ignore them. This contract proves only that OpenKit supplied stable bounded input; it does not promise a particular upstream header, breakpoint, cache key, or retained entry.
 
-`PiAiGatewayClient` passes normalized cache scope and retention input to pi-ai as `sessionId` and `cacheRetention` when present. This proves adapter input only; it does not require or claim an exact upstream cache key, header, breakpoint, sticky route, or other provider wire representation. A provider path that does not support cache input may ignore it without changing request ownership or success semantics.
+Codex turn state and prompt cache scope are related continuity inputs but remain distinct values. The opaque turn state is never hashed into diagnostics, and a cache-scope match is required before a stored turn state can be reused.
 
-### Cache effectiveness evidence
+### Effectiveness Evidence
 
-Only provider-reported cache-read and cache-write quantities establish cache effectiveness. Their absence means effectiveness is unknown, not that a cache miss occurred. Usage records and read models preserve those quantities when available without exposing raw cache input.
+Only provider-reported cache-read and cache-write quantities prove cache effectiveness. Their absence means unknown, not miss. Durable usage evidence preserves those quantities when available and never infers a hit from latency, repeated input, session identity, or turn-state reuse.
 
-No cache-fidelity class, wire-fidelity record, inferred hit, or successful cache hit is required by this contract.
+## Usage, Errors, And Cancellation
+
+Pi-ai usage is normalized into input, output, total, cache-read, cache-write, and cost-estimate records when the provider supplies them. Missing values remain absent; NanoCore does not invent usage.
+
+Every provider failure crossing JSON or post-start SSE uses a stable OpenKit code and fixed generic message. Pi-ai messages, provider-native codes, raw response bodies, auth payloads, and stack traces remain internal even when used to classify authentication, rate limit, context overflow, invalid request, provider unavailable, cancellation, or generic failure.
+
+Cancellation propagates through the pi-ai request signal. If cancellation or transport loss occurs after an external provider effect may have started, the result may be interrupted or unknown under the Core/external-effect boundary; NanoCore does not retry automatically or dispatch to a different provider.
+
+## Current Implementation Projection
+
+Every dispatchable provider now routes through `LLMGatewayProviderDispatcher` and `PiAiGatewayClient`. Subscription-backed profiles resolve their explicit provider-slot pair to the manager-owned stock pi-ai `Models` runtime before invocation; there is no active provider-specific dispatcher branch or account fallback. Custom-provider synthesis, Chat Completions, bounded endpoint bridging, streaming conversion, provider-error normalization, cancellation, and usage mapping remain unified in this path.
+
+Codex subscription inference uses stock pi-ai's native Responses adapter with SSE response-header capture for `x-codex-turn-state`; xAI subscription inference uses the same pi-ai client through its pair-scoped runtime. The exact `0.84.2` pin preserves Codex Responses namespaces and custom tool calls through pi-ai's semantic tool-call events without a second transport. `PromptCacheKeyResolver` remains the single cache-scope owner, the dispatcher hashes the provider/model/provider-slot scope, and the pi-ai boundary maps accepted cache input to `sessionId` and `cacheRetention` while durable effectiveness evidence uses only provider-reported usage. OpenKit accepts stock pi-ai request identity and maintains no private provider patch.
+
+The former dedicated Codex Responses client, app-server account flow, Codex-home credential path, and `codex-oauth` artifacts have been physically removed. This spec remains `Partial` until the owner-governed Codex real-use runs complete the accepted transport evidence.
+
+## Accepted Design
+
+The accepted implementation keeps one cohesive `PiAiGatewayClient` and small mapping modules grouped by real API-family differences. Subscription account selection happens before this client; provider-specific authentication state does not create provider-specific inference clients. Codex turn state uses pi-ai's generic header and response callback with SSE transport. Cache scope remains an OpenKit-owned normalized input passed through generic pi-ai options. No wrapper hierarchy, provider plugin system, dedicated Codex transport, or private pi-ai patch is needed.
 
 ## Rollout / Remaining Implementation
 
-Non-Codex backend consolidation and removal of the hand-written transport are complete. The remaining accepted work is native pi-ai Responses routing and its focused mapping tests. WP-5A explicitly excludes that work; until a later owning slice implements it, bridgeable Responses requests use Chat Completions conversion and non-bridgeable requests fail explicitly. No backward-compatible internal routing alias is required.
+Remaining rollout is owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md`. After the provider-subscription storage and Vault foundation lands without activating the authored extension or public routes, one atomic kernel cutover implements profile classification, provider-neutral schemas and live handlers, Core Client and generated contract projections, pi-ai authentication, native Responses, subscription-slot selection, Codex turn-state continuity through generic hooks, stock pi-ai originator behavior, cache and usage parity, and removal of the active `codex-oauth` branch and dedicated client. Authentication and inference cannot cut over in separate live packages because the resulting intermediate state would require a forbidden bridge, dual client, dual credential path, alias, or stub.
 
-## Testing Strategy
+No internal compatibility alias remains for `codex-oauth`, and no app-server fallback remains after cutover.
 
-- L1: provider config tests prove every non-Codex provider resolves to pi-ai and Codex OAuth resolves to the Codex client.
-- L1: cache-scope tests prove server-owned attribution cannot be overridden by public metadata, optional public hints and request fallback remain dispatchable, raw ownership ids are not exposed, and cache effectiveness is read only from provider-reported cache-read and cache-write usage.
-- L1: pi-ai adapter tests prove Chat Completions mapping, custom OpenAI-compatible provider synthesis, the fixed non-authorizing keyless-local placeholder, unsupported field rejection, and no ambient credential fallback. Native Responses mapping tests are required before this spec may become `Implemented`.
-- L2: contract tests prove public Gateway error envelopes, streaming chunks, tool-call deltas, usage normalization, and no pi-ai vocabulary leakage.
-- L3: black-box Gateway tests prove `/v1/chat/completions` and `/v1/responses` work through pi-ai for OpenAI-compatible and non-OpenAI providers.
-- L5: NanoCore smoke proves boot with pi-ai only for non-Codex provider dispatch.
-- L6: the quota-gated real-provider story uses one configured non-custom provider and proves a successful non-streaming call, streaming completion, accepted cache-scope input, provider-reported cache-read or cache-write usage when available, and zero secret or cache-input leaks. It does not require a custom provider or a cache hit.
+This removal is limited to the Gateway and provider-subscription account paths. It does not remove or rename `/api/app/vault/bootstrap/codex-auth-json` and does not alter worker-runtime Codex app-server ownership.
 
-## Acceptance Criteria
+## Testing Strategy / Acceptance Criteria
 
-- No production Gateway request path uses the hand-written OpenAI-compatible client for non-Codex providers.
-- OpenAI `/v1/responses` traffic can route through pi-ai as native Responses when configured.
-- Chat Completions and Responses public wire shapes remain compatible with existing accepted Gateway tests.
-- Custom OpenAI-compatible endpoints route through pi-ai-synthesized providers.
-- Keyless local or private endpoints receive only the fixed non-secret `openkit-keyless` compatibility value; hosted profiles still require an explicitly resolved credential and pi-ai receives no ambient provider secret.
-- Separately authorized provider-backed Internal Core Role and worker calls derive trusted persistent request, Workspace, thread, turn, agent, and agent-session ownership only from server-owned and AEP-owned records; public metadata may persist only as caller-asserted best-effort labels.
-- Public metadata remains optional hints; a public call with no Workspace scope still dispatches and remains process-local-only, while a supplied unauthorized Workspace fails closed.
-- Provider-visible cache derivatives and public logs or diagnostics expose no raw ownership ids, prompt text, tool arguments, or secrets; any caller-asserted public labels in durable usage remain explicitly non-authoritative, while only server-owned attribution carries authority under S43.
-- Usage evidence records cache read and cache write quantities when provider data is available.
-- Gateway diagnostics may show provider-reported cache effectiveness without exposing raw cache input; no wire-fidelity class, inferred hit, or successful cache hit is required.
+- L1 provider-resolution tests prove every dispatchable provider reaches `PiAiGatewayClient`, no backend discriminator or Codex branch remains, and subscription profiles require an explicit valid slot.
+- L1 adapter tests prove native Codex Responses mapping, bounded bridges, custom-provider synthesis, keyless-local behavior, no ambient credentials, generic originator acceptance, SSE turn-state round trips, cross-slot turn-state isolation, cancellation, and stable error normalization.
+- L1 cache tests prove the generic subscription slot participates in hashed scope, public metadata cannot override server-owned authority, raw ids never leave the resolver, and effectiveness uses only provider-reported usage.
+- L2 contract tests prove public Chat Completions and Responses envelopes, streaming chunks, tool-call deltas, usage normalization, and no pi-ai or provider-private vocabulary leakage.
+- L3 black-box tests prove OpenAI-compatible, Codex subscription, and xAI subscription profiles all use the unified client; two overlapping subscription slots cannot cross credentials, cache scope, or turn state.
+- L3 opt-in real-provider evidence proves native Codex Responses, streaming where supported, refresh when safely exercisable, accepted cache input, and provider-reported cache usage when available without requiring a cache hit.
+- L5 NanoCore smoke proves boot and Gateway service with no Codex app-server process, `CODEX_HOME`, `auth.json`, dedicated Codex client, or ambient credential dependency.
+
+Acceptance requires: all production LLM dispatch uses stock pi-ai; native Codex Responses preserves the accepted public semantics; Codex turn state survives sequential requests without crossing account or scope boundaries; the old `codex-oauth` backend and dedicated client are absent; app-server is not started or queried by the Gateway/account path; OpenKit's cache resolver remains authoritative; and no credential, raw scope, pi-ai vocabulary, or upstream error leaks publicly.
 
 ## Alternatives Considered
 
-**Keep the native OpenAI-compatible client permanently.** This keeps current OpenAI wire control, but it leaves two general provider backends and duplicates request mapping, streaming parsing, usage extraction, error normalization, and cache behavior. This is rejected as the steady state.
+**Keep the dedicated Codex client.** Rejected because it preserves duplicate request, streaming, usage, error, refresh, and cache behavior for one provider family.
 
-**Use pi-ai only for non-OpenAI providers.** This was the first adoption slice and remains useful history, but it leaves OpenAI and OpenAI-compatible providers on a separate backend even though pi-ai already has the relevant API families.
+**Add a dedicated xAI subscription client beside Codex.** Rejected because it repeats the same maintenance problem and bypasses pi-ai's provider ownership.
 
-**Create an OpenKit cache service.** This is premature. Provider caches are upstream KV-cache mechanisms, not durable OpenKit prompt stores. OpenKit should first pass stable cache scopes and observe cache read/write evidence.
+**Use pi-ai only for non-OpenAI providers.** Rejected because it leaves two general transport stacks despite pi-ai supporting the required OpenAI and subscription API families.
 
-## Deferred Work
+**Create an OpenKit cache service.** Rejected because current providers own their caches; OpenKit needs stable scope input and provider-reported evidence, not another durable cache platform.
 
-- Native multimodal Responses support can expand once the pi-ai adapter maps the relevant provider APIs without lossy bridge behavior.
+**Patch pi-ai for an OpenKit originator or Codex-specific transport.** Rejected because neither private wire value justifies a fork, and generic pi-ai hooks cover the required continuity behavior.
+
+## Deferred / Future Work
+
+- WebSocket Codex transport after pi-ai exposes response-header metadata with tested parity.
+- Native multimodal Responses expansion after pi-ai can preserve the relevant public shapes without lossy conversion.
+- Credential-backed xAI real-use activation remains governed by `docs/specs/20260721-provider_subscription_accounts.md`.
+- New provider families only after their adapter, entitlement, credential, and capability boundaries are accepted.
+
+## Links
+
+- `docs/specs/20260526-llm_gateway_responses_api.md`
+- `docs/specs/20260721-provider_subscription_accounts.md`
+- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
+- `docs/specs/20260703-audit_usage_evidence_records.md`
+
+- pi-ai upstream: `https://github.com/earendil-works/pi/tree/main/packages/ai`

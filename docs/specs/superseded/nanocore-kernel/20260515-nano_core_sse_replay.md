@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-29
+current-guidance: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260528-core_client_boundary.md`"
+decision-evidence: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260528-core_client_boundary.md`"
+---
 # Nano-Core Turn SSE Replay
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-29
-Current Guidance: `docs/core/protocol.md`, `docs/core/communication.md`, `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260528-core_client_boundary.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

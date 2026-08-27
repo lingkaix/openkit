@@ -1,19 +1,20 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Worker Agent Capability
-
-Status: Accepted
-Implementation: Partial
 
 ## Summary
 
 This spec defines the target design for worker-facing agent capabilities beyond the current LLM gateway.
 
-The clean target is one governed worker agent capability plane at `https://capability.local/v1`, plus one AEP-resolved OpenAI-compatible LLM route. Backend-local inference may use `https://inference.local/v1`; packages that require complete attribution use the exact authenticated NanoCore worker-inference base URL instead. Worker agents should not directly discover, install, authenticate, or route privileged services. NanoCore owns the catalog, policy check, routing, credential injection, metering, audit, error normalization, and gateway projection.
+The clean target keeps future `https://capability.local/v1` and the accepted logical `inference.local` binding as distinct worker-local APIs. The latter has the adapter-owned fixed URL `http://127.0.0.1:17892/inference/v1`; the AEP carries no native URL. Sandbox Integration projects them onto `/capabilities/*` and `/inference/*` over the sandbox's one standard HTTP/2 session inside one stock RelayStream; worker control remains `/worker-control/*`. Each family retains a distinct token or reference, scope, payload and concurrency bounds, flow control, retry and failure semantics, usage, and audit. Worker agents should not directly discover, install, authenticate, or route privileged services. NanoCore retains capability semantics while the NanoHost owns only the outer transport projection.
 
 ## Owns
 
 - The worker-facing agent capability plane and its gateway projection.
 - Runtime capability families, catalog entries, request lineage, and capability-call summaries.
-- The relationship between the future `capability.local` projection, backend-local inference, trusted AEP-resolved worker-inference routes, and durable capability, usage, and audit records.
+- The relationship between the future `capability.local` projection, worker-local `inference.local`, their distinct route credentials, and durable capability, usage, and audit records.
 - Gateway-mediated MCP, knowledge, external API, network, vault-mediated credential use, LLM, artifact, and diagnostic capability boundaries.
 - Capability error normalization, rate-limit hooks, budget hooks, metering hooks, and audit hooks for worker-facing capability calls.
 
@@ -27,6 +28,7 @@ The clean target is one governed worker agent capability plane at `https://capab
 - Non-gateway runtime, sandbox, storage, or workspace-sync metering.
 - Runtime-internal sub-agent provenance, trusted worker-inference session binding, and runtime cache lineage.
 - End-user Agent Skill Interface behavior.
+- Runtime Epoch lifecycle, RelayStream carriage, Sandbox Integration, and outer route transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 ## Core References
 
@@ -54,10 +56,11 @@ The clean target is one governed worker agent capability plane at `https://capab
 - Do not let workers install arbitrary MCP servers or tools at runtime.
 - Do not define provider-specific API payload schemas except for gateway envelopes.
 - Do not make `inference.local` a generic capability endpoint.
+- Do not add a direct sandbox-to-NanoCore route, a second control path, or more than the current one active worker slot.
 
 ## Background
 
-`docs/core/agent-capability.md` defines the conceptual boundary. `docs/specs/20260629-worker_runtime_communication_model.md` reserves the future `capability.local` plane plus one AEP-resolved inference projection: backend-local `inference.local` or the authenticated worker-inference base URL when complete attribution is required.
+`docs/core/agent-capability.md` defines the conceptual boundary. `docs/specs/20260802-nanohost_runtime_and_transport.md` fixes the transport projection: Sandbox Integration exposes worker-local `capability.local` and `inference.local` while carrying `/capabilities/*` and `/inference/*` alongside, but semantically separate from, `/worker-control/*`.
 
 The missing design is the first complete non-LLM worker agent capability contract.
 
@@ -67,7 +70,7 @@ The worker capability plane is not currently implemented. `packages/config-schem
 
 The protocol and storage foundations remain: `packages/worker-protocol` defines `WorkerCapabilityCallSummary` as a transcript/import summary schema, `packages/protocol` defines product-level `CapabilityCall`, `UsageRecord`, and `AuditEvent`, and the shared usage ledger supports implemented LLM producers. A worker-reported summary is evidence for import and does not prove that NanoCore offered or executed a capability call.
 
-The generic public LLM gateway and the separately governed worker-inference path are independent of this disabled capability plane. Runtime provenance and trusted worker-inference remain governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`, whose production proof is complete; that result does not implement or authorize this capability plane.
+The generic public LLM gateway and the legacy direct worker-inference path are independent of this disabled capability plane. Runtime provenance remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; its historical production proof does not implement the accepted `inference.local` transport, the `capability.local` plane, or the RelayStream plus nested standard HTTP/2 precondition.
 
 Network egress, external API routing, generic future credential classes, the full Capability Catalog, baseline rate-limit and budget enforcement, transformer-pipeline routing, Knowledge and artifact routes, diagnostics, and MCP tool supply all remain future implementation work under this accepted contract.
 
@@ -77,15 +80,17 @@ Server capability flags exposed through NanoCore metadata and consumed by `packa
 
 All privileged worker agent capability access goes through one NanoCore-owned gateway projection.
 
-The worker-visible endpoints are:
+The worker-visible local APIs and their outer target route families are:
 
 ```text
 https://capability.local/v1
-https://inference.local/v1                     # backend-local inference
-<AEP workerInferenceBaseUrl>                    # complete attributed inference
+  -> /capabilities/*                            # capability token
+http://127.0.0.1:17892/inference/v1
+  -> /inference/*                               # inference token
+/worker-control/*                               # distinct worker-control token
 ```
 
-When implemented, `capability.local` will carry OpenKit capability calls. The AEP-resolved LLM route carries OpenAI-compatible requests through either backend-local inference or the authenticated worker-inference route. Every governed projection must produce capability, usage, and audit records with the same lineage model.
+When implemented, `capability.local` will carry OpenKit capability calls, while the logical `inference.local` binding carries OpenAI-compatible inference calls through the fixed loopback URL above. Shared HTTP/2 carriage does not merge their authority or behavior: each family authenticates its own token or reference and preserves its own payload, concurrency, flow-control, retry, failure, usage, and audit contract.
 
 The first route projection may use family-specific routes such as `/knowledge/search` and `/knowledge/read` because they are easier for runtime-native clients and policy schemas to type. A generic `POST /calls` route is optional future work, not the first canonical requirement.
 
@@ -133,7 +138,7 @@ Catalog source records should be file-system-first or manifest-backed where poss
 
 ## Request Envelope
 
-The future thin worker client supplies:
+The future thin worker client supplies through the separately authenticated capability route:
 
 - capability call id or idempotency key
 - worker sequence when emitted by the shim
@@ -142,7 +147,7 @@ The future thin worker client supplies:
 - content digests for large payload references
 - request timestamp
 
-NanoCore derives authoritative workspace, thread, turn, agent-session, package-snapshot, capability-id, and family context from the authenticated package session, selected route, and resolved catalog. Worker-supplied lineage is never authority.
+NanoCore derives authoritative workspace, thread, turn, AgentSession, package-snapshot, capability-id, and family context from the authenticated package session, selected route, and resolved catalog. Worker-supplied lineage is never authority.
 
 ## CapabilityCall Record
 
@@ -267,7 +272,7 @@ Minimum dimensions:
 - workspace id
 - thread id when available
 - turn id when available
-- agent session id
+- AgentSession id
 - package snapshot id
 - capability id
 - capability family
@@ -302,8 +307,8 @@ The worker receives an actionable error without raw upstream secrets or backend 
 
 ## Resolved Decisions
 
-- Worker-facing capabilities use one governed capability plane at `capability.local`; LLM clients use the specialized OpenAI-compatible route resolved by the AEP.
-- Backend-local `inference.local` remains an LLM endpoint, not a generic capability endpoint, and packages that require complete attribution use the authenticated NanoCore worker-inference route instead.
+- Worker-facing capabilities use one governed worker-local capability API at `capability.local`, projected by Sandbox Integration onto `/capabilities/*` with a capability token distinct from inference and worker control.
+- Worker-local `inference.local` remains an LLM endpoint, not a generic capability endpoint, and Sandbox Integration projects it onto `/inference/*` with its own inference token and complete AEP and lease binding.
 - Family-specific routes are acceptable for the first worker capability projection. They must still produce canonical `CapabilityCall` semantics.
 - `knowledge.*` is the canonical family name. The older `memory.*` implementation projection has been removed without compatibility aliases.
 - Capability catalog sources should remain manifest- or file-system-first, while the AEP stores the resolved per-session projection.
@@ -314,7 +319,7 @@ The worker receives an actionable error without raw upstream secrets or backend 
 
 ## Deferred / Future Work
 
-- Rebuild the direct `capability.local` projection, thin worker client, and initial Knowledge, artifact, and diagnostic route families without restoring a sidecar or creating a second control path.
+- Implement the Sandbox Integration `capability.local` projection, thin worker client, and initial Knowledge, artifact, and diagnostic route families without restoring a sidecar or creating a second control path.
 - Add worker capability routes for external API, network, and future typed tool calls after those roadmap areas are activated.
 - Add generic vault-mediated capability routes for credential classes not covered by the current non-capability Codex auth JSON runtime-file and Git push paths.
 - Add capability catalog schema and resolution records that distinguish canonical catalog sources from AEP snapshots.
@@ -354,3 +359,4 @@ The worker receives an actionable error without raw upstream secrets or backend 
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`

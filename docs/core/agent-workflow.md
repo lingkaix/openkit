@@ -1,10 +1,11 @@
+---
+status: Accepted
+---
 # Agent Workflow Model
-
-Status: Accepted
 
 This document owns the Core workflow mechanisms used to coordinate worker-agent work.
 
-This document does not own user-facing work vocabulary, agent runtime substrate, agent session continuity, agent supply, agent capability routing, protocol record schemas, channel-specific Agent Skill Interface behavior, Skill implementation, App API endpoints, storage schemas, UI components, or agent-private task graphs.
+This document does not own user-facing work vocabulary, agent runtime substrate, AgentSession continuity, agent supply, agent capability routing, protocol record schemas, channel-specific Agent Skill Interface behavior, Skill implementation, App API endpoints, storage schemas, UI components, or agent-private task graphs. The Internal Agent Runtime specification owns the role-agnostic bounded internal Agent runtime, while this document owns only the durable workflow mechanisms composed around it.
 
 `Agent Workflow` is the Core-owned mechanism layer for composing planned, bounded, reviewable, resumable worker-agent work.
 
@@ -31,20 +32,19 @@ Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's d
 - Mechanisms come first, modes come second. Core should stabilize primitives that many workflows can reuse before treating one product mode as canonical.
 - Core owns workflow truth. Worker agents may execute work, and channels may operate the workflow, but durable workflow state belongs to Core.
 - Default setup is not a universal model. Goal Mode, one-step loops, Action Center projections, artifacts, and evidence bundles form the current recommended setup, not the definition of all agent workflows.
-- Keep the default backbone small. Use workspace, thread, turn, item, artifact, approval, and agent session records before promoting richer workflow objects.
+- Keep the default backbone small. Use workspace, thread, turn, item, artifact, approval, and AgentSession records before promoting richer workflow objects.
 - Move work forward in bounded, reviewable steps. A worker step should produce observable items, artifacts, evidence, pending human attention, or a terminal state before the next step begins.
 - Deliver the accepted worker request itself. A Turn-owned worker input must preserve the exact Coordinator-composed request; routing summaries, dashboard projections, context summaries, and checkpoints cannot substitute for that request or prove its delivery.
 - Keep human decisions explicit. Plan approval, user input, sensitive action approval, review, retry, refinement, acceptance, and stop decisions must be visible and auditable.
 - Treat channels as projections. Web UI, the unified end-user Agent Skill Interface, desktop apps, automations, and future integrations may operate the same workflow mechanisms, but they do not redefine them.
 - Keep agent-private loops private until Core needs them. Tool retries, model self-reflection, private planner traces, and runtime-native task graphs should not become core records unless Core must schedule, retry, show, approve, audit, or attach artifacts to them.
-- Make graph semantics earned. Dependencies, attempts, branches, joins, and lineage should be promoted only after real workflows require them beyond item causality and normal turn structure.
 - Avoid a `Core Agent` concept by default. Workflow orchestration is a Core responsibility, not a separate canonical agent unless a future design proves that abstraction is necessary.
 
 ## Canonical Terms
 
 `Agent Workflow` is the Core-owned mechanism layer for composing planned, bounded, reviewable worker-agent work inside a workspace and thread.
 
-`Workflow Mechanism` is a reusable Core primitive for workflow composition, such as intent, objective, phase, plan, bounded step, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, branch, join, or lineage.
+`Workflow Mechanism` is a reusable Core primitive for workflow composition, such as intent, objective, phase, plan, bounded step, gate, decision, evidence, checkpoint, context compaction, handoff, retry, or refinement.
 
 `Workflow Mode` is a named composition of workflow mechanisms for a recognizable way of doing work.
 
@@ -86,10 +86,6 @@ Goal Mode and the accepted unified `openkit` Skill's loop recipe are OpenKit's d
 
 `Goal Mode` is the current built-in workflow mode for objective-driven, reviewable worker-agent work.
 
-`Workflow Graph` is a future optional structure for representing dependencies, attempts, branches, joins, lineage, evaluation, and retry semantics when the default thread, turn, and item structure is not expressive enough.
-
-`Attempt`, `Dependency`, `Branch`, `Join`, and `Lineage` are candidate graph terms. They are not default protocol objects until promoted by a later accepted design.
-
 ## Boundaries And Non-Goals
 
 Agent workflow owns:
@@ -99,14 +95,13 @@ Agent workflow owns:
 - default workflow setup semantics
 - planning, plan approval, bounded step, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, stop, and closeout semantics
 - the relationship between workflow mechanisms, current Goal Mode, the unified Agent Skill loop recipe, worker execution, artifacts, evidence, and review
-- the boundary for future dynamic workflow and graph semantics
 - the rule that prevents premature `TaskRun`-style core concepts
 
 Agent workflow does not own:
 
 - user-facing task vocabulary, which belongs to `work-model.md`
 - agent, runtime, turn assignment, and runtime lifecycle semantics, which belong to `runtime-model.md`
-- agent session continuity, snapshots, resume, fork, clone, rollback, and recovery, which belong to `agent-session.md`
+- current AgentSession continuity, exact reconnect, interruption, and fresh-session fallback, which belong to `agent-session.md`
 - agent catalogs, setup contracts, and profile supply, which belong to `agent-supply.md`
 - LLM, MCP, tool, network, credential, context, usage, and rate-limit supply for worker agents, which belongs to `agent-capability.md`
 - protocol schemas, commands, events, and lifecycle enum definitions, which belong to `protocol.md` and `communication.md`
@@ -123,7 +118,7 @@ Use existing records first:
 - item for observable history
 - artifact for durable outputs
 - approval request for human decisions
-- agent session for runtime continuity
+- AgentSession for runtime continuity
 
 The reusable mechanism flow is:
 
@@ -136,7 +131,7 @@ intent or objective
   -> bounded worker step
   -> items, artifacts, evidence, audit projections
   -> checkpoint or context compaction when needed
-  -> continue, refine, retry, handoff, branch, join, pause, block, accept, or close
+  -> continue, refine, retry, handoff, pause, block, accept, or close
 ```
 
 A workflow mode may use all of these mechanisms or only a subset. A small workflow may skip explicit planning. A high-risk workflow may require plan approval, review gates, evidence collection, and explicit closeout.
@@ -224,7 +219,7 @@ Planning should be reviewable when it controls non-trivial work.
 
 Context compaction is a workflow mechanism for continuing work without carrying the entire raw thread, runtime state, or source material forward.
 
-It may be useful before long-running continuation, handoff, retry, recovery, branch comparison, worker restart, or context-limited execution.
+It may be useful before long-running continuation, handoff, retry, recovery, worker restart, or context-limited execution.
 
 Context compaction must preserve traceability to the underlying thread items, artifacts, evidence, knowledge pages, source references, decisions, and checkpoints that justify the compacted context.
 
@@ -288,36 +283,11 @@ The bundled CLI is a deterministic channel facade over public Core or App API co
 
 The Skill's loop guidance is a workflow recipe for the default setup. It should drive one bounded step at a time, read workflow state after each step, present evidence, and ask the human before continuing when a gate or external side effect is involved.
 
-## Dynamic Workflow And Graph Semantics
-
-The default model should not introduce a workflow graph when item causality and turn structure are enough.
-
-A future workflow graph may be justified when Core must represent:
-
-- dependencies between multiple turns
-- multiple attempts for one planned operation
-- parallel branches that later merge
-- explicit implementation-review pipelines
-- scheduled or cron-derived recurring work
-- reproducible retry lineage
-- artifact provenance across many turns
-- evaluation loops that compare competing attempts
-- cross-thread or cross-workspace lineage
-- dynamically authored workflow templates or repeatable workflow recipes
-
-These requirements should be proven by product or runtime behavior before becoming stable core schema.
-
-If promoted later, a workflow graph should organize or reference objectives, phases, steps, gates, decisions, turns, items, artifacts, approvals, reviews, evidence, checkpoints, agent sessions, and audit projections. It should not replace the item log.
-
-Product surfaces may render graph views, but the graph should remain derivable or auditable through stable history.
-
 ## Relationship To TaskRun
 
 OpenKit does not use `TaskRun` as a default core concept.
 
 Agent-private task graphs should stay private unless Core needs to schedule, retry, show, approve, audit, or attach artifacts to them.
-
-If a future graph is promoted, it should be designed around explicit workflow and graph semantics rather than reintroducing a vague task-run layer.
 
 ## Invariants
 
@@ -335,7 +305,6 @@ If a future graph is promoted, it should be designed around explicit workflow an
 - A bounded step MUST return observable status to Core before the next bounded step is run.
 - Human decisions MUST be represented through visible workflow state, approval records, user-input records, review records, or other promoted human-attention projections.
 - Agent-private graphs, traces, retries, and hidden reasoning MUST NOT become core records unless Core needs them for scheduling, retry, visibility, approval, audit, artifact lineage, or recovery.
-- A future workflow graph MUST reference or organize stable core records instead of replacing item history.
 
 ## Relationships To Other Core Aspects
 
@@ -359,14 +328,14 @@ If a future graph is promoted, it should be designed around explicit workflow an
 
 ## Default Setup Projection
 
-The built-in default setup may combine Goal Mode, optional plan review, bounded worker steps, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation.
+The built-in default setup combines Goal Mode's mandatory explicit Plan approval before every V1 worker step with bounded worker steps, Action Center projections, artifacts, evidence bundles, workspace review and apply records, and end-user Agent Skill loop operation. An additional editorial review of Plan wording or presentation may be optional, but it never substitutes for or weakens the approval gate.
 
 That setup is a recommended composition of Core workflow mechanisms, not the definition of Agent Workflow itself.
 
-User-defined workflow modes, workflow recipes, and workflow graph semantics should be promoted only after real workflows prove the need.
+User-defined workflow modes and workflow recipes should be promoted only after real workflows prove the need.
 
-Use thread, turn, item, artifact, approval, agent session, goal, review, and evidence records where they already express the workflow. Keep richer workflow mechanisms and graph concepts in reserve until they remove real ambiguity.
+Use thread, turn, item, artifact, approval, AgentSession, goal, review, and evidence records where they already express the workflow.
 
 Workflow mechanisms become stable protocol records only when App API projections cannot preserve ordering, recovery, audit, or interoperability semantics.
 
-User-defined workflow modes, recipes, templates, workflow graphs, Task Evaluator behavior, and cross-thread or cross-workspace workflow lineage are not core primitives until promoted by a stable core update.
+User-defined workflow modes, recipes, templates, and Task Evaluator behavior are not core primitives until promoted by a stable core update.

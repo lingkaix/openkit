@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/specs/20260703-audit_usage_evidence_records.md`, `docs/specs/20260628-web_product_surface_projection.md`"
+decision-evidence: "`docs/specs/20260703-audit_usage_evidence_records.md`, `docs/specs/20260628-web_product_surface_projection.md`"
+---
 # Per-Turn Feedback
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/specs/20260703-audit_usage_evidence_records.md`, `docs/specs/20260628-web_product_surface_projection.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

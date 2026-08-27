@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Implemented
+---
 # App API OpenAPI Projection
-
-Status: Accepted
-Implementation: Implemented
 
 ## Owns
 
@@ -20,6 +21,7 @@ Implementation: Implemented
 - Protocol event envelope, SSE semantics, stream cursors, and replay (`docs/core/protocol.md`, `docs/core/communication.md`).
 - Route behavior, auth semantics (`docs/specs/20260704-remote_auth_credential_bootstrap.md`), or any endpoint's business contract.
 - The gateway's OpenAI-compatible `/v1/*` surface, which follows external OpenAI compatibility (`docs/specs/20260526-llm_gateway_responses_api.md`), not this projection.
+- The worker-plane `/worker-control/*`, `/inference/*`, and `/capabilities/*` route families, which are not App API and whose transport is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 ## Core References
 
@@ -50,7 +52,7 @@ This spec adds an OpenAPI document as a generated projection with the direction 
 - Do not replace or wrap `@openkit/core-client`; no second first-party SDK.
 - Do not make OpenAPI the owner of streaming semantics; the protocol docs own the event envelope.
 - Do not pull the separate Core HTTP/SSE projection into the App API document merely because NanoCore serves both surfaces.
-- Do not cover the OpenAI-compatible gateway `/v1/*` surface, the direct worker-control `/api/worker-control` contract, or the accepted future `capability.local` plane; those follow their own external or worker-facing contracts.
+- Do not cover the OpenAI-compatible gateway `/v1/*` surface or the accepted but unimplemented worker-plane `/worker-control/*`, `/inference/*`, and `/capabilities/*` route families; those follow their own external or worker-facing contracts.
 - Do not add an OpenAPI binding dependency or runtime validation layer without a concrete need that justifies its behavior and maintenance cost.
 - Do not promise compatibility for independently released third-party clients or SDKs; App API, Core Client, CLI, Skill, and Web move together in one OpenKit release.
 
@@ -84,7 +86,7 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 - Every public App API route MUST be registered with: path, method, operation id, request schema references (params, query, body), response schema references per status code, error envelope reference, required auth scheme, and tags.
 - Reusable structured request and response shapes MUST import from the shared packages. A route-local primitive path or query constraint MAY remain inline when no shared semantic schema exists and extracting one would create a speculative contract entity; when a shared id or value schema already exists, the registration MUST reference it instead of duplicating the constraint.
 - Operation ids MUST be unique, lowercase-camel identifiers and stable within one OpenKit version; they are exact anchors for fixtures and projections. Renaming one is a release-coupled contract change, not a requirement to preserve an alias or compatibility window.
-- Routes explicitly outside the projection are a closed list: the Core HTTP/SSE projection, browser-auth implementation routes, the OpenAI-compatible `/v1/*` gateway surface, worker-plane relay routes (`/api/worker-control/*`), deterministic local-mode test-support routes, and internal diagnostics explicitly marked non-public. Every public App API route outside that list MUST be registered.
+- Routes explicitly outside the projection are a closed list: the Core HTTP/SSE projection, browser-auth implementation routes, the OpenAI-compatible `/v1/*` gateway surface, worker-plane routes (`/worker-control/*`, `/inference/*`, and `/capabilities/*`), deterministic local-mode test-support routes, and internal diagnostics explicitly marked non-public. Every public App API route outside that list MUST be registered.
 
 ### Generated document
 

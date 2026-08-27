@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/specs/20260628-nanocore_config_identity_contract.md`"
+decision-evidence: "`docs/specs/20260628-nanocore_config_identity_contract.md`"
+---
 # Runtime Config Reload
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/specs/20260628-nanocore_config_identity_contract.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 
@@ -445,5 +446,5 @@ When file watching is added, should it be enabled by config, environment variabl
 - [Server Config and Data Layout](./20260519-server_config_data_layout.md)
 - [Agent Profile Config](../agent-setup-runtime-supply/20260519-agent_profile_config.md)
 - [Agent Profile Model](../agent-setup-runtime-supply/20260522-agent_profile_model.md)
-- [NanoCore DATA_ROOT Config Guide](../../../nanocore-data-root-config.en.md)
-- [Change Tracking](../../../change-tracking.md)
+- [NanoCore DATA_ROOT Config Guide](../../../manual/nanocore-data-root-config.en.md)
+- [Change Execution Governance](../../../change-execution.md)

@@ -1,7 +1,8 @@
+---
+status: Draft
+implementation: Not Started
+---
 # Scheduler Recurring And Event Triggers
-
-Status: Draft
-Implementation: Not Started
 
 ## Owns
 
@@ -11,7 +12,7 @@ Implementation: Not Started
 ## Does Not Own
 
 - Any current V1 capability, implementation, schema, route, service, runner, test obligation, or release gate.
-- Audit group G07, WP-6, or the current self-improvement loop. Those scopes use explicit human-requested reflection and do not depend on recurring or event-triggered automation.
+- The current Knowledge and self-improvement scopes. Those scopes use explicit human-requested reflection and do not depend on recurring or event-triggered automation.
 - Turn admission, queue ordering, placement, leases, dispatch, or worker-effect recovery, which remain owned by `docs/specs/20260703-durable_scheduler_design.md` and the applicable worker runtime specifications.
 - A generic event bus, workflow engine, job registry, fire ledger, recovery coordinator, or product automation platform.
 - The semantics of any domain operation that might later request scheduled execution.
@@ -25,7 +26,7 @@ Implementation: Not Started
 
 ## Summary
 
-This Draft is a non-authorizing future boundary. OpenKit V1 does not provide recurring or event-triggered worker execution, and G07/WP-6 does not require it. Reflection remains an explicit human action. A future design may proceed only after a concrete user automation need identifies the responsible actor, the existing operation to invoke, and why explicit invocation is insufficient.
+This Draft is a non-authorizing future boundary. OpenKit V1 does not provide recurring or event-triggered worker execution, and the current Knowledge and self-improvement scopes do not require it. Reflection remains an explicit human action. A future design may proceed only after a concrete user automation need identifies the responsible actor, the existing operation to invoke, and why explicit invocation is insufficient.
 
 The smallest acceptable future shape is a timing record in front of an existing owner. It is not a second execution or recovery system. Worker work must enter through the existing durable admission path, and non-worker work must remain with its domain owner instead of being generalized into scheduler jobs.
 
@@ -101,7 +102,7 @@ Cron expressions, event subscriptions, broad automation APIs, fire history, over
 
 ## Links
 
-- `docs/changes/202607172152230001-openkit_execution_program.md`
+
 - `docs/specs/20260703-durable_scheduler_design.md`
 - `docs/specs/20260703-runtime_scheduling_scale.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`

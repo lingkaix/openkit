@@ -1,19 +1,21 @@
+---
+status: Accepted
+implementation: Partial
+updated: 2026-08-10
+---
 # Agent Manifest And AEP Resolution
-
-Status: Accepted
-Implementation: Partial
 
 ## Summary
 
-This spec defines the clean target for authored agent manifests and their resolution into Agent Environment Package snapshots.
+This specification defines the concrete `AgentManifest` schema and validation and its resolution into Agent Environment Package snapshots.
 
 The target model is strict: one authored manifest plus one selected nested profile is an input, not product truth. NanoCore resolves it with workspace policy, provider catalogs, vault grants, runtime placement, supply, and scheduling constraints into one `ResolvedAgentSetup` and then one immutable AEP snapshot for each worker session.
 
-In core vocabulary, the authored manifest is the concrete setup document for an `AgentSetupContract`. Product-facing catalog summaries remain separate from launch manifests. Worker sessions launch from resolved AEP snapshots, not from catalog entries or authored files.
+Core Agent Supply owns the authored `AgentManifest` concept. This specification owns its concrete schema and validation and its resolution into `ResolvedAgentSetup` and immutable AEP snapshots. Product-facing catalog summaries remain separate from launch manifests. Worker sessions launch from resolved AEP snapshots, not from catalog entries or authored files.
 
 ## Owns
 
-- The authored agent setup document used as a manifest input.
+- The concrete `AgentManifest` schema and validation for authored manifest inputs.
 - The resolution contract from authored setup, server policy, workspace policy, user preference, request input, provider catalog, supply catalog, vault grants, policy decisions, and runtime backend capability into one launch snapshot.
 - Resolution precedence, fail-closed behavior, readiness diagnostics, degraded state explanation, and snapshot identity rules.
 - The implementation projection for current `.agent.jsonc` loading, setup resolution, runtime config reload handling, and OpenShell-backed AEP materialization.
@@ -24,12 +26,12 @@ In core vocabulary, the authored manifest is the concrete setup document for an 
 
 - Product-visible agent catalogs or `AgentCatalogEntry` protocol summaries.
 - General AEP schema ownership beyond how this resolver creates a snapshot.
-- Agent session lifecycle, session reuse, warm pools, queueing, or placement scheduling.
+- AgentSession lifecycle, session reuse, warm pools, queueing, or placement scheduling.
 - Agent capability call routing, gateway metering, or worker-visible capability protocols.
 - Permission policy semantics, vault storage semantics, or sandbox containment semantics.
 - Workspace synchronization, artifact registration, evidence retention, or audit schema details.
 - Native Codex, OpenCode, OpenShell, or Pi Agent config file formats.
-- Concrete local or remote placement, backend target selection, OpenShell Gateway transport, or deployment topology.
+- Concrete local or remote placement, configured NanoHost selection, NanoHost credential or transport, Runtime Epoch lifecycle, sandbox-local Integration carriage, OpenShell Gateway transport, or deployment topology.
 
 ## Core References
 
@@ -40,8 +42,13 @@ In core vocabulary, the authored manifest is the concrete setup document for an 
 - `docs/core/vault.md`
 - `docs/core/permissions.md`
 - `docs/core/storage.md`
+
+## Related Docs
+
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/specs/20260704-session_static_workspace_materialization.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
+- `docs/specs/20260801-nanohost_workspace_data_boundary.md`
 
 ## Goals
 
@@ -61,13 +68,13 @@ In core vocabulary, the authored manifest is the concrete setup document for an 
 
 ## Background
 
-`docs/core/agent-supply.md` defines NanoCore as the owner of agent setup and resolved worker environment. `docs/specs/20260616-agent_environment_package.md` defines the broad AEP model. This specification owns the authored manifest and deterministic resolution contract.
+`docs/core/agent-supply.md` owns the authored `AgentManifest` concept and NanoCore's resolved worker environment. `docs/specs/20260616-agent_environment_package.md` owns the strict AEP envelope and cross-boundary invariants. This specification owns the concrete manifest schema and validation and the deterministic resolution into `ResolvedAgentSetup` and AEP.
 
 ## Decision
 
 Use three records:
 
-- `AgentManifest`: the authored declarative setup file for one agent supply unit.
+- `AgentManifest`: the Core-owned authored declarative setup concept for one agent supply unit, with its concrete schema and validation owned by this specification.
 - `ResolvedAgentSetup`: NanoCore's policy-checked resolved setup before launch.
 - `AgentEnvironmentPackage`: the immutable launch snapshot materialized into the worker runtime.
 
@@ -154,9 +161,18 @@ observability
 extensions
 ```
 
-`runtime` declares an opaque `kind`, an opaque `adapter`, an optional pinned `version`, one exact governed `image.ref` with pull policy, and a non-empty list of runtime binary ids with absolute worker-local executable paths. NanoCore must preserve these declarations generically; it must not infer an image, adapter, or binary path from `kind`.
+`runtime` declares an opaque `kind`, an opaque `adapter`, an optional pinned `version`, one governed image selection, and a non-empty list of runtime binary ids with absolute worker-local executable paths. NanoCore must preserve these declarations generically; it must not infer an image, adapter, or binary path from `kind`.
 
-`mode`, `deployment`, `transport`, and an unstructured `runtimeConfig` are not AgentManifest areas and must be rejected as unknown fields. They neither select local versus remote placement nor carry a local command, SSH target, Gateway origin, transport credential, or native runtime configuration. Server configuration, scheduler records, and the selected governance backend own topology. A remote stock OpenShell Gateway remains supported through the backend target and disposable-Cell contract; it is not authored per agent.
+The image selection is exactly one of two authored forms, matching the two forms the package owner accepts in `docs/specs/20260616-agent_environment_package.md`:
+
+- one exact governed `image.ref` with pull policy; or
+- one build definition declaring the exact literal context reference `build-context://empty/v1`, its exact digest `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, one independent nonempty inline Dockerfile build input encoding 1 through 268,435,456 exact UTF-8 bytes with its lowercase SHA-256, build arguments, and a bounded build egress grant set.
+
+Resolution treats the two forms identically in every other respect: the authored selection is preserved without inference, resolved into one immutable AEP, and materialized by the backend. A reference whose `ref` is one canonical lowercase `sha256:` digest and whose pull policy is `never` names a deployment image already admitted to the NanoHost Image Store and imported during readiness; the backend passes that digest directly to `sandbox.create` and MUST NOT emit `image.acquire`, while every other reference is materialized through the existing acquisition owner. Absence or corruption of that preloaded deployment digest remains a NanoHost readiness failure and creates no runtime fallback. Under V1 the build-context singleton is explicit authored input, not a resolver default: its zero-entry canonical byte sequence is exactly empty bytes, the 1-through-268,435,456-byte UTF-8 Dockerfile remains inline immutable package content with a lowercase SHA-256 over exactly those bytes, is independently digested, and is excluded from the context digest, and any missing or different context pair, empty or oversized Dockerfile, invalid UTF-8, or Dockerfile digest mismatch is rejected before a scheduler or backend effect. Pull policy applies only to the reference form and is meaningless under the build form, so a manifest that supplies both a build definition and a pull policy is rejected rather than silently ignoring one. A build egress set that is absent, unbounded, or wildcard-hosted is rejected; whether a specific endpoint may appear in that set remains a workspace-policy decision under its existing owner. The selection is a discriminated union in the resolved package, which is why the package owner moves to `schemaVersion: 3` rather than gating the form behind a required feature. V1 defines no Dockerfile locator, context locator variant, transfer authority, configuration input, dependency, compatibility form, or future extension placeholder.
+
+The generic authored build arm, resolved build arm, and resolver path implement the exact authored `build-context://empty/v1` plus `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, prove that digest from the zero-entry empty-byte context, keep the Dockerfile excluded from that digest, enforce its nonempty 268,435,456-byte UTF-8 ceiling and exact digest, and reject every invalid input before effects.
+
+`mode`, `deployment`, `transport`, and an unstructured `runtimeConfig` are not AgentManifest areas and must be rejected as unknown fields. They neither select local versus remote placement nor carry a NanoHost identity, NanoHost credential, Runtime Epoch identity, local command, SSH target, Gateway origin, NanoCore endpoint, direct worker endpoint, transport credential, or native runtime configuration. Server configuration and scheduler records select the one configured NanoHost; the backend resolves only sandbox-local Integration bindings for the accepted worker package. No agent-authored field may select or widen that topology.
 
 `profiles` define behavior modes. Profiles may restrict parent capabilities but cannot expand them.
 
@@ -182,7 +198,7 @@ Resolution must turn workspace declarations into a session-static workspace layo
 
 `policy` declares required actions, approval points, and policy domains touched by this agent.
 
-`sandbox` declares exact network grants, credential declarations, and backend requirements. Each network grant identifies its host, port, protocol, access mode, purpose, and a non-empty explicit binary-path list; omission never means every runtime binary, and every listed path must exactly match a path declared in `runtime.binaries`. Credential declarations identify provider or vault references plus allowed visibility and injection mode without secret values. Backend requirements may identify allowed and preferred backend kinds plus required capabilities only as eligibility constraints; they never name or select a backend instance, local or remote placement, SSH target, Gateway origin, or transport.
+`sandbox` declares exact network grants, credential declarations, and backend requirements. Each network grant identifies its host, port, protocol, purpose, and a non-empty explicit binary-path list plus either one access mode or a non-empty bounded REST rule list; omission never means every runtime binary, and every listed path must exactly match a path declared in `runtime.binaries`. Exact REST rules currently allow `GET` or `POST` with absolute OpenShell-compatible paths and cannot be combined with an access preset. Credential declarations identify provider or vault references plus allowed visibility and injection mode without secret values. Backend requirements may identify allowed and preferred backend kinds plus required capabilities only as eligibility constraints; they never name or select a NanoHost, backend instance, Runtime Epoch, local or remote placement, SSH target, Gateway origin, NanoCore endpoint, direct worker endpoint, route credential, or transport.
 
 NanoCore may restrict these declarations during resolution, but neither NanoCore nor a backend may add an endpoint, credential path, provider attachment, binary allow rule, or backend capability that the authored manifest and policy did not authorize. Backend environment variables, built-in endpoints, and deployment defaults must not expand the effective allowlist.
 
@@ -227,7 +243,7 @@ NanoCore resolves an agent launch in this order:
 9. Resolve provider instance ids and model ids.
 10. Resolve skill and MCP catalog entries as static supply metadata.
 11. Resolve vault grants and injection visibility.
-12. Resolve exact sandbox network, credential, and backend requirements without accepting manifest-owned placement or transport topology.
+12. Resolve exact sandbox network, credential, and backend requirements without accepting manifest-owned placement, NanoHost, endpoint, credential, or transport topology.
 13. Resolve workspace materialization inputs and output roots.
 14. Resolve the session-static workspace layout, workspace slots, and session compatibility envelope.
 15. Resolve resource and scale policy.
@@ -254,16 +270,17 @@ The AEP snapshot must carry:
 - lineage ids
 - selected agent and profile
 - descriptive runtime kind
-- selected governed image reference and pull policy
+- selected governed image selection, which is either the image reference with its pull policy or the resolved build definition and its build egress set
 - generic `openkit-worker-shim` command
 - `control.adapter.kind: openkit-worker-shim` and the sole opaque adapter selector in `control.adapter.targetRuntime`
 - exact declared runtime binary ids and absolute worker-local paths
-- resolved runtime placement
+- selected backend kind and capability requirements without a NanoHost, host, Runtime Epoch, Gateway, SSH, or remote endpoint identity
 - backend capability requirements
 - resolved provider attachments
 - resolved skill supply
 - resolved MCP catalog metadata without an executable route
 - resolved capability intersection and missing-proof diagnostics
+- non-secret sandbox-local Integration route bindings and distinct worker-control, inference, and capability token references resolved by the backend, never authored by the manifest
 - exact resolved network and credential policy
 - resolved workspace inputs and output roots
 - resolved session-static workspace layout and workspace slots
@@ -281,7 +298,7 @@ The snapshot is immutable. Any material change creates a new snapshot.
 
 The AEP snapshot is the only launch contract passed to worker governance backends. `runtime.command.argv` launches `openkit-worker-shim`; it never contains Codex, OpenCode, Pi, or future runtime-native argv. `control.adapter.targetRuntime` is the only adapter selector, while `agent.runtimeKind` is descriptive and must not select code.
 
-The backend materializes the governed image, exact policy, provider and vault attachments, workspace, control endpoint, and package file without widening the AEP. Inside the image, the generic shim selects the statically registered adapter named by `targetRuntime`; the current adapter contract derives only runtime-native argv, safe child environment additions, and isolated state-root paths from the resolved AEP. It returns no generated-file or native-config artifacts to the shared shim. A future runtime that cannot work within this contract must amend S25 and its adapter specification before any file envelope enters implementation.
+The backend materializes the governed image, exact policy, provider and vault attachments, workspace, package file, and non-secret sandbox-local Integration bindings without widening the AEP. The worker package never receives the configured NanoHost credential, raw route tokens, Runtime Epoch identity, remote NanoCore or Gateway address, SSH target, Gateway forward, or direct sandbox-to-NanoCore endpoint. Inside the image, the generic shim selects the statically registered adapter named by `targetRuntime`; the current adapter contract derives only runtime-native argv, safe child environment additions, and isolated state-root paths from the resolved AEP. It returns no generated-file or native-config artifacts to the shared shim. A future runtime that cannot work within this contract must amend S25 and its adapter specification before any file envelope enters implementation.
 
 No AEP MCP catalog record generates a runtime-native MCP config, direct worker-to-server connection, or executable route. Worker MCP execution remains disabled until its owning capability-plane contract is implemented and proven.
 
@@ -300,7 +317,7 @@ Admission may report `degraded` when a required worker credential is owned by an
 
 Readiness explanations must be redacted and must not expose secrets, host paths, or backend-private payloads.
 
-Readiness states describe launchability. They do not describe turn completion or agent-session lifecycle state.
+Readiness states describe launchability. They do not describe turn completion or AgentSession lifecycle state.
 
 ## Readiness Remediation Hints
 
@@ -342,7 +359,7 @@ Worker governance backends materialize the AEP into:
 - the exact governed image and generic `openkit-worker-shim` entrypoint
 - skill directories or references
 - provider endpoint config
-- the direct control endpoint and selected inference endpoint
+- distinct sandbox-local `/worker-control/*`, `/inference/*`, and `/capabilities/*` Integration bindings plus non-secret token references
 - exact sandbox network, credential, process, filesystem, and backend policy
 - workspace roots and generated files
 - output roots
@@ -359,16 +376,18 @@ Worker agents must not author or mutate their own stable supply, and neither a b
 The current implementation follows the single authority chain defined by this specification:
 
 - `packages/config-schema/src/agent.ts` strictly validates `schemaVersion: 1` `.agent.jsonc` files and rejects historical top-level `mode`, `deployment`, `transport`, and unstructured `runtimeConfig` fields. An authored runtime supplies an opaque kind and adapter, one exact image reference and pull policy, and a non-empty list of absolute worker-local binary paths.
-- The manifest selects exactly one provider profile and optional model. It owns exact sandbox network grants, credential declarations, and backend eligibility requirements. Network grants name explicit declared binary paths. No manifest field selects local or remote placement, an SSH target, a Gateway origin, or transport credentials.
+- The manifest selects exactly one provider profile and optional model. It owns exact sandbox network grants, credential declarations, and backend eligibility requirements. Network grants name explicit declared binary paths and either an access preset or bounded exact REST rules. No manifest field selects local or remote placement, an SSH target, a Gateway origin, or transport credentials.
 - `apps/nanocore/src/config/agents-loader.ts` loads and validates manifests, while `apps/nanocore/src/agents/setup-resolver.ts` produces a topology-free `ResolvedAgentSetup` containing the selected manifest and resolved provider. Required features, provider and supply references, backend requirements, sandbox authority, and readiness fail closed.
 - `apps/nanocore/src/agents/setup-ledger.ts` stores redacted workspace-scoped resolved-setup records. `/api/setup/diagnostics` reports redacted launchability; deployment and Gateway diagnostics remain scheduler or backend concerns.
 - `apps/nanocore/src/runtime/agent-environment.ts` preserves the manifest-authored image, pull policy, runtime binaries, sandbox envelope, adapter id, provider route, and static supply through one generic OpenShell AEP resolver. It emits the fixed `openkit-worker-shim --package /openkit/config/package.json` command. `control.adapter.targetRuntime` is the sole adapter selector, and `agent.runtimeKind` never selects code.
 - The current adapter and route intersection is closed and version-pinned: Codex `0.144.1` and OpenCode `1.18.1` accept only the trusted NanoCore relay envelope; Pi `0.80.7` accepts only direct Anthropic `claude-sonnet-4-5`. Zero routes, multiple routes, mixed relay and direct authority, and unsupported runtime-route pairs fail before child launch.
-- The OpenShell materializer compiles network and credential policy only from the immutable AEP. Backend defaults and deployment environment cannot widen it. The backend validates required capabilities before effects and never infers an image, binary, adapter, provider, credential, or endpoint.
+- The OpenShell materializer compiles network and credential policy only from the immutable AEP. Backend defaults and deployment environment cannot widen it. The backend validates required capabilities before effects and never infers an image, binary, adapter, provider, credential, or endpoint. An exact lowercase digest reference with pull policy `never` reuses the deployment image proved at NanoHost readiness and proceeds directly to `sandbox.create`; other reference forms retain `image.acquire`.
 - The AEP preserves sourceRef lineage, vault-backed attachments, backend requirements, workspace roots, private per-turn input, policy binding, transcript paths, and redacted snapshots. Current Skill and MCP entries are static approved supply metadata; `capabilities` remains explicitly disabled with no callable route or generated native MCP configuration.
 - `packages/worker-shim` selects one adapter from its static registry. The shared contract is only `prepare` and `collect`: adapters derive native argv, safe child environment, isolated state-root paths, and one bounded normalized result. It has no adapter-authored config-file envelope, runtime compatibility fallback, dynamic plugin loader, worker capability client, or control sidecar.
 
-Local schema, resolver, AEP, materializer, readiness, redaction, worker-shim, adapter, image-contract, closed-runtime, typecheck, build, and repository gates cover this boundary. The three pinned arm64 images build on A1 and pass stock OpenShell `0.0.80` create, upload, adapter `prepare` dry-run, and `--no-keep` cleanup checks. That evidence proves image content, adapter preparation, containment, upload, and cleanup only; it does not prove the complete worker-control readiness, heartbeat, interrupt, reconnect, recovery, or terminal lifecycle for every adapter. The shared product-visible readiness projection can still report `ready` before provider/model compatibility and the fixed control-binary set are resolved; later AEP resolution fails closed, but this earlier false-ready projection keeps the specification Partial until the existing setup resolver owns both decisions.
+Current production selects only the configured NanoHost RuntimeTarget and resolves capability, worker-control, and inference as three sandbox-local Integration bindings over the stock `ForwardTcp`/`RelayStream` pair and nested standard HTTP/2 session. It supplies no direct NanoCore worker endpoint or Cell topology; capability remains disabled, while worker-control and inference retain distinct token bindings. The authored manifest remains topology-free, and NanoHost transport, Runtime Epoch lifecycle, and route realization stay with their narrow owners.
+
+Local schema, resolver, AEP, materializer, readiness, redaction, worker-shim, adapter, image-contract, closed-runtime, typecheck, build, and repository gates cover this boundary. The 2026-07-21 refreshed arm64 images build locally and pass their complete image smoke checks. The earlier minimal images passed stock OpenShell `0.0.80` create, upload, adapter `prepare` dry-run, and `--no-keep` cleanup checks on A1, but refreshed-image stock OpenShell verification remains open under `docs/specs/20260721-worker_execution_environment_images.md`. The shared product-visible readiness projection can still report `ready` before provider/model compatibility and the fixed control-binary set are resolved; later AEP resolution fails closed, but this earlier false-ready projection keeps the specification Partial until the existing setup resolver owns both decisions.
 
 ## Scale Fields
 
@@ -394,10 +413,10 @@ Workspace-local agent definitions are allowed only as policy-reviewed setup prop
 
 The first supported model should be:
 
-1. A workspace proposes an agent setup document.
+1. A workspace proposes a workspace-scoped `AgentManifest` catalog entry.
 2. NanoCore validates schema, redaction, source references, capability declarations, vault references, sandbox requirements, and policy domain.
 3. Required reviewers or policy rules accept, edit, reject, or defer the proposal.
-4. Accepted workspace-local setup becomes a workspace-scoped `AgentSetupContract` entry visible through the workspace catalog.
+4. Accepted workspace-local setup becomes a workspace-scoped `AgentManifest` catalog entry visible through the workspace catalog.
 5. Launch still resolves through the same manifest-to-AEP pipeline and cannot expand beyond server and workspace policy.
 
 Workers must not launch directly from an unreviewed workspace-local file.
@@ -444,6 +463,7 @@ Rejected for the first stable design. Workspace config may restrict and select w
 - Shim tests proving current runtime-native argv, environment, and state paths are derived from AEP inputs without an adapter-authored file envelope.
 - Boundary tests proving `runtime.command.argv` always launches `openkit-worker-shim`, `control.adapter.targetRuntime` is the only adapter selector, and `agent.runtimeKind` never selects code.
 - Resolver tests proving exact authored image and runtime binary declarations reach the AEP without a runtime-specific NanoCore branch.
+- Resolver tests proving the build form accepts only explicit `build-context://empty/v1` plus `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, preserves a nonempty inline 1-through-268,435,456-byte UTF-8 Dockerfile with its exact independent digest outside the empty-context digest, and rejects every other or missing context pair, invalid Dockerfile bound or digest, locator, or inference before effects.
 - Sandbox tests rejecting network binary paths absent from `runtime.binaries` and rejecting any backend, deployment default, or environment variable that widens resolved network or credential authority.
 - Capability tests proving launch advertisement is the manifest requirement intersection with adapter and image proof, required missing proof blocks launch, and optional unproven support stays unadvertised.
 - MCP tests proving static catalog records do not generate native config, direct connections, or executable routes while the capability plane is disabled.
@@ -464,22 +484,23 @@ Rejected for the first stable design. Workspace config may restrict and select w
 - Authored manifests are setup inputs, not product truth.
 - Catalog entries are selection and explanation surfaces, not launch manifests.
 - One authored `AgentManifest` with one selected nested behavior profile resolves through one `ResolvedAgentSetup` into one immutable AEP; no runtime-oriented profile or inferred runtime may become a parallel source.
-- AgentManifest owns no `mode`, `deployment`, `transport`, or unstructured `runtimeConfig` field. Server configuration, scheduler records, and the selected backend own local or remote placement and remote OpenShell Gateway topology.
+- AgentManifest owns no `mode`, `deployment`, `transport`, or unstructured `runtimeConfig` field. It carries no NanoHost, Runtime Epoch, SSH, Gateway, NanoCore endpoint, direct worker endpoint, or transport credential. Server configuration and scheduler records select the one configured NanoHost, and the backend resolves only non-secret sandbox-local Integration bindings.
 - The AEP launches only the generic `openkit-worker-shim`; `control.adapter.targetRuntime` is the sole opaque adapter selector, and `agent.runtimeKind` is descriptive.
 - Authored runtime declarations own the exact governed image and non-empty runtime binary id and absolute worker-local path list. Authored sandbox declarations own exact network grants, credential declarations, and backend requirements, and materialization may only restrict them.
+- The V1 authored build form names only the explicit empty-context singleton and its exact digest; the independently digested Dockerfile remains inline immutable content of 1 through 268,435,456 UTF-8 bytes and is not a context entry, and no Dockerfile locator, resolver default, alternate context reference, context transfer authority, configuration, or future variant exists.
 - Launch-time capability advertisement is the intersection of manifest requirements and selected adapter and image proof. Required missing proof blocks launch, and optional unproven support remains unadvertised.
 - Static MCP catalog bindings do not authorize runtime-native MCP config, direct worker connections, or executable routes.
 - Shim and adapter records remain candidates until NanoCore validates and commits canonical product state.
 - AEP snapshots are immutable launch contracts. Any material supply, policy, workspace, provider, vault, backend, or request change produces a new snapshot.
 - Request, user, and workspace layers may select or restrict allowed supply. They must not expand server or workspace policy.
-- Codex `0.144.1` and OpenCode `1.18.1` are relay-only. Pi `0.80.7` is direct-provider-only and accepts exactly Anthropic `claude-sonnet-4-5`. No adapter or resolver fallback exists between these envelopes.
+- Codex `0.144.1` and OpenCode `1.18.1` are relay-only for LLM authority. That route constraint excludes direct LLM provider credentials and endpoints but permits unrelated manifest-authored development grants. Pi `0.80.7` is direct-provider-only and accepts exactly Anthropic `claude-sonnet-4-5`. No adapter or resolver fallback exists between these envelopes.
 - Current runtime-native launch details are adapter-derived outputs from AEP snapshots and are never stable product contracts; generated native files are not authorized by the current adapter interface.
 - Readiness is a redacted pre-launch diagnostic with `ready`, `degraded`, `blocked`, and `stale` target states.
 - Scale fields in manifests are intent. Scheduler records decide actual placement, queueing, reuse, and capacity.
 - Host execution is not a valid worker AEP backend target.
 - Workspace-scoped AEP snapshot metadata belongs in workspace-owned storage. Runtime/session directories may hold generated file-backed materialization copies and backend receipts.
 - Compact or historical manifest shapes do not need compatibility preservation in this internal development phase.
-- Workspace-local agent definitions may exist only as policy-reviewed setup proposals and accepted workspace-scoped setup contracts. Unreviewed workspace-local files are never launch contracts.
+- Workspace-local agent definitions may exist only as policy-reviewed `AgentManifest` proposals and accepted workspace-scoped `AgentManifest` catalog entries. Unreviewed workspace-local files are never launch contracts.
 - Authored Skill and MCP constraints may use exact pins or policy-approved ranges, but the AEP snapshot must store exact resolved versions and digests. The first catalog-backed implementation should prefer exact pins until deterministic resolver evidence exists.
 - Scale intent fields remain preferences or upper bounds; scheduler records own concrete placement, queueing, reuse, warm-pool realization, and capacity.
 - Product-visible readiness remediation hints must be redacted and action-oriented.
@@ -506,3 +527,5 @@ Rejected for the first stable design. Workspace config may restrict and select w
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260703-policy_enforcement_mapping.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
+- `docs/specs/20260721-worker_execution_environment_images.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`

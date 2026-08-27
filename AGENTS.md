@@ -1,194 +1,95 @@
-# AI Agent Coding Guidelines
+# Repository Agent Execution Contract
 
-This file is the concise execution rulebook for agents working in this repository.
+This file is the concise, always-loaded execution contract for work in this repository.
 
-## A Rule: 我们的项目处在内部开发中，因此在做设计、决策、实现和修改时，不要考虑任何向后兼容的问题
+## Authority & Precedence
 
-## Operating Model
+- [AUTHORITY-001] Root `AGENTS.md` owns repository execution; Core and accepted specifications own design; `docs/documentation-model.md` owns document types and precedence; `docs/change-execution.md` owns material-work coordination; `docs/verification-instruments.md` owns evidence quality; `docs/toolchain.md` owns setup and dependency procedure; local guides own local workflow; change and audit records are evidence, never design authority.
+- [OM-002] Engineers own user intent, architecture, governing trade-offs, strict-risk acceptance, and final approval. Agents may choose and revise a working method, task decomposition, probe, and role composition when that does not change those decisions.
+- [PRECEDENCE-001] MUST and MUST NOT override SHOULD, PREFER, and MAY. Correctness, security, authority, and scope override quality preferences; otherwise use the smallest coherent change that satisfies the requested outcome.
+- [PRECEDENCE-002] Git and running systems decide implementation fact; accepted owners decide intent. A disagreement is a finding, not permission to invert authority.
+- [PRECEDENCE-003] If same-concern authorities conflict or governing intent is ambiguous, do not silently choose a side. Stop the affected work and ask the engineer.
+- [AUTHORITY-002] This file owns its six top-level sections, a ceiling of 2100 words, and three to eight binary completion questions carrying clause IDs and expected answers. Only an engineer may raise that ceiling. `tests/agents-root-contract.test.mjs` is an executable projection and holds no authority.
 
-- Agents execute well-scoped work end-to-end.
-- Engineers own architecture, trade-offs, and final approval.
-- Prefer explicit rules over tribal knowledge.
-- Current product development is NanoCore-first and end-user Agent-Skill-first: harden the kernel through public App API contracts, then project the complete supported user/operator surface through the unified `openkit` Skill and its bundled CLI before treating the Web UI as the primary product build surface.
-- The current engineering baseline is the small-deployment profile in `docs/deployment.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260703-durable_scheduler_design.md`: one NanoCore process per data root, one logical SQLite writer, a small team that is typically under ten people, and one configured local or remote worker target with one active worker slot. This is an optimization target, not a user-count authorization limit.
-- Do not reintroduce the removed user-facing MCP facade or split setup/loop Skill variants. New AI-interface work belongs to the transport-neutral operation catalog, bundled CLI, and unified end-user Skill defined by `docs/specs/20260713-openkit_agent_skill_interface.md`; worker-side MCP capability supply remains a separate runtime concern under its owning specification.
-- Stabilize core behavior in protocol, schemas, NanoCore, public App API, and transport-neutral Agent Skill Interface contracts first. Reflect that stable behavior in the unified Skill and Web UI after the kernel contract is reliable instead of using either presentation surface as the source of core behavior.
-- Testing follows the accepted L0-L6 taxonomy: L0 static repo checks, L1 package and app unit tests, L2 contract and conformance tests, L3 NanoCore black-box e2e, L4 Web browser e2e, L5 smoke and artifact health tests, and L6 story acceptance. The taxonomy is not a requirement to prove every behavior at every layer. Keep L6 agent-first, keep deterministic adapters only where useful, and reduce confirmed L6 defects into the lowest sufficient L1-L5 regression coverage.
-- Current protocol design is being advanced by keeping `packages/protocol`, `apps/nanocore`, and `apps/web` structurally aligned.
-- Default protocol iteration follows one of two paths:
-  1. Research-driven path: when external projects, repositories, docs, papers, articles, or prior-art comparisons are needed, start the `.codex/agents/researcher.toml` sub-agent. Research evidence, cloned repositories, notes, and generated reports stay under `temp/research/<date>-<slug>/` and are not committed. The main agent reviews the researcher output, cross-checks it against primary sources and available tools such as DeepWiki, CodeGraph, Graphify, or local source inspection, then promotes accepted conclusions into `docs/specs/`, `docs/core/`, `docs/changes/`, or other canonical project documents before implementation. Improve the protocol first, implement the update in `apps/nanocore`, then reflect the change in `apps/web`.
-  2. UI-play path: when a developer plays with the UI and proposes an end-user-facing change, the agent should first decide whether the current protocol must change to support the request; if so, update the protocol first, then update the `apps/nanocore` server, and finally reflect the upgraded behavior in the UI.
-- When aligning changes across packages, update and commit each package separately in sequence (e.g., commit `packages/protocol` first, then `apps/nanocore`, then `apps/web`). This keeps the history linear, reviewable, and bisectable.
+## Non-negotiables
 
-## Mandatory Rules
+- [NONNEG-001] 我们的项目处在内部开发中，因此在做设计、决策、实现和修改时，不要考虑任何向后兼容的问题
+- [LANG-001] Repository code, comments, and documentation MUST be English Markdown where documentation applies. The two Chinese meta-instructions in this file and localized manuals are the only exceptions.
+- [LANG-002] `docs/manual/` follows the localized manual rules in `docs/documentation-model.md`.
+- [NONNEG-002] 在输出任何文本时，禁止在一个完整的语句或段落内插入换行符
 
-### 1. Test-first development
+The Safety Kernel stays hard for every task:
 
-- Before writing tests, choose an implementation shape that keeps the feature path maintainable, discoverable, cohesive, and easy to review.
-- Write tests first for every feature and bugfix.
-- Prefer two commits for behavior changes:
-  1. `test: add tests for <feature>`
-  2. `feat|fix(<scope>): implement <feature>`
-- After the test and implementation pass, do a code-quality review for simplicity, cohesion, duplication, unnecessary abstractions, and traceability.
-- Use one or more follow-up commits when the post-TDD review finds maintainability improvements that should be separated from the initial implementation.
-- Do not ship behavior changes without tests.
-- Add the smallest test at the lowest layer that can prove the changed invariant. Add a higher-layer test only when that boundary can expose a failure the lower layer cannot represent; do not repeat the same assertion across L1-L6 for completeness.
+- Authorization
+- Confidentiality
+- Credential Handling
+- Data Loss
+- Destructive Action
+- External Effect and Publication
+- Sandbox Containment
+- Concurrent Write Ownership
 
-### 2. Document code
+[SCOPE-004] Uncertainty in the Safety Kernel fails closed. Ordinary local and reversible work may continue after the smallest correction. Parallel dispatch MUST name write ownership, and the same repository path may have only one writer at a time; coordinate before expanding into another writer's path.
 
-Document every type, interface, struct, class, function, and method using the standard format for that language:
+## Build Loop
 
-- JS/TS: JSDoc
-- Go: GoDoc
-- Python: PyDoc / PEP 257
-- Rust: RustDoc
+Apply these twelve principles as judgments, not as a mandatory workflow:
 
-Documentation should cover purpose, parameters, return values, and error behavior where relevant.
+1. Intent First
+2. Principles Over Procedure
+3. Facts Over Plans
+4. Probe Before Commitment
+5. Methods Stay Plastic
+6. Roles Are Capabilities
+7. Independence By Risk
+8. Errors Stay Local
+9. Progress Changes Artifact, Belief, Or Decision
+10. Reframe Before Repetition
+11. Patterns Trial Before Binding
+12. Hard Where Irreversible Or Accountable
 
-### 3. Keep specs and change records current
+- [WORK-001] Understand the owner, implementation, surrounding path, and local guidance before editing. Start at one cohesive seam and follow existing ownership unless current evidence requires a different route.
+- [EVID-001] Before asking an engineer for a factual answer, run the cheapest safe and authorized probe whose result could change the decision. Plans and reports are claims until reconciled with the owned artifact, Git, named execution output, or the external system concerned.
+- [TEST-002] Features and bug fixes normally begin with the lowest-sufficient regression. A probe may precede the test when the failure, environment, or oracle is unknown. Name the expected failure before running a check; setup, permission, or collection failure proves nothing. `docs/specs/20260529-test_strategy.md` owns test layers and `docs/verification-instruments.md` owns oracle and harness quality.
+- [QUALITY-001] Apply high cohesion, low coupling, DRY, KISS, and YAGNI. Complete required behavior with the smallest clear design, not the fewest lines.
+- [QUALITY-003] Add no entity, dependency, option, abstraction, wrapper, runner, durable state, or compatibility path without a present need. Do not deduplicate code that only looks similar or predict variants that do not exist. Reuse an existing owner before creating a parallel one.
+- [SCOPE-012] Keep failures and corrections local. Do not silently absorb adjacent improvements. When evidence defeats the premise or repeated method, reframe instead of adding another procedural container around the same work.
+- [OM-009] Keep affected owners, producers, and consumers aligned. Document changed code entities using the language-standard style, and update the local guide when an app or package changes.
+- [TEST-006] After implementation, inspect simplicity, cohesion, duplication, authority alignment, and direct evidence. An acceptor MUST inspect the actual diff, bytes, or named execution output; a producer report cannot alone constitute acceptance.
+- [CHECK-019] Run focused lint, typecheck, tests, and build checks in proportion to the changed slice, reporting exact results. Full gates run only when the touched surface, accepted plan, release boundary, or engineer requires them.
 
-- Follow `docs/documentation-model.md` for the documentation type system and index, and `docs/change-tracking.md` before adding files under `docs/specs/` or `docs/changes/`.
-- Use `docs/specs/` for non-trivial changes:
-  - architecture or workflow changes
-  - public API changes
-  - rollout or migration planning
-  - work with meaningful trade-offs
-- Use `docs/changes/` for material change lifecycle records: write change plans before significant work, keep curated progress checkpoints during execution, and finish with implementation summaries for major PR, standalone, or release-level records.
-- Every material change record must link related core architecture, product design, and spec docs where relevant, especially `docs/core/architecture.md`, `docs/core/work-model.md`, `docs/product-vision.md`, and applicable `docs/specs/` files.
-- Use `docs/audits/` for dated, rule-generated observation records such as calibration reports and drift findings; they carry no design authority.
-- Keep spec and change record aligned with implementation.
-- Apply the selective-rehydration rule in `docs/change-tracking.md` whenever documentation is compressed, split, promoted, or reconciled.
-- Keep Core documents short and normative, specifications precise and narrow, and change plans execution-focused; keep curated execution evidence in change plans without treating it as design authority.
-- Do not remove a criterion whose absence could materially change implementation, tests, failure behavior, recovery, ownership, or responsibility. Compression is safe only when two independent implementers reading the remaining authoritative documents would make the same material choices.
-- For every material concept, the owning Core and specification set must preserve five decision classes: exact definition and exclusions; unique durable authority and projection boundary; creation, update, termination, retry, and recovery lifecycle; conflict, missing, stale, restart, and dependency-failure semantics; and externally observable acceptance predicates. State explicitly when a class does not apply.
-- Apply the two-independent-implementers precision bar fully to Durable contract families. Release-coupled surfaces need one clear same-release implementation, typed bounded failure behavior, and risk-sufficient tests, not distributed-systems completeness or cross-release reconstruction guarantees. Private implementation details need only the clarity and checks required to protect a promoted boundary; they do not require standalone documentation or completeness testing.
+### Completion Gate
 
-Filename rules:
+- [AUTH-003] Does the diff add architecture, behavior, feature scope, durable state, or cross-module responsibility without an accepted owner? Expected: No.
+- [TEST-009] Does observable behavior change without a lowest-sufficient regression or an explicit evidence-backed reason that another proof is stronger? Expected: No.
+- [TEST-012] Does a deciding check use a weak oracle or require an effect domain its subject does not own without a finding? Expected: No.
+- [QUALITY-016] Does the diff retain dead code, speculative abstraction, duplicate ownership, an unnecessary wrapper, or a fragmented path? Expected: No.
+- [CODEDOC-001] Is a changed code entity undocumented in its required style, or is an affected app or package guide stale? Expected: No.
+- [CHECK-019] Is an applicable focused check missing exact observed evidence? Expected: No.
+- [GOV-017] Did a producer's report alone accept its artifact, or is independent judgment absent where consequence or uncertainty requires it? Expected: No.
 
-- specs: `YYYYMMDD-short_name.md`
-- changes: `[datetime]-[short_name].md`
+## Change Authority
 
-### 4. Use Conventional Commits
+- [AUTH-001] Before changing architecture, design, feature behavior, public contract, or durable lifecycle, identify the owner under `docs/core/` or `docs/specs/`. If none covers the decision, discuss and accept an owner before production code, test infrastructure, or public contract changes.
+- [DOC-002] Non-trivial decisions require a specification. Material execution uses `docs/change-execution.md`; a change record preserves intent and evidence but never supplies design authority.
+- [DOC-017] Every material concept's owning Core or specification set MUST preserve five decision classes: exact definition and exclusions; unique durable authority and projection boundary; creation, update, termination, retry, and recovery lifecycle; conflict, missing, stale, restart, and dependency-failure semantics; and externally observable acceptance predicates. A class that does not apply MUST be stated explicitly.
+- [DOC-015] Compression, relocation, or reconciliation must not remove a criterion that could change implementation, tests, failure, recovery, ownership, or responsibility.
+- [SCOPE-001] `docs/core/foundation.md` owns proportionality and fallback doctrine. Strict Safety Kernel concerns remain strict regardless of ordinary proportionality.
+- [SCOPE-007] Core storage and an external Agent Runtime are separate effect domains. Do not invent cross-domain atomicity or automatic repair where an explicit unknown result, inspection, or new-request retry is truthful.
+- [SCOPE-013] A durable record, lifecycle, state machine, runner, harness, or cross-module owner needs a demonstrated current need not served by an existing owner.
 
-Commit messages must follow:
+## Program Governance
 
-```text
-<type>[optional scope]: <description>
-```
+- [GOV-ACTIVATE-001] Material coordination applies to cross-owner or cross-package work, public contracts, durable data or lifecycle, product workflow, architecture, deployment topology, governing authority, strict risk, multi-agent or long-running execution, likely future audit, or an explicit change plan. Ordinary scoped tasks execute directly.
+- [GOV-001] For material work load and follow `docs/change-execution.md`. The primary agent coordinates work and may choose probes, decomposition, roles, and review depth. It may not change user intent, governing authority, or a strict-risk boundary, and it may not adjudicate an authority-bearing artifact it produced.
+- [GOV-013] Spawn only registered `.codex/agents/` capabilities. Use independence according to consequence and uncertainty rather than a fixed role sequence.
+- [GOV-016] No producer may weaken, delete, skip, or bypass a contract-derived failing check to obtain green. Where a check and contract conflict, return the conflict to their owner.
+- [GOV-023] A finding or failed review normally causes a local correction or reframe, not an engineer interruption. Ask the engineer only for a real intent, trade-off, authority, strict-effect, or residual-risk decision.
 
-Allowed types:
+## Local Guides & References
 
-- `feat`
-- `fix`
-- `docs`
-- `test`
-- `refactor`
-- `perf`
-- `build`
-- `ci`
-- `chore`
-
-### 5. Follow local guides and cookbooks
-
-- Every important directory must contain a local `README.md`.
-- `README.md` is the directory-level source of truth for purpose, scope, architecture boundaries, commands, test/build usage, file maps, human workflow, and links to related design documents.
-- `AGENTS.md` is optional. Create or keep it only when the directory has local agent execution rules that are not already covered by the root `AGENTS.md` or the local `README.md`.
-- When a directory has `AGENTS.md`, the file must state that agents should read the sibling `README.md` first and that `AGENTS.md` contains only local agent execution rules.
-- Do not duplicate general background, module descriptions, command tables, or design context from `README.md` into `AGENTS.md`.
-- Before changing a concrete app or package, read its local `README.md` and, when present, its local `AGENTS.md`.
-- If a relevant cookbook exists in `docs/cookbooks/`, follow it.
-- Do not handcraft new sub-project starter files unless a cookbook explicitly allows it.
-
-### 6. Preserve code quality
-
-- Apply high cohesion, low coupling, DRY, KISS, and YAGNI throughout design, implementation, and review; complete the required behavior first, then choose the smallest clear design that preserves correctness, security, and maintainability.
-- Do not add an entity without a present need. Every new type, interface, function, class, module, package, configuration option, or dependency must remove demonstrated complexity, establish a real ownership boundary, or enable required reuse.
-- Do not create abstractions for predicted variants or deduplicate code that only looks similar. Extract shared concepts only when the same knowledge or behavior is already repeated and one owner can represent it clearly.
-- Keep files focused and cohesive.
-- Minimize coupling between modules.
-- Optimize for maintainability and discoverability over file-size targets; do not treat line count as a quality metric.
-- It is acceptable to keep related logic in one larger cohesive file, or a small set of cohesive files, when that makes the full implementation easier to search, read, and maintain.
-- Keep complete feature paths easy to trace from one clear entry point.
-- Avoid scattering one implementation across many helpers, types, classes, files, or packages unless the split removes real complexity.
-- Prefer direct, readable flow over unnecessary intermediate states, wrapper functions, and pass-through abstractions.
-- Reuse existing patterns before creating parallel implementations for similar scenarios.
-- Prefer small, reviewable changes.
-- During large feature work, review each completed slice for dead code, duplicate ownership, pass-through layers, speculative flexibility, and fragmented feature paths; simplify before adding the next slice.
-- Refactor when needed to keep boundaries clear, but stay scoped to the task.
-
-### 7. Prevent over-engineering and undocumented scope expansion
-
-- `docs/core/foundation.md` is the canonical owner of the system-wide scope, fallback, and compromise doctrine; the rules below are its repository execution projection.
-- Nothing is perfect. A bounded fallback or explicit system compromise is allowed when it preserves the owning module's documented scope and does not silently broaden responsibility.
-- Reliability and verification must be proportional to the documented deployment scale, consequence, and trust boundary. Security, authorization, credentials, sandbox escape, data loss, and irreversible external effects remain strict; ordinary availability, projection, cleanup, and reconnect behavior may use a documented bounded fallback.
-- Core storage and an external Agent Runtime are separate effect domains. Do not invent cross-domain atomicity, settlement, or automatic repair when an explicit `interrupted`, `unknown`, inspect, or new-request retry outcome is safe and truthful.
-- Future multi-process Core, shared-database coordination, high availability, dynamic multi-target scheduling, fairness, hot failover, or transparent recovery is roadmap material until an accepted current design promotes it. Future scale MUST NOT authorize current records, states, abstractions, compatibility, runners, harnesses, or test obligations.
-- The whole system and every module, package, service, test harness, and runner must have a clear documented scope. Do not expand one component into a parallel workflow engine, orchestration layer, product surface, or test platform to satisfy one feature or proof requirement.
-- Prefer deletion, direct implementation, and reuse of an existing owner before adding another state machine, abstraction, compatibility path, runner, or framework.
-- A new durable record, lifecycle state, state machine, runner, harness, or cross-module owner requires a present documented need that cannot be handled by an existing owner plus a bounded fallback. Convenience, hypothetical scale, and exhaustive proof are not sufficient justification.
-- Before making an architecture, design, feature, or implementation change, identify the owning document under `docs/core/` or `docs/specs/`. If the proposed behavior or responsibility is not covered there, stop implementation and discuss the design first.
-- After that discussion, update an existing owning document or add and accept a new design or specification before the behavior enters production code, test infrastructure, or public contracts. A change record may track execution, but it does not replace design authority.
-- Do not add undocumented architecture, design, behavior, feature scope, or cross-module responsibility to the system. Implementation and tests must remain inside the accepted documented boundary.
-- A fallback or compromise must state its boundary and failure behavior in the owning documentation. It must remain the smallest mechanism that works and must not become implicit authorization for scope expansion.
-
-### 8. Keep repository text in English
-
-- All code, comments, and documentation must be in English.
-- All documentation must be Markdown.
-
-## Execution Checklist
-
-Before finishing work, verify:
-
-- tests were added first for behavior changes
-- maintainability and discoverability were considered before test design
-- post-TDD code-quality review was completed when behavior changed
-- every architecture, design, feature, and implementation change is covered by an owning core or spec document before implementation
-- documentation compression, promotion, and reconciliation passed the selective-rehydration and two-independent-implementers test
-- every new entity has a present, concrete justification
-- every fallback or compromise is bounded, documented, and does not broaden the owning module's scope
-- no dead code, speculative abstraction, duplicate ownership, or unnecessary pass-through layer remains
-- no production or test component gained an undocumented responsibility or became a parallel platform
-- new code is documented
-- specs are updated for non-trivial changes
-- change records are updated
-- local guides are updated when an app or package changed
-- relevant cookbook guidance was followed
-- applicable focused lint, typecheck, tests, and build checks pass for the changed slice; full L0-L6 or `verify:full` runs only at the owning work-package exit, release candidate gate, or explicit request
-- no new linter errors remain
-
-## Working Rules
-
-### When editing existing code
-
-- Read the current implementation first.
-- Follow existing patterns unless there is a clear repository-level reason to change them.
-- Avoid unrelated refactors.
-
-### When working on apps, packages, CI, or setup
-
-- Check `docs/cookbooks/` first.
-- Prefer official CLIs, framework generators, or approved templates.
-- Keep setup instructions and automation in version-controlled files.
-
-### When adding dependencies
-
-- Use the package manager to add them.
-- Prefer maintained current versions unless the user requests otherwise.
-- Commit the appropriate lockfile updates.
-- Document why the dependency exists when it affects workflow or architecture.
-
-## Quick References
-
-- Repository entry point: `README.md`
-- Documentation index: `docs/INDEX.md`
-- Documentation type system: `docs/documentation-model.md`
-- Human workflow: `CONTRIBUTING.md`
-- Template design: `docs/template-overview.md`
-- Setup/ops recipes: `docs/cookbooks/`
-- App guides: `apps/README.md`
-- Package guides: `packages/README.md`
-
-## Notes
-
-**在输出任何文本时，禁止在一个完整的语句或段落内插入换行符**
+- [LOCAL-001] Each important directory has a `README.md` for purpose, boundaries, commands, and workflow. An optional local `AGENTS.md` adds only directory-specific execution rules and must direct readers to the README first.
+- [LOCAL-006] Before app or package work, read its parent and local guides. For setup, CI, dependencies, generators, deployment, or operations, check `docs/toolchain.md` and the relevant cookbook.
+- [LOAD-001] Enter through `README.md`; use `docs/INDEX.md` to locate owners; load `docs/documentation-model.md` for documentation governance and `docs/change-execution.md` for material coordination.
+- [LOAD-003] `docs/manual/` contains non-authoritative user and operator projections. `CONTRIBUTING.md` owns human contribution workflow and is required for authorized commit work.
+- [OM-011] External research stays uncommitted under `temp/research/`; promote only accepted conclusions into their canonical owner.

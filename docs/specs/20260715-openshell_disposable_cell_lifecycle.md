@@ -1,9 +1,82 @@
+---
+status: Deprecated
+implementation: Partial
+status-changed: 2026-08-02
+current-guidance: "`docs/specs/20260802-nanohost_runtime_and_transport.md`"
+decision-evidence: "`docs/specs/20260802-nanohost_runtime_and_transport.md`"
+---
 # OpenShell Disposable Cell Lifecycle
 
-Status: Accepted
-Implementation: Implemented
+## Lifecycle Reason
 
-## Owns
+The per-AgentSession disposable Cell contract is deprecated because the accepted target moves all OpenShell lifecycle effects onto one configured NanoHost and makes one Runtime Epoch the fail-stop, uncertainty, and fresh-readiness boundary. NanoCore restart no longer needs per-session runtime recreation or NanoCore-owned OpenShell lifecycle control because a live NanoHost continues local operations and reconnects through exact existing lineage and sequence.
+
+The target preserves the safety problem this contract solved but rejects its lifecycle granularity and authority placement. An accepted create or delete whose completion cannot be proved still requires a causal fence, but the fence is now whole-Runtime Epoch invalidation rather than one cold Cell per AgentSession.
+
+## Retention Reason
+
+The NanoHost path passed the required fault evidence on 2026-08-26, and the legacy implementation, configuration, commands, and current-support instructions were deleted. This document remains at the active root only until the governance-required terminal archive transition is executed by an auditor; it is not selectable implementation guidance.
+
+The document preserves the tested stock OpenShell `0.0.80` facts, A1 fail-stop and late-create evidence, detached-launch proof, retry-safe cleanup markers, remote SSH and Gateway-forward topology, and exact NanoCore read-only restoration behavior. Those facts remain historical and migration evidence; they do not authorize new Cell work.
+
+## Current Guidance
+
+`docs/specs/20260802-nanohost_runtime_and_transport.md` is the sole current implementation-facing authority for NanoHost identity, Runtime Epoch, OpenShell lifecycle, supervision, readiness, communication, reconnect, and cleanup uncertainty.
+
+`docs/specs/20260801-nanohost_workspace_data_boundary.md` owns only execution/data separation, native data authority, transfer direction, and the current one-NanoHost/one-slot boundary.
+
+Every per-session Cell, NanoCore Cell owner, NanoCore helper, lifecycle SSH invocation, Gateway-forward, direct sandbox-to-NanoCore worker-control endpoint, and NanoCore read-only OpenShell handle described below is legacy implementation. It MUST NOT guide new design or be extended.
+
+## Criterion Disposition
+
+| Legacy criterion | Disposition | Exact destination and target meaning |
+| --- | --- | --- |
+| Stock OpenShell only; no fork, patch, replacement Gateway, private Supervisor, or private protocol. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## Sandbox-To-Gateway Communication Boundary` and `## Security And Containment Rules` require stock components, standard HTTP/2, and no OpenKit multiplexer or private OpenShell surface. |
+| An accepted create that can still arrive after resource-local cleanup requires a causal fence. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` section `### Uncertain Create Or Delete` invalidates the complete Runtime Epoch and fences capacity until fresh recovery. |
+| Recovery creates fresh roots, network, authentication, Gateway state, and container-runtime state. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `### Epoch Creation` and `### Readiness` require fresh ownership plus absence of prior mutable state before admission. |
+| Every effect-capable process is terminated before old capacity can return. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` section `## Runtime Epoch Topology And Supervision` places the NanoHost service, Gateway, container runtime, helpers, and sandboxes in one fail-stop group. |
+| The stock Gateway remains loopback-only and is not directly exposed. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## Sandbox-To-Gateway Communication Boundary` and `## Security And Containment Rules` retain loopback-only Gateway access through stock mechanisms. |
+| Read-only image archives may remain outside the failure epoch only as inert input with no mutable runtime or authentication state. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` section `### Runtime Epoch` preserves the inert verified image-archive boundary. |
+| Exact vendor version, checksum, component identity, and stock snapshot authority. | `duplicate` | `docs/specs/20260522-vendor_snapshot_packages.md` section `## Contract / Expected Behavior` already owns pinned vendor snapshot identity and verification; this legacy spec's concrete `0.0.80` evidence remains historical only. |
+| Component and version preflight must pass before runtime readiness. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `### Epoch Creation` and `### Readiness` require pinned stock component and image identities before work is accepted. |
+| Scheduler capacity is acquired before runtime preparation or launch. | `duplicate` | `docs/specs/20260703-durable_scheduler_design.md` section `## Admission And Launch` already owns acquisition and exact lease admission. |
+| Capacity is released only after exact cleanup evidence succeeds, and cleanup failure keeps it held. | `duplicate` | `docs/specs/20260703-durable_scheduler_design.md` section `## Lease, Reconnect, And Cleanup` owns capacity release; `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `### Normal AgentSession End` and `### Uncertain Create Or Delete` supply the NanoHost cleanup proof it consumes. |
+| Worker lifetime is not inferred from attached stock CLI lifetime, and detached launch requires observed stock proof. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` section `## Testing Strategy / Acceptance Criteria` requires the historical detached-launch proof to be reproduced or replaced only by a stronger observed stock mechanism. |
+| Containment loss or inability to exclude escape denies new admission, external effects, and egress. | `duplicate` | `docs/core/sandbox.md` section `## Principles` already owns the fail-closed admission, effect, and egress response for the owning execution-substrate epoch. |
+| Containment loss interrupts affected Turns and AgentSessions and withholds unaccepted publication. | `duplicate` | `docs/core/sandbox.md` section `## Principles` already owns interruption and non-publication; the shared-epoch consequence is projected by `docs/specs/20260802-nanohost_runtime_and_transport.md` section `## Security And Containment Rules`. |
+| Potentially exposed Vault material follows existing revocation or rotation authority without claiming recall. | `duplicate` | `docs/core/vault.md` section `## Lifecycle And Failure Semantics` already owns revocation, rotation, stale-session, and non-recall semantics. |
+| Containment loss invalidates the complete cleanup boundary and prohibits partial cleanup or old-environment reuse. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## Security And Containment Rules` and `### Runtime Epoch Recovery` require whole-epoch invalidation and fresh recovery. |
+| NanoCore restart classifies the exact surviving attempt before any replacement or cleanup effect. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` section `### NanoCore Restart Or Short Outage` and `docs/specs/20260704-agent_session_continuity.md` section `## Exact Reconnect Contract` require exact continuity or truthful interruption. |
+| NanoCore reconstructs a launch-incapable read-only OpenShell handle after restart. | `rejected` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `### NanoCore Restart Or Short Outage` and `## Current Implementation Projection` keep local runtime ownership in the NanoHost and reconnect NanoCore through durable lineage instead of reconstructing an OpenShell handle. |
+| Exact process key, lease, package, backend-session lineage, and next sequence are required for adoption. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `### NanoCore Restart Or Short Outage` and `### Required Scenario 1: NanoCore Restart During Active Work` require the same identities and exact next sequence without recreation. |
+| Cleanup retry never guesses the target or outcome, and cleanup failure preserves evidence and capacity ownership. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `### Uncertain Create Or Delete` and `## Missing, Stale, Conflict, Retry, And Dependency Failure Semantics` fail closed, preserve uncertainty, and require fresh authority after invalidation. |
+| The fixed Cell marker, boot identity, bridge record, same-owner retry, host lock, and owner-mismatch mechanisms are the target recovery model. | `rejected` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## Runtime Epoch Topology And Supervision` and `### Runtime Epoch Recovery` use one OS-supervised epoch fence and explicitly add no durable NanoHost operation journal; the legacy marker machinery remains deletion evidence only. |
+| One cold Gateway and container runtime are created per AgentSession. | `rejected` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## Decision` and `### Normal AgentSession End` share one healthy Runtime Epoch and delete only the ended AgentSession's sandbox. |
+| NanoCore is the OpenShell lifecycle authority and invokes a privileged Cell helper. | `rejected` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## Decision` and `### Configuration And Installation` make the NanoHost the sole lifecycle authority and prohibit Cell helper configuration. |
+| Fixed helper paths, caller-owned Cell paths, fixed SSH argv, and persisted SSH-target digest bind lifecycle effects. | `rejected` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `### Configuration And Installation` and `## Security And Containment Rules` prohibit NanoCore-supplied lifecycle commands and replace the remote target with one configured NanoHost identity and deployment binding. |
+| SSH prepares and recycles the remote runtime. | `rejected` | `docs/specs/20260802-nanohost_runtime_and_transport.md` section `### Configuration And Installation` permits SSH only for installation-time safe-sink delivery, diagnostics, evidence, and human-authorized break-glass work, never runtime control. |
+| NanoCore reaches a forwarded Gateway and the sandbox reaches a direct NanoCore worker-control endpoint. | `rejected` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## NanoCore-To-NanoHost Communication Boundary` and `## Sandbox-To-Gateway Communication Boundary` replace both paths with one NanoHost session and one RelayStream projection. |
+| Secrets, host paths, process ids, sockets, container ids, and backend-private evidence remain outside product records and public diagnostics. | `duplicate` | `docs/core/sandbox.md` section `## Must Not Expose` and `docs/core/vault.md` section `## Prohibited Surfaces` already own the private evidence and secret boundary; the target projects it in `docs/specs/20260802-nanohost_runtime_and_transport.md` section `## Security And Containment Rules`. |
+| A process-survival, cleanup, or stock-runtime observation is never generalized beyond the tested topology and identities. | `received` | `docs/specs/20260802-nanohost_runtime_and_transport.md` sections `## Current Implementation Projection` and `## Testing Strategy / Acceptance Criteria` distinguish historical Cell observations from required target evidence and leave RelayStream feasibility explicitly unproved. |
+| The current release has one configured NanoHost, one target, and one active worker slot despite the epoch's zero-or-more sandbox shape. | `duplicate` | `docs/specs/20260703-runtime_scheduling_scale.md` section `## Decision` owns the current scale ceiling; `docs/specs/20260802-nanohost_runtime_and_transport.md` section `## Decision` projects it into the epoch target. |
+| A future smaller blast radius uses multiple independent NanoHosts rather than per-AgentSession Cells. | `deferred` | Owner: `docs/specs/20260703-runtime_scheduling_scale.md` section `## Deferred / Future Work`; activation condition: one measured capacity, network, compliance, isolation, or blast-radius need that requires more than the current single NanoHost and slot. |
+
+## Rollout / Migration Plan
+
+1. Completed: stock RelayStream, nested standard HTTP/2, and OS-supervision feasibility were proved without extending the Cell path.
+2. Completed: the Runtime Epoch and Sandbox Integration were implemented under the current NanoHost authority.
+3. Completed: NanoCore cut over to the sole NanoHost transport without a legacy runtime selector.
+4. Completed: the four required NanoHost fault scenarios and their Aggregate passed on the declared A1 topology.
+5. Completed: the Cell helper, controller, per-session lifecycle calls, remote lifecycle configuration, Gateway-forward assumptions, direct worker-control configuration, obsolete tests, and current-support instructions were deleted.
+6. Pending governance execution: an auditor changes this specification to `Superseded`, sets implementation to `N/A`, moves it under `docs/specs/superseded/`, and retains it only as historical evidence.
+
+The migration exit condition is that the NanoHost path is the sole selectable runtime path, the four fault scenarios are green on the declared topology, and no current code or operator guidance depends on a Cell concept. There is no compatibility path after deletion.
+
+## Legacy Contract Warning
+
+All remaining sections describe the partially implemented legacy Cell path as it exists before cutover. Their normative language applies only to maintaining and safely removing that legacy implementation; it MUST NOT be used to design the NanoHost runtime or justify new Cell, SSH, Gateway-forward, direct worker endpoint, or NanoCore lifecycle behavior.
+
+## Legacy Ownership
 
 - The source-free lifecycle boundary that OpenKit requires around stock OpenShell worker execution.
 - The disposable Cell model that groups one stock OpenShell Gateway, one dedicated containerd, one dedicated dockerd, all epoch-local runtime state, and at most one active worker backend session.
@@ -12,7 +85,7 @@ Implementation: Implemented
 - The local and remote fixed-command controller contracts used by NanoCore to invoke the privileged Cell helper without modifying OpenShell.
 - The stock OpenShell version and component-identity preflight required before a Cell may become ready.
 
-## Does Not Own
+## Legacy Exclusions
 
 - Core sandbox concepts, which belong to `docs/core/sandbox.md`.
 - General scheduler records, leases, placement, and capacity accounting, which belong to `docs/specs/20260703-durable_scheduler_design.md`.
@@ -20,7 +93,7 @@ Implementation: Implemented
 - OpenShell policy, provider, credential-injection, or schema-snapshot mappings, which belong to `docs/specs/20260703-openshell_mechanism_internalization.md` and the policy and vault specifications.
 - OpenShell source code, internal protocols, release engineering, or upstream defect remediation.
 
-## Core References
+## Historical Core References
 
 - `docs/core/sandbox.md`
 - `docs/core/runtime-model.md`
@@ -28,7 +101,7 @@ Implementation: Implemented
 - `docs/core/storage.md`
 - `docs/core/audit.md`
 
-## Summary
+## Legacy Summary
 
 OpenKit must consume official OpenShell artifacts without a fork, patch, replacement binary, or private protocol variant.
 
@@ -48,7 +121,7 @@ The next session starts a fresh Cell and verifies that both stock OpenShell and 
 
 Detached-process survival is a bounded deployment fact, not an OpenShell-wide guarantee. NanoCore adopts only the exact worker process that presents its memory-only key, exact lineage, and next sequence before the durable deadline; otherwise it uses the existing evidence-preserving recycle path.
 
-## Goals
+## Legacy Goals
 
 - Eliminate every OpenKit-maintained OpenShell source fork or patch.
 - Fence the observed late-create class without claiming an unsupported stock OpenShell guarantee.
@@ -58,7 +131,7 @@ Detached-process survival is a bounded deployment fact, not an OpenShell-wide gu
 - Support both co-located Cells and remote Cells controlled through one fixed SSH helper invocation.
 - Make the accepted compromise observable and testable: one cold Cell, one active backend session, no shared runtime reuse.
 
-## Non-Goals
+## Legacy Non-Goals
 
 - No shared OpenShell Gateway across concurrent OpenKit worker sessions.
 - No warm Cell pool, live Cell reuse, or multi-session Cell.
@@ -70,7 +143,7 @@ Detached-process survival is a bounded deployment fact, not an OpenShell-wide gu
 - No custom OpenShell binary path, CLI TLS-verification bypass flag, external dependency fork, or patched OpenShell artifact.
 - No claim that every local, remote, tunneled, container, or host-reboot topology preserves the worker process or reconnect route.
 
-## Cell Boundary
+## Legacy Cell Boundary
 
 One Cell owns exactly these effect-capable resources:
 
@@ -85,7 +158,7 @@ Read-only image tar archives may live outside the Cell and may seed a fresh dock
 
 An image archive is inert input and must not contain a live socket, process, mutable container record, Gateway database, or epoch authentication state.
 
-## Fixed Compromise
+## Legacy Fixed Compromise
 
 The first implementation has a scheduler concurrency ceiling of one for the OpenShell target.
 
@@ -99,7 +172,7 @@ Every completed or failed session pays the cost of starting a replacement contai
 
 Warm reuse and concurrent Cells remain deferred until measured demand justifies a separately reviewed design with independent ports, address pools, capacity records, and teardown proofs.
 
-## Lifecycle
+## Legacy Lifecycle
 
 ### Plan Before Effect
 
@@ -161,25 +234,33 @@ NanoCore does not use per-resource sandbox or provider deletion as cleanup or fa
 
 If the Cell cannot be recycled, the durable backend session remains cleanup-owned, scheduler capacity remains unavailable, and recovery must retry recycle from the persisted identity.
 
+### Containment Loss
+
+Confirmed containment escape and inability to exclude escape invalidate the entire active Cell. NanoCore must deny its new admissions, external effects, and egress; revoke worker-control and materialized-session handles; interrupt the affected Turn and AgentSession; reject publication of output not already accepted behind the final-status barrier; retain only redacted evidence; and call the existing same-owner whole-Cell recycle path. Potentially exposed Vault material is routed to its existing revocation or rotation owner. Per-process or per-sandbox deletion is never sufficient, and the old Cell is never reused.
+
+After successful recycle, the fresh empty replacement epoch may serve only a fresh authorized request; it is not continuation or replay of the affected Turn. Cleanup failure retains the existing Cell owner, backend identity, and scheduler capacity exactly as other recycle failures do. This contract adds no containment incident state or workflow and does not claim automatic escape detection.
+
+At deprecation time, the legacy implementation supplied handle revocation, Turn and AgentSession interruption paths, redacted evidence owners, and whole-Cell recycle, but it had no trusted containment-loss detector or one entry point that composed this complete response. That historical gap remains evidence only; the current containment owner is `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+
 ### Restart Recovery
 
 The active owner marker and epoch counter live outside the NanoCore process and survive NanoCore restart. The marker contains the epoch, active owner, last recycled owner, boot identity, cleanup phase, and cleanup bridge, which makes interrupted teardown retryable without treating missing mutable state as successful cleanup.
 
 Restart recovery classifies the exact durable lease and backend session before any physical effect. An eligible previously post-launch heartbeat-live session has the sequence-zero process-key hash plus `lastWorkerSequence >= 1` and enters the bounded scheduler `awaiting-reconnect` path without Cell prepare, replacement sandbox creation, shim launch, worker-control registration, or recycle. A sequence-zero-only supervisor uses exact existing cleanup. An already-releasing session with durable accepted `final_status` proceeds directly through the existing collection, reconciliation, cleanup, lease, and capacity owners without another heartbeat.
 
-For an eligible awaiting-reconnect or releasing session, the OpenShell backend reconstructs one exact read-only session handle from the immutable AEP snapshot, durable backend-session identity, deterministic sandbox name, deployment and package lineage, agent session and lease, exact Cell target, placement, Gateway name and endpoint, trusted data-root-relative staging reference, deterministic session paths, and only provider identifiers already present in durable records. Restoration fails closed before external effect when any identity, lineage, target, path, backend version, or workspace-handoff check disagrees.
+For an eligible awaiting-reconnect or releasing session, the OpenShell backend reconstructs one exact read-only session handle from the immutable AEP snapshot, durable backend-session identity, deterministic sandbox name, deployment and package lineage, AgentSession and lease, exact Cell target, placement, Gateway name and endpoint, trusted data-root-relative staging reference, deterministic session paths, and only provider identifiers already present in durable records. Restoration fails closed before external effect when any identity, lineage, target, path, backend version, or workspace-handoff check disagrees.
 
 The restored handle permits exact sandbox inspection, transcript and artifact download, provider and backend evidence reads, workspace-change collection, and exact cleanup after the existing terminal owners reach their cleanup fence. It is not launch-capable and must never call Cell `prepare`, create a sandbox, upload launch inputs, mutate provider setup, launch a process, register a worker-control token, or fabricate missing launch-only values merely to satisfy the old process-memory session shape.
 
 Exact process-key, lineage, and next-sequence adoption keeps the original Cell, sandbox, backend session, worker shim, lease, checkpoint, and workspace handoff. Verification failure, deadline expiry, or an unrecoverable identity mismatch revokes control and calls the existing idempotent recycle path with the persisted backend session id; recovery never prepares or launches a replacement for that turn. Ordinary cancellation remains owned by the existing live-turn control path rather than restart recovery.
 
-Restart closeout calls the existing lease, checkpoint, backend session, worker-control terminal record, agent session, workspace reconciliation, evidence, and cleanup owners directly. It adds no settlement coordinator, parallel domain workflow, or table.
+Restart closeout calls the existing lease, checkpoint, backend session, worker-control terminal record, AgentSession, workspace reconciliation, evidence, and cleanup owners directly. It adds no settlement coordinator, parallel domain workflow, or table.
 
 Awaiting-reconnect and adopted running Cells are not recycled. Reconnect timeout first fences the lease as `needs-evidence`, then invokes exact recycle. Cleanup failure retains the exact owner marker and backend identity, holds scheduler capacity, and waits for the next boot's same-owner recycle retry; no failure path guesses a target or releases capacity to restore availability.
 
 This contract does not guarantee that a worker survives every restart topology. A co-located host reboot normally kills the Cell, and a remote worker can reconnect only when its Cell, shim, Gateway access, and worker-control route actually survive and recover before the fixed deadline. Both outcomes use the same process-key/lineage/sequence classification rather than topology-specific compatibility behavior.
 
-## Cell Control
+## Legacy Cell Control
 
 The privileged helper has one fixed installed path and accepts only `prepare <owner-id>` and `recycle <owner-id>`.
 
@@ -195,7 +276,7 @@ The helper validates the owner id before using it and derives every unit, path, 
 
 NanoCore never accepts a request-supplied command, helper path, unit name, root directory, port, or shell fragment.
 
-## Gateway And Image Contract
+## Legacy Gateway And Image Contract
 
 The Cell Gateway binds only to loopback on the Cell host and uses the stock native Gateway JWT configuration generated for that epoch.
 
@@ -213,7 +294,7 @@ The OpenKit worker image should be built natively on the runtime host and saved 
 
 The A1 cache contains the host-built arm64 worker image and `ghcr.io/nvidia/openshell/supervisor:709aa0fe3e9e4d2b5fea336b5d6e393b45481898`, the exact tag baked into the official Gateway `0.0.80` binary. The helper verifies the Docker `29.6.1` fresh-load image id `sha256:d87e54175490a7dc5e75daef1c4aaf43955cf3fc3945827e4f03698ea99faadb` before Gateway startup.
 
-## Capacity And Release Contract
+## Legacy Capacity And Release Contract
 
 The first OpenShell scheduler pool and target capacity are both one.
 
@@ -223,7 +304,7 @@ Capacity release occurs only after backend cleanup returns success, which now re
 
 A sandbox delete response, empty sandbox list, empty Docker snapshot, elapsed grace window, Gateway disconnect, or NanoCore process exit is not independently sufficient to release capacity.
 
-## Security And Failure Rules
+## Legacy Security And Failure Rules
 
 - External OpenShell binaries, source, images, and protocols must not be patched or forked.
 - Restart reconnect relies on the trusted TLS or operator-managed SSH transport already protecting the bearer token. OpenKit adds no application-layer challenge; a transport observer who obtains both bearer token and process key could race the worker.
@@ -240,9 +321,10 @@ A sandbox delete response, empty sandbox list, empty Docker snapshot, elapsed gr
 - Secrets, JWT private keys, Docker sockets, host paths, process ids, and unit names remain backend-private.
 - Partial prepare and recycle failures must preserve enough owner evidence for deterministic operator recovery.
 - NanoCore must not decrement scheduler capacity after incomplete Cell destruction.
+- Confirmed or unexcluded containment escape must use the complete containment-loss boundary above; no partial cleanup or old-Cell reuse may be treated as success.
 - No tested process-survival result may be generalized to a topology whose Cell, sandbox, route, or host-survival properties were not verified.
 
-## A1 Stock Runtime Evidence
+## Historical A1 Stock Runtime Evidence
 
 The design was falsified against unmodified OpenShell CLI and Gateway `0.0.80` on A1 before acceptance.
 
@@ -264,7 +346,7 @@ The final implementation acceptance rebuilt `openkit/worker-codex:dev` natively 
 
 The opt-in remote backend E2E used the checksum-verified official macOS OpenShell `0.0.80` CLI, a separate operator-managed SSH Gateway tunnel, and the fixed SSH lifecycle controller to materialize a sandbox under the A1 Cell, execute a command inside it, download the command's result file, and recycle the whole Cell into an empty replacement. A separate A1-local E2E uploaded a minimal AEP fixture and executed the real OpenKit worker shim inside the Cell. These runs complete this lifecycle specification. The separate real Codex `0.144.1` root-plus-two-child worker-runtime provenance acceptance later passed independently on A1 against stock OpenShell `0.0.80`; it validates provenance without extending this lifecycle specification's ownership.
 
-## Alternatives
+## Historical Alternatives
 
 ### Patch Or Fork OpenShell
 
@@ -290,7 +372,7 @@ Rejected because a Gateway endpoint without the matching fixed lifecycle target 
 
 Rejected for the current contract because the fixed SSH invocation already supplies the two required lifecycle actions without adding another daemon, protocol, or credential surface.
 
-## Implementation Projection
+## Current Legacy Implementation Projection
 
 The whole-Cell prepare, recycle, remote fixed-controller, cleanup-fence, detached shim launch, and active read-only restart-restoration slice are implemented. The backend can reconstruct the exact existing session as read-only, collect through it, and recycle the same Cell without calling prepare, create, upload, provider mutation, launch, or worker-control registration.
 
@@ -301,7 +383,7 @@ The whole-Cell prepare, recycle, remote fixed-controller, cleanup-fence, detache
 - Remote configuration uses `OPENKIT_OPENSHELL_CELL_SSH_TARGET`, `OPENKIT_OPENSHELL_GATEWAY_URL`, and `OPENKIT_OPENSHELL_WORKER_CONTROL_BASE_URL`; the OpenShell CLI remains the official platform-installed `0.0.80` binary and never uses the TLS-verification bypass flag. The stock Cell Gateway's unauthenticated HTTP listener remains bound to host loopback and is exported only through the separately authenticated SSH local-forward.
 - `apps/nanocore/src/scheduler-records.ts` initializes the first OpenShell pool and target with one slot.
 
-## Verification
+## Legacy Verification
 
 - L1 controller tests verify exact local sudo and remote SSH argv construction, owner and target validation, bounded errors, and no shell evaluation.
 - L1 backend tests verify prepare-before-preflight ordering, whole-Cell cleanup after every post-prepare failure, owner-bound restart cleanup, access revocation, retry, and absence of resource-delete success claims.
@@ -316,7 +398,7 @@ The whole-Cell prepare, recycle, remote fixed-controller, cleanup-fence, detache
 - The L5 opt-in remote backend test controls A1 through the fixed SSH lifecycle command, reaches its loopback Gateway through an operator-managed tunnel, materializes one sandbox, executes a bounded command, downloads its result, and proves whole-Cell cleanup leaves a fresh empty replacement; this validates only the declared A1 topology.
 - The late-create A1 falsifier holds a Docker create before forwarding, destroys the Cell, starts a fresh Cell, and proves the old request cannot materialize.
 
-## Deferred Work
+## Historical Deferred Work
 
 - Multiple independent Cells with distinct ports, address pools, capacity records, and owner markers.
 - Warm image-layer seeding that remains inert and cannot preserve mutable runtime state.

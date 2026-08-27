@@ -1,10 +1,11 @@
+---
+status: Retired
+implementation: N/A
+status-changed: 2026-07-15
+current-guidance: None
+decision-evidence: "https://github.com/lingkaix/openkit/commit/ff85a9e898782f615ca71652b1f62dcfc9896fe2"
+---
 # Remote OpenShell Gateway
-
-Status: Retired
-Implementation: N/A
-Status Changed: 2026-07-15
-Current Guidance: None
-Decision Evidence: `docs/changes/202607111941330001-core_spec_implementation_alignment_audit.md`
 
 Active replacement: `../20260715-openshell_disposable_cell_lifecycle.md` supports both local and remote placement only when the Gateway and its sandboxes are inside one single-slot disposable Cell. This document's naked external-Gateway contract remains retired.
 
@@ -57,7 +58,6 @@ OpenShell sandbox deletion normalizes the pinned 0.0.80 missing-entity result wh
 
 ## Core References
 
-- `docs/deployment.md`
 - `docs/core/runtime-model.md`
 - `docs/core/sandbox.md`
 - `docs/core/agent-capability.md`

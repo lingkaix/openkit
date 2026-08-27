@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/specs/20260531-human_attention_intervention_model.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/specs/20260703-worker_control_protocol.md`"
+decision-evidence: "`docs/specs/20260531-human_attention_intervention_model.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/specs/20260703-worker_control_protocol.md`"
+---
 # Codex Approval Bridge
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/specs/20260531-human_attention_intervention_model.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/specs/20260703-worker_control_protocol.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

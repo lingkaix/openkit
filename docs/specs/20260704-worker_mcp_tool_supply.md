@@ -1,11 +1,12 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Worker MCP Tool Supply
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
-- The `mcp.*` capability route family on `capability.local`: `mcp.list_servers`, `mcp.list_tools`, `mcp.call_tool`.
+- The `mcp.*` capability route family on worker-local `capability.local`, projected through `/capabilities/mcp/*`: `mcp.list_servers`, `mcp.list_tools`, `mcp.call_tool`.
 - The workspace MCP server catalog record: named server entries, transports, credential references, and tool allow rules.
 - NanoCore ownership of MCP server lifecycle: spawn, connect, supervise, health, teardown.
 - Gateway-side credential injection binding for MCP server calls.
@@ -22,6 +23,7 @@ Implementation: Partial
 - Third-party non-MCP API proxying and unified network egress, which remain deferred on the roadmap.
 - MCP server sandboxing/isolation, which is deferred.
 - The canonical `AgentCapability` and `CapabilityCall` terms (`docs/core/agent-capability.md`).
+- RelayStream, nested HTTP/2, Sandbox Integration, route credentials, or NanoHost lifecycle, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 ## Core References
 
@@ -32,7 +34,7 @@ Implementation: Partial
 
 ## Summary
 
-Worker agents need MCP tools, and the product vision routes all worker access to external systems through Core-governed gateways. This spec defines the accepted MCP plane of that unified-proxy direction for worker traffic: workers never connect to MCP servers directly; they will call `mcp.*` routes on `capability.local`, and NanoCore will own the servers, credentials, policy checks, audit trail, and tool schema history.
+Worker agents need MCP tools, and the product vision routes all worker access to external systems through Core-governed gateways. This spec defines the accepted MCP plane for worker traffic: workers never connect to MCP servers directly; they will call `mcp.*` operations on worker-local `capability.local`, Sandbox Integration will carry them through `/capabilities/mcp/*` with the distinct capability token, and NanoCore will own the servers, credentials, policy checks, audit trail, and tool schema history.
 
 In the accepted target, MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: endpoints and launch configs never appear inline in manifests. Every tool call will be one `CapabilityCall` with a `UsageRecord`; tool schemas will be snapshotted per server version so calls stay interpretable after servers change; credentials will be injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
 
@@ -56,13 +58,13 @@ In the accepted target, MCP servers are declared once in a workspace-scoped cata
 
 ## Background
 
-`docs/specs/20260703-worker_agent_capability.md` establishes `capability.local` as the accepted single worker-visible capability endpoint and lists the `mcp.*` route family as deferred. The product vision (§6.5) defines a unified proxy whose MCP plane gives agents authenticated, access-controlled, rate-limitable, audited MCP access. This spec fixes the target contract while implementation remains sequenced on the roadmap beside third-party auth proxying and network egress.
+`docs/specs/20260703-worker_agent_capability.md` establishes `capability.local` as the worker-local capability API and lists the `mcp.*` route family as deferred. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns its `/capabilities/*` carriage and keeps its credential and semantics distinct from `/inference/*` and `/worker-control/*`. This spec fixes the target MCP contract while implementation remains sequenced on the roadmap beside third-party auth proxying and network egress.
 
 The workspace data source catalog (`docs/specs/20260704-workspace_data_source_catalog.md`) already set the pattern this spec mirrors: declare a named resource once at workspace scope, reference it by name everywhere, never inline endpoints in manifests.
 
 ## Decision
 
-- All worker MCP access flows through the NanoCore agent capability gateway on `capability.local`. Direct worker-to-MCP-server connections are prohibited in every deployment shape.
+- All worker MCP access flows through worker-local `capability.local`, projected by Sandbox Integration through `/capabilities/mcp/*` to the NanoCore capability gateway. Direct worker-to-MCP-server connections are prohibited in every deployment shape.
 - MCP servers are declared in a workspace-scoped catalog (with read-only projection of server-scoped shared entries) and referenced by name from agent manifests.
 - NanoCore owns MCP server lifecycle: it spawns stdio servers and connects to HTTP servers; workers never hold server handles.
 - Credentials resolve from vault references at the gateway with `gateway-only` visibility.
@@ -90,11 +92,11 @@ Rules:
 - Server-scoped shared entries are deployment configuration projected into workspaces read-only; a workspace MAY disable but not edit them.
 - Catalog entries carry no secret material; credential slots are vault references per `docs/core/vault.md`.
 
-### Routes on capability.local
+### Routes On `capability.local`
 
 Three target operations will join the future capability plane, using the envelope, lineage, authentication, and verification rules owned by the worker capability spec:
 
-- `mcp.list_servers`: returns the servers enabled for this agent session — entry names, transport kind, health state, and tool-name summaries only. No endpoints, no launch configs, no credential hints.
+- `mcp.list_servers`: returns the servers enabled for this AgentSession — entry names, transport kind, health state, and tool-name summaries only. No endpoints, no launch configs, no credential hints.
 - `mcp.list_tools`: returns the tool schemas for one named server, served from the current `McpToolSchemaSnapshot` (see below), not live from the server, so listing is deterministic per snapshot.
 - `mcp.call_tool`: invokes one tool on one named server with JSON arguments; returns the tool result or a typed error.
 
@@ -102,7 +104,7 @@ Rules:
 
 - A session sees only servers that its resolved AEP enables; `mcp.list_servers` MUST NOT reveal disabled or out-of-scope entries.
 - `mcp.call_tool` responses are size-bounded (bound set by capability-plane policy). Oversized results fail typed with `mcp-result-too-large` and a hint to route bulk output through artifacts or the data plane; the gateway MUST NOT truncate silently.
-- Calls carry the full capability lineage (workspace, thread, turn, agent session, package snapshot); the gateway stamps the catalog entry id and schema snapshot id onto the call record.
+- Calls carry the full capability lineage (workspace, thread, turn, AgentSession, package snapshot); the gateway stamps the catalog entry id and schema snapshot id onto the call record.
 - Timeouts are enforced at the gateway (default 60s per call, catalog-entry configurable); a timed-out call fails typed and MUST NOT leave the worker waiting on a hung server.
 
 ### Server lifecycle
@@ -111,14 +113,14 @@ Rules:
 - `stdio` servers are spawned and supervised by NanoCore on demand (first call or session start, an implementation choice) and reaped when idle past a bound. Spawned server processes run in NanoCore's host context in this slice; sandboxing them is deferred, and server trust is therefore deployment configuration — the catalog is writable only through governed workspace configuration surfaces.
 - `http` servers are connected from NanoCore with pooled clients.
 - A `failed` or unreachable server yields typed `mcp-server-unavailable` errors on calls, never hangs; repeated failures mark the entry `degraded` in `mcp.list_servers` output so workers can adapt.
-- One catalog entry MAY serve many concurrent sessions; per-session isolation of server-side state is NOT guaranteed by this contract, and entries whose tools are stateful should be documented as such by their operators. (Per-session server instances are a deferred lifecycle option.)
+- The current release permits one active worker slot. One catalog entry may be reused across successive AgentSessions, but this specification does not authorize concurrent worker AgentSessions, a multi-agent harness, or fleet behavior. Per-AgentSession server instances remain a deferred lifecycle option for stateful or isolation-sensitive servers.
 
 ### Credential injection
 
 - Credential resolution happens at the gateway when NanoCore spawns or calls the server: vault references resolve through the vault backend, values land in the server's process environment (`stdio`) or request auth material (`http`), with visibility class `gateway-only` per the vault injection contract.
 - Workers MUST NOT be able to obtain MCP credentials through any route: not in `mcp.list_servers`, not in error payloads, not in tool results echoing server environment. The gateway MUST apply redaction filters to tool results for known credential shapes as defense in depth.
 - Vault grant revocation takes effect on the next capability call: the gateway re-checks grant validity per call (cheap check against the grant record), and revocation also triggers teardown of spawned `stdio` servers holding the revoked material in their environment.
-- Every credential resolution emits `VaultUse` per the vault specs.
+- Every credential resolution emits `VaultUse` success or typed-failure evidence per the Vault contract; that evidence is not injection authority or proof that the MCP sink completed.
 
 ### Tool schema retention
 
@@ -152,7 +154,7 @@ The gateway will grow an MCP subsystem beside the inference dispatcher: a catalo
 
 ## Current Implementation Projection
 
-The executable plane is not implemented. Current AEPs declare `capabilities.mode: disabled` with no routes; NanoCore exposes none of the three `/api/worker-capabilities/mcp/*` routes, has no worker MCP gateway, and `@openkit/worker-shim` has no capability client. The removed route tests and built-artifact worker MCP smoke therefore provide no current acceptance evidence.
+The executable plane is not implemented. Current AEPs declare `capabilities.mode: disabled` with no routes; NanoCore exposes no MCP capability handlers, Sandbox Integration does not expose `capability.local` or `/capabilities/mcp/*`, and `@openkit/worker-shim` has no capability client. The removed route tests and built-artifact worker MCP smoke therefore provide no current acceptance evidence.
 
 The remaining substrate is partial: AEP supply and snapshot schemas can retain approved MCP catalog inputs, and the L6 story remains a future acceptance target. Those static records do not start servers, expose tools, authorize calls, produce usage, or grant worker access. Implementation must rebuild the thin capability client, NanoCore gateway, schema retention, policy and approval binding, vault injection, route tests, and artifact smoke from this contract.
 
@@ -217,6 +219,7 @@ Previously open questions are resolved by accepted V1 defaults: `stdio` MCP serv
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
 - `docs/specs/20260529-test_strategy.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/core/agent-capability.md`
 - `docs/core/permissions.md`
 - `docs/core/vault.md`

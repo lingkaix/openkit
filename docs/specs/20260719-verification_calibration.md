@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Not Started
+---
 # Verification Calibration Program
-
-Status: Draft
-Implementation: Not Started
 
 ## Owns
 
@@ -9,24 +10,35 @@ This specification owns the repository's verification calibration program: the t
 
 ## Does Not Own
 
+- The single-instrument discriminating-power record that admits one harness as an oracle;
+  `docs/verification-instruments.md` Harness Admission owns it. This specification owns the
+  ongoing programme and its audit records, which measure detection power across the suite
+  over time; it does not own the one-off record that lets a particular instrument decide a
+  particular gate.
 - The L0-L6 test taxonomy and gate policy; `docs/specs/20260529-test_strategy.md` owns them.
 - L6 story acceptance semantics, roles, and evidence packages; `docs/specs/20260529-l6_story_acceptance.md` owns them.
+- Adaptive coordination and the composition of implementation, testing, verification, review, and audit functions; `docs/change-execution.md` owns that coordination. This specification calibrates those functions but does not authorize or replace everyday execution rules.
 - The audit-record document type; `docs/documentation-model.md` owns it.
 - The product's runtime self-improvement and evaluation loop; `docs/specs/20260710-self_improvement_evaluation_loop.md` owns it. This program calibrates repository engineering, not product runtime behavior, and product audit records under `docs/core/audit.md` are a different domain.
 - Mutation tooling internals, CI job definitions, and reviewer prompt content; implementation slices own them under their own change plans.
 
 ## Core References
 
-- `docs/engineering-doctrine.md`
-- `docs/documentation-model.md`
 - `docs/core/foundation.md`
-- `docs/specs/20260529-test_strategy.md`
+
+## Intent
+
+- `docs/engineering-doctrine.md`
+
+## Governance
+
+- `docs/documentation-model.md`
 
 ## Summary
 
 Under full delegation every verifier — test suite, reviewer, judge, auditor — is agent-produced, so verifier failures correlate with implementation failures and unmeasured verifiers degrade silently. This program answers one question empirically: if a known fault were planted at this trust boundary, which layer would detect it, how fast, and with what probability? Detection-power trends are the repository's health metric and the delegation experiment's falsifiability evidence.
 
-The program has three layers matching three trust boundaries: code mutation calibrates the test suites, seeded defects calibrate the review and adjudication pipeline, and specification mutation calibrates the documentation-to-projection derivation chain. Mechanics stay distributed under existing owners; the layers share one fault taxonomy, one calibration record schema, and one reporting plane in `docs/audits/`.
+The program has three layers matching three trust boundaries: code mutation calibrates the test suites, seeded defects calibrate review and adjudication functions, and specification mutation calibrates the documentation-to-projection derivation chain. Mechanics stay distributed under existing owners; the layers share one fault taxonomy, one calibration record schema, and one reporting plane in `docs/audits/`.
 
 ## Current Scope
 
@@ -36,7 +48,7 @@ The program covers this repository's engineering system at its current shape: on
 
 - Measure, per trust boundary, the probability and latency of detecting a known planted fault.
 - Convert unverified specification surface into named, enforced projections.
-- Keep every calibration metric owned by the audit side and out of implementer optimization loops.
+- Keep every calibration metric owned by the audit side and out of builder optimization loops.
 - Produce dated, comparable trend records that let a human approve work on evidence.
 
 ## Non-goals
@@ -52,11 +64,11 @@ Code mutation calibrates the L1/L2 test suites by planting syntactic faults and 
 
 Per material change touching a strict surface, an incremental mutation run covers only the changed code. Every surviving mutant is either killed by a new test or given an equivalence argument; the disposition list enters the change's evidence in its change record. This diff-level killed-or-justified rule is the only mutation gate. Triage effort per change is bounded; an exhausted budget is recorded, not silently absorbed.
 
-Periodically, a sampled full run covers strict-surface modules and reports per-module detection trends to the audit side. Global scores are diagnostic only and MUST NOT appear as implementer targets, prompts, or gates.
+Periodically, a sampled full run covers strict-surface modules and reports per-module detection trends to the audit side. Global scores are diagnostic only and MUST NOT appear as builder targets, prompts, or gates.
 
 ## Layer 2: Seeded Defects
 
-Seeded defects calibrate the review and adjudication pipeline by measuring its catch rate against known planted defects.
+Seeded defects calibrate the adaptive review and adjudication path by measuring its catch rate against known planted defects.
 
 A saboteur agent derives variants of real changes with planted defects indexed by the shared fault taxonomy, and the variants pass through the standard adversarial review blind. The output is a catch-rate matrix by defect class and reviewer configuration; a blind class drives reviewer prompt, context-discipline, or model-family changes.
 
@@ -72,7 +84,7 @@ Static step: for a sampled document, enumerate its normative statements and, for
 
 Dynamic step: for a sample of claimed pointers, invert the pointed-to projection and confirm it fails, reusing layer 1 mechanics as the proof.
 
-The output is a load-bearing map per document — enforced, story-covered, audit-only, or unverified per statement — published as an audit record, and it drives where the next L2 tests and L0 rules are added. Existing mechanical edges are story `contracts` metadata and story deterministic assertions; a citation convention linking L2 contract tests to their owning specification remains a proposed follow-up and is not authorized while this specification is Draft.
+The output is a load-bearing map per document — enforced, story-covered, audit-only, or unverified per statement — published as an audit record, and it drives where the next L2 tests and L0 rules are added. Existing mechanical edges are story `contracts` metadata and story deterministic assertions. A citation convention linking L2 contract tests to their owning specification remains a non-authorizing deferred question below.
 
 ## Shared Fault Taxonomy
 
@@ -84,7 +96,7 @@ Every calibration action produces one record with: what was injected, where, whe
 
 ## Ownership And Separation
 
-The audit side owns all measurement, record production, and trend reporting. Production and verification stay separated: implementing agents never adjudicate their own calibration outcomes, calibration judges and reviewers run in clean contexts, and reviewer or judge model families SHOULD differ from the implementer's on strict surfaces. Calibration of the review layer itself is measured by seeded defects, not by self-report.
+The audit side owns all measurement, record production, and trend reporting. Production and verification stay separated: builders never adjudicate their own calibration outcomes, calibration judges and reviewers run in clean contexts, and reviewer or judge model families SHOULD differ from the builder's on strict surfaces. Calibration of the review layer itself is measured by seeded defects, not by self-report.
 
 ## Falsification Thresholds
 
@@ -108,7 +120,7 @@ Each pilot runs under its own change plan; this specification authorizes no impl
 
 ## Acceptance Predicates
 
-- No calibration metric appears as an implementer target, prompt content, or gate, except the diff-level killed-or-justified rule.
+- No calibration metric appears as a builder target, prompt content, or gate, except the diff-level killed-or-justified rule.
 - Every planted seed is registered, torn down, and provably absent from integration branches.
 - Every calibration output is a dated audit record linking this specification.
 - A second clean-context judge reproduces calibration verdicts from the recorded evidence alone.
@@ -120,7 +132,7 @@ Each pilot runs under its own change plan; this specification authorizes no impl
 
 Rejected: a single scheduler and store would be a new platform with correlated failure across all three layers, against the root anti-platform rules; the layers share taxonomy, record schema, and reporting instead.
 
-### Implementer-Owned Metrics
+### Builder-Owned Metrics
 
 Rejected: any measured proxy handed to its producer as a target stops measuring; audit-side ownership is the Goodhart guard.
 
@@ -137,11 +149,10 @@ Rejected as a general mechanism: L6 is opt-in, expensive, and bounded by its own
 - Whether calibration runs deserve scheduled automation after two manual cycles.
 - Whether reviewer and judge model rotation should follow a standing policy.
 - Whether the load-bearing map should extend beyond core and strict-surface specifications.
+- Whether a citation convention should link L2 contract tests to their owning specification as an additional mechanical derivation edge for layer 3.
 
 ## Related Docs
 
-- `docs/engineering-doctrine.md`
-- `docs/documentation-model.md`
 - `docs/specs/20260529-test_strategy.md`
 - `docs/specs/20260529-l6_story_acceptance.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`

@@ -1,8 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # OpenKit Agent Skill Interface
-
-Status: Accepted
-Implementation: Implemented
-Change Plan: `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
 
 ## Owns
 
@@ -26,6 +26,13 @@ It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_c
 - `docs/core/permissions.md`
 - `docs/core/vault.md`
 - `docs/core/audit.md`
+
+Related specs:
+
+
+## Related Docs
+
+- `docs/specs/20260721-provider_subscription_accounts.md`
 
 ## Summary
 
@@ -233,15 +240,34 @@ The initial operation groups cover:
 
 - connection, readiness, diagnostics, and bootstrap
 - access tokens and credential storage
+- NanoHost enrollment, redacted transport-token inventory and revocation, named-slot issue and rotation, rotation abort, and decommission
 - workspaces, resources, repositories, and Git operations
 - threads, Chat Mode, Task Mode, Goal Mode, plans, and bounded steps; steering without an accepted durable delivery contract remains an explicit exclusion with a typed fail-closed result
 - Action Center, approvals, questions, reviews, artifacts, evidence, audit, and usage
 - knowledge sources, observations, claims, conflicts, retrieval, context packages, proposals, repair, and health
 - interrupted-worker inspection and checkpoint retry, scheduler admissions, and exact S16 Goal pending input only after its durable owner and delivery proof exist
-- runtime configuration and stale-session handling
+- runtime configuration and product-safe runtime availability; AgentSession identity and replacement remain hidden internal behavior
 - vault status, unlock, lock, bootstrap, grants, injection records, use records, and rebind
+- provider-subscription inventory, account lifecycle and status, and quota
 - automations
 - backup, export, import, and workspace portability
+
+The provider-subscription projection freezes these exact transport-neutral identities:
+
+| Agent operation id | App API `operationId` | Core Client method |
+| --- | --- | --- |
+| `provider-subscription.provider-list` | `listSubscriptionProviders` | `providerSubscriptions.listProviders` |
+| `provider-subscription.account-list` | `listProviderSubscriptionAccounts` | `providerSubscriptions.listAccounts` |
+| `provider-subscription.account-create` | `createProviderSubscriptionAccount` | `providerSubscriptions.createAccount` |
+| `provider-subscription.account-update` | `updateProviderSubscriptionAccount` | `providerSubscriptions.updateAccount` |
+| `provider-subscription.account-delete` | `deleteProviderSubscriptionAccount` | `providerSubscriptions.deleteAccount` |
+| `provider-subscription.account-status` | `getProviderSubscriptionAccountStatus` | `providerSubscriptions.getAccountStatus` |
+| `provider-subscription.account-login-start` | `startProviderSubscriptionAccountLogin` | `providerSubscriptions.startAccountLogin` |
+| `provider-subscription.account-login-cancel` | `cancelProviderSubscriptionAccountLogin` | `providerSubscriptions.cancelAccountLogin` |
+| `provider-subscription.account-logout` | `logoutProviderSubscriptionAccount` | `providerSubscriptions.logoutAccount` |
+| `provider-subscription.account-quota` | `getProviderSubscriptionAccountQuota` | `providerSubscriptions.getAccountQuota` |
+
+These ten `app-api` entries use the existing generic literal catalog and `openkit ops call` path. They add no provider-specific CLI branch, convenience command, exclusion, alias, or new Skill narrative.
 
 ### Output and error envelopes
 
@@ -354,11 +380,15 @@ The Skill must not mirror every schema. The CLI must not mirror NanoCore busines
 
 ## Current Implementation Projection
 
-The accepted design is implemented by `skills/openkit/`, `skills/openkit-cli.mjs`, `skills/openkit-operations.mjs`, and `skills/openkit-secrets.mjs`. The checked operation catalog references public App API or typed Core Client owners, the bundled CLI provides JSON-only discovery and invocation, and the Skill progressively routes agents to one-level references.
+The base mechanism is implemented by `skills/openkit/`, `skills/openkit-cli.mjs`, `skills/openkit-operations.mjs`, and `skills/openkit-secrets.mjs`. The checked operation catalog references public App API or typed Core Client owners, the bundled CLI provides JSON-only discovery and invocation, and the Skill progressively routes agents to one-level references.
+
+All ten provider-subscription operations are present in the existing literal `app-api` catalog under the frozen transport-neutral identities. They map one-to-one to the checked App API operation ids and `client.providerSubscriptions` methods, use the shared strict input schemas through the generic `openkit ops call` path, and add no provider-specific command, alias, exclusion, workflow, or duplicated route contract. The bundled executable is regenerated from that source and passes the existing reachability and interface checks.
+
+The seven NanoHost transport operations map through that same generic path to `client.app` methods and shared App API schemas. They write secrets only to named execution-host slots and return redacted inventory; they add no CLI credential destination, alias, or second delivery path.
 
 Repository checks enforce public-operation coverage and reject a reachable user-facing MCP package, binary, import, script, release step, Skill metadata entry, active-guide projection, or one of the four former Skill directories. The former user-facing MCP implementation and its dedicated acceptance platform are deleted without an alias or compatibility path.
 
-NanoCore remains authoritative for validation, authorization, idempotency, state, recovery, audit, and execution. Worker-side MCP remains a separate accepted capability plane, and current worker AEPs expose no capability routes.
+NanoCore remains authoritative for validation, authorization, idempotency, state, recovery, audit, and execution. Worker-side MCP remains a separate accepted capability plane, and current worker AEPs expose no capability routes. This spec remains `Partial` until the complete public user/operator operation surface satisfies the catalog-or-exclusion acceptance predicate; the provider-subscription subset is aligned and has no separate CLI or Skill package.
 
 ## Alternatives Considered
 
@@ -494,7 +524,7 @@ None. The clean replacement, audience, package shape, command families, capabili
 
 ## Links
 
-- `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
+
 - `docs/specs/20260528-core_client_boundary.md`
 - `docs/specs/20260704-app_api_openapi_projection.md`
 - `docs/specs/20260704-remote_auth_credential_bootstrap.md`

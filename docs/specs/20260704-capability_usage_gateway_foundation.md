@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Capability Usage Gateway Foundation
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
@@ -30,6 +31,9 @@ Implementation: Partial
 - `docs/core/vault.md`
 
 Related specs:
+
+
+## Related Docs
 
 - `docs/specs/20260526-llm_gateway_responses_api.md`
 - `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
@@ -99,7 +103,7 @@ It MUST carry:
 - turn id when available
 - item id when available
 - agent id when available
-- agent session id when available
+- AgentSession id when available
 - Agent Environment Package snapshot id when available
 - product-safe runtime origin reference when available
 - product-safe runtime cache-lineage reference when available
@@ -116,7 +120,7 @@ Rules:
 
 - Missing optional lineage is allowed for server diagnostics and manual gateway calls, but workspace id and a non-null authority actor are required for worker-agent execution and workspace-owned usage.
 - Before a Workspace-attributed producer starts a CapabilityCall or contacts an upstream, it must apply the current-authority predicate from `docs/specs/20260715-multi_user_workspace_system.md` to that actor and the concrete `llm.gateway.use`, `tool.use`, or `network.egress` operation. A null, stale, or denied actor records no Workspace effect; an unattributed server diagnostic cannot be promoted into Workspace usage or authority.
-- The context actor is transient enforcement input. Durable CapabilityCall and RuntimeEvidence records retain their existing AEP, Turn, Agent Session, request, and audit links instead of copying another `ActorRef`; the linked UsageRecord stores only the exact derived responsible-user id required by the audit and usage specification.
+- The context actor is transient enforcement input. Durable CapabilityCall and RuntimeEvidence records retain their existing AEP, Turn, AgentSession, request, and audit links instead of copying another `ActorRef`; the linked UsageRecord stores only the exact derived responsible-user id required by the audit and usage specification.
 - The context MUST NOT carry prompt text, tool arguments, tool results, secrets, bearer tokens, or raw prompt cache keys.
 - Producer adapters may add feature-local diagnostic ids, but the recorder stores only stable OpenKit ids and redacted summaries.
 
@@ -126,12 +130,13 @@ The recorder owns a three-step lifecycle:
 
 1. `startCapabilityCall(context)`: persists a pending call row before contacting the upstream provider or MCP server.
 2. `recordUsage(callId, usage[])`: persists zero or more usage rows after the producer has a measured result or partial result.
-3. `finishCapabilityCall(callId, outcome)`: marks the call `succeeded`, `failed`, `denied`, `aborted`, or `timed-out` with a stable error code when applicable.
+3. `finishCapabilityCall(callId, outcome)`: records one terminal status from the closed vocabulary owned by `docs/core/agent-capability.md`, with a stable error code when applicable.
 
 Rules:
 
 - A call rejected by policy before any upstream contact MUST finish as `denied` and MUST NOT emit usage.
 - A call that contacts upstream and then fails MUST finish as `failed` or `aborted` and MUST emit partial usage when the producer can measure it.
+- A call whose execution is known to have stopped without a complete result finishes as `interrupted`; this does not prove whether the external effect happened. A call left by a crash whose external result cannot be proved finishes as `unknown`. An `unknown` call is never automatically replayed: only external inspection or reconciliation may establish its result, and any later invocation is a fresh authorized request.
 - The recorder MUST use the existing `(workspaceId, requestId, family, operation)` tuple as the complete idempotency key for capability-call start. Those four fields match by lookup and are not repeated in the replay-attribution comparison.
 - When that lookup finds an existing row, exact-match replay is allowed only when the incoming `capabilityId`, `threadId`, `turnId`, `itemId`, `agentId`, `agentSessionId`, `packageSnapshotId`, `runtimeOriginRef`, `runtimeCacheLineageRef`, `sourceIds`, `providerRef`, `serviceRef`, and `redactionClass` equal the persisted immutable effect attribution. `sourceIds` are compared only after canonical sorting and deduplication.
 - Replay comparison MUST NOT include `callId`, `summary`, status, error code, timestamps, or the transient `authorityActor`.
@@ -266,7 +271,7 @@ Current relevant code is split:
 - `apps/nanocore/src/llm/gateway-usage.ts` records process-local diagnostics only.
 - `packages/protocol/src/models/usage.ts` already defines `UsageRecordSchema`.
 - `packages/protocol/src/models/capability.ts` already defines `CapabilityCallSchema`.
-- `apps/nanocore/src/capability/usage-ledger.ts` now provides the first shared workspace-scoped ledger skeleton: start a durable capability call, record linked usage rows, finish the call with a terminal status, recover `running` calls during boot workspace scans, and emit one linked `AuditEvent` for terminal capability outcomes. The recorder validates rows against the existing protocol schemas, rejects raw payload-shaped field names before storage, skips duplicate equivalent usage measurements when an idempotent capability call is retried, marks the linked call `failed` with `usage_record_failed` when usage recording fails, and marks restart-recovered calls `cancelled` with `capability_call_recovered_after_restart`.
+- `apps/nanocore/src/capability/usage-ledger.ts` now provides the first shared workspace-scoped ledger skeleton: start a durable capability call, record linked usage rows, finish the call with a terminal status, recover `running` calls during boot workspace scans, and emit one linked `AuditEvent` for terminal capability outcomes. The recorder validates rows against the existing protocol schemas, rejects raw payload-shaped field names before storage, skips duplicate equivalent usage measurements when an idempotent capability call is retried, and marks the linked call `failed` with `usage_record_failed` when usage recording fails. Its restart recovery currently marks calls `cancelled` with `capability_call_recovered_after_restart`; `packages/protocol/src/models/capability.ts` currently exposes only `queued`, `running`, `succeeded`, `failed`, and `cancelled`. That schema and recovery behavior diverge from the Core terminal vocabulary, especially the required `unknown` result, and are not accepted recovery semantics.
 - Workspace-scoped databases now own `capability_calls` and `usage_records` tables through `workspace_0013_capability_usage_ledger`.
 - QuickChatAgent LLM calls now use the same recorder when NanoCore has a Core database. The producer writes one workspace-scoped `CapabilityCall` with family `llm` and one linked `UsageRecord` using provider-reported total tokens when available, falling back to one request-count row when token usage is absent.
 - Public `/v1/chat/completions` and `/v1/responses` calls routed through pi-ai now use the same recorder when the request carries `metadata.openkit.workspaceId`. NanoCore starts a workspace-scoped `CapabilityCall` with family `llm`, observes raw pi-ai terminal usage exactly once before public normalization, records positive input, output, cache-read, and cache-write token rows plus one positive estimated-USD row when available, and marks started calls failed when dispatch, stream consumption, or usage recording fails. The same observation feeds process-local diagnostics while retaining provider-reported cache-read and cache-write semantics. Public calls without workspace attribution remain process-local diagnostics only, and public responses never expose raw usage, cost objects, or prompt-cache keys.

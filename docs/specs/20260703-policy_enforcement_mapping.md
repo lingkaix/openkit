@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Policy Enforcement Mapping
-
-Status: Accepted
-Implementation: Partial
 
 ## Summary
 
@@ -65,7 +66,7 @@ Subjects:
 - automation
 - agent
 - agent profile
-- agent session
+- AgentSession
 - worker shim
 - external integration
 
@@ -119,7 +120,7 @@ Context:
 
 - core mode
 - workspace membership status and fixed access level
-- agent session state
+- AgentSession state
 - package snapshot id
 - requested runtime placement
 - backend capability summary
@@ -167,7 +168,7 @@ The following registry is the unique owner of the closed V1 product-operation to
 | `llm.gateway.use` | `ar:llm-gateway-use` | Workspace-attributed public LLM Gateway use. |
 | `repo.push` | `ar:repo-push` | Approval-gated repository publication. |
 
-A handler may enforce a durable lifecycle precondition such as exact invitee, responsible user, expected revision, or winning Approval claimant, but it must not define a competing role table. Ownership transfer maps only to `workspace.lifecycle`; the existing Workspace Vault reference list/rebind and grant/plan/receipt metadata lists map only to `vault.admin`; VaultUse and other audit, usage, evidence, backend-handle, and permission-decision reads map only to `audit.read`.
+A handler may enforce a durable lifecycle precondition such as exact invitee, responsible user, expected revision, or winning Approval claimant, but it must not define a competing role table. Ownership transfer maps only to `workspace.lifecycle`; the existing Workspace Vault reference list/rebind and `VaultGrant`, `VaultInjectionPlan`, and `VaultInjectionReceipt` metadata lists map only to `vault.admin`; `VaultUse` and other audit, usage, evidence, backend-handle, and permission-decision reads map only to `audit.read`. None of those read permissions turns evidence into injection authority.
 
 Mutation posture is separate from the product operation. It describes whether a public request may change protected product state or cause an external effect and is the authority for `workspace-readonly` token enforcement. It MUST NOT be inferred from the HTTP method. Incidental redacted audit or usage evidence does not turn an otherwise read-only operation into a content mutation, while an operation such as Knowledge retrieval may be marked mutating when its accepted contract updates authoritative indexes or traces.
 
@@ -175,7 +176,7 @@ Owner-only reads, user-scoped invitation discovery and response, self-leave, and
 
 ## PermissionDecision
 
-`PermissionDecision` should carry:
+`docs/core/permissions.md` owns the `PermissionDecision` definition and closed result categories. This specification projects that concept with these exact fields:
 
 - decision id
 - policy engine version
@@ -192,17 +193,9 @@ Owner-only reads, user-scoped invitation discovery and response, self-leave, and
 - audit event id
 - created timestamp
 
-Decision results:
-
-- `allow`
-- `deny`
-- `require_approval`
-- `require_escalation`
-- `defer`
-- `not_applicable`
-- `error`
-
 Decisions are immutable.
+
+When one governed effect depends on multiple mandatory policy inputs, NanoCore first omits neutral `not_applicable` inputs when at least one policy domain applies, then combines the applicable Core-owned results with the exact precedence `error > deny > require_escalation > require_approval > defer > not_applicable > allow`. Missing mandatory facts and mandatory evaluation failures map to `error`; all-`not_applicable` inputs produce `not_applicable`; and `allow` is valid only when every applicable mandatory input allows. Only the final `allow` authorizes the effect. Every other result blocks it, and all-`not_applicable` blocks because no applicable authority allowed the effect. A producer that evaluates only one policy input records that single result and does not imply that absent mandatory inputs allowed the effect.
 
 A portable Workspace import preserves immutable permission decisions and their linked Approval rows only as historical evidence. `apr_imported_` and `grant_imported_` are reserved non-authorizing import namespaces and target-side authority creation rejects them. An effect consumer MUST require current-deployment authority: any decision linked to the Approval remint, any Vault grant carrying the VaultGrant remint, and any effect decision missing the target-issuance identity required by its owning contract is non-authorizing regardless of target repository or Vault-reference re-binding. The enforcement point applies one stateless target-issuance predicate before external mutation or secret resolution; it does not rewrite history, synthesize a deny row, infer missing origin, or create an import-specific policy state machine. Fresh target-issued authority is the only promotion path.
 
@@ -240,7 +233,7 @@ Policy outcome to product behavior:
 | `require_approval` | Create an approval gate and pause the operation. |
 | `require_escalation` | Create a higher-authority attention row and do not execute. |
 | `defer` | Mark the operation pending because required context is missing. |
-| `not_applicable` | Continue to the next applicable policy domain. |
+| `not_applicable` | Continue evaluation in another mandatory policy domain; if none applies, retain `not_applicable` and block because no authority allowed the effect. |
 | `error` | Fail closed and audit the policy error. |
 
 Approvals satisfy policy requirements; they do not replace policy.
@@ -275,9 +268,9 @@ The V1 enforcement bridge exists, but full alignment with the standard-aligned p
 - `apps/nanocore/src/llm/gateway-routes.ts` enforces the runtime config's LLM Gateway enabled flag and provider allowlist directly, without a parallel process-local policy store. The routes record durable `PermissionDecision` rows for enabled/disabled and provider allowlist allow/deny outcomes through the same recorder; migration of that route-local evaluation to `@openkit/policy-kernel` remains future work.
 - The local deterministic Goal Mode supervise route records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` before starting its worker turn through `startGoalTaskWorkerTurn`, giving the worker-launch path its first product permission-decision producer.
 - `runWorkerTurnLoop` now records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` after creating the worker turn and before starting the worker boundary, so the real bounded worker loop also leaves a product permission-decision row.
-- The governed worker executor stores the same first worker-launch policy snapshot id on the created agent session and the resolved AEP policy block, binding the durable session lineage and backend launch snapshot to the `runtime.launch` decision snapshot for that turn.
+- The governed worker executor stores the same first worker-launch policy snapshot id on the created AgentSession and the resolved AEP policy block, binding the durable session lineage and backend launch snapshot to the `runtime.launch` decision snapshot for that turn.
 - `apps/nanocore/src/runtime/openshell-policy.ts` renders derived OpenShell filesystem, process, and network policy YAML from NanoCore runtime inputs.
-- `recordProductPermissionDecision` persists the accepted product decision result set, including `require_approval` and `require_escalation`, fails closed when a `require_approval` decision does not name the required approval kind, and emits linked server- or workspace-scoped `AuditEvent` rows with `permissionDecisionId` filled. Server-owned decisions are exposed through `GET /api/app/permission-decisions`, `client.app.listServerPermissionDecisions`, and the unified Skill/CLI `permission.server-list` operation; workspace-owned decisions are exposed through `GET /api/app/workspaces/:workspaceId/permission-decisions`, `client.app.listWorkspacePermissionDecisions`, and the unified Skill/CLI `permission.workspace-list` operation.
+- `recordProductPermissionDecision` persists the accepted seven-value product decision result set, including `require_approval` and `require_escalation`, fails closed when a `require_approval` decision does not name the required approval kind, and emits linked server- or workspace-scoped `AuditEvent` rows with `permissionDecisionId` filled. Current producers record individual outcomes; no shared implementation currently combines multiple mandatory results under the Core precedence, so a future multi-input enforcement point must add that conformance before admitting effects. Server-owned decisions are exposed through `GET /api/app/permission-decisions`, `client.app.listServerPermissionDecisions`, and the unified Skill/CLI `permission.server-list` operation; workspace-owned decisions are exposed through `GET /api/app/workspaces/:workspaceId/permission-decisions`, `client.app.listWorkspacePermissionDecisions`, and the unified Skill/CLI `permission.workspace-list` operation.
 - `apps/nanocore/src/policy/approval-gates.ts` creates the first policy-originated approval gate by recording a `require_approval` permission decision, creating the matching `ApprovalRequest`, creating the item-backed `approval-request`, and pausing the turn with `humanGate.kind: "approval"` so the existing Action Center projection can surface it. No current enforcement point produces a `require_escalation` workflow or higher-authority Action Center row.
 - The Git push executor now treats durable target-issued `repo.push` permission decisions as target-bound authority. Before invoking the Git command runner, `executeGitPushAttempt` requires an immutable workspace-scoped `allow` decision whose resource summary matches the current workspace id, repository resource id, and target branch and whose linked Approval id is not the portable-import remint; it records a terminal `refused-policy` push record when the selected decision is missing, imported, or belongs to a different push target. Secret-injection plan creation applies the same target-issuance predicate to the VaultGrant id, so Vault-reference re-binding cannot reactivate an imported grant.
 - `ApprovalStatus` in `packages/protocol/src/models/approval.ts` and `ApprovalDecision` in `apps/nanocore/src/runtime/types.ts` represent current approval states and decisions.

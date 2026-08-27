@@ -1,13 +1,14 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Worker Runtime Sub-Agent Provenance And Inference Identity
-
-Status: Accepted
-Implementation: Implemented
 
 ## Owns
 
 - The boundary between one NanoCore-owned worker execution and runtime-internal sub-agents created by Codex or another Worker Agent runtime.
 - The raw runtime event capture and runtime-origin indexing contract needed to reconstruct parent and child activity without flattening native records into one ambiguous transcript.
-- The trusted identity binding for worker-originated calls through the OpenKit-owned worker-inference route selected by the governed backend.
+- The trusted identity binding for worker-originated calls through worker-local `inference.local`, projected by Sandbox Integration through `/inference/*` with an inference credential distinct from worker control and capabilities.
 - The separation between authoritative OpenKit lineage, runtime-native causal origin, and prompt-cache lineage.
 - Product-safe runtime-origin and runtime-cache linkage from worker LLM calls into the existing `CapabilityCall` ledger.
 - Completeness, quarantine, redaction, retention, and acceptance rules for runtime sub-agent provenance.
@@ -21,6 +22,7 @@ Implementation: Implemented
 - The general worker-control protocol, workspace synchronization protocol, public LLM Gateway API, provider capability matrix, or generic prompt-cache behavior for non-worker callers.
 - A product-visible sub-agent graph, sub-agent management UI, `SubAgent` table, or a generic distributed tracing platform.
 - Changes to the `EvidenceBundle` or `RuntimeEvidence` record shapes.
+- Runtime Epoch lifecycle, stock RelayStream and nested HTTP/2 carriage, Sandbox Integration, and route-token separation, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 ## Core References
 
@@ -30,15 +32,18 @@ Implementation: Implemented
 - `docs/core/agent-capability.md`
 - `docs/core/storage.md`
 - `docs/core/audit.md`
+
+## Intent
+
 - `docs/product-vision.md`
 
 ## Summary
 
-A large task may be assigned to one Worker Agent execution while Codex or another runtime creates many internal sub-agents. Those runtime children belong to the same OpenKit workspace, thread, turn, agent session, and Agent Environment Package snapshot, but they do not share one runtime-native thread or causal origin.
+A large task may be assigned to one Worker Agent execution while Codex or another runtime creates many internal sub-agents. Those runtime children belong to the same OpenKit workspace, thread, turn, AgentSession, and Agent Environment Package snapshot, but they do not share one runtime-native thread or causal origin.
 
 OpenKit must preserve both truths. The outer OpenKit lineage remains the authority for ownership, permissions, accounting, review, and product history, while a separate runtime-origin index preserves the native parent-child graph and maps each raw runtime frame to the correct internal origin. Runtime-native thread ids never become OpenKit `Thread` ids, and runtime-internal children never become Core `AgentSession` records merely because they exist.
 
-Worker LLM calls require the same separation. An authenticated worker-inference binding supplies authoritative outer lineage, a runtime-origin hint identifies which internal runtime thread caused the call, and a separate runtime-cache lineage controls prompt-cache routing. Cache identity is performance metadata only; it never grants authority and never substitutes for causal provenance.
+Worker LLM calls require the same separation. The distinct inference binding supplies authoritative outer lineage, a runtime-origin hint identifies which internal runtime thread caused the call, and a separate runtime-cache lineage controls prompt-cache routing. The inference credential is never the worker-control or capability token. Cache identity is performance metadata only; it never grants authority and never substitutes for causal provenance.
 
 The implementation reuses the existing worker protocol, capability ledger, EvidenceBundle, and RuntimeEvidence surfaces. It adds only the minimum missing contracts: streamed raw runtime capture, a runtime-origin index, trusted worker-inference routing, one missing AEP snapshot lineage field, and two optional product-safe correlation refs on `CapabilityCall`.
 
@@ -51,7 +56,7 @@ The implementation reuses the existing worker protocol, capability ledger, Evide
 - Keep the canonical OpenKit turn coherent even when the runtime executes a private tree of sub-agents.
 - Attribute worker LLM capability calls and usage to trusted outer lineage without trusting request-body metadata supplied by the runtime.
 - Reconcile provisional live inference origin hints against the final normalized runtime-origin index before claiming complete attribution.
-- Prevent sibling runtime threads from accidentally sharing one prompt-cache key merely because they share an OpenKit thread, turn, or agent session.
+- Prevent sibling runtime threads from accidentally sharing one prompt-cache key merely because they share an OpenKit thread, turn, or AgentSession.
 - Preserve intentional cache reuse when a runtime explicitly declares that two requests belong to the same cache lineage.
 - Keep raw provider and runtime identifiers out of normal product APIs, audit rows, usage rows, logs, diagnostics, and default exports.
 - Fail or quarantine provenance-incomplete worker output according to the AEP required-feature contract instead of silently claiming complete traceability.
@@ -64,7 +69,7 @@ The implementation reuses the existing worker protocol, capability ledger, Evide
 - Do not build a provider-neutral trace query service before a concrete product need exists.
 - Do not guarantee provider cache hits; OpenKit can preserve routing lineage and measure cache usage, but the upstream provider decides actual cache eligibility.
 - Do not redesign EvidenceBundle, RuntimeEvidence, UsageRecord, or AuditEvent.
-- Do not fork or patch OpenShell. The governed backend consumes only the stock `0.0.80` CLI and Gateway boundary pinned by `@openkit/openshell-schema-snapshot`.
+- Do not fork or patch OpenShell. NanoHost consumes only the stock `0.0.99` client and Gateway boundary pinned by its app-local manifest; `@openkit/openshell-schema-snapshot` is a historical `0.0.80` policy-conformance input and owns no current runtime pin.
 
 ## Background
 
@@ -76,11 +81,11 @@ Current Codex `exec --json` output is also not a complete multi-agent transcript
 
 The vendored Codex app-server schemas already distinguish runtime-native thread ids, parent thread ids, depth, role or nickname metadata, and sub-agent activity. Those fields are useful evidence inputs, but they remain adapter-native and must not redefine the OpenKit work model.
 
-The public `POST /v1/chat/completions` and `POST /v1/responses` routes derive durable attribution only from caller-supplied `metadata.openkit`; sandbox environment variables such as `OPENKIT_WORKSPACE_ID`, `OPENKIT_THREAD_ID`, `OPENKIT_TURN_ID`, and `OPENKIT_AGENT_SESSION_ID` are intentionally not bound to those requests. Relay-required workers instead use separate internal Chat Completions and Responses routes that authenticate the active AEP package and lease before writing trusted capability lineage.
+The public `POST /v1/chat/completions` and `POST /v1/responses` routes derive durable attribution only from caller-supplied `metadata.openkit`; sandbox environment variables such as `OPENKIT_WORKSPACE_ID`, `OPENKIT_THREAD_ID`, `OPENKIT_TURN_ID`, and `OPENKIT_AGENT_SESSION_ID` are intentionally not bound to those requests. The historical Cell implementation instead used separate direct Chat Completions and Responses routes that authenticated the active AEP package and lease before writing trusted capability lineage.
 
-OpenShell's reserved `inference.local` endpoint cannot supply that missing path for V1 complete attribution. In the repository-pinned OpenShell 0.0.80 contract it is one gateway-global provider and model route shared across sandboxes, strips caller authorization, and forwards only a fixed provider header allowlist. It therefore cannot inject one package-and-lease binding per AEP or preserve the Codex-native request headers required for runtime-origin reconciliation. OpenKit instead uses an explicit backend-governed REST route to NanoCore with a per-package provider credential placeholder; `inference.local` remains available only to deployments that do not claim complete AEP attribution.
+The historical `inference.local` behavior in stock OpenShell `0.0.80` was gateway-global, stripped caller authorization, and forwarded only a fixed provider header allowlist, so the deleted Cell path used a direct NanoCore REST route and a per-package placeholder. Sandbox Integration now owns the worker-local `inference.local` adaptation and carries the package-and-lease binding plus runtime-origin hints through `/inference/*` using a distinct inference credential.
 
-The current prompt-cache resolver preserves an explicit `prompt_cache_key`, otherwise reads `metadata.openkit.promptCacheKey`, otherwise derives a key from stable OpenKit scope, and finally generates a request-scoped fallback. That generic behavior is suitable for public callers, but an outer OpenKit thread or agent session is too coarse for a runtime that has several concurrent child threads.
+The current prompt-cache resolver preserves an explicit `prompt_cache_key`, otherwise reads `metadata.openkit.promptCacheKey`, otherwise derives a key from stable OpenKit scope, and finally generates a request-scoped fallback. That generic behavior is suitable for public callers, but an outer OpenKit thread or AgentSession is too coarse for a runtime that has several concurrent child threads.
 
 ## Decision
 
@@ -88,7 +93,7 @@ OpenKit will model worker-internal sub-agent execution through three separate id
 
 | Dimension | Purpose | Authority | Typical values | Persistence |
 | --- | --- | --- | --- | --- |
-| OpenKit worker lineage | Ownership, permission, review, accounting, scheduling, and product history | Authoritative after NanoCore validates the worker session binding | Workspace, thread, turn, agent session, package snapshot, request | Canonical records and ledgers |
+| OpenKit worker lineage | Ownership, permission, review, accounting, scheduling, and product history | Authoritative after NanoCore validates the worker session binding | Workspace, thread, turn, AgentSession, package snapshot, request | Canonical records and ledgers |
 | Runtime origin | Causal reconstruction inside one worker execution | Evidence only; never grants authority | Runtime family, native session, native thread, parent native thread, native turn, role, depth | Restricted raw evidence plus a product-safe normalized index |
 | Runtime cache lineage | Stable routing for requests expected to share an exact prompt prefix | Performance hint only; never grants authority or proves causality | Runtime-provided cache lineage or an adapter-declared equivalent | Product-safe ref on `CapabilityCall`; raw value is not stored |
 
@@ -106,7 +111,7 @@ Independent verification of adapter-produced Codex origin claims remains mandato
 
 Adding a fourth base adapter MUST NOT modify or depend on the Codex verifier. A future runtime that needs equivalent native provenance requires a separately accepted optional extension with its own isolated verifier and evidence contract; that work does not broaden the shared adapter interface or retroactively add provenance obligations to other runtimes.
 
-This extension uses the separately governed worker-inference binding and does not enable the disabled `capability.local` plane or executable worker MCP supply. Stock OpenShell `0.0.80` remains the complete governed backend boundary.
+This extension uses the separately governed worker-inference binding and does not enable the disabled `capability.local` plane or executable worker MCP supply. Exact stock OpenShell `0.0.99` is the target backend boundary, while the NanoHost transport and mandatory stock-feasibility precondition remain owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 ## Contract / Expected Behavior
 
@@ -115,7 +120,7 @@ This extension uses the separately governed worker-inference binding and does no
 - `WorkerLineageSchema` remains the authority-bearing worker lineage contract and remains unchanged by this design.
 - All runtime-internal activity produced within one AEP snapshot MUST bind to the same expected `workspaceId`, `threadId`, `turnId`, `agentSessionId`, and `packageSnapshotId`.
 - Runtime-native ids MUST NOT replace or override any OpenKit lineage field.
-- A runtime-native parent-child relation MUST NOT imply an OpenKit handoff, delegation, new turn, new thread, or new agent session.
+- A runtime-native parent-child relation MUST NOT imply an OpenKit handoff, delegation, new turn, new thread, or new AgentSession.
 - Canonical items and artifacts remain owned by the outer OpenKit turn after NanoCore verification.
 
 ### 2. Runtime Provenance Capture
@@ -204,7 +209,7 @@ After successful verification, NanoCore MUST automatically create two workspace-
 The restricted raw bundle MUST contain:
 
 - `sourceKind: "worker-runtime-provenance-raw"`
-- the outer workspace, thread, turn, and agent-session lineage
+- the outer workspace, thread, turn, and AgentSession lineage
 - restricted raw references for `raw-streams.json`, every listed raw stream, and `native-origin-index.jsonl`
 - content digests for the manifest, index, and every retained stream
 - `retentionClass: "restricted-raw"`
@@ -229,43 +234,21 @@ Malformed lineage, missing reachable streams, unstable child streams, digest mis
 
 The raw stream manifest, raw streams, native index, and their locators MUST NOT be returned by normal App API, Core Client, unified Skill, bundled CLI, worker-side MCP, Web, audit, usage, or diagnostics surfaces. NanoCore stores restricted files under `evidence/backend/<rawBundleId>/` and the product-safe normalized index under `evidence/bundles/<indexBundleId>/runtime-origin-index.jsonl`; logical refs are bundle-relative and never contain host paths or native ids. The internally stored restricted bundle retains governed raw refs, but every ordinary projection of that `restricted-raw` runtime provenance bundle MUST return `rawEvidenceRefs: []`; projections of other automatic EvidenceBundle producers remain unchanged. Default workspace export MUST retain the normalized index file and product-safe bundle. When restricted raw export is not explicitly authorized, export MUST retain only an expired source-digest bundle row with empty raw refs so RuntimeEvidence linkage does not dangle; its digests describe omitted source evidence and MUST NOT claim local re-verifiability. It MUST NOT include restricted raw files or locators.
 
-Workspace import MUST remint the normalized index outer workspace, thread, turn, agent-session, and package-snapshot lineage through the existing import maps. Because package and workspace identities change, import MUST also remint runtime-origin, parent-origin, runtime-turn, and cache-lineage refs without native ids while preserving their internal equality classes, rewrite linked CapabilityCall refs through those maps, reject a non-null origin ref absent from its package index, recompute the normalized file and bundle digests, and stage the rewritten file inside the atomic workspace publication path. It MUST never copy raw provenance files. Automatic bundle and RuntimeEvidence writers MUST use deterministic ids and exact-content replay checks; an equal restart replay is accepted and a divergent replay under the same id fails. Interrupted-worker recovery explicitly re-runs verification from the stable evidence directory before terminal recovery; NanoCore does not add a boot-wide provenance scanner.
+Workspace import MUST remint the normalized index outer workspace, thread, turn, AgentSession, and package-snapshot lineage through the existing import maps. Because package and workspace identities change, import MUST also remint runtime-origin, parent-origin, runtime-turn, and cache-lineage refs without native ids while preserving their internal equality classes, rewrite linked CapabilityCall refs through those maps, reject a non-null origin ref absent from its package index, recompute the normalized file and bundle digests, and stage the rewritten file inside the atomic workspace publication path. It MUST never copy raw provenance files. Automatic bundle and RuntimeEvidence writers MUST use deterministic ids and exact-content replay checks; an equal restart replay is accepted and a divergent replay under the same id fails. Interrupted-worker recovery explicitly re-runs verification from the stable evidence directory before terminal recovery; NanoCore does not add a boot-wide provenance scanner.
 
 Manual EvidenceBundle creation is not part of this flow. Both worker runtime provenance bundles are produced only by the NanoCore transcript-collection boundary.
 
 ### 5. Trusted Worker Inference Binding
 
-OpenShell's reserved `inference.local` route is not the V1 trusted binding because it is gateway-global and cannot preserve per-package runtime hints. A relay-required AEP instead supplies one backend-resolved worker inference base URL whose two sandbox-visible endpoints map directly to NanoCore:
+The trusted logical target `inference.local` is exposed only inside the sandbox at the adapter-owned fixed URL `http://127.0.0.1:17892/inference/v1`. Sandbox Integration projects its OpenAI-compatible Chat Completions and Responses operations through `/inference/*` on the one standard HTTP/2 session carried by the sandbox's one stock RelayStream. The AEP carries the semantic binding and token reference but no native URL. `/worker-control/*` and `/capabilities/*` share carriage only; they retain distinct credentials and semantics.
 
-```text
-<workerInferenceBaseUrl>/chat/completions
-<workerInferenceBaseUrl>/responses
-```
+The AEP binds one short-lived inference token or non-secret reference to the exact package snapshot, active lease, selected provider and model, and permitted runtime-origin hint contract. That token MUST be rejected by `/worker-control/*` and `/capabilities/*`, and neither the worker-control token nor capability token may authenticate inference. Sandbox Integration keeps raw token material out of the native runtime's prompt, request body, normal files, logs, and diagnostics.
 
-For OpenShell, `workerInferenceBaseUrl` is the worker-visible NanoCore relay origin plus `/api/worker-inference/v1`. The target NanoCore routes are:
+Inference requests MUST preserve OpenAI-compatible request and response bodies, streaming SSE, client cancellation, `prompt_cache_retention`, and supported request compression or decompression required by the pinned adapter. One worker request is rejected before provider dispatch when either its encoded aggregate or its decoded aggregate exceeds 16 MiB; transport layers may enforce the encoded ceiling earlier but do not own another semantic limit. Request-body `metadata.openkit`, arbitrary authority headers, provider selectors, model overrides, package ids, and workspace lineage MUST NOT establish or override authority. Conflicting authority fields fail with `worker_inference_lineage_mismatch`, and each accepted request receives a fresh capability request id.
 
-```text
-POST /api/worker-inference/v1/chat/completions
-POST /api/worker-inference/v1/responses
-```
+Before launch, the NanoHost MUST prove that root and child runtime calls use only the fixed loopback `inference.local` projection, the distinct inference binding reaches only `/inference/*`, runtime session/thread/sub-agent hints survive, sandbox-supplied credentials cannot replace the binding, direct provider credentials and egress are absent, and the required streaming, cancellation, flow-control, and compression behavior works through stock OpenShell. The retained Unit F gate proves the generic RelayStream plus nested standard HTTP/2 path; it does not replace this provenance-specific root, child, hint, credential, streaming, and cancellation gate. Failure or indeterminate evidence blocks this optional implementation without a sidecar, direct NanoCore route, SSH path, Gateway forward, custom mux, OpenShell fork, or patch.
 
-These routes MUST preserve OpenAI-compatible request and response bodies, streaming SSE, client cancellation, `prompt_cache_retention`, and supported request compression or decompression semantics required by the pinned runtime adapter, but they are an internal worker capability surface and not a second public LLM API.
-
-The OpenShell backend MUST create one provider credential instance per package snapshot inside that package's disposable Cell epoch. Its value is the existing short-lived worker-control session token and its sandbox value is only an OpenShell credential placeholder. The generated Codex 0.144.1 custom provider uses that placeholder as its API key and targets `workerInferenceBaseUrl`. OpenShell MUST resolve the placeholder at its proxy boundary so raw token material is not placed in the Codex process configuration or request body.
-
-The OpenShell policy MUST allow only the pinned Codex executable paths to reach the exact NanoCore relay host and port, MUST allow only `POST /api/worker-inference/v1/chat/completions` and `POST /api/worker-inference/v1/responses`, and MUST deny direct provider hosts. A relay-required package MUST NOT upload Codex `auth.json`, expose direct provider API keys, preserve a direct provider route, or inherit the raw worker-control token into the Codex child process.
-
-The worker-inference routes MUST authenticate the resolved bearer token through a token-only `WorkerControlGateway` lookup, derive the registered package and lineage server-side, and revalidate the durable active lease binding. They MUST hydrate the durable redacted AEP snapshot after restart rather than accepting worker-supplied package fields. The implementation reuses the existing worker-control session and lease store and MUST NOT create a second worker identity database.
-
-Request-body `metadata.openkit`, arbitrary authority headers, provider selectors, model overrides, package ids, and workspace lineage MUST NOT establish or override authority. Conflicting authority fields MUST fail with `worker_inference_lineage_mismatch`. Each accepted request MUST receive a fresh capability request id; the outer AEP request id is lineage only and MUST NOT be reused for sibling inference calls.
-
-The backend MUST prove before launch that the provider placeholder resolves only on the exact REST rules, runtime session/thread/sub-agent hints survive, sandbox-supplied credentials cannot replace the resolved token, root and child Codex calls inherit the same custom provider, and streaming, cancellation, and the adapter's supported compression work through the exact stock OpenShell `0.0.80` path. If that proof fails, NanoCore MUST fail closed, stop rollout of trusted worker inference, and keep the capability disabled until the direct binding passes; a sidecar fallback is not permitted.
-
-For remote placement, the stock Gateway remains bound to `http://127.0.0.1:17670` on the Cell host. An operator-managed authenticated SSH local-forward exposes it as a credential-free loopback HTTP origin on the NanoCore host. NanoCore does not create or own that tunnel; its separate lifecycle SSH command disables forwarding and invokes only the fixed Cell helper. The remote sandbox also requires an independently configured credential-free HTTP(S) worker-control URL ending exactly at `/api/worker-control`.
-
-Provider or sandbox deletion is not teardown proof. Session completion, materialization failure, and restart cleanup revoke the process-local package token and recycle the complete Cell; scheduler capacity returns only after the replacement epoch is ready and stably empty. Runtime provider detach MAY still enforce a revoked grant before teardown, but it is not the final cleanup boundary.
-
-An authenticated worker inference call without a valid active AEP and lease binding MUST fail closed with `worker_inference_unauthorized`. An AEP that does not require the authenticated route may still produce runtime provenance, but OpenKit MUST report gateway attribution as incomplete and MUST NOT claim that every worker LLM call was captured.
+Credential or grant revocation terminates the affected sandbox. If deletion cannot be proved, the NanoHost invalidates the complete Runtime Epoch and keeps capacity fenced until fresh-empty readiness; cleanup does not prove recall. An inference call without a valid active AEP and lease binding fails closed with `worker_inference_unauthorized`.
 
 The existing public `/v1/chat/completions` and `/v1/responses` routes remain generic public Gateway routes. Their caller-supplied metadata may support best-effort public attribution, but it is not accepted as worker authority.
 
@@ -283,7 +266,7 @@ Each runtime adapter that declares `worker.runtime-provenance.v1` MUST define a 
 
 The relay MUST remove runtime-native hint fields before sending the request upstream. NanoCore MUST resolve the native thread hint to the same product-safe `runtimeOriginRef` used by the normalized provenance index, treat the live mapping as provisional, and reconcile it at turn end as defined above.
 
-Runtime hints are causal and performance inputs only. They MUST NOT alter workspace, thread, turn, agent-session, package, provider, model, permission, vault, budget, or policy ownership.
+Runtime hints are causal and performance inputs only. They MUST NOT alter workspace, thread, turn, AgentSession, package, provider, model, permission, vault, budget, or policy ownership.
 
 A sub-agent-capable adapter that cannot supply a stable runtime thread hint MUST NOT declare complete runtime provenance. When the AEP requires complete provenance, capability negotiation or the worker turn MUST fail rather than silently attributing every inference call to the outer root.
 
@@ -366,7 +349,7 @@ The Codex adapter owns native capture, initial parsing, and hint mapping. The na
 
 ## Current Implementation Projection
 
-Current code implements the deterministic Phase 1-5 trusted relay, provenance, evidence, and correlation contract plus cross-surface conformance. Remote backend E2E proves stock OpenShell `0.0.80` materialization through the loopback SSH tunnel and fixed remote Cell controller, and the quota-authorized A1 Task acceptance at production source HEAD `891eb7e` proves the real Codex 0.144.1 root-plus-two-child path. Later commits only narrowed and reused test-runner infrastructure; they did not alter or rerun that production proof.
+Current code retains the deterministic provenance, evidence, correlation, and internal inference-route machinery, but the NanoHost capability declaration does not advertise `worker.runtime-provenance.v1`, so the optional extension is not selectable in production. Historical remote backend E2E used the loopback SSH tunnel and fixed remote Cell controller, and the quota-authorized A1 Task acceptance at production source HEAD `891eb7e` proved the real Codex 0.144.1 root-plus-two-child path only on that deleted topology. The current NanoHost gate proves RelayStream, nested standard HTTP/2, and Runtime Epoch lifecycle, but not the provenance-specific root-plus-child contract or its distinct inference credential.
 
 This implementation remains an optional Codex extension: its NanoCore native verifier is accepted only inside the focused provenance importer and is not a precedent for native schemas in generic runtime selection, AEP launch, worker control, governance, or public protocol code.
 
@@ -374,21 +357,21 @@ This implementation remains an optional Codex extension: its NanoCore native ver
 - `packages/worker-shim/src/cli.ts` now drains process stdout and stderr with bounded 16 KiB diagnostic prefixes and, when the AEP declares runtime provenance, streams exact primary stdout chunks with backpressure into the focused Codex 0.144.1 provenance adapter. The adapter applies the declared total-byte and stream-count limits plus bounded directory-entry, candidate, frame, and repeated-index-value guards; copies only stable root and child rollouts reachable from the primary thread; stops reading a rollout once retention is bounded; excludes unrelated rollouts; rejects runtime identity drift; preserves malformed and partial physical frames; and atomically commits the protocol-validated restricted manifest and native-origin index. A new capture invalidates any earlier manifest before touching its raw files, provenance-enabled process failures do not expose native output through ordinary diagnostics, and failed child-process drains have bounded termination. Existing final assistant, lifecycle transcript, and workspace publication behavior remains unchanged when provenance is absent or succeeds.
 - `apps/nanocore/src/runtime/worker-transcript.ts` keeps canonical assistant messages and artifacts outer-turn-owned while delegating runtime provenance to the focused importer.
 - `apps/nanocore/src/runtime/worker-governance-backend.ts` collects the declared bounded raw stream manifest, root/child stream set, and native origin index as backend-local files without placing raw payloads in ordinary transcript data.
-- The worker image, pinned runtime fixtures, provenance adapter, and vendored app-server schema snapshot are aligned on Codex 0.144.1. NanoCore accepts only the platform-installed stock OpenShell CLI and Gateway at exactly `0.0.80`; it does not expose a custom binary path or accept a version range.
-- `packages/config-schema` and NanoCore AEP resolution define fixed runtime-provenance transcript paths, positive 256 MiB and 64-stream limits, and required-feature negotiation that depends on the trusted inference relay. The declaration is projected only when explicitly requested, and the production OpenShell backend advertises `worker.runtime-provenance.v1` after exact stock CLI version validation. Each launch still fails closed unless the Gateway is stock `0.0.80`, Providers v2 is active, and the package satisfies the trusted-relay and provenance constraints; the A1 Task run supplies the release-level executable proof.
+- The worker image, pinned runtime fixtures, provenance adapter, and vendored app-server schema snapshot are aligned on Codex 0.144.1. NanoHost pins stock OpenShell `0.0.99`; NanoCore invokes no OpenShell CLI or Gateway and exposes no custom binary path or version selector.
+- `packages/config-schema` and NanoCore AEP resolution define fixed runtime-provenance transcript paths, positive 256 MiB and 64-stream limits, and required-feature negotiation that depends on trusted inference. The declaration is projected only when explicitly requested, and current NanoHost package validation rejects it because the NanoHost capability declaration does not advertise `worker.runtime-provenance.v1`.
 - Current Codex exec JSONL exposes a primary `thread.started` id and collab tool calls with sender and receiver thread ids, but its event filter does not emit complete child-thread event streams; current Codex per-thread rollout records and vendored app-server parent-thread fields are therefore both relevant adapter inputs.
 - `packages/codex-app-server-schema/generated-schema/v2/ThreadReadResponse.json` and `ItemStartedNotification.json` expose native parent-thread and sub-agent fields that can validate the pinned Codex adapter's normalized graph.
-- The public LLM routes still use caller-supplied `metadata.openkit` only for best-effort public attribution. Separate internal Chat Completions and Responses worker-inference routes authenticate a live package-and-lease token, hydrate the registered AEP after restart, select only its provider/model, start one fresh durable capability call, and reject caller authority or privileged provider state.
-- AEPs that do not require trusted relay attribution may use `inference.local`. Relay-required AEPs carry the immutable selected provider/model, derive an exact NanoCore worker-inference URL from the control relay origin, configure Codex 0.144.1 with a strict custom provider and placeholder credential, emit exact POST-only network policy, and reject direct network, credential, provider-backed MCP, vault, or provider attachments before side effects. The OpenShell backend creates the package-scoped generic provider inside the disposable Cell, rotates and revokes the package token, and authenticates the internal route. Cleanup recycles the complete Cell instead of deleting the provider or sandbox as proof of teardown.
-- Local placement uses the fixed Cell Gateway origin `http://127.0.0.1:17670`. Remote placement accepts only a credential-free loopback HTTP Gateway origin backed by an operator-managed SSH local-forward; lifecycle control uses a separate fixed SSH helper command with forwarding disabled, and the remote worker-control URL must be directly reachable from the sandbox.
-- The internal route preserves bounded identity/Zstd request decoding, JSON and SSE bodies, client cancellation, partial usage, one-shot durable terminal state, and final Codex OAuth `x-codex-turn-state` continuity. It validates the pinned Codex 0.144.1 canonical turn metadata and request kind, cross-checks its body and header projections, normalizes sub-agent kind, requires a hint for provenance-required packages, derives only product-safe origin and cache correlation, and strips raw runtime ids and cache lineage before shared provider dispatch. It does not forward Codex-private continuity state through ordinary pi-ai providers. The A1 Task acceptance proves the real Responses transport, root and child hints, attributed cancellation, usage and cache telemetry, and turn-end reconciliation on the pinned runtime.
+- The public LLM routes still use caller-supplied `metadata.openkit` only for best-effort public attribution. The retained separate internal Chat Completions and Responses route code authenticates a live package-and-lease token, hydrates the registered AEP after restart, selects only its provider/model, starts one fresh durable capability call, and rejects caller authority or privileged provider state; no current NanoHost package selects the optional provenance extension.
+- The deleted Cell implementation let non-attributed AEPs use stock `inference.local` and gave relay-required AEPs a direct NanoCore worker-inference URL derived from the control origin. It reused the worker-control token as the provider credential, created a package-scoped provider inside the disposable Cell, and recycled the Cell for cleanup. None of those credential or transport choices exists in the NanoHost path.
+- The deleted Cell implementation used the fixed Cell Gateway origin locally and an operator-managed SSH local-forward plus fixed SSH lifecycle helper remotely. The current path has no selectable Cell, SSH, Gateway-forward, direct sandbox-to-NanoCore, or direct Gateway path.
+- The retained internal route code preserves bounded identity/Zstd request decoding, JSON and SSE bodies, client cancellation, partial usage, one-shot durable terminal state, and final Codex OAuth `x-codex-turn-state` continuity. It validates the pinned Codex 0.144.1 canonical turn metadata and request kind, cross-checks its body and header projections, normalizes sub-agent kind, requires a hint for provenance-required packages, derives only product-safe origin and cache correlation, and strips raw runtime ids and cache lineage before shared provider dispatch. Historical A1 evidence proves those provenance semantics only on the deleted Cell topology.
 - `apps/nanocore/src/llm/prompt-cache-key.ts` preserves the generic public precedence unchanged and owns a separate worker derivation path. Explicit native cache lineage is hashed with provider, account, model, workspace, and runtime family; absent lineage receives a request-scoped random key, a null product ref, and a product-safe degraded summary.
 - `apps/nanocore/src/capability/usage-ledger.ts` persists the AEP package snapshot plus product-safe origin and cache refs on CapabilityCall only. UsageRecord and AuditEvent continue to link by `capabilityCallId` without duplicating runtime identity.
 - EvidenceBundle product reads hide stored runtime provenance raw refs. Restricted-raw expiry deletes only `evidence/backend/<rawBundleId>/`, clears the row refs, and preserves the normalized index. Default workspace export retains an expired ref-free raw source-digest row plus the normalized index, while import remints outer lineage, package-scoped normalized refs, workspace-scoped cache refs, linked ids, and CapabilityCall correlations before recomputing the normalized digest.
 - `apps/nanocore/src/runtime/runtime-evidence.ts` produces deterministic transcript-collection RuntimeEvidence with exact replay checks, capture and gateway-reconciliation summaries, and linked raw/index bundle ids.
 - Existing EvidenceBundle and RuntimeEvidence shapes provide distinct `restricted-raw` and `turn-evidence` retention, the transcript-collection phase, digests, and cross-record linkage without schema redesign.
 - The deterministic NanoCore conformance fixture exercises one four-stream runtime forest, three authenticated worker-inference calls, sibling cache isolation, explicit cache sharing, blocked provider-selection bypass, 3/3 turn-end origin reconciliation, both provenance bundles, hidden ordinary raw refs, transcript-collection RuntimeEvidence, capability usage, audit linkage, and one canonical outer assistant result. Protocol, App API, OpenAPI, Core Client, and the unified Skill's `usage.read` operation separately project the product-safe CapabilityCall fields without exposing native ids.
-- The opt-in A1 Task acceptance used unmodified OpenShell CLI and Gateway `0.0.80`, Codex `0.144.1`, and the A1-built `openkit/worker-codex:dev` image. It completed four retained streams, one root plus two children, three runtime origins, 18/18 reconciled Gateway calls with 16 successes and two attributed cancellations, three cache lineages, 152,320 cached-input tokens, one canonical outer assistant result, terminal teardown, lease and capacity release, review cleanup, an unchanged repository HEAD, owner-only redacted evidence, and a final empty idempotently recycled Cell without any OpenShell fork or patch.
+- The historical opt-in A1 Task acceptance used unmodified OpenShell CLI and Gateway `0.0.80`, Codex `0.144.1`, and the A1-built `openkit/worker-codex:dev` image. It completed four retained streams, one root plus two children, three runtime origins, 18/18 reconciled Gateway calls with 16 successes and two attributed cancellations, three cache lineages, 152,320 cached-input tokens, and one canonical outer assistant result on the legacy Cell path. It does not prove the accepted stock RelayStream transport, nested HTTP/2 behavior, route-token separation, or NanoHost lifecycle.
 
 ## Alternatives Considered
 
@@ -429,13 +412,13 @@ Rejected. Two concrete needs do not justify a new framework. A bounded raw strea
 
 OpenKit is in internal development, so the clean target replaces the incomplete worker path without compatibility aliases.
 
-1. Add failing AEP, OpenShell policy, Codex custom-provider, token-only authentication, internal route, cancellation, compression, and direct-egress tests for the authenticated worker inference path.
-2. Align the worker image, generated schema evidence, and relay fixtures on Codex 0.144.1, prove the OpenShell 0.0.80 provider-placeholder route, and stop rollout with trusted worker inference disabled if that proof fails.
-3. Add the authenticated worker-inference routes and package/lease binding while sharing the existing provider dispatcher and usage recorder; do not enable provenance capture or correlation fields in this relay-foundation slice.
+1. Add failing AEP, route-token separation, `inference.local`, `/inference/*`, cancellation, compression, flow-control, and direct-egress tests for the authenticated worker inference path.
+2. Align the worker image and generated schema evidence on Codex 0.144.1, then stop implementation if the separately governed stock RelayStream plus nested standard HTTP/2 feasibility proof fails or is indeterminate.
+3. Add the Sandbox Integration `inference.local` projection and distinct inference-token package/lease binding while sharing the existing provider dispatcher and usage recorder; do not enable provenance capture or correlation fields in this transport-foundation slice.
 4. Add runtime provenance output declarations, limits, and required-feature negotiation without enabling the feature, then stream primary Codex JSON output, discover the reachable child graph, snapshot each stable child rollout under a synthetic stream ref, and generate the restricted stream manifest and native origin index from pinned fixtures and schema evidence.
 5. Collect, verify, normalize, retain, and automatically index runtime provenance through separate restricted-raw and product-safe EvidenceBundle producers plus the new transcript-collection RuntimeEvidence producer.
-6. Add `packageSnapshotId`, `runtimeOriginRef`, and `runtimeCacheLineageRef` to `CapabilityCall`, its storage row, export/import projection, App API read schema, and generated OpenAPI, then add runtime-specific cache derivation and turn-end origin reconciliation over the trusted relay.
-7. Switch sub-agent-capable worker AEPs to require `worker.runtime-provenance.v1` only after the adapter, relay, importer, and correlation tests pass conformance.
+6. Add `packageSnapshotId`, `runtimeOriginRef`, and `runtimeCacheLineageRef` to `CapabilityCall`, its storage row, export/import projection, App API read schema, and generated OpenAPI, then add runtime-specific cache derivation and turn-end origin reconciliation over trusted worker-local inference.
+7. Switch sub-agent-capable worker AEPs to require `worker.runtime-provenance.v1` only after the adapter, inference projection, importer, and correlation tests pass conformance.
 8. Remove any temporary code that buffers complete Codex stdout, trusts worker `metadata.openkit` for authority, or derives a worker cache key solely from outer lineage.
 
 Existing internal worker records are not backfilled. A provenance-capable retry creates a new package snapshot and new evidence rather than pretending historical raw data exists.
@@ -465,15 +448,16 @@ Testing follows `docs/specs/20260529-test_strategy.md`.
 - A fixture containing one primary exec stream plus separate parent, child A, and child B rollout streams reconstructs the exact runtime forest and returns the correct raw frame set for each `runtimeOriginRef`.
 - Canonical item import remains one coherent outer turn and does not flatten child messages into product history.
 - Spoofed `metadata.openkit`, runtime headers, package snapshot ids, and inactive lease bindings fail closed.
-- Public `/v1` routes retain their generic contract, while worker-inference routes use authenticated lineage and the same provider dispatcher and preserve streaming, cancellation, retention, and supported compression semantics.
-- A relay-required AEP routes root and child inference through the generated Codex custom provider, per-package placeholder, exact OpenShell REST rules, and internal NanoCore route; it blocks direct provider credentials and egress and fails capability negotiation when the backend cannot prove that coverage.
+- Public `/v1` routes retain their generic contract, while worker-local inference uses authenticated lineage and the same provider dispatcher and preserves streaming, cancellation, retention, and supported compression semantics.
+- The fixed `127.0.0.1:17892` native listener is bound before Harness readiness but admits traffic only after the nested H2 client is ready; exact authenticated `POST /inference/*` preserves request bytes and end-to-end headers through the outer route, rejects an encoded or decoded aggregate above 16 MiB at the owning boundary, streams SSE and compressed responses with backpressure, propagates cancellation, and neither retries nor opens an outer stream for a wrong token, route family, method, or absolute-form target.
+- A provenance-required AEP routes root and child inference only through worker-local `inference.local`, the distinct inference binding, and `/inference/*`; it blocks direct provider credentials and egress and fails capability negotiation when the NanoHost cannot prove that coverage.
 - Capability calls contain trusted outer lineage plus product-safe runtime refs, and linked usage/audit rows require no duplicate runtime fields.
 - Turn-end reconciliation rejects a missing or unknown capability-call `runtimeOriginRef` instead of assigning it to the root origin.
 
 ### L3: NanoCore Black-Box Tests
 
 - A fake governed worker emits a primary stream plus separate root and child streams, makes LLM calls from each origin, completes one outer turn, and produces one promoted restricted-raw bundle, one promoted product-safe index bundle, one transcript-collection RuntimeEvidence record, canonical outer items, capability calls, usage rows, and audit linkage.
-- Distinct child cache lineages produce distinct upstream cache keys and refs even though the calls share the same OpenKit thread, turn, and agent session.
+- Distinct child cache lineages produce distinct upstream cache keys and refs even though the calls share the same OpenKit thread, turn, and AgentSession.
 - An explicitly declared inherited cache lineage produces the same upstream cache key and ref while runtime origins remain distinct, while parentage without an inheritance signal remains isolated.
 - Missing or tampered required provenance quarantines evidence and prevents a successful provenance-complete terminal result.
 - A capability call whose provisional runtime origin is absent from the final normalized forest prevents gateway-attribution completeness while preserving the failed call as an audit record.
@@ -502,9 +486,9 @@ Acceptance is complete only when all of the following are true:
 - Risk: Provenance indexing adds memory pressure for large tasks. Mitigation: stream primary bytes, copy child streams incrementally, and write index lines with bounded buffers and backpressure.
 - Risk: Runtime-native ids leak into product records. Mitigation: mint opaque refs in NanoCore and run canary leak checks across evidence summaries, capability rows, usage rows, audit rows, API responses, logs, and exports.
 - Risk: An authenticated worker spoofs another child origin within its own session. Mitigation: treat runtime origin as evidence rather than authority, validate it against the retained native stream, and never use it for permissions or provider selection.
-- Risk: A runtime bypasses the authenticated OpenKit route, so Gateway records appear complete while direct provider calls are missing. Mitigation: require root-and-child custom provider configuration, withhold direct provider credentials, deny direct provider egress, and fail capability negotiation when coverage cannot be proved.
+- Risk: A runtime bypasses worker-local inference, so records appear complete while direct provider calls are missing. Mitigation: require root-and-child `inference.local` configuration, withhold direct provider credentials, deny direct provider egress, and fail capability negotiation when coverage cannot be proved.
 - Risk: Shared cache lineage becomes a hot routing key. Mitigation: preserve runtime intent, measure request fanout and cached-token effectiveness by product-safe cache lineage, and allow the adapter to rotate lineage when its native runtime does so.
-- Risk: A backend cannot inject a trusted inference binding. Mitigation: use an OpenKit-owned relay or fail AEP capability negotiation before launch.
+- Risk: the NanoHost cannot project the trusted inference binding through stock RelayStream and standard HTTP/2. Mitigation: fail AEP capability negotiation and return to the transport owner; do not add a direct route, sidecar, custom mux, fork, or patch.
 
 ## Open Questions
 
@@ -524,6 +508,7 @@ None. The accepted V1 contract deliberately leaves provider-specific header name
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260704-capability_usage_gateway_foundation.md`
@@ -532,7 +517,7 @@ None. The accepted V1 contract deliberately leaves provider-specific header name
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/specs/20260529-test_strategy.md`
-- `docs/changes/202607111937290001-worker_runtime_subagent_provenance.md`
+
 - [OpenShell inference routing](https://docs.nvidia.com/openshell/latest/sandboxes/inference-routing)
 - [OpenShell policy schema](https://docs.nvidia.com/openshell/reference/policy-schema)
 - [OpenShell credential isolation](https://docs.nvidia.com/openshell/latest/security/best-practices)

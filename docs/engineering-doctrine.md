@@ -1,44 +1,70 @@
+---
+status: Accepted
+---
 # Engineering Doctrine
 
-Status: Accepted
+This document explains the delegation premise and the observations behind repository governance. It is non-authoritative rationale: implementation and execution decisions resolve to root governance, Core, accepted specifications, and direct evidence.
 
-This document records why this repository works the way it does: the delegation premise, the role documents play, the verification philosophy, and the criteria under which the premise itself would be judged wrong. It is explanatory intent for agents and humans applying the normative rules elsewhere; it defines no behavioral contract, and no implementation choice may cite it as sole authority.
+## Delegation Is A Fallible System
 
-This document does not own product doctrine (`docs/core/foundation.md`), product purpose (`docs/product-vision.md`), the documentation type system (`docs/documentation-model.md`), or any repository execution rule (`AGENTS.md`, `docs/change-tracking.md`).
+OpenKit is an experiment in delegating most engineering execution to agents while engineers retain user intent, architecture, governing trade-offs, strict-risk acceptance, and final approval. The premise is that current agents can own a repository of this shape when boundaries remain understandable and independently verifiable.
 
-## The Premise Under Test
+No participant is assumed infallible. Engineers can approve a poor decomposition, a primary agent can lose direction after context compression, a builder can implement the wrong premise correctly, and reviewer language can be misunderstood. A resilient loop keeps such errors local, preserves enough reality to recover, and continues toward the outcome instead of pretending errors can be designed away.
 
-This repository is a deliberate experiment in full delegation: agents execute substantially all development and maintenance work, and engineers act as product owner and tech lead. The premise is that current agents can own a project of this shape — a core in the low hundreds of thousands of lines inside a repository under a million — provided the architecture stays modular and every module is independently verifiable. The binding constraint is not total size; it is the size of the largest unit that must be understood as a whole, the verifiability of each module, and the rate of semantic drift over time.
+Long-horizon work cannot rely on one uninterrupted model context. Direction must survive in append-only user intent and direct artifacts; working facts and methods must remain cheap to revise. Where a compacted or resumed context is about to pay for a belief it can no longer check, a fresh context is more valuable than asking the drifting context to certify itself.
 
-The premise is a hypothesis, not a settled conclusion. Its expected failure mode is not visible collapse but entropy: duplicated abstractions, tests that still pass while no longer testing intent, and specifications that drift from what was meant. The whole engineering system described below exists to make that entropy measurable.
+## Stable Direction, Plastic Method
 
-## Documents As The Source Of Intent
+User outcome, non-negotiables, acceptance, authority, and strict-effect boundaries anchor a task. Decomposition, role composition, test order, probes, correction strategy, and intermediate record shape are methods. Treating methods as permanent authority blocks learning; treating intent as a working guess causes drift.
 
-Documents are the single source of truth for intent; running code is always the de facto source of truth for behavior. All engineering risk lives in the gap between them, so the regime never relies on prose staying true by discipline alone: normative statements degrade into executable projections — contract tests, schema checks, repository validators, story assertions — and independent audits measure the residual gap. A specification statement that nothing can check mechanically is where drift will accumulate; finding those statements is a standing task, not an incident.
+Existing patterns are useful defaults because they encode experience. They become binding only when consequence requires them or repeated evidence shows that judgment alone does not reliably preserve the protected concern. A useful pattern can remain optional. A rule earns mechanical enforcement only when its subject is finite, its violation is directly observable, and the enforcement is cheaper than the failures it prevents.
 
-Authority is inversely proportional to change rate. Core documents are stable and highest; specifications decide designs; change records carry execution context and never gain design authority; audit records are instrument readings and carry none. This ordering exists because authority attached to fast-moving documents would let the source of truth drift with execution.
+The practical unit of progress is a changed artifact, belief, or decision. Activity, role transitions, status updates, and polished explanations are coordination cost. Predicting the intended change before a material action exposes empty motion more reliably than counting actions after the fact.
 
-Raw discussion — human or agent — is the execution log of thinking. It is not committed; what is committed is the distilled decision, its rationale, and its rejected alternatives, in the document type that owns them. The same selective-rehydration bar that governs document compression governs this distillation: nothing may be dropped whose absence would change a material choice.
+## Documents And Reality
 
-## Verify The Verifiers
+Engineers own user intent; intent documents durably preserve recorded user intent, and accepted authorities durably preserve accepted decisions that agents execute. Git, artifacts, running code, and external systems are sources of factual state. An audit surfaces divergence among current engineer intent, its durable record, accepted authority, and factual state for engineer disposition rather than silently choosing which one should change. Change records preserve execution context and cannot promote themselves into design authority. A report is a claim about an artifact, not a substitute for reading it.
 
-Under full delegation every verifier — test suite, reviewer, judge, auditor — is itself agent-produced, so verifier failures correlate with implementation failures, and any unmeasured verifier degrades silently. The human role therefore shifts from verifying the product to verifying the verifiers, and the empirical method for that is fault injection: feed a verifier known faults and read its detection rate. Detection-power trends, not anecdotes, are how this repository knows its delegation is holding.
+Authority should change more slowly than its projections. Core documents hold stable model decisions, specifications hold concrete contracts, and generated checks detect drift. Raw reasoning, transcripts, and temporary evidence stay outside the canonical corpus until a durable conclusion has an accepted owner.
 
-Three consequences follow. Production and verification stay separated: whoever produced an artifact does not adjudicate it, and metrics measured by the audit side are never handed to implementers as optimization targets, because a targeted proxy stops measuring. Independence has three dimensions — context, model, and objective — and a verification design states which it actually provides. Loud failure beats quiet failure: a check that throws on the unknown is worth more than a tolerant one that silently passes what it does not understand.
+Compression is selective, not lossy by convenience. A rewrite must preserve every criterion whose absence could change behavior, failure, recovery, ownership, security, or responsibility. At the same time, vocabulary has a cost: a named concept in an always-loaded contract is likely to become an obligation. One-use terminology belongs in discussion evidence, not governance.
 
-Human attention is risk-tiered, not uniform: security, authorization, credentials, data loss, and irreversible external effects always warrant direct scrutiny; routine surfaces are sampled and reviewed through evidence, not diffs.
+## Testability And Verification
 
-## The Human Role
+Testing is the main observation channel available to delegated engineering, so testability is an architectural property. A component that owns an effect domain should be the only component whose tests require that effect domain. If a check needs an effect its subject does not own, the boundary has leaked; granting the check broader access hides the symptom and preserves the defect.
 
-Engineers own intent, architecture arbitration, and final approval — and final approval is based on evidence: calibration trends, audit findings, conformance results, and evidence packages, not line-by-line reading. Judgment is a maintained asset: periodic deep dives into real code and real failures are scheduled work, because the taste needed to smell a wrong architecture erodes without contact.
+A system that does not expose an observation required for verification forces tests to build a parallel observatory. Where no product surface may reveal the fact, the owning design should provide a named verification-only channel. This decision belongs with the subject, not inside a late acceptance gate.
 
-## Falsifiability
+Iteration latency matters separately from test coverage. Cheap local iterations let an agent run, observe, correct, and run again. When every attempt requires a remote authorization or formal handoff, the agent substitutes source inference for observation. Bounded disposable environments and focused checks preserve iteration without weakening credential, containment, data-loss, or irreversible-effect controls.
 
-The delegation premise must remain falsifiable. The calibration program's owning specification defines concrete thresholds — detection rates on strict surfaces, review catch rates by defect class, specification load-bearing ratios — whose sustained violation triggers a scoping-down discussion rather than a rationalization. Evidence that the premise is failing is a finding, not an embarrassment; the experiment's value is the answer, in either direction.
+Tests themselves are fallible. A green harness may never have traversed its deciding assertion, a fixture may replace the real subject, and a review question may have no stopping condition. `docs/verification-instruments.md` therefore owns oracle classification, deliberate negative outcomes, effect-domain rules, and real-environment identity. These protections remain applicable when an instrument actually decides work; they are not reasons to manufacture a gate for every task.
 
-## Related Docs
+## Independence By Consequence
 
-- `docs/product-vision.md`
+Independent contexts are valuable when producer bias, uncertainty, authority, or consequence makes self-review insufficient. They are costly when invoked as a fixed sequence for every small correction. The primary agent should compose test authoring, implementation, review, verification, audit, and research capabilities according to the failure that must be intercepted.
+
+Reviewer, verifier, and auditor answer different epistemic questions without imposing a fixed order or cadence. Routine review asks whether the delivered artifact is correct, complete, simple, and aligned with its owner; rarer verification tries to falsify a key blocker, closure claim, design sufficiency, or the necessity of a mechanism; rare audit reads longitudinally from recorded intent through accepted authority, projections and tests, implementation, and runtime evidence to expose drift, calibrate detection, or preserve a terminal archive. Each produces evidence for the responsible acceptor and does not authorize new intent, architecture, trade-offs, strict-risk acceptance, or final approval.
+
+A producer never accepts an authority-bearing artifact solely through its own report. Routine reversible work may be accepted from direct artifact inspection and focused execution evidence. Strict effects and material cross-owner claims warrant stronger independence. Fresh-context direction review serves a different purpose from artifact review and stays narrow because an unspent belief costs nothing; its owner decides where the spending happens.
+
+## Safety And Recovery
+
+Authorization, confidentiality, credentials, data loss, destructive actions, publication and other external effects, sandbox containment, and concurrent writes remain strict. Their consequence is not reduced by ordinary proportionality. Uncertainty fails closed, cleanup reaches settlement, and residual state is reported truthfully.
+
+Ordinary errors should not collapse the whole program. A failed hypothesis changes belief; a defect inside the accepted outcome is corrected; a defeated premise triggers reframe; only a real intent, authority, strict-effect, trade-off, or residual-risk decision requires the engineer. This keeps human attention for decisions only a human owns.
+
+One writer per repository path is the minimum useful concurrency mechanism. More elaborate inventories and lease accounting are justified only if actual pilot evidence shows that this direct rule cannot preserve work.
+
+## Learning Outside Execution
+
+Executing agents should optimize for the user outcome, not for framework metrics. Raw transcripts, timings, checkpoints, artifacts, human interruptions, failed premises, and recovery evidence may be retained for later audit. Rates and scores do not return to the active loop as live breakers because they invite Goodhart behavior and turn measurement into another workflow controller.
+
+Framework changes should follow repeated observations across completed work. A candidate pattern is tried before it becomes universal. When evidence supports an addition, install the smallest rule or mechanism that directly catches the repeated failure and state what would make it removable.
+
+## Related Documents
+
+- `AGENTS.md`
+- `docs/change-execution.md`
+- `docs/change-execution-rationale.md`
+- `docs/verification-instruments.md`
 - `docs/documentation-model.md`
-- `docs/core/foundation.md`
-- `docs/specs/20260719-verification_calibration.md`

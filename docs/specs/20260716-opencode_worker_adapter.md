@@ -1,13 +1,17 @@
+---
+status: Accepted
+implementation: Implemented
+updated: 2026-08-21
+---
 # OpenCode Worker Adapter
-
-Status: Accepted
-Implementation: Implemented
 
 ## Summary
 
 The OpenCode Worker Adapter translates one resolved Agent Environment Package into one bounded OpenCode process and translates its machine-readable native event stream into the shared OpenKit worker harness result.
 
 The current product path uses OpenCode's one-shot run surface. The OpenCode HTTP server is not a second OpenKit control plane and is not required for one bounded worker turn.
+
+This adapter remains in the shared registry's `bounded-turn` mode. It is not eligible for the multi-AgentSession shared-Harness RuntimeTarget until this owning specification accepts and the pinned runtime proves the complete `session-continuity` contract; the Codex implementation does not implicitly broaden OpenCode.
 
 ## Owns
 
@@ -24,6 +28,13 @@ The current product path uses OpenCode's one-shot run surface. The OpenCode HTTP
 - AEP resolution, provider selection, credential grants, network policy, or backend lifecycle
 - product state, scheduling, review, apply, Action Center, or public API behavior
 - a translation of every OpenCode native event into the canonical worker protocol
+
+## Core References
+
+- `docs/core/runtime-model.md`
+- `docs/core/agent-session.md`
+- `docs/core/agent-supply.md`
+- `docs/core/sandbox.md`
 
 ## Upstream Contract
 
@@ -103,7 +114,7 @@ Native route projection is adapter-specific. For the trusted relay, argv selects
       "name": "OpenKit Worker Inference",
       "npm": "@ai-sdk/openai",
       "options": {
-        "baseURL": "<exact workerBaseUrl>",
+        "baseURL": "http://127.0.0.1:17892/inference/v1",
         "apiKey": "{env:OPENKIT_WORKER_INFERENCE_TOKEN}"
       },
       "models": {
@@ -114,7 +125,7 @@ Native route projection is adapter-specific. For the trusted relay, argv selects
 }
 ```
 
-The adapter JSON-serializes the exact model id and base URL rather than interpolating text. The AEP provider instance id remains NanoCore evidence and is not used as the OpenCode native provider id.
+The adapter JSON-serializes the exact model id and uses the fixed Sandbox Integration base URL rather than interpolating either value. The AEP provider instance id remains NanoCore evidence and is not used as the OpenCode native provider id.
 
 `OPENCODE_CONFIG_CONTENT` is an environment value, not a generated file. It contains only the credential environment-variable reference, never the placeholder or provider credential value. The governed AgentManifest and adapter isolation above disable ambient project configuration, auth content, configured and default plugins, Claude Code prompts/skills, external Skills, model fetches, sharing, updates, and LSP downloads. Approved static file supply is added back only through the AEP.
 
@@ -162,7 +173,7 @@ Required adapter tests cover:
 - malformed JSON, missing final output, and byte-bound failures
 - non-zero exit and redacted diagnostics
 - ambient config/plugin/share/MCP isolation, turn-scoped XDG state, and post-collection deletion
-- conformance with the same shared adapter contract used by Codex and Pi
+- conformance with the shared `bounded-turn` adapter contract also used by Pi
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.
 
@@ -170,7 +181,7 @@ Required image smoke covers the pinned `opencode --version`, JSON run mode help,
 
 ## Implementation Evidence And Limit
 
-The OpenCode `1.18.1` adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented. On A1, the arm64 image was built directly, passed its smoke check, and stock unpatched OpenShell `0.0.80` created a sandbox from it, uploaded the AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+The OpenCode `1.18.1` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and refreshed image smoke are implemented. OpenCode is intentionally ineligible for the target shared-Harness RuntimeTarget because no accepted or implemented session-continuity adapter exists. The refreshed 2026-07-21 arm64 image builds locally and passes its complete smoke. The earlier minimal arm64 image passed stock unpatched OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, but that historical run is not refreshed-image OpenShell evidence.
 
 This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
@@ -187,7 +198,7 @@ This adapter is clean only when deleting it and its image removes all OpenCode c
 
 ## Related Documents
 
-- `docs/changes/202607160036500001-worker_agent_adapter_boundary.md`
+
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-worker_control_protocol.md`

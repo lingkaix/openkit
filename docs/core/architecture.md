@@ -1,10 +1,11 @@
+---
+status: Accepted
+---
 # Core Architecture
-
-Status: Accepted
 
 This document owns the stable App/Core/Agent layer boundary, the split between Core coordination and agent execution, the adapter translation boundary, internal Core role boundaries, and the workspace-service boundary.
 
-This document does not own package layout, App API endpoints, protocol or database record shapes, storage backends, communication transports, runtime session continuity, deployment topology, agent-native protocols, provider mappings, launch commands, or sandbox backend details.
+This document does not own package layout, App API endpoints, protocol or database record shapes, storage backends, communication transports, internal Agent runtime mechanics, runtime session continuity, deployment topology, agent-native protocols, provider mappings, launch commands, or sandbox backend details. The Internal Agent Runtime specification owns the role-agnostic bounded execution substrate used by model-using internal roles.
 
 ## Purpose
 
@@ -17,7 +18,7 @@ OpenKit coordinates work across changing product surfaces, agent runtimes, adapt
 - Apps, channels, Skills, CLIs, and API clients are governed projections over Core contracts rather than independent workflow or state owners.
 - Runtime-native commands, events, sessions, provider payloads, and diagnostics remain behind the adapter boundary unless another Core aspect deliberately promotes a stable product projection.
 - Core storage and an Agent Runtime are separate effect domains. A local transaction can commit Core truth, but it cannot make an external process, provider, sandbox, repository, or network effect atomically commit with that truth.
-- Deployment and storage choices must not change product-state ownership, policy authority, review semantics, or trust boundaries.
+- Deployment, storage, and release-artifact choices preserve the Core semantic invariant stated below; they select placement and packaging, not product meaning.
 - Workspace services expose governed Core contracts rather than raw storage, provider, sandbox, or adapter internals.
 
 ## Architecture Shape
@@ -97,11 +98,11 @@ Internal roles may produce decisions or proposals only through normal Core servi
 - Adding an agent runtime MUST NOT add runtime-specific product, workflow, policy, governance, or canonical-schema branches to Core.
 - Internal Core roles MUST remain inside the coordination plane and MUST NOT maintain private product or workflow state.
 - Workspace services MUST expose governed Core contracts and MUST NOT expose raw storage, credentials, provider clients, sandbox control, or adapter internals.
-- Deployment placement, storage backend, and release artifacts MUST NOT change Core ownership, policy decisions, review authority, audit meaning, or usage attribution.
+- Deployment placement, storage backend, and release artifacts MUST NOT change the Core semantics of workspace, thread, turn, item, artifact, approval, agent, AgentSession, knowledge, vault, audit, or usage. This includes their ownership, policy authority, review semantics, trust boundaries, audit meaning, and usage attribution.
 
 ## Relationships To Other Core Aspects
 
-Core Concepts owns the shared product objects and identifier semantics; Identity owns actors, authentication, and membership; Work Model owns user-facing work meaning; Agent Workflow owns workflow progression; Runtime Model and Agent Session own execution lifecycle and continuity; Communication owns command, event, streaming, and transport projections; Storage owns persistence and data-source boundaries.
+Core Concepts owns the shared product objects and identifier semantics; Identity owns actors, authentication, and membership; Work Model owns user-facing work meaning; Agent Workflow owns workflow progression; Runtime Model and AgentSession own execution lifecycle and continuity; Communication owns command, event, streaming, and transport projections; Storage owns persistence and data-source boundaries.
 
 Agent Supply owns selectable agent profiles and readiness; Agent Capability owns governed runtime capability supply; Permissions, Sandbox, and Vault own authorization, containment, and credential boundaries; Knowledge, Audit, and Metering own their respective workspace services and records.
 

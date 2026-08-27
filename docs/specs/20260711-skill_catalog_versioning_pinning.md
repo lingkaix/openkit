@@ -1,7 +1,8 @@
+---
+status: Draft
+implementation: Not Started
+---
 # Skill Catalog Versioning And Pinning
-
-Status: Draft
-Implementation: Not Started
 
 ## Owns
 
@@ -11,7 +12,7 @@ Implementation: Not Started
 ## Does Not Own
 
 - Any current V1 capability, implementation, schema, route, operation catalog entry, runner, test obligation, or release gate.
-- Audit group G07, WP-6, or the current self-improvement loop. No current work package depends on a Skill Catalog.
+- The current Knowledge and self-improvement flows. Neither depends on a Skill Catalog.
 - The end-user `openkit` Skill, worker Skill authoring UX, Skill execution semantics, allowed-tool enforcement, or sandbox behavior.
 - A registry, marketplace, import/export service, deprecation lifecycle, garbage collector, backup format, dependency resolver, or cross-deployment distribution platform.
 - Agent Environment Package resolution or materialization mechanics beyond the future integrity constraints stated here.
@@ -40,7 +41,7 @@ Design work may resume only when a real worker Skill is supplied as files to a r
 ### Non-goals
 
 - Do not authorize catalog APIs, persistence, bootstrap seeding, repository import, Git integration, export, backup, deprecation, garbage collection, labels, semantic versions, version ranges, dependencies, or discovery.
-- Do not create a prerequisite for G07/WP-6, reflection, evaluation, or proposal workflows.
+- Do not create a prerequisite for current Knowledge, self-improvement, reflection, evaluation, or proposal workflows.
 - Do not preserve or replace the hardcoded metadata table through a compatibility layer.
 
 ## Decision
@@ -107,7 +108,7 @@ Public discovery and mutation APIs, registries, marketplaces, source import, exp
 
 ## Links
 
-- `docs/changes/202607172152230001-openkit_execution_program.md`
+
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`

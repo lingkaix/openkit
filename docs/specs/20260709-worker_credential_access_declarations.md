@@ -1,12 +1,13 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Worker Credential Access Declarations
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
 - The generic worker credential declaration contract that replaces hard-coded worker credential use cases with list-driven launch-time resolution.
-- The launch-time flow from credential declaration to `VaultGrant` validation, `InjectionPlan`, `InjectionReceipt`, `VaultUse`, and backend-private materialization context.
+- The launch-time flow from credential declaration to `VaultGrant` validation, `VaultInjectionPlan`, `VaultInjectionReceipt`, `VaultUse`, and backend-private materialization context.
 - The first three generic worker credential visibility classes: sandbox-provider, runtime file, and runtime environment variable.
 - The rule that sandbox-provider is the default shape for HTTP API credentials when the worker can present a placeholder in a header, query parameter, or path.
 - The fallback rules for worker-visible runtime files and runtime environment variables.
@@ -73,13 +74,13 @@ Runtime-file and runtime-env are supported as fallback paths for tools that cann
 
 ## Background
 
-`docs/specs/20260703-vault_secret_injection.md` already defines `VaultReference`, `VaultGrant`, `InjectionPlan`, `InjectionReceipt`, and `VaultUse`.
+`docs/specs/20260703-vault_secret_injection.md` already defines `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse`.
 
 `docs/specs/20260703-openshell_mechanism_internalization.md` already adopts OpenShell Providers v2 as the first enforcement backend for sandbox-provider credential injection.
 
 The public declaration name is intentionally backend-neutral because future sandbox backends may provide equivalent provider or proxy credential injection without being OpenShell.
 
-`docs/specs/20260616-agent_environment_package.md` already makes AEP the NanoCore-owned package passed to worker governance backends.
+`docs/specs/20260616-agent_environment_package.md` owns the resolved AEP envelope and cross-boundary invariants passed to worker governance backends; this specification owns the credential declarations projected into that envelope.
 
 The implementation currently has narrow credential paths with fixed ids such as `vault_github_read`, `grant_github_read`, `vault_codex_auth_json`, and `grant_codex_auth_json`.
 
@@ -171,7 +172,7 @@ Validation MUST fail closed when the selected backend cannot enforce the request
 
 Validation MUST reject duplicate declaration ids, duplicate target environment variables, duplicate target paths, and conflicting provider instance ids within one package.
 
-NanoCore MUST create one `InjectionPlan`, one `InjectionReceipt`, and one `VaultUse` record for each successful declaration resolution.
+NanoCore MUST create one `VaultInjectionPlan` before resolution, one `VaultUse` record for the resolution outcome, and one `VaultInjectionReceipt` only after backend-private materialization completes successfully.
 
 NanoCore MUST record failed vault resolution attempts through the audited backend wrapper when the failure occurs after grant lookup.
 
@@ -245,7 +246,7 @@ For runtime-file declarations, the worker sees a sandbox-local file.
 
 For runtime-env declarations, the worker sees a real environment variable.
 
-In all cases, `VaultReference`, `VaultGrant`, `InjectionPlan`, `InjectionReceipt`, and `VaultUse` remain Core control-plane records.
+In all cases, `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` remain Core control-plane records.
 
 ### Public Surface Rules
 
@@ -283,11 +284,11 @@ The schema should reject secret-shaped inline fields through the existing AEP ra
 
 ### Resolver
 
-Add one shared NanoCore resolver that accepts declarations, package lineage, agent session id, Core DB, vault backend, and backend-private sinks.
+Add one shared NanoCore resolver that accepts declarations, package lineage, AgentSession id, Core DB, vault backend, and backend-private sinks.
 
 The resolver should replace the fixed GitHub MCP provider resolver and the fixed Codex auth runtime-file resolver.
 
-The resolver should keep the existing record creation sequence: plan, receipt, audited vault resolve, then backend-private materialization sink.
+The resolver must use the accepted sequence: plan, audited vault resolution with `VaultUse`, successful backend-private materialization sink, then receipt. The current pre-resolution receipt order is implementation residue, not a sequence to preserve.
 
 The resolver should use the same `VaultUseAuditedBackend` wrapper as existing V1 flows.
 
@@ -330,6 +331,8 @@ The current implementation is partial.
 `apps/nanocore/src/runtime/agent-environment.ts` generates and resolves `sandbox-provider` declarations for provider-backed credentials.
 
 The shared declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material. Current packages emit a disabled capability plane, so a non-null grant `targetCapabilityId` is intentionally fail-closed on this path.
+
+The shared resolver currently persists a receipt before audited resolution and backend-private sink completion. That order is non-conforming: failed resolution or a rejected provider sink can retain a row that is not a successful completion fact.
 
 The durable GitHub MCP and Codex auth JSON materialization paths have already moved to the shared declaration resolver.
 

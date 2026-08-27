@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/core/protocol.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`"
+decision-evidence: "`docs/core/protocol.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`"
+---
 # Protocol Package Organization
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/core/protocol.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 
@@ -130,4 +131,4 @@ The package should still reserve places for identity, vault references, usage re
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/contract-evolution.md`
-- `docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md`
+- Historical v0.0.1 release plan (no longer retained)

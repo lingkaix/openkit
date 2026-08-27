@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/specs/20260628-nanocore_config_identity_contract.md`"
+decision-evidence: "`docs/specs/20260628-nanocore_config_identity_contract.md`"
+---
 # Runtime Config UI Management
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/specs/20260628-nanocore_config_identity_contract.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 
@@ -297,7 +298,7 @@ Mitigation: show restart-required changes as pending and do not label them as ap
 
 ## Links
 
-- `docs/specs/20260525-runtime_config_reload.md`
+- `docs/specs/superseded/nanocore-config-identity/20260525-runtime_config_reload.md`
 - `apps/nanocore/src/app-api/runtime-config.ts`
 - `packages/core-client/src/app-api/runtime-config.ts`
 - `packages/core-client/src/client.ts`

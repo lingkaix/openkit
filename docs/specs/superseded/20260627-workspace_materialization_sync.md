@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/specs/20260703-workspace_synchronization.md`"
+decision-evidence: "`docs/specs/20260703-workspace_synchronization.md`"
+---
 # Workspace Materialization And Synchronization
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/specs/20260703-workspace_synchronization.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 
@@ -413,8 +414,8 @@ Real provider or GitHub-token tests must remain opt-in.
 - `docs/core/sandbox.md`
 - `docs/product-vision.md`
 - `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260627-openkit_development_loop_protocol.md`
-- `docs/specs/20260617-openkit_ai_interface.md`
+- `docs/specs/retired/20260627-openkit_development_loop_protocol.md`
+- `docs/specs/superseded/20260617-openkit_ai_interface.md`
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - [NVIDIA/NemoClaw](https://github.com/NVIDIA/NemoClaw)

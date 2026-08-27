@@ -1,16 +1,16 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Work Resource Interaction Model
-
-Status: Accepted
-Implementation: Partial
-Change Plan: `docs/changes/202607132212000001-work_resource_interaction_model.md`
 
 ## Owns
 
 This spec owns the implementation-facing interaction model that lets users express precise intent against work resources without requiring every interaction to be plain text.
 
-It owns the three work-resource planes as a classification boundary, the distinction between a resource plane and the `Artifact` product role, the deferred boundary for future grounded interaction, the relationship between conversation and a material surface, and the current implementation boundary.
+It owns the three Work Resource Classes as a classification boundary, the distinction between a Work Resource Class and the `Artifact` product role, the deferred boundary for future grounded interaction, the relationship between conversation and a material surface, and the current implementation boundary.
 
-It owns the authorized Phase 1 contract for one Thread-bound workspace-native Markdown or plain-text material through material identity, immutable revisions, explicit Thread binding, queued next-turn inclusion, exact worker-visible revision capture, active-turn delivery, worker proposal review and conflict-safe apply, recovery, Web projection, and acceptance criteria. The G05/C09 review selected the existing version-keyed `ArtifactReview` as the single proposal decision and apply owner; this specification authorizes no parallel review, apply, or recovery engine.
+It owns the authorized Phase 1 contract for one Thread-bound workspace-native Markdown or plain-text material through material identity, immutable revisions, explicit Thread binding, queued next-turn inclusion, exact worker-visible revision capture, active-turn delivery, worker proposal review and conflict-safe apply, recovery, Web projection, and acceptance criteria. The accepted authority review selected the existing version-keyed `ArtifactReview` as the single proposal decision and apply owner; this specification authorizes no parallel review, apply, or recovery engine.
 
 ## Does Not Own
 
@@ -31,6 +31,9 @@ It does not define a universal `Resource` entity, feedback framework, locator fr
 - `docs/core/agent-capability.md`
 - `docs/core/permissions.md`
 - `docs/core/audit.md`
+
+## Intent
+
 - `docs/product-vision.md`
 
 ## Summary
@@ -39,11 +42,11 @@ The accepted product posture is: **delegate by default, collaborate on demand, a
 
 Conversation remains the narrative and coordination layer, while a relevant work resource may become the shared surface for precise intent.
 
-OpenKit classifies work resources into three planes according to source-of-truth ownership and native editability, but the current implementation scope covers only Plane 1.
+OpenKit classifies work resources into three Work Resource Classes according to source-of-truth ownership and native editability, but the current implementation scope covers only Work Resource Class 1.
 
 The first and only authorized vertical slice is one Thread-bound Markdown or plain-text material with immutable revisions, explicit binding, exact worker-input provenance, and worker proposals governed by the existing version-keyed `ArtifactReview`. Accepted apply is one app-local Workspace transaction over that Review and the existing Material owners; Workspace Sync is not an alias for this path.
 
-Plane 2 and Plane 3 are deferred boundary definitions. They do not authorize implementation, shared schemas, generalized frameworks, connectors, workbench integration, or public product surfaces.
+Work Resource Class 2 and Work Resource Class 3 are deferred boundary definitions. They do not authorize implementation, shared schemas, generalized frameworks, connectors, workbench integration, or public product surfaces.
 
 ## Goals / Non-goals
 
@@ -61,29 +64,13 @@ Plane 2 and Plane 3 are deferred boundary definitions. They do not authorize imp
 - Do not add a global strong-interaction or weak-interaction mode.
 - Do not make pointer movement, selection changes, keystrokes, or autosave events worker inputs.
 - Do not inject workspace edits merely because the user is viewing a Thread.
-- Do not add the three planes to `Artifact.kind`.
+- Do not add the three Work Resource Classes to `Artifact.kind`.
 - Do not create a universal resource, feedback, locator, document, editor, workbench, or connector abstraction.
 - Do not build native media, design, CAD, project-file, or external-system editing in this phase.
-- Do not implement Plane 2, Plane 3, arbitrary external writeback, CRDT, operational transformation, real-time multi-user coediting, or live mutation of an active worker filesystem.
+- Do not implement Work Resource Class 2, Work Resource Class 3, arbitrary external writeback, CRDT, operational transformation, real-time multi-user coediting, or live mutation of an active worker filesystem.
 - Do not preserve backward compatibility for repository-owned internal shapes replaced during implementation.
 
 ## Decision
-
-### Strategic product thesis
-
-Model capability and harness maturity will eliminate interaction created only by the need to operate tools. They will not eliminate interaction required to form intent, exercise taste, judge quality, or explore possibility.
-
-As high-quality candidate generation becomes cheaper, users may perform more creative exploration through comparison, preview, selection, and fine adjustment rather than less. High-bandwidth interaction therefore moves from teaching AI how to execute toward jointly deciding what should exist.
-
-OpenKit MUST cover the continuous transition from delegation to co-creation, but it MUST NOT reproduce domain production workbenches such as ChatCut, Figma, or CAD tools. This boundary determines whether OpenKit remains an Agent manager or grows into a Human + Agent work system.
-
-The higher-layer capability OpenKit must own is **judgement grounding**: converting human judgement that is difficult to express in prose into Agent input that is precise, localized, executable, and replayable.
-
-**OpenKit should not only let users tell an Agent what to do. It should let users transmit professional judgement that is not yet fully verbalized through selection, comparison, annotation, adjustment, and local modification.**
-
-This capability becomes more important as models become stronger because a small intent error can drive an increasingly large amount of correct but misdirected automated execution.
-
-OpenKit's durable product moat is the ability to compress tacit human judgement into signals that an Agent can interpret and act on accurately without requiring OpenKit to become the domain tool itself.
 
 ### Product interaction posture
 
@@ -107,17 +94,17 @@ A text selection or annotation identifies where an instruction applies, while an
 
 The Action Center identifies when human attention is required without replacing Thread and Item history.
 
-### Three work-resource planes
+### Three Work Resource Classes
 
-| Plane | Authority boundary | Current authorization |
+| Work Resource Class | Authority boundary | Current authorization |
 | --- | --- | --- |
-| Workspace-native Material | Editable state is owned by the OpenKit workspace | Plane 1 Markdown or plain-text slice only |
-| Managed Asset or Bundle | OpenKit may preserve identity and lineage while domain editing remains elsewhere | Deferred and non-authorizing |
-| External System Resource | Authoritative state remains in a third-party system | Deferred and non-authorizing |
+| Work Resource Class 1 — Workspace-native Material | Editable state is owned by the OpenKit workspace | Work Resource Class 1 Markdown or plain-text slice only |
+| Work Resource Class 2 — Managed Asset or Bundle | OpenKit may preserve identity and lineage while domain editing remains elsewhere | Deferred and non-authorizing |
+| Work Resource Class 3 — External System Resource | Authoritative state remains in a third-party system | Deferred and non-authorizing |
 
-The plane is determined by authority and lifecycle, not MIME type.
+The class is determined by authority and lifecycle, not MIME type.
 
-These planes are classifications, not three `Artifact` kinds and not a shared record hierarchy.
+These classes are classifications, not three `Artifact` kinds and not a shared record hierarchy.
 
 ### Current implementation boundary
 
@@ -127,13 +114,13 @@ NanoCore now stores exact current-content digest, mutation-request proof, and im
 
 NanoCore now owns exactly `workspace_materials`, `workspace_material_revisions`, and `thread_material_bindings`, with immutable linear revisions, singular Thread binding, queue coalescing, six mutations, five reads, and command receipts. Each Material mutation and its receipt commit in one Workspace SQLite transaction. Artifact-family authority and the Workspace receipt remain separate effect domains: a request-owned Artifact authority footprint without its receipt returns `recovery_required` on exact retry without receipt reconstruction, effect repetition, settlement, or automatic repair.
 
-Real Task and Goal worker launches now persist and verify the immutable S39 Context Package trace, exact generated `context` handoff, selected Material revision and digest, queue mutation proof, and accepted backend materialization before launch. `lastWorkerSeenRevisionId` and `currentTurnRevisionId` are derived only from those verified traces. Goal steering now uses the Thread-unique `PendingUserTurnRecord`, original Item, applied Context Package proof, immutable `SteeringTerminalOutcome`, and body-free command receipts for queued, applied, follow-up, cancellation, cleanup, restart, and exact replay; no live worker filesystem mutation or second delivery lifecycle exists. Worker transcript import now creates the exact canonical turn-output Artifact, reference Item, and version-owned Artifact Review, verifies an explicit Material proposal against the same accepted S39 trace, and applies an accepted current-base proposal with the Review, new immutable revision, current pointer, bound queues, and receipt in one Workspace SQLite transaction. S51 exports and remints the complete Material, Revision, Binding, Review, and Context Package graph; its bounded imported-history verifier may contribute only historical `lastWorkerSeenRevisionId`. Web projection and complete Phase 1 acceptance remain unimplemented, and checkpoint diagnostics MUST NOT substitute for delivery proof.
+Real Task and Goal worker launches now persist and verify the immutable S39 Context Package trace, exact generated `context` handoff, selected Material revision and digest, queue mutation proof, and accepted backend materialization before launch. `lastWorkerSeenRevisionId` and `currentTurnRevisionId` are derived only from those verified traces. Goal steering now uses the Thread-unique `PendingUserTurnRecord`, original Item, applied Context Package proof, immutable `SteeringTerminalOutcome`, and body-free command receipts for queued, applied, follow-up, cancellation, cleanup, restart, and exact replay; no live worker filesystem mutation or second delivery lifecycle exists. Worker transcript import now creates the exact canonical turn-output Artifact, reference Item, and version-owned Artifact Review, verifies an explicit Material proposal against the same accepted S39 trace, and applies an accepted current-base proposal with the Review, new immutable revision, current pointer, bound queues, and receipt in one Workspace SQLite transaction. S51 exports and remints the complete Material, Revision, Binding, Review, and Context Package graph; its bounded imported-history verifier may contribute only historical `lastWorkerSeenRevisionId`. The bounded Work Resource Class 1 Web projection is implemented; complete Phase 1 acceptance still awaits its separately owned L4 browser and real-use evidence, program-exit proof remains pending, and checkpoint diagnostics MUST NOT substitute for delivery proof.
 
 The first slice MUST support one workspace-native Markdown or plain-text material explicitly bound to one Thread working set.
 
 The authorized Phase 1 slice is complete only when the user can create or open the material, bind it to a Thread, save a stable revision without sending a separate chat message, see that revision queued for the next worker turn, prove which revision the worker received, review an exact worker proposal against that revision, apply it without overwriting a newer user revision, and recover the same state after restart.
 
-Plane 2 and Plane 3 MUST remain unimplemented until Plane 1 acceptance passes and a separate accepted specification authorizes the next concrete use case.
+Work Resource Class 2 and Work Resource Class 3 MUST remain unimplemented until Work Resource Class 1 acceptance passes and a separate accepted specification authorizes the next concrete use case.
 
 ## Concept Boundaries
 
@@ -143,7 +130,7 @@ Plane 2 and Plane 3 MUST remain unimplemented until Plane 1 acceptance passes an
 
 It MUST NOT become a universal core record, shared table, protocol union, or generalized framework.
 
-Implementation MUST use the smallest existing owner or the three Plane 1 app-local records defined below.
+Implementation MUST use the smallest existing owner or the three Work Resource Class 1 app-local records defined below.
 
 ### Artifact and Item lineage
 
@@ -168,7 +155,7 @@ Each communicating Turn owns exactly one `artifact-reference` Item for one Artif
 
 A work-produced Artifact version and the producing or mutating Turn's required `artifact-reference` Item state form one acknowledged logical commit. NanoCore MUST acknowledge the mutation only after both sides are durable and mutually valid. A handled validation or persistence failure MUST leave both sides at the previous complete version or leave neither newly created record visible. After restart, storage MUST expose either the old complete commit or the new complete commit; a detected half-state MUST fail closed and MUST NOT be repaired by inference, compatibility parsing, or a second settlement workflow. The physical commit and crash-consistency mechanism remains owned by `docs/specs/20260703-storage_layout_record_ownership.md`.
 
-A workspace-only Artifact import MAY exist before Thread introduction only with its immutable `imported` origin. Introduction uses the exact `artifact.introduce` command scoped by authenticated actor, Workspace, Thread, and required `requestId`; its canonical caller input is exactly `{ artifactId, expectedArtifactVersion }`. One deterministic idle-Thread admission rechecks that the Thread has no non-terminal Turn, reserves the deterministic Turn and `artifact-reference` Item identities, writes that Core-local Turn directly as `completed`, writes the completed reference Item for the exact Artifact version, and then publishes the command receipt under the Artifact-family compromise below. The Turn has no Agent, Agent Session, provider call, worker, scheduler admission, checkpoint, or runtime effect. Leaving the Artifact's immutable origin and top-level null Thread and Turn unchanged is part of the same acknowledged success predicate.
+A workspace-only Artifact import MAY exist before Thread introduction only with its immutable `imported` origin. Introduction uses the exact `artifact.introduce` command scoped by authenticated actor, Workspace, Thread, and required `requestId`; its canonical caller input is exactly `{ artifactId, expectedArtifactVersion }`. One deterministic idle-Thread admission rechecks that the Thread has no non-terminal Turn, reserves the deterministic Turn and `artifact-reference` Item identities, writes that Core-local Turn directly as `completed`, writes the completed reference Item for the exact Artifact version, and then publishes the command receipt under the Artifact-family compromise below. The Turn has no Agent, AgentSession, provider call, worker, scheduler admission, checkpoint, or runtime effect. Leaving the Artifact's immutable origin and top-level null Thread and Turn unchanged is part of the same acknowledged success predicate.
 
 Any active Turn, including a Goal Turn or user-input gate, returns `409 thread_busy` before an Item, Turn, pending row, or command record; this bounded compromise requires the caller to wait for an idle Thread instead of extending Goal steering or gate payloads. Because the rejection is unrecorded, the same request id and input may be retried after the Thread becomes idle. Exact replay of an accepted command returns exactly `{ artifactId, artifactVersion, turnId, itemId }`, whose Turn is the original deterministic completed Turn and whose Item is its exact `artifact-reference`; it does not return copied Turn or Item bodies. Changed input returns `idempotency_key_conflict`, an expected-version mismatch returns `conflict`, and any partial or contradictory accepted tuple returns `recovery_required` without creating another Turn or Item. Concurrent admission succeeds for only one competing Turn transaction; the loser reevaluates the busy predicate and cannot double-record introduction.
 
@@ -180,7 +167,7 @@ A Workspace-native Material MAY be exported or intentionally frozen as an Artifa
 
 ### Knowledge remains cross-cutting
 
-Knowledge remains reusable workspace understanding rather than another work-resource plane.
+Knowledge remains reusable workspace understanding rather than another Work Resource Class.
 
 A material or Artifact MAY become a Knowledge Source, but Knowledge proposal, review, retrieval, and injection remain owned by the Knowledge model.
 
@@ -190,7 +177,7 @@ Grounded annotation, exact text-range patching, locator relocation, compare-driv
 
 A future implementation requires a separately accepted specification that names one concrete product need and defines the exact command scope and canonical input, locator units and stale rules, durable Item or review owner, lifecycle, replay, failure mapping, privacy boundary, public API, and acceptance evidence. It MUST reuse an existing lifecycle where one fits and MUST NOT introduce a universal feedback or locator framework.
 
-## Plane 1: Workspace-native Material
+## Work Resource Class 1: Workspace-native Material
 
 ### Definition
 
@@ -258,12 +245,12 @@ Bind, unbind, exclude, and restore commands MUST be request-id idempotent and ca
 
 | Command | Preconditions | Committed result |
 | --- | --- | --- |
-| bind | Binding absent or `unbound` | `bindingState=bound`, `inclusionState=included`, and `latestQueuedRevisionId` equals the Material's current revision or null when unsaved. |
+| bind | `expectedBindingState: "not_bound"`; the candidate Material is not currently bound to the Thread, whether no binding row exists or an `unbound` row is retained | `bindingState=bound`, `inclusionState=included`, and `latestQueuedRevisionId` equals the Material's current revision or null when unsaved. |
 | unbind | `bindingState=bound` | Preserve the record with `bindingState=unbound`, `inclusionState=included`, and `latestQueuedRevisionId=null`. |
 | exclude | `bindingState=bound`, `inclusionState=included`, and a queued revision exists | Retain the exact `latestQueuedRevisionId` and set `inclusionState=excluded`. |
 | restore | `bindingState=bound` and `inclusionState=excluded` | Retain the latest queue, including a revision advanced by a later save, and set `inclusionState=included`. |
 
-Only exact replay of the accepted request returns its original successful result after the target state has been reached. A different request whose expected state is stale returns typed `conflict` without mutation even when its desired target already matches the current projection; no command acquires implicit last-writer or no-op authority. A save advances `latestQueuedRevisionId` for both included and excluded bound bindings. Rebinding an unbound Material uses the bind result above and does not restore an old exclusion or queue. A read projection MUST NOT infer binding from an open editor, recent Thread, or Context Package history.
+Only exact replay of the accepted request returns its original successful result after the target state has been reached. A different request whose expected state is stale returns typed `conflict` without mutation even when its desired target already matches the current projection; no command acquires implicit last-writer or no-op authority. The canonical bind input and request hash use only `expectedBindingState: "not_bound"`; the former public `absent` and `unbound` precondition literals are invalid with no compatibility path. A save advances `latestQueuedRevisionId` for both included and excluded bound bindings. Rebinding an unbound Material uses the bind result above and does not restore an old exclusion or queue. A read projection MUST NOT infer binding from an open editor, recent Thread, or Context Package history.
 
 ### Next-turn handoff
 
@@ -328,7 +315,7 @@ Valid `Send now` input to an active Goal MAY be accepted as `queued` only when t
 
 The terminal commands are exactly `goal.steering.follow_up` and `goal.steering.cancel`. Each is scoped by authenticated actor, Workspace, Thread, `pendingTurnId`, and required terminal-command `requestId`, with no semantic request body; lookup precedes the current Goal or Turn projection. Durable proof names that caller value `terminalRequestId` and separately retains `sendRequestId` from the pending row. Both commands require the pending row's original Goal to be terminal; a nonterminal original Goal returns `409 conflict` before claiming because its next Goal step remains the only delivery owner. The winning operation captures one `acceptedAt` before its claim. `SteeringTerminalOutcome` is one immutable Workspace business record, not command-receipt metadata: its deterministic `outcomeId` is derived from Workspace, Thread, pending Turn, and terminal request; it contains exactly `workspaceId`, `threadId`, `outcomeId`, `state`, `pendingTurnId`, `sendRequestId`, `terminalRequestId`, `contentItemId`, `goalId`, `activeTurnId`, `inputKind`, nullable `materialId`, `revisionId`, and `contentDigest`, nullable `followUpTurnId`, nullable `followUpItemId`, and `acceptedAt`; `state` is exactly `follow-up` or `cancelled`, the three Material fields are all null for message input and all exact for Material input, and both follow-up identities are non-null only for `follow-up`. The command receipt stores only the outcome resource kind and `outcomeId` permitted by C07, and replay projects the public result from that immutable owner rather than storing a response snapshot. The public follow-up response is exactly `{ state: "follow-up", pendingTurnId, requestId: terminalRequestId, sourceRequestId: sendRequestId, contentItemId, goalId, activeTurnId, followUpTurnId, followUpItemId }`, and the public cancel response is exactly `{ state: "cancelled", pendingTurnId, requestId: terminalRequestId, sourceRequestId: sendRequestId, contentItemId, goalId, activeTurnId }`. Neither exposes the recovery-only input kind or Material fields. The outcome, matching receipt, and pending-row deletion commit together; the outcome has no mutable lifecycle, queue role, or authority over current delivery after cleanup.
 
-The follow-up command additionally requires an idle Thread, derives `followUpTurnId` and `followUpItemId` deterministically from the pending identity and `terminalRequestId`, and wins the `follow-up` claim. It then writes one Core-local Turn directly as `completed` with `humanGate=null`, `error=null`, `configVersion=null`, `startedAt=completedAt=acceptedAt`, and `durationMs=0`, plus one completed `user-message` Item whose text exactly copies the original input Item, whose `parentItemId` is the original `contentItemId`, whose `causationId` is `terminalRequestId`, and whose `createdAt=completedAt=acceptedAt`. It does not invoke or alias `turn.start` and creates no Coordinator decision, scheduler admission, Agent, Agent Session, provider call, AEP snapshot, worker request, materialization, or S39 Context Package trace. After that pair is durable, the outcome, receipt, and row deletion commit together. This bounded conversion places the input in post-Goal Thread history but deliberately does not choose a work mode or execute it; subsequent work requires an explicit ordinary command. An active Thread returns `thread_busy` before claiming and leaves the row unchanged. Cancel wins the `cancelled` claim and commits its outcome, receipt, and row deletion in one Workspace transaction without a Turn. Identical receipt replay returns only the winning tuple; an identical still-pending follow-up claim may finish only the exact deterministic pair and final transaction above. Changed scope or reuse of either request identity with inconsistent lineage returns `idempotency_key_conflict`, a competing winning claim returns `conflict`, and missing or contradictory proof returns `recovery_required`. Neither command may retarget the row to a newer Goal.
+The follow-up command additionally requires an idle Thread, derives `followUpTurnId` and `followUpItemId` deterministically from the pending identity and `terminalRequestId`, and wins the `follow-up` claim. It then writes one Core-local Turn directly as `completed` with `humanGate=null`, `error=null`, `configVersion=null`, `startedAt=completedAt=acceptedAt`, and `durationMs=0`, plus one completed `user-message` Item whose text exactly copies the original input Item, whose `parentItemId` is the original `contentItemId`, whose `causationId` is `terminalRequestId`, and whose `createdAt=completedAt=acceptedAt`. It does not invoke or alias `turn.start` and creates no Coordinator decision, scheduler admission, Agent, AgentSession, provider call, AEP snapshot, worker request, materialization, or S39 Context Package trace. After that pair is durable, the outcome, receipt, and row deletion commit together. This bounded conversion places the input in post-Goal Thread history but deliberately does not choose a work mode or execute it; subsequent work requires an explicit ordinary command. An active Thread returns `thread_busy` before claiming and leaves the row unchanged. Cancel wins the `cancelled` claim and commits its outcome, receipt, and row deletion in one Workspace transaction without a Turn. Identical receipt replay returns only the winning tuple; an identical still-pending follow-up claim may finish only the exact deterministic pair and final transaction above. Changed scope or reuse of either request identity with inconsistent lineage returns `idempotency_key_conflict`, a competing winning claim returns `conflict`, and missing or contradictory proof returns `recovery_required`. Neither command may retarget the row to a newer Goal.
 
 An explicit input carrying `turnId` is a response to the exact active `user-input` gate, not generic steering. A missing or terminal Turn returns typed `stale`; an existing Turn without an active gate returns typed `not_awaiting_input`. Both fail without writing Item or queue state. An implicit input received when no Turn is active starts a new ordinary Turn.
 
@@ -352,7 +339,7 @@ Each accepted declaration creates exactly one version-1 Artifact with id `worker
 
 Absence of `materialProposal` means that Artifact version is not a Material proposal. The candidate is untrusted operation input and is not another durable owner. A structurally valid candidate MUST be copied into the version-keyed `ArtifactReview` if and only if the exact tuple occurs exactly once in the same source Turn's accepted S39 Context Package trace, the Artifact is an eligible text-compatible `turn-output`, and the tuple resolves to the same Workspace Material and immutable base revision; absence MUST store null. Text compatibility is closed: a `kind=markdown` Material accepts only Artifact `content.format=markdown`, a `kind=text` Material accepts only Artifact `content.format=text`, and `content.format=json` is never a Phase 1 Material proposal. A malformed, duplicate, ambiguous, ineligible, incompatible, or unmatched candidate is `invalid_request` and leaves the Artifact version and Review unwritten. Missing or contradictory already-durable source Turn, accepted S39 trace, Material, or base-revision authority is `recovery_required`. No decision caller may add or replace the candidate, and no path, name, identifier prefix, current binding, latest Material projection, or mere trace visibility may infer proposal intent, target, or base.
 
-After portable S51 import, S39's separate imported-history verifier MAY satisfy only the read-only same-Turn Material-tuple integrity check for an existing imported Review. The historical result authorizes no mutation: a target decision still requires the exact unresolved Review, current Artifact version and bytes, authenticated target actor, ordinary target request and receipt, and, for proposal apply, the current expected Material base and existing atomic Workspace transaction. Imported `sourceAgentId` is historical lineage and only an exact selector: refinement or redo additionally requires the target Workspace's current Agent catalog to contain one enabled Agent with that exact id. Missing or disabled target Agent authority returns `409 stale` with the Review unresolved and zero writes; NanoCore MUST NOT reject the import, remap the historical id, or substitute a default Agent. A permitted refinement or redo MUST create a fresh target-local Turn, admission, Agent Session, lease, backend handoff, and strict S39 trace; it MUST NOT reconnect to or adopt imported runtime state. Imported history never proves worker delivery, launch, replay, reconnect, steering `applied`, capability authority, credential authority, or an external effect.
+After portable S51 import, S39's separate imported-history verifier MAY satisfy only the read-only same-Turn Material-tuple integrity check for an existing imported Review. The historical result authorizes no mutation: a target decision still requires the exact unresolved Review, current Artifact version and bytes, authenticated target actor, ordinary target request and receipt, and, for proposal apply, the current expected Material base and existing atomic Workspace transaction. Imported `sourceAgentId` is historical lineage and only an exact selector: refinement or redo additionally requires the target Workspace's current Agent catalog to contain one enabled Agent with that exact id. Missing or disabled target Agent authority returns `409 stale` with the Review unresolved and zero writes; NanoCore MUST NOT reject the import, remap the historical id, or substitute a default Agent. A permitted refinement or redo MUST create a fresh target-local Turn, admission, AgentSession, lease, backend handoff, and strict S39 trace; it MUST NOT reconnect to or adopt imported runtime state. Imported history never proves worker delivery, launch, replay, reconnect, steering `applied`, capability authority, credential authority, or an external effect.
 
 Artifact Review decisions remain local to one exact Artifact version and MUST NOT be translated into a staged Workspace Review by identifier prefix, route fallback, or verdict mapping. `reviewId` is exactly `arev_${digest24}`, where `digest24` is the first 24 lowercase hexadecimal characters of SHA-256 over the canonical JSON serialization of `[workspaceId, artifactId, artifactVersion]`, encoded as UTF-8, and there is at most one `ArtifactReview` owner for that pair. Its exact fields are `workspaceId`, `reviewId`, `artifactId`, `artifactVersion`, `contentDigest`, nullable `sourceThreadId`, `sourceTurnId`, and `sourceAgentId`, nullable `materialProposal` as exactly `{ materialId, baseRevisionId, baseContentDigest }`, nullable `decision`, `decisionActorId`, `decisionRequestId`, `feedback`, `decidedAt`, `followUpTurnId`, and `appliedMaterialRevisionId`, plus `createdAt`. The owner snapshots the source fields and immutable proposal tuple when that version becomes reviewable; both `materialProposal` and the Artifact version are immutable thereafter. Later Artifact versions create distinct immutable Review history and never overwrite the earlier owner. Every decision and result field is initially null, and first-writer compare-and-set accepts exactly `accepted`, `needs_refinement`, `redo`, `rejected`, or `deferred` with required request and actor identity. Same-request and same-input replay returns the same owner; changed input is `idempotency_key_conflict`; a competing decision is `stale`; a contradictory owner is `recovery_required`.
 
@@ -405,7 +392,7 @@ Restart MUST never choose the newest-looking projection, duplicate a side effect
 
 ### Web projection
 
-The OpenKit Web UI MUST be sufficient to complete the Plane 1 flow without another desktop agent application.
+The OpenKit Web UI MUST be sufficient to complete the Work Resource Class 1 flow without another desktop agent application.
 
 The Web UI MUST use public Core Client operations and MUST NOT access worker files, Core-private paths, or external runtime state directly.
 
@@ -415,33 +402,33 @@ The conversation surface MUST show item-backed explanations of material inclusio
 
 The Action Center MAY project only the exact Artifact Review owner described above and the exact unresolved Goal steering `PendingUserTurnRecord` defined by this specification. An Artifact Review row and source MUST contain at least `reviewId`, `artifactId`, and `artifactVersion`, and its row identity derives from that version-owned Review; an Artifact-id-only source is invalid. Any executable Artifact Review decision action MUST address the versioned decision endpoint and MUST NOT use a generic review fallback. The steering row exposes its original Goal lineage and only exposes follow-up and cancellation after that Goal is terminal; the projection is not command authority. A rejected Material expected-base command creates no durable conflict owner or Action Center row, and projection MUST NOT create a Material writeback, delivery, or conflict lifecycle.
 
-## Deferred Plane Boundaries
+## Deferred Work Resource Class Boundaries
 
-### Plane 2: Managed Asset or Bundle
+### Work Resource Class 2: Managed Asset or Bundle
 
-Plane 2 covers an asset or bundle whose meaningful source format is not safely or economically editable through the Plane 1 material surface.
+Work Resource Class 2 covers an asset or bundle whose meaningful source format is not safely or economically editable through the Work Resource Class 1 material surface.
 
 OpenKit MAY later preserve identity, version lineage, review state, previews, and import or export provenance while domain editing remains with a specialized owner.
 
-This definition does not authorize Plane 2 records, bundle manifests, binary payload changes, derived-representation pipelines, workbench sessions, embedding, round-trip adapters, UI, or worker protocol.
+This definition does not authorize Work Resource Class 2 records, bundle manifests, binary payload changes, derived-representation pipelines, workbench sessions, embedding, round-trip adapters, UI, or worker protocol.
 
-Any Plane 2 implementation requires evidence from a concrete asset type and a separate accepted specification and change plan.
+Any Work Resource Class 2 implementation requires evidence from a concrete asset type and a separate accepted specification and change plan.
 
-### Plane 3: External System Resource
+### Work Resource Class 3: External System Resource
 
-Plane 3 covers a record whose authoritative state remains in an external system.
+Work Resource Class 3 covers a record whose authoritative state remains in an external system.
 
 OpenKit MAY later provide bounded context and governed operations through existing Data Source, Vault, Permission, Agent Capability, approval, and audit owners without replacing that external source of truth.
 
 This definition does not authorize external-resource records, shared projection schemas, connectors, query surfaces, writeback, synchronization, domain UI, or worker protocol.
 
-Any Plane 3 implementation requires evidence from a concrete external system and a separate accepted specification and change plan.
+Any Work Resource Class 3 implementation requires evidence from a concrete external system and a separate accepted specification and change plan.
 
 ### Non-authorizing future checklist
 
-Future Plane 2 or Plane 3 design must address authority, identity, version or freshness, representation, lineage, permission, sensitivity, Thread relationship, worker-availability proof, and change precondition through its owning records.
+Future Work Resource Class 2 or Work Resource Class 3 design must address authority, identity, version or freshness, representation, lineage, permission, sensitivity, Thread relationship, worker-availability proof, and change precondition through its owning records.
 
-This checklist is not a shared schema, universal reference contract, implementation plan, or authorization to add cross-plane machinery.
+This checklist is not a shared schema, universal reference contract, implementation plan, or authorization to add cross-class machinery.
 
 ## Phase 1 Architecture Boundary
 
@@ -496,7 +483,7 @@ NanoCore remains authoritative for material revisions, bindings, accepted worker
 - Artifact origin is immutable, and each version plus its required provenance or reference Item revision MUST commit as one logical mutation.
 - Refinement and redo MUST preserve earlier attempts and MUST NOT bypass another non-terminal Turn or create a competing workspace writer.
 - Replay and restart MUST preserve the originally accepted lineage and outcome rather than resolving through a newer current Goal, Turn, revision, binding, or projection.
-- Plane 2 and Plane 3 MUST remain deferred until separately authorized.
+- Work Resource Class 2 and Work Resource Class 3 MUST remain deferred until separately authorized.
 
 ### Error and stale-state behavior
 
@@ -557,7 +544,7 @@ The Phase 1 mutation names and canonical caller inputs are closed:
 | `artifact.review.decide` | actor, Workspace, Artifact, Artifact version, `requestId` | exactly `{ decision, feedback? }` for `accepted`, `rejected`, or `deferred`, and exactly `{ decision, feedback }` for `needs_refinement` or `redo`; supplied feedback is non-empty; a non-null Review `materialProposal` makes `accepted` the atomic expected-base Material apply above without adding caller input |
 | `material.create` | actor, Workspace, `requestId` | `{ title, kind, sensitivity }`, where kind is exactly `markdown` or `text`; Material id is an output |
 | `material.save` | actor, Workspace, Material, `requestId` | `{ expectedRevisionId, contentDigest, content }`; media type is derived from immutable Material kind, and revision id is an output |
-| `material.bind` | actor, Workspace, Thread, Material, `requestId` | `{ expectedBindingState }`, where the value is exactly `absent` or `unbound` |
+| `material.bind` | actor, Workspace, Thread, Material, `requestId` | `{ expectedBindingState: "not_bound" }` |
 | `material.unbind` | actor, Workspace, Thread, Material, `requestId` | `{ expectedBindingState: "bound" }` |
 | `material.exclude` | actor, Workspace, Thread, Material, `requestId` | `{ expectedBindingState: "bound", expectedInclusionState: "included", expectedQueuedRevisionId }` |
 | `material.restore` | actor, Workspace, Thread, Material, `requestId` | `{ expectedBindingState: "bound", expectedInclusionState: "excluded" }` |
@@ -576,7 +563,7 @@ Web and Agent Skill Interface consumers MUST use governed public operations inst
 
 | Alternative | Decision |
 | --- | --- |
-| Treat every plane as an Artifact kind | Rejected because it turns a durable output role into a universal resource model |
+| Treat every Work Resource Class as an Artifact kind | Rejected because it turns a durable output role into a universal resource model |
 | Keep interaction text-only | Rejected because known target and location would be discarded and re-inferred from prose |
 | Add strong and weak interaction modes | Rejected because interaction intensity changes within one Thread and existing lifecycle owners remain sufficient |
 | Inject every workspace edit | Rejected because workspace presence is not Thread intent; explicit binding is required |
@@ -643,17 +630,9 @@ Web and Agent Skill Interface consumers MUST use governed public operations inst
 - The UI never claims that a worker saw a revision without server provenance.
 - The complete Phase 1 flow works without opening a desktop worker application.
 
-### L5 integrity coverage
+#### Fixed-sequence Work Resource Class 1 acceptance
 
-- Every material revision referenced by a Context Package can be resolved and digest-verified.
-- Invalid parent chains, missing canonical content, and unresolved pending handoffs are reported.
-- Restart recovery preserves material identity, revision history, bindings, and worker-input provenance.
-- Artifact/provenance, Artifact/reference including workspace-only introduction, revision/current-pointer, binding/queue, queue/Context Package, and Artifact Review fault injection proves that acknowledged state is complete and unacknowledged half-state is rolled back or fails closed.
-- Portable export/import remints every Material proposal target, base revision, and applied revision reference coherently and rejects a missing or contradictory graph.
-
-### L6 story acceptance
-
-The canonical story MUST prove the following sequence.
+The L4 browser acceptance MUST prove the following sequence.
 
 1. A user creates a Thread and binds a Markdown material at revision 1.
 2. A worker turn receives revision 1, and its Context Package records revision 1 and its digest.
@@ -665,6 +644,14 @@ The canonical story MUST prove the following sequence.
 
 Additional acceptance MUST cover unrelated-material exclusion, explicit queued-revision exclusion, active-turn delivery, workspace isolation, and redo without deletion of prior attempts.
 
+### L5 integrity coverage
+
+- Every material revision referenced by a Context Package can be resolved and digest-verified.
+- Invalid parent chains, missing canonical content, and unresolved pending handoffs are reported.
+- Restart recovery preserves material identity, revision history, bindings, and worker-input provenance.
+- Artifact/provenance, Artifact/reference including workspace-only introduction, revision/current-pointer, binding/queue, queue/Context Package, and Artifact Review fault injection proves that acknowledged state is complete and unacknowledged half-state is rolled back or fails closed.
+- Portable export/import remints every Material proposal target, base revision, and applied revision reference coherently and rejects a missing or contradictory graph.
+
 ## Stop Rules
 
 If users cannot predict or trust automatic next-turn inclusion despite explicit binding and visible queue state, Phase 1 MUST shrink to an explicit `Publish to Thread` action rather than add heuristics.
@@ -673,26 +660,26 @@ The current slice accepts Goal steering only into the unique pending owner defin
 
 Material worker proposal implementation MUST stop if the selected version-keyed Artifact Review plus one `workspace.sqlite` transaction cannot express the complete success predicate. It MUST NOT add a Material proposal record or route, Workspace Sync alias, merge or rebase engine, Apply Plan or Apply Result, settlement state, or recovery workflow to avoid that boundary.
 
-If future asset types fail to share meaningful contracts, OpenKit MUST NOT build a universal Plane 2 protocol.
+If future asset types fail to share meaningful contracts, OpenKit MUST NOT build a universal Work Resource Class 2 protocol.
 
 If a future external integration requires OpenKit to mirror a domain system, the design MUST be re-reviewed before implementation.
 
 ## Open Questions
 
-There are no blocking open questions for the authorized Phase 1 slice. G05/C09 resolved Material worker writeback to the exact version-keyed Artifact Review and existing Material owner transaction defined above.
+There are no blocking open questions for the authorized Phase 1 slice. The accepted authority decision resolves Material worker writeback to the exact version-keyed Artifact Review and existing Material owner transaction defined above.
 
 ## Deferred / Future Work
 
-- Additional Plane 1 material kinds after the Markdown or plain-text slice proves the contract.
+- Additional Work Resource Class 1 material kinds after the Markdown or plain-text slice proves the contract.
 - Cross-material comparison and richer bounded controls after a demonstrated need.
-- Plane 2 design only through a concrete asset type and separately accepted specification.
-- Plane 3 design only through a concrete external system and separately accepted specification.
+- Work Resource Class 2 design only through a concrete asset type and separately accepted specification.
+- Work Resource Class 3 design only through a concrete external system and separately accepted specification.
 - Promotion of proven app-local material semantics only after multiple consumers demonstrate a durable product-independent contract.
 - Multi-user coediting only after a demonstrated requirement exceeds versioned handoff and publish barriers.
+- Stage 5 and the Web-dependent Stage 6 remainder of the Work Resource Class 1 surface, including Web surface-catalog and tier-gate reconciliation, confirmation that unbacked surfaces stay inert and labeled, dead-fixture removal under `apps/web/src/screens/demos/**`, the two Web local guides, this specification's `implementation` field remaining `Partial` until that work lands, and the matching `docs/roadmap.md` entries. Activation waits until the governed worker images complete a real Responses relay and the owner-required function-tool boundary holds under a declared environment identity. This specification already owns the requirements; no separate change bundle is created in advance.
 
 ## Links
 
-- [Change Plan](../changes/202607132212000001-work_resource_interaction_model.md)
 - [Product Vision](../product-vision.md)
 - [Core Concepts](../core/core-concepts.md)
 - [Work Model](../core/work-model.md)

@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Storage Layout And Record Ownership
-
-Status: Accepted
-Implementation: Partial
 
 ## Summary
 
@@ -23,7 +24,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 
 ## Does Not Own
 
-- Core semantic definitions for workspace, thread, turn, item, artifact, knowledge, vault, audit, usage, or agent session.
+- Core semantic definitions for workspace, thread, turn, item, artifact, knowledge, vault, audit, usage, or AgentSession.
 - Table DDL, migration scripts, ORM details, or read-model query design.
 - Workspace synchronization protocol semantics.
 - Vault secret backend implementation or secret material storage.
@@ -42,6 +43,9 @@ The important call is to stop organizing persistence by feature module. Storage 
 - `docs/core/vault.md`
 - `docs/core/agent-session.md`
 - `docs/core/contract-evolution.md`
+
+## Related Docs
+
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 
 ## Goals
@@ -50,7 +54,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 - Decide which record families are file-backed source of truth and which may use SQLite as source of truth.
 - Bring OpenShell, worker-shim, audit, log, transcript, and evidence outputs back into NanoCore-owned storage.
 - Keep records inspectable, portable, backup-friendly, and easy to rebuild into query indexes.
-- Preserve lineage from workspace, thread, turn, agent session, package snapshot, backend session, capability call, policy decision, and evidence bundle.
+- Preserve lineage from workspace, thread, turn, AgentSession, package snapshot, backend session, capability call, policy decision, and evidence bundle.
 
 ## Non-goals
 
@@ -69,6 +73,8 @@ The missing decision is the concrete target layout and record ownership rule, es
 ## Decision
 
 Use sibling ownership trees and one database per ownership scope. A Workspace is a first-class server resource; its owner is an identity relationship, not its physical parent.
+
+Local and server deployments use the same `DATA_ROOT` hierarchy. Core mode changes authentication and configuration posture, not physical record ownership or storage shape; local mode is not a separate storage tree.
 
 The target tree is:
 
@@ -153,6 +159,10 @@ SQLite source-of-truth records:
 
 Audit-family rows home in the database of their `ownerScope` per the Storage Scope Homing decision in `docs/specs/20260703-audit_usage_evidence_records.md`: workspace-lineage rows in `workspace.sqlite`, server control-plane rows in `core.sqlite`, user-identity rows in `user.sqlite`. Workspace deletion produces a sealed server-owned audit closure export under `server/exports/` before removal.
 
+### Turn Event Replay Retention
+
+The current Turn-event transport replay window retains exactly the latest 100 events per Turn in the active store. Live append drops the oldest retained event when the window exceeds 100, and Workspace reload reads the canonical event log but restores only its final 100 events into the replay store. If the first retained sequence is `F`, a non-initial reconnect cursor `since=N` expires only when `N < F - 1`; `since=F-1` is valid and replays `F` onward. The initial `since=0` request asks for the current retained window and is not expired by that reconnect comparison. An expired cursor fails with `core.stream.cursor_expired`; storage must not imply that the complete file-backed event log is still transport-replayable. Protocol owns the abstract cursor, expiry, and terminal-proof semantics, while Communication owns their HTTP/SSE projection.
+
 SQLite-derived records:
 
 - dashboard read models
@@ -174,7 +184,7 @@ Boot MUST NOT move the file to quarantine, delete it, repair it in place, create
 
 This fail-closed rule does not apply to derived SQLite indexes and read models. A corrupt derived store MUST be deleted and rebuilt from its file-backed source of truth or authoritative ledgers, and the owning subsystem remains explicitly degraded until rebuild completes.
 
-## G01 Material And Artifact Review Transaction Boundary
+## Material And Artifact Review Transaction Boundary
 
 The Phase 1 Material graph is an explicit exception to the ordinary file-backed workspace-history default. Its three authoritative families and the command ledger that acknowledges their mutations live in the same `workspace.sqlite`; no Material authority exists under `files/`, `sources/`, `knowledge/`, `artifacts/`, or a private Material directory.
 
@@ -195,7 +205,7 @@ Material creation commits the new `WorkspaceMaterial` and its completed command 
 
 S51 exports these four authoritative row families as strict line-oriented records, then imports them through one target Workspace transaction after validating and rewriting their complete identity graph. Deployment-local command receipts do not travel. S51 rewrites every Material and Artifact Review request-proof field to its reserved non-command `import-lineage:` token, which remains historical lineage and is never receipt-reconstruction or access authority; the complete import transaction is not a command-receipt half-state. A database file or Material content directory is never the portable representation.
 
-## G01 Goal Steering Transaction Boundary
+## Goal Steering Transaction Boundary
 
 S16 permits exactly one mutable `PendingUserTurnRecord` per `(workspaceId, threadId)`. It stores the original Goal, active Turn, send request, content Item, input kind, nullable exact Material tuple, queue mode, receipt time, and nullable `terminalClaimKind`, `terminalClaimId`, and `terminalClaimedAt`. The claim timestamp equals `acceptedAt` for follow-up or cancellation; an applied claimant captures it at its claim transaction without redefining Turn acceptance time. It is a bounded delivery owner, not a general queue: a second row cannot coexist, no priority or ordering field exists, and the row is deleted only by its exact applied, follow-up, or cancelled winner.
 
@@ -249,6 +259,7 @@ The owner-independent V2 Workspace root and most scoped record-family ownership 
 - `rebuildExistingWorkspaceDerivedIndexes` runs the same derived-index rebuild at boot for existing workspace directories that have a canonical `workspace.json` projection, skipping half-built workspace directories without that projection.
 - The server-scope database currently holds Better Auth or auth implementation rows, server settings, users, scheduler coordination, worker-control ledgers, and durable backend-session lifecycle rows. Restart closeout reuses those owners and adds no settlement table.
 - Workspace repository resources, worker-turn checkpoints, Goal Mode records, workspace synchronization owners, workspace filesystem staging roots, workspace-scoped permission decisions, `PendingUserTurnRecord`, and `SteeringTerminalOutcome` now live in workspace-owned `workspace.sqlite` files with workspace-scoped migration ledgers. The two steering families are deployment-local command proof and are intentionally excluded from portable Workspace export.
+- `TURN_STREAM_EVENT_WINDOW_SIZE` in `apps/nanocore/src/storage/workspace-file-records.ts` is 100. `FsStore` applies that same limit on live append and reload, `turn-event-routes.ts` returns `core.stream.cursor_expired` for an older cursor, and focused reload and route tests prove the retained-window behavior.
 - Worker checkpoint rows carry workspace/thread/turn lineage, context package digest, stage, stop reason, and redacted diagnostics.
 - `WorkspaceMaterial`, immutable `WorkspaceMaterialRevision`, singular `ThreadMaterialBinding`, and version-keyed `ArtifactReview` are implemented in `workspace.sqlite`; their public routes, Action Center projection, and portable export/import use those existing owners rather than a second workflow or filesystem authority.
 - The obsolete Artifact-id-keyed JSON owner and `reviews/artifacts/` layout have been deleted without a compatibility reader, migration, or dual write. Only the accepted version-keyed `artifact_reviews` Workspace SQLite family may own generic Artifact Review decisions.
@@ -257,7 +268,7 @@ The owner-independent V2 Workspace root and most scoped record-family ownership 
 
 The workspace physical `memory/` directory has been replaced by `knowledge/`. OpenKit-owned protocol, App API, NanoCore, core-client, unified Skill, bundled CLI, and Web surfaces now use `knowledge`; remaining `memory` mentions in active implementation are ordinary in-memory wording, resource-limit options, or fail-closed unsupported layout guards.
 
-The current file projection materializes turn items as file-backed JSONL under per-thread and per-turn storage paths, knowledge page Markdown under `knowledge/pages/<knowledgeEntryId>.md`, app-local knowledge proposal Markdown under `knowledge/proposals/<proposalId>.md`, app-local knowledge proposal review decisions under `knowledge/reviews/<proposalId>.json`, source identity records under `sources/registry/<sourceId>.json`, registered text source material under `sources/materials/<sourceId>/content.txt`, artifact metadata under `artifacts/<artifactId>/artifact.json` with content files under `artifacts/<artifactId>/files/content.{md,txt,json}`, and agent session records under `runtime/agent-sessions/<agentSessionId>/session.json`. The target layout keeps item logs, knowledge pages, proposal summaries and review decisions, source identity records, source material evidence, artifact metadata and content files, and agent-session runtime records file-backed, but moves ownership and recovery rules into the workspace tree defined in this spec.
+The current file projection materializes turn items as file-backed JSONL under per-thread and per-turn storage paths, knowledge page Markdown under `knowledge/pages/<knowledgeEntryId>.md`, app-local knowledge proposal Markdown under `knowledge/proposals/<proposalId>.md`, app-local knowledge proposal review decisions under `knowledge/reviews/<proposalId>.json`, source identity records under `sources/registry/<sourceId>.json`, registered text source material under `sources/materials/<sourceId>/content.txt`, artifact metadata under `artifacts/<artifactId>/artifact.json` with content files under `artifacts/<artifactId>/files/content.{md,txt,json}`, and AgentSession records under `runtime/agent-sessions/<agentSessionId>/session.json`. The target layout keeps item logs, knowledge pages, proposal summaries and review decisions, source identity records, source material evidence, artifact metadata and content files, and AgentSession runtime records file-backed, but moves ownership and recovery rules into the workspace tree defined in this spec.
 
 ## Workspace Storage Layout
 
@@ -346,7 +357,7 @@ Canonical product records are created only when NanoCore imports and verifies th
 
 OpenShell ids, gateway ids, provider handles, supervisor logs, process ids, and native file-transfer handles must not become the public product identity.
 
-Runtime-internal sub-agent streams and their native origin indexes follow the restricted evidence and product-safe normalization contract in `docs/specs/20260711-worker_runtime_subagent_provenance.md`; they do not create additional OpenKit thread, turn, or agent-session storage trees.
+Runtime-internal sub-agent streams and their native origin indexes follow the restricted evidence and product-safe normalization contract in `docs/specs/20260711-worker_runtime_subagent_provenance.md`; they do not create additional OpenKit thread, turn, or AgentSession storage trees.
 
 ## Server Storage Layout
 
@@ -387,7 +398,7 @@ Every runtime-produced record must carry enough lineage to be verified after imp
 - thread id when applicable
 - turn id when applicable
 - agent id when applicable
-- agent session id when applicable
+- AgentSession id when applicable
 - package snapshot id when applicable
 - backend session summary when applicable
 - capability call id when applicable

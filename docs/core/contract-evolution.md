@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Contract Evolution Model
-
-Status: Accepted
 
 This document owns how OpenKit classifies contract stability, promotes contract surfaces, evolves breaking contracts, and judges implementations against the promoted core model.
 
@@ -128,8 +129,9 @@ This document does not create a compatibility promise for independently versione
 - Compatibility shims MUST NOT remain after an accepted design removes an old shape unless that design explicitly defines a temporary migration path.
 - Product projections, App APIs, adapters, storage layers, runtime bridges, Skills, CLIs, and UI read models MUST NOT redefine Core concepts they only project.
 - Implementation-private payloads, native runtime logs, provider-native events, backend diagnostics, launch commands, absolute local paths, and environment variables MUST NOT become supported contracts by accident.
+- Newly introduced external dependencies MUST use official unmodified releases. Missing stock capability MUST be handled through a bounded local guard, upstream change, or design reconsideration rather than a dependency fork, patch, or monkey-patch; previously authorized vendor snapshots retain their existing governed status.
 - Any change to a promoted aspect MUST update the owning document, matching schemas or fixtures, affected migrations, and the implementation tests that enforce the behavior.
-- Optional unknown fields MAY be ignored only when ignoring them cannot change authority, safety, retention, billing, or product meaning.
+- Safely ignorable unknown optional fields MAY be ignored by readers and SHOULD be preserved when a writer rewrites the same canonical record. Unsupported required or authority-bearing semantics MUST fail closed rather than be ignored or inferred.
 - Release-coupled consumers MUST fail with a typed incompatibility instead of guessing across an unknown contract identity.
 
 ## Conformance Dimensions
@@ -211,11 +213,11 @@ The exact endpoint or transport shape belongs to the owning projection.
 
 ## Storage Strictness Versus Live Projection Strictness
 
-Durable storage and manifest readers may ignore unknown optional non-authority-bearing fields when their owning contract permits it.
+Durable storage and manifest readers may ignore unknown optional non-authority-bearing fields when their owning contract permits it. Writers SHOULD preserve those fields when rewriting the same canonical record whenever preservation is safe and practical; an owning record contract MAY require stronger preservation for referenced content.
 
 Storage tolerance never relaxes protocol, App API, CLI, Skill, or UI projection strictness. A projection MUST emit a strictly valid payload for its exact claimed contract identity and MUST drop safely ignorable storage extensions rather than forwarding unknown fields.
 
-Unsupported authority-bearing semantics, required features, canonical record families, or major format versions must fail closed or enter the quarantine behavior defined by their owner.
+Unsupported authority-bearing semantics, required features, canonical record families, or major format versions MUST fail closed or enter the quarantine behavior defined by their owner.
 
 ## Relationships To Other Core Aspects
 

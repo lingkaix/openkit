@@ -1,19 +1,23 @@
+---
+status: Accepted
+implementation: Partial
+updated: 2026-08-10
+---
 # Agent Environment Package And Worker Governance Backends
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
-This spec owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's worker-execution source of truth and worker governance backends.
+This specification owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's resolved worker-execution authority and a worker governance backend's materialization.
 
-It owns the resolved package shape for worker identity, governed runtime image, generic shim command, opaque worker-side adapter selector, declared runtime binaries, workspace materialization inputs, provider and vault attachments, exact policy intent, backend materialization, audit expectations, and backend evidence.
+It owns the strict version 3 envelope, the exact canonical worker-consumed byte projection and package-config identity, the resolution and immutability invariants, the no-widen and no-secret boundaries, the redacted snapshot requirement, and the package evidence needed for launch, restart, and recovery decisions.
+
+It owns the two forms a resolved runtime image may take inside the package — a digest-pinned published image reference or a bounded build definition — and the immutability, no-secret, no-widen, and resolution rules that apply to the build definition as package content. It does not own how a build definition is executed, stored, or imported.
 
 ## Does Not Own
 
-This spec does not own stable core definitions, user-authored agent manifest resolution, worker-control commands, workspace synchronization records, runtime scheduling, policy evaluation, vault storage, capability gateway routing, backend-native OpenShell schemas, worker-runtime sub-agent provenance, worker-inference identity specialization, or UI readiness layouts.
+This specification does not own the user-authored `AgentManifest`, provider or Vault lifecycle, workspace synchronization, worker-control protocol, capability routing, scheduling, NanoHost identity or transport, Runtime Epoch lifecycle, backend-native policy or lifecycle artifacts, runtime-native adapter behavior, product records, public UI behavior, or a cross-stage error taxonomy.
 
-Those contracts are owned by the relevant core documents and current active specs.
+Those contracts remain with their narrow Core and specification owners. An AEP carries their resolved inputs and lineage without redefining them.
 
 ## Core References
 
@@ -26,2388 +30,285 @@ Those contracts are owned by the relevant core documents and current active spec
 - `docs/core/vault.md`
 - `docs/core/audit.md`
 - `docs/core/storage.md`
+
+## Related Docs
+
+- `docs/specs/20260703-agent_manifest_aep_resolution.md`
+- `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260704-session_static_workspace_materialization.md`
+- `docs/specs/20260703-worker_control_protocol.md`
+- `docs/specs/20260703-workspace_synchronization.md`
+- `docs/specs/20260703-worker_agent_capability.md`
+- `docs/specs/20260704-worker_mcp_tool_supply.md`
+- `docs/specs/20260703-vault_secret_injection.md`
+- `docs/specs/20260704-vault_backend_implementation.md`
+- `docs/specs/20260703-policy_enforcement_mapping.md`
+- `docs/specs/20260703-durable_scheduler_design.md`
+- `docs/specs/20260703-openshell_mechanism_internalization.md`
+- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
+- `docs/specs/20260801-nanohost_workspace_data_boundary.md`
+- `docs/specs/20260708-container_image_packaging.md`
+- `docs/specs/20260721-worker_execution_environment_images.md`
+- `docs/specs/20260716-codex_worker_adapter.md`
+- `docs/specs/20260716-opencode_worker_adapter.md`
+- `docs/specs/20260716-pi_worker_adapter.md`
+- `docs/specs/20260711-worker_runtime_subagent_provenance.md`
+- `docs/specs/20260703-audit_usage_evidence_records.md`
+- `docs/specs/20260703-storage_layout_record_ownership.md`
 
-## Summary
+## Definition And Exclusions
 
-OpenKit needs a canonical way for NanoCore to define what a worker agent should see and what it is allowed to do before a backend materializes that request into a local container, remote container, VM, managed sandbox, or custom worker runtime.
+An `AgentEnvironmentPackage` is one strict, resolved, immutable NanoCore record that binds an exact worker launch to its OpenKit lineage, runtime, workspace inputs, supplied resources, sandbox-local Integration bindings, governed access, inference route, resource intent, observability requirements, and backend requirements.
 
-Runtime backend details are refined by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, and `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`. Host-local staging and harness behavior are implementation projections; real Worker Agent product paths use governed container or sandbox placements.
+The AEP is the canonical input to worker governance materialization. NanoCore remains authoritative for product identity, policy and permission decisions, provider and Vault references, canonical Turn and Item state, usage, audit, and review. A backend may materialize and enforce the package and return evidence, but it must not create or replace those authorities.
 
-The durable decision is that NanoCore owns the product and governance source of truth, while OpenShell or another worker governance backend owns backend-specific materialization and enforcement.
+An AEP is not:
 
-NanoCore defines:
+- a user-authored configuration file;
+- a secret container or credential store;
+- a backend-native policy, provider, process, container, Cell, or sandbox record;
+- a NanoHost, Runtime Epoch, Gateway, container-runtime, SSH, remote endpoint, or transport-credential record;
+- a worker-control or capability protocol definition;
+- a canonical transcript, Item, Artifact, or Audit record;
+- an instruction to infer omitted access, routes, credentials, binaries, mounts, or backend capabilities;
+- a mutable session configuration or a live-update mechanism.
 
-- the agent identity and selected profile
-- the exact governed worker image, tools, runtime binaries, skills, and generic shim startup command
-- the workspace files, repositories, data mounts, attachments, and output paths visible to the worker
-- the provider profiles and provider instances available to the worker
-- the vault references and grants that can satisfy those provider instances
-- the policy intent for filesystem, network, process, inference, provider, secret, artifact, and resource access
-- the audit expectations and lineage links back to workspace, thread, turn, item, and agent session records
+Backend-native identities and sensitive material remain in their backend, runtime, or Vault owners. Public and diagnostic projections use OpenKit identities and redacted summaries only.
 
-The backend materializes:
+## Authority Chain
 
-- container or sandbox runtime state
-- backend-native policy files
-- backend-native provider attachments
-- backend-native credential placeholders or gateway routes
-- mounted files, repositories, object-store paths, and output directories
-- supervisor, proxy, or relay processes
-- backend-native logs and enforcement evidence
+The only accepted authority chain is:
 
-OpenShell is valuable because its Providers v2, sandbox policy, inference routing, compute driver, and observability designs already cover many of the fields OpenKit needs.
+```text
+one validated AgentManifest
+  -> one ResolvedAgentSetup
+  -> one strict immutable AgentEnvironmentPackage
+  -> one validated backend materialization
+  -> one bounded worker launch
+```
 
-OpenKit should adopt an OpenShell-inspired provider/profile/policy vocabulary, and an OpenAI-sandbox-inspired workspace manifest vocabulary, without making either third-party schema the canonical OpenKit product contract.
+Core Agent Supply owns the authored `AgentManifest` concept. `docs/specs/20260703-agent_manifest_aep_resolution.md` owns its concrete schema, validation, and resolution into `ResolvedAgentSetup`. Policy, catalogs, workspace roots, request context, grants, and backend facts may resolve references or restrict that declaration, but they must not supply a missing image, adapter, runtime binary, network grant, credential declaration, or backend requirement.
+
+The current `ResolvedAgentSetup` contains the complete selected manifest and either one resolved provider summary or `null`. The provider summary contains a provider id, selected model or `null`, the server-provider origin, and a secret reference or `null`; it never contains the secret value.
+
+NanoCore resolves the setup together with the exact Turn, AgentSession, `ActorRef`, workspace roots, request context, provider and Vault authority, policy, and selected backend target. The result must pass the strict AEP schema and all cross-field checks before it can cross into backend materialization.
+
+The backend validates the package against its real capabilities and readiness before launch. Materialization may translate the accepted AEP into backend-private artifacts, but neither materialization nor launch may add authority absent from the parsed package.
+
+## Strict V2 Envelope
+
+The parsed package has `schemaVersion: 3` and exactly these top-level fields:
+
+```text
+schemaVersion
+packageId
+snapshotId
+createdAt
+scope
+agent
+runtime
+workspace
+supply
+control
+capabilities
+providers
+credentials
+vault
+policy
+llm
+resources
+observability
+backend
+extensions
+```
+
+Unknown top-level fields are rejected. Backend-specific or private expansion belongs under `extensions` only when another accepted owner defines its use; `extensions` never bypasses the package's authority, secret, or validation rules.
+
+The schema supplies only these top-level defaults during parsing:
+
+- `capabilities` defaults to protocol `openkit-worker-capability-v1`, mode `disabled`, and no routes;
+- `credentials` defaults to no declarations;
+- `extensions` defaults to an empty object.
+
+All other top-level fields are required. `schemaVersion` is the literal number `3`, `createdAt` is an ISO date-time, and `packageId` plus `snapshotId` are non-empty immutable identities.
+
+The top-level sections have these responsibilities:
+
+| Section | Package responsibility |
+| --- | --- |
+| `scope` | Binds Workspace, Thread, Turn, AgentSession, request, and initiating `ActorRef` lineage. |
+| `agent` | Identifies the selected Agent and descriptive runtime/profile projection. |
+| `runtime` | Carries the governed image selection defined below, declared absolute worker binaries, fixed generic shim command, and process/session inputs. |
+| `workspace` | Carries the worker-visible root, declared inputs, generated material, and output declarations. |
+| `supply` | Carries resolved static Skill and MCP catalog material without granting a callable route. |
+| `control` | Carries the sandbox-local `/worker-control/*` Integration binding, transcript, non-secret worker-control token reference, and the opaque runtime-adapter selector. |
+| `capabilities` | Carries the sandbox-local `/capabilities/*` Integration binding and separately governed worker-capability projection; the current implementation projection is disabled with no routes. |
+| `providers` | Carries non-secret provider profiles, instances, and attachments resolved for this launch. |
+| `credentials` | Carries declarations and references only, never credential values. |
+| `vault` | Carries non-secret Vault references and grants owned by the Vault contracts. |
+| `policy` | Carries the exact filesystem, process, network, and secret policy intent to materialize. |
+| `llm` | Carries exactly one resolved sandbox-local `/inference/*` semantic binding, inference route, token reference, and authority mode; trusted relay packages omit `workerBaseUrl` and every native URL. |
+| `resources` | Carries worker resource intent without creating a second scheduler. |
+| `observability` | Carries required audit and evidence expectations. |
+| `backend` | Carries the preferred backend, allowed kinds, and required capability set. |
+| `extensions` | Carries bounded owner-defined data that grants no independent authority. |
+
+Nested field shapes and lifecycle rules remain with the narrow owners linked above. This specification requires their resolved projections to agree in one strict envelope rather than duplicating their tables.
+
+### Canonical Worker-Consumed Byte Projection
+
+Immediately before NanoCore prepares the worker-consumed package import, it parses the candidate again through `AgentEnvironmentPackageSchema`; parse failure or a value outside the JSON domain fails before any effect. It then serializes recursively by preserving array order, sorting every object key by JavaScript UTF-16 code-unit order, encoding object keys and scalar strings with `JSON.stringify`, and accepting only null, booleans, strings, finite JSON numbers, arrays, and plain JSON objects. `undefined`, a non-finite number, bigint, symbol, function, cycle, non-plain object, or any other non-JSON value is rejected rather than coerced or omitted.
+
+The exact body is compact UTF-8 JSON with no BOM and no trailing newline. Its byte identity is the lowercase `sha256:<64hex>` digest over those exact bytes plus their UTF-8 byte length. The same exact body, digest, and length enter the existing `reference.import` request identity and file-data proof. This serializer remains local to the existing worker-governance package producer, and the legacy CLI package writer calls that same local owner; it is not a general canonical-JSON framework or dependency. The durable redacted snapshot and its digest remain a distinct evidence projection and are neither reused nor redefined by this byte identity. The complete worker-consumed body independently remains subject to the existing `package-config` import ceiling of 268,435,456 bytes, so an individually valid Dockerfile can still make the later aggregate package admission fail under the existing pre-bootstrap cleanup and fence lifecycle.
+
+NanoCore owns those immutable package bytes. It imports them through the existing `reference.import` operation under the sole non-workspace identity `package-config`, exact relative path `package.json`, and fixed image-private destination `/openkit/config/package.json`. `package-config` is not an AEP field, declared workspace slot, output, Artifact, snapshot, credential, transport authority, executable selector, or general configuration-file surface. NanoHost owns only request-private staging and local effect proof, while the image helper owns only that fixed placement. Adjacent identity or path, export, another destination, and caller, package, image-metadata, or configuration selection are rejected.
+
+For the NanoHost cross-host projection, the dedicated generated Context Package input preserves the exact package-root digest and binds to the declared `context` slot; NanoCore-private `workspaceRoots`, source paths, host paths, archives, and transfer handles never enter the AEP or wire contract. Each output declaration carries only its output id, normalized slot-relative path, registration posture, and retention, never a predicted digest or byte length. The NanoHost computes actual export digest and length after the terminal barrier, and those facts remain backend evidence until NanoCore verifies the bytes and hands them to the existing transcript, Artifact, or Workspace collection owner.
+
+The package preserves distinct non-secret worker-control and inference token references, but neither raw live token nor its hash is AEP content. The NanoHost runtime resolves two independent attempt-private raw values only through the sensitive `bridge.open` boundary and supplies them to the fixed worker bootstrap through exactly two stdin slots; they never enter the fixed Start argv or environment, package, package digest, snapshot, Context Package, or another route family. The worker-control token reaches only descriptor 3, while the inference token reaches the native Agent only through the existing sanitized `OPENKIT_WORKER_INFERENCE_TOKEN` binding; capability remains disabled and receives no token. The selected adapter owns any fixed native URL that projects the semantic inference binding; NanoCore, the AEP, and the worker manifest do not select or serialize it.
+
+## Runtime Image Selection And Build Definition
+
+`runtime` resolves to exactly one of two image forms, never both and never neither. `runtime.image.ref` therefore stops being unconditional and becomes one arm of a discriminated selection, which changes the meaning of an existing field.
+
+That change is why this specification moves to `schemaVersion: 3` rather than gating the new form behind a required feature. `docs/specs/20260703-schema_evolution_record_envelope.md` permits either, and a required feature is the right instrument only when old and new readers must coexist. Under this repository's internal-development rule they never do: NanoCore, Sandbox Integration, and the execution runtime are released together, restart recovery reads a snapshot written by the same version, and an incompatible historical data root is replaced rather than migrated. Buying a feature registry, a second gate, and an unsupported-feature branch to protect a coexistence that does not occur would be strictly more machinery for strictly less clarity. One version, one shape, and a version 2 package is simply invalid.
+
+**Image reference.** A published image reference with its pull policy, exactly as authored and resolved today. Which reference forms an author may use, and how a tag is treated, remain owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260708-container_image_packaging.md`, and `docs/specs/20260721-worker_execution_environment_images.md`. This specification adds no new restriction on that form; resolving a reference to the exact content digest a sandbox consumes happens at the execution runtime's acquisition boundary and is owned there.
+
+**Build definition.** A bounded description from which the execution runtime produces one image for this attempt, consisting of the exact V1 build-context singleton reference `build-context://empty/v1`, its exact content digest `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, one build input document, declared build arguments, a declared build egress grant set, and exact positive-integer `timeLimitSeconds`, `outputLimitBytes`, and `layerLimit` values. The singleton denotes a zero-entry canonical context whose byte sequence is exactly empty bytes. The V1 build input document is a Dockerfile whose value encodes nonempty UTF-8 bytes with length from 1 through 268,435,456 inclusive. Those exact bytes remain inline immutable AEP content, participate in the build-input and package digests, and are carried independently from the context; they MUST NOT enter or alter the build-context digest. The existing `input.digest` is lowercase SHA-256 over exactly those UTF-8 bytes. No BOM removal, newline normalization, compression, locator, fetch, path, alternate spelling, or context mutation is inferred. Resolving the build input grants no host, shell, lifecycle, capability, host-path, build-root, socket, context-transfer, or context-variant authority, and NanoCore MUST NOT interpret it as anything other than package content bound by its independent digest.
+
+The build definition obeys the same package rules as every other resolved input, stated here because it is the first package field whose content is executable elsewhere:
+
+- **Immutable.** The exact singleton context reference and digest, independent build input document, and build arguments are part of the package and its digest. Any change produces a new package and a new bounded launch; a package is never mutated to change a build. V1 accepts no other context reference or digest, and resolution MUST NOT infer, substitute, fetch, transfer, configure, or synthesize another context variant.
+- **Bounded exact bytes.** Authored and resolved Dockerfiles MUST each encode 1 through 268,435,456 UTF-8 bytes inclusive and MUST match the declared lowercase SHA-256 over those exact bytes. Empty, non-UTF-8, oversized, or digest-mismatched input fails before a scheduler or backend effect; neither resolution nor carriage may replace the inline bytes with a reference.
+- **No secret.** Build arguments carry no secret value, credential, token, authorization header, or unrestricted host path, and the schema rejects secret-shaped fields recursively exactly as elsewhere. A build that needs credential material expresses it as a non-secret reference; this specification authorizes no build-time secret delivery, and the absence of that mechanism is a truthful limit rather than an implied capability.
+- **No widen of the sandbox.** A build definition MUST NOT grant the sandbox that runs the resulting image any network, filesystem, credential, or capability authority beyond what the same package's `policy`, `providers`, `credentials`, and `vault` sections already grant it. Nothing a build installs, writes, or configures becomes runtime authority; the launch policy remains the only authority.
+- **Declared build egress.** A build legitimately needs network access the resulting sandbox does not have, because package managers and language toolchains are build-time concerns. Pretending otherwise would make the form unusable, so build egress is its own explicitly declared, bounded grant set inside the build definition rather than an inherited or implied widening of the sandbox grants. It is authored, resolved, and validated like every other grant, it is scoped to ordinary build traffic only, and it is **not** inherited by the sandbox. Each resolved grant preserves exactly one explicit `{host, port}` pair; a missing host or port, wildcard host, non-positive or out-of-range port, path, URL, protocol, capability, socket, inferred default, or inferred `443` is rejected. The runtime-owned fixed OCI registry bootstrap pairs are separate from AEP grants and do not create, remove, replace, or default an authored pair. Whether a given endpoint may appear in a build egress set remains a workspace-policy decision under its existing owner.
+- **Declared execution bounds.** `timeLimitSeconds`, `outputLimitBytes`, and `layerLimit` are required positive integers and each MUST be no greater than the corresponding maximum owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`. V1 therefore accepts `timeLimitSeconds` from 1 through 1800, `outputLimitBytes` from 1 through 21474836480, and `layerLimit` from 1 through 128, all inclusive. Absence, zero, a negative or fractional value, overflow, or a value above its exact maximum fails resolution before any build effect; neither NanoCore nor NanoHost supplies a default or raises a declared bound.
+- **Resolved before launch.** NanoCore validates the build definition during ordinary AEP resolution, before any launch or build effect. Validation failure is a strict schema or cross-field rejection.
+- **Not a published image.** The image a build definition produces is attempt-scoped. Its publication boundary and content guarantees are owned by `docs/specs/20260721-worker_execution_environment_images.md`; this specification only requires that the package never names such an image as a deployment image.
+- **Digest binding.** The resulting image digest is bound to the attempt by the execution runtime owner and recorded as launch evidence. It is never written back into the immutable package. Under the build form the package-to-session consistency comparison that otherwise uses `runtime.image.ref` uses the build-definition lineage — the exact empty-context singleton reference and digest, independent Dockerfile input digest, and resolved argument digest — plus the recorded resulting image digest, and a missing or mismatched value fails closed exactly as a reference mismatch does.
+
+Execution of a build definition — acquisition, containment, network bounds, time and size bounds, storage, verification, and import — is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`. The package carries the resolved inputs and lineage only, exactly as it does for every other backend-materialized field.
+
+## Resolution And Launch Invariants
+
+NanoCore must resolve and validate an AEP before any worker launch effect.
+
+Resolution and materialization obey these invariants:
+
+- The exact `AgentManifest` image, opaque adapter id, runtime binary paths, sandbox declarations, and backend requirements are preserved or narrowed, never widened.
+- Every network-policy binary path names a declared runtime binary path.
+- The launch command is the generic `openkit-worker-shim --package /openkit/config/package.json`; runtime-native argv remains with the selected adapter.
+- NanoHost realizes that command only through the runtime-owned fixed `ExecSandboxInteractive` Start with `/workspace`, no TTY, timeout zero, and the existing six non-secret lineage environment entries; no AEP field selects or widens those backend-private Start fields.
+- `control.adapter.targetRuntime` is the sole adapter selector; `agent.runtimeKind`, image names, environment variables, and backend defaults do not select or infer an adapter.
+- The package carries one resolved LLM route; zero routes, multiple routes, mixed relay and direct authority, or an unsupported runtime-route pairing fails before child launch.
+- The sandbox-local worker-control, inference, and capability bindings remain distinct and non-secret in the package. They share no token reference or authority, and raw authentication material is resolved through runtime-private channels.
+- The package MUST NOT contain a NanoHost identity or credential, Runtime Epoch identity, Cell identity, remote NanoCore or Gateway URL, SSH target, Gateway forward, container-runtime endpoint, direct sandbox-to-NanoCore endpoint, OpenShell authentication material, or raw route token.
+- Workspace paths and roots must pass the containment, immutable-base, materialization, and publication rules of their owners before launch.
+- After `sandbox.create`, the exact canonical AEP body must be admitted first as `package-config/package.json` to `/openkit/config/package.json`; only then may the prepared Context Package inventory imports run, and only after all of them succeed may `bridge.open` start the fixed bootstrap. Missing, failed, changed, or uncertain package-config admission blocks every later import and worker launch.
+- The prepared Context Package's exact sorted regular-file inventory and package-root digest must match the generated `context` input before its per-file imports can run, while output declarations remain path-only and cannot pre-authorize produced bytes.
+- Required backend capabilities must be present and backend readiness must succeed before materialization can become launchable.
+- Optional capability absence remains unadvertised; it does not authorize a fallback or silent degradation.
+- A backend may implement only the declared image, command, files, mounts, provider attachments, credentials, policy, routes, resources, and evidence sinks.
+
+The AEP is immutable. Any change to launch identity, image, command, adapter, binaries, workspace layout or content, context, provider or credential attachment, Vault grant, policy, inference route, resource intent, output declaration, observability requirement, or backend requirement creates a new AEP and a new bounded launch.
+
+This specification defines no backend update operation, mutation of a pending or active package, environment rewrite, session-reuse inference, compatibility reader, or automatic retry. Retry is a new owning request that must resolve and validate current authority again.
+
+Termination, evidence collection, workspace handoff, teardown, and retry outcomes use their worker-runtime, synchronization, scheduler, and backend-lifecycle owners. The AEP supplies immutable lineage and requirements but does not create another lifecycle.
+
+## Secret And Authority Boundaries
+
+An AEP and every persisted or public snapshot must contain no raw secret value, authorization header, unrestricted host path, backend-private handle, raw provider payload, NanoHost credential, raw route token, remote Gateway locator, or transport credential.
+
+Provider, worker-control, inference, capability, and credential access is expressed through non-secret provider ids, declarations, route bindings, token references, secret references, Vault references, and grants. Exact credential values may exist only in the Vault or backend-private launch path authorized by those references, and they must not be copied into the AEP, its digest input, its durable snapshot, product records, ordinary logs, or public diagnostics. A token reference for one Integration route family MUST NOT be accepted as a reference for another family.
+
+The package schema recursively rejects raw secret-shaped fields. Snapshot persistence redacts backend-private identifiers and local runtime references and then parses the redacted value through the same strict version 3 schema before writing it.
+
+The initiating `scope.triggerActor` is immutable launch lineage. Its responsible user is accountability and authorization context only and never selects a Workspace database, directory, store, or backend placement.
+
+An immutable package proves authority at resolution time, not perpetual current authority. NanoCore must reauthorize each later NanoCore-mediated governed effect through its owning permission contract. Lost authority triggers the existing interrupt, cleanup, and publication rejection behavior; it does not mutate the AEP or invent cross-domain atomicity.
+
+## Snapshot Restart And Recovery
+
+NanoCore persists one immutable, redacted, strictly parsed AEP snapshot under the owning Workspace at:
+
+```text
+runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json
+```
+
+The snapshot record binds `snapshotId`, `packageId`, Workspace, Thread, Turn, AgentSession, Agent, runtime kind, backend kind, `createdAt`, the redacted package, and a SHA-256 digest of the exact serialized redacted package.
+
+Snapshot list and read operations expose only the redacted record through App API, Core Client, OpenAPI, and the unified Skill/CLI. The durable snapshot remains evidence and diagnostics; it is not a replay instruction or current access grant.
+
+Normal resolution, snapshot reads, restart, export, and import accept version 3 only. No runtime alias, compatibility union, or fallback form is authorized, and no reader accepts a version 2 package.
+
+Current restart recovery parses the stored package and verifies its snapshot and scope against the durable lease, session, and admission lineage required by the scheduler and worker-runtime owners before using it as recovery evidence. It does not currently compare `backend.preferred` or `runtime.image.ref` with the durable backend session. A missing, malformed, secret-bearing, or lineage-conflicting snapshot fails closed.
+
+An exact durable package and backend lineage may support the reconnect or closeout behavior already authorized by the scheduler and worker-runtime owners. When that proof is absent, recovery uses their cleanup and truthful interrupted, failed, or `recovery_required` outcomes; AEP defines no reconstruction, secret re-resolution, hidden retry, or repair workflow.
 
 ## Current Implementation Projection
 
-The current NanoCore implementation uses the Agent Environment Package as the concrete V1 contract for worker governance execution. Current code resolves package metadata for local and remote disposable OpenShell Cell paths, including runtime placement, worker-visible workspace roots, generated task context, control endpoint metadata, transcript paths, policy snapshot binding, session workspace layout, workspace synchronization expectations, supply projections, capability projections, vault-backed runtime files, and backend capability requirements. NanoCore also persists redacted workspace-owned package snapshots and exposes them through App API, Core Client, OpenAPI, and the unified Skill/CLI `environment.snapshot-list` and `environment.snapshot-read` operations for diagnostics, evidence, export/import, and restart investigation.
+The implemented resolver, schema, snapshot readers, migration, and restart path accept strict version 3 only and require exactly one resolved runtime image form: a reference or a bounded build. Reference resolution preserves the authored reference and pull policy owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`. Build resolution validates the exact empty-context singleton, immutable inline nonempty UTF-8 Dockerfile bound and digest, arguments and their digest, explicit exact build-egress set, resource bounds, and no-secret/no-widen invariants; NanoHost dispatches byte-free bounded metadata, verifies the fixed `image.build/input` carriage before the effect, executes fixed `image.acquire` or `image.build`, and returns exact digest evidence.
 
-The current V2 scope schema carries one required `triggerActor: ActorRef`; the removed `userId`, `automationId`, and `organizationId` aliases have no compatibility reader. `responsibleUserId` is derived accountability context and never doubles as a physical Workspace-store owner. Package producers, consumers, persisted snapshots, restart classification, worker control, Gateway, and policy adapters use the same V2 authority, while the stopped-process Workspace migration transforms accepted V1 snapshots before the V2 layout is published.
+`Implementation: Partial` is current.
 
-The current OpenShell-backed path resolves one strict `AgentManifest` through `ResolvedAgentSetup` into one immutable AEP. The manifest supplies the exact governed image reference and pull policy, a non-empty set of absolute worker-local runtime binary paths, the opaque adapter id, one provider selection, and exact sandbox network, credential, and backend requirements. Manifest and resolved-setup records carry no placement, transport, SSH, or Gateway topology; the scheduler and backend remain the only topology owners.
+NanoCore resolves a validated `AgentManifest` through the current `ResolvedAgentSetup`, parses the generated version 3 AEP, validates backend capability requirements, materializes the package through the NanoHost-owned runtime path, and records a redacted immutable snapshot. There is no version 2 reader, alias, dual signature, or compatibility fallback.
 
-Every current worker image launches the fixed generic command `openkit-worker-shim --package /openkit/config/package.json`. `control.adapter.targetRuntime` is the only runtime adapter selector; `agent.runtimeKind` is descriptive. The static worker-side registry contains the pinned Codex, OpenCode, and Pi adapters behind the two-operation `prepare` and `collect` contract. Codex `0.144.1` and OpenCode `1.18.1` accept only the trusted NanoCore relay envelope. Pi `0.80.7` accepts only the direct Anthropic `claude-sonnet-4-5` envelope. Zero routes, multiple routes, an unsupported runtime-route pairing, mixed relay and direct credentials, or any inferred fallback fails before child launch.
+The current production worker lifecycle selects only a `nanohost` RuntimeTarget. NanoCore retains the durable package, lease, session, and product authorities while the selected NanoHost materializes the `openshell` backend inside its Runtime Epoch; host, Cell, remote-placement, Gateway, SSH, and direct NanoCore backend selectors are rejected.
 
-The accepted V1 boundary is implemented for NanoCore-owned AEP resolution and OpenShell-backed materialization. Authored setup can project required backend capabilities into AEP backend requirements, backend materialization validates missing required capabilities before launch, grant-backed provider and runtime-file attachments flow through vault records without storing secret material in the package, and redacted package snapshots can be listed and read without exposing backend-private fields, raw credentials, or host-local runtime references.
+The current package projects the fixed generic worker shim, one adapter selected from the static Codex, OpenCode, and Pi registry by `control.adapter.targetRuntime`, transcript evidence, one supported inference route, workspace roots and context, static Skill and MCP supply, provider and Vault declarations, policy, resources, observability, backend requirements, and the three sandbox-local Integration bindings for capability, worker-control, and inference with distinct Token references. It projects no direct NanoCore endpoint or raw Token. The exact generated Context Package inventory maps to fixed imports after package-config, path-only outputs map to NanoHost-produced and NanoCore-verified exports, the fixed unary two-token NanoHost bootstrap retains its response monitor, and lease-owned distinct hash-only worker-control and inference bindings restore on restart. Adapter-specific native commands, output parsing, provider-route compatibility, image contents, and enabled capability behavior remain with their narrow specifications.
 
-Provider attachments in an AEP are declarations, not implicit OpenShell CLI arguments. Runtime-file and runtime-environment materialization does not automatically become `openshell sandbox create --provider`; the backend attaches only provider credentials that were resolved through the provider/vault materialization path or explicit transient provider inputs owned by the launch request.
+Current packages project worker capabilities as disabled with no routes. Static Skill or MCP supply does not grant a worker capability, direct MCP connection, or alternate control plane.
 
-Current read-write workspace roots are Git-backed: NanoCore resolves and records the full immutable `HEAD` object id before materialization and rejects a writable root without a valid commit. That independent host-side base must match the worker change-set and materialization base before review can become actionable.
+Current snapshot persistence redacts and reparses the package, records its digest and lineage, and supports redacted list/read diagnostics. Scheduler restart recovery verifies snapshot, scope, lease, session, admission, backend kind, and exact reference or build-input lineage before using the package for cleanup, reconnect, or closeout evidence.
 
-Current packages always emit `capabilities: { protocol: "openkit-worker-capability-v1", mode: "disabled", routes: [] }`. The removed worker capability client, NanoCore `/api/worker-capabilities/*` routes, worker MCP gateway, and capability smoke are not part of the current implementation. Skill and MCP supply records may still be resolved as static package inputs, but they do not grant a callable worker capability route. The accepted future capability and MCP contracts remain in `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md` and are sequenced in `docs/roadmap.md`.
+The current affected package tests, migration and database checks, typechecks, builds, linters, OpenAPI generation and validation, and NanoHost Rust tests, formatting, and Clippy checks pass. This implementation projection does not claim completion of the separate A1 gate.
 
-The three pinned arm64 worker images build on A1 and pass stock OpenShell `0.0.80` create, upload, generic-shim dry-run, and `--no-keep` cleanup checks. This proves image content, adapter preparation, containment, upload, and cleanup only; it does not prove the complete worker-control readiness, heartbeat, interrupt, reconnect, recovery, or terminal lifecycle for every adapter. The worker-runtime provenance and trusted worker-inference extension remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; production advertisement is implemented and its separate real OpenShell `0.0.80` and Codex `0.144.1` proof passed on A1. Rich Web readiness views, broader provider profiles, object-store mounts, worker capabilities, multiple Cell targets, and target selection remain future extensions over the same AEP boundary.
+## Failure Semantics
 
-## Goals / Non-goals
+Every validation, resolution, materialization, snapshot, and recovery failure is fail-closed and must be reported without secret or backend-private material.
 
-### Goals
+Current observable failure categories are:
 
-1. Define the `AgentEnvironmentPackage` as the canonical NanoCore contract for worker execution materialization.
-2. Define the worker governance backend boundary used by OpenShell, Docker, Kubernetes, VM, future managed sandbox providers, and future custom infrastructure.
-3. Borrow mature provider profile vocabulary from OpenShell Providers v2 for provider categories, credentials, endpoints, binaries, discovery, refresh, and policy contribution.
-4. Borrow mature workspace manifest vocabulary from sandbox systems for files, repositories, mounts, users, groups, environment, outputs, and setup commands.
-5. Keep NanoCore as the source of truth for users, workspaces, threads, turns, agent sessions, provider routing, vault references, grants, permission decisions, audit records, and item lineage.
-6. Let OpenShell or another backend enforce NanoCore decisions in the runtime environment.
-7. Keep the schema backend-portable so OpenKit can support OpenShell, plain Docker, Kubernetes, VM, remote runtime gateways, and hosted sandbox providers.
-8. Define enough manifest fields for future implementation planning without requiring immediate implementation.
-9. Define which fields are authored, resolved, materialized, derived, dynamic, static, secret-bearing, or audit-only.
-10. Preserve the existing `Workspace -> Thread -> Turn -> Item[]` backbone.
+- authored manifest loading failure, reported as an invalid-manifest diagnostic;
+- setup resolution failure for an invalid default profile, missing provider, or unsupported required feature;
+- strict AEP schema or cross-field rejection;
+- missing or contradictory Turn, AgentSession, actor, provider/model, workspace, policy, credential, Vault, route, image, adapter, binary, or backend input;
+- unsupported backend selection, required backend capability, backend readiness, or runtime-route pairing;
+- an image selection that is absent, ambiguous, or supplies both forms, or a build definition that is secret-bearing, sandbox-authority-widening, omits or changes `build-context://empty/v1` or `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, supplies an empty, non-UTF-8, over-268,435,456-byte, or digest-mismatched inline Dockerfile, mixes that independent Dockerfile into the context digest, lacks an explicit exact `{host, port}` build egress grant, infers a port or registry bootstrap authority, or declares `timeLimitSeconds` outside 1 through 1800, `outputLimitBytes` outside 1 through 21474836480, or `layerLimit` outside 1 through 128;
+- redaction, snapshot parsing, digest, path, or lineage mismatch;
+- missing, contradictory, non-regular, or digest-mismatched Context Package inventory input, or an output result whose slot or path contradicts its path-only declaration;
+- restart evidence that is missing, stale, contradictory, or insufficient for the owning recovery action.
 
-### Non-goals
+The current setup resolver has stable diagnostic codes for its three setup failures. AEP resolution, backend validation, and later runtime paths currently use ordinary errors or their owning service diagnostics rather than one unified typed AEP error set.
 
-- Do not implement this design in this spec.
-- Do not make OpenShell YAML the only accepted OpenKit authoring format.
-- Do not expose backend-native policy files, container IDs, VM IDs, process IDs, raw environment variables, provider credentials, or host paths as stable protocol fields.
-- Do not redefine `Agent`, `AgentProfile`, `AgentSession`, `Turn`, `Item`, `Artifact`, `VaultReference`, `PermissionDecision`, or `AuditEvent` core concepts.
-- Do not move app-local gateway, provider, vault, policy, or backend internals into `packages/protocol` before the App API surface is stable.
-- Do not require every backend to support every source kind, provider kind, refresh strategy, or policy primitive in the first implementation.
-- Do not reintroduce host execution as a real Worker Agent runtime.
-- Do not store raw secrets in agent packages, provider profiles, provider instances, workspace manifests, item payloads, Knowledge Store records, normal workspace files, audit records, or product logs.
-- Do not mutate a running process environment after provider, policy, or credential changes.
+A closed cross-stage error taxonomy is not implemented and is not authorized by this specification. That absence is a finding for a future owning design if a concrete public or cross-module need appears; it must not be disguised here as an implemented resolver contract.
 
-## Background
+Failure before launch produces no worker launch. Failure after a physical effect follows the existing backend cleanup, scheduler, worker-control, workspace publication, and audit owners and must not be reported as successful materialization or canonical product completion.
 
-OpenKit already has the long-term product boundary: App surfaces submit work, NanoCore coordinates that work, and agent runtimes execute heavy tasks.
+## Acceptance Predicates
 
-The missing infrastructure contract is the package that says what a worker receives at execution time.
+The contract is satisfied only when all of the following are observable:
 
-Earlier work in `docs/specs/superseded/worker-runtime/20260526-workspace_data_mounts.md` intentionally limited the first workspace-root slice to `host-dir`.
-
-That was appropriate for the earliest trusted-local worker loop, but it leaves open questions for containers, remote sandboxes, object stores, repository checkout, generated setup files, skills, tools, vault-backed credentials, LLM routing, provider-aware policy, audit ingestion, and runtime enforcement.
-
-OpenShell's Providers v2 design is useful because it treats a provider as a profile-backed access bundle rather than a credential record.
-
-In that design, a provider profile can describe credentials, environment variable names, endpoints, binary allowlists, network policy rules, inference metadata, discovery behavior, and credential refresh metadata.
-
-OpenShell's runtime model is also useful because a gateway owns control-plane state while a supervisor inside each sandbox enforces policy where filesystem, process, network, and credential visibility exist.
-
-OpenAI's sandbox manifest model is useful because it treats worker workspace setup as an explicit fresh-session contract for files, directories, repositories, mounts, environment setup, users, groups, and output directories.
-
-OpenKit should combine those ideas under a NanoCore-owned schema.
-
-## Decision
-
-OpenKit will introduce an `AgentEnvironmentPackage` design as the canonical input to worker execution materialization.
-
-The package is a resolved NanoCore object, not necessarily a user-authored file.
-
-It may be assembled from server config, workspace config, agent setup, selected profile, user grants, vault references, provider registry, policy engine decisions, turn requirements, and runtime backend capabilities.
-
-The package is then passed to a `WorkerGovernanceBackend`.
-
-The first serious backend candidate is OpenShell.
-
-OpenShell is not modeled as another agent runtime.
-
-It is modeled as an enforcement backend that wraps a worker agent runtime such as Codex, OpenCode, Pi Agent, a custom worker process, or a future agent service.
-
-The architecture is:
-
-```text
-AgentManifest plus selected nested profile
-  -> NanoCore ResolvedAgentSetup
-  -> immutable AgentEnvironmentPackage
-  -> WorkerGovernanceBackend materializes the governed image, exact policy, supply, and package file
-  -> generic openkit-worker-shim selects control.adapter.targetRuntime
-  -> statically registered adapter prepares one native process and collects one bounded result
-  -> generic shim emits schema-conformant candidate records
-  -> NanoCore validates and commits canonical product state
-```
-
-NanoCore remains the only canonical source for:
-
-- user identity and workspace membership
-- workspace, thread, turn, item, artifact, knowledge, and agent session lineage
-- provider profiles accepted by OpenKit
-- provider instances visible to an agent session
-- vault references, grants, and injection contracts
-- permission decisions and approval gates
-- capability routing and LLM provider selection
-- audit projections used by product surfaces and governance queries
-
-Backends may attach evidence and enforcement metadata.
-
-Backends do not replace NanoCore's canonical records.
-
-## Design Principles
-
-### NanoCore Defines, Backend Materializes
-
-NanoCore defines the desired worker-visible environment and the allowed capability envelope.
-
-The backend translates that definition into concrete governed runtime state and launches the AEP-declared generic shim command. The shim then selects one statically registered worker-side adapter by the AEP's opaque adapter id; only that adapter produces runtime-native argv, safe child-environment additions, isolated state-root paths, and a bounded normalized result. The current adapter contract produces no native config artifact.
-
-This keeps product semantics portable across OpenShell, Docker, Kubernetes, VM, managed sandbox, and future hosted sandbox backends.
-
-### Adopt Mature Vocabulary, Not Foreign Ownership
-
-OpenKit should adopt OpenShell-style provider profile fields where they are useful.
-
-Examples include category, credential declarations, environment variable aliases, auth style, endpoints, binary allowlists, GraphQL and REST rules, refresh strategy, and profile-derived policy layers.
-
-OpenKit should not require users or product features to understand OpenShell-specific storage, CLI commands, runtime flags, or reserved rule naming.
-
-### Separate Profile, Instance, Grant, And Injection
-
-A provider profile describes a reusable provider type.
-
-A provider instance binds one profile to concrete configuration and vault references.
-
-A vault grant authorizes use in a specific context.
-
-A backend injection materialization decides how the credential becomes usable by the worker without exposing the secret value to the prompt.
-
-Those are separate records.
-
-### Keep Policy Intent Separate From Enforcement Artifact
-
-NanoCore owns abstract permission decisions and policy intent.
-
-The backend owns concrete policy artifacts such as OpenShell policy YAML, container network rules, Kubernetes network policies, proxy config, or firewall rules.
-
-NanoCore audit must record both the abstract decision and the backend enforcement result.
-
-### Prefer Stable Worker Endpoints
-
-Agents should see stable local endpoints or environment variables managed by OpenKit or the backend.
-
-They should not need to know whether routing goes through NanoCore, OpenShell `inference.local`, a network proxy, a Kubernetes service, or a managed sandbox endpoint.
-
-### Separate Control From Inference
-
-OpenKit worker control traffic and LLM inference traffic use separate channels.
-
-The AEP carries exactly one resolved LLM route. A trusted-relay route may expose an OpenAI-compatible endpoint without a real provider credential; a direct-provider route may expose only its manifest-declared credential binding and exact direct egress. The selected adapter must reject a route its pinned runtime cannot represent. Non-attributed packages may use `https://inference.local`; provenance-required packages receive an exact authenticated NanoCore worker-inference base URL only when the selected adapter supports that projection.
-
-The control channel is mandatory for governed workers. The generic `openkit-worker-shim` calls the AEP-resolved NanoCore `/api/worker-control` base URL directly over HTTP or HTTPS, authenticates with the package-bound sandbox token, emits heartbeats and bounded worker records, polls the typed interrupt command, and reports final status.
-
-No sandbox-local control alias, sidecar, backend relay, or transcript-only control mode is part of the accepted contract. OpenShell network policy allows only the shim binaries to reach the declared NanoCore control endpoint. The transcript files under `/openkit/session/` remain required evidence collected at turn end; they are not an alternate control path.
-
-### Do Not Derive Items From Backend Logs
-
-Backend logs and supervisor events are enforcement evidence.
-
-They are not the canonical source for OpenKit `Turn` and `Item` records.
-
-NanoCore owns the event sequence shown to users.
-
-Backends may produce security, lifecycle, policy, process, filesystem, network, inference, and credential evidence, but NanoCore decides whether that evidence becomes an audit record, a diagnostic row, a compact status item, or an artifact event.
-
-The preferred lightweight split is:
-
-```text
-/openkit/session/items.jsonl      -> non-canonical OpenKit item candidates
-/openkit/session/events.jsonl     -> worker lifecycle and progress events
-/openkit/session/artifacts.jsonl  -> non-canonical artifact candidates
-/var/log/openshell*.log           -> backend security, enforcement, and audit evidence
-```
-
-On turn end, NanoCore validates candidate session records and may commit canonical thread, turn, item, and artifact state. Candidates remain non-canonical until that commit. OpenShell OCSF JSONL or shorthand logs remain audit and enforcement evidence.
-
-Both streams should share `workspaceId`, `threadId`, `turnId`, `agentSessionId`, and `packageSnapshotId` correlation fields.
-
-### Treat Backend Capability As Negotiated
-
-The package can request capabilities that not every backend supports.
-
-NanoCore must negotiate against backend capability declarations and either select a capable backend, degrade explicitly, request human approval, or fail before starting the worker.
-
-### No Hidden Secret Flow
-
-Every secret use must be traceable through a vault reference, grant, injection path, provider instance, capability call, and audit event.
-
-The worker may receive placeholders, local endpoints, process environment variables, or short-lived handles only when the selected injection path permits that visibility.
-
-## Conceptual Object Model
-
-```text
-AgentEnvironmentPackage
-  package identity and lineage
-  selected agent and profile
-  worker runtime and image
-  generic shim startup command
-  opaque worker-side adapter selector
-  workspace manifest
-  tool, binary, MCP, and skill supply
-  worker control channel
-  provider attachments
-  vault grants
-  policy intent
-  LLM routing
-  resource limits
-  observability and audit sinks
-  backend requirements
-
-WorkerGovernanceBackend
-  capability declaration
-  materializer
-  session launcher
-  evidence collector
-  teardown handler
-```
-
-The package is resolved at worker session start.
-
-The materialized backend session is captured in `AgentSession` runtime metadata and linked to the turn that requested execution.
-
-## Package Lifecycle
-
-The package lifecycle is:
-
-```text
-one selected AgentManifest plus nested profile
-  -> NanoCore resolution
-  -> catalog, policy, grant, and request restriction
-  -> policy and vault evaluation
-  -> backend selection
-  -> package snapshot
-  -> backend materialization
-  -> worker session start
-  -> evidence ingestion
-  -> teardown and artifact collection
-```
-
-### Resolution Inputs
-
-Exactly one selected `AgentManifest` and one nested profile provide launch declarations. Server and workspace policy, provider and supply catalogs, workspace roots, vault grants, request selections, context references, and backend capability facts may resolve references or restrict those declarations; they must not supply a missing image, adapter, runtime binary, network grant, credential declaration, or backend requirement.
-
-They are inputs to package resolution.
-
-### NanoCore Resolution
-
-NanoCore resolves inputs into one package snapshot.
-
-Resolution must:
-
-- select the agent and profile
-- resolve the backend target
-- preserve the exact authored governed image and declared runtime binary paths
-- set the worker command to the generic `openkit-worker-shim`
-- copy the authored opaque adapter id into `control.adapter.targetRuntime`
-- resolve workspace inputs
-- resolve tool and skill supply
-- resolve provider attachments
-- resolve vault grants
-- resolve exact network, credential, and backend declarations without widening them
-- request or reuse permission decisions
-- compute policy intent
-- select LLM routing
-- compute audit expectations
-- intersect manifest capability requirements with selected adapter and image proof
-- verify backend capability support
-
-Every network binary path must match one declared runtime binary path. Missing required adapter or image proof blocks launch; optional unproven capability remains unadvertised.
-
-### Package Snapshot
-
-NanoCore stores a redacted package snapshot for diagnostics, reproducibility, and audit.
-
-The snapshot must not include raw secret values, backend-private handles, unrestricted host paths, or raw provider payloads.
-
-The snapshot should include stable OpenKit IDs and redacted summaries.
-
-### Backend Materialization
-
-The backend materializes the package into governed backend-native artifacts and launches the exact AEP command. It must not add an endpoint, credential path, provider attachment, binary allow rule, or backend capability absent from the resolved package.
-
-For OpenShell, this may include:
-
-- provider profiles or profile references
-- provider instances or provider attachments
-- provider refresh state references
-- sandbox policy YAML
-- gateway settings
-- inference routing configuration
-- sandbox create flags
-- compute driver config references
-- workspace mounts
-- supervisor configuration
-- OCSF JSON export settings
-- launch command
-
-For a plain Docker backend, this may include:
-
-- image name
-- container command
-- bind mounts
-- network mode
-- environment variable placeholders
-- managed proxy endpoint
-- resource limits
-- log collection config
-
-For a hosted sandbox backend, this may include:
-
-- workspace manifest
-- file uploads
-- remote object-store mount declarations
-- environment setup commands
-- approved environment variables
-- output directory declarations
-- provider route handles
-
-### Worker Session Start
-
-The backend starts the worker only after:
-
-- required package fields validate
-- backend capability negotiation succeeds
-- permission decisions are recorded
-- required approvals are satisfied
-- vault grants are active
-- provider instances are usable
-- workspace inputs are materializable
-- policy artifacts are accepted by the backend
-- audit sink setup succeeds or the selected policy allows degraded audit
-
-### Package Changes
-
-The AEP is immutable. Any change to image, command, environment, mounts, identity, working directory, workspace layout or contents, provider or credential attachment, network or backend policy, context, budget, output declarations, or other launch input creates a new AEP and a new bounded worker launch. This specification defines no backend update operation, live package mutation, or session-reuse workflow.
-
-### Session Static And Turn Dynamic Workspace
-
-The package must distinguish session-static workspace layout from turn-dynamic workspace contents.
-
-The session-static layout is the reusable sandbox substrate. It includes the worker-visible workspace root, declared workspace slots, slot access envelope, static filesystem policy, output roots, transcript roots, provider attachment envelope, network policy envelope, and base working directory.
-
-The turn-dynamic materialization fills declared slots with task-specific files, repository checkouts, object-store snapshots, generated context, artifacts, helper files, transcripts, and outputs.
-
-Worker sessions may be reused only when the session-static envelope covers the new turn's resolved requirements and remains valid under current policy, vault, provider, backend capability, and config state.
-
-If a new turn requires a static mount path, provider placeholder, process environment, working directory, image, user, group, or control endpoint shape that the current session does not provide, NanoCore must create a replacement session or fail closed before launch.
-
-This contract is owned by `docs/specs/20260704-session_static_workspace_materialization.md`.
-
-### Evidence Ingestion
-
-Backends produce evidence.
-
-Evidence may include:
-
-- sandbox lifecycle events
-- policy accepted or rejected events
-- network allow or deny events
-- filesystem allow or deny events
-- process launch events
-- provider placeholder resolution events
-- inference routing events
-- credential refresh state changes
-- resource limit events
-- artifact sync events
-- teardown events
-
-NanoCore ingests evidence into audit records, diagnostics, item summaries, or artifact metadata according to product visibility rules.
-
-## `AgentEnvironmentPackage` Top-level Shape
-
-The conceptual shape is:
-
-```jsonc
-{
-  "schemaVersion": 2,
-  "packageId": "aepkg_01jz...",
-  "snapshotId": "aepsnap_01jz...",
-  "createdAt": "2026-06-16T00:00:00.000Z",
-  "scope": {
-    "workspaceId": "w_...",
-    "threadId": "t_...",
-    "turnId": "turn_...",
-    "agentSessionId": "as_...",
-    "triggerActor": {
-      "kind": "user",
-      "id": "user_..."
-    }
-  },
-  "agent": { "...": "..." },
-  "runtime": { "...": "..." },
-  "workspace": { "...": "..." },
-  "supply": { "...": "..." },
-  "control": { "...": "..." },
-  "providers": { "...": "..." },
-  "vault": { "...": "..." },
-  "policy": { "...": "..." },
-  "llm": { "...": "..." },
-  "resources": { "...": "..." },
-  "observability": { "...": "..." },
-  "backend": { "...": "..." },
-  "extensions": {
-    "openkit": {
-      "turnInput": "Implement the assigned turn."
-    }
-  }
-}
-```
-
-The accepted target schema identity is exactly `2`. After the identity cutover, runtime resolution, persistence, restart, export, and import accept only schema version `2`; schema version `1` is input only to the stopped-process migration defined in [AEP V2 Identity Cutover](#aep-v2-identity-cutover) and is not a runtime union member, alias, or fallback form.
-
-All IDs are OpenKit IDs unless explicitly marked as backend-native.
-
-Backend-native IDs belong only in materialization records and redacted diagnostics.
-
-## Field Classes
-
-Each field should declare one or more classes in schema documentation.
-
-| Class | Meaning |
-| --- | --- |
-| `authored` | Can be authored in config or UI input. |
-| `resolved` | Produced by NanoCore after merging inputs. |
-| `materialized` | Produced by a worker governance backend implementation from the resolved package. |
-| `derived` | Computed from other fields and not independently authored. |
-| `secret` | Contains secret material and must never appear in the package snapshot. |
-| `secret-ref` | References secret material without containing it. |
-| `audit` | Must be linkable to audit records. |
-| `static` | Requires session recreation if changed. |
-| `dynamic` | May update a running session when the backend supports it. |
-| `backend-private` | Must not become a stable OpenKit protocol or App API field. |
-
-## Scope Fields
-
-`scope` binds the package to OpenKit lineage.
-
-```jsonc
-{
-  "scope": {
-    "workspaceId": "w_...",
-    "threadId": "t_...",
-    "turnId": "turn_...",
-    "itemId": "item_requesting_worker_start",
-    "agentSessionId": "as_...",
-    "triggerActor": {
-      "kind": "user",
-      "id": "user_..."
-    },
-    "requestId": "req_..."
-  }
-}
-```
-
-Rules:
-
-- `workspaceId`, `threadId`, `turnId`, and `agentSessionId` are required for worker turns.
-- `triggerActor` is required and uses the shared `ActorRef` contract so policy can evaluate the initiating actor and responsible user independently from Workspace storage ownership.
-- A human trigger's responsible user is its own `id` by definition and the human variant does not duplicate `responsibleUserId`. Agent, automation, integration, and system variants carry nullable `responsibleUserId`; consumers must derive the responsible user through the tagged `ActorRef` rather than use it as a storage locator.
-- `scope.triggerActor` is the sole runtime actor authority for the Turn and package snapshot. Scheduler, lease, worker-control, capability, usage, audit, and runtime-evidence records link to the Turn, Agent Session, or package snapshot and must not add another runtime `ActorRef`, replace a null responsible user, or become current-authority records; an owning schema may copy only the derived responsible-user id as historical attribution.
-- The immutable actor and policy snapshot prove launch lineage, not current Workspace authority. NanoCore applies the exact stateless predicate and effect-boundary table in `docs/specs/20260715-multi_user_workspace_system.md` immediately before launch and each implemented NanoCore-mediated governed effect.
-- A running backend keeps its immutable AEP. When the next NanoCore or worker-control boundary detects lost responsible-user authority, NanoCore uses the existing interrupt and whole-Cell cleanup owners and accepts no later Workspace publication from that attempt. A worker-native request already submitted through an AEP-authorized endpoint may finish before detection; AEP adds no mutable grant, live policy rewrite, dynamic revocation protocol, state, or recovery workflow to hide that bounded compromise.
-- `tenantId`, `organizationId`, physical Workspace owner id, and user-nested Workspace paths are not AEP scope fields.
-- `itemId` is optional but should link to the user or system item that caused the worker start when available.
-- `requestId` should be included for cross-boundary tracing.
-
-## Agent Fields
-
-`agent` describes the selected execution supply and behavior profile.
-
-```jsonc
-{
-  "agent": {
-    "agentId": "agent_codex_container",
-    "profileId": "coder",
-    "displayName": "Codex Worker",
-    "runtimeKind": "codex",
-    "profileKind": "coder",
-    "instructions": [
-      {
-        "id": "repo-guidelines",
-        "kind": "file",
-        "sourceRef": "workspace://config/instructions/repo-guidelines.md",
-        "workerPath": "/openkit/instructions/repo-guidelines.md",
-        "integrity": {
-          "sha256": "..."
-        }
-      }
-    ],
-    "capabilityRequests": [
-      "llm",
-      "shell",
-      "filesystem",
-      "network",
-      "git",
-      "artifacts"
-    ]
-  }
-}
-```
-
-Rules:
-
-- `agentId` and `profileId` come from the agent catalog and agent setup model.
-- `runtimeKind` is a stable OpenKit summary, not a backend command.
-- `instructions` may reference files or generated material, but generated instruction files must be materialized outside normal secret-bearing config.
-- `capabilityRequests` summarize what the agent asks for; permission and sandbox fields decide what is actually allowed.
-
-## Runtime Fields
-
-`runtime` describes the worker process to launch.
-
-```jsonc
-{
-  "runtime": {
-    "image": {
-      "kind": "container-image",
-      "ref": "ghcr.io/openkit/codex-worker:2026-06-16",
-      "digest": "sha256:...",
-      "pullPolicy": "if-not-present"
-    },
-    "binaries": [
-      {
-        "id": "openkit-worker-shim",
-        "path": "/usr/local/bin/openkit-worker-shim"
-      },
-      {
-        "id": "codex",
-        "path": "/usr/local/bin/codex"
-      },
-      {
-        "id": "git",
-        "path": "/usr/bin/git"
-      },
-      {
-        "id": "gh",
-        "path": "/usr/bin/gh"
-      }
-    ],
-    "command": {
-      "argv": ["openkit-worker-shim", "--package", "/openkit/config/package.json"],
-      "workingDirectory": "/workspace/repo",
-      "stdin": "pipe",
-      "stdout": "pipe",
-      "stderr": "pipe"
-    },
-    "process": {
-      "user": "openkit-worker",
-      "group": "openkit-worker",
-      "umask": "0022"
-    },
-    "session": {
-      "reuse": "never",
-      "resumeHandleRef": null,
-      "staleWhenPackageChanges": true
-    }
-  }
-}
-```
-
-Field notes:
-
-- `image.kind` may be `container-image`, `vm-image`, `remote-template`, or `managed-sandbox-template`.
-- `image.ref` is static for one session.
-- `image.digest` should be present for reproducible container, VM, or remote image materialization.
-- `binaries` is the exact non-empty authored list of runtime binary ids and absolute worker-local executable paths preserved through resolution. Process and network policy binary references must match these paths.
-- `command.argv` is exactly the generic `openkit-worker-shim` command, not a shell string or runtime-native argv.
-- `workingDirectory` is worker-visible and should be relative to declared workspace roots or a known backend path.
-- `process.user` and `process.group` are backend materialization hints and require backend support.
-- Session reuse is conservative by default because provider, mount, and policy changes can make warm sessions unsafe.
-- `extensions.openkit.turnInput` is the existing private per-turn input consumed by the shim. It is not an adapter selector, native command, policy grant, or public contract.
-
-## Workspace Manifest
-
-`workspace` defines what files, repositories, data mounts, generated setup, and output locations the worker can see.
-
-The shape deliberately extends the earlier `workspace.roots` design.
-
-The workspace section should resolve into a `SessionWorkspaceLayout` plus per-turn `TurnWorkspaceMaterialization` records rather than treating every input as a fresh mount.
-
-Long-lived container workers should normally use `/workspace` as the base working directory and receive the active turn root through context, because binding the session command to a single repository path makes session reuse unnecessarily fragile.
-
-```jsonc
-{
-  "workspace": {
-    "root": "/workspace",
-    "inputs": [
-      {
-        "id": "repo",
-        "kind": "repository",
-        "source": {
-          "kind": "git",
-          "url": "https://github.com/example/project.git",
-          "ref": "main",
-          "commit": "..."
-        },
-        "target": "/workspace/repo",
-        "access": "read-write",
-        "materialization": {
-          "mode": "checkout",
-          "depth": 1
-        }
-      },
-      {
-        "id": "local-data",
-        "kind": "directory",
-        "source": {
-          "kind": "workspace-dir",
-          "pathRef": "workspace://files/data"
-        },
-        "target": "/workspace/data",
-        "access": "read-only"
-      },
-      {
-        "id": "customer-exports",
-        "kind": "object-store",
-        "source": {
-          "kind": "s3",
-          "bucket": "customer-exports",
-          "prefix": "2026/q2/",
-          "region": "us-east-1",
-          "endpointRef": null,
-          "providerInstanceId": "provider_aws_reports"
-        },
-        "target": "/workspace/customer-exports",
-        "access": "read-only",
-        "mount": {
-          "mode": "ephemeral",
-          "sync": "on-demand"
-        }
-      }
-    ],
-    "generatedFiles": [
-      {
-        "id": "task-context",
-        "target": "/openkit/context/task.md",
-        "contentRef": "generated://task-context",
-        "access": "read-only"
-      }
-    ],
-    "outputs": [
-      {
-        "id": "default-output",
-        "path": "/workspace/output",
-        "registerAsArtifacts": true,
-        "retention": "sync-on-turn-end"
-      }
-    ]
-  }
-}
-```
-
-### Input Kinds
-
-| Kind | Meaning | First implementation status |
-| --- | --- | --- |
-| `directory` | Directory materialized from workspace storage, artifact storage, repository checkout, staged local source, or remote source. | Partially existing through current workspace materialization paths. |
-| `file` | Single file materialized into the worker workspace. | Deferred. |
-| `repository` | Git or other repository checkout. | Needed for container workers. |
-| `object-store` | S3, R2, GCS, Azure Blob, Box, or compatible object storage. | Deferred. |
-| `artifact` | Prior OpenKit artifact materialized as worker input. | Deferred. |
-| `snapshot` | Prior worker workspace snapshot or sandbox snapshot. | Deferred. |
-| `generated` | NanoCore-generated instruction, context, task, or config file. | Needed for context packaging. |
-| `attachment` | User-uploaded attachment. | Deferred. |
-
-### Source Kinds
-
-| Source kind | Example | Credential handling |
-| --- | --- | --- |
-| `workspace-dir` | Workspace-owned or workspace-linked directory. | No remote credential; path must be validated and materialized through workspace synchronization. |
-| `workspace-file` | Workspace-owned or workspace-linked file. | No remote credential; path must be validated and materialized through workspace synchronization. |
-| `git` | GitHub repository at a commit. | Provider instance or token grant. |
-| `s3` | AWS S3 bucket and prefix. | Provider instance and vault grant. |
-| `r2` | Cloudflare R2 bucket and prefix. | Provider instance and vault grant. |
-| `gcs` | Google Cloud Storage bucket and prefix. | Provider instance and vault grant. |
-| `azure-blob` | Azure container and prefix. | Provider instance and vault grant. |
-| `box` | Box folder or file reference. | Provider instance and vault grant. |
-| `http-archive` | HTTPS zip or tarball. | Optional provider instance. |
-| `openkit-artifact` | Artifact ID. | OpenKit permission. |
-| `generated` | Generated content reference. | No raw secret content. |
-
-### Workspace Rules
-
-- Worker-visible paths must be absolute inside the worker environment or relative to `workspace.root`.
-- Authored source paths must avoid absolute local paths unless a workspace synchronization materializer or deployment policy explicitly permits that projection.
-- Source paths must not contain `..` path escapes.
-- Symlink escapes must be rejected during materialization.
-- `access` must be `read-only` or `read-write`.
-- Remote source credentials must be expressed through provider instances and vault grants.
-- Output paths must be declared before session start if the backend needs static mounts.
-- Output registration should create artifact records linked to the turn and materialized workspace input IDs.
-
-## Supply Fields
-
-`supply` describes static Skill, tool-catalog, MCP-catalog, package-manager, and helper-service metadata available to the worker. Exact executable ids and paths live only in `runtime.binaries` so supply and policy cannot disagree about binary identity.
-
-```jsonc
-{
-  "supply": {
-    "skills": [
-      {
-        "id": "repo-guidelines",
-        "sourceRef": "workspace://skills/repo-guidelines",
-        "target": "/openkit/skills/repo-guidelines",
-        "integrity": {
-          "sha256": "..."
-        }
-      }
-    ],
-    "mcpServers": [
-      {
-        "id": "filesystem-tools",
-        "version": "1.0.0",
-        "catalogEntryDigest": "sha256:...",
-        "allowedTools": ["read_file", "list_directory"]
-      }
-    ],
-    "services": [
-      {
-        "id": "openkit-gateway",
-        "kind": "http",
-        "url": "https://openkit-gateway.local",
-        "exposure": "worker-local"
-      }
-    ]
-  }
-}
-```
-
-Rules:
-
-- Supply records that need an executable reference one `runtime.binaries[].id`; they do not repeat or override executable paths.
-- Skills are materialized files or directories; they are not implicit prompt text.
-- MCP entries are exact static catalog metadata. They must not contain transport, command, endpoint, credential, native config target, direct worker connection, or executable route fields.
-- Static MCP supply does not grant worker access. Executable MCP access exists only through the separately governed `capability.local` plane after its owning contract is implemented and proven; current AEP capabilities remain disabled with no routes.
-- Service URLs should be stable worker-local names when possible.
-
-## Worker Transcript And Direct Control
-
-`control` describes the mandatory direct NanoCore worker-control connection and the required transcript evidence collected at turn end. This contract is separate from LLM inference, future worker capabilities, and backend security telemetry.
-
-```jsonc
-{
-  "control": {
-    "protocol": "openkit-worker-control-v1",
-    "mode": "direct-nanocore",
-    "transcript": {
-      "root": "/openkit/session",
-      "eventsPath": "/openkit/session/events.jsonl",
-      "itemsPath": "/openkit/session/items.jsonl",
-      "artifactsPath": "/openkit/session/artifacts.jsonl",
-      "flush": "line",
-      "import": "turn-end",
-      "required": true
-    },
-    "endpoint": {
-      "kind": "direct-url",
-      "baseUrl": "https://nanocore.example.com/api/worker-control",
-      "required": true,
-      "implementation": "direct-nanocore"
-    },
-    "auth": {
-      "kind": "sandbox-session-token",
-      "tokenRef": "runtime://openkit/control-token",
-      "credentialVisibility": "environment"
-    },
-    "channels": {
-      "commands": true,
-      "events": "batch",
-      "artifacts": "batch",
-      "heartbeats": true,
-      "logs": "summary-only"
-    },
-    "commands": [
-      "interrupt"
-    ],
-    "events": [
-      "worker.ready",
-      "item.created",
-      "artifact.created",
-      "turn.completed",
-      "turn.failed",
-      "worker.heartbeat"
-    ],
-    "adapter": {
-      "kind": "openkit-worker-shim",
-      "targetRuntime": "codex",
-      "targetTransport": "outbound-https"
-    }
-  }
-}
-```
-
-Rules:
-
-- `control.protocol` is an OpenKit protocol owned by NanoCore, not an OpenShell protocol.
-- `control.mode` must be exactly `direct-nanocore`.
-- `transcript.root` should be mounted writable by the worker or shim and readable by NanoCore during artifact collection.
-- `eventsPath`, `itemsPath`, and `artifactsPath` are worker-visible paths.
-- Transcript records must bind to workspace, thread, turn, agent session, package snapshot, and request IDs.
-- `endpoint.baseUrl` must be a credential-free HTTP(S) URL whose path is exactly `/api/worker-control` after trailing-slash normalization.
-- `endpoint.required` must be `true`, and `endpoint.implementation` must be `direct-nanocore`.
-- `auth.tokenRef` must be `runtime://openkit/control-token`; the image launcher transfers the material to the shim through an inherited anonymous file descriptor and removes it from the child environment.
-- The only current NanoCore-to-worker command family is `interrupt`. A future diagnostic operation requires a separately accepted closed typed contract; no arbitrary command placeholder is retained.
-- `control.adapter.kind` must be `openkit-worker-shim`.
-- `control.adapter.targetRuntime` is the sole opaque adapter selector. NanoCore, the governance backend, `agent.runtimeKind`, image names, environment variables, and built-in defaults must not select or infer the adapter.
-- The adapter transport must match the endpoint scheme: `outbound-http` or `outbound-https`.
-- Direct control must preserve event ordering before events reach client-facing streams.
-- The worker or shim may emit candidate events, but NanoCore assigns canonical sequence numbers and persists canonical items.
-- `logs: "summary-only"` means backend or worker logs are summarized before becoming product-visible items.
-- Raw backend security logs remain audit evidence, not chat transcript content.
-
-### Transcript Sink Files
-
-`events.jsonl` records worker lifecycle and progress events.
-
-Each line is one JSON object.
-
-Example:
-
-```jsonc
-{
-  "schemaVersion": 1,
-  "kind": "worker-event",
-  "event": "turn.started",
-  "workspaceId": "w_main",
-  "threadId": "thread_123",
-  "turnId": "turn_456",
-  "agentSessionId": "as_789",
-  "packageSnapshotId": "aepsnap_codex_github_001",
-  "requestId": "req_def",
-  "sequence": 1,
-  "timestamp": "2026-06-16T00:00:00.000Z",
-  "data": {}
-}
-```
-
-`items.jsonl` records OpenKit item candidates.
-
-Example:
-
-```jsonc
-{
-  "schemaVersion": 1,
-  "kind": "item",
-  "workspaceId": "w_main",
-  "threadId": "thread_123",
-  "turnId": "turn_456",
-  "agentSessionId": "as_789",
-  "packageSnapshotId": "aepsnap_codex_github_001",
-  "requestId": "req_def",
-  "sequence": 12,
-  "item": {
-    "type": "assistant-message",
-    "status": "completed",
-    "parts": [
-      {
-        "type": "text",
-        "text": "Implemented the requested change and ran focused tests."
-      }
-    ]
-  }
-}
-```
-
-`artifacts.jsonl` records artifact candidates.
-
-Example:
-
-```jsonc
-{
-  "schemaVersion": 1,
-  "kind": "artifact",
-  "workspaceId": "w_main",
-  "threadId": "thread_123",
-  "turnId": "turn_456",
-  "agentSessionId": "as_789",
-  "packageSnapshotId": "aepsnap_codex_github_001",
-  "requestId": "req_def",
-  "sequence": 3,
-  "artifact": {
-    "kind": "file",
-    "title": "Patch Summary",
-    "path": "/workspace/output/summary.md",
-    "mediaType": "text/markdown"
-  }
-}
-```
-
-Import rules:
-
-- NanoCore imports transcript files only after the worker reaches a terminal outcome unless live import is explicitly enabled.
-- NanoCore validates every line before import.
-- NanoCore rejects records whose lineage fields do not match the expected package and turn.
-- NanoCore assigns canonical item IDs, event sequence numbers, and artifact IDs during import.
-- Worker-supplied `sequence` values are source ordering hints, not canonical OpenKit sequence numbers.
-- Malformed transcript records become diagnostics and audit evidence; they do not silently enter the canonical item log.
-- Missing transcript files should fail the turn only when `control.transcript.required` is `true`.
-- Imported items should be marked with source metadata that distinguishes `worker-transcript` from live client input and NanoCore-generated status items.
-
-### Direct NanoCore Control Endpoint
-
-The AEP-resolved LLM endpoint and worker-control endpoint are separate. The LLM endpoint carries inference requests, provider routing, credential isolation, and usage attribution. The control endpoint carries worker lifecycle updates, bounded records, heartbeats, and interrupt commands. A current Codex, OpenCode, or Pi worker launch contains exactly one already resolved LLM route; the resolver owns that selection, while the shared shim and adapter fail before child launch on zero or multiple routes and never choose or fall back among them.
-
-The current OpenShell path is direct:
-
-```text
-Worker runtime
-  -> openkit-worker-shim
-  -> statically registered adapter selected by control.adapter.targetRuntime
-  -> authenticated HTTP(S)
-  -> NanoCore /api/worker-control
-  -> NanoCore worker session state
-```
-
-The shim receives the exact worker-reachable NanoCore base URL from the AEP. OpenShell network policy permits only the approved shim binaries to reach that endpoint. The package-bound token authenticates the package snapshot, worker session, lease, and request lineage; the request body does not grant authority.
-
-Transcript files remain durable turn evidence and artifact inputs. They do not replace the direct control connection, and a control failure does not authorize the worker to continue under an ungoverned transcript-only mode. OpenShell service forwarding, sandbox-local aliases, backend relays, and capability gateways are not worker-control implementations.
-
-### OpenKit Worker Shim
-
-Many agent runtimes expose native protocols that do not match OpenKit `Turn` and `Item` semantics.
-
-Every real worker image uses the generic `openkit-worker-shim`. The shim selects exactly one statically registered adapter by `control.adapter.targetRuntime`; it never branches on `agent.runtimeKind` or an environment variable.
-
-The shim is responsible for:
-
-- starting the worker runtime
-- asking the selected adapter to prepare one native launch plan and collect one bounded normalized result
-- writing `events.jsonl`, `items.jsonl`, and `artifacts.jsonl`
-- receiving NanoCore `interrupt` commands
-- terminating the supervised process group when interruption is accepted
-- publishing artifact candidates through the transcript sink
-- sending heartbeats through direct NanoCore control
-- reporting terminal outcomes
-
-The shim is not the policy engine.
-
-The shared shim must not understand Codex, OpenCode, Pi, or future runtime-native argv or event schemas. Those details belong only to the selected worker-side adapter.
-
-The backend supervisor remains the local enforcement boundary for filesystem, process, network, credential, and inference controls.
-
-The shim is the runtime-neutral supervisor that emits schema-conformant candidate records. NanoCore alone validates and commits canonical turns, items, artifacts, and worker state.
-
-### NanoCore Full Thread Control
-
-NanoCore retains full control of a thread by owning the authoritative turn and item state machine, even when worker transcript import is non-real-time.
-
-The worker backend launches, enforces, and collects evidence, but it must not decide canonical OpenKit turn status. The control flow is:
-
-```text
-NanoCore creates turn
-  -> NanoCore resolves AgentEnvironmentPackage
-  -> Backend launches governed worker session
-  -> Shim authenticates directly to NanoCore /api/worker-control
-  -> Shim reports heartbeats and bounded worker records
-  -> NanoCore may issue interrupt
-  -> Selected adapter returns one bounded normalized result
-  -> Shim emits schema-conformant candidate records
-  -> NanoCore persists canonical worker state and selected item events
-  -> Shim reports terminal worker outcome
-  -> NanoCore collects transcript files, artifacts, and backend evidence
-  -> NanoCore decides final turn status and artifact registration
-```
-
-This rule prevents OpenShell, Docker, Kubernetes, or any other backend from becoming the source of truth for product history.
-
-Backend lifecycle events may explain why a worker failed or was blocked, but they do not replace NanoCore turn closeout.
-
-The Web UI should subscribe to NanoCore, not to a sandbox, OpenShell Gateway, OpenShell service URL, or worker process.
-
-The UI-facing status stream should be compact and operational rather than a token-level chat replay.
-
-Useful status fields include phase, last progress event, last heartbeat, blocked reason, pending approval count, policy denial summary, artifact count, elapsed time, estimated cost, backend health, and available user actions.
-
-NanoCore may project this into worker, thread, goal, and agent-network panels.
-
-The UI may send user actions such as interrupt, priority change, approval response, or policy adjustment request to NanoCore.
-
-NanoCore decides whether those actions become worker commands, backend operations, human review rows, or denied requests.
-
-## Provider Profile Model
-
-Provider profiles describe provider types.
-
-OpenKit should use OpenShell-inspired fields because they already cover provider-owned access policy.
-
-```jsonc
-{
-  "providerProfiles": [
-    {
-      "id": "github",
-      "displayName": "GitHub",
-      "description": "Git hosting, REST, GraphQL, and git access.",
-      "category": "source_control",
-      "inferenceCapable": false,
-      "credentials": [
-        {
-          "name": "api_token",
-          "envVars": ["GITHUB_TOKEN", "GH_TOKEN"],
-          "required": true,
-          "authStyle": "bearer",
-          "headerName": "authorization",
-          "queryParam": null,
-          "refresh": {
-            "strategy": "static"
-          }
-        }
-      ],
-      "discovery": {
-        "credentials": ["api_token"]
-      },
-      "endpoints": [
-        {
-          "host": "api.github.com",
-          "port": 443,
-          "path": "/**",
-          "protocol": "rest",
-          "access": "read-only",
-          "enforcement": "enforce"
-        },
-        {
-          "host": "api.github.com",
-          "port": 443,
-          "path": "/graphql",
-          "protocol": "graphql",
-          "access": "read-only",
-          "enforcement": "enforce"
-        },
-        {
-          "host": "github.com",
-          "port": 443,
-          "path": "/**",
-          "protocol": "rest",
-          "access": "read-only",
-          "enforcement": "enforce"
-        }
-      ],
-      "binaries": [
-        "/usr/bin/git",
-        "/usr/local/bin/git",
-        "/usr/bin/gh",
-        "/usr/local/bin/gh"
-      ],
-      "extensions": {}
-    }
-  ]
-}
-```
-
-### Provider Categories
-
-OpenKit should use these initial categories:
-
-| Category | Meaning |
-| --- | --- |
-| `other` | Provider does not fit a more specific category. |
-| `inference` | Model and inference API providers. |
-| `agent` | Agent CLIs and coding tools. |
-| `source_control` | Git hosting, repository, and source control providers. |
-| `messaging` | Chat, email, notification, and messaging APIs. |
-| `data` | Data storage, file, database, document, or object-store APIs. |
-| `knowledge` | Search, retrieval, and knowledge-base providers. |
-
-These values intentionally align with OpenShell Providers v2.
-
-OpenKit may add categories only when existing categories are insufficient for product routing or UI grouping.
-
-### Credential Declaration Fields
-
-Each credential declaration may include:
-
-| Field | Meaning |
-| --- | --- |
-| `name` | Profile-local credential name. |
-| `description` | Human-readable purpose. |
-| `envVars` | Accepted environment variable aliases for discovery or placeholder names. |
-| `required` | Whether a provider instance must bind this credential. |
-| `authStyle` | One of `basic`, `bearer`, `header`, or `query` for intended injection. |
-| `headerName` | Header to inject when `authStyle` needs a header. |
-| `queryParam` | Query parameter to inject when `authStyle` uses query credentials. |
-| `refresh` | Credential refresh metadata. |
-
-The declaration does not contain the credential value.
-
-### Endpoint Fields
-
-Endpoint objects should align with the backend network policy vocabulary:
-
-| Field | Meaning |
-| --- | --- |
-| `host` | DNS host. |
-| `port` | TCP port. |
-| `path` | Optional path glob or protocol-specific path. |
-| `protocol` | `rest`, `graphql`, `websocket`, `tcp`, or backend-supported value. |
-| `tls` | TLS policy summary or backend-specific extension. |
-| `access` | `read-only`, `read-write`, `custom`, or `deny`. |
-| `enforcement` | `enforce`, `observe`, or `disabled`. |
-| `allowedIps` | Optional SSRF or resolved-IP allowlist. |
-| `rules` | Allow rules for REST, GraphQL, WebSocket, or provider-specific protocols. |
-| `denyRules` | Explicit deny rules. |
-| `persistedQueries` | GraphQL persisted-query handling. |
-| `graphqlMaxBodyBytes` | GraphQL request body cap. |
-| `requestBodyCredentialRewrite` | Whether body credential rewrite is permitted. |
-| `websocketCredentialRewrite` | Whether WebSocket credential rewrite is permitted. |
-
-### Refresh Strategies
-
-OpenKit should reserve these strategy values:
-
-| Strategy | Meaning |
-| --- | --- |
-| `static` | Credential is updated manually or by operator action. |
-| `external` | External process updates the provider instance. |
-| `oauth2_refresh_token` | Refresh token exchange mints an access token. |
-| `oauth2_client_credentials` | Client credentials flow mints an access token. |
-| `google_service_account_jwt` | Service account JWT flow mints an access token. |
-
-OpenKit may initially implement only `static` and `external`.
-
-The schema should keep the other strategies so provider profiles do not need a disruptive redesign later.
-
-Refresh material must be represented as vault references or secure material records, not inline secrets.
-
-## Provider Instance Model
-
-A provider instance binds a provider profile to one concrete configuration and credential set.
-
-```jsonc
-{
-  "providerInstances": [
-    {
-      "id": "provider_github_read",
-      "profileId": "github",
-      "displayName": "GitHub read access",
-      "scope": {
-        "owner": "workspace",
-        "workspaceId": "w_..."
-      },
-      "credentials": {
-        "api_token": {
-          "vaultRef": "vault://workspace/w_.../github/read-token",
-          "grantId": "grant_...",
-          "expiresAt": null
-        }
-      },
-      "config": {},
-      "policyMode": "profile-default",
-      "status": {
-        "readiness": "ready",
-        "lastVerifiedAt": null,
-        "expiresAt": null
-      }
-    }
-  ]
-}
-```
-
-Rules:
-
-- `profileId` must reference an accepted provider profile.
-- `credentials.*.vaultRef` is a secret reference, not secret material.
-- `grantId` links the provider use to a NanoCore vault grant.
-- `policyMode` may be `profile-default`, `read-only`, `read-write`, `custom`, or `disabled`.
-- Provider instances can be server-scoped, user-scoped, workspace-scoped, or turn-scoped. AEP identity and provider ownership define no organization scope.
-- Backend-native provider names are materialized aliases, not canonical OpenKit IDs.
-
-## Provider Attachments
-
-Provider attachments describe which provider instances the worker session receives.
-
-```jsonc
-{
-  "providers": {
-    "attachments": [
-      {
-        "id": "attach_github_read",
-        "providerInstanceId": "provider_github_read",
-        "purpose": "source-code-read",
-        "credentialVisibility": "placeholder",
-        "policyContribution": "profile-endpoints",
-        "allowedBinaries": ["git", "gh"],
-        "allowedWorkspaceInputs": ["repo"],
-        "dynamic": true
-      }
-    ]
-  }
-}
-```
-
-`credentialVisibility` values:
-
-| Value | Meaning |
-| --- | --- |
-| `none` | Credential is not visible to the worker; calls go through a gateway. |
-| `placeholder` | Worker receives placeholders that the backend resolves outside prompt context. |
-| `process-env` | Worker process receives environment variables. This needs explicit policy approval. |
-| `file-handle` | Worker receives a mounted credential file or handle. This needs explicit policy approval. |
-| `short-lived-token` | Worker receives a short-lived token. This needs expiry and audit. |
-| `backend-private` | Backend uses the credential without exposing it to the process. |
-
-Preferred values are `none`, `placeholder`, and `backend-private`.
-
-`process-env`, `file-handle`, and `short-lived-token` should require stricter permission decisions.
-
-## Vault Fields
-
-`vault` lists the grants and injection contracts needed by the package.
-
-```jsonc
-{
-  "vault": {
-    "grants": [
-      {
-        "grantId": "grant_...",
-        "vaultRef": "vault://workspace/w_.../github/read-token",
-        "subject": {
-          "agentId": "agent_codex_container",
-          "agentSessionId": "as_...",
-          "userId": "user_..."
-        },
-        "capability": "provider:github:api_token",
-        "scope": "turn",
-        "expiresAt": "2026-06-16T12:00:00.000Z",
-        "injectionPaths": ["placeholder", "gateway-header"]
-      }
-    ],
-    "injections": [
-      {
-        "id": "inj_github_token",
-        "grantId": "grant_...",
-        "providerAttachmentId": "attach_github_read",
-        "path": "placeholder",
-        "target": {
-          "envVar": "GITHUB_TOKEN"
-        },
-        "auditRequired": true
-      }
-    ]
-  }
-}
-```
-
-Rules:
-
-- A package may reference grants but must not embed secret values.
-- Every injection must point to a grant.
-- Injection paths must be allowed by both the grant and the selected backend.
-- The backend can materialize only the injection paths it supports.
-- NanoCore audit records must show that a vault reference was used, not the secret value.
-
-## LLM Routing Fields
-
-`llm` describes how the worker obtains model inference.
-
-The recommended attributed OpenShell-backed path is that the AEP configures the worker with an exact NanoCore worker-inference base URL and one sandbox-wide per-package OpenShell placeholder credential, while a default-deny policy leaves only the manifest-declared runtime binary paths, NanoCore host, POST methods, and paths reachable. NanoCore then authenticates the active AEP and lease before selecting the real provider, model, credential source, usage attribution, prompt cache metadata, and audit linkage.
-
-In that arrangement, NanoCore is the canonical inference gateway and stock `inference.local` is not in the attributed path. A package that selects backend-local inference must report attribution as incomplete when that backend cannot preserve the same lineage.
-
-```jsonc
-{
-  "llm": {
-    "mode": "gateway",
-    "routes": [
-      {
-        "id": "default",
-        "providerInstanceId": "provider_openai_codex_slot_a",
-        "model": "gpt-5",
-        "endpoint": {
-          "kind": "openai-compatible",
-          "workerBaseUrl": "https://nanocore.internal/api/worker-inference/v1",
-          "upstream": {
-            "kind": "nanocore-gateway",
-            "baseUrlRef": "runtime://nanocore/worker-inference/v1"
-          }
-        },
-        "credentialVisibility": "placeholder",
-        "promptCache": {
-          "enabled": true,
-          "keyScope": "runtime-cache-lineage"
-        }
-      }
-    ],
-    "headers": {
-      "allow": [
-        "openai-organization",
-        "x-model-id",
-        "anthropic-version",
-        "anthropic-beta"
-      ],
-      "stripAuthorization": true
-    }
-  }
-}
-```
-
-`mode` values:
-
-| Value | Meaning |
-| --- | --- |
-| `gateway` | Worker traffic is routed to an OpenKit-managed gateway, either directly or through a backend-local alias such as `inference.local`. |
-| `backend-local` | Worker traffic is routed through a backend-managed local inference endpoint whose upstream provider routing is owned by the backend. |
-| `direct-external` | Worker calls external provider endpoints directly under network policy. |
-| `disabled` | Worker does not receive LLM access from the package. |
-
-Preferred mode is `gateway`.
-
-For OpenShell-backed workers that require complete attribution, preferred `gateway` mode uses the exact AEP-bound NanoCore worker-inference base URL plus the per-package OpenShell placeholder and REST policy. Legacy `inference.local` remains outside that trusted binding.
-
-The AEP resolves route authority but does not promise one universal runtime-native projection. The selected worker adapter must prove that its pinned runtime can express the exact endpoint, provider/model selection, credential environment name, and wire protocol without ambient authority or an adapter-authored file; an unsupported runtime-route pairing fails before child launch. The adapter must not infer protocol from a provider id, select another model, or replace a trusted-relay route with a direct route.
-
-`backend-local` is acceptable only when the backend can preserve OpenKit provider IDs, usage, prompt cache metadata, and audit linkage.
-
-`direct-external` should require explicit policy because the worker may see provider API shapes and because credential isolation depends on backend enforcement.
-
-Rules:
-
-- Trusted-relay packages must not receive real LLM provider API keys. A direct-provider package may receive only the one standard credential environment binding declared by its manifest and resolved grant.
-- Sandbox-supplied `Authorization` headers should be stripped before upstream inference.
-- NanoCore should authenticate the sandbox token, active AEP, and lease before honoring requests on the internal worker-inference routes.
-- NanoCore should map forwarded inference calls to workspace, thread, turn, agent session, provider instance, and request IDs.
-- NanoCore should record capability calls, usage, and audit events for forwarded inference.
-- A backend-level `inference.local` implementation that cannot preserve NanoCore lineage, provider IDs, usage, and audit is a non-attributed backend-local route; complete attribution requires the OpenKit-owned authenticated worker-inference path.
-- Worker authority-bearing lineage must come from an authenticated AEP and lease binding, not request-body `metadata.openkit` or runtime-supplied headers.
-- Runtime-native causal origin and runtime cache lineage must follow `docs/specs/20260711-worker_runtime_subagent_provenance.md`; the shared outer OpenKit thread, turn, or agent session must not become the cache key for every runtime-internal child.
-- An AEP that requires complete worker-inference attribution must configure the root runtime and every runtime-internal child to use the authenticated worker-inference base URL, withhold direct provider credentials, deny direct provider API egress, and fail capability negotiation when the backend cannot prove that coverage; `backend-local` and `direct-external` modes must report attribution as incomplete unless they satisfy the same authenticated path contract.
-- Trusted-relay and direct-provider authority are mutually exclusive. A relay package carries only `OPENKIT_WORKER_INFERENCE_TOKEN` and exact relay egress; a direct-provider package carries only its manifest-declared provider credential environment binding and exact direct egress. Supplying both, or silently falling back from one to the other, is invalid.
-
-## Policy Intent
-
-`policy` expresses the policy NanoCore wants enforced.
-
-```jsonc
-{
-  "policy": {
-    "decisions": [
-      {
-        "decisionId": "pd_...",
-        "action": "use-provider",
-        "resource": "provider_github_read",
-        "decision": "allow",
-        "enforcementPoint": "capability-gateway"
-      }
-    ],
-    "filesystem": {
-      "default": "deny",
-      "readOnly": ["/usr", "/lib", "/openkit/instructions", "/workspace/data"],
-      "readWrite": ["/workspace/repo", "/workspace/output", "/tmp"],
-      "includeWorkingDirectory": true
-    },
-    "process": {
-      "allowedUsers": ["openkit-worker"],
-      "allowPrivilegeEscalation": false,
-      "allowedBinaries": [
-        "/usr/bin/git",
-        "/usr/bin/gh",
-        "/usr/bin/node",
-        "/usr/local/bin/codex"
-      ],
-      "denyBinaries": []
-    },
-    "network": {
-      "default": "deny",
-      "providerDerived": true,
-      "customEndpoints": [],
-      "denyEndpoints": []
-    },
-    "secrets": {
-      "defaultVisibility": "none",
-      "allowedInjectionPaths": ["placeholder", "gateway-header"]
-    },
-    "humanApproval": {
-      "requiredFor": [
-        "external-side-effect",
-        "credential-process-env",
-        "write-source-control",
-        "network-outside-provider-policy"
-      ]
-    }
-  }
-}
-```
-
-Policy intent maps to backend enforcement artifacts.
-
-For OpenShell, it may compile into:
-
-- `filesystem_policy`
-- `landlock`
-- `process`
-- `network_policies`
-- provider-derived `_provider_*` policy layers
-- inference routing settings
-- provider attachment commands
-
-For Kubernetes, it may compile into:
-
-- pod security context
-- resource requests and limits
-- network policy
-- volume mounts
-- secret projection rules
-- managed proxy config
-
-## Policy Static And Dynamic Fields
-
-Policy fields should be marked static or dynamic.
-
-Initial classification:
-
-| Field area | Default classification | Notes |
-| --- | --- | --- |
-| Image | Static | Requires new session. |
-| Command | Static | Requires new session. |
-| User and group | Static | Requires new session. |
-| Filesystem mounts | Static | Usually requires new session. |
-| Read/write path access | Static unless backend supports live remount. | OpenShell-style filesystem policy is static. |
-| Network endpoint policy | Dynamic when backend supports hot reload. | OpenShell-style network policies can be dynamic. |
-| Provider attachments | Dynamic for future process launches when backend supports attach/detach. | Existing processes usually keep their original environment. |
-| Credential refresh | Dynamic for backend-private or placeholder resolution. | Existing process env should not mutate. |
-| LLM route | Dynamic only when gateway endpoint remains stable. | Otherwise requires new session. |
-| Resource limits | Backend-specific. | Some runtime limits cannot change safely. |
-| Audit export | Dynamic when backend supports it. | OpenShell OCSF JSON can be toggled without restart. |
-
-## Resource Limits
-
-`resources` defines resource intent and budget hooks.
-
-```jsonc
-{
-  "resources": {
-    "cpu": {
-      "limit": "4"
-    },
-    "memory": {
-      "limit": "8Gi"
-    },
-    "disk": {
-      "limit": "50Gi"
-    },
-    "wallClock": {
-      "maxSeconds": 7200
-    },
-    "processes": {
-      "max": 256
-    },
-    "network": {
-      "egressBytes": null
-    },
-    "llm": {
-      "maxInputTokens": null,
-      "maxOutputTokens": null,
-      "maxCostUsd": null
-    }
-  }
-}
-```
-
-NanoCore should enforce LLM budgets at the gateway when possible.
-
-Backends may enforce CPU, memory, disk, and process limits.
-
-## Observability And Audit
-
-`observability` defines what evidence NanoCore expects.
-
-```jsonc
-{
-  "observability": {
-    "audit": {
-      "required": true,
-      "sink": "nanocore",
-      "events": [
-        "sandbox.lifecycle",
-        "policy.applied",
-        "network.decision",
-        "filesystem.decision",
-        "process.launch",
-        "provider.credential_resolution",
-        "llm.route",
-        "artifact.sync"
-      ]
-    },
-    "logs": {
-      "workerStdout": "item-summary",
-      "workerStderr": "diagnostic-summary",
-      "backendSecurity": "audit",
-      "backendDebug": "diagnostics"
-    },
-    "formats": {
-      "accept": ["ocsf-json", "jsonl", "text-summary"],
-      "preferred": "ocsf-json"
-    },
-    "redaction": {
-      "required": true,
-      "forbiddenPatterns": ["secret-values", "authorization-headers", "raw-provider-payloads"]
-    }
-  }
-}
-```
-
-Rules:
-
-- Product surfaces should not replay raw backend security logs as chat history.
-- Backend security logs should become audit records or compact status items.
-- Audit records must link to workspace, thread, turn, agent session, provider instance, vault grant, and permission decision IDs where possible.
-- OCSF JSON is accepted as a backend evidence format but not the canonical OpenKit `AuditEvent` schema.
-- NanoCore should store backend evidence references or normalized records, not unrestricted raw logs forever.
-
-## Backend Requirements
-
-`backend` declares materialization requirements and selection constraints.
-
-```jsonc
-{
-  "backend": {
-    "preferred": "openshell",
-    "allowedKinds": ["openshell", "docker", "kubernetes", "vm", "managed-sandbox", "custom"],
-    "requiredCapabilities": [
-      "container",
-      "transcript-sink",
-      "worker-control",
-      "network-policy",
-      "provider-attachments",
-      "credential-placeholder",
-      "nanocore-inference-upstream",
-      "audit-export"
-    ],
-    "degrade": {
-      "allowHostMode": false,
-      "allowMissingOcsf": false,
-      "allowDirectExternalInference": false
-    },
-    "extensions": {
-      "openshell": {
-        "computeDriver": "docker",
-        "providersV2Required": true,
-        "ocsfJsonEnabled": true
-      }
-    }
-  }
-}
-```
-
-Backend capability names should include:
-
-| Capability | Meaning |
-| --- | --- |
-| `container` | Can launch local containers. |
-| `remote-container` | Can launch remote containerized workers. |
-| `vm` | Can launch VM or microVM workers. |
-| `filesystem-policy` | Can enforce filesystem read/write constraints. |
-| `network-policy` | Can enforce network endpoint policy. |
-| `process-policy` | Can enforce process user, binary, or child-process constraints. |
-| `transcript-sink` | Can preserve worker-written `/openkit/session/*.jsonl` files for turn-end import. |
-| `worker-control` | Can let the approved worker shim reach NanoCore's authenticated direct worker-control endpoint. |
-| `sandbox-local-endpoint` | Can expose a stable sandbox-local inference endpoint when selected by the LLM projection. |
-| `service-forwarding` | Can expose sandbox loopback services through backend-managed URLs for debugging, previews, or operator inspection. |
-| `provider-attachments` | Can attach provider instances to worker sessions. |
-| `credential-placeholder` | Can expose placeholders and resolve credentials outside prompts. |
-| `gateway-header-injection` | Can inject credentials at gateway boundary. |
-| `backend-local-inference` | Can provide local inference route inside sandbox. |
-| `nanocore-inference-upstream` | Can forward sandbox-local inference traffic to NanoCore's `/v1` gateway while preserving session identity. |
-| `audit-export` | Can export structured security events. |
-| `dynamic-network-policy` | Can update network policy while a session runs. |
-| `dynamic-provider-attach` | Can attach or detach providers while a session runs. |
-| `object-store-mount` | Can mount object-store sources. |
-| `snapshot` | Can capture and resume workspace or runtime snapshots. |
-| `file-upload-download` | Can move declared files or bundles into and out of the worker runtime through backend-native transport. |
-| `git-materialization` | Can materialize a Git repository at a requested ref and collect Git-derived changes. |
-| `change-set-collection` | Can collect declared workspace changes and return a manifest, patch, bundle, or file list to NanoCore. |
-| `interactive-resume` | Can reconnect to a running or paused worker session without losing product lineage. |
-| `backend-service-readiness` | Can prove gateway, supervisor, sandbox, provider, or file-transfer readiness before NanoCore treats a session as launchable. |
-
-## OpenShell-First Backend Strategy
-
-Official, unmodified OpenShell `0.0.80` is the first-class backend for governed local and remote container execution inside one single-slot disposable Cell.
-
-It is also the reference implementation for policy rendering, provider attachments, gateway-mediated inference, sandbox lifecycle evidence, and backend-native file transfer.
-
-That does not make OpenShell the canonical OpenKit control plane.
-
-The canonical design rule is OpenShell-first, OpenKit-owned semantics, capability-based portability.
-
-OpenKit should intentionally use OpenShell's strongest mechanisms where they reduce product risk or implementation cost:
-
-- Sandbox materialization through stock OpenShell inside the Cell; OpenKit's fixed Cell helper owns whole-runtime prepare and recycle.
-- Network, process, and filesystem policy enforcement where supported.
-- Provider attachment and credential projection.
-- `inference.local` or equivalent local endpoint projection when it can preserve NanoCore usage and audit lineage.
-- `openshell sandbox upload`, `openshell sandbox download`, `openshell sandbox exec`, and future file primitives for backend-native transport.
-- OpenShell OCSF and supervisor logs as enforcement evidence.
-
-OpenKit must not expose these mechanisms as stable product semantics.
-
-OpenKit-owned semantics include:
-
-- workspace, thread, turn, item, artifact, approval, goal, worker turn, and Action Center lifecycle
-- Agent Environment Package snapshots and materialization decisions
-- permission decisions, vault grants, provider instance lineage, usage records, and audit linkage
-- workspace input snapshots, materialization records, change sets, staged workspace reviews, and apply results
-- public App API, end-user Agent Skill Interface, Web UI, and protocol response shapes
-- human review gates before accepting changes, committing, pushing, deploying, or triggering external side effects
-
-Backend-owned implementation details include:
-
-- OpenShell Gateway names, sandbox ids, provider handles, policy YAML, supervisor payloads, private process ids, and file-transfer commands
-- Docker container ids, Kubernetes pod names, VM ids, hosted sandbox ids, and provider-private file handles
-- backend retry state, private readiness probes, raw logs, temporary credentials, and raw environment values
-
-OpenKit may preserve backend-private details in restricted runtime storage when recovery requires them, but public surfaces should receive only redacted summaries, OpenKit-issued ids, and normalized evidence references.
-
-### Capability-Based Portability
-
-Portable backend support should be capability-based, not lowest-common-denominator based.
-
-NanoCore should select or reject a backend by matching the Agent Environment Package and workspace materialization plan against declared capabilities.
-
-When a backend lacks a required capability, NanoCore should fail before launch with a redacted diagnostic instead of silently degrading product guarantees.
-
-When a backend supports an optional capability, NanoCore may choose a richer strategy for that backend while preserving the same OpenKit records.
-
-Examples:
-
-- OpenShell may use provider attachments and network policies to expose GitHub read access, while another backend may report unavailable or degraded credential and network enforcement.
-- OpenShell may use upload and download primitives for file transport, while Docker may use `docker cp`, Kubernetes may use an exec or volume strategy, and hosted sandboxes may use provider file APIs.
-- OpenShell may expose structured OCSF evidence, while another backend may emit compact lifecycle summaries; both are backend evidence until NanoCore normalizes them.
-- A backend with `git-materialization` may clone or fetch directly inside the worker runtime, while a backend without it must receive a prepared snapshot or fail if Git materialization is required.
-
-Backend portability therefore increases implementation complexity in a controlled way.
-
-The project should pay that cost only at product boundaries where backend lock-in would otherwise leak into durable records, review gates, public APIs, or recovery semantics.
-
-It should not create abstract interfaces for hypothetical features until at least one product path needs the boundary.
-
-## Worker Governance Backend Interface
-
-Every worker governance backend implementation should provide the same conceptual operations.
-
-```ts
-interface WorkerGovernanceBackend {
-  describeCapabilities(): BackendCapabilities;
-  validatePackage(input: AgentEnvironmentPackage): BackendValidationResult;
-  materialize(input: AgentEnvironmentPackage): Promise<MaterializedWorkerEnvironment>;
-  launch(input: MaterializedWorkerEnvironment): Promise<WorkerSessionHandle>;
-  collectEvidence(handle: WorkerSessionHandle): AsyncIterable<WorkerEvidenceEvent>;
-  teardown(handle: WorkerSessionHandle): Promise<WorkerTeardownResult>;
-}
-```
-
-### `describeCapabilities`
-
-The backend declares static and dynamic capabilities.
-
-NanoCore uses this to select a backend or reject a package before starting a worker.
-
-### `validatePackage`
-
-The backend checks backend-specific constraints.
-
-Validation must be redacted and safe for diagnostics.
-
-Examples:
-
-- unsupported image type
-- unsupported mount source
-- unsupported credential injection path
-- unsupported policy field
-- backend driver unavailable
-- missing provider profile support
-- missing audit export support
-
-### `materialize`
-
-The backend converts the OpenKit package into backend-native artifacts.
-
-The result must separate redacted diagnostic metadata from sensitive backend-private data.
-
-### `launch`
-
-The backend starts the worker session.
-
-Launch must return a stable OpenKit-facing session handle.
-
-The handle may include backend-private references in storage, but App API and protocol surfaces should receive only redacted summaries.
-
-### `collectEvidence`
-
-The backend streams security, lifecycle, and policy evidence back to NanoCore.
-
-NanoCore decides which evidence becomes audit, item summaries, diagnostics, or artifacts.
-
-### Artifact declarations
-
-S16 Stage 4 authorizes one bounded artifact collection path inside the existing turn-end transcript and backend data-plane boundary; it does not add a control operation, backend-generic file API, live Artifact owner, or second protocol phase. A transcript declaration is collectable only when its canonical absolute POSIX path is a strict child of exactly one current AEP `workspace.outputs` entry with `registerAsArtifacts=true` and `retention=sync-on-turn-end`, and its exact media type is one of the three text-compatible values closed by S16. A path, artifact notice, declaration, extension, or output-root membership alone is never canonical content authority.
-
-The selected backend reads each exact declared file while the owning session is retained after the terminal output barrier. The complete declaration set is validated before canonical writes, and collection is transfer-bounded by making and downloading through the existing retained-session operations only a backend-owned temporary copy of at most the remaining 16 MiB aggregate budget plus one sentinel byte; the unbounded declared file is never downloaded directly, and excess rejects the complete set with zero canonical writes. Each accepted payload must be non-empty well-formed UTF-8 with no normalization. OpenShell uses only its stock sandbox command and download operations and the existing retained Cell; this contract does not patch OpenShell or require another transfer service. Backend-private exact non-empty secret values injected for the materialization are retained only in process memory through collection, while the existing scheduler-owned sandbox binding reference remains durable under its runtime owner; both enter one ephemeral comparison set, and neither the set nor another copy of those values becomes Artifact state. Each complete injected value is UTF-8 encoded and deduplicated by byte equality, and a match means contiguous byte-substring containment anywhere in a payload rather than whole-payload equality; a runtime-file value is compared as its complete injected content. Any match fails closed with a redacted result and zero Artifact or Review writes. If restart restoration cannot recover the original complete set, the existing backend cleanup lifecycle runs and declarations fail as `recovery_required` while non-Artifact closeout may continue; values are neither newly persisted nor re-resolved for reconstruction. This is the bounded exact-value guard from S30, not generic DLP.
-
-### `teardown`
-
-The backend stops the worker session and releases temporary resources.
-
-Teardown should emit final evidence and mark cleanup failures distinctly from worker task failures.
-
-For OpenShell, successful teardown means recycling the complete owning Cell into a fresh verified empty epoch. Sandbox or provider deletion is neither cleanup proof nor a fallback success path.
-
-## OpenShell Backend Mapping
-
-An OpenShell backend should map OpenKit package fields as follows.
-
-| OpenKit field | OpenShell materialization |
-| --- | --- |
-| `runtime.image` | Sandbox image or compute driver image setting. |
-| `runtime.command.argv` | Sandbox command after supervisor starts. |
-| `workspace.inputs` | Bind mounts, staged files, repository checkout, or backend-supported mounts. |
-| `workspace.outputs` | Output directories plus artifact collection. |
-| `control.transcript` | Writable `/openkit/session/*.jsonl` directory collected at turn end. |
-| `control.endpoint` with `implementation: "direct-nanocore"` | OpenShell network policy lets the approved worker shim call the exact worker-reachable NanoCore `/api/worker-control` URL. |
-| `providerProfiles` | Built-in or custom OpenShell provider profiles. |
-| `providerInstances` | OpenShell providers created or referenced through gateway state. |
-| `providers.attachments` | Sandbox `--provider` attachments or runtime attach commands. |
-| `policy.filesystem` | `filesystem_policy` and Landlock settings. |
-| `policy.process` | OpenShell `process` and binary policy where supported. |
-| `policy.network` | `network_policies` plus provider-derived layers. |
-| `llm.mode: gateway` with an exact NanoCore `workerInferenceBaseUrl` | Per-package generic provider placeholder plus exact OpenShell network policy for the manifest-declared runtime binaries forwarding to NanoCore's authenticated internal worker-inference routes; S64-S66 own native route projection and unsupported combinations. |
-| `llm.mode: backend-local` | OpenShell `inference.local` owns final provider routing when explicitly selected. |
-| `observability.formats.preferred: ocsf-json` | OpenShell OCSF JSON export setting. |
-| `resources.cpu` and `resources.memory` | Sandbox create `--cpu` and `--memory` where driver supports them. |
-
-OpenShell-specific constraints:
-
-- OpenShell is the first-class container backend and reference implementation, but OpenKit product semantics remain NanoCore-owned.
-- Provider-derived policy layers are derived materialization output and must not become canonical NanoCore policy records.
-- Provider, credential, filesystem, and network changes produce a new immutable AEP and bounded launch; this contract does not mutate an active package even when OpenShell exposes native update mechanisms.
-- Relay-required packages should route the exact AEP-bound worker-inference base URL to NanoCore so it keeps authenticated package lineage, provider, model, usage, prompt cache, and audit ownership.
-- If OpenShell itself owns final `inference.local` provider routing, NanoCore must treat that as `backend-local` mode and require explicit audit and usage preservation checks.
-- The OpenShell materializer must provide the worker-reachable NanoCore control URL directly and allow only approved shim binaries to reach it.
-- OpenShell service forwarding, `inference.local`, and future capability mediation are not worker-control paths.
-- The stock OpenShell Gateway must run inside the same disposable Cell as its container runtime and sandboxes. Local placement invokes the fixed helper through non-interactive sudo; remote placement invokes the same helper through the fixed SSH lifecycle command and reaches the loopback Gateway through a separate operator-managed local forward.
-- A reachable external or shared Gateway without the matching whole-Cell lifecycle target is not a valid backend target, and the integration must not use insecure Gateway mode, a custom binary path, or an embedded, forked, patched, replacement, or private OpenShell artifact.
-- OpenShell file transfer, sandbox filesystem access, or declared output collection can collect `/openkit/session/*.jsonl` after turn completion.
-- OpenShell supervisor and OCSF logs are enforcement evidence and must not be treated as canonical `Item` streams.
-- OpenKit must not assume all Providers v2 roadmap items are implemented by a specific OpenShell version.
-
-## OpenAI-style Hosted Sandbox Mapping
-
-A hosted sandbox backend should map OpenKit package fields as follows.
-
-| OpenKit field | Hosted sandbox materialization |
-| --- | --- |
-| `workspace.inputs` | Manifest files, directories, repositories, remote mounts, and setup commands. |
-| `workspace.outputs` | Declared output directories synced back after turn completion. |
-| `runtime.command` | The generic `openkit-worker-shim` entrypoint declared by the AEP. |
-| `supply.skills` | Uploaded or generated files in the sandbox workspace. |
-| `providers.attachments` | Backend-specific credential handles or gateway endpoints. |
-| `llm.mode: gateway` | OpenKit gateway endpoint visible from hosted sandbox. |
-| `policy.network` | Backend network policy or proxy restrictions. |
-| `policy.filesystem` | Backend filesystem mount access settings. |
-
-Hosted sandbox backends must still report NanoCore audit lineage.
-
-## Canonical Package Snapshot Example
-
-This example is intentionally compact and shows direct worker control with a separate backend-local inference projection.
-
-```jsonc
-{
-  "schemaVersion": 2,
-  "packageId": "aepkg_codex_github_001",
-  "snapshotId": "aepsnap_codex_github_001",
-  "scope": {
-    "workspaceId": "w_main",
-    "threadId": "thread_123",
-    "turnId": "turn_456",
-    "agentSessionId": "as_789",
-    "triggerActor": {
-      "kind": "user",
-      "id": "user_abc"
-    },
-    "requestId": "req_def"
-  },
-  "agent": {
-    "agentId": "agent_codex_container",
-    "profileId": "coder",
-    "runtimeKind": "codex",
-    "capabilityRequests": ["llm", "shell", "filesystem", "network", "git", "artifacts"]
-  },
-  "runtime": {
-    "image": {
-      "kind": "container-image",
-      "ref": "ghcr.io/openkit/codex-worker:2026-06-16",
-      "digest": "sha256:..."
-    },
-    "binaries": [
-      {
-        "id": "openkit-worker-shim",
-        "path": "/usr/local/bin/openkit-worker-shim"
-      },
-      {
-        "id": "codex",
-        "path": "/usr/local/bin/codex"
-      },
-      {
-        "id": "git",
-        "path": "/usr/bin/git"
-      }
-    ],
-    "command": {
-      "argv": ["openkit-worker-shim", "--package", "/openkit/config/package.json"],
-      "workingDirectory": "/workspace/repo"
-    }
-  },
-  "workspace": {
-    "root": "/workspace",
-    "inputs": [
-      {
-        "id": "repo",
-        "kind": "repository",
-        "source": {
-          "kind": "git",
-          "url": "https://github.com/example/project.git",
-          "ref": "main"
-        },
-        "target": "/workspace/repo",
-        "access": "read-write"
-      }
-    ],
-    "outputs": [
-      {
-        "id": "default-output",
-        "path": "/workspace/output",
-        "registerAsArtifacts": true
-      }
-    ]
-  },
-  "supply": {
-    "skills": []
-  },
-  "control": {
-    "protocol": "openkit-worker-control-v1",
-    "mode": "direct-nanocore",
-    "transcript": {
-      "root": "/openkit/session",
-      "eventsPath": "/openkit/session/events.jsonl",
-      "itemsPath": "/openkit/session/items.jsonl",
-      "artifactsPath": "/openkit/session/artifacts.jsonl",
-      "flush": "line",
-      "import": "turn-end",
-      "required": true
-    },
-    "endpoint": {
-      "kind": "direct-url",
-      "baseUrl": "https://nanocore.example.com/api/worker-control",
-      "required": true,
-      "implementation": "direct-nanocore"
-    },
-    "auth": {
-      "kind": "sandbox-session-token",
-      "tokenRef": "runtime://openkit/control-token",
-      "credentialVisibility": "environment"
-    },
-    "channels": {
-      "commands": true,
-      "events": "batch",
-      "artifacts": "batch",
-      "heartbeats": true,
-      "logs": "summary-only"
-    },
-    "commands": ["interrupt"],
-    "adapter": {
-      "kind": "openkit-worker-shim",
-      "targetRuntime": "codex",
-      "targetTransport": "outbound-https"
-    }
-  },
-  "capabilities": {
-    "protocol": "openkit-worker-capability-v1",
-    "mode": "disabled",
-    "routes": []
-  },
-  "providers": {
-    "providerInstances": [
-      {
-        "id": "provider_github_read",
-        "profileId": "github",
-        "credentials": {
-          "api_token": {
-            "vaultRef": "vault://workspace/w_main/github/read-token",
-            "grantId": "grant_github_read"
-          }
-        },
-        "policyMode": "read-only"
-      }
-    ],
-    "attachments": [
-      {
-        "id": "attach_github_read",
-        "providerInstanceId": "provider_github_read",
-        "credentialVisibility": "placeholder",
-        "policyContribution": "profile-endpoints",
-        "allowedBinaries": ["git"]
-      }
-    ]
-  },
-  "llm": {
-    "mode": "gateway",
-    "routes": [
-      {
-        "id": "default",
-        "providerInstanceId": "provider_openai_codex_slot_a",
-        "model": "gpt-5",
-        "endpoint": {
-          "kind": "openai-compatible",
-          "workerBaseUrl": "https://inference.local/v1",
-          "upstream": {
-            "kind": "nanocore-gateway",
-            "baseUrlRef": "runtime://nanocore/v1"
-          }
-        },
-        "credentialVisibility": "none"
-      }
-    ]
-  },
-  "policy": {
-    "filesystem": {
-      "default": "deny",
-      "readOnly": ["/usr", "/lib"],
-      "readWrite": ["/workspace/repo", "/workspace/output", "/tmp"]
-    },
-    "network": {
-      "default": "deny",
-      "rules": [
-        {
-          "id": "github-source-read",
-          "host": "github.com",
-          "port": 443,
-          "protocol": "https",
-          "access": "read-only",
-          "binaryPaths": ["/usr/bin/git"],
-          "purpose": "source-control"
-        }
-      ]
-    },
-    "secrets": {
-      "defaultVisibility": "none",
-      "allowedInjectionPaths": ["placeholder", "gateway-header"]
-    }
-  },
-  "observability": {
-    "audit": {
-      "required": true,
-      "sink": "nanocore",
-      "events": ["sandbox.lifecycle", "network.decision", "provider.credential_resolution", "llm.route"]
-    },
-    "formats": {
-      "preferred": "ocsf-json"
-    }
-  },
-  "backend": {
-    "preferred": "openshell",
-    "allowedKinds": ["openshell", "docker", "kubernetes"],
-    "requiredCapabilities": [
-      "container",
-      "transcript-sink",
-      "worker-control",
-      "network-policy",
-      "provider-attachments",
-      "credential-placeholder",
-      "nanocore-inference-upstream",
-      "audit-export"
-    ],
-    "extensions": {
-      "openshell": {
-        "computeDriver": "docker",
-        "providersV2Required": true,
-        "ocsfJsonEnabled": true
-      }
-    }
-  },
-  "extensions": {}
-}
-```
-
-## Storage And Data Ownership
-
-Authored provider profiles may live under:
-
-```text
-DATA_ROOT/config/provider-profiles/*.provider-profile.jsonc
-```
-
-Provider instances may live under:
-
-```text
-DATA_ROOT/config/providers/*.provider.jsonc
-DATA_ROOT/users/<user-id>/config/providers/*.provider.jsonc
-DATA_ROOT/workspaces/<workspace-id>/config/providers/*.provider.jsonc
-```
-
-Agent environment package snapshots live at the exact Workspace-owned path:
-
-```text
-DATA_ROOT/workspaces/<workspace-id>/runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json
-```
-
-Backend materialization records may live under:
-
-```text
-DATA_ROOT/workspaces/<workspace-id>/runtime/agent-sessions/<agent-session-id>/backend/<materialization-id>.json
-```
-
-The responsible user derived from `scope.triggerActor` is authority and accountability context only. Neither that user nor any other actor identifier may select, construct, reopen, or relocate a Workspace path.
-
-Backend-private files, credentials, tokens, container state, VM state, and sandbox working directories must not be stored in normal workspace config.
-
-If they need persistence, they must live in server-owned runtime storage, backend-owned storage, or vault-owned storage with explicit retention policy.
-
-## Relationship To Existing Specs
-
-This spec extends the earlier supporting detail in `docs/specs/superseded/worker-runtime/20260526-workspace_data_mounts.md`.
-
-Runtime-internal sub-agent provenance, trusted worker-inference identity, and runtime cache lineage are specialized by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
-
-The earlier `host-dir` reference remains useful only as historical host-local mount material. The canonical target vocabulary is workspace-owned or workspace-linked materialization, not host ownership.
-
-This spec defines the broader manifest and materialization contract needed for container, remote, object-store, hosted sandbox, and governed provider access.
-
-Together with `docs/core/agent-supply.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, and `docs/specs/20260629-worker_runtime_communication_model.md`, this spec replaces the superseded setup/runtime supply overview.
-
-It does not replace `Agent`, `AgentProfile`, or `AgentSession`.
-
-It defines the environment package resolved for a concrete session.
-
-This spec complements `docs/specs/20260628-nanocore_config_identity_contract.md`.
-
-Server config remains the source for deployment-level providers and defaults.
-
-The environment package is the per-session resolved snapshot.
-
-This spec complements `docs/specs/20260526-llm_gateway_responses_api.md`.
-
-The LLM gateway remains NanoCore-owned unless a backend-local inference route is explicitly selected and can preserve OpenKit usage and audit linkage. A backend-local route cannot claim complete worker-inference attribution unless it also satisfies the authenticated path and direct-egress blocking contract.
-
-## Alternatives Considered
-
-### Make OpenShell YAML the canonical OpenKit config
-
-Rejected.
-
-OpenShell's schema is strong, but it is backend-specific.
-
-Making it canonical would couple OpenKit product concepts to one enforcement backend and would make future Docker-only, Kubernetes-only, hosted sandbox, or custom backend support harder.
-
-OpenKit needs stable IDs, product lineage, user and workspace ownership, vault grant references, permission decisions, and audit record linkage that are not native OpenShell concepts.
-
-OpenShell should remain the reference backend and may strongly influence field vocabulary, but OpenKit records must stay canonical.
-
-The acceptable form of dependency is an adapter that compiles OpenKit-owned records into OpenShell-native artifacts and then normalizes OpenShell evidence back into OpenKit-owned records.
-
-The unacceptable form of dependency is public App API, end-user CLI, Web UI, Action Center, or storage records that require consumers to understand OpenShell-native ids, YAML, gateway state, provider payloads, or supervisor logs.
-
-### Design every field from scratch
-
-Rejected.
-
-OpenShell Providers v2 already has a mature field vocabulary for provider categories, credentials, discovery, endpoints, binary allowlists, policy contribution, and refresh metadata.
-
-OpenAI-style sandbox manifests already show a useful workspace setup vocabulary.
-
-OpenKit should not waste effort redesigning common fields when mature reference designs exist.
-
-### Keep only host-local harnesses until later
-
-Rejected as a long-term architecture.
-
-Host-local harnesses are useful for local dogfooding, but they have weak isolation and cannot satisfy the product direction for governed worker agents, remote containers, provider-controlled credentials, and security audit.
-
-### Put all enforcement in NanoCore
-
-Rejected.
-
-NanoCore should own policy decisions and audit, but filesystem, process, network, and credential enforcement must happen where the worker runs.
-
-That requires a backend supervisor, container runtime, VM boundary, hosted sandbox provider, or OS-level controls.
-
-### Put all enforcement in backend policy and skip NanoCore policy
-
-Rejected.
-
-The backend cannot own OpenKit's product semantics.
-
-NanoCore must know which user, workspace, thread, turn, agent session, provider instance, vault grant, and permission decision caused an action.
-
-## Consequences
-
-- OpenKit gains one portable contract for governed worker execution.
-- OpenShell can be integrated as an enforcement backend without becoming the product control plane.
-- Provider profile design work becomes much smaller because OpenKit can adopt the mature OpenShell vocabulary.
-- Workspace materialization becomes explicit enough to support workspace-linked directories, repositories, generated files, object stores, prior artifacts, and hosted sandbox manifests.
-- NanoCore can keep provider, vault, policy, and audit semantics canonical.
-- Backends can evolve independently behind a materializer interface.
-- Schema implementation will be non-trivial and should be staged.
-- The first backend integration must be conservative about OpenShell features that are declared roadmap or partially implemented.
-
-## Rollout / Migration Plan
-
-### AEP V2 Identity Cutover
-
-The stopped-process Workspace migration is the only owner of schema version `1` AEP snapshot input. After Workspace resolution no longer accepts a user or responsible-user storage parameter and before the staged top-level Workspace tree is published, the migration transforms every existing snapshot at `runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json` into the exact schema version `2` shape.
-
-The transform is deterministic. A non-null V1 `automationId` becomes `{ kind: "automation", id: automationId, responsibleUserId: userId ?? null }`; otherwise a non-null V1 `userId` becomes `{ kind: "user", id: userId }`. The transform removes `userId`, `automationId`, and `organizationId` from AEP scope, sets `schemaVersion` to `2`, preserves every other package and lineage field, recomputes the enclosing snapshot-record content digest, and validates the final redacted record through the schema version `2` contract. A V1 snapshot that does not satisfy either mapping or fails final validation blocks publication.
-
-The migration report records the predecessor and successor digests for every transformed snapshot. The migration-only V1 reader is private to this one transformation and must not be exported into runtime resolution, ledger reads, restart, normal portable import, or any compatibility adapter. Once the top-level layout is accepted, every normal AEP reader is schema version `2` only.
-
-### Phase 0: Reference And Schema Draft
-
-1. Accept this spec as the design direction.
-2. Use temp-only researcher evidence for OpenShell Providers v2, policy, inference routing, compute drivers, and observability; promote accepted conclusions into this spec or follow-up specs with stable source citations.
-3. Use temp-only researcher evidence for OpenAI-style sandbox workspace manifests; promote accepted conclusions into this spec or follow-up specs with stable source citations.
-4. Decide which field names should be exact OpenShell-compatible names and which should use OpenKit camelCase style.
-
-### Phase 1: Schema-only Package Model
-
-1. Add schema types in an app-local package or NanoCore-local module.
-2. Add fixtures for one Codex container package with GitHub read-only provider and OpenKit LLM gateway.
-3. Add fixtures for one data-analysis package with a read-only object-store mount.
-4. Add validation for no raw secrets, no host path escapes, unique IDs, supported provider categories, and backend capability requirements.
-5. Add redacted package snapshot generation.
-
-### Phase 2: Provider Profile And Instance Registry
-
-1. Add provider profile registry with OpenShell-inspired profiles.
-2. Add provider instance records that use `secretRef` or `vaultRef`.
-3. Add readiness checks for missing profiles, missing grants, missing required credentials, expired credentials, and disabled providers.
-4. Add UI diagnostics that show provider profile, instance, readiness, category, and policy summary without secrets.
-
-### Phase 3: OpenShell Materializer Spike
-
-1. Implement a read-only materializer that compiles one package fixture into OpenShell provider profile references, provider attachments, policy YAML, and sandbox create options.
-2. Do not start real workers in the first slice.
-3. Add golden tests for generated backend artifacts.
-4. Add tests that reject attempts to mutate an active AEP instead of creating a new snapshot and bounded launch.
-5. Add tests that keep backend-native generated material out of protocol and public app schemas.
-
-### Phase 4: Local Container Worker Spike
-
-1. Start a local OpenShell-backed sandbox for a Codex or OpenCode worker.
-2. Materialize `/openkit/session/*.jsonl` as the durable transcript sink.
-3. Package `openkit-worker-shim` as the worker entrypoint, select an opaque statically registered adapter through `control.adapter.targetRuntime`, and supply the exact NanoCore `/api/worker-control` base URL.
-4. Allow only the approved shim binaries to reach NanoCore's direct worker-control endpoint.
-5. Expose only the exact AEP-bound NanoCore worker-inference route for attributed model traffic, using a per-package OpenShell placeholder and Codex-only REST policy.
-6. Exercise any GitHub read-only provider attachment in a separate non-attributed sandbox fixture; do not combine it with the attributed inference package.
-7. Record policy application and sandbox lifecycle evidence.
-8. Collect declared output artifacts.
-9. Fail launch if required audit export, transcript sink, provider policy composition, or direct worker-control readiness is unavailable.
-
-### Phase 5: Product Integration
-
-1. Surface backend readiness and sandbox summaries in the agent catalog.
-2. Surface provider attachments and policy summary in worker diagnostics.
-3. Surface policy denials and blocked capabilities through Action Center rows.
-4. Normalize backend evidence into OpenKit audit records.
-5. Add worker and agent-network status panels backed by NanoCore worker session state, not direct sandbox connections.
-6. Add compact live progress stream support for phase, heartbeat, blocked reason, policy denial summary, artifact count, elapsed time, estimated cost, and available actions.
-7. Add user actions for interrupt, approval response, and policy adjustment request through NanoCore.
-8. Add artifact review flow for collected outputs.
-
-## Testing Strategy
-
-### Schema Tests
-
-- Accept only schema version `2` packages with one required closed `triggerActor: ActorRef`, and reject schema version `1`, missing actors, duplicated human `responsibleUserId`, missing non-human `responsibleUserId`, and legacy `userId`, `automationId`, or `organizationId` scope fields.
-- Accept valid package fixtures for local and remote disposable OpenShell Cells, plain Docker, Kubernetes, VM, and hosted sandbox intents.
-- Reject unknown top-level fields outside `extensions`.
-- Reject raw secret-like fields in package snapshots.
-- Reject control channel configs that lack workspace, thread, turn, agent session, or sandbox session identity binding.
-- Reject provider instances with missing required credentials.
-- Reject provider attachments without vault grants.
-- Reject duplicate IDs inside package sections.
-- Reject unsupported provider categories.
-- Reject invalid credential visibility for a provider grant.
-- Reject workspace paths with absolute host paths when deployment policy forbids them.
-- Reject path traversal and symlink escapes.
-- Reject output paths outside declared workspace root.
-
-### Resolver Tests
-
-- Preserve the exact initiating `triggerActor`, derive a human responsible user from actor `id`, derive a non-human responsible user from `responsibleUserId`, and never pass either identity to Workspace storage resolution.
-- Resolve package from server config, agent setup, workspace roots, provider registry, and turn request.
-- Prefer OpenKit LLM gateway mode by default.
-- Mark sessions stale when static package fields change.
-- Preserve dynamic policy updates only when backend capabilities declare support.
-- Fail before launch when a required backend capability is missing.
-- Require approval when policy says provider write access, external side effects, process-env credentials, or network outside provider policy need human authorization.
-
-### Migration Tests
-
-- Transform representative V1 human and automation snapshots only through the stopped-process migration, recompute their enclosing digests, accept the resulting V2 records, reject malformed V1 input before publication, and prove that normal ledger, restart, export, and import readers reject V1.
-
-### Materializer Tests
-
-- Compile provider profiles and attachments into backend-native artifacts.
-- Compile `/openkit/session` transcript sink mounts and collection paths.
-- Compile mandatory direct NanoCore worker-control routing without exposing raw package tokens.
-- Allow only approved shim binaries to reach the resolved worker-control URL.
-- Reject package materialization that maps worker control through `inference.local`, service forwarding, a sandbox-local alias, or a capability route.
-- Reject package materialization that uses OpenShell service forwarding as the canonical OpenKit worker control channel.
-- Compile attributed `llm.mode: gateway` routing to the exact NanoCore worker-inference base URL with the per-package placeholder and POST-only OpenShell policy.
-- Generate OpenShell-style policy with provider-derived network rules where supported.
-- Generate redacted materialization records.
-- Do not persist derived provider rules as canonical NanoCore policy.
-- Keep backend-private handles out of App API diagnostics.
-- Round-trip package snapshots without secret values.
-
-### Runtime Tests
-
-- Launch a fake worker through a fake backend and stream lifecycle evidence.
-- Launch a fake worker shim that writes candidate `events.jsonl`, `items.jsonl`, and `artifacts.jsonl`, then verify NanoCore validates lineage and schema before committing canonical items and artifacts at turn end.
-- Verify NanoCore rejects transcript records with mismatched workspace, thread, turn, agent session, or package snapshot IDs.
-- Launch a fake worker shim that authenticates to the direct NanoCore worker-control endpoint and relays compact progress.
-- Verify live progress updates worker phase, heartbeat, blocked reason, policy denial summary, artifact count, elapsed time, and available actions without creating canonical item records unless NanoCore explicitly imports or promotes them.
-- Verify direct control failure stops or cancels the worker while preserving transcript evidence already written.
-- Verify `interrupt` delivery, acknowledgement, process-group termination, and idempotency.
-- Launch a fake OpenShell backend that reports policy apply success, network deny, credential placeholder resolution, and teardown.
-- Verify OpenShell OCSF evidence can produce audit records without becoming canonical item deltas.
-- Verify authenticated worker-inference requests map to workspace, thread, turn, agent session, package snapshot, provider instance, usage, and audit records.
-- Verify a provider or credential change creates a new AEP and does not mutate an active worker package.
-- Verify artifact collection registers output artifacts with thread, turn, and input lineage.
-- Verify failed backend audit setup blocks launch when audit is required.
-
-### Product Tests
-
-- Agent catalog shows backend, sandbox, provider, and readiness summaries without backend-private internals.
-- Action Center shows approval or blocked-state rows for policy-required decisions.
-- Turn review surfaces show imported transcript items and artifacts without requiring live worker streaming.
-- Agent network panels show compact NanoCore worker session status without connecting directly to sandbox services.
-- Interrupt, approval response, and policy adjustment actions are submitted to NanoCore and reflected as command or review state.
-- Thread item history is driven by NanoCore canonical item imports, not backend supervisor logs.
-- Audit view can query by workspace, thread, turn, agent session, provider instance, vault grant, and permission decision.
-
-## Risks & Mitigations
-
-### Risk: OpenShell Schema Drift
-
-OpenShell is still evolving.
-
-Mitigation: keep OpenKit canonical schemas independent, pin the current adapter and tests to exact stock OpenShell `0.0.80`, and require a freshly reviewed mapping and acceptance proof for any future version instead of carrying an OpenShell compatibility layer.
-
-### Risk: Configuration Surface Becomes Too Large
-
-The package can become intimidating.
-
-Mitigation: users should author high-level agent, provider, and workspace config fragments; NanoCore should generate the resolved package snapshot.
-
-### Risk: Backend Evidence Is Mistaken For Product Truth
-
-Backend logs are enforcement evidence, not the primary product record.
-
-Mitigation: normalize evidence into OpenKit audit records and item summaries with stable lineage.
-
-### Risk: Secret Injection Semantics Become Ambiguous
-
-Different backends expose secrets differently.
-
-Mitigation: require every provider attachment to declare credential visibility and every injection to link to a vault grant.
-
-### Risk: Host-Local Harnesses Look Safer Than They Are
-
-Host-local staging and development harnesses may not enforce policy strongly.
-
-Mitigation: host-local harness readiness must report degraded isolation and must not claim filesystem, network, or process enforcement that it cannot provide.
-
-### Risk: Dynamic Updates Are Misunderstood
-
-Provider attach, credential refresh, or policy update may not affect already-running processes.
-
-Mitigation: classify fields as static or dynamic and mark sessions stale when changes need a process or sandbox restart.
-
-### Risk: Direct Worker Control Becomes Unreachable
-
-Remote container placement can fail if the resolved NanoCore URL is not worker-reachable or OpenShell policy does not allow the approved shim binaries to connect.
-
-Mitigation: materialization preflight must verify the exact URL, scheme-derived transport, binary allowlist, and authenticated readiness before launch. Runtime control failure stops or cancels the worker instead of silently degrading into transcript-only execution.
-
-### Risk: Gateway Embedding Creates An Unsupported Coupling
-
-Treating OpenShell Gateway as an in-process NanoCore library could couple NanoCore to unstable internal OpenShell APIs and make upgrades difficult.
-
-Mitigation: keep the official OpenShell Gateway out of process inside the disposable Cell and control only the fixed whole-Cell lifecycle. OpenKit must not embed, fork, patch, replace, or publish a private OpenShell artifact.
-
-## Resolved Decisions
-
-- OpenKit-authored provider profile and AEP config fields use OpenKit-style camelCase. OpenShell-compatible snake_case belongs only in backend extensions or generated OpenShell materialization artifacts.
-- Provider profiles are server-owned by default. Workspace-defined custom profiles require policy-reviewed setup proposals and must not grant authority beyond server and workspace policy.
-- Runtime files and runtime environment values do not imply backend provider attachment. Only a resolved backend provider credential or an explicit transient launch provider may become an OpenShell `--provider` argument.
-- The first provider profile baseline is GitHub/source-control, OpenAI-compatible inference, and OpenAI Codex account slot. PyPI, generic REST API, and object-store profiles are deferred until a concrete worker task requires them.
-- The current OpenShell backend is pinned to exact stock version `0.0.80` and must prove required feature flags during preflight. A future version change requires fresh whole-Cell and worker-runtime acceptance rather than a compatibility path; NanoCore must fail closed when lineage, usage, or audit preservation cannot be proven.
-- The first object-store target should be a generic S3-compatible contract that can project to S3 and R2 before adding provider-specific GCS, Azure Blob, or Box contracts.
-- Object-store materialization should start with OpenKit-managed staged files or gateway-mediated reads. Backend FUSE, sync-on-demand, and backend-native mounts require separate backend capability declarations and recovery tests.
-- Generated files are runtime files by default. They become artifacts only when they are user-visible outputs, review inputs, or evidence that must survive beyond the worker session.
-- Public App API readiness projections should expose only redacted package, backend, provider, vault, policy, and capability summaries. Full unredacted AEP snapshots remain internal runtime records and must not become public product records.
-- Package snapshots are diagnostics-only by default. NanoCore exposes only redacted durable package snapshots through `/api/app/workspaces/:workspaceId/agent-environment/snapshots`, Core Client, OpenAPI, and the unified Skill/CLI `environment.snapshot-list` and `environment.snapshot-read` operations; a redacted snapshot or snapshot reference may become a restricted evidence artifact when needed for review, replay, or audit.
-- Backend version negotiation uses backend capability declarations, feature probes, selected backend version, and required feature flags recorded in materialization evidence. Missing required capabilities fail before launch.
-- OpenShell Gateway placement follows the disposable Cell contract. Local placement uses the Gateway inside the co-located Cell; remote placement binds one fixed SSH lifecycle target to one operator-managed loopback HTTP Gateway origin and one explicit credential-free HTTP(S) `/api/worker-control` URL reachable from the sandbox. A naked or shared external Gateway is invalid.
-- The smallest worker control protocol is owned by `docs/specs/20260703-worker_control_protocol.md`. AEP supplies the direct endpoint, authentication, transcript, channels, commands, and backend capability projection without redefining operation schemas.
-- Governed workers use only the authenticated direct NanoCore worker-control connection. A sandbox-local alias, sidecar, backend relay, capability gateway, or transcript sink must not become a second control path.
-
-## Deferred / Future Work
-
-- Provider profile specs for PyPI, generic REST APIs, and object-store providers beyond the first S3-compatible baseline.
-- Backend-native object-store mounts after staged-file and gateway-mediated paths are proven.
-- Rich Web UI package readiness views over redacted App API summaries.
-- Multiple independent disposable Cell targets and scheduler-owned target selection.
-
-## Links
-
-- [Core Architecture](../core/architecture.md)
-- [Agent Capability](../core/agent-capability.md)
-- [Vault Model](../core/vault.md)
-- [Permissions Model](../core/permissions.md)
-- [Sandbox Model](../core/sandbox.md)
-- [Audit Model](../core/audit.md)
-- [Agent Supply](../core/agent-supply.md)
-- [Runtime Model](../core/runtime-model.md)
-- [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
-- [Session Static Workspace Materialization](./20260704-session_static_workspace_materialization.md)
-- [Workspace Data Mount Materialization](./superseded/worker-runtime/20260526-workspace_data_mounts.md)
-- [Agent Manifest And AEP Resolution](./20260703-agent_manifest_aep_resolution.md)
-- [Worker Runtime Communication Model](./20260629-worker_runtime_communication_model.md)
-- [Agent Profile Model](./superseded/agent-setup-runtime-supply/20260522-agent_profile_model.md)
-- [Server Config and Data Layout](./superseded/nanocore-config-identity/20260519-server_config_data_layout.md)
-- [LLM Gateway Responses API](./20260526-llm_gateway_responses_api.md)
-- [NVIDIA OpenShell Providers v2](https://docs.nvidia.com/openshell/latest/sandboxes/providers-v2)
-- [NVIDIA OpenShell How It Works](https://docs.nvidia.com/openshell/latest/about/how-it-works)
-- [NVIDIA OpenShell Manage Sandboxes](https://docs.nvidia.com/openshell/latest/sandboxes/manage-sandboxes)
-- [NVIDIA OpenShell Gateway Config](https://docs.nvidia.com/openshell/latest/reference/gateway-config)
-- [NVIDIA OpenShell Policy Schema Reference](https://docs.nvidia.com/openshell/latest/reference/policy-schema)
-- [NVIDIA OpenShell Inference Routing](https://docs.nvidia.com/openshell/latest/sandboxes/inference-routing)
-- [NVIDIA OpenShell Sandbox Compute Drivers](https://docs.nvidia.com/openshell/latest/reference/sandbox-compute-drivers)
-- [NVIDIA OpenShell OCSF JSON Export](https://docs.nvidia.com/openshell/latest/observability/ocsf-json-export)
-- [OpenAI Sandbox Agents](https://developers.openai.com/api/docs/guides/agents/sandboxes)
+- A parsed package has literal `schemaVersion: 3`, contains the complete strict top-level envelope, applies only the three documented defaults, and rejects unknown top-level fields.
+- One validated `AgentManifest` resolves through one `ResolvedAgentSetup` into one immutable AEP, with no parallel setup document or authority path.
+- Missing authored image, adapter, binary, network, credential, provider, workspace, policy, route, or backend authority is rejected rather than inferred.
+- `runtime` resolves to exactly one image form: an image reference with its pull policy, or a bounded build definition. Both forms and neither form are rejected.
+- A build definition preserves exactly `build-context://empty/v1` with digest `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, whose zero-entry canonical byte sequence is empty bytes, and preserves 1 through 268,435,456 exact UTF-8 Dockerfile bytes inline as independently digested package content excluded from that context digest. It also preserves explicit exact `{host, port}` ordinary build grants with no inferred port or registry bootstrap authority, `timeLimitSeconds` from 1 through 1800, `outputLimitBytes` from 1 through 21474836480, and `layerLimit` from 1 through 128; it has no secret value, capability, host path, build root, socket, Dockerfile locator, context transfer, or future context variant and grants the resulting sandbox no authority beyond the package's own grants.
+- The image digest produced from a build definition is recorded as launch evidence, never written back into the immutable package, and used with the build-definition lineage wherever `runtime.image.ref` would otherwise anchor package-to-session consistency.
+- The package passes strict schema, cross-field, required-capability, and backend-readiness checks before worker launch.
+- Materialization and launch do not widen the parsed package or expose a second control, inference, credential, or capability route.
+- A generated Context Package input preserves its package-root digest and declared `context` slot while private roots and host paths remain outside the package; every output declaration remains path-only, and actual export digest and length are accepted only as NanoHost-produced evidence after NanoCore byte verification and canonical-owner handoff.
+- The worker-consumed AEP is reparsed immediately before import and serialized as compact UTF-8 JSON with recursively UTF-16-code-unit-sorted object keys, preserved array order, JSON-stringified keys and strings, no BOM, and no trailing newline; non-JSON values fail before effects, and its exact lowercase SHA-256 plus byte length bind the import identity.
+- The first successful import after `sandbox.create` is exactly `package-config/package.json` at fixed `/openkit/config/package.json`; it precedes every generated Context Package import and `bridge.open`, admits no adjacent path, export, selector, schema field, or new transfer surface, and any absent, changed, failed, or uncertain package import prevents worker launch under the existing delete-to-epoch-fence truth.
+- The package carries only distinct non-secret sandbox-local Integration bindings and token references for worker control, inference, and capability; it carries no raw route token, NanoHost credential, remote Gateway or NanoCore endpoint, SSH target, Gateway forward, container-runtime endpoint, Cell identity, or Runtime Epoch identity.
+- NanoHost bootstrap uses only the fixed package command and six existing non-secret lineage environment entries; its two independent raw tokens cross only the runtime-private stdin-slot boundary, with worker control restricted to descriptor 3 and inference restricted to the authorized sanitized native binding.
+- Raw secrets, authorization material, backend-private handles, and unrestricted host references are absent from the AEP, durable snapshot, public diagnostics, and product records.
+- Any material launch-input change produces a new package and bounded launch rather than mutating an existing package or session.
+- The persisted snapshot is redacted, reparsed as version 3, digest-bound, Workspace-owned, and linked to the exact package, Turn, AgentSession, Agent, runtime, and backend.
+- Complete restart evidence rejects a missing or mismatched package snapshot and requires `backend.preferred` and `runtime.image.ref` to match the durable backend session before claiming package-to-session consistency; the current path remains partial for those two comparisons.
+- Current diagnostics distinguish the implemented setup failures and truthful broader failure categories without claiming a unified typed resolver taxonomy.
+- Deleting backend-private material or one concrete adapter does not change the AEP's NanoCore-owned authority, strict envelope, or product lineage.

@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/core/protocol.md`, `packages/protocol/README.md`"
+decision-evidence: "`docs/core/protocol.md`, `packages/protocol/README.md`"
+---
 # Protocol Lifecycle Enums
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/core/protocol.md`, `packages/protocol/README.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

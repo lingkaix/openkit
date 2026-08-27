@@ -1,8 +1,9 @@
+---
+status: Accepted
+implementation: Partial
+date: 2026-07-15
+---
 # Contract Stability Baseline
-
-Status: Accepted
-Implementation: Partial
-Date: 2026-07-15
 
 ## Owns
 
@@ -33,6 +34,9 @@ Date: 2026-07-15
 - `docs/core/vault.md`
 - `docs/core/audit.md`
 - `docs/core/contract-evolution.md`
+
+## Intent
+
 - `docs/product-vision.md`
 
 ## Summary
@@ -172,14 +176,14 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 | Core semantics | Strong promoted documentation with owner-independent Workspace storage, centralized request authorization, fixed roles, lifecycle, attribution, and current-effect authority projected in NanoCore. | Retain these promoted boundaries while the remaining independently owned contract families finish. |
 | Promoted protocol families | Strict schemas, generated schema coverage, protocol identity, and many conformance tests exist. | Retain strict current-schema gates and classify each newly promoted family explicitly. |
 | Persisted data and storage ownership | Canonical Workspace data is top-level and owner-independent, with one verified stopped-process migration, external cold-backup evidence, and no compatibility reader. | Retain the v2 layout, migration report, and fail-closed boot admission. |
-| Workspace portability | V2 export/import excludes source access authority, creates the importer as sole target owner/member, preserves non-authorizing history, and full backup preserves same-deployment users and relationships. | Ready for the WP-5 multi-user baseline; later portability owners must preserve these authority boundaries. |
-| Identity and membership | Better Auth, scoped tokens, fixed owner/editor/viewer projection, centralized authorization, invitation and membership lifecycle, ownership transfer/recovery, and one-way disable are implemented. | Ready for WP-5; re-enable, hard deletion, organizations, and another token system remain outside V1. |
-| Permission and approval | The NGAC-aligned kernel, exact operation mapping, centralized resolver, child lineage, current-effect reauthorization, and named eligible-principal projections are active. | Ready for WP-5 without a second permission engine; unrelated operation families retain their own plans. |
-| Audit and accountability | Shared lifecycle, human Item, Turn, policy Approval, governed runtime, usage, and decision families preserve their specified actor, responsible-user, request, subject, and revision lineage. | Ready for the bounded WP-5 producer set; this does not claim every S59 producer outside WP-5 is complete. |
-| Shared-write correctness | Append-only history, central request idempotency, direct revisions and atomic claims for the named Workspace lifecycle and policy Approval transitions, and existing owner-local Artifact Review, Material, and Workspace Sync controls are active. | Ready for the named WP-5 shared-write set; no generic concurrency framework or broader CAS promise is created. |
-| Release-coupled product surface | App API, generated OpenAPI, all fifteen Core Client operations, eleven bearer-reachable catalog/CLI/Skill operations, and exact contract artifacts align in one release; four session-only operations are explicit known-partials and the rebuilt Web remains deferred. | Ready for the accepted WP-5 projection boundary; S10 owns the rebuilt multi-user Web and its browser acceptance. |
+| Workspace portability | V2 export/import excludes source access authority, creates the importer as sole target owner/member, preserves non-authorizing history, and full backup preserves same-deployment users and relationships. | Ready for the current multi-user baseline; later portability owners must preserve these authority boundaries. |
+| Identity and membership | Better Auth, scoped tokens, fixed owner/editor/viewer projection, centralized authorization, invitation and membership lifecycle, ownership transfer/recovery, and one-way disable are implemented. | Ready for the current multi-user baseline; re-enable, hard deletion, organizations, and another token system remain outside V1. |
+| Permission and approval | The NGAC-aligned kernel, exact operation mapping, centralized resolver, child lineage, current-effect reauthorization, and named eligible-principal projections are active. | Ready for the current multi-user baseline without a second permission engine; unrelated operation families retain their own plans. |
+| Audit and accountability | Shared lifecycle, human Item, Turn, policy Approval, governed runtime, usage, and decision families preserve their specified actor, responsible-user, request, subject, and revision lineage. | Ready for the bounded current producer set; this does not claim every S59 producer outside that set is complete. |
+| Shared-write correctness | Append-only history, central request idempotency, direct revisions and atomic claims for the named Workspace lifecycle and policy Approval transitions, and existing owner-local Artifact Review, Material, and Workspace Sync controls are active. | Ready for the named current shared-write set; no generic concurrency framework or broader CAS promise is created. |
+| Release-coupled product surface | App API, generated OpenAPI, all fifteen Core Client operations, eleven bearer-reachable catalog/CLI/Skill operations, and exact contract artifacts align in one release; four session-only operations are explicit known-partials and the rebuilt Web remains deferred. | Ready for the accepted current projection boundary; S10 owns the rebuilt multi-user Web and its browser acceptance. |
 
-`Implementation: Partial` remains correct for this cross-program baseline because S10 and other independently owned contract families are not complete. The WP-5 multi-user and contract-stability subset satisfies its named gates; that bounded completion does not promote the whole repository to a frozen or globally complete state.
+`Implementation: Partial` remains correct for this cross-program baseline because S10 and other independently owned contract families are not complete. The current multi-user and contract-stability subset satisfies its named gates; that bounded completion does not promote the whole repository to a frozen or globally complete state.
 
 ## Baseline Gate By Contract Kind
 
@@ -226,7 +230,7 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 
 OpenKit implements strict Zod contracts, protocol and App API schema packages, generated schema and OpenAPI drift checks, request idempotency, record envelopes, required-feature handling, versioned Workspace export, data-root layout markers, owner-independent top-level Workspace storage and migration, fixed owner/editor/viewer policy projection, centralized operation-metadata authorization, handler-owned child-lineage enforcement, scoped bearer tokens, the complete V1 Workspace sharing and user-disable lifecycle, named durable permission decisions and actor attribution, current-effect reauthorization, eligible-principal projections, Vault and portability authority boundaries, Workspace Synchronization Review, and conflict-checked apply.
 
-The implemented same-release projection exposes all fifteen operations through App API and Core Client and the eleven bearer-reachable operations through the catalog, bundled CLI, and unified Skill. Own-invitation list, accept, decline, and exact own-receipt leave remain explicit session-only CLI/Skill known-partials; WP-5 intentionally adds no Better Auth bearer support, persisted CLI session, or second user-token system. The rebuilt multi-user Web remains with S10. Other remaining baseline gaps belong to their named specifications and work packages rather than authorizing compatibility machinery or more WP-5 scope. Artifact Review, Material, and Workspace Sync retain their existing owner-local contracts.
+The implemented same-release projection exposes all fifteen operations through App API and Core Client and the eleven bearer-reachable operations through the catalog, bundled CLI, and unified Skill. Own-invitation list, accept, decline, and exact own-receipt leave remain explicit session-only CLI/Skill known-partials; the current baseline intentionally adds no Better Auth bearer support, persisted CLI session, or second user-token system. The rebuilt multi-user Web remains with S10. Other remaining baseline gaps belong to their named specifications rather than authorizing compatibility machinery or broader current scope. Artifact Review, Material, and Workspace Sync retain their existing owner-local contracts.
 
 No current implementation evidence establishes a support promise for independently versioned third-party App API clients.
 
@@ -295,7 +299,6 @@ None. A future independently released API consumer or legal-isolation deployment
 
 ## Links
 
-- [Implementation Change Plan](../changes/202607160021540001-contract_stability_multi_user_workspaces.md)
 - [Contract Evolution Model](../core/contract-evolution.md)
 - [Core Concepts](../core/core-concepts.md)
 - [Storage Model](../core/storage.md)

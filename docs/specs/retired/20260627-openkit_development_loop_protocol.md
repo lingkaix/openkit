@@ -1,10 +1,11 @@
+---
+status: Retired
+implementation: N/A
+status-changed: 2026-07-13
+current-guidance: None
+decision-evidence: "https://github.com/lingkaix/openkit/commit/962c097570419b9fb951d44342ee6a556e5c7cfa"
+---
 # OpenKit Development Loop Protocol
-
-Status: Retired
-Implementation: N/A
-Status Changed: 2026-07-13
-Current Guidance: None
-Decision Evidence: `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
 
 ## Lifecycle Reason
 
@@ -24,7 +25,7 @@ It owns the roles, lifecycle, approval gates, evidence requirements, fallback cl
 
 This spec does not own general Agent Workflow mechanisms, user-facing work vocabulary, MCP tool schemas, worker-control protocol details, workspace synchronization mechanics, agent environment packaging, authentication internals, deployment runbooks, or repository change-record storage policy.
 
-Those contracts are owned by the relevant core documents, protocol specs, runtime specs, and `docs/change-tracking.md`.
+Those contracts are owned by the relevant core documents, protocol specs, runtime specs, and `docs/change-execution.md`.
 
 ## Core References
 
@@ -62,7 +63,7 @@ The remaining work is outside the accepted V1 development-loop protocol: unatten
 - Keep the MCP server as a thin AI-native user interface over public NanoCore APIs.
 - Preserve coordinator context by pushing concrete work into NanoCore, sub-agents, or remote Codex sessions instead of forcing the loop manager to carry all implementation detail in one conversation.
 - Make local mode the default proof path for coordinator-driven self-improvement, and require server-mode or remote proof only when the changed surface or release gate depends on it.
-- Record lifecycle decisions in the current repository lifecycle-record system governed by `docs/change-tracking.md`.
+- Record lifecycle decisions in the current repository lifecycle-record system governed by `docs/change-execution.md`.
 
 ## Non-goals
 
@@ -211,7 +212,7 @@ The stop condition must be externally checkable from NanoCore state, repository 
 
 ### 2. Create Durable Lifecycle Record
 
-For material loop work, the coordinator creates or updates the repository lifecycle record required by `docs/change-tracking.md` before implementation begins.
+For material loop work, the coordinator creates or updates the repository lifecycle record required by `docs/change-execution.md` before implementation begins.
 
 The change record captures intent, scope, related specs, roles, plan, checkpoints, blockers, verification evidence, deviations, and final summary.
 
@@ -389,10 +390,10 @@ When the protocol is routine enough for day-to-day use, the operational recipe m
 - `docs/core/protocol.md`
 - `docs/core/agent-capability.md`
 - `docs/product-vision.md`
-- `docs/specs/20260617-openkit_ai_interface.md`
+- `docs/specs/superseded/20260617-openkit_ai_interface.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`
 - `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260526-codex_chatgpt_subscription_login.md`
+- `docs/specs/superseded/20260526-codex_chatgpt_subscription_login.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
 - `docs/specs/20260529-l6_story_acceptance.md`

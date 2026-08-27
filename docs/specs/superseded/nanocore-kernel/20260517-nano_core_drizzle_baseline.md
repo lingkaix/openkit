@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/specs/20260703-storage_layout_record_ownership.md`, `docs/specs/20260628-nanocore_config_identity_contract.md`"
+decision-evidence: "`docs/specs/20260703-storage_layout_record_ownership.md`, `docs/specs/20260628-nanocore_config_identity_contract.md`"
+---
 # NanoCore Drizzle Baseline
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/specs/20260703-storage_layout_record_ownership.md`, `docs/specs/20260628-nanocore_config_identity_contract.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

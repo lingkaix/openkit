@@ -1,11 +1,28 @@
+---
+status: Accepted
+date: 2026-04-15
+---
 # Product Vision
-
-Status: Accepted
-Date: 2026-04-15
 
 ## Current Implementation Posture
 
 The accepted implementation path is NanoCore-first and end-user Agent-Skill-first. OpenKit hardens the core kernel and public API, then projects the complete supported user/operator capability surface through the progressively disclosed `openkit` Skill and bundled CLI before completing the Web UI as the primary product surface. The removed user-facing MCP facade and split setup/loop Skills must not be restored, while worker-side MCP capability supply remains a separate accepted future plane whose current AEP projection is disabled.
+
+## Strategic Work Resource Thesis
+
+Model capability and harness maturity will eliminate interaction created only by the need to operate tools. They will not eliminate interaction required to form intent, exercise taste, judge quality, or explore possibility.
+
+As high-quality candidate generation becomes cheaper, users may perform more creative exploration through comparison, preview, selection, and fine adjustment rather than less. High-bandwidth interaction therefore moves from teaching AI how to execute toward jointly deciding what should exist.
+
+OpenKit must cover the continuous transition from delegation to co-creation without reproducing domain production workbenches. This boundary keeps OpenKit an Agent manager while allowing it to grow into a Human + Agent work system.
+
+The higher-layer capability OpenKit owns is judgement grounding: converting human judgement that is difficult to express in prose into Agent input that is precise, localized, executable, and replayable.
+
+OpenKit should not only let users tell an Agent what to do. It should let users transmit professional judgement that is not yet fully verbalized through selection, comparison, annotation, adjustment, and local modification.
+
+This capability becomes more important as models become stronger because a small intent error can drive an increasingly large amount of correct but misdirected automated execution.
+
+OpenKit's durable product moat is the ability to compress tacit human judgement into signals that an Agent can interpret and act on accurately without requiring OpenKit to become the domain tool itself.
 
 ## 1. 产品定位
 
@@ -170,7 +187,7 @@ Proxy 的核心价值如下。
 基本工作方式如下。
 
 - 用户将访问外部服务的 secrets 存入 vault，例如 Linear API Key、GitHub Token 等。
-- 每次启动 agent session 时，传入对应的 `vault_id`。
+- 每次启动 AgentSession 时，传入对应的 `vault_id`。
 - Agent 调用外部工具时，由 proxy 层自动注入凭证。
 
 Credentials must remain outside agent prompts, context packages, and stable product records. [Vault](./core/vault.md) owns the visibility, containment, redaction, and audit contract for every approved injection path.

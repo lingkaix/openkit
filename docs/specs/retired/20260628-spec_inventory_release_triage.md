@@ -1,10 +1,11 @@
+---
+status: Retired
+implementation: N/A
+status-changed: 2026-07-11
+current-guidance: None
+decision-evidence: "https://github.com/lingkaix/openkit/commit/fffc107f9b73a8855045435598dcf97ebf2786da"
+---
 # Specification Inventory And Release Triage
-
-Status: Retired
-Implementation: N/A
-Status Changed: 2026-07-11
-Current Guidance: None
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 
@@ -38,7 +39,7 @@ Future cleanup should continue from the remaining `Keep And Audit` list.
 
 Core docs are release-neutral doctrine. They do not own 0.0.1 scope, current implementation paths, concrete package names, current schema field lists, or development-only runtime placements.
 
-Release posture, current implementation mapping, migration detail, and concrete schema projections belong in specs, changes, working logs, and implementation docs.
+Release posture, current implementation mapping, migration detail, and concrete schema projections belong in specs, change records, and implementation docs.
 
 Host Agent is no longer a core deployment concept. Historical host-adapter specs may remain as implementation or supporting detail until their useful details are migrated or intentionally dropped.
 

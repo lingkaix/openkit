@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/specs/20260628-nanocore_config_identity_contract.md`"
+decision-evidence: "`docs/specs/20260628-nanocore_config_identity_contract.md`"
+---
 # Layered User and Workspace Configuration
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/specs/20260628-nanocore_config_identity_contract.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

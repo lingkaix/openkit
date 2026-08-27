@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-05-28
+current-guidance: "`docs/specs/20260528-core_client_boundary.md`"
+decision-evidence: "`docs/specs/20260528-core_client_boundary.md`"
+---
 # Core Client HTTP and SSE Helpers
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-05-28
-Current Guidance: `docs/specs/20260528-core_client_boundary.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/core/agent-workflow.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-worker_context_package.md`"
+decision-evidence: "`docs/core/agent-workflow.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-worker_context_package.md`"
+---
 # Sustained Mode: Long-Running, Self-Correcting, Token-Efficient Agent Operation
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/core/agent-workflow.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/specs/20260531-worker_turn_reliability_envelope.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-worker_context_package.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

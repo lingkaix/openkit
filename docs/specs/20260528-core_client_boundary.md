@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Core Client Boundary
-
-Status: Accepted
-Implementation: Implemented
 
 ## Owns
 
@@ -19,6 +20,14 @@ This spec does not own stable core protocol semantics, individual App API route 
 - `docs/core/communication.md`
 - `docs/core/work-model.md`
 - `docs/core/architecture.md`
+
+Related specs:
+
+
+## Related Docs
+
+- `docs/specs/20260721-provider_subscription_accounts.md`
+- `docs/specs/20260704-app_api_openapi_projection.md`
 
 ## Summary
 
@@ -57,7 +66,7 @@ The public client is grouped by boundary:
 - `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
 - `client.app`: dashboards, Goal Mode, workspace synchronization read models, search, quick chat, automations, diagnostics, setup diagnostics, Goal Review, and feedback.
 - `client.runtimeConfig`: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
-- `client.oauth.openaiCodex`: Codex ChatGPT account slot status, list, create, update, delete, start, cancel, and logout routes.
+- `client.providerSubscriptions`: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.agents`: Agent Catalog list, get, and health refresh routes.
@@ -70,11 +79,34 @@ There is no `getMeta`, `createMemoryEntry`, `updateMemoryEntry`, `respondToAppro
 
 ## App API Schema Package
 
-`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, OAuth account slots, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal Mode read models and decisions, Agent Catalog, and Action Center.
+`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal Mode read models and decisions, Agent Catalog, and Action Center.
 
 The package depends only on `@openkit/protocol` and `zod`.
 
 It must remain runtime-neutral and must not import NanoCore services, filesystem code, Web UI code, or client transport helpers.
+
+## Provider Subscription Slice
+
+`client.providerSubscriptions` is the only provider-subscription client namespace. It exposes exactly these methods in public operation order:
+
+```ts
+listProviders()
+listAccounts(subscriptionProviderId)
+createAccount(subscriptionProviderId, input)
+updateAccount(subscriptionProviderId, accountSlotId, input)
+deleteAccount(subscriptionProviderId, accountSlotId)
+getAccountStatus(subscriptionProviderId, accountSlotId)
+startAccountLogin(subscriptionProviderId, accountSlotId, input)
+cancelAccountLogin(subscriptionProviderId, accountSlotId, input)
+logoutAccount(subscriptionProviderId, accountSlotId)
+getAccountQuota(subscriptionProviderId, accountSlotId)
+```
+
+The methods map one-to-one and in the same order to `listSubscriptionProviders`, `listProviderSubscriptionAccounts`, `createProviderSubscriptionAccount`, `updateProviderSubscriptionAccount`, `deleteProviderSubscriptionAccount`, `getProviderSubscriptionAccountStatus`, `startProviderSubscriptionAccountLogin`, `cancelProviderSubscriptionAccountLogin`, `logoutProviderSubscriptionAccount`, and `getProviderSubscriptionAccountQuota`. `listProviders()` returns `ProviderSubscriptionsResponse`; `listAccounts()` returns `ProviderSubscriptionAccountsResponse`; create, update, status, login, cancel, and logout return the strict `ProviderSubscriptionAccount` status union; delete returns `Promise<void>` from the `204` empty response; and quota returns `ProviderSubscriptionQuota`. The four `input` parameters use the strict create, update, login, and cancel request objects defined by the provider-subscription specification. Request and response types come directly from `@openkit/app-api-schemas`; the client adds no defaults, aliases, provider-family inference, credential handling, or alternate response shapes.
+
+For this slice, a non-success `ApiError` becomes `ApiCallError` while preserving its HTTP status, stable code, and fixed sanitized message. A malformed successful payload becomes `ProtocolValidationError`; the client never accepts unknown response fields or repairs a response into another union branch.
+
+The prior `client.oauth.openaiCodex` namespace and every root-level or nested alias for its methods are removed in the same release as the provider-neutral App API cutover. No old namespace remains. This removal does not remove or rename the separately owned Vault administration client method for `/api/app/vault/bootstrap/codex-auth-json`.
 
 ## Agent Catalog Slice
 
@@ -137,9 +169,9 @@ This is an internal-development breaking change.
 
 Removed aliases and old NanoCore response shapes are not preserved.
 
-Provider diagnostics now use the strict current object shape.
+Provider diagnostics use the strict current object shape but do not duplicate provider-subscription account state. The legacy `oauth.openaiCodexAccounts` field is removed rather than renamed, and account status and quota remain available only through `client.providerSubscriptions`.
 
-Runtime config, diagnostics, and OAuth fields that existed only for earlier placeholder responses are removed from the typed surface.
+Runtime config, diagnostics, and provider-specific OAuth fields that existed only for earlier placeholder responses are removed from the typed surface.
 
 ## Correctness Notes
 
@@ -149,17 +181,23 @@ Auth responses now use concrete schemas instead of `unknown`.
 
 Empty successful delete routes return `void` without parsing through `z.never`.
 
-Turn SSE validation errors are delivered through the async iterator instead of a callback-only subscription path.
+For Turn SSE, `@openkit/core-client` is the sole decoder of terminal-affiliated envelopes and projects the Core-owned classification, cursor, delivery, termination, and recovery semantics through its async iterator. Web and other consumers receive only admitted events and do not repeat outer-envelope, embedded-Turn, terminal-status, or exact-owner decoding.
+
+The Core Client validates the forward-compatible outer envelope and every applicable embedded `Turn` before advancing its sequence cursor. A protocol-valid but semantically noncanonical terminal-affiliated envelope above the cursor advances the cursor, is skipped from iterator delivery, continues processing or reconnects with the latest `since`, and never becomes terminal proof.
+
+An invalid outer envelope or applicable embedded `Turn` surfaces `ProtocolValidationError` from the async iterator without cursor advancement, consumer delivery, silent filtering, or terminal proof. The failing iterator read rejects, the active Fetch stream is aborted or the active EventSource is closed, automatic reconnect and further transport processing stop, and the next iterator read returns `done`.
+
+After `ProtocolValidationError`, the failed subscription exposes no private cursor as recovery authority, performs no automatic recovery, and adds no public recovery shape. A later caller-created subscription supplies only a caller-owned `since` value or no `since`, and it may fail again until an authoritative read establishes usable state or a compatible client-server upgrade is installed.
 
 Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives persisted feedback validation from `TurnFeedbackResponseSchema` and applies strict validation at the disk boundary without defining a second public schema.
 
 ## Current Implementation Projection
 
-The composed `@openkit/core-client` surface, shared `@openkit/app-api-schemas` package, NanoCore App API validation path, Web consumption path, and bundled CLI consumption path follow this boundary. The unified `openkit` Skill invokes the bundled CLI and adds no second SDK or route contract.
+The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package now include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains.
 
-The boundary is guarded by package tests that keep App API schemas runtime-neutral and OpenAPI tests that prevent first-party clients from reversing direction and consuming the generated OpenAPI artifact as the source contract.
+NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract.
 
-The remaining items named in Future Slices stay outside this spec until their owning specs land the matching routes, schemas, and client methods.
+Provider-neutral Web consumption is now complete. This spec remains `Partial` only because the items named in Future Slices stay outside this spec until their owning specifications, NanoCore routes, schemas, and client methods land.
 
 ## Future Slices
 

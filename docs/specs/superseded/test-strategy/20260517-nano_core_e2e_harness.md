@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-05-29
+current-guidance: "`docs/specs/20260529-test_strategy.md`, `docs/specs/20260529-l6_story_acceptance.md`"
+decision-evidence: "`docs/specs/20260529-test_strategy.md`, `docs/specs/20260529-l6_story_acceptance.md`"
+---
 # NanoCore Black-Box E2E Harness
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-05-29
-Current Guidance: `docs/specs/20260529-test_strategy.md`, `docs/specs/20260529-l6_story_acceptance.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

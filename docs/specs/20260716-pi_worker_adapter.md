@@ -1,13 +1,17 @@
+---
+status: Accepted
+implementation: Implemented
+updated: 2026-08-21
+---
 # Pi Worker Adapter
-
-Status: Accepted
-Implementation: Implemented
 
 ## Summary
 
 The Pi Worker Adapter translates one resolved Agent Environment Package into one bounded Pi Coding Agent process and translates Pi's machine-readable native event stream into the shared OpenKit worker harness result.
 
 Pi is the third concrete runtime challenge. Its purpose in this architecture is to prove that the worker boundary is not an accidental Codex/OpenCode common denominator.
+
+This adapter remains in the shared registry's `bounded-turn` mode and is already ineligible for the target NanoHost route. It is not eligible for the multi-AgentSession shared-Harness RuntimeTarget until this owning specification accepts and the pinned runtime proves both the route and complete `session-continuity` contracts; the Codex implementation does not implicitly broaden Pi.
 
 ## Owns
 
@@ -19,11 +23,18 @@ Pi is the third concrete runtime challenge. Its purpose in this architecture is 
 
 ## Does Not Own
 
-- child process supervision, direct worker-control, canonical transcripts, or workspace publication
+- child process supervision, worker control, canonical transcripts, or workspace publication
 - AEP resolution, provider selection, credential grants, network policy, or backend lifecycle
 - product state, scheduling, review, apply, Action Center, or public API behavior
 - a generic RPC client or interactive terminal UI
 - a translation of every Pi extension or UI event into OpenKit product events
+
+## Core References
+
+- `docs/core/runtime-model.md`
+- `docs/core/agent-session.md`
+- `docs/core/agent-supply.md`
+- `docs/core/sandbox.md`
 
 ## Upstream Contract
 
@@ -50,7 +61,7 @@ The shared harness supplies the adapter with:
 - worker working directory
 - session directory
 - the provider, model, endpoint, and credential bindings from the AEP's one already resolved LLM route
-- a safe child environment without the worker-control token
+- a safe child environment without the worker-control or capability token; any target inference binding uses its own distinct inference credential
 
 The adapter does not choose provider credentials, trust arbitrary project resources, enable network sources, or override AEP policy.
 
@@ -93,9 +104,11 @@ Pi does not need native MCP support to satisfy the OpenKit boundary. The OpenKit
 
 ## Provider And Credentials
 
-The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. Pi `0.80.7` cannot consume the trusted NanoCore relay under the accepted no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-provider path requires `models.json`. Trusted relay is therefore unsupported and deferred. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, or silently replace the relay with a direct route.
+The accepted NanoHost runtime exposes the logical worker-local `inference.local` binding at fixed `http://127.0.0.1:17892/inference/v1`, projected by Sandbox Integration through `/inference/*` with an inference credential distinct from `/worker-control/*` and `/capabilities/*`. Pi must not receive a direct NanoCore endpoint, the worker-control token, an SSH or Gateway-forward route, or a second control path. The pinned Pi runtime still cannot consume that fixed target under this adapter contract, so the target remains unsupported for Pi.
 
-`prepare` accepts only the pinned `anthropic` / `claude-sonnet-4-5` direct pair with the manifest-declared `ANTHROPIC_API_KEY` credential binding, which the image smoke proves exists exactly in Pi's catalog. It passes that exact pair through `--provider` and `--model`, rejects zero or multiple routes, and fails before spawn when the pair or credential binding differs. Pi's fuzzy and synthetic model fallback is never accepted as route resolution. Trusted-relay and direct-provider credentials and egress remain mutually exclusive.
+The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. Pi `0.80.7` cannot consume the accepted `inference.local` target under the no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-provider path requires `models.json`. The target binding is therefore unsupported. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, or silently replace worker-local inference with a direct route.
+
+The historical Pi adapter accepted only the pinned `anthropic` / `claude-sonnet-4-5` direct pair with the manifest-declared `ANTHROPIC_API_KEY` credential binding, which the image smoke proved existed exactly in Pi's catalog. It passed that exact pair through `--provider` and `--model`, rejected zero or multiple routes, and failed before spawn when the pair or credential binding differed. Pi's fuzzy and synthetic model fallback was never accepted as route resolution. This direct credential path is historical evidence, not current NanoHost guidance.
 
 ## Manifest And Image Contract
 
@@ -143,7 +156,7 @@ Required adapter tests cover:
 - non-zero exit and redacted diagnostics
 - exact fail-closed resource, approval, session, provider, model, update, and telemetry controls
 - turn-scoped `PI_CODING_AGENT_DIR` isolation proving global prompts, settings, packages, and auth cannot load
-- conformance with the same shared adapter contract used by Codex and OpenCode
+- conformance with the shared `bounded-turn` adapter contract also used by OpenCode
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.
 
@@ -151,7 +164,7 @@ Required image smoke covers pinned `pi --version`, JSON mode help, generic shim 
 
 ## Implementation Evidence And Limit
 
-The Pi `0.80.7` adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented for the exact direct `anthropic` / `claude-sonnet-4-5` route. On A1, the arm64 image was built directly, passed its smoke check, and stock unpatched OpenShell `0.0.80` created a sandbox from it, uploaded the AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+The Pi `0.80.7` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and refreshed image smoke are implemented for the legacy direct `anthropic` / `claude-sonnet-4-5` route. Pi remains ineligible for the target NanoHost route and shared-Harness RuntimeTarget because neither the accepted route nor a session-continuity adapter is implemented. The refreshed 2026-07-21 arm64 image builds locally and passes its complete smoke. The earlier minimal arm64 image passed stock unpatched OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, but that historical run is not refreshed-image evidence and proves neither the target NanoHost lifecycle nor RelayStream plus nested HTTP/2 feasibility.
 
 This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
@@ -176,7 +189,8 @@ Pi proves the intended extensibility only when it is added as one AgentManifest,
 
 ## Related Documents
 
-- `docs/changes/202607160036500001-worker_agent_adapter_boundary.md`
+
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-worker_control_protocol.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`

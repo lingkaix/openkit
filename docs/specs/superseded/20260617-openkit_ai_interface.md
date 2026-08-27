@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-13
+current-guidance: "`docs/specs/20260713-openkit_agent_skill_interface.md`"
+decision-evidence: "`docs/specs/20260713-openkit_agent_skill_interface.md`"
+---
 # OpenKit AI Interface: Skill And MCP Control Surface
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-13
-Current Guidance: `docs/specs/20260713-openkit_agent_skill_interface.md`
-Decision Evidence: `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
 
 ## Lifecycle Reason
 
@@ -890,7 +891,7 @@ Inputs:
 
 Purpose:
 
-Guide an AI application through deciding whether a completed OpenKit self-improvement cycle needs a spec update, change record, working log, or no durable doc update.
+Guide an AI application through deciding whether a completed OpenKit self-improvement cycle needs a spec update, change record, or no durable doc update.
 
 Inputs:
 
@@ -898,7 +899,7 @@ Inputs:
 - `threadId`
 - `summary`
 
-This prompt should reference `docs/change-tracking.md` and the repository `AGENTS.md` rules.
+This prompt should reference `docs/change-execution.md` and the repository `AGENTS.md` rules.
 
 ## App API Mapping
 
@@ -1398,6 +1399,5 @@ Require human review, bounded steps, automatically produced evidence bundles, an
 - [Chat Mode And Core Assistant](../20260704-chat_mode_assistant.md)
 - [Task Mode Worker Delegation](../20260704-task_mode_worker_delegation.md)
 - [Goal Mode Coordination](../20260704-goal_mode_coordination.md)
-- [Evidence Surface Simplification](../../changes/202607111848520001-evidence_surface_simplification.md)
 - [Codex Agent Communication Modes](./worker-runtime/20260507-codex_agent_communication_modes.md)
-- [Change Tracking](../../change-tracking.md)
+- [Change Execution Governance](../../change-execution.md)

@@ -1,7 +1,8 @@
+---
+status: Draft
+implementation: Not Started
+---
 # Evaluation Harness Design
-
-Status: Draft
-Implementation: Not Started
 
 ## Owns
 
@@ -24,7 +25,7 @@ Implementation: Not Started
 
 ## Summary
 
-This Draft records future decision gates and safety boundaries only. It is not an accepted runtime contract, is not part of the current G07/WP-6 V1, and authorizes no implementation.
+This Draft records future decision gates and safety boundaries only. It is not an accepted runtime contract, is not part of the current Knowledge or self-improvement V1, and authorizes no implementation.
 
 ## Decision
 
@@ -98,13 +99,6 @@ No Evaluation Harness is implemented. Existing Task and Goal execution, Context 
 
 ## Related Documents
 
-- `docs/core/foundation.md`
-- `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
-- `docs/core/sandbox.md`
-- `docs/core/audit.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`
 - `docs/specs/20260703-worker_context_package.md`
 - `docs/specs/20260529-test_strategy.md`
-- `docs/changes/202607111600390001-self_improvement_loop_foundations.md`
-- `docs/changes/202607172152230001-openkit_execution_program.md`

@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Work Model
-
-Status: Accepted
 
 This document owns how OpenKit work appears to users and product surfaces.
 
@@ -21,7 +22,7 @@ Workspace -> Thread -> Turn -> Item[]
 ## Principles
 
 - Delegation is the default posture, precise collaboration is available on demand, and governance remains visible throughout.
-- Product surfaces should make work understandable without requiring users to understand agent sessions, runtime handles, storage layout, or adapter internals.
+- Product surfaces should make work understandable without requiring users to understand AgentSessions, runtime handles, storage layout, or adapter internals.
 - Product-facing terms such as task, job, goal, deliverable, review, redo, and refinement must map to their owning durable records instead of creating parallel truth.
 - The thread narrative and ordered Item history remain the user-visible source of truth even when surfaces group, summarize, or highlight work.
 - Quick reply, delegated work, long-running goals, grounded collaboration, and human attention must preserve the same Core backbone.
@@ -37,6 +38,8 @@ Core Concepts owns the canonical meanings of Workspace, Thread, Turn, Item, Arti
 - Items supply the ordered history from which visible messages, status, decisions, reviews, and outputs are projected.
 
 A product projection may summarize or reorganize these records, but it must preserve their identity, order, lineage, and owning authority.
+
+Product surfaces present parallel work as related execution Threads linked from the originating or Goal Main Thread. They keep worker Items in the execution narrative that produced them instead of interleaving several agents' work into one conversation, while still making status, results, evidence, and navigation understandable from the parent surface.
 
 ## Quick Chat Workspace
 
@@ -86,7 +89,7 @@ Conversation is the narrative and coordination layer. When a product surface kno
 
 Grounded interaction must flow through ordinary input, Steering Input, Review And Acceptance, Elicitation Gate, or Approval Gate. It must not create a global strong-interaction mode, universal Resource entity, universal Artifact model, or hidden feedback log.
 
-Product terms such as compare, select, annotate, adjust, patch, accept, reject, and redo describe intent. Exact resource planes, payload envelopes, locators, revision handling, delivery receipts, conflict checks, and editor controls belong to implementation-facing contracts.
+Product terms such as compare, select, annotate, adjust, patch, accept, reject, and redo describe intent. Exact Work Resource Classes, payload envelopes, locators, revision handling, delivery receipts, conflict checks, and editor controls belong to implementation-facing contracts.
 
 ## Artifacts And Deliverables
 
@@ -110,13 +113,15 @@ Deliverable, task, job, and goal are product-facing terms. A Deliverable normall
 | Context compact | A traceable summary used for continuation, handoff, retry, recovery, or worker execution without replacing its source history. |
 | Interruption | A truthful stop when execution or its external outcome cannot be proved. It preserves the prior attempt and may require inspection or a new authorized Turn; it does not promise transparent resume or automatic repair. |
 
-Reusable understanding produced by context compaction belongs to Knowledge. Runtime continuity produced by compaction belongs to the agent-session owner.
+Reusable understanding produced by context compaction belongs to Knowledge. Runtime continuity produced by compaction belongs to the AgentSession owner.
 
 ## Agent Visibility
 
-Product surfaces may show the selected agent, current work status, readiness, effective capability and sandbox summaries, and agent-session health when those details help users understand responsibility or risk.
+Product surfaces may show the selected Agent, current work status, product-safe runtime availability, and effective capability and Sandbox summaries when those details help users understand responsibility or risk.
 
-They must not expose raw adapter internals, process handles, provider payloads, secret-bearing diagnostics, or hidden agent-private task graphs as normal user concepts.
+They offer two conversation actions: continue the current Thread or create a new Thread. AgentSession is hidden runtime continuity and MUST NOT appear as a picker, creation action, navigation object, identifier, history, or native handle.
+
+Product surfaces must not expose raw adapter internals, process handles, provider payloads, secret-bearing diagnostics, or hidden Agent-private task graphs as normal user concepts.
 
 ## Long-Running Work
 
@@ -132,7 +137,9 @@ When exact continuation cannot be proved, preserving an interrupted attempt and 
 - Quick Chat MUST remain an owner-only lightweight Workspace and MUST NOT silently become a project or worker-execution boundary.
 - Chat Mode MUST NOT hide worker execution; entry into Task Mode or Goal Mode MUST be explicit in Thread history.
 - Task Mode MUST remain bounded delegated work, while Goal Mode MUST remain durable governed objective work.
-- For an approved Goal step, the immutable Goal Task snapshot MUST own every task-specific worker-request fact; neither a mode service nor Coordinator may replace an accepted fact with a default or reconstruct it from a Plan Item, caller payload, or current projection.
+- Parallel worker activity MUST appear as linked execution narratives rather than several agents writing inside one Thread.
+- Product surfaces MUST express conversation continuity as continuing a Thread or creating a new Thread and MUST NOT expose AgentSession as a user-selectable conversation concept.
+- Once a workflow accepts an immutable execution request, that accepted record MUST own every task-specific worker-request fact. A coordinator, channel, caller payload, default, or mutable projection MUST NOT replace or reconstruct those accepted facts.
 - Human attention MUST use the four composable product modes without turning Action Center into a new authority.
 - Grounded collaboration MUST preserve exact subject and version context through owning records without creating a hidden feedback log.
 - Work-produced Artifact mutations MUST remain Item-backed. A Workspace-only import or registration MAY omit Thread and Turn lineage only with explicit provenance; its first introduction into a Thread and every later work-produced mutation MUST create exact Item-backed lineage.

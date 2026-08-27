@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/specs/20260703-worker_context_package.md`, `docs/core/knowledge.md`"
+decision-evidence: "`docs/specs/20260703-worker_context_package.md`, `docs/core/knowledge.md`"
+---
 # Worker Context Taxonomy
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/specs/20260703-worker_context_package.md`, `docs/core/knowledge.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

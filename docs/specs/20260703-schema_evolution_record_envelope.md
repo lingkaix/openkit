@@ -1,18 +1,22 @@
+---
+status: Accepted
+implementation: Implemented
+---
 # Schema Evolution And Record Envelope
-
-Status: Accepted
-Implementation: Implemented
 
 ## Owns
 
 - Forward-compatible extension rules for OpenKit-authored storage records and manifest-like files.
 - The common envelope required by canonical file-backed records.
-- Reader behavior for unknown fields, unknown record families, unsupported required features, and namespaced extensions.
-- The boundary between current internal clean-target changes and future additive schema evolution.
+- Concrete envelope reader and writer behavior for unknown fields, unknown record families, unsupported required features, and namespaced extensions.
+- Digest stability, field-surface mapping, split envelopes for line-oriented records, and the required-feature registry.
+- The current internal clean-target baseline for envelope-backed storage records and manifest-like files.
+
+These bullets describe the concrete envelope realization only. `docs/core/contract-evolution.md` owns the general evolution semantics.
 
 ## Does Not Own
 
-- Core semantic definitions for workspace, thread, turn, item, artifact, knowledge, audit, usage, vault, or agent session.
+- Core semantic definitions for workspace, thread, turn, item, artifact, knowledge, audit, usage, vault, or AgentSession.
 - Complete schemas for every record family.
 - SQLite table DDL, migration scripts, ORM layout, or query model design.
 - External provider schemas, object-store schemas, Git schemas, OpenShell-native payloads, or runtime-native config files.
@@ -27,6 +31,9 @@ Implementation: Implemented
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
 - `docs/core/knowledge.md`
+
+## Related Docs
+
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
@@ -37,7 +44,7 @@ This spec defines how OpenKit-owned files evolve after the current storage and m
 
 The current internal development phase does not preserve old internal shapes, paths, or compact manifest formats.
 
-Once the new baseline is established, future additions should be additive by default: older readers may ignore or preserve unknown optional fields, while unsupported authority-bearing semantics must fail closed.
+General additive evolution, unknown optional-field preservation, and fail-closed semantics follow `docs/core/contract-evolution.md`. This spec realizes those rules for envelope-backed files.
 
 ## Goals
 
@@ -55,19 +62,9 @@ Once the new baseline is established, future additions should be additive by def
 
 ## Decision
 
-Use additive schema evolution with explicit required-feature gates.
+Apply the general evolution rules from `docs/core/contract-evolution.md` through an envelope with explicit required-feature gates.
 
-Unknown optional fields MAY be ignored by readers that do not understand them.
-
-Readers SHOULD preserve unknown optional fields when rewriting a record in place, but they are not required to preserve unknown derived indexes, cached diagnostics, or generated materialization outputs.
-
-Unknown authority-bearing semantics MUST NOT be silently ignored.
-
-Writers MUST mark any new field or record behavior that changes authority, permission, vault use, sandbox policy, provider routing, mount access, workspace write scope, retention, audit obligation, or billing-relevant measurement with `requiredFeatures`, `minCoreVersion`, or an equivalent required capability list owned by the record family.
-
-Readers MUST reject records whose required features are unsupported.
-
-This spec is the single normative source for the general evolution rules. Other core documents and specs MUST reference this contract and add only domain-specific rules; they MUST NOT restate the general rules in their own normative language, because parallel restatements drift.
+For envelope-backed records, writers MUST mark any new field or record behavior that changes authority, permission, vault use, sandbox policy, provider routing, mount access, workspace write scope, retention, audit obligation, or billing-relevant measurement with `requiredFeatures`, `minCoreVersion`, or an equivalent required capability list owned by the record family. Envelope readers MUST reject records whose required features are unsupported.
 
 ## Baseline Compatibility Posture
 
@@ -79,7 +76,7 @@ For the current storage and manifest reset, OpenKit does not need permanent lega
 
 The compatibility contract in this spec starts at the accepted baseline created by the active storage, manifest, audit, vault, and context specs.
 
-Future versions should remain forward-tolerant for optional fields and fail closed for required semantics.
+Future versions follow the optional-field and fail-closed rules in `docs/core/contract-evolution.md`.
 
 ## Record Envelope
 
@@ -106,7 +103,7 @@ extensions
 
 `ownerScope` identifies whether the record is server-owned, user-owned, or workspace-owned. Organization and tenant scopes are not reserved; adding a new ownership scope requires a concrete accepted design and a real source-of-truth owner.
 
-`lineage` carries stable IDs needed to relate the record to workspace, thread, turn, item, artifact, knowledge, agent, agent session, AEP snapshot, capability call, policy decision, vault grant, request, and evidence records when those IDs exist.
+`lineage` carries stable IDs needed to relate the record to workspace, thread, turn, item, artifact, knowledge, agent, AgentSession, AEP snapshot, capability call, policy decision, vault grant, request, and evidence records when those IDs exist.
 
 `contentDigest` identifies the canonical payload or file content used for replay, import, verification, or evidence linkage.
 
@@ -223,7 +220,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 | Feature | Status | Description |
 | --- | --- | --- |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
-| `session.concurrent-turns` | active | Agent session may process more than one turn concurrently. |
+| `session.concurrent-turns` | active | AgentSession may process more than one turn concurrently. |
 | `vault.injection.query-param` | active | Vault injection may place secret references into query parameters. |
 | `workspace.mount.fuse` | active | Workspace input requires a FUSE-style mount implementation. |
 | `workspace.writeback.external` | active | Workspace writes are committed through an external writeback mechanism. |
@@ -295,13 +292,9 @@ Unknown evidence may be retained as restricted evidence when storage policy allo
 ## Resolved Decisions
 
 - Current internal migration does not require compatibility with old internal storage or manifest shapes.
-- Future schema evolution is additive by default.
-- Unknown optional fields may be ignored or preserved.
-- Unsupported required features must fail closed.
-- Authority-bearing fields must never be silently ignored.
+- General additive evolution, unknown-field preservation, and required or authority-bearing fail-closed semantics are owned by `docs/core/contract-evolution.md`; this spec realizes them through the envelope and required-feature registry.
 - Namespaced extensions are optional hints, not the stable product contract.
 - Canonical file-backed records should use a common envelope unless their owning spec defines a narrower line-oriented format.
-- This spec is the single normative source for general evolution rules; other documents reference it instead of restating it.
 - Digest-referenced canonical records are superseded by successor records instead of being rewritten in place; migrations map predecessor digests to successor digests.
 - Canonical field names are camelCase on JSON/JSONL surfaces and snake_case on Markdown frontmatter surfaces, with a mechanical mapping owned by this spec.
 - Line-oriented families use a split envelope: minimal per-line header plus a file-level manifest.

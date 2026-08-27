@@ -1,227 +1,139 @@
-# Agent Session Model
+---
+status: Accepted
+---
+# AgentSession Model
 
-Status: Accepted
+This document defines the Core identity and continuity rules for `AgentSession`.
 
-This document defines OpenKit agent session semantics.
+It owns AgentSession meaning, Thread cardinality, durable identity, current selection, replacement, and the boundary between continuity and product-visible work.
 
-This document owns runtime continuity for initialized agent execution.
+It does not own Agent supply, capability routing, permission decisions, Turn or Item history, scheduling capacity, Harness or Sandbox lifecycle, native adapter protocol, transport recovery, or reusable knowledge.
 
-This document does not own agent supply declarations, agent capability routing, permission decisions, sandbox policy, durable work history, or reusable knowledge.
+## Canonical Term
 
-Agent session is runtime continuity. It is not knowledge, not a thread, not a turn, and not an agent-private task graph.
+`AgentSession` is a proper OpenKit item name. English prose, comments, diagnostics, and test descriptions that refer to this item MUST use `AgentSession` or `AgentSessions`; spaced, bare, and hyphenated prose variants are not synonyms.
 
-## Purpose
+Language-conventional identifiers such as `agentSession`, `agentSessionId`, and schema-required `agent_session_id` are allowed. Wire values, route segments, filenames, storage paths, and enum values may retain their syntax-required encoding, but they do not define alternative product terms.
 
-OpenKit agents may stay alive across many turns, preserve warm runtime state, resume after interruptions, or be replaced after failure.
+## Definition And Exclusions
 
-The agent session model gives Core a stable way to represent that continuity without making it the user-facing work model.
+`AgentSession` is Core's hidden runtime-continuity identity for one independently governed native agent conversation. It is bound to exactly one Workspace and one Thread for its whole life and may execute multiple sequential Turns from that Thread.
 
-User-visible work is still organized by:
+AgentSession is not a Thread, Turn, Item, user-visible conversation, user-selectable session, physical connection, Agent process, Harness Instance, Sandbox, scheduler lease, Runtime Epoch, or native provider handle. A network reconnect or process restart does not by itself create a new AgentSession, and sharing a Harness or Sandbox does not merge AgentSessions.
+
+User-visible work remains:
 
 ```text
 Workspace -> Thread -> Turn -> Item[]
 ```
 
-Runtime continuity is represented by:
+AgentSession is an internal continuity dimension that intersects this model when a worker executes a Turn. It does not contain a Turn and a Turn does not contain an AgentSession.
 
-```text
-Workspace -> AgentSession -> Turn
-```
+Internal roles such as Assistant and Goal Orchestrator run no worker runtime and have no AgentSession.
 
-## Principles
+## Product Boundary
 
-- Agent sessions represent runtime continuity, not user-facing work history.
-- Warm runtime state can improve execution, but it must not become hidden knowledge or a hidden product record.
-- Session reuse should preserve safety, routing clarity, and item-history coherence.
-- Session reuse MUST be decided against a stable compatibility envelope, not by merely finding any idle worker process.
-- Resume, snapshot, fork, clone, and rollback are runtime continuity features, not implicit workspace, knowledge, or secret-copy features.
-- Replacement of an agent session should preserve thread history through Core records, not hidden agent-private state.
-- Continuity is an optimization, not an availability promise. When exact resume cannot be proved, Core should preserve the interrupted attempt and require a fresh authorized session rather than infer continuity or silently replace work.
+Ordinary product surfaces expose continuing the current Thread or creating a new Thread. They MUST NOT expose an AgentSession picker, AgentSession creation action, AgentSession history, AgentSession identifier, or native conversation handle.
 
-## Agent Session Is Not Knowledge
+The product may expose product-safe runtime availability and the authoritative outcome of a Turn. Operator diagnostics and audit evidence may carry a redacted AgentSession lineage when needed for support, recovery, or accountability, but that lineage is not navigation or user authority.
 
-Knowledge is reusable workspace understanding and learning.
+Replacing an AgentSession is therefore an internal runtime action. It never creates a new user-visible conversation and never changes the identity or history of the bound Thread.
 
-Agent session is live or resumable runtime continuity.
+## Cardinality And Current Authority
 
-Knowledge may be learned from work, reviewed by humans, edited, indexed, and injected into future relevant tasks.
+A Thread may have zero or more historical AgentSessions and at most one current authoritative AgentSession.
 
-An agent session may include warm process state, runtime handles, workspace mount state, sandbox state, provider session state, or resume tokens.
+The current AgentSession is the only AgentSession that may receive a newly authorized Turn for that Thread. Historical predecessors remain evidence and MUST NOT be reopened or reused.
 
-An agent session can be deleted without deleting knowledge. Knowledge-derived context can be injected into a new agent session.
+Before a successor becomes current, the predecessor MUST be terminal and non-reusable, and its runtime binding MUST be closed or fenced against further effects. A temporary state with no current AgentSession is valid. Two current AgentSessions for one Thread are never valid.
 
-## AgentSession
+A Harness Instance may host multiple AgentSessions only when they belong to distinct Threads. Each retains independent identity, authorization, sequence, cancellation, evidence, native conversation, and terminal outcome.
 
-`AgentSession` is the core session concept for agent execution.
+Each AgentSession has at most one active Turn. The Thread single-flight rule independently permits at most one active Turn for that Thread.
 
-It is an initialized communication and scheduling handle between Core and an agent runtime.
+## Durable Authority And Projections
 
-It can represent:
+Core's durable AgentSession record is the unique authority for AgentSession identity, Workspace and Thread binding, lifecycle status, and current-or-historical selection. Runtime, scheduler, Harness, Sandbox, transport, and adapter records are projections or dependent authorities for their own concerns; none may create a second current AgentSession or infer continuity from co-location.
 
-- a local container agent
-- a remote agent connection
-- a managed sandbox session
-- a runtime provider session
-- a resumable serialized runtime handle
+`NativeConversationHandle` is restricted adapter metadata for exact native-conversation continuity. It MUST NOT become a Thread identifier, public AgentSession field, authorization input, Workspace truth, or ordinary diagnostic value.
 
-Agent session is a Core-to-agent control-plane concept. It is not the bottom-level model of how the agent internally executes tasks.
-
-## Scope
-
-An agent session belongs to one workspace.
-
-An agent session may optionally be bound to:
-
-- one agent
-- one manifest and setup snapshot
-- one selected profile
-- one thread
-- one sandbox instance
-- one runtime backend
-- one deployment target
-
-Workspace affinity is required. Thread affinity is optional.
-
-Long-lived workspace-scoped sessions can execute turns from multiple threads only if Core can preserve history, safety, and routing clarity. The default assumption is one active turn at a time per agent session.
+Process identity is not continuity authority. A later Turn may start a new native process and resume the exact restricted handle while keeping the same AgentSession. If exact native continuity cannot be proved, the process cannot claim that AgentSession's continuity.
 
 ## Lifecycle
 
-Common agent session states:
+### Creation
 
-```text
-created
-initializing
-ready
-busy
-idle
-degraded
-suspended
-interrupted
-failed
-closed
-```
+Creation succeeds only after Core binds the exact Workspace and Thread, confirms that the Thread has no current AgentSession, and validates every Agent, authorization, compatibility, and runtime dependency required by the selected path. A missing or conflicting dependency fails closed without creating a usable AgentSession.
 
-These 10 states are the product-visible/protocol projection (`AgentSessionStatus`). Runtime adapters may maintain a finer internal state machine (e.g. `AgentSessionState`: starting/idle/bound/running/awaiting_input/stopping/exited/failed) that maps onto these projected states.
+### Exact Reconnect
 
-These states describe runtime continuity, not turn completion.
+A physical connection may reconnect without changing AgentSession identity only when the runtime proves the same AgentSession, active Turn when present, scheduler lease, worker identity, immutable adapter mode, authorization lineage, and next protocol sequence under the accepted reconnect contract.
 
-An agent session can be `idle` while a thread has no active turn.
+An exact reconnect changes connection generation. It does not create a successor AgentSession, replay a Turn, or replace Core history.
 
-An agent session can be `failed` while the affected turn is retried on another session.
+### Sequential Turn Reuse
 
-A turn can be `failed` while the session returns to `idle` and remains reusable.
+An idle current AgentSession may receive a later Turn from its bound Thread when compatibility, authorization, native-handle readiness, and all scheduling gates pass. The later Turn may use a new process that resumes the exact NativeConversationHandle.
 
-## Turn Assignment
+Reuse MUST NOT bypass manifest resolution, workspace synchronization, vault, permission, audit, evidence, scheduling, or required-feature checks. Matching configuration or shared placement alone is not proof of reuse safety.
 
-A turn is assigned to one agent session when it executes.
+### Replacement
 
-The agent session may be:
+Core creates a successor AgentSession only after the predecessor is terminal and its runtime binding is closed or fenced. The successor is bound to the same Thread, becomes the sole current AgentSession atomically with predecessor retirement, and starts with fresh authorization and compatibility checks.
 
-- newly created for the turn
-- reused from the workspace
-- reused from the same thread
-- restored from a snapshot or resume handle
-- replaced by a new session after failure
+Replacement may follow continuity loss, incompatible runtime requirements, explicit close, or recovery that cannot prove exact continuity. The successor reconstructs user-visible context from Core-owned Thread history and MUST NOT inherit unproved native state.
 
-The turn records which agent session executed it. The agent session records current assignment and historical assignment summaries as needed by implementation.
+An active Turn is never moved, resumed, or replayed through a successor AgentSession. If continuity is lost during an active Turn, that Turn remains interrupted, failed, unknown, or `recovery_required` under its existing owner. Only a new authorized Turn may run on the successor.
 
-## Session Compatibility
+### Termination
 
-Session reuse is allowed only when the existing session's static runtime envelope covers the new turn.
+Closing or terminal failure ends AgentSession reuse and its restricted native conversation without deleting the Thread, Turns, Items, accepted outputs, or a compatible shared Sandbox. Ordinary termination closes only the AgentSession-local runtime binding and resources owned by that binding.
 
-The compatibility envelope includes runtime image, command shape, process identity, base working directory, control endpoint shape, workspace slot layout, static filesystem access envelope, provider attachment envelope, vault injection visibility class, network policy envelope, resource class, backend capability summary, and required features.
+Sandbox or Runtime Epoch invalidation may affect several AgentSessions at once, but their identities and outcomes remain independent. Shared failure does not create shared continuity or let one AgentSession's cleanup proof stand for another.
 
-The compatibility envelope does not include turn payload digests, generated task content, current output files, transient upload handles, raw host paths, raw secrets, backend-native sandbox IDs, or worker-private cache contents.
+### Retry And Recovery
 
-Core may model this envelope as a `SessionCompatibilityKey` or equivalent metadata.
+An operation may retry only through its existing owner and immutable identity. Retrying connection establishment may preserve the AgentSession only through exact reconnect proof; retrying a new user request may create a successor only after the predecessor retirement rule holds.
 
-If a new turn requires static state that the existing session does not provide, Core should replace the session instead of mutating hidden runtime state.
+After Core restart, recovery derives current selection from durable AgentSession records and validates every dependent runtime binding before use. Missing, stale, conflicting, duplicated-current, or dependency-failed state is fenced from execution. Recovery never chooses a winner from two purported current AgentSessions by recency or runtime liveness.
 
-Replacing a session is normal and must preserve user-visible thread history through Core records.
+When exact continuity cannot be proved, Core preserves the prior Turn's truthful outcome, retires or fences the affected AgentSession, and may create one successor for a new authorized Turn. Snapshot restore, generic resume selection, fork, clone, and rollback are not authorized mechanisms.
 
-## Warm State
+## Warm State And Knowledge
 
-Agent sessions may keep warm state.
+AgentSession may retain warm process, provider, tool, browser, filesystem, or adapter state. Warm state is runtime state, not Core work history or reusable knowledge.
 
-Examples:
+Only Core-owned import, review, storage, and knowledge mechanisms may turn accepted outputs into Workspace truth or reusable knowledge. Closing an AgentSession neither deletes knowledge nor silently promotes its private state.
 
-- initialized model client
-- loaded MCP tools
-- local process state
-- sandbox filesystem state
-- checked-out workspace files
-- mounted data
-- static workspace slot layout
-- dynamic slot contents materialized for recent turns
-- authenticated provider session
-- browser state
-- adapter-specific runtime cache
+## Runtime-Internal Child Activity
 
-Warm state is runtime state. It should not become knowledge unless Core explicitly extracts, reviews, and records it as knowledge.
+A worker may create private child processes, tool loops, provider sessions, or sub-agents beneath one AgentSession and Turn. They remain private provenance while they need no independent permission, budget, scheduling, retry, recovery, review, user-visible ownership, or terminal status.
 
-Session-static workspace layout and turn-dynamic slot contents are different kinds of warm state.
+When child activity needs any of those responsibilities, NanoCore MUST prospectively admit separately governed work. Concurrent governed work requires a distinct Thread and therefore a distinct AgentSession.
 
-The layout may be part of the compatibility envelope for reuse.
+## Observable Acceptance
 
-The slot contents may accelerate work, but they must not become workspace truth unless NanoCore imports, reviews, applies, or records them through the owning workspace synchronization and storage contracts.
+The AgentSession model is accepted only when observable evidence proves all of the following:
 
-## Snapshot And Resume
-
-Some runtimes support snapshots, resume handles, or serialized state.
-
-Core should model this as agent session capability and agent session metadata, not as a mandatory protocol feature for every agent.
-
-Conceptual resume sources:
-
-- keep the live session
-- resume from runtime handle
-- restore from snapshot
-- start a fresh session from manifest and workspace inputs
-
-Resume must preserve enough identity to explain which agent, manifest, setup snapshot, workspace state, and sandbox state were used.
-
-These capability concepts do not authorize a snapshot store, restore workflow, reuse selector, or test matrix before a current backend and workflow require them.
-
-## Fork, Clone, And Rollback
-
-Fork, clone, and rollback are advanced agent session operations.
-
-They may be useful for experiments, parallel attempts, review branches, reproducible debugging, or sandbox recovery.
-
-If promoted later, they should be defined in terms of agent session state, workspace state, artifact lineage, and item history. They should not copy knowledge or secrets implicitly.
-
-## Crash Recovery
-
-If an agent session crashes, Core may decide whether to:
-
-- mark the current turn failed
-- retry the turn on a replacement session
-- resume from snapshot
-- ask the user for approval or clarification
-- keep partial items and artifacts as history
-
-Crash recovery policy belongs to Core and runtime adapters.
-
-The item log should remain coherent even if the agent session fails.
-
-The baseline fallback is explicit interruption plus a new authorized attempt. Automatic replacement, snapshot restore, or transparent continuation is optional and requires exact proof from an owning implementation-facing contract.
-
-## Replacement
-
-An agent session may be replaced without replacing the thread.
-
-Replacement is normal when a process crashes, a container is recreated, a remote agent is unavailable, a runtime version changes, or setup must be re-materialized.
-
-The replacement agent session should preserve turn and item history by reading the thread, not by inheriting hidden agent-private state unless an explicit resume path exists.
+- ordinary user surfaces offer continue-Thread and new-Thread behavior without exposing AgentSession selection, identity, history, or native handles
+- one Thread can accumulate historical AgentSessions but can never have more than one current AgentSession
+- successor admission atomically retires and fences its predecessor before the successor becomes current
+- exact transport reconnect preserves AgentSession, active-Turn, lease, worker, mode, and sequence identity
+- a later Turn can reuse the current AgentSession only after exact native-handle readiness and existing authorization and scheduling gates pass
+- active-Turn continuity loss preserves a truthful terminal or uncertain outcome and does not replay that Turn through a successor
+- two distinct Threads can retain independent AgentSessions in one compatible Harness without sharing authority, native state, cancellation, evidence, or outcome
+- missing, stale, conflicting, duplicate-current, restart, and dependency-failure cases fail closed without inferred continuity
+- ordinary AgentSession close removes its local binding without requiring deletion of a compatible shared Sandbox
 
 ## Invariants
 
-- AgentSession MUST mean runtime continuity and Core-to-agent scheduling, not thread, chat, knowledge, or task.
-- An agent session MUST belong to one workspace.
-- A turn MUST record which agent session executed it when execution occurs.
-- Agent sessions MUST NOT delete, copy, or mutate knowledge implicitly.
-- Agent sessions MUST NOT require the agent to expose a private task graph.
-- Snapshot, resume, fork, clone, and rollback MUST NOT copy secrets or knowledge implicitly.
-- Agent session reuse MUST NOT bypass manifest resolution, AEP compatibility, workspace synchronization, vault, permission, sandbox, audit, or required-feature checks.
-- Agent sessions MUST NOT treat unimported sandbox files, backend mounts, provider sessions, or worker-private caches as canonical workspace truth.
-- Failure to prove exact continuity MUST preserve the prior attempt as interrupted or terminal and MUST NOT be converted into an inferred resume, replacement, or successful completion.
+- AgentSession MUST mean the hidden Core runtime-continuity identity defined here.
+- An AgentSession MUST remain bound to exactly one Workspace and one Thread.
+- A Thread MUST have at most one current AgentSession and MAY retain historical predecessors.
+- An AgentSession MUST have at most one active Turn, and an active Turn MUST execute through exactly one AgentSession.
+- A connection, process, native handle, Harness, Sandbox, Runtime Epoch, or lease MUST NOT replace AgentSession identity.
+- A successor MUST NOT become current before its predecessor is terminal, non-reusable, and runtime-fenced.
+- An active Turn MUST NOT move between AgentSessions or be replayed as continuity.
+- Sharing runtime infrastructure MUST NOT merge AgentSession identity, authority, context, cancellation, evidence, or outcome.
+- AgentSession reuse MUST NOT bypass existing authorization, compatibility, scheduling, workspace, vault, permission, audit, or evidence owners.
+- Ordinary product surfaces MUST NOT expose AgentSession as a conversation or user action.

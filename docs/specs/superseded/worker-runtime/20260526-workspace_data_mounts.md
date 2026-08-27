@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260703-storage_layout_record_ownership.md`"
+decision-evidence: "`docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260703-storage_layout_record_ownership.md`"
+---
 # Workspace Data Mount Materialization
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260703-storage_layout_record_ownership.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

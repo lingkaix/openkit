@@ -6,7 +6,7 @@ Read `README.md` first. This file contains only local agent execution rules for 
 
 - Keep active specs at the root of `docs/specs/`; keep terminal specs only in the directory matching their canonical status.
 - Do not leave stale, obsolete, or known-wrong information in an active spec in a way that can mislead future implementation or review.
-- Update or archive obsolete specs with the lifecycle metadata, evidence, and substantive reasons required by `README.md`.
+- Update an obsolete active spec in place only while it remains active or Deprecated. Only the auditor may perform a final `Superseded`, `Retired`, or `Rejected` archive transition, with the lifecycle metadata, evidence, and substantive reasons required by `README.md`.
 - Do not use specs as task logs, release progress logs, or one-off implementation summaries.
 - If a related design document does not exist and a change has meaningful design trade-offs, create or update a spec before implementation proceeds.
 - Use `Status` for document authority and `Implementation` for implementation alignment. Do not use `Completed` as a spec status.
@@ -19,7 +19,7 @@ When writing or updating a spec:
 - Link to the relevant `docs/core/` documents instead of redefining their canonical concepts.
 - State what the spec owns and does not own near the top of the document.
 - Keep product vision, mission, and product-level principles out of specs unless the spec is explicitly projecting a core principle into an implementation contract.
-- Keep release progress, task history, and one-off implementation summaries in `docs/changes/` or `docs/working_logs/`, not in active specs.
+- Keep durable release context and implementation summaries in `docs/changes/`, and noisy progress in uncommitted working space, not in active specs.
 - Use cross-references when another active spec owns a related concept, protocol, or data shape.
 - Do not let a current implementation detail become a core concept by implication.
 
@@ -124,6 +124,8 @@ Archived specs are not active guidance. They MUST use the status matching their 
 When several specs describe one strongly related contract, create one consolidated root-level spec and move absorbed older contracts under `superseded/`.
 
 When a product surface or module is deleted or deliberately reset without contract continuity, move the old specs under `retired/`. A later clean-slate design does not retroactively supersede the retired contract.
+
+Only an auditor may make the final terminal metadata update and archive move, and it must produce the non-authorizing terminal-archive audit record in the same change. After that change lands, never edit, rename, move, or delete the archived file; use a new audit record for later observations and current guidance or a new root-level spec for renewed work.
 
 Do not leave active docs pointing at archived specs as the current entry point. Active docs should link to current guidance first and only link to archived specs when historical detail is explicitly needed.
 

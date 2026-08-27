@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Core Protocol
-
-Status: Accepted
 
 This document defines stable OpenKit core protocol semantics.
 
@@ -23,7 +24,7 @@ It must support:
 - item streaming
 - approval requests and decisions
 - artifact events and artifact references
-- agent definitions and agent session visibility
+- Agent definitions and internal AgentSession lineage
 - cancellation and interruption
 - resume where supported
 - readable errors
@@ -42,43 +43,13 @@ The protocol is not a raw agent-runtime protocol. ACP, A2A, MCP, Codex app-serve
 
 ## Primary Model
 
-The primary protocol hierarchy is:
-
-```text
-Workspace
-  Thread
-    Turn
-      Item[]
-```
-
-This hierarchy is the product model, communication model, and storage backbone.
-
-`Workspace` is the top-level work environment and execution boundary.
-
-`Thread` is a durable work container inside a workspace.
-
-`Turn` is one execution unit inside a Thread. A schedulable or worker Turn is Agent-bound; an owning accepted contract may define a Core-local service Turn that is sessionless only under the narrow no-worker and no-runtime-effect rule below.
-
-`Item` is the append-only communication and storage atom inside a turn.
+`docs/core/core-concepts.md` owns the `Workspace -> Thread -> Turn -> Item[]` hierarchy and the canonical definitions of those records. Protocol projects that model into commands, events, lifecycle states, replay, and error semantics without redefining it.
 
 ## Agent Control Model
 
-The protocol may expose agent and agent session summaries, but it must not expose runtime-private task graphs as required core objects.
+The protocol may carry AgentSession records for authorized internal coordination, persistence replay, audit, and operator diagnostics, but ordinary App API and client projections MUST NOT expose AgentSession as a conversation, navigation object, identifier, history, picker, or action.
 
-The agent control model is:
-
-```text
-Agent
-  AgentSession
-    Turn
-      Item[]
-```
-
-`Agent` is a schedulable supply unit available in a workspace.
-
-`AgentSession` is an initialized, reusable communication and scheduling handle between Core and an agent runtime.
-
-OpenKit does not use `AgentRun` or `TaskRun` as core protocol objects. Execution metadata belongs on `Turn`, `AgentSession`, `Item` payloads, or implementation-specific telemetry.
+`docs/core/runtime-model.md` owns the relationship between Agent, AgentSession, and worker Turn, while `docs/core/agent-session.md` owns AgentSession identity and continuity. Protocol may carry their stable internal records and redacted operator summaries but does not redefine their runtime semantics or expose private task graphs.
 
 ## Protocol Boundary
 
@@ -131,7 +102,7 @@ The first stable protocol family should define records for:
 - `EventEnvelope`
 - `ServerEvent`
 
-`TriggerSource` is not a peer Core Record; it is a `Turn` sub-field modeled as `TurnTriggerSourceSchema`. `Channel` is deferred to a future protocol family and has no schema yet.
+`docs/core/core-concepts.md` owns `TriggerSource` as a Turn sub-field and keeps `Channel` outside the current record family. Protocol schemas project that ownership without introducing peer records.
 
 Record schemas should be authored in the active machine-readable protocol schema package.
 
@@ -193,7 +164,7 @@ Required lifecycle families include:
 - turn status
 - item status
 - approval status
-- agent session status
+- AgentSession status
 
 ## Thread Semantics
 
@@ -203,25 +174,24 @@ Threads support create, list, get, resume, and archive semantics.
 
 Thread resume means re-entering an existing durable thread context so a client or channel can read history and submit new turns.
 
-Thread resume MUST NOT mean restoring an agent session, sandbox snapshot, or agent-private runtime state. Runtime resume belongs to `AgentSession`.
+Thread resume MUST NOT mean restoring an AgentSession, Sandbox snapshot, or Agent-private runtime state. AgentSession continuity remains an internal runtime concern.
 
-A thread may have multiple turns over time and may involve multiple agents or agent sessions.
+A Thread may have multiple sequential Turns and historical AgentSessions over time, but it has at most one current AgentSession and one non-terminal Turn.
 
-Thread is not an agent session and must not be coupled to exactly one runtime handle.
+Thread is not AgentSession and must not be coupled to exactly one runtime handle. An ordinary client continues a Thread or creates a new Thread; it never chooses or creates AgentSession.
 
 ## Turn Semantics
 
-A turn is one execution unit inside a thread.
+`docs/core/core-concepts.md` owns the `Turn` definition. This section owns its protocol lifecycle, command, gate, and stream semantics.
 
-A Turn executed by a worker or other schedulable Agent is assigned to exactly one Agent Session. A Core-local service Turn may execute with `agentSessionId=null` only when its owning accepted workflow contract forbids worker, scheduler, sandbox, and runtime-session effects and names the app-local service and durable result owners; a provider capability call alone does not create an Agent Session.
+A Turn executed by a worker or other schedulable Agent is assigned internally to exactly one AgentSession. A Core-local service Turn may execute with `agentSessionId=null` only when its owning accepted workflow contract forbids worker, scheduler, Sandbox, and AgentSession effects and names the app-local service and durable result owners; a provider capability call alone does not create an AgentSession.
 
 A turn can be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering.
 
-Typical terminal states are:
+The complete Turn terminal-state set is:
 
 - `completed`
 - `interrupted`
-- `cancelled`
 - `failed`
 
 Non-terminal states may include:
@@ -232,7 +202,7 @@ Non-terminal states may include:
 
 The core protocol does not define a `cancelling` turn state.
 
-Interrupt and cancellation commands are asynchronous commands. Clients MAY show a local in-flight UI state while waiting for the next authoritative turn event, but Core should emit only the stable turn states listed above unless a future protocol version adds another state.
+Interrupt and cancellation commands asynchronously request interruption; cancellation does not create a distinct terminal state. Clients MAY show a local in-flight UI state while waiting for the next authoritative Turn event, but Core emits only the stable Turn states listed above.
 
 New input should use the same core input semantics across web UI, desktop UI, chat channels, and future transports.
 
@@ -240,11 +210,21 @@ If a Thread has an active non-terminal Turn, follow-up user input is accepted on
 
 If a thread has no active turn, new user input starts a new turn.
 
+A Turn is created after its command, Thread, trigger, and required dependencies are accepted. Item appends and lifecycle transitions update it until exactly one terminal state is recorded. A terminal Turn is never reopened or rewritten; retry or recovery creates a new Turn under fresh admission and preserves the earlier terminal record. Missing dependencies fail before creation, and stale, replayed, conflicting, or wrong-owner commands MUST NOT create, retarget, duplicate, or terminalize a Turn. After restart, Core reconstructs current status and single-flight admission from durable Turn and Item records; runtime memory or a transport close is not authority.
+
+### Turn Interruption
+
+Interruption is append-only. Every finalized Item remains unchanged, the Turn becomes terminal `interrupted`, and no Item or effect is rolled back, rewritten, or deleted. The Item in flight is finalized from content already accumulated by Core and marked truncated rather than discarded.
+
+For a media channel, truncation records what Core generated, not what the user heard, saw, or otherwise perceived. The durable record MUST NOT assert delivery beyond the channel's own authoritative evidence.
+
+An interrupt request conflicts with an already terminal Turn and MUST NOT alter it. Missing, stale, duplicated, or dependency-failed interrupt requests follow ordinary command idempotency and error semantics and MUST NOT manufacture a terminal outcome. After restart, Core may finish interruption only from the durable request and exact Turn lineage; otherwise it preserves the existing state or reports recovery required instead of inferring success. Observable completion requires the exact terminal Turn and finalized Item history, including the truncated marker when an Item was in flight.
+
 ### Terminal Stream Failures
 
-Once a turn stream has started, the terminal `turn.completed` event MUST carry a `stopReason`. `stopReason` is carried on the terminal turn-completed event envelope, not as a field on the durable `Turn` record.
+Once a turn stream has started, the canonical exact-owner terminal-affiliated envelope defined by Stream Cursor And Replay MUST carry a `stopReason` in its `turn-completed` payload. `stopReason` is carried on that envelope, not as a field on the durable `Turn` record.
 
-Failures after stream start MUST be represented as a terminal `turn.completed` event or equivalent terminal record with `stopReason: "error"` or `stopReason: "aborted"` as appropriate.
+Failures after stream start MUST be represented by that canonical exact-owner terminal-affiliated envelope or an equivalent terminal record with `stopReason: "error"` or `stopReason: "aborted"` as appropriate.
 
 Provider, parser, timeout, and adapter failures after stream start MUST NOT leave the caller with only a half-open stream, opaque transport close, or client-side stream error.
 
@@ -445,7 +425,7 @@ When a turn waits on a question or elicitation, `Turn.humanGate` MUST be `{ kind
 
 `awaiting_human` is the only core turn state for human-gated pauses. Clients MUST choose approval UI or user-input UI from `humanGate.kind` and the referenced item type, not from the turn status string alone.
 
-When Core receives user input for a Turn that is paused on `user-input-request`, Core MUST attach that input to the same Turn instead of creating a new Turn. The owning accepted contract then decides whether that Turn continues `running` or closes as `completed`, `cancelled`, or `failed`.
+When Core receives user input for a Turn that is paused on `user-input-request`, Core MUST attach that input to the same Turn instead of creating a new Turn. The owning accepted contract then decides whether that Turn continues `running` or closes as `completed`, `interrupted`, or `failed`.
 
 Implementations MAY support only a subset of approval statuses, but clients should tolerate the full status family once advertised by protocol version or capability flag.
 
@@ -522,7 +502,7 @@ Minimum turn-stream guarantees:
 - every envelope has a monotonic `sequence` value for that stream
 - events are emitted in causal order
 - clients may ignore duplicate or stale events by sequence
-- `turn.completed` is terminal for the turn stream
+- only the canonical exact-owner terminal-affiliated envelope defined by Stream Cursor And Replay is terminal proof for the turn stream
 
 ## Stream Cursor And Replay
 
@@ -532,13 +512,28 @@ For a turn stream, a `since=N` cursor means the client has processed every event
 
 If the requested cursor is older than the retained replay window, Core MUST return `core.stream.cursor_expired`.
 
-A terminal turn event is authoritative proof that the turn stream is complete.
+A turn-stream envelope is terminal-affiliated when either its event marker is `turn.completed` or its payload discriminator is `turn-completed`.
 
-Status-aware HTTP replay MAY return `204 No Content` only when the reconnect cursor is already at or beyond a retained terminal event.
+Terminal affiliation and its disposition MUST NOT create a protocol schema, protocol record, durable state, or independent creation, update, recovery, or termination lifecycle; the existing Turn lifecycle remains authoritative, and this rule classifies only validation, cursor, delivery, and stream-processing behavior.
 
-`204 No Content` is the only silent terminal replay signal. Opaque SSE close events, transport errors, or EventSource error callbacks are not terminal proof unless the client has already observed a terminal event.
+A terminal-affiliated envelope is the canonical exact-owner terminal only when both markers are present, its embedded `Turn` passes the applicable protocol schema with status `completed`, `interrupted`, or `failed`, and both the envelope and embedded `Turn` match the subscribed Workspace, Thread, and Turn exactly. A canonical exact-owner terminal is authoritative proof that the turn stream is complete.
 
-Clients that cannot observe HTTP status MUST rely on a terminal event, a status-aware replay response, or a surfaced stream failure.
+A terminal-affiliated envelope is valid but semantically noncanonical when it passes the forward-compatible outer-envelope schema and every applicable embedded-record schema but does not satisfy every canonical exact-owner terminal condition. A client MUST validate the outer envelope and every applicable embedded record before advancing the cursor or deciding delivery.
+
+After validation, the existing sequence rule remains unchanged: a client MAY ignore a stale or duplicate envelope whose sequence is at or below the current cursor. A valid semantically noncanonical terminal-affiliated envelope above the cursor MUST advance the cursor, MUST be withheld from consumer delivery, MUST NOT count as terminal proof, and MUST allow processing to continue or reconnect from the latest cursor so a later canonical exact-owner terminal can be delivered.
+
+An invalid outer envelope or applicable embedded record MUST NOT advance the cursor, be delivered, or be treated as a semantically withheld event. The validation failure MUST terminate the current subscription's active stream attempt and all automatic reconnect or further transport processing for that subscription, and it MUST NOT terminalize the Turn.
+
+After such a validation failure, the failed subscription exposes no private cursor as recovery authority, performs no automatic recovery, and adds no public recovery shape. A later caller-created subscription supplies only a caller-owned `since` value or no `since`, and it may fail again until an authoritative read establishes usable state or a compatible client-server upgrade is installed.
+
+Observable conformance branches are:
+
+- A canonical exact-owner terminal above the cursor advances the cursor, is delivered once as terminal proof, and ends subscription processing.
+- A valid semantically noncanonical terminal-affiliated envelope above the cursor advances the cursor, produces no consumer event or terminal proof, and permits a later canonical exact-owner terminal through continued processing or replay from that advanced cursor.
+- An invalid outer envelope or applicable embedded record leaves the cursor unchanged, produces a validation failure rather than a delivered or silently withheld event, stops automatic reconnect and further processing, and leaves Turn terminality to an authoritative record.
+- A validated stale or duplicate envelope remains ignorable under the existing sequence rule and does not alter terminal proof.
+
+When the client cursor is already at or beyond a retained canonical exact-owner terminal, a transport MAY project terminal replay without sending another event, but only as an explicit status-aware confirmation. An opaque connection close, transport error, or callback is never terminal proof by itself. Core Protocol owns the classification, cursor, delivery, termination, and recovery semantics above; `docs/core/communication.md` and client contracts own only their concrete projections and MUST preserve them.
 
 ## Commands
 
@@ -558,7 +553,7 @@ Required command families include:
 - invoke an Artifact mutation command only where an accepted owning specification defines it
 - list or read item history
 
-HTTP endpoints, SDK method names, and app-specific convenience commands belong in `docs/app-api.md`, `docs/core/communication.md`, or generated client packages.
+Concrete HTTP endpoints, app-specific commands, and SDK method names belong to their accepted owning specifications and executable projections in shared schemas, route registrations, and generated clients. `docs/core/communication.md` retains transport semantics.
 
 ## Command Idempotency
 
@@ -585,21 +580,19 @@ For turn-scoped commands, Core SHOULD also include `threadId` and `turnId` in th
 
 For workspace creation, where no workspace ID exists before the command is accepted, Core MAY use a server-local global scope.
 
-A completed command receipt is the default replay authority. The receipt stores the original response resource identifiers; replay returns those identifiers and projects current state from the owning records. Exact byte-for-byte response reconstruction is not required, and callers may re-query the returned resources.
+A completed command receipt is the default replay authority. Replay projects current state from the authoritative result owners rather than reconstructing an earlier response byte for byte, and callers may re-query those owners.
 
 If a duplicate command is received while an explicit accepted in-progress owner exists, Core MAY return that owner's current status rather than creating duplicate turns, approvals, artifacts, or items. An in-progress owner does not authorize Core to infer a completed receipt.
 
-If request-owned effects exist without a completed receipt, the central default is `409 recovery_required` with no repeated effect, inferred winner, synthesized receipt, settlement state, or repair workflow. The only accepted missing-receipt effect-completion exception is the S60/S61 Knowledge review decision: after its exact accepted review is durable, the same decision request may complete only that proposal's fixed absent page write when the proposal, review, request, actor, source, target, bytes, digest, authorization, and validation tuple all match. Audit and the completed receipt must then become durable before success is reported. Every other partial or contradictory state returns `409 recovery_required`; this exception adds no receipt fields, record, settlement, repair, or recovery workflow and is not precedent for another command.
+If request-owned effects exist without a completed receipt, Core MUST return `recovery_required` without repeating an effect, inferring a winner, synthesizing a receipt, or adding a settlement, repair, or recovery workflow. An accepted owning contract MAY permit the identical request to resume only an explicit in-progress operation whose complete immutable request-owned proof that contract defines is present. Missing, partial, or contradictory proof returns `recovery_required`. A bounded resume does not extend receipt metadata or establish precedent for another command.
 
-The idempotency ledger MUST store only non-secret metadata: command name, request ID, scope IDs, a canonical input hash, response resource kind and ID, creation timestamp, and expiry timestamp. It MUST NOT store a response-body snapshot, drive a business transition, replace an owning record, or become a command lifecycle.
+The idempotency ledger MUST store only non-secret metadata needed to bind the immutable command identity and semantic input to authoritative result owners. It MUST NOT store business content or a response-body snapshot, drive a business transition, replace an owning record, or become a command lifecycle.
 
-The sole accepted receipt-metadata exception is `chat.start` under `docs/specs/20260704-chat_mode_assistant.md`. Its receipt MAY additionally store only `resultKind`, the original HTTP success status, and the downstream Task Turn or Goal and Goal Turn identifiers required by a handoff. These fields remain non-secret and non-authoritative, MUST NOT drive a business transition, and are not a precedent for another command. No other command may extend receipt metadata without an explicit update to this Core contract and its owning accepted specification.
+Baseline completed-receipt metadata is a closed set: command name, caller `requestId`, the smallest stable non-secret scope identifiers, canonical semantic-input hash, response resource kind and id, `createdAt`, and `expiresAt`. It MUST NOT contain an arbitrary result, request body, or HTTP response snapshot. An accepted command-specific owner MAY define only a closed non-authoritative replay-metadata exception that creates no precedent for another command.
 
-S16's immutable `SteeringTerminalOutcome` is a named Workspace business owner, not receipt metadata or an exception to this rule. Its terminal-command receipt stores only that owner's resource kind and id and projects the bounded result from the owner.
+By default, `expiresAt` MUST be exactly seven days after `createdAt`. An accepted bounded exception MAY instead tie retention to an exact explicit in-progress owner. While that exact owner exists, the retained receipt remains valid replay authority. When no such exception is active, a receipt is replay authority only before expiry; at `referenceTime >= expiresAt`, it MUST be treated as absent and MAY be pruned. Ordinary expiry absence and pruning resume after the in-progress owner terminates. Expiry, or the end of the bounded exception, MUST NOT authorize inferred success or response reconstruction: existing request-owned effects without a valid completed receipt follow `recovery_required`.
 
-It MUST NOT store prompts, knowledge content, context package content, provider config, OAuth state, secrets, full request bodies, or full response bodies.
-
-If the same command, scope, and `requestId` are reused with different semantic input, Core MUST reject the request with `409` and `idempotency_key_conflict`.
+If the same command, scope, and `requestId` are reused with different semantic input, Core MUST reject the request with `idempotency_key_conflict`.
 
 ## Capability Discovery
 
@@ -616,7 +609,7 @@ Capability metadata may include:
 - workspace resource support
 - knowledge editing support
 - question or elicitation support
-- agent session visibility support
+- product-safe runtime availability support
 
 Capability discovery is a protocol concern; the exact endpoint is a transport projection.
 
@@ -629,7 +622,7 @@ Examples:
 - `core.interrupt`
 - `core.knowledge.edit`
 - `core.questions`
-- `core.agent_session.visible`
+- `core.runtime.availability`
 - `core.stream.replay`
 - `core.item_delta.snapshot_updated`
 - `core.item_delta.request_started`
@@ -707,14 +700,15 @@ Secret values and provider-native sensitive payloads must not appear in protocol
 - Clients MUST NOT infer routing, storage paths, timestamps, ownership, or provider identity from ID shape.
 - Raw heterogeneous live events without the core event envelope MUST NOT be part of the core protocol.
 - Mutating and asynchronous commands MUST carry a caller-provided `requestId`.
-- Command replay MUST use the central receipt-and-current-owner policy; missing receipts MUST fail as `recovery_required` unless one already accepted command-specific exception proves its complete request-owned tuple.
+- Command replay MUST use the central receipt-and-current-owner policy; without a completed receipt, Core MUST NOT repeat completed effects or infer or synthesize success, and only an explicit accepted in-progress owner may resume its exact request. Every other incomplete or contradictory state MUST fail as `recovery_required`.
+- A Thread MUST NOT have more than one non-terminal Turn.
+- A Turn MUST terminate only as `completed`, `interrupted`, or `failed`, and a terminal Turn MUST NOT be reopened or rewritten.
+- Interruption MUST preserve finalized Items and finalize server-accumulated in-flight content as truncated without claiming unsupported media delivery.
 - Protocol errors MUST use stable machine-readable codes and MUST NOT leak secret values or provider-native sensitive payloads.
 
 ## Schema Source Of Truth
 
-The machine-readable protocol source of truth should live in the active protocol schema package.
-
-The preferred authoring stack is TypeScript and Zod, with generated JSON Schema for non-TypeScript consumers.
+The active protocol schema package MUST hold the machine-readable protocol source of truth.
 
 Schema authoring rules:
 
@@ -722,13 +716,12 @@ Schema authoring rules:
 - use stable discriminator fields such as `type`, `kind`, `status`, or `event`
 - keep durable records, mutation requests, mutation responses, and event payloads as separate named schemas
 - use string timestamps on the wire
-- avoid schema transforms or validators that cannot be represented in JSON Schema
 
 ## Compatibility
 
 OpenKit is currently in internal development, so protocol evolution optimizes for a strict current contract instead of retaining old wire shapes.
 
-Current protocol validators must reject old records that omit required fields, old item deltas that omit `itemType`, old event envelopes and API error records that omit `protocolVersion`, and old command-execution items that omit `output`.
+Current protocol validators MUST reject removed wire shapes rather than silently accepting them. Concrete retired shapes belong in their owning specifications, change records, and conformance fixtures.
 
 Protocol changes that alter public records, events, commands, generated schemas, conformance fixtures, or client-facing semantics require an accepted spec and a protocol version bump.
 
@@ -766,7 +759,6 @@ running
 awaiting_human
 completed
 interrupted
-cancelled
 failed
 ```
 
@@ -797,7 +789,7 @@ artifact-updated
 context-injection-updated
 ```
 
-Agent session status:
+AgentSession status:
 
 ```text
 created
@@ -811,6 +803,8 @@ interrupted
 failed
 closed
 ```
+
+`created`, `initializing`, `ready`, `busy`, `idle`, `degraded`, and `suspended` are non-terminal AgentSession statuses and therefore identify current continuity for the bound Thread. `interrupted`, `failed`, and `closed` are terminal and historical; a terminal AgentSession MUST NOT transition back to a non-terminal status. Successor creation requires no non-terminal AgentSession for that Thread.
 
 ## Related Docs
 

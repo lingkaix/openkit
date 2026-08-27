@@ -1,6 +1,6 @@
 #:schema https://developers.openai.com/codex/config-schema.json
-model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+#model = "gpt-5.6-sol"
+#model_reasoning_effort = "high"
 #service_tier = "fast"
 sandbox_mode = "danger-full-access"
 approval_policy = "on-request"
@@ -10,22 +10,43 @@ goals = true
 [tui]
 notification_condition = "always"
 [agents]
-max_threads = 12
+enabled = true
+default_subagent_model = "gpt-5.6-sol"
+default_subagent_reasoning_effort = "high"
+max_concurrent_threads_per_session = 12
 
-[agents.research]
-description = "Research existing projects and produce or update reference reports for improving this repository. Use primary sources first, then use DeepWiki as a co-researcher to cross-check findings, compare interpretations, and reduce omissions."
+# Each spawnable role is an optional capability. Its operational instructions
+# live in its config_file; the registry description is only a discoverability aid.
+
+[agents.researcher]
+description = "Research external projects from primary sources and retain independent evidence under temp/."
 config_file = "agents/researcher.toml"
 nickname_candidates = ["Archivist", "Surveyor", "Analyst"]
 
+[agents.test-author]
+description = "Derive the smallest useful failing check from accepted intent or an owning contract."
+config_file = "agents/test-author.toml"
+nickname_candidates = ["Oracle", "Prover", "Specifier"]
+
 [agents.builder]
-description = "Implementation-focused project builder for making scoped code, test, documentation, and verification changes in this repository."
+description = "Implement the smallest coherent change within explicitly owned writable paths."
 config_file = "agents/builder.toml"
-nickname_candidates = ["Builder", "Implementer", "Integrator"]
+nickname_candidates = ["Builder", "Maker", "Integrator"]
 
 [agents.reviewer]
-description = "Codex review-mode project reviewer focused on correctness, regressions, security, tests, and repository-rule compliance."
+description = "Perform normal independent pre-acceptance review of a material artifact for correctness, completeness, ownership, and simplicity."
 config_file = "agents/reviewer.toml"
-nickname_candidates = ["Reviewer", "Auditor", "Inspector"]
+nickname_candidates = ["Reviewer", "Inspector", "Adjudicator"]
+
+[agents.verifier]
+description = "Falsify key blocker, closure, or design claims, or perform a fresh-context direction check before a durable commitment after compaction, after a Reframe, or on resume."
+config_file = "agents/verifier.toml"
+nickname_candidates = ["Falsifier", "Skeptic", "Prober"]
+
+[agents.auditor]
+description = "Audit long-horizon repository integrity, run governed measurements, or execute an engineer-approved terminal archive."
+config_file = "agents/auditor.toml"
+nickname_candidates = ["Calibrator", "Instrument", "Assayer"]
 
 [mcp_servers.deepwiki]
 url = "https://mcp.deepwiki.com/mcp"

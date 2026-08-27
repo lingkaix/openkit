@@ -7,7 +7,7 @@ They translate core concepts, boundaries, and principles into concrete,
 verifiable design contracts for modules, protocols, data models, lifecycle
 rules, migration paths, and implementation work.
 
-Use [`docs/change-tracking.md`](../change-tracking.md) as the canonical policy for how specs relate to stable core docs, change records, and working logs.
+Use [`docs/change-execution.md`](../change-execution.md) as the canonical policy for how specs relate to stable core docs and change records.
 
 ## Purpose
 
@@ -40,7 +40,7 @@ Do not put these in specs:
 
 - Product vision, mission, product-level principles, or broad system philosophy that belongs in `docs/product-vision.md` or `docs/core/`.
 - Canonical definitions already owned by `docs/core/`; specs may reference or project them, but must not redefine them.
-- Task logs, release progress logs, implementation journals, or one-off summaries that belong in `docs/changes/` or `docs/working_logs/`.
+- Task logs, release progress logs, implementation journals, or one-off summaries that belong in change records or uncommitted working space.
 - Raw research notes or external references; distill accepted conclusions into a design decision instead.
 - Detailed code walkthroughs unless they are needed as a current implementation projection.
 - Repeated explanations of concepts already covered by another active spec; use cross-references instead.
@@ -56,7 +56,7 @@ Do not use specs as task logs, release progress logs, or one-off implementation 
 - `docs/core/` owns stable core model decisions.
 - `docs/specs/` owns implementation-facing design contracts, alternatives, consequences, rollout plans, migration plans, and unresolved questions.
 - `docs/changes/` owns curated lifecycle records for material PRs, standalone important changes, and release summaries.
-- `docs/working_logs/` owns archived long-run release PRDs, task lists, and progress logs.
+- Uncommitted working space such as `temp/` holds noisy long-run release PRDs, task lists, and progress logs until closeout distills durable context into a change record.
 
 Core documents define canonical concepts once. Specs reference those concepts and
 describe how they are realized for a concrete module, protocol, data shape, or
@@ -95,6 +95,8 @@ Workflow, human attention, and verification:
 
 Worker runtime, supply, and synchronization:
 
+- [`20260802-nanohost_runtime_and_transport.md`](./20260802-nanohost_runtime_and_transport.md)
+- [`20260801-nanohost_workspace_data_boundary.md`](./20260801-nanohost_workspace_data_boundary.md)
 - [`20260616-agent_environment_package.md`](./20260616-agent_environment_package.md)
 - [`20260703-agent_manifest_aep_resolution.md`](./20260703-agent_manifest_aep_resolution.md)
 - [`20260629-worker_runtime_communication_model.md`](./20260629-worker_runtime_communication_model.md)
@@ -102,8 +104,8 @@ Worker runtime, supply, and synchronization:
 - [`20260716-codex_worker_adapter.md`](./20260716-codex_worker_adapter.md)
 - [`20260716-opencode_worker_adapter.md`](./20260716-opencode_worker_adapter.md)
 - [`20260716-pi_worker_adapter.md`](./20260716-pi_worker_adapter.md)
-- [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md)
 - [`20260708-container_image_packaging.md`](./20260708-container_image_packaging.md)
+- [`20260721-worker_execution_environment_images.md`](./20260721-worker_execution_environment_images.md)
 - [`20260704-session_static_workspace_materialization.md`](./20260704-session_static_workspace_materialization.md)
 - [`20260704-workspace_data_source_catalog.md`](./20260704-workspace_data_source_catalog.md)
 - [`20260703-runtime_scheduling_scale.md`](./20260703-runtime_scheduling_scale.md)
@@ -132,17 +134,22 @@ Storage, knowledge, policy, vault, audit, and metering:
 - [`20260704-vault_backend_implementation.md`](./20260704-vault_backend_implementation.md)
 - [`20260703-openshell_mechanism_internalization.md`](./20260703-openshell_mechanism_internalization.md)
 - [`20260703-audit_usage_evidence_records.md`](./20260703-audit_usage_evidence_records.md)
+- [`20260731-operational_telemetry_standardization.md`](./20260731-operational_telemetry_standardization.md)
 - [`20260704-workspace_backup_export_import.md`](./20260704-workspace_backup_export_import.md)
 - [`20260710-self_improvement_evaluation_loop.md`](./20260710-self_improvement_evaluation_loop.md)
 - [`20260711-evaluation_harness_design.md`](./20260711-evaluation_harness_design.md)
+
+Deprecated transition specifications remain at the root only while their documented legacy behavior is still implemented. Load their `Current Guidance` before reading historical contract text, do not extend them, and move them to the matching terminal directory only after their migration exit condition is proved.
+
+- [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md) — legacy per-session Cell implementation pending Runtime Epoch cutover and deletion
 
 Capability and provider slices:
 
 - [`20260526-llm_gateway_responses_api.md`](./20260526-llm_gateway_responses_api.md)
 - [`20260703-pi_ai_provider_gateway_adoption.md`](./20260703-pi_ai_provider_gateway_adoption.md)
 - [`20260708-pi_ai_unified_llm_backend.md`](./20260708-pi_ai_unified_llm_backend.md)
+- [`20260721-provider_subscription_accounts.md`](./20260721-provider_subscription_accounts.md)
 - [`20260704-capability_usage_gateway_foundation.md`](./20260704-capability_usage_gateway_foundation.md)
-- [`20260526-codex_chatgpt_subscription_login.md`](./20260526-codex_chatgpt_subscription_login.md)
 - [`20260522-vendor_snapshot_packages.md`](./20260522-vendor_snapshot_packages.md)
 - [`20260711-skill_catalog_versioning_pinning.md`](./20260711-skill_catalog_versioning_pinning.md)
 
@@ -221,12 +228,7 @@ Accepted -> Retired
 Deprecated -> Accepted
 ```
 
-`Deprecated` is transitional: the old behavior still exists and needs current
-documentation, but it must not be extended. `Superseded`, `Retired`, and
-`Rejected` are terminal document-authority states. A terminal spec may return
-to an active state only through an explicit new decision that explains why the
-earlier terminal decision no longer applies. Returning a `Deprecated` spec to
-`Accepted` likewise requires an explicit decision that cancels the deprecation.
+`Deprecated` is transitional: the old behavior still exists and needs current documentation, but it must not be extended. `Superseded`, `Retired`, and `Rejected` are terminal document-authority states, and a terminal spec never returns to an active state. Renewed work continues in named current guidance or a new root-level specification with a new identity and links the terminal-archive audit as history only when one exists. Returning a `Deprecated` spec to `Accepted` requires an explicit decision that cancels the deprecation.
 
 ## Lifecycle Evidence
 
@@ -236,7 +238,7 @@ following metadata near the top:
 ```markdown
 Status Changed: YYYY-MM-DD
 Current Guidance: <repository-relative link or None>
-Decision Evidence: <change record, PR, issue, or commit link>
+Decision Evidence: <successor Core or specification path, audit record, PR, issue, or commit link>
 ```
 
 It MUST also include a substantive `Lifecycle Reason` section. Every archived
@@ -250,6 +252,7 @@ section.
 
 Additional rules depend on the terminal state:
 
+- For a terminal transition performed after the auditor-owned archive rule was adopted, `Decision Evidence` MUST name the repository terminal-archive audit, not a change record or commit link alone. Specs already archived before adoption require no audit backfill; the bytes committed with the rule adoption become their freeze baseline.
 - `Deprecated` MUST link to current guidance and include a `Rollout / Migration Plan` with an exit condition.
 - `Superseded` MUST identify the replacement authority in `Current Guidance`; the replacement must actually absorb or continue the old contract or substantive proposal.
 - `Retired` MUST use `Current Guidance: None` for the ended contract. Related new work may be linked as context, but it must not be presented as a replacement unless the contract continues.
@@ -271,6 +274,10 @@ needs historical retention; do not create the directory speculatively.
 Root-level current specs MUST use `Draft`, `Accepted`, or `Deprecated`.
 Archived specs MUST use the status matching their directory. Directory
 placement never substitutes for explicit lifecycle metadata and evidence.
+
+Only an auditor may perform the final terminal metadata update and move into `docs/specs/superseded/`, `docs/specs/retired/`, or, once a real rejected proposal requires it, `docs/specs/rejected/`. The move and its non-authorizing audit record land together, and that commit freezes the archived bytes. A terminal spec is never edited, renamed, moved again, or deleted; later corrections and observations use a new audit record, and renewed work uses current guidance or a new active spec.
+
+The auditor-owned terminal-archive rule is not a separate migration mandate. Files already under a terminal archive before adoption require no audit backfill; any authorized evidence corrections included in the rule-adoption change land first, and those resulting bytes are then frozen. Do not create `docs/specs/rejected/` or its validator branch before the first real rejected archive requires it.
 
 ## Internal Development Compatibility Rule
 

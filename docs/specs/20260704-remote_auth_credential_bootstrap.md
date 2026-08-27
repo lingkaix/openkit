@@ -1,31 +1,32 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Remote Auth Credential Bootstrap
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
-- The OpenKit access-token format, lifecycle, and the closed v1 scope set.
+- The human remote-access token format, lifecycle, and closed v1 scope set.
 - The server-mode first-boot bootstrap ceremony that establishes the owner `User` and the first credential.
-- The channel authentication contract for the bundled `openkit` CLI and any remote coordinator calling NanoCore with a token.
+- The human remote-access channel authentication contract for the bundled `openkit` CLI and any remote coordinator calling NanoCore with a human remote-access token.
 - Client-side credential storage rules for Skill-capable AI applications and the bundled CLI process.
-- Transport requirements for accepting bearer tokens on non-loopback interfaces.
-- Token rotation, revocation, and the independence of `Token` and `AuthSession` revocation.
-- The actor-context resolution and audit-label binding for token-authenticated requests.
+- Transport requirements for accepting human remote-access bearer tokens on non-loopback interfaces.
+- Human remote-access token rotation, revocation, and the independence of human-owned `Token` and `AuthSession` revocation.
+- The actor-context resolution and audit-label binding for human remote-access token-authenticated requests.
 
 ## Does Not Own
 
 - Canonical identity concepts. `docs/core/identity.md` owns `User`, `AuthSession`, `Token`, `WorkspaceMember`, `AutomationIdentity`, and actor-context terminology; this spec realizes only the current human-`User`-owned remote-auth contract.
 - Authorization policy evaluation, roles, or permission decisions. Those belong to `docs/specs/20260629-openkit_policy_model.md` and `docs/specs/20260703-policy_enforcement_mapping.md`.
-- Multi-user Workspace membership, invitations, fixed roles, owner transfer, and user lifecycle, which are owned by `docs/specs/20260715-multi_user_workspace_system.md`.
+- Canonical Workspace membership and user lifecycle, which are owned by `docs/core/identity.md`. Multi-user invitation, fixed-role, and owner-transfer mechanics belong to `docs/specs/20260715-multi_user_workspace_system.md`.
 - User-owned external-service secrets and provider credentials. Those belong to the vault specs (`docs/specs/20260703-vault_secret_injection.md`).
 - Better Auth implementation details, table layout, or session-cookie mechanics beyond their appearance in the Current Implementation Projection.
 - Worker sandbox session tokens and lease-bound worker authentication, owned by the scheduler and worker control protocol specs.
+- The NanoHost transport token family owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`: its tokens belong to a configured NanoHost `IntegrationIdentity`, use the distinct `nanohost-transport` token type and scope, authenticate only the NanoCore-to-NanoHost transport, and follow that specification's lifecycle. Reuse is limited to the `okt_` opaque-secret format, CSPRNG generation, hashing, constant-time verification, and redaction primitives; that reuse transfers no authority to this specification.
 
 ## Core References
 
 - `docs/core/identity.md`
-- `docs/deployment.md`
 - `docs/core/permissions.md`
 - `docs/core/vault.md`
 - `docs/core/audit.md`
@@ -34,7 +35,7 @@ Implementation: Partial
 
 This spec fills the remote-auth gap deferred by `docs/specs/20260628-nanocore_config_identity_contract.md`: how a server-mode NanoCore deployment mints its first credential, how the bundled CLI and remote coordinators authenticate afterward, and how Skill-capable clients store credential material safely.
 
-The clean target is a single credential family: server-issued opaque access tokens realizing the `Token` identity concept. Tokens carry a `okt_` prefix for leak scanning, are stored hashed, are shown exactly once at issuance, and belong to a small closed scope set. Server mode mints a one-time owner bootstrap token on first boot and delivers it only through the secure operator mechanism defined below; local mode keeps its implicit local-user posture unchanged. The bundled CLI authenticates with `OPENKIT_NANOCORE_TOKEN` as an explicit ephemeral bearer-token override or resolves a persistent token from supported credential storage. Clients prefer a secret-safe OS credential-store writer and otherwise use the permitted encrypted fallback, never plaintext config. Bearer tokens are refused over non-loopback plaintext HTTP.
+The clean target for human remote access is a single credential family: server-issued opaque access tokens owned by a responsible human `User` and realizing the `Token` identity concept. Tokens carry a `okt_` prefix for leak scanning, are stored hashed, are shown exactly once at issuance, and belong to the small closed human remote-access scope set below. Server mode mints a one-time owner bootstrap token on first boot and delivers it only through the secure operator mechanism defined below; local mode keeps its implicit local-user posture unchanged. The bundled CLI authenticates with `OPENKIT_NANOCORE_TOKEN` as an explicit ephemeral bearer-token override or resolves a persistent token from supported credential storage. Clients prefer a secret-safe OS credential-store writer and otherwise use the permitted encrypted fallback, never plaintext config. Bearer tokens are refused over non-loopback plaintext HTTP.
 
 ## Goals
 
@@ -77,24 +78,26 @@ NanoCore owns opaque access-token issuance and verification as the remote channe
 
 - A token secret MUST be the fixed prefix `okt_` followed by a random secret with at least 256 bits of entropy from a cryptographically secure source, encoded so the full secret is a single URL-safe string. The prefix exists so secret scanners and redaction filters can match OpenKit tokens; redaction tooling SHOULD treat any `okt_`-prefixed string as credential material.
 - NanoCore MUST store only a strong one-way hash as durable credential authority. Access-token plaintext MUST be returned exactly once over its protected issuance response and MUST NOT be persisted, logged, or retrievable afterward. The bootstrap credential may exist only in the owner-readable one-time file or explicitly secure delivery destination defined below.
-- The `Token` record MUST carry: token id (UUIDv7), owner user id (the responsible human `User` in V1), scope, issued time, expiration time, revocation time, rotation lineage (predecessor token id and rotation grace expiry when rotated), status (`active`, `expired`, `revoked`, `rotated` per `docs/core/identity.md`), and a last-used summary (last-used time, channel, and coarse source summary; no full request logs).
+- The human remote-access `Token` record MUST carry: token id (UUIDv7), owner user id (the responsible human `User` in V1), scope, issued time, expiration time, revocation time, rotation lineage (predecessor token id and rotation grace expiry when rotated), status (`active`, `expired`, `revoked`, `rotated` per `docs/core/identity.md`), and a last-used summary (last-used time, channel, and coarse source summary; no full request logs). This human owner field does not apply to NanoHost transport tokens, whose owner is the configured NanoHost `IntegrationIdentity` under their owning specification.
 - Token read models MUST expose the token id and a short non-secret display fragment at most; they MUST NOT expose the hash or any recoverable secret material.
 
 ### Scopes
 
-Scopes are a small closed set in v1:
+Human remote-access token scopes are a small closed set in v1:
 
 - `server-admin`: deployment-administration authority, including token issuance and revocation, user administration, server config, backup, recovery, and data-root operations; it does not imply Workspace content authority.
 - `workspace`: read and write product operations bound to an explicit list of workspace ids recorded on the token.
 - `workspace-readonly`: read-only product operations bound to an explicit list of workspace ids.
 
+This closed set applies only to the human remote-access token family. It neither includes nor governs the NanoHost token type and scope `nanohost-transport`.
+
 Rules:
 
-- A token MUST carry exactly one scope. `workspace` and `workspace-readonly` tokens MUST carry at least one workspace id; `server-admin` tokens MUST NOT carry workspace bindings.
+- A human remote-access token MUST carry exactly one scope. Human remote-access `workspace` and `workspace-readonly` tokens MUST carry at least one workspace id; human remote-access `server-admin` tokens MUST NOT carry workspace bindings.
 - Scope checks are authentication-layer gates. Passing a scope check MUST NOT be treated as a permission decision; policy evaluation still applies downstream, per `docs/core/permissions.md`.
 - Requests outside a token's scope MUST fail with a typed authorization error that does not reveal whether the target resource exists.
-- Every Better Auth session actor and bearer-token actor, including a `server-admin` token actor, MUST be checked against the token owner's current active Workspace membership and product role on every workspace-addressed product request. A missing membership verifier MUST fail closed. Workspace-scoped tokens MUST additionally be bound to the addressed Workspace; `server-admin` tokens are exempt only from the token-binding field, never from membership or policy evaluation.
-- Membership revocation MUST retain the membership edge with `status = "removed"`; hard deletion is not a supported revocation mechanism because it discards the tombstone. Workspace creation and workspace import MUST record the owner membership transactionally. Request-time filesystem discovery MUST NOT synthesize missing membership, revive an existing `removed` edge, or replace the first workspace registry owner.
+- Every Better Auth session actor and human remote-access bearer-token actor, including a `server-admin` token actor, MUST be checked against the human token owner's current active Workspace membership and product role on every workspace-addressed product request. A missing membership verifier MUST fail closed. Human remote-access Workspace-scoped tokens MUST additionally be bound to the addressed Workspace; `server-admin` tokens are exempt only from the token-binding field, never from membership or policy evaluation.
+- Membership tombstones, implicit-revival prohibition, and explicit reactivation follow `docs/core/identity.md`. Workspace creation and workspace import MUST record the owner membership transactionally and MUST NOT replace the first workspace registry owner.
 - Global App Search requests made by `workspace` or `workspace-readonly` tokens MUST search only token-bound workspaces with active membership. The same visible workspace set MUST constrain workspace, thread, knowledge, artifact, and item results; removing active membership MUST remove that workspace from subsequent search results and the removal MUST survive NanoCore restart.
 - Deployment-wide data-root administration routes MUST accept only the implicit local actor in local mode or a `server-admin` token in server mode. A Better Auth session, `workspace` token, or `workspace-readonly` token MUST NOT confer data-root administration authority.
 
@@ -108,6 +111,8 @@ Rules:
 - Local mode keeps the implicit local user posture from `docs/specs/20260628-nanocore_config_identity_contract.md`: no bootstrap token, no ceremony, loopback trust unchanged.
 
 ### Channel authentication
+
+In `Channel authentication`, `Transport requirements`, and `Rotation and revocation`, every unqualified token, bearer-token, token actor, and `Token` record means only the human remote-access token family. The NanoHost transport token family remains outside every route, actor, TLS, rotation, revocation, and `AuthSession`-interaction rule in those subsections.
 
 - The bundled CLI and any remote coordinator MUST authenticate to server-mode NanoCore with a scoped token presented as `Authorization: Bearer <token>`.
 - The bundled CLI MUST resolve the token from the client credential store or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override. The `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` raw passthrough variables remain removed with no compatibility alias, per the internal development compatibility rule.
@@ -127,7 +132,7 @@ Rules:
 ### Transport requirements
 
 - NanoCore MUST refuse bearer-token authentication over plaintext HTTP on non-loopback interfaces. Server mode MUST present TLS — either natively or via a fronting proxy that the deployment declares — before tokens are accepted on non-loopback addresses.
-- Loopback interfaces continue to accept tokens over plaintext HTTP so local development and the desktop-embedded posture in `docs/deployment.md` keep working.
+- Loopback interfaces continue to accept tokens over plaintext HTTP for local development and desktop-embedded operation.
 - The refusal MUST be a typed startup or request error naming the transport requirement, not a silent downgrade or a warning-only acceptance.
 
 ### Rotation and revocation
@@ -137,6 +142,7 @@ Rules:
 - `AuthSession` records and `Token` records MUST be revocable independently. Revoking a user's sessions MUST NOT revoke their tokens, and vice versa; an owner-initiated "revoke all credentials" action is a composite of both.
 - A rotated or revoked token MUST NOT be reactivatable; recovery is issuing a new token.
 - `server-admin` tokens MUST be able to list, issue, rotate, and revoke tokens through public App API routes; those routes are the only token administration surface, and bundled CLI token-administration operations MUST be facades over them.
+- A durable human access-token row whose scope is outside the closed set above is not a historical read-model variant and MUST NOT be projected, authenticated, rewritten into a current scope, or retained behind a compatibility filter. The one accepted internal-development retirement is a one-way Core migration that deletes an exact `workspace-readwrite` row only when its durable status is already `revoked` and no surviving Token row names it as `predecessorTokenId`. The same transaction MUST append one redacted server-owned system `AuditEvent` for each retired Token, preserve every pre-existing audit row, delete the candidate, prove no unsupported scope remains, and publish the migration ledger entry. Any unproved lineage, audit-publication failure, non-revoked `workspace-readwrite` row, or other unsupported scope MUST roll back Token deletion, new audit rows, and ledger publication and block product startup without deleting, reissuing, rotating, or repairing a Token. A later retry is a new boot after explicit operator correction through a separately accepted recovery owner; normal boot invents no recovery authority.
 
 ## Accepted Design
 
@@ -155,6 +161,7 @@ The NanoCore token, bootstrap, authorization, audit, `@openkit/core-client`, and
 - Local mode resolves the implicit local user via `LOCAL_USER_ID`; this spec does not change that path.
 - NanoCore implements `okt_` opaque secret generation with at least 256 bits of entropy, versioned SHA-256 token hashing, constant-time verification, closed v1 scope-shape validation, active / expired / revoked / rotated usability checks, durable server-scope `openkit_access_tokens` records, and server-mode bearer verification in `apps/nanocore/src/auth/middleware.ts`. Current token records are owned by a human `User`; no `AutomationIdentity` token owner or membership path is implemented. Protected routes resolve token actors without exposing token material, and NanoCore refuses bearer tokens over non-loopback plaintext HTTP before verification.
 - NanoCore exposes `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, `POST /api/app/auth/tokens/:tokenId/revoke`, and `POST /api/app/auth/tokens/:tokenId/rotate`; only `server-admin` token actors can administer tokens, list/revoke/rotate responses expose only redacted records, and create/rotate return plaintext once. `@openkit/core-client` exposes the same routes, while the bundled CLI exposes `token.list` and `token.revoke` and machine-checks create/rotate as explicit exclusions until a safe named destination exists. Successful CLI-authenticated requests send stable `openkit-cli` / `agent-skill` channel metadata for the redacted last-used summary.
+- The closed-scope write and response schemas and the one-way Core migration are implemented. The migration removes only exact unreferenced revoked `workspace-readwrite` history, appends one redacted server system audit event per removal, rejects every other unsupported durable scope, and publishes its ledger entry in the same transaction; the token-list route and exact presented-secret authentication remain unchanged.
 - Better Auth session actors and every bearer-token actor, including `server-admin`, require active membership for workspace-addressed requests; a missing membership verifier fails closed, workspace-scoped tokens additionally enforce route-level workspace bindings, and workspace-readonly tokens reject mutating methods with non-echoing `core.auth.scope_forbidden` failures. Server-mode first boot issues a distinct one-time bootstrap token when the OpenKit `users` table is empty, writes the plaintext only to an owner-readable data-root emission file, and exposes `POST /api/app/auth/bootstrap/consume` as the public one-shot route that atomically creates the owner `User` and returns the first `server-admin` access token once.
 - Successful bootstrap consumption, access-token issuance, token revocation, and token rotation now emit server-owned general `AuditEvent` rows through the existing audit recorder. The rows use stable token lifecycle action names and redacted token ids, scopes, owners, and authenticated actor ids when present; they do not store bootstrap token values, plaintext `okt_` secrets, token hashes, keychain material, fallback encrypted-file contents, or authorization headers.
 - Token records target the server-scope database in the layout owned by `docs/specs/20260703-storage_layout_record_ownership.md`.
@@ -185,6 +192,7 @@ This is new machinery plus one same-change removal, not a compatibility migratio
 3. The former MCP server switched to `OPENKIT_NANOCORE_TOKEN` and deleted the cookie/authorization passthrough before the user-facing MCP package was removed.
 4. The client credential-store helper reads OS keychain entries first and encrypted fallback files second. Linux and Windows setup writes use stdin-backed keychain commands; macOS setup uses encrypted fallback until a safe non-argv keychain writer is available, without adding a dependency solely for that write.
 5. The bundled CLI adopted the credential-store and bootstrap contracts, added secret-safe direct storage for one-time token material, and replaced the former MCP credential path without a compatibility surface.
+6. One Core migration deletes only unreferenced revoked rows with the exact retired `workspace-readwrite` scope, appends one redacted server system audit event per deletion, then proves no unsupported scope remains before publishing its migration id. The migration transaction rolls back on surviving rotation lineage, audit failure, any non-revoked retired row, or any unknown scope; the App API schema and list query gain no legacy branch.
 
 Fresh dogfooding deployments authenticate by consuming the one-time bootstrap token. Existing data roots require an existing `server-admin` token; locked-out deployments require a separately defined operator data-root recovery procedure, and this change does not allow an ordinary Better Auth session to elevate through token-administration routes.
 
@@ -194,6 +202,7 @@ Mapped to the L0-L6 model in `docs/specs/20260529-test_strategy.md`:
 
 - L0: repository checks that no plaintext `okt_` secret appears in committed files, examples, or fixtures other than clearly fake documented placeholders; schema-drift checks for the `Token` record shape.
 - L1: unit tests for secret generation entropy and prefix shape, hash-and-lookup verification, status transitions (`active` to `expired`/`revoked`/`rotated`), rotation-grace math, scope-to-route gating, bootstrap single-consumption logic, and credential-store resolve order including fallback warning emission, encrypted fallback non-plaintext storage, and stdin-backed Linux/Windows keychain writes with secret-free argv.
+- L1: Core migration tests seed one current Token plus unreferenced revoked `workspace-readwrite` history and prove only the retired row is removed, one redacted retirement audit is appended, every pre-existing audit row and every column of the current Token including hash and lineage is unchanged, the migration id is published once, a second boot is idempotent, and the migrated list route returns the current record through the unchanged closed response schema. Separate surviving-lineage, non-revoked-retired, unknown-scope, and audit-publication-failure cases MUST leave every Token row, audit row, and migration-ledger row unchanged.
 - L2: contract tests binding the auth middleware to the actor-context shape: token-authenticated requests produce actor context with identity, token id, and channel; audit label producers receive it; verification failures are uniform and non-echoing; tokens in query strings, bodies, and cookies are rejected.
 - L3: NanoCore black-box tests cover fresh server-mode bootstrap, single consumption, scoped-token isolation, revocation, rotation, and plaintext transport refusal; bundled CLI black-box coverage must authenticate end to end through supported credential resolution.
 - L4: not applicable until Web UI token administration screens exist.
@@ -224,7 +233,6 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 ## Links
 
 - `docs/core/identity.md`
-- `docs/deployment.md`
 - `docs/core/permissions.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/core/audit.md`

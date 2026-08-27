@@ -1,13 +1,16 @@
+---
+status: Accepted
+implementation: Partial
+---
 # OpenKit Test Strategy
-
-Status: Accepted
-Implementation: Implemented
 
 ## Owns
 
-This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, deterministic gate policy, smoke and artifact health posture, real-provider opt-in rules, and the relationship between AI-assisted story tests and lower-level regression coverage.
+This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, deterministic gate policy, test data and fixture hygiene, smoke and artifact health posture, real-provider opt-in rules, and the relationship between AI-assisted story tests and lower-level regression coverage.
 
 ## Does Not Own
+
+This spec does not own what makes a verdict believable: oracle classification, harness admission, the effect-domain and observation-channel rules, and the execution-environment rules including the container rule and the real-use host manifest belong to `docs/verification-instruments.md`. This spec decides which layer proves which invariant; that document decides whether the instrument deciding it can be believed, and states its own application scope.
 
 This spec does not own individual test implementation files, CI workflow syntax, release management policy, story file content, browser UI design, provider credentials, or package-specific test commands beyond the layer contract.
 
@@ -28,6 +31,8 @@ The repository already has package unit tests, NanoCore black-box e2e tests, Web
 This spec makes those layers explicit, defines the responsibilities and boundaries for each layer, and adds an agentic story testing model for AI-assisted product acceptance.
 
 The testing system should be deterministic by default, evidence-rich at the browser and process boundaries, and strict about reducing discovered failures into lower-level regression tests.
+
+Test-first is the strong default for a known feature or defect, not a universal ordering rule. When the failure, environment, or deciding oracle is unknown, a focused probe may establish the fact before a regression is written; once the behavior is understood, the lowest-sufficient lasting proof remains required.
 
 ## Goals
 
@@ -53,6 +58,8 @@ The testing system should be deterministic by default, evidence-rich at the brow
 
 Tests should sit at the lowest layer that can prove the behavior.
 
+Choose test order according to what is known. Name and observe the intended red result before production implementation when a contract already defines the failure. Probe first when a test would otherwise encode an unverified premise or exercise an unadmitted instrument. Neither path permits shipping changed behavior without durable evidence.
+
 L0-L6 is a taxonomy of available proof boundaries, not a checklist for every feature, bug, command, or state transition. One invariant should normally have one primary regression at the lowest sufficient layer and at most one higher-layer check for a distinct integration risk.
 
 Verification depth is risk-proportional:
@@ -70,9 +77,9 @@ Integration and e2e tests should prove boundaries that unit tests cannot represe
 
 Smoke tests should be shallow, fast, and release-artifact-oriented.
 
-AI story tests should search for product intent failures and produce evidence, then any confirmed defect should become a deterministic regression test at the lowest appropriate layer.
+`docs/specs/20260529-l6_story_acceptance.md` owns L6 execution, evidence, and defect-reduction mechanics.
 
-The normal test gate must not require real OpenAI, ChatGPT subscription, Codex login, external network, or browser profile state.
+The normal test gate must not require real OpenAI, ChatGPT subscription, Codex login, external network, or browser profile state. `docs/verification-instruments.md` owns the container rule, its one exception, and the platform-divergence rule that makes more than one execution environment affordable, together with the effect-domain rule that decides what it means when the lowest sufficient layer turns out to need an effect its subject does not own.
 
 Opt-in tests may use real providers or real local host tools, but they must be explicitly named and skipped by default.
 
@@ -86,7 +93,7 @@ Opt-in tests may use real providers or real local host tools, but they must be e
 | L3 | NanoCore black-box integration and e2e | Does NanoCore boot and satisfy its API, SSE, storage, auth, and worker contracts as a process? | Release, selected PRs | Vitest e2e harness, temporary data roots, HTTP clients, built NanoCore |
 | L4 | Web browser e2e | Can a real user complete visible UI workflows in a browser? | Release, selected PRs | Playwright, Vite, NanoCore test server, browser traces |
 | L5 | Smoke and artifact health tests | Do built packages, staging routes, and containers start and expose minimum health? | Release and deployment | Build scripts, Docker/staging scripts, health probes, packaged-route Playwright |
-| L6 | Agentic story acceptance tests | Does the product satisfy realistic intent across a complete use case? | Nightly, release candidate, manual review | AI agent runner, Playwright or Chrome DevTools MCP, story specs, evidence bundles |
+| L6 | Agentic story acceptance tests | Does the product satisfy realistic intent across a complete use case? | Release candidate, manual review | See `docs/specs/20260529-l6_story_acceptance.md` |
 
 ## Existing Entrypoints
 
@@ -98,7 +105,7 @@ The root tag release gate is `pnpm -w verify:release`.
 
 The root explicit full local gate is `pnpm -w verify:full`.
 
-`verify:full` adds Web Playwright e2e and deterministic story acceptance to the release gate.
+`verify:full` adds Web Playwright e2e to the release gate.
 
 NanoCore package-local tests run with `pnpm --filter @openkit/nanocore test`.
 
@@ -109,8 +116,6 @@ Web unit and component tests run with `pnpm --filter @openkit/web test`.
 Web browser e2e runs with `pnpm --filter @openkit/web e2e`.
 
 Web staging browser e2e runs with `pnpm --filter @openkit/web e2e:staging`.
-
-Deterministic L6 story acceptance runs with `pnpm --filter @openkit/web e2e:stories` or `pnpm -w test:stories`.
 
 Built-artifact smoke tests run with `pnpm -w test:smoke`.
 
@@ -199,7 +204,7 @@ Web e2e must operate through a real browser and visible UI flows.
 
 The default implementation should use Playwright because it is deterministic, CI-friendly, and already part of `apps/web`.
 
-Chrome DevTools MCP is useful for manual reproduction, exploratory debugging, authenticated local browser checks, and AI story execution, but the committed deterministic CI suite should prefer Playwright.
+Chrome DevTools MCP is useful for manual reproduction, exploratory debugging, and authenticated local browser checks, but the committed deterministic CI suite should prefer Playwright.
 
 Browser tests should start isolated NanoCore and Vite processes on dynamic ports unless they intentionally target a packaged staging route.
 
@@ -233,37 +238,9 @@ If a smoke test needs more than a minimal boot path, that behavior belongs in Na
 
 ## L6 Agentic Story Acceptance Tests
 
-L6 story tests use a user or AI agent to exercise one important product intent through a supported public Skill, CLI, API, or UI surface.
+L6 is the agent-first, opt-in product-intent layer. `docs/specs/20260529-l6_story_acceptance.md` owns its admission, story, execution, evidence, and failure contracts.
 
-The detailed L6 selection rule, story artifact contract, bounded execution modes, evidence proportionality, failure semantics, and defect reduction policy are defined in `docs/specs/20260529-l6_story_acceptance.md`.
-
-They are valuable when a material product failure can appear only across supported public boundaries or during realistic use.
-
-They must not replace deterministic tests.
-
-They should run after deterministic unit, contract, e2e, and smoke tests are already healthy.
-
-They are best suited for intentional release-candidate validation, dogfooding, and exploratory acceptance.
-
-Each story must be a versioned artifact in the repository once the runner exists.
-
-Story acceptance MUST reuse an existing runner or ordinary product client. A feature-specific runner or acceptance harness requires a separate present platform need; proving one feature is not sufficient justification.
-
-Each story must define one intent, preconditions, allowed setup, public user steps, observable outcomes, deterministic oracles, bounded cleanup, and failure classification. Add evidence or flake policy only when it changes the acceptance decision or materially shortens triage.
-
-The AI agent should use the product's supported public surface and an existing client or browser tool. It must not bypass that surface with private state mutation during the user-flow portion.
-
-The AI agent may inspect logs and network records for evidence, but it must not mutate backend state directly unless the story explicitly marks that step as setup or cleanup.
-
-The pass/fail decision must include machine-checkable assertions where possible.
-
-Acceptable assertions include DOM state, URL state, persisted API state, emitted protocol events, server logs without secret leakage, artifact existence, and expected terminal turn status.
-
-Subjective AI judgement may annotate product quality issues, but subjective judgement alone is not enough to pass a blocking story.
-
-When a story finds a defect, the follow-up work must add or update the lowest-layer deterministic regression test that can catch the defect next time.
-
-Detailed story metadata, body sections, execution boundaries, and evidence rules belong to `docs/specs/20260529-l6_story_acceptance.md`.
+A fixed mechanical proof belongs at L3 when it drives NanoCore or another public process boundary, or at L4 when it drives the browser. A confirmed defect found at L6 receives its deterministic regression at the lowest sufficient layer.
 
 ## Test Data And Environment Policy
 
@@ -283,6 +260,8 @@ Network access should be disabled or mocked by default unless the test is explic
 
 Quota-consuming provider tests must include a clear environment variable gate and must not run in normal CI by accident.
 
+The container rule and its one exception, the platform-divergence rule, oracle classification, and harness admission were previously stated in this specification and are now owned by `docs/verification-instruments.md`. A check chooses its layer under this specification and is believed under that one.
+
 ## CI And Release Gates
 
 Pull requests should run only the lightweight repository check by default.
@@ -291,7 +270,7 @@ Ordinary branch pushes should not run CI by default.
 
 Version tags matching `v*.*.*` or `V*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`.
 
-Manual workflow dispatch should expose `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `deterministic-stories`, `release-gate`, and `full` selections.
+Manual workflow dispatch should expose `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full` selections.
 
 The release gate should run `pnpm -w verify:release`.
 
@@ -315,11 +294,16 @@ Staging browser e2e tests should stay under `apps/web/e2e/staging/` or a more sp
 
 Docker and packaging smoke tests should stay near the build scripts or package that owns the artifact.
 
-Executable story artifacts live under `tests/stories/`.
+L6 story artifacts live under `tests/stories/`; their contract and execution support are owned by `docs/specs/20260529-l6_story_acceptance.md`.
 
-Deterministic story adapters live under `tests/story-runner/`.
+The current mechanical acceptance proofs belong to these deterministic layers:
 
-The first runner is Playwright-backed and deterministic. A future `executor: agentic` path may reuse the same story contract with an AI-operated browser agent.
+| Proof | Name | Destination |
+| --- | --- | --- |
+| C01 | `openkit-local-self-check` | L4 Web browser e2e |
+| C02 | `pi-ai-gateway-real-provider` | L3 opt-in real-provider e2e |
+| C03 | `task-mode-real-worker-release` | L3 opt-in real-worker e2e |
+| C04 | `provider-subscription-real-lifecycle` | L3 opt-in real-provider e2e |
 
 ## Failure Evidence
 
@@ -331,9 +315,17 @@ Web e2e should preserve Playwright traces, screenshots, videos when enabled, bro
 
 Smoke tests should preserve build output, container logs, health responses, process exit status, and startup timing.
 
-Agentic story tests should preserve the story file version, agent transcript, browser evidence, server evidence, network evidence, final assertions, and a concise triage note.
+L6 evidence follows `docs/specs/20260529-l6_story_acceptance.md`.
 
 Evidence must redact secrets before it is committed, uploaded, or pasted into a change record.
+
+L3 opt-in real-provider tests use a stricter failure-evidence contract than the general NanoCore list above. Each writes one owner-only (`0600`) redacted terminal result per attempted run, after that run's cleanup attempt settles and including when lifecycle work or cleanup fails. The result must retain enough to attribute a failure to product behavior rather than an external cause, and must never retain raw SSE, error text, request or response payloads, credential material, file paths, provider-private values, or durable product records. Evidence that cannot separate a product failure from a provider or environment failure is insufficient, not merely terse.
+
+Cleanup always runs to settlement. When lifecycle work and cleanup both fail, the first lifecycle failure controls both the reported phase and the propagated error; the later cleanup failure is reported only as its own outcome, never replaces the first failure, and retains no raw secondary error. When cleanup is the first failure, it controls the reported phase and propagates.
+
+Terminal failure classification is derived only from a parsed public Gateway terminal payload's error code, is restricted to the fixed public failure vocabulary owned by `docs/specs/20260526-llm_gateway_responses_api.md`, and maps every missing, non-string, or unrecognized code onto one generic fallback. A raw provider code is never retained. Run cardinality is fixed by the test rather than by its caller: at most one diagnostic cardinality override may exist per test, every other explicit value must be rejected before auth-source content access or any provider effect, and that override authorizes no general runner parameterization or additional lifecycle variant.
+
+`apps/nanocore/e2e/provider-subscription-real-lifecycle-runner.test.mjs` is the executable projection of this contract for C04 and holds no authority of its own. It owns the exact summary field set and types, the phase values, the code enumeration, and the override's name; this specification owns only the invariants above.
 
 ## Coverage Expectations
 
@@ -351,15 +343,15 @@ For worker scheduling, high-risk coverage means launch authorization, exact work
 
 ## Current Implementation Projection
 
-The testing-layer contract owned by this spec is implemented:
+The repository implements the established layer gates and deterministic test placement:
 
-- Root scripts expose the accepted gates: `verify`, `verify:l0-l2`, `verify:release`, `verify:full`, `test:e2e:nano`, `test:e2e:web`, `test:smoke`, `test:stories`, and the explicitly gated real-provider or real-worker story commands.
-- `.github/workflows/ci.yml` implements the accepted trigger posture: lightweight PR checks, tag-triggered release gate jobs for L0-L2, NanoCore e2e, and smoke, plus manual workflow dispatch for `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `deterministic-stories`, `release-gate`, and `full`.
-- Unit, contract, NanoCore e2e, Web e2e, staging e2e, smoke, and deterministic story entrypoints exist in the repository-owned locations named by this spec.
-- Story artifacts live under `tests/stories/`, bounded story support lives under `tests/story-runner/`, and the root deterministic story command runs the shared story-support checks plus one Web Workspace, Thread, and diagnostics self-check. The unified Skill and bundled CLI keep their deterministic contract coverage at L1-L3 rather than restoring transport-specific L6 runners. The retired simulator sequence that continued one scheduler-backed Turn through approval, user input, and Artifact production is not acceptance evidence because it has no Task or Goal checkpoint owner.
-- Real Codex and provider-dependent story paths remain opt-in and outside the default deterministic gate.
+- Root scripts expose the accepted deterministic gates: `verify`, `verify:l0-l2`, `verify:release`, `verify:full`, `test:e2e:nano`, `test:e2e:web`, and `test:smoke`, plus explicitly gated real-provider and real-worker L3 commands.
+- `.github/workflows/ci.yml` implements the accepted trigger posture: lightweight PR checks, tag-triggered release gate jobs for L0-L2, NanoCore e2e, and smoke, plus manual workflow dispatch for `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full`.
+- Unit, contract, NanoCore e2e, Web e2e, staging e2e, and smoke entrypoints exist in the repository-owned locations named by this spec.
+- `apps/web/e2e/openkit-local-self-check.spec.ts` is the C01 L4 entrypoint under `pnpm -w test:e2e:web`. The C02-C04 L3 entrypoints are `apps/nanocore/e2e/pi-ai-real-provider-runner.mjs`, `apps/nanocore/e2e/task-mode-real-worker-runner.mjs`, and `apps/nanocore/e2e/provider-subscription-real-lifecycle-runner.mjs`, behind `pnpm -w test:e2e:real-provider`, `pnpm -w test:e2e:real-task-mode`, and `pnpm -w test:e2e:real-subscription` respectively.
+- L6 story artifacts remain outside the deterministic gate and follow `docs/specs/20260529-l6_story_acceptance.md`.
 
-The remaining agentic story executor and story-catalog growth work are owned by `docs/specs/20260529-l6_story_acceptance.md` and remain deferred there rather than keeping this layer-model spec partial.
+Remaining L6 work is owned by `docs/specs/20260529-l6_story_acceptance.md`.
 
 ## Risks And Mitigations
 
@@ -373,7 +365,7 @@ Mitigation: Use temporary data roots, fake providers, deterministic workers, and
 
 Risk: AI story tests become non-reproducible.
 
-Mitigation: Version stories, constrain tools, collect evidence, require deterministic assertions, and reduce every confirmed failure into a lower-layer regression test.
+Mitigation: Apply the L6 acceptance contract and reduce every confirmed failure into a lower-layer regression test.
 
 Risk: Contract drift appears first in Web e2e.
 
@@ -389,23 +381,20 @@ Mitigation: Keep PR gates to the lightweight repository check, run L0-L3 plus L5
 
 ## Resolved Decisions
 
-- Future stories should use deterministic Playwright adapters only when the workflow is stable, cheap, selector-friendly, and suitable for repeatable machine assertions.
-- Future stories should use an agentic browser runner when the workflow is long, exploratory, judgement-heavy, layout-sensitive, or intended for dogfooding and product-intent review rather than narrow regression.
+- Stable, fixed browser workflows belong at L4; stable, fixed NanoCore or public process workflows belong at L3.
 - No additional staging or Docker smoke check is mandatory beyond the current built-artifact smoke job until a concrete deployment target or release-candidate policy promotes it.
-- This strategy does not choose a fixed first-three agentic story set; the L6 catalog or release-candidate plan should select stories by risk, current product surface, evidence cost, and failure-reduction value.
 
 ## Deferred Work
 
-- Add a story catalog or metadata report when the number of committed L6 stories grows enough to require filtering by tag, environment, risk, executor, or release target.
-- Promote only stable and cheap L6 stories into deterministic adapters or explicit release-candidate manual gates.
+- Promote only stable and cheap mechanical proofs into L3, L4, or explicit release-candidate manual gates.
 - Revisit mandatory staging or Docker smoke gates only when a concrete packaged deployment path becomes release-critical.
 
 ## Related Docs
 
 - `README.md`
-- `docs/change-tracking.md`
+- `docs/verification-instruments.md`
+- `docs/change-execution.md`
 - `docs/app-api.md`
-- `docs/core/protocol.md`
 - `docs/specs/20260529-l6_story_acceptance.md`
 - `docs/specs/superseded/agent-workflow/20260526-nano_core_lightweight_agents.md`
 - `docs/specs/20260528-core_client_boundary.md`

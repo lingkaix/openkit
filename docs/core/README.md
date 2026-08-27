@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Core
-
-Status: Accepted
 
 This folder holds the stable OpenKit core model and the governance rules for promoting durable system concepts.
 
@@ -31,10 +32,10 @@ Core documents are not implementation plans. They should not define full databas
 Use these layers when deciding where content belongs:
 
 - `docs/core/` contains the stable core concepts, models, lifecycle vocabulary, protocol semantics, contract-evolution rules, and architecture boundaries. Once promoted, these docs become canonical for their aspect.
-- `docs/deployment.md` contains deployment placement, release artifact, container, remote, and managed runtime doctrine. It is deployment guidance that must preserve Core semantics, not a core aspect owner.
+- `docs/deployment.md` is a platform reference containing calibrated deployment judgments and a direct link index to owning documents and executable or operator projections; it owns no deployment doctrine.
 - `docs/product-vision.md` contains product-level mission, positioning, audience, and high-level product direction. Module-level principles belong in the relevant core aspect document.
 - `docs/specs/` contains implementation-facing decisions, adapter-specific contracts, migration plans, unresolved trade-offs, and future work that must not appear as core doctrine until promoted.
-- `docs/app-api.md` contains app-specific endpoints, UI read models, diagnostics, settings, quick chat, and gateway APIs.
+- `docs/app-api.md` is a platform reference containing calibrated App API judgments and direct owner and generated-projection link indexes; concrete endpoints, read models, and gateway APIs remain with their accepted specifications and executable owners.
 - `temp/research/` contains temporary external research evidence packages that are not committed. Durable findings must be promoted into specs, core docs, change records, or other canonical project documents with stable source citations.
 - `docs/changes/` contains material change lifecycle records and closeout summaries.
 
@@ -52,7 +53,7 @@ Specs that introduce durable concepts must include a core-alignment explanation:
 
 Core documents must not depend downward on specs. Specs may cite core documents as stable doctrine, but core documents must not cite specs as authority, implementation detail, related reading, or deferred ownership.
 
-Core documents must not contain unresolved questions. If a candidate decision is not stable enough for core, keep it in the owning spec, change record, roadmap, or working log until it is ready to promote.
+Core documents must not contain unresolved questions. If a candidate decision is not stable enough for core, keep it in the owning spec, change record, roadmap, or uncommitted working space until it is ready to promote.
 
 ## Aspect File Standard
 
@@ -107,7 +108,7 @@ The current required core aspect set contains 20 documents. Future merge or reti
 ### Execution And Communication
 
 - `runtime-model.md` — agent execution model.
-- `agent-session.md` — runtime continuity, agent sessions, snapshots, resume, fork, and recovery.
+- `agent-session.md` — AgentSession identity, hidden continuity, exact reconnect, and replacement.
 - `agent-workflow.md` — Core workflow mechanisms, workflow modes and recipes, default setup, bounded steps, gates, evidence, and graph boundaries.
 - `protocol.md` — core protocol semantics.
 - `communication.md` — commands, events, streaming, and transport projections.
@@ -118,15 +119,15 @@ The current required core aspect set contains 20 documents. Future merge or reti
 - `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
 - `knowledge.md` — workspace knowledge, source references, proposals, review, and context injection.
-- `agent-supply.md` — agent catalogs, setup contracts, profiles, readiness, capability summaries, and supply model.
+- `agent-supply.md` — agent catalogs, Agent Manifests, profiles, readiness, capability summaries, and supply model.
 
 ### Capability, Governance, And Control
 
 - `agent-capability.md` — runtime capability supply, gateway projection, transformer, vault injection, usage, audit metadata, and rate-limit boundary for worker agents.
 - `permissions.md` — authorization, policy, roles, attributes, grants, and enforcement.
-- `sandbox.md` — execution isolation, runtime environments, containment, snapshots, and resource boundaries.
+- `sandbox.md` — execution isolation, runtime environments, containment, and resource boundaries.
 - `audit.md` — stable audit projections over items, permission decisions, capability calls, vault use, and runtime events.
-- `metering.md` — system-wide measurement principles, current non-gateway usage categories, aggregation boundaries, and future budget and cost direction.
+- `metering.md` — system-wide measurement principles, attribution, aggregation, and cost projection boundaries.
 
 ### Evolution And Compliance
 
@@ -142,22 +143,22 @@ This index routes readers to the owner of each canonical term family. The owner 
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection | `work-model.md` |
 | App, Core, Agent layer boundary, Agent Adapter, workspace service, generative kernel, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
-| Agent, Runtime, turn assignment, runtime lifecycle | `runtime-model.md` |
+| Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
 | Client/Core communication, Core/agent communication, transport projections, communication planes | `communication.md` |
 | Storage, file-system-first source of truth, SQLite companion store, item log persistence | `storage.md` |
 | User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
-| SecretVault, VaultReference, VaultGrant, VaultInjection, VaultAudit | `vault.md` |
+| SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
 | Knowledge Store, Knowledge Page, Knowledge Source, Knowledge Proposal, Knowledge Review, Knowledge Manager, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
-| AgentProfile, AgentCatalog, AgentCatalogEntry, AgentSetupContract, catalog readiness, setup materialization | `agent-supply.md` |
+| AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization | `agent-supply.md` |
 | Permission, Subject, Action, Resource, Context, PermissionDecision, enforcement point | `permissions.md` |
 | Sandbox, sandbox scope, isolation area, sandbox summary, backend containment | `sandbox.md` |
 | AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `agent-capability.md` |
 | AuditEvent, audit projection, audit producer boundary | `audit.md` |
-| UsageRecord, usage unit, attribution, cost projection | `agent-capability.md` |
-| System-wide measurement, non-gateway runtime, storage and network consumption, aggregation and cost direction | `metering.md` |
-| AgentSession, continuity, snapshot, resume, fork, clone, rollback, crash recovery | `agent-session.md` |
-| Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence, Workflow Graph, dependency, attempt, branch, join, lineage | `agent-workflow.md` |
+| UsageRecord, capability-call usage units and attribution | `agent-capability.md` |
+| System-wide measurement policy, non-gateway runtime, storage and network consumption, cross-producer aggregation, Cost projection | `metering.md` |
+| AgentSession, continuity, exact reconnect, interruption, fresh-session fallback | `agent-session.md` |
+| Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence | `agent-workflow.md` |
 | Stability classes, stabilization mechanisms, contract evolution, strict parsing, conformance dimensions, fixture expectations | `contract-evolution.md` |
 
 ## Reading Order
@@ -191,8 +192,14 @@ All core aspect files are accepted as current doctrine for their aspect. Treat e
 
 Promote an idea into `docs/core/` only when the concept is clear enough to become part of the stable model and has an identified aspect owner.
 
-Do not promote implementation-specific fields before the abstract model is agreed. Keep adapter-native, provider-native, route-specific, schema-specific, database-specific, and UI-specific details in specs, App API docs, package docs, or implementation docs unless they need a stable core abstraction.
+Do not promote implementation-specific fields before the abstract model is agreed. Keep adapter-native, provider-native, route-specific, schema-specific, database-specific, and UI-specific details in accepted specifications, package guides, generated OpenAPI artifacts, or implementation docs unless they need a stable core abstraction.
 
-Retire or merge a core document only after its canonical terms, principles, invariants, open points, related specs, and incoming references have been migrated to an explicit surviving owner.
+An engineer-approved decision or accepted surviving authority must authorize a Core retirement before execution. Only an auditor performs the final metadata transition and archive move, after every canonical term, principle, invariant, open point, related specification, and inbound current-guidance link has an explicit disposition.
+
+When historical retention is necessary, the auditor moves the final document under `docs/core/retired/` and produces one non-authorizing audit record in the same change. The audit records the accepted decision, exact source and archive paths, complete authority-criterion receiver inventory, every inbound current-guidance link disposition, and final SHA-256. No archived Core document exists today, so do not create that directory or its validator support until a real retirement requires it.
+
+A retained Core archive uses `status: Retired`, `current-guidance: None`, and `decision-evidence` linking the same-change retirement audit. It includes a substantive `Lifecycle Reason` explaining why its authority ended and how its authority-bearing criteria were disposed, plus a distinct substantive `Retention Reason` naming the historical evidence worth keeping.
+
+The retirement change freezes the archived Core document. It is never edited, renamed, moved again, or deleted; later observations use a new audit record, and renewed authority uses `status: Accepted` in a new active Core document at a different repository-relative path.
 
 Archived `Superseded`, `Retired`, and `Rejected` specs may preserve history, but they are not active decision logs. New durable decisions should either update the relevant core document or be recorded in a current spec at the root of `docs/specs/`.

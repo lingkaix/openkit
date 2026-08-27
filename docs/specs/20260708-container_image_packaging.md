@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Container Image Packaging And Release Publishing
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
@@ -10,6 +11,7 @@ Implementation: Partial
 - The machine-readable image manifest used by local scripts and GitHub Actions.
 - The release tag to GHCR publishing contract for OpenKit-owned images.
 - The version, tag, label, digest, and provenance rules for published images.
+- The boundary between a published release artifact and Core product truth, including what an image may never contain and what publishing an image may never change.
 - The migration path away from root-level Dockerfiles and staging-specific script names.
 
 ## Does Not Own
@@ -19,6 +21,7 @@ Implementation: Partial
 - Worker-facing control, capability, inference, data, and evidence protocols, which are owned by `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-worker_control_protocol.md`, and `docs/specs/20260703-worker_agent_capability.md`.
 - Agent Environment Package field semantics, which are owned by `docs/specs/20260616-agent_environment_package.md`.
 - OpenShell provider, policy, vault, and evidence internalization, which is owned by `docs/specs/20260703-openshell_mechanism_internalization.md`.
+- Runtime Epoch lifecycle, Sandbox Integration, RelayStream, route credentials, and runtime transport, which are owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 - Kubernetes, Helm, Docker Compose, installer, desktop-app, or platform-specific deployment packaging.
 - npm package publishing, language package versioning, or third-party marketplace distribution.
 
@@ -31,9 +34,13 @@ Implementation: Partial
 - `docs/core/agent-capability.md`
 - `docs/core/vault.md`
 - `docs/core/audit.md`
+
+## Related Docs
+
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-openshell_mechanism_internalization.md`
@@ -62,7 +69,7 @@ containers/
   worker-pi/
     Dockerfile
     smoke.sh
-  dev-e2e/
+  test-env/
     Dockerfile
     smoke.sh
 scripts/docker/
@@ -85,7 +92,7 @@ Goals:
 3. Make `containers/images.json` the only machine-readable image catalog.
 4. Publish release images to GHCR from version tags.
 5. Keep GHCR image tags, OCI labels, and GitHub release notes traceable to one Git commit and one Git tag.
-6. Prefer OpenShell Community sandbox base images for worker images, with digest pinning.
+6. Use upstream OpenShell Community sandbox images as a reviewed environment and policy reference while keeping the OpenKit worker base digest-pinned and contract-specific.
 7. Keep OpenKit worker contracts inside OpenKit-owned worker shims.
 8. Remove staging-specific names from future release packaging.
 9. Make image smoke checks mandatory before publishing.
@@ -93,8 +100,8 @@ Goals:
 
 Non-goals:
 
-- Do not build a new OpenKit-specific generic worker base image until real repeated worker image layers justify it.
-- Do not publish `dev-e2e` by default on product release tags.
+- Do not publish a fourth OpenKit-specific generic worker base image; shared worker layers remain an internal multi-stage build detail.
+- Do not publish `test-env` by default on product release tags.
 - Do not make one universal worker image for Codex, OpenCode, Pi, and future agents.
 - Do not make OpenShell gateway state, OpenShell policy YAML, or OpenShell provider records canonical OpenKit release artifacts.
 - Do not introduce Docker Compose, Helm, Kubernetes, or desktop-app packaging in this spec.
@@ -126,12 +133,13 @@ The repository-owned image classes are:
 | Image id | Release artifact | Purpose | Base image rule |
 | --- | --- | --- | --- |
 | `app` | Yes | Product app image containing NanoCore, Web UI, public HTTP entrypoint, migrations, and data templates. | Use a pinned Node runtime base that matches repository Node policy. |
-| `worker-codex` | Yes | OpenShell sandbox payload for Codex worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base, then add OpenKit worker packages and Codex-specific runtime layer. |
-| `worker-opencode` | Yes | OpenShell sandbox payload for OpenCode worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base, then add OpenKit worker packages and OpenCode-specific runtime layer. |
-| `worker-pi` | Yes | OpenShell sandbox payload for Pi worker execution through OpenKit worker shim. | Prefer pinned OpenShell Community base or a pinned upstream Pi sandbox base only if it already satisfies OpenShell sandbox assumptions. |
-| `dev-e2e` | No by default | Local and CI diagnostic toolbox for browser/e2e/debug work. | Use the smallest practical debug base for the test surface. |
+| `worker-common` | Yes | Published base carrying the shared development environment and worker shim, with no native Agent runtime. It is the extension point for the three runtime images, for the repository development image, and for user or secondary-developer sandbox images. | Use the pinned digest-addressed upstream base under Worker Base Image Policy. |
+| `worker-codex` | Yes | OpenShell sandbox payload for Codex worker execution through OpenKit worker shim. | Use the pinned shared OpenKit development stage and add only the Codex runtime leaf. |
+| `worker-opencode` | Yes | OpenShell sandbox payload for OpenCode worker execution through OpenKit worker shim. | Use the pinned shared OpenKit development stage and add only the OpenCode runtime leaf. |
+| `worker-pi` | Yes | OpenShell sandbox payload for Pi worker execution through OpenKit worker shim. | Use the pinned shared OpenKit development stage and add only the Pi runtime leaf. |
+| `test-env` | Never on a release tag; published for CI to consume | The environment every repository check executes inside, owned by `docs/toolchain.md` Test Execution Environment. | Use the repository Node base and install only what the gates execute; no worker runtime. |
 
-App image and worker images are separate release units.
+App image and worker images MUST remain separate release units. The one allowed exception is a single-machine evaluation bundle that an explicit deployment owns and names; a normal release build MUST NOT merge the app and worker units, and the app image MUST NOT bundle worker agent runtimes as its release model.
 
 The app image is user-facing. It owns NanoCore startup, Web UI static assets, public HTTP routing, data-root layout, database migrations, app smoke checks, and packaged UI checks.
 
@@ -193,7 +201,7 @@ The manifest must not include secrets, tokens, private registry credentials, loc
 
 ### Repository Layout
 
-All OpenKit-owned image Dockerfiles must live under `containers/<image-id>/Dockerfile`.
+OpenKit-owned image Dockerfiles must live beneath `containers/`. An independently implemented image uses `containers/<image-id>/Dockerfile`; the four worker artifacts use the shared `containers/workers/Dockerfile` plus unique manifest targets owned by `docs/specs/20260721-worker_execution_environment_images.md`. An OpenKit-owned image that derives from a published OpenKit base is an independently implemented image and keeps its own directory and Dockerfile; deriving does not move it into the base's shared Dockerfile.
 
 Each image directory must include a `README.md` when the image has operator-visible behavior beyond `docker build`.
 
@@ -220,11 +228,11 @@ The app image may include Caddy as the current HTTP frontend.
 
 Caddy is an implementation projection, not a permanent product requirement. A future app image may replace Caddy if it preserves the same public HTTP boundary and smoke coverage.
 
-The app image should not bundle worker agent runtimes as the normal release model.
-
 ### Worker Image Contract
 
-Every release worker image must:
+`worker-common` is a published artifact but not a deployment image, so the contract below binds the three runtime images and not the base. The base must instead carry the shared development environment and the generic shim package, contain no native runtime, and remain buildable and smokeable on its own; `docs/specs/20260721-worker_execution_environment_images.md` owns those obligations and the extension guarantees a derived image may rely on. A release build that publishes the base without publishing it as a first-class catalog entry, or that treats it as deployable, is invalid.
+
+Every release deployment worker image must:
 
 - run inside OpenShell as a sandbox payload,
 - provide the generic `openkit-worker-shim` entrypoint,
@@ -253,17 +261,29 @@ Worker images must not:
 - push, tag, deploy, or mutate protected branches without NanoCore-approved review and apply gates,
 - treat OpenShell-native ids or logs as canonical product state.
 
-### OpenShell Base Image Policy
+### Worker Base Image Policy
 
-Worker images should inherit from a pinned OpenShell Community sandbox base image when that base image provides the expected OpenShell users, writable sandbox home, language runtimes, network tooling, and agent-friendly process assumptions.
+This policy governs the upstream base that `worker-common` itself builds on. The three deployment images take their base from `worker-common` rather than selecting an upstream base directly, so the rules below are satisfied once, at the base, and inherited. A deployment image that pins an upstream base of its own has bypassed the shared stage and is invalid.
+
+Worker images must use a current digest-pinned upstream base that satisfies the exact OpenKit execution-environment contract. OpenShell Community sandbox images are the primary reference for useful developer tooling, non-root layout, and policy behavior, but an upstream image is not automatically a compliant OpenKit final image.
 
 The base image must be digest-pinned before a release image is published.
 
 The base image may use a tag during local development, but release builds must resolve and record the digest.
 
-Updating the OpenShell base digest is an explicit maintenance change. It must update `containers/images.json`, run worker image smoke checks, and run the real OpenShell worker verification for affected worker images.
+Updating the worker base digest is an explicit maintenance change. It must update `containers/images.json`, run worker image smoke checks, and run the real OpenShell worker verification for affected worker images.
 
-OpenKit may use an upstream community sandbox image directly only when the image already satisfies the OpenKit worker contract. Otherwise OpenKit must add its own worker shim layer.
+OpenKit may use an upstream community sandbox image directly only when it contains exactly one selected Agent runtime, the pinned OpenKit shim, the accepted tool and filesystem baseline, no baked authorization, and every other OpenKit worker invariant. The current upstream base combines multiple Agent runtimes and a broad baked policy, so OpenKit uses it as reference rather than as a final or inherited release image.
+
+### Release Artifact Boundary
+
+A published image is a deployable projection of the Core and worker placement model. It makes placement reproducible; it owns nothing that Core owns.
+
+Every published image, app or worker, MUST NOT contain durable product state, vault secret values, workspace truth, approval or review decisions, or final policy decisions. A digest-pinned base, build argument, label, entrypoint, or smoke script is a packaging fact and MUST NOT become the source of a product record.
+
+`docs/core/architecture.md` owns the invariant that release artifacts do not change Core semantics. The packaging consequence is that building, publishing, retagging, or repinning an image MUST NOT redefine product records or their authorities; a packaging change that appears to require such a semantic change is a defect in the change, not a packaging option.
+
+Every release artifact MUST be traceable to one source commit and one release tag through the tags and OCI labels defined by Version And Tag Policy and OCI Label Policy. Production-style deployments SHOULD reference an exact version or digest rather than a mutable convenience tag. Locally built artifacts and local development tags are build conveniences and are never release identity.
 
 ### Version And Tag Policy
 
@@ -298,7 +318,7 @@ Stable release images may also update `latest`.
 
 Pre-release images must not update `latest`.
 
-`latest` is a convenience tag for evaluation only. Deployment docs must prefer exact version tags or digest-pinned references.
+`latest` is a convenience tag for evaluation only.
 
 Git branch names must not create release tags.
 
@@ -410,7 +430,7 @@ The repository-owned Codex manifest template may select this local development i
 openkit/worker-codex:dev
 ```
 
-Every authored `AgentManifest` selects an OpenShell-compatible image reference accepted by `openshell sandbox create --from`; NanoCore copies that resolved reference into the AEP. A global `OPENKIT_OPENSHELL_WORKER_IMAGE` selector is not part of the current contract. Release manifests should use GHCR references or digests, while repository-owned local templates may use cataloged development tags.
+Every authored `AgentManifest` selects an OpenShell-compatible image reference that the NanoHost may pass to stock sandbox creation after admission; NanoCore copies that resolved reference into the AEP but performs no OpenShell lifecycle effect. A global `OPENKIT_OPENSHELL_WORKER_IMAGE` selector is not part of the current contract. Release manifests should use GHCR references or digests, while repository-owned local templates may use cataloged development tags.
 
 ## Proposed Design
 
@@ -427,19 +447,20 @@ containers/
     Dockerfile
     entrypoint.sh
     smoke.sh
-  worker-codex/
+  workers/
     README.md
     Dockerfile
+    openkit-worker-shim
+  worker-codex/
+    README.md
     smoke.sh
   worker-opencode/
     README.md
-    Dockerfile
     smoke.sh
   worker-pi/
     README.md
-    Dockerfile
     smoke.sh
-  dev-e2e/
+  test-env/
     README.md
     Dockerfile
     smoke.sh
@@ -450,7 +471,7 @@ scripts/docker/
   e2e-app.sh
 ```
 
-`worker-opencode` and `worker-pi` directories may be added only when their adapters and smoke checks exist.
+The shared worker Dockerfile exposes `worker-codex`, `worker-opencode`, and `worker-pi` final targets. The three runtime directories retain their smoke scripts and operator-visible ownership without duplicating Dockerfiles.
 
 The initial migration should create only directories for live images.
 
@@ -478,35 +499,36 @@ The initial manifest should include:
     {
       "id": "worker-codex",
       "repository": "openkit-worker-codex",
-      "dockerfile": "containers/worker-codex/Dockerfile",
+      "dockerfile": "containers/workers/Dockerfile",
+      "target": "worker-codex",
       "context": ".",
       "kind": "worker",
       "runtime": "codex",
       "release": true,
       "workerContract": "openkit-worker-v1",
-      "baseImage": "node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5",
+      "baseImage": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
       "platforms": ["linux/amd64", "linux/arm64"],
       "smoke": "containers/worker-codex/smoke.sh",
       "smokeCommand": "openkit-worker-codex-smoke",
       "localTag": "openkit/worker-codex:dev"
     },
     {
-      "id": "dev-e2e",
-      "repository": "openkit-dev-e2e",
-      "dockerfile": "containers/dev-e2e/Dockerfile",
+      "id": "test-env",
+      "repository": "openkit-test-env",
+      "dockerfile": "containers/test-env/Dockerfile",
       "context": ".",
-      "kind": "dev",
+      "kind": "test",
       "release": false,
       "platforms": ["linux/amd64"],
-      "smoke": "containers/dev-e2e/smoke.sh",
-      "smokeCommand": "openkit-dev-e2e-smoke",
-      "localTag": "openkit/dev-e2e:dev"
+      "smoke": "containers/test-env/smoke.sh",
+      "smokeCommand": "openkit-test-env-smoke",
+      "localTag": "openkit/test-env:dev"
     }
   ]
 }
 ```
 
-The first applied worker image keeps the existing Node base to avoid mixing the layout migration with a base-image migration. The Node base is digest-pinned in `containers/images.json`; a later worker-base audit should decide whether to switch to an OpenShell Community base image.
+The first layout migration retained the existing Node base. The accepted 2026-07-21 environment refresh now uses the current digest-pinned Node 24 LTS base and the internal common-stage contract in `docs/specs/20260721-worker_execution_environment_images.md`; the upstream OpenShell Community base remains a reference rather than a release parent.
 
 ### GitHub Actions Shape
 
@@ -566,16 +588,16 @@ Applied image catalog and Dockerfile layout:
 
 - `containers/images.json`
 - `containers/app/Dockerfile`
-- `containers/worker-codex/Dockerfile`
-- `containers/worker-opencode/Dockerfile`
-- `containers/worker-pi/Dockerfile`
-- `containers/dev-e2e/Dockerfile`
+- `containers/workers/Dockerfile`
+- `containers/workers/openkit-worker-shim`
+- `containers/workers/smoke-common.sh`
+- `containers/test-env/Dockerfile`
 - `containers/app/entrypoint.sh`
 - `containers/app/smoke.sh`
 - `containers/worker-codex/smoke.sh`
 - `containers/worker-opencode/smoke.sh`
 - `containers/worker-pi/smoke.sh`
-- `containers/dev-e2e/smoke.sh`
+- `containers/test-env/smoke.sh`
 
 Applied Docker helper scripts:
 
@@ -595,7 +617,7 @@ Updated tests that enforce the manifest and Dockerfile paths:
 
 Runtime documentation updated with the new worker image name:
 
-- `docs/nanocore-deployment-modes.en.md`
+- `docs/manual/nanocore-deployment-modes.en.md`
 - `apps/nanocore/README.md`
 
 Release workflow state:
@@ -609,27 +631,33 @@ Runtime default state:
 - Repository-owned `AgentManifest` templates select their exact cataloged worker image, runtime adapter, binary paths, pull policy, provider route, credential requirements, and sandbox policy.
 - NanoCore resolves the manifest into the AEP generically. It has no runtime-specific image selector, native command schema, or global worker-image fallback.
 - The AEP launches `openkit-worker-shim`; `control.adapter.targetRuntime` selects one adapter in the shim's static registry.
-- Release docs should prefer exact GHCR version or digest references.
+- Current release documentation uses exact GHCR version or digest references.
 
 The current catalog contains separate Codex, OpenCode, and Pi worker images. Each contains the generic shim and exactly one pinned native runtime: Codex `0.144.1`, OpenCode `1.18.1`, or Pi `0.80.7`.
 
 Release worker base state:
 
-- `containers/images.json` pins all three worker base images to `node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5`.
-- Each worker Dockerfile uses that digest-pinned Node base for its builder and runtime stages.
+- `containers/images.json` pins all three worker base images to `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and selects one unique final target per worker artifact.
+- `containers/workers/Dockerfile` uses that digest-pinned Node base for the shared shim-builder and common runtime stages, then adds exactly one native Agent runtime in each final target.
 
 Worker runtime state:
 
 - The generic shim uses one static registry and the bounded `prepare`/`collect` contract. Native runtime schemas and commands remain outside NanoCore and canonical worker schemas.
 - The Codex launcher preserves the OpenShell-provided proxy variables and enables Node environment-proxy support with `NODE_USE_ENV_PROXY=1` so Node `fetch` follows the governed egress path.
-- The launcher preserves inherited `NO_PROXY` and `no_proxy` entries but MUST NOT add `host.openshell.internal`; the authenticated NanoCore worker-control origin remains reachable through the OpenShell policy proxy.
+- The deleted Cell launcher preserved inherited `NO_PROXY` and `no_proxy` entries but did not add `host.openshell.internal`; its authenticated NanoCore worker-control origin remained reachable through the OpenShell policy proxy. The current path uses Sandbox Integration and distinct `/worker-control/*`, `/inference/*`, and `/capabilities/*` bindings over the NanoHost-owned transport.
 - The image and launcher MUST provide a writable runtime home through `CODEX_HOME` or `HOME` before the optional S33 Codex provenance extension starts. Missing home state is a Codex image or provenance failure, not a shared adapter-contract requirement, and MUST fail closed before inference when that extension is required.
 
-A1 verification state:
+A1 verification state before the 2026-07-21 execution-environment refresh:
 
-- All three arm64 worker images were built directly on A1 and passed their image smoke checks.
-- Stock unpatched OpenShell `0.0.80` created one sandbox from each image, uploaded its AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
-- This evidence proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup only. It does not prove a real-provider turn or the worker-control readiness, heartbeat, interruption, reconnect, and recovery lifecycle.
+- The previous three minimal arm64 worker images were built directly on A1 and passed their image smoke checks.
+- Historical stock unpatched OpenShell `0.0.80` evidence created one sandbox from each previous image, uploaded its AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+- This historical evidence proves the unchanged adapter, shim, stock OpenShell containment, upload, and cleanup path for the previous image contents only. It is not current verification of the refreshed common environment or its new AEP network grants.
+
+Current refreshed-image verification state:
+
+- On 2026-07-21, all three refreshed arm64 final targets built from `containers/workers/Dockerfile` on the current development host and passed their complete image smoke checks as non-root `sandbox` users.
+- The same host cross-built all three refreshed targets as `linux/amd64`, and every cross-platform image passed the same complete non-root smoke contract.
+- On 2026-08-01, historical A1 verification repeated stock OpenShell create, AEP upload, shim dry-run, and legacy whole-Cell cleanup for every refreshed image. This proves image compatibility only; it does not prove the unimplemented Runtime Epoch target, stock RelayStream plus nested standard HTTP/2 feasibility, or route-token separation.
 
 ## Alternatives Considered
 
@@ -645,9 +673,11 @@ Rejected. Staging is a validation and dogfooding mode, not the formal product pa
 
 Rejected for now. A universal worker image would be larger, harder to smoke test, harder to reason about for policy, and would force unrelated agent runtimes to release together. Separate worker images keep runtime-specific failures local.
 
-### Create An OpenKit Worker Base Immediately
+### Publish An OpenKit Worker Base — Superseded 2026-08-12
 
-Rejected for now. The three current worker images share a pinned Node base, but their native runtime layers remain small and independent. A custom OpenKit worker base becomes useful only when measured duplicated maintenance justifies another release artifact.
+Originally rejected. The measured duplication justified one internal common Docker stage, but no manifest, deployment, or user selected a common artifact, so publishing a fourth image would have added release and compatibility surface without a current consumer.
+
+Superseded because the missing consumer now exists in two forms: the repository's own development image, which `docs/toolchain.md` derives from the base, and any user or secondary developer customizing a sandbox image. The release and compatibility surface named above is accepted rather than disputed, and `docs/specs/20260721-worker_execution_environment_images.md` owns what that obliges. The alternative that stays rejected is publishing a base with no consumer.
 
 ### Publish Images On Every Main Push
 
@@ -670,8 +700,8 @@ Rejected. The monorepo root package currently uses `0.0.0`, and OpenKit release 
 
 1. Add this spec.
 2. Add `containers/images.json` with current live images.
-3. Move `containers/worker-codex/Dockerfile` to `containers/worker-codex/Dockerfile` without behavior changes.
-4. Move `Dockerfile.dev-e2e` to `containers/dev-e2e/Dockerfile` without behavior changes.
+3. Keep runtime-specific worker smoke and operator notes in their leaf directories while building all three final worker artifacts from `containers/workers/Dockerfile` with unique targets.
+4. Move `Dockerfile.dev-e2e` to `containers/dev-e2e/Dockerfile` without behavior changes. That directory was later renamed to `containers/test-env`; see `docs/toolchain.md` Test Execution Environment.
 5. Move `Dockerfile.staging` to `containers/app/Dockerfile` and rename staging-specific entrypoint and smoke scripts to app-image names.
 6. Add `scripts/docker/build-image.sh` and `scripts/docker/smoke-image.sh` as manifest-driven wrappers.
 7. Rename `scripts/docker/stage.sh` to `scripts/docker/run-app.sh` or keep a temporary same-change redirect only until all docs and package scripts are updated in the same PR.
@@ -693,6 +723,7 @@ Manifest validation:
 - Every `id` is unique.
 - Every release image has at least one platform.
 - Every worker image has `runtime`, `baseImage`, and `workerContract`.
+- Every worker image has a unique `target` consumed by local build scripts and release CI.
 - Every release worker image has a digest-pinned `baseImage`.
 - No manifest field contains an absolute local path.
 
@@ -700,11 +731,9 @@ Dockerfile static tests:
 
 - App image Dockerfile builds NanoCore and Web dependencies in dependency order.
 - App image Dockerfile copies required migrations, data templates, app entrypoint, and app smoke script.
-- Every release worker Dockerfile uses digest-pinned base images for release builds.
-- Every release worker Dockerfile builds `@openkit/worker-protocol` and `@openkit/worker-shim`, exposes `openkit-worker-shim`, and proves that the manifest-selected adapter exists in the static registry.
-- Every release worker Dockerfile installs exactly its manifest-declared native runtime and verified binary paths.
-- Every release worker Dockerfile creates `/openkit/config`, `/openkit/session`, and `/openkit/artifacts`.
-- Every release worker Dockerfile declares the sandbox user expected by OpenShell.
+- The shared worker Dockerfile uses digest-pinned direct image inputs, builds `@openkit/worker-protocol` and `@openkit/worker-shim` once, and exposes one final target per release worker.
+- Every final worker target installs exactly its manifest-declared native runtime and verified binary paths.
+- The shared worker stage creates `/openkit/config`, `/openkit/session`, and `/openkit/artifacts` and declares the sandbox user expected by OpenShell.
 - Codex image and launcher tests separately require a writable runtime home and the governed Node proxy contract when the optional S33 provenance extension is enabled.
 
 Local build acceptance:
@@ -736,9 +765,9 @@ Worker image smoke acceptance:
 
 OpenShell acceptance:
 
-- Each release worker image can be used through `openshell sandbox create --from`.
-- The packaging check for each release worker image must prove stock OpenShell sandbox creation, AEP upload, generic shim dry run, and sandbox deletion.
-- That packaging check does not prove a real-provider turn or the worker-control lifecycle. Applicable release-candidate provider and worker stories must execute and pass under their owning specifications; a skipped story does not satisfy that separate release gate.
+- Each release worker image must remain compatible with stock `openshell sandbox create --from` as an isolated packaging check.
+- The packaging check for each release worker image must prove stock OpenShell sandbox creation, AEP upload, generic shim dry run, and sandbox deletion without becoming a selectable product lifecycle path.
+- That packaging check does not prove a real-provider turn, NanoHost lifecycle, RelayStream, nested HTTP/2, route-token separation, or worker-control behavior. Applicable release-candidate provider and worker stories must execute and pass under their owning specifications; a skipped story does not satisfy that separate release gate.
 
 CI acceptance:
 
@@ -755,7 +784,7 @@ CI acceptance:
 | --- | --- |
 | Upstream OpenShell base changes break workers. | Pin base image digests and treat digest updates as explicit maintenance changes. |
 | Multi-arch builds fail because one runtime binary is unavailable. | Keep `platforms` per image in `containers/images.json` and publish only tested platforms. |
-| `latest` causes accidental upgrades. | Document version and digest references as the supported deployment path. |
+| `latest` causes accidental upgrades. | Apply the exact-version-or-digest deployment reference rule in the Release Artifact Boundary. |
 | Image publishing happens before tests pass. | Make publish jobs depend on release-gate jobs and image smoke jobs. |
 | Staging vocabulary keeps leaking into release docs. | Rename image ids, script names, and docs during migration, and do not keep old names as permanent aliases. |
 | Worker image grows into a second product runtime. | Keep worker image responsibilities limited to runtime adaptation and OpenKit worker records. |
@@ -774,19 +803,21 @@ CI acceptance:
 - Nightly or main-branch diagnostic image publishing.
 - Kubernetes, Helm, or Compose packaging.
 - Desktop app packaging with bundled or external NanoCore.
-- A shared OpenKit worker base image after multiple worker images prove repeated layers.
+- Retagging or promoting a derived image built by a user from the published `worker-common` base; a derivation is the user's artifact and OpenKit publishes only its own catalog entries.
 - Dedicated registry promotion from release-candidate images to stable release images.
 
 ## Links
 
-- `docs/change-tracking.md`
+- `docs/change-execution.md`
 - `docs/specs/README.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
+- `docs/specs/20260721-worker_execution_environment_images.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-openshell_mechanism_internalization.md`
 - `docs/specs/superseded/20260518-staging_docker_distribution.md`
-- `docs/nanocore-deployment-modes.en.md`
+- `docs/manual/nanocore-deployment-modes.en.md`
 - `.github/workflows/ci.yml`

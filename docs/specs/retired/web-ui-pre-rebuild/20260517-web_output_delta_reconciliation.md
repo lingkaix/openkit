@@ -1,10 +1,11 @@
+---
+status: Retired
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: None
+decision-evidence: "https://github.com/lingkaix/openkit/commit/fffc107f9b73a8855045435598dcf97ebf2786da"
+---
 # Web Output Delta Reconciliation
-
-Status: Retired
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: None
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

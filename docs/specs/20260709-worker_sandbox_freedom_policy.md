@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Worker Sandbox Freedom Policy
-
-Status: Accepted
-Implementation: Implemented
 
 ## Summary
 
@@ -30,10 +31,14 @@ The target rule is: process execution is broadly available inside the sandbox, f
 - `docs/core/agent-supply.md`
 - `docs/core/permissions.md`
 - `docs/core/vault.md`
+- OpenShell Community base sandbox policy: `https://github.com/NVIDIA/OpenShell-Community/blob/main/sandboxes/base/policy.yaml`
+
+## Related Docs
+
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260704-worker_mcp_tool_supply.md`
 - `docs/specs/20260616-agent_environment_package.md`
-- OpenShell Community base sandbox policy: `https://github.com/NVIDIA/OpenShell-Community/blob/main/sandboxes/base/policy.yaml`
+- `docs/specs/20260721-worker_execution_environment_images.md`
 
 ## Principles
 
@@ -102,11 +107,19 @@ The effective allowlist is exactly the normalized network rules recorded in the 
 
 Users may add network allowlist entries at worker creation time.
 
-A network allowlist entry should declare id, host, port, protocol, access mode, purpose label, and optional binary paths when the backend requires binary-scoped network policy.
+A network allowlist entry must declare id, host, port, protocol, purpose label, and non-empty binary paths. It declares either an access mode or a non-empty exact REST rule list, never both.
 
 Wildcard hosts, unrestricted ports, and private network ranges should be rejected in the first user-facing implementation unless an operator-only escape hatch explicitly enables them.
 
-The first implementation should support HTTPS REST endpoints well and can defer method-level and path-level filtering unless the backend already provides it cheaply.
+The first implementation supports HTTPS REST access presets and bounded `GET` or `POST` path rules because stock OpenShell already enforces that shape. Exact rules may use OpenShell path globs but hosts remain exact, rule paths must be absolute and free of line breaks, and another HTTP method remains unsupported until a present workload and backend proof justify it.
+
+### Built-In Development Baseline
+
+The three repository-owned AgentManifest templates explicitly grant GitHub Smart HTTP clone and fetch, read-only GitHub REST access through `gh`, read-only npm registry access through the declared Node package binaries, and read-only PyPI index and artifact access through the declared uv, Python, and pip binaries. `docs/specs/20260721-worker_execution_environment_images.md` owns the exact endpoints, binary paths, and image correspondence.
+
+GitHub Smart HTTP uses `GET /**/info/refs*` and `POST /**/git-upload-pack`; it omits `POST /**/git-receive-pack`, so the baseline does not grant push. These entries are ordinary manifest-authored AEP rules, not backend defaults or image policy.
+
+Trusted worker inference requires its exact control and inference routes and excludes direct provider authority, but it may coexist with unrelated manifest-authored development grants. A validator must distinguish the LLM route boundary from the package's complete network list rather than requiring a relay-only list.
 
 ## Secret Injection Model
 
@@ -164,7 +177,7 @@ If a backend cannot enforce a declared filesystem, network, or secret-injection 
 
 ## Current Implementation Projection
 
-The current OpenShell backend compiles base network policy only from the immutable AEP. It has no built-in Codex or DeepWiki endpoints, backend network option, or deployment environment variable that can append a rule. It also rejects non-transient backend provider credentials before provider or sandbox effects because the current AEP does not carry the exact Providers v2 endpoint and binary policy; the internally generated trusted-inference profile is limited to the AEP's exact inference authority.
+The current OpenShell backend compiles base network policy only from the immutable AEP. It has no built-in Codex or DeepWiki endpoints, backend network option, or deployment environment variable that can append a rule. The 2026-07-21 refinement adds bounded authored `GET` or `POST` REST rules and the built-in development grants while preserving the same no-hidden-authority invariant. It also rejects non-transient backend provider credentials before provider or sandbox effects because the current AEP does not carry the exact Providers v2 endpoint and binary policy; the internally generated trusted-inference profile remains limited to the AEP's exact inference authority.
 
 The correction preserves the unmodified stock OpenShell `0.0.80` boundary. It does not enable the disabled `capability.local` plane or executable worker MCP supply, and neither future plane authorizes direct undeclared egress.
 
@@ -173,7 +186,7 @@ Acceptance materializes one AEP through the governance backend and compares the 
 ## Deferred Work
 
 - Full Capability Catalog with reusable presets, admin policy, workspace inheritance, and approval defaults.
-- Method-level and path-level network filtering for arbitrary user-declared endpoints.
+- Additional HTTP methods, query-aware rule semantics beyond OpenShell path matching, and richer user-facing exact-rule editing.
 - Organization role policy for who can approve reusable network, filesystem, and secret grants.
 - Dynamic network or filesystem policy updates for already-running worker sessions.
 - Rich secret classes such as provider profiles, refreshable credentials, and scoped credential brokers for every external service.

@@ -1,11 +1,12 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/specs/README.md`, `docs/specs/AGENTS.md`"
+decision-evidence: "`docs/specs/README.md`, `docs/specs/AGENTS.md`"
+date: 2026-05-29
+---
 # Remove Historical Compatibility Layers
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/specs/README.md`, `docs/specs/AGENTS.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
-Date: 2026-05-29
 
 
 ## Lifecycle Reason
@@ -26,7 +27,7 @@ This spec records the breaking cleanup that removes historical aliases, permissi
 
 The completion pass also removes the remaining staging and template documentation paths that still described inline credentials as current operator guidance.
 
-The cleanup does not remove product capabilities such as OpenAI-compatible APIs, provider failover, provider fallback, SPA fallback, pnpm deployment flags, Tailwind upstream warnings, archived working logs, temporary research material, or upstream generated Codex schema text.
+The cleanup does not remove product capabilities such as OpenAI-compatible APIs, provider failover, provider fallback, SPA fallback, pnpm deployment flags, Tailwind upstream warnings, temporary research material, or upstream generated Codex schema text.
 
 ## Decisions
 
@@ -90,7 +91,7 @@ Protocol validators must not fill missing `configVersion`, `output`, `itemType`,
 4. Update `packages/core-client` tests and APIs to remove unscoped OAuth methods and protocol aliases.
 5. Update `apps/nanocore` routes, managers, store loading, runtime config wiring, runtime materializer names, tests, and diagnostics.
 6. Update `apps/web` diagnostics and protocol consumers to use current scoped shapes only.
-7. Update current docs and accepted specs, while leaving archived working logs, temporary files, and upstream generated schema text unchanged.
+7. Update current docs and accepted specs, while leaving temporary files and upstream generated schema text unchanged.
 
 ## Test Gates
 
@@ -113,4 +114,4 @@ Accepted specs that previously described historical repairs or removed defaults 
 
 ## Final Scan Allowlist
 
-The post-cleanup legacy scan may keep only these classes of matches: current product capabilities such as `client.oauth.openaiCodex`, `oauth.openaiCodexAccounts`, `defaultProviders`, current `defaultProviderId` config fields, resolved runtime `apiKey` fields, Codex upstream `apiKey` auth mode, OpenAI-compatible API capability, provider failover and fallback, rejection tests, archived working logs, explicit rejection text for removed inputs, Tailwind upstream warnings, and pnpm's required `--legacy` deploy flag.
+The post-cleanup legacy scan may keep only these classes of matches: current product capabilities such as `client.oauth.openaiCodex`, `oauth.openaiCodexAccounts`, `defaultProviders`, current `defaultProviderId` config fields, resolved runtime `apiKey` fields, Codex upstream `apiKey` auth mode, OpenAI-compatible API capability, provider failover and fallback, rejection tests, explicit rejection text for removed inputs, Tailwind upstream warnings, and pnpm's required `--legacy` deploy flag.

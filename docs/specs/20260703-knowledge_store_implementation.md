@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Knowledge Store Implementation Contract
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
@@ -30,6 +31,9 @@ Implementation: Partial
 - `docs/core/storage.md`
 - `docs/core/agent-capability.md`
 - `docs/core/audit.md`
+
+## Related Docs
+
 - `docs/specs/20260702-knowledge_store_governance_rules.md`
 - `docs/specs/20260703-worker_context_package.md`
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
@@ -180,7 +184,7 @@ This pipeline and row are the one governed retrieval owner for product search, K
 
 Product surfaces reach knowledge through NanoCore-owned operations, not raw file access. The V1 operation families are page read and list; direct page create, update, and bounded delete; proposal draft, review decision, and proposal-created-page reversal; source register and read; observation, claim, and conflict maintenance; deterministic retrieval; schema and index inspection; and explicit report-only health and repair suggestions. Accepted claims may guide an authorized ordinary proposal draft through their already-valid source references, but V1 has no separate claim-promotion proposal producer. Worker-facing `knowledge.*` operations and worker-control proposal-summary ingestion remain disabled and create no current route or test obligation.
 
-Direct page create, update, and delete remain the existing authorized human commands. Create and update MUST run the four-stage validator before mutation and write `review_state: user-authored`, so changed proposal-accepted bytes never preserve their earlier accepted-review label. A direct edit may retain exact digest-qualified registered-Source or directly `user-authored` Page references only after their current bytes verify; a currently `accepted` generated Page never passes merely because an earlier accepted Review exists. References that require external Turn, Item, or S39 verification fail the Store-local edit rather than being inferred, and the user may register the underlying material as a Source or create a separate user-authored Page. Direct delete remains manual Knowledge governance and MUST NOT be projected as the proposal-reversal result below. G07 adds no direct-mutation CAS field, actor-scoped ledger key, exact Audit encoding, revision, event, tombstone, or history family; the existing command and Audit posture remains unchanged.
+Direct page create, update, and delete remain the existing authorized human commands. Create and update MUST run the four-stage validator before mutation and write `review_state: user-authored`, so changed proposal-accepted bytes never preserve their earlier accepted-review label. A direct edit may retain exact digest-qualified registered-Source or directly `user-authored` Page references only after their current bytes verify; a currently `accepted` generated Page never passes merely because an earlier accepted Review exists. References that require external Turn, Item, or S39 verification fail the Store-local edit rather than being inferred, and the user may register the underlying material as a Source or create a separate user-authored Page. Direct delete remains manual Knowledge governance and MUST NOT be projected as the proposal-reversal result below. The accepted Knowledge scope adds no direct-mutation CAS field, actor-scoped ledger key, exact Audit encoding, revision, event, tombstone, or history family; the existing command and Audit posture remains unchanged.
 
 ### Proposal decision, application, and reversal
 

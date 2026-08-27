@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Foundation Model
-
-Status: Accepted
 
 This document owns the cross-aspect doctrine that every OpenKit design, implementation, deployment, and product projection must preserve.
 
@@ -24,6 +25,7 @@ This model supplies those cross-aspect invariants without replacing the speciali
 - Reliability and assurance should be proportional to the documented deployment scale, consequence, and trust boundary. Safe interruption, inspection, or a new authorized attempt may be the correct outcome when transparent recovery would require another authority or workflow.
 - Future scale, availability, and deployment hypotheses are non-authorizing until an accepted current design promotes them.
 - Core should coordinate and govern work while specialized agents and runtimes perform heavy execution.
+- External dependencies remain outside OpenKit's authority boundary. `docs/core/contract-evolution.md` owns their contract and missing-capability rules.
 
 ## Canonical Terms
 

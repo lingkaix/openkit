@@ -1,14 +1,15 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/specs/20260721-provider_subscription_accounts.md`"
+decision-evidence: "`docs/specs/20260721-provider_subscription_accounts.md`"
+---
 # Codex OAuth Account UX Recovery
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/specs/20260526-codex_chatgpt_subscription_login.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 
-Codex ChatGPT Subscription Login absorbed account slots, sanitized diagnostics, scoped login/logout actions, provider binding, and route ownership into one accepted contract. This recovery note lost authority because account UX and server behavior now evolve together under that active owner.
+Codex ChatGPT Subscription Login first absorbed account slots, sanitized diagnostics, scoped login/logout actions, provider binding, and route ownership; Provider Subscription Accounts now owns the provider-neutral replacement. This recovery note remains historical because account UX and server behavior evolve together under that active owner.
 
 ## Retention Reason
 

@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Audit Model
-
-Status: Accepted
 
 This document defines OpenKit audit semantics.
 
@@ -12,7 +13,7 @@ Audit records are stable projections used to explain what happened, who or what 
 
 ## Purpose
 
-OpenKit coordinates human users, automations, agents, agent sessions, vault references, capability calls, permissions, sandbox modes, files, artifacts, and knowledge.
+OpenKit coordinates human users, automations, agents, AgentSessions, vault references, capability calls, permissions, sandbox modes, files, artifacts, and knowledge.
 
 Audit gives Core a durable way to answer safety, debugging, review, and governance questions without requiring every product surface to replay raw item logs.
 
@@ -34,8 +35,9 @@ Audit events may be derived from:
 - capability calls
 - permission decisions
 - vault reference use
-- agent session lifecycle events
+- AgentSession lifecycle events
 - sandbox lifecycle events
+- execution-substrate epoch lifecycle events
 - knowledge lifecycle events
 - storage migrations or imports
 
@@ -53,8 +55,9 @@ Core MUST write or enqueue an audit event for:
 - approval decisions
 - Workspace invitation, membership, role, ownership-transfer, recovery, and deletion decisions
 - user disable, deletion, and credential-revocation decisions
-- agent session lifecycle changes
+- AgentSession lifecycle changes
 - sandbox lifecycle changes
+- execution-substrate epoch invalidation, and the readiness that returns that substrate's capacity
 - knowledge entry creation, archival, supersession, or injection
 - artifact publication
 - destructive storage operations
@@ -87,7 +90,7 @@ Minimum stable areas include:
 - optional turn ID
 - optional item ID
 - optional agent ID
-- optional agent session ID
+- optional AgentSession ID
 - optional capability call ID
 - optional permission decision ID
 - optional invitation or membership ID
@@ -99,13 +102,15 @@ These are model areas, not a complete field list.
 
 Audit records must avoid storing secret values, raw provider payloads, sensitive sandbox internals, or unrestricted file contents.
 
+An execution substrate's private epoch identity, process identifiers, roots, sockets, and backend handles are sensitive runtime internals under `docs/core/runtime-model.md`. An audit record for an epoch boundary carries the classification, the outcome, the elapsed time, and redacted lineage; it must not promote private substrate identity into a product-visible field or make an epoch a user-facing lifecycle.
+
 Audit should store references, summaries, hashes, stable IDs, or redacted excerpts where needed.
 
 An audit actor uses the `ActorRef` semantics from `docs/core/identity.md`. Display names and email addresses may appear only as redacted point-in-time summaries; they are not durable actor identifiers. Credential summaries may identify credential kind, stable credential record ID, and channel, but never secret material, authorization headers, cookies, token hashes, or invitation secrets.
 
 ## Source Of Truth
 
-Audit records may be stored as SQLite source-of-truth records because they are operational projections that need structured query, filtering, and retention policies.
+`docs/core/storage.md` owns persistence and source-of-truth placement. Audit owns the semantic projection, query, filtering, and retention requirements independently of the storage mechanism.
 
 Where possible, audit events should retain links back to item IDs, capability call IDs, permission decision IDs, vault reference IDs, and other related core records.
 
@@ -114,10 +119,12 @@ Where possible, audit events should retain links back to item IDs, capability ca
 - Audit records MUST NOT store secret values, raw provider payloads, sensitive sandbox internals, or unrestricted file contents.
 - Audit MUST remain a governance projection over core activity, not a second user conversation log.
 - Product surfaces MUST NOT claim complete audit coverage when an implementation intentionally omits an audit producer class.
-- Audit events SHOULD retain stable links back to item IDs, capability call IDs, permission decision IDs, vault reference IDs, agent session IDs, or related core records when those records exist.
+- Audit events SHOULD retain stable links back to item IDs, capability call IDs, permission decision IDs, vault reference IDs, AgentSession IDs, or related core records when those records exist.
 - Auditable shared mutations and terminal human decisions MUST preserve the winning actor reference, responsible user when applicable, target resource, request ID, outcome, and timestamp.
 - Membership, ownership, credential, and permission changes MUST be auditable even when the affected user later becomes disabled, removed, or deleted.
 - Core MUST own durable audit projection; adapters, bridges, gateways, and agents may only provide metadata or source events.
+- An execution substrate's own private failure or diagnostic record is a source input, never the durable audit projection, and MUST NOT be treated as an audit record or as authority for a recovery, readiness, or capacity decision.
+- An audit record for an execution-substrate epoch boundary MUST NOT make private substrate identity a product-visible field or substitute for AgentSession identity.
 
 ## Related Docs
 
@@ -125,6 +132,7 @@ Where possible, audit events should retain links back to item IDs, capability ca
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/permissions.md`
+- `docs/core/runtime-model.md`
 - `docs/core/vault.md`
 - `docs/core/agent-capability.md`
 - `docs/core/storage.md`

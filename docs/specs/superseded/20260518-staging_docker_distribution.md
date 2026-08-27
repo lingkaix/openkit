@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-08
+current-guidance: "`docs/specs/20260708-container_image_packaging.md`"
+decision-evidence: "`docs/specs/20260708-container_image_packaging.md`"
+---
 # Staging Docker Distribution
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-08
-Current Guidance: `docs/specs/20260708-container_image_packaging.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 
@@ -317,7 +318,7 @@ Provider template quality becomes user-visible in server deployments, so diagnos
 
 ## Rollout / Migration Plan
 
-1. Add this spec and the v0.0.3 working log.
+1. Add this spec and the v0.0.3 release plan.
 2. Add Docker smoke tests before adding the Dockerfile.
 3. Add `Dockerfile.staging`, Caddy config, and entrypoint.
 4. Add server config template with `defaults.coreProviderId` and `defaults.gatewayProviderId`.
@@ -376,7 +377,7 @@ Mitigation: keep image taxonomy in docs and tests, and assert that `Dockerfile.s
 
 ## Links
 
-- Historical v0.0.2 working log (no longer retained in the repository)
+- Historical v0.0.2 release record (no longer retained in the repository)
 - [OpenCode documentation](https://opencode.ai/docs/)
 - [OpenCode SDK package](https://www.npmjs.com/package/@opencode-ai/sdk)
 - [OpenAI-Compatible Internal Facade](./20260517-openai_compat_facade.md)

@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Knowledge Model
-
-Status: Accepted
 
 This document defines OpenKit knowledge semantics.
 

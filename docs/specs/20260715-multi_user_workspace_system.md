@@ -1,8 +1,9 @@
+---
+status: Accepted
+implementation: Implemented
+date: 2026-07-15
+---
 # Single-Deployment Multi-User Workspace System
-
-Status: Accepted
-Implementation: Implemented
-Date: 2026-07-15
 
 ## Owns
 
@@ -23,6 +24,7 @@ Date: 2026-07-15
 - Automation execution, durable schedule/fire records, and automation responsibility reassignment, which belong to `docs/specs/20260711-scheduler_recurring_event_triggers.md`.
 - Long-lived compatibility for App API, Core Client, CLI, Skill, or Web projections.
 - Outbound email delivery or pre-account invitation onboarding.
+- Runtime Epoch lifecycle, sandbox termination, cleanup, and runtime transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 ## Core References
 
@@ -37,6 +39,9 @@ Date: 2026-07-15
 - `docs/core/vault.md`
 - `docs/core/agent-session.md`
 - `docs/core/contract-evolution.md`
+
+## Intent
+
 - `docs/product-vision.md`
 
 ## Summary
@@ -390,7 +395,7 @@ Canonical Workspace readers and writers must continue to reject symlinks and uns
 
 ## Personal And Shared Data Boundaries
 
-- Workspace Threads, Items, Knowledge, Artifacts, agent sessions, approvals, policy decisions, audit, usage, repositories, data sources, and Workspace configuration are shared according to policy.
+- Workspace Threads, Items, Knowledge, Artifacts, AgentSessions, approvals, policy decisions, audit, usage, repositories, data sources, and Workspace configuration are shared according to policy.
 - User preferences, current Workspace selection, personal notification state, and user-local credentials remain user-scoped.
 - A user's built-in Quick Chat Workspace remains owner-only and non-shareable in V1. Each server user has an independent Quick Chat Workspace and its Knowledge does not become team knowledge.
 - Raw Vault secret material remains in the Vault backend. The owner manages Workspace references and grants; an editor may cause an approved agent use only when policy permits it; a viewer has no Vault-use authority.
@@ -398,25 +403,13 @@ Canonical Workspace readers and writers must continue to reject symlinks and uns
 
 ## Actor Attribution
 
-Shared history must distinguish actor identity from message role, trigger source, credential type, and agent identity.
-
-The shared protocol and persisted projection must use one compact `ActorRef` shape:
-
-```text
-ActorRef =
-  | { kind: user, id: stable user id }
-  | { kind: agent | automation | integration | system,
-      id: stable actor id,
-      responsibleUserId: stable user id or null }
-```
-
-For a human user, the actor `id` is also the responsible user by definition, so the human variant does not duplicate it in a second field. For an agent, automation, integration, or system actor, `responsibleUserId` identifies the active accountable user when one exists. This tagged union is closed and its complete invariant must remain representable in both the canonical schema and generated JSON Schema. Credential kind, credential ID, and channel belong to authenticated request and audit context rather than `ActorRef`.
+`docs/core/identity.md` owns the closed `ActorRef` shape and its distinction from message role, trigger source, credential type, and agent identity. This specification owns the concrete multi-user attribution projections and failure rules below.
 
 The responsible-user derivation is exact: a `user` actor yields its own `id`, every non-human actor yields its stored `responsibleUserId`, and `null` remains `null`. No producer may replace a null result with the current Workspace owner, automation owner, current session user, or another mutable projection.
 
 `ActorRef` and AEP scope contain no tenant, organization, credential-kind, or physical Workspace-owner field. The responsible user derived from the tagged actor is authority and accountability context only and must never select a Workspace store, database, directory, or path.
 
-The WP-5 Stage 6 attribution slice is closed to these four durable families:
+The current durable actor-attribution boundary is closed to these four families:
 
 | Family | Unique durable authority and exact field | Lifecycle and failure semantics |
 | --- | --- | --- |
@@ -561,16 +554,16 @@ Scheduler admission and AEP schema version `2` worker package scope must carry o
 
 ### Current-Authority Predicate
 
-Every implemented Stage 7 boundary uses one stateless `currentWorkspaceAuthority(workspaceId, actor, productOperation, effectAuthority)` predicate immediately before the NanoCore-owned effect. The predicate derives the responsible user only from `actor`, then requires that user to be non-null and currently `active`, an active member of the exact Workspace, entitled by the current fixed-role mapping to `productOperation`, and allowed by current policy. `effectAuthority` is the existing owner-specific Approval, PermissionDecision, VaultGrant, review, or resource tuple when that boundary already requires one; the caller validates that tuple before passing the predicate, and the predicate does not become a second owner-aware policy engine. The tuple must be complete, target-matching, current-deployment authority and cannot replace the user, membership, role, or policy checks. For Vault use, the durable VaultGrant is the effect-authority owner: it must be target-issued and active, and every non-null user, Workspace, agent, agent-session, and capability constraint must exactly match the current execution. Its optional Approval and policy-decision identifiers are immutable issuance lineage rather than use-time decision owners; when an Approval id is present it must be target-issued and the policy-decision id must be non-null, but effect execution does not re-run or reconstruct that workflow. A null responsible user, missing or contradictory fact, removed membership, disabled user, insufficient current role, denied policy, or stale effect authority denies with zero governed effect. The predicate reads current Core and owning-domain authority directly for the small single-writer deployment and adds no cache, durable decision row, state, workflow, or recovery owner.
+Every implemented Stage 7 boundary uses one stateless `currentWorkspaceAuthority(workspaceId, actor, productOperation, effectAuthority)` predicate immediately before the NanoCore-owned effect. The predicate derives the responsible user only from `actor`, then requires that user to be non-null and currently `active`, an active member of the exact Workspace, entitled by the current fixed-role mapping to `productOperation`, and allowed by current policy. `effectAuthority` is the existing owner-specific Approval, PermissionDecision, VaultGrant, review, or resource tuple when that boundary already requires one; the caller validates that tuple before passing the predicate, and the predicate does not become a second owner-aware policy engine. The tuple must be complete, target-matching, current-deployment authority and cannot replace the user, membership, role, or policy checks. For Vault use, the durable VaultGrant is the effect-authority owner: it must be target-issued and active, and every non-null user, Workspace, agent, AgentSession, and capability constraint must exactly match the current execution. Its optional Approval and policy-decision identifiers are immutable issuance lineage rather than use-time decision owners; when an Approval id is present it must be target-issued and the policy-decision id must be non-null, but effect execution does not re-run or reconstruct that workflow. A null responsible user, missing or contradictory fact, removed membership, disabled user, insufficient current role, denied policy, or stale effect authority denies with zero governed effect. The predicate reads current Core and owning-domain authority directly for the small single-writer deployment and adds no cache, durable decision row, state, workflow, or recovery owner.
 
-The immutable `AEP.scope.triggerActor` is the sole runtime actor authority. Scheduler, lease, worker-control, capability, usage, audit, and runtime-evidence records may link to the Turn, Agent Session, or AEP snapshot and may copy the derived responsible user only where their owning schema requires attribution; they must not duplicate another `ActorRef`, select a replacement actor, or become current-authority records.
+The immutable `AEP.scope.triggerActor` is the sole runtime actor authority. Scheduler, lease, worker-control, capability, usage, audit, and runtime-evidence records may link to the Turn, AgentSession, or AEP snapshot and may copy the derived responsible user only where their owning schema requires attribution; they must not duplicate another `ActorRef`, select a replacement actor, or become current-authority records.
 
 ### Stage 7 Effect Boundaries
 
 | Boundary | Product operation and authority actor | Exact failure and successor rule |
 | --- | --- | --- |
 | Turn admission and scheduler launch | `runtime.launch`; the immutable Turn/AEP `triggerActor`. | Deny before a new admission, lease, sandbox token, or worker launch. An already-created product Turn uses its existing denied or `interrupted` owner outcome; Stage 7 adds no state. |
-| NanoCore-mediated active-worker capability, LLM, or external call | `tool.use`, `llm.gateway.use`, or `network.egress` as owned by the concrete call; the AEP `triggerActor`, or the authenticated actor for a separately submitted Gateway request. | Deny before upstream contact, secret resolution, or capability dispatch. Existing CapabilityCall, UsageRecord, AuditEvent, Turn, and Agent Session owners may record their already-defined denied or interrupted projection only. |
+| NanoCore-mediated active-worker capability, LLM, or external call | `tool.use`, `llm.gateway.use`, or `network.egress` as owned by the concrete call; the AEP `triggerActor`, or the authenticated actor for a separately submitted Gateway request. | Deny before upstream contact, secret resolution, or capability dispatch. Existing CapabilityCall, UsageRecord, AuditEvent, Turn, and AgentSession owners may record their already-defined denied or interrupted projection only. |
 | Worker Artifact or Workspace-content publication | `artifact.write` or `workspace.write`; the AEP `triggerActor` until a separate fresh human command owns promotion. | Do not create or advance canonical Workspace content. Worker output, manifests, and Workspace Synchronization reconciliation evidence may remain inspectable but non-authorizing. |
 | Workspace Sync approved apply | `review.apply`; the authenticated actor of the fresh apply request plus the exact pending Workspace Sync Review, requested `accepted` decision, and apply preconditions. | The original worker `triggerActor` remains lineage only. A fresh currently authorized actor may apply the reviewed output under its own new request; denial performs no strategy mutation or successful apply write and leaves the Review pending. |
 | Vault-backed use | `vault.use`; the authenticated request actor or AEP `triggerActor`, current Workspace policy, and the exact active target-matching target-issued VaultGrant. Optional Approval and PermissionDecision ids are structurally validated issuance lineage only. | Deny before material leaves the Vault backend or an injection sink is invoked. Existing redacted failed VaultUse/Audit evidence may be written; it is not effect authority. |
@@ -580,7 +573,7 @@ Fresh apply and push requests do not reactivate or rewrite stale actor authority
 
 ### Bounded Worker-Native Compromise
 
-NanoCore cannot atomically revoke an external effect already invoked after a successful check, and an already-running sandbox may hold immutable AEP network rules or runtime-file/runtime-environment credentials whose individual worker-native requests do not traverse NanoCore. Stage 7 therefore guarantees that a failed current-authority check permits no new NanoCore-mediated upstream call, secret resolution, Workspace publication, approved apply, or Git push. A request already submitted to an external system may finish, and worker-native activity may continue until the next NanoCore or worker-control boundary detects lost authority and invokes the existing interrupt and whole-Cell cleanup owners. From that detection forward NanoCore accepts only non-authorizing evidence and publishes no output from the stale authority. This bounded race is explicit; Stage 7 adds no dynamic credential revocation protocol, mutable AEP, quarantine state, recovery workflow, or claim that every in-flight external request can be cancelled.
+NanoCore cannot atomically revoke an external effect already invoked after a successful check, and an already-running sandbox may hold immutable AEP network rules or runtime-file/runtime-environment credentials whose individual worker-native requests do not traverse NanoCore. Stage 7 therefore guarantees that a failed current-authority check permits no new NanoCore-mediated upstream call, secret resolution, Workspace publication, approved apply, or Git push. A request already submitted to an external system may finish, and worker-native activity may continue until the next NanoCore or worker-control boundary detects lost authority. Detection revokes the affected route or grant and terminates that sandbox through the NanoHost; if deletion cannot be proved, the NanoHost invalidates the complete Runtime Epoch and holds capacity until fresh-empty readiness. From detection forward NanoCore accepts only non-authorizing evidence and publishes no output from the stale authority. Cleanup never proves recall of already exposed material. This bounded race is explicit; Stage 7 adds no dynamic credential revocation protocol, mutable AEP, quarantine state, recovery workflow, or claim that every in-flight external request can be cancelled.
 
 The current automation facade is an in-memory definition store with no executor, so it has no Stage 7 background effect to reauthorize. Stage 7 does not add Workspace automation ownership, responsible-user reassignment, schedule/fire records, persistence, pause state, or an executor. The automation replacement design and its current-authority check belong entirely to `docs/specs/20260711-scheduler_recurring_event_triggers.md`; until that work lands, automation definitions remain non-executing and are not Stage 7 acceptance evidence.
 
@@ -760,7 +753,7 @@ The exact V1 operation surface is closed as follows:
 | `recoverWorkspaceAccess` | `POST /api/app/workspaces/{workspaceId}/access-recovery` | deployment administrator; `deployment.recover` | `{ recovery }` |
 | `disableUser` | `POST /api/app/users/{userId}/disable` | deployment administrator; `api.call` | `{ user }` |
 
-The App API and Core Client expose all fifteen operations. The existing bearer-token-only CLI and unified Skill project only the operations reachable through their current credential contract. `listMyWorkspaceInvitations`, `acceptWorkspaceInvitation`, `declineWorkspaceInvitation`, and the exact own-receipt form of `leaveWorkspace` remain session-capable App API and Core Client operations in this work package and are an explicit known-partial for the CLI and Skill; WP-5 does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close that presentation gap.
+The App API and Core Client expose all fifteen operations. The existing bearer-token-only CLI and unified Skill project only the operations reachable through their current credential contract. `listMyWorkspaceInvitations`, `acceptWorkspaceInvitation`, `declineWorkspaceInvitation`, and the exact own-receipt form of `leaveWorkspace` remain session-capable App API and Core Client operations in the current projection and are an explicit known-partial for the CLI and Skill; the current baseline does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close that presentation gap.
 
 ## Testing Strategy And Acceptance Criteria
 
@@ -810,7 +803,7 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 
 ### L6 Agentic Story Acceptance
 
-- WP-5 adds no new multi-user agentic story. The accepted progressive-discovery story proves only that a real Agent can reach the unified Skill, discover and describe an operation, call the bundled CLI, and confirm durable readback.
+- The current multi-user baseline adds no new agentic story. The accepted progressive-discovery story proves only that a real Agent can reach the unified Skill, discover and describe an operation, call the bundled CLI, and confirm durable readback.
 - The release acceptance bundle combines that existing Agent/Skill reachability evidence with exact-release catalog and artifact checks for every bearer-reachable sharing operation, the Core-backed two-user L3 invitation/restart/removal path, and deterministic L1-L2 actor-lineage plus current-authority regressions. None of these evidence classes substitutes for another.
 - The L3 path MUST use two canonical users and public session or App API operations to create, invite, discover, accept, restart, remove, and observe a typed non-enumerating denial on the removed user's next request. Deterministic attribution checks MUST preserve the initiating editor's immutable `triggerActor` and responsible-user lineage and the owner's distinct review or decision actor with its existing durable decision and audit linkage.
 - At least one runtime-publication regression MUST revoke or disable the responsible user after worker output exists but before Artifact or Workspace publication, then prove a typed denied or interrupted outcome and zero publication. At least one irreversible-effect regression MUST remove authority after preflight but before the effect and prove that the existing provider, Vault, Git, or equivalent effect owner is not invoked. The exact current-authority table MUST continue to fail closed for a missing, removed, disabled, null-responsibility, insufficient-role, policy-denied, or missing-effect-authority tuple.
@@ -911,7 +904,6 @@ None for V1. Pre-account invitations, verified-email delivery, break-glass acces
 
 ## Links
 
-- [Implementation Change Plan](../changes/202607160021540001-contract_stability_multi_user_workspaces.md)
 - [Contract Stability Baseline](./20260715-contract_stability_baseline.md)
 - [NanoCore Config And Identity Contract](./20260628-nanocore_config_identity_contract.md)
 - [OpenKit Policy Model](./20260629-openkit_policy_model.md)
@@ -925,3 +917,4 @@ None for V1. Pre-account invitations, verified-email delivery, break-glass acces
 - [OpenKit Test Strategy](./20260529-test_strategy.md)
 - [OpenKit Agent Skill Interface](./20260713-openkit_agent_skill_interface.md)
 - [Scheduler Recurring And Event Triggers](./20260711-scheduler_recurring_event_triggers.md)
+- [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)

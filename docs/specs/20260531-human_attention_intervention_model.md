@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Human Attention And Intervention Model
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
@@ -37,7 +38,7 @@ Those Action Center rows are projections over existing protocol records, app-loc
 
 ## Current Implementation Projection
 
-The V1 NanoCore implementation exposes the main app-local surfaces through unified Action Center rows, version-owned Artifact Reviews, durable Goal Review records, pending Workspace Sync Reviews, knowledge proposal projections, and interrupted-worker recovery choices through product-facing read models. Interrupted-worker rows derive from the exact terminal scheduler, Turn, Session, backend-cleanup, capacity-release, checkpoint, and mode-owner predicate; only eligible rows expose retry, while contradictory Goal lineage exposes inspection and guidance without an executable action. A version-owned Artifact Review is the decision owner for an ordinary exact Artifact version, while a durable Workspace Sync Review owns only its staged workspace changes and passes exactly `accepted`, `needs_refinement`, `rejected`, or `blocked`. Action Center keeps the generic Artifact Review projection inspect-only until the Stage 5 client dispatcher lands; direct decisions already use only the versioned owner route. An exact Artifact related to both owner families remains one inspect-only `recovery_required` risk row, and both direct decision routes fail closed. The generic unversioned Artifact Review route and generic Core Artifact metadata mutation route remain absent.
+The V1 NanoCore implementation exposes the main app-local surfaces through unified Action Center rows, version-owned Artifact Reviews, durable Goal Review records, pending Workspace Sync Reviews, knowledge proposal projections, and interrupted-worker recovery choices through product-facing read models. Interrupted-worker rows derive from the exact terminal scheduler, Turn, AgentSession, backend-cleanup, capacity-release, checkpoint, and mode-owner predicate; only eligible rows expose retry, while contradictory Goal lineage exposes inspection and guidance without an executable action. A version-owned Artifact Review is the decision owner for an ordinary exact Artifact version, while a durable Workspace Sync Review owns only its staged workspace changes and passes exactly `accepted`, `needs_refinement`, `rejected`, or `blocked`. Action Center keeps the generic Artifact Review projection inspect-only until the Stage 5 client dispatcher lands; direct decisions already use only the versioned owner route. An exact Artifact related to both owner families remains one inspect-only `recovery_required` risk row, and both direct decision routes fail closed. The generic unversioned Artifact Review route and generic Core Artifact metadata mutation route remain absent.
 
 The current Goal Review path exposes one unresolved evidence row with explicit `accept`, `refine`, `retry`, and `abort` decisions and no verdict in its projection. Applying one decision resolves the Review, updates the addressed Goal Task, unlocks dependency-satisfied Tasks when applicable, and always leaves `currentTaskId=null` in one Workspace transaction; when every Task is complete, that same transaction terminalizes the Goal. Immutable `GoalTask.reviewPolicy` is now the sole review decision: `required=true` creates exactly one unresolved Goal Review, `required=false` takes the same closeout path without a Review, and Goal step requests reject caller-selected overrides.
 
@@ -88,17 +89,7 @@ Without that vocabulary, approval, question, steer, queue, review, blocked, retr
 
 ## Decision
 
-OpenKit will model human involvement through four primary interaction modes.
-
-1. `Approval Gate`: a blocking human decision that authorizes or denies a sensitive action.
-
-2. `Elicitation Gate`: a blocking human answer to a question, missing input, planning choice, blocked-state choice, or runtime continuation choice.
-
-3. `Steering Input`: non-terminal user input submitted while work is active; V1 accepts it only for the exact Goal path with the S16 durable pending owner and otherwise rejects it before writes.
-
-4. `Review And Acceptance`: human or agent evaluation of work products, artifacts, diffs, plans, knowledge proposals, and evidence through their owning records.
-
-These modes can compose.
+`docs/core/work-model.md` owns the four human-attention modes and their stable product meanings. This specification maps those modes to concrete protocol, persistence, Action Center, delivery, and recovery behavior.
 
 For example, an existing Goal or checkpoint owner may produce an elicitation gate for a missing choice; a selected path may require an approval gate for additional cost or side effects; a later Goal step may then produce an Artifact Review through its existing owner.
 
@@ -127,23 +118,7 @@ The app layer may expose an `Action Center` read model that groups pending human
 
 Only approval gates and elicitation gates are human gates in the current core protocol.
 
-`Approval gate` is a blocking decision that authorizes a sensitive action.
-
-It exists to protect safety, policy, cost, credentials, irreversible operations, and external side effects.
-
-`Elicitation gate` is a blocking request for information or a choice.
-
-It exists when the agent, coordinator, or worker envelope cannot continue responsibly without human input.
-
-`Steering input` is proposed user input while work is already active. Classification as steering does not by itself mean that Core accepted, queued, or delivered it.
-
-It may correct direction, add constraints, ask the agent to pause, request faster wrap-up, change priority, or provide new information.
-
 `Delivery policy` is the authoritative outcome for steering input accepted through an owning delivery contract. V1 accepts only the Goal-owned safe-point path defined by S16; other delivery ideas are not implementation authority.
-
-`Review and acceptance` is evaluation of a work product or intermediate result.
-
-It may lead to accept, refine, redo, export, preserve, propose knowledge, escalate, or stop.
 
 `Escalation trigger` is a runtime, review, budget, policy, or quality condition that asks for human attention.
 
@@ -157,7 +132,7 @@ It is not a new protocol object by itself.
 
 Human-in-the-loop should not create a parallel workflow engine.
 
-The core records remain workspace, thread, turn, item, artifact, approval request, and agent session.
+The core records remain workspace, thread, turn, item, artifact, approval request, and AgentSession.
 
 App-local runtime envelopes may hold richer state while the product is still learning which fields are durable.
 
@@ -191,19 +166,11 @@ An elicitation answer can produce steering.
 
 A budget extension can require approval.
 
-An approval decision can authorize the owning workflow to continue; it does not by itself authorize adapter-native worker Session resume.
+An approval decision can authorize the owning workflow to continue; it does not by itself authorize adapter-native AgentSession resume.
 
 The model should support these compositions without adding one-off concepts for each scenario.
 
-## Interaction Mode 1: Approval Gate
-
-### Purpose
-
-Approval gates protect operations that should not proceed without explicit human authorization.
-
-They should become less frequent as agent sandboxes, runtime defaults, and workspace policies improve.
-
-They remain necessary for sensitive cases.
+## Approval Gate Mapping
 
 ### Typical Triggers
 
@@ -227,7 +194,7 @@ The user responds through the approval response command.
 
 Core records an `approval-decision` item.
 
-The owning workflow then follows its documented continuation, failure, cancellation, or recovery predicate. In Goal worker V1, a gate response closes the waiting envelope and any further work uses a new step request and Turn; the approval record alone never resumes a worker Session.
+The owning workflow then follows its documented continuation, failure, cancellation, or recovery predicate. In Goal worker V1, a gate response closes the waiting envelope and any further work uses a new step request and Turn; the approval record alone never resumes an AgentSession.
 
 ### Product Requirements
 
@@ -239,13 +206,7 @@ Approval cards should support grant and deny first.
 
 Additional choices such as grant once, grant for this turn, grant for this workspace policy, or deny and explain can be added later only when backed by explicit policy semantics.
 
-## Interaction Mode 2: Elicitation Gate
-
-### Purpose
-
-Elicitation gates collect missing user input or choices required for responsible continuation.
-
-They cover agent questions, Plan Mode questions, blocked-state recovery, runtime checkpoint recovery, ambiguous task scope, and human choices that are not authorization decisions.
+## Elicitation Gate Mapping
 
 ### Typical Triggers
 
@@ -268,7 +229,7 @@ The user responds through ordinary turn input scoped to the paused turn.
 
 Core records a `user-input-response` item.
 
-The owning workflow then follows its documented transition. A non-worker flow may continue the same Turn when its contract permits; a worker `ask_user` response remains attached to that Turn but resumes it only to close the waiting envelope under S05. Task Mode requires a new `task.start` for further execution, while Goal Mode returns the Goal Task to `ready` and requires a new `goal.step`; neither implies Session resume.
+The owning workflow then follows its documented transition. A non-worker flow may continue the same Turn when its contract permits; a worker `ask_user` response remains attached to that Turn but resumes it only to close the waiting envelope under S05. Task Mode requires a new `task.start` for further execution, while Goal Mode returns the Goal Task to `ready` and requires a new `goal.step`; neither implies AgentSession resume.
 
 ### Plan Mode
 
@@ -296,13 +257,7 @@ Until that safe path exists, a gate containing any `isSecret=true` question is v
 
 Question responses use an exact structured map rather than flattened text: `answers` is `{ [questionId]: [string] }`, and the one array member is non-empty. V1 has no multi-select question mode, so zero or multiple values are `400 invalid_request`. A request producer MUST reject duplicate question ids as `400 invalid_request` before creating the request Item. The answer keys MUST equal every and only question id in the referenced completed request Item; missing or extra answer keys are `400 invalid_request`. If an already durable request Item contains duplicate ids or contradicts the Turn gate, response submission returns `409 recovery_required` rather than blaming caller input. The same Turn's `humanGate` and the absence of a response Item own waiting state; the request Item itself is completed once its immutable payload is durable. Every failure occurs before business mutation.
 
-## Interaction Mode 3: Steering Input
-
-### Purpose
-
-Steering lets the user influence active work without waiting for a terminal result.
-
-It is the core "human as leader" interaction for long-running agents.
+## Steering Input Mapping
 
 ### Typical Triggers
 
@@ -350,13 +305,7 @@ The item log should remain coherent.
 
 When input is proven applied inside the same Goal worker Turn, the exact immutable Context Package trace is the authority; UI message ordering is only a projection.
 
-## Interaction Mode 4: Review And Acceptance
-
-### Purpose
-
-Review and acceptance covers evaluation of plans, artifacts, diffs, generated files, knowledge proposals, and test evidence through their named owners.
-
-It is not the same thing as approval unless a policy-sensitive action is being authorized.
+## Review And Acceptance Mapping
 
 ### Typical Triggers
 
@@ -495,9 +444,9 @@ The following scenarios should guide implementation, tests, and product review.
 | User requests redo | Attempt is unsatisfactory | Review And Acceptance | Steering Input | Start new attempt in same thread without deleting prior attempt. |
 | Budget nearing limit | Usage crosses configured watermark | Steering Input | Elicitation Gate | The owning mode supplies a request-scoped budget constraint to its next Coordinator decision and optionally asks the user for scope or budget choice; no queue record is created. |
 | Budget exhausted | No more substantive work allowed | Elicitation Gate | Approval Gate if extension spends quota | Ask the user to wrap up, request an authorized extension, narrow scope, choose a permitted downgrade, or pause where the owning mode supports it. |
-| Runtime crashes with checkpoint | Active turn loses worker session | Elicitation Gate | Review And Acceptance | Show recovery choices and partial artifacts. |
+| Runtime crashes with checkpoint | Active Turn loses AgentSession continuity | Elicitation Gate | Review And Acceptance | Show product-safe recovery choices and partial Artifacts without exposing AgentSession identity or actions. |
 | Accepted Goal pending input survives crash | Goal recovers from input Item plus pending row | Steering Input | Elicitation Gate | Show the original Goal and Turn lineage and only the delivery, follow-up conversion, or cancellation actions authorized by S16. |
-| Agent config becomes stale | Runtime config changes mid-session | Elicitation Gate | Steering Input | Ask whether to continue current session, restart, or switch agent. |
+| Agent configuration becomes incompatible | A later Turn cannot reuse the current AgentSession | Elicitation Gate | Steering Input | Explain product-safe availability and offer only an authorized Turn retry, a new Thread, or an available Agent choice; AgentSession retirement and replacement remain internal. |
 | Agent readiness blocked | Agent cannot start | Elicitation Gate | None | Offer switch agent, refresh, fix config, or retry later. |
 | Knowledge proposal after task | User or owning service submits an explicit governed proposal command with source references | Review And Acceptance | Elicitation Gate | Let user accept, reject, or defer; changed candidate bytes require a new proposal. |
 | External publish action | Agent wants to publish or send output | Approval Gate | Review And Acceptance | User reviews content, then explicitly approves side effect. |
@@ -544,7 +493,6 @@ interface HumanAttentionRow {
   turnId?: string;
   itemId?: string;
   artifactId?: string;
-  agentSessionId?: string;
   goalId?: string;
   taskId?: string;
   title: string;
@@ -559,7 +507,7 @@ interface HumanAttentionRow {
 
 This should begin as `@openkit/app-api-schemas` and NanoCore read-model work.
 
-Only rows backed by stable core concepts should expose core IDs.
+Only rows backed by stable product concepts should expose their product-visible Core IDs. AgentSession identity is excluded from this ordinary App API projection.
 
 An approval row is actionable only when the referenced Turn is `awaiting_human`, its approval gate names the exact request Item and Approval record, that Item is a completed `approval-request`, and the Approval remains `pending`. A question row is actionable only when the referenced Turn is `awaiting_human`, its user-input gate names the exact completed request Item and request id, that Item has unique question ids and no secret question, and no matching response Item exists. A valid secret-question gate remains visible only as an inspect-only or disabled row with reason `Secret answers require a future Vault-backed input contract.` Goal worker gates additionally require the exact `waiting_for_user` checkpoint and matching Goal and Goal Task lineage. Missing or contradictory owners may produce an inspect-only recovery row when an owning specification authorizes it, but they MUST NOT produce approval or answer actions. Item absence alone, identifier prefixes, or a missing response projection never proves actionability.
 
@@ -587,7 +535,7 @@ S16 Goal steering now uses only the exact Thread-unique `PendingUserTurnRecord`,
 
 `apps/web/src/App.tsx` renders a first-class Action Center page, keeps inline thread approval/question cards for local context, links Goal Mode human attention warnings to the Action Center, and dispatches enabled approval, agent-readiness, durable Workspace Sync Review, and Goal Review actions through `@openkit/core-client`.
 
-Knowledge proposal accept, reject, and defer decisions are the accepted Action Center projection. Current code still exposes an `edited` decision that mutates the pending proposal title and summary; G07 deletes that drift because create-only V1 requires a new proposal for changed candidate bytes. Current claim-promotion and worker-control proposal-summary paths are duplicate proposal producers; G07 deletes them, and accepted Claims may guide only the ordinary complete `knowledge.proposal-draft` command. Durable Workspace Sync Review rows expose executable `accepted`, `needs_refinement`, `rejected`, and `blocked` decisions through App API, `@openkit/core-client`, and OpenAPI even when the backing Artifact is unavailable; no Artifact route can decide or apply them. Live Goal Review rows created by human-reviewed steps expose executable accept, refinement, retry, and abort actions with no preselected verdict; Core Client, Web, and the unified Skill's `goal.review-decide` CLI operation submit the canonical decision, and cancelling required text collection leaves the Review unresolved. Direct Task and Goal Gate response closeout, exact replay, and boot checkpoint classification use the existing Item, Turn, Session, checkpoint, mode, backend, lease, capacity, and receipt owners; complete exact tuples close once, while incomplete or contradictory tuples remain `recovery_required`. If an AEP worker reports accepted `blocked` plus `ask_user` without a transport that names an exact Core Gate, NanoCore preserves that worker outcome, completes backend cleanup, marks the Product Turn and Agent Session `interrupted` with `worker_human_gate_unavailable`, and returns `recovery_required`; it does not synthesize a Gate or Action Center row. The mode checkpoint stays `preparing` with null `stopReason` and `workerSessionId`, so boot leaves it discoverable as `recovery_required` instead of claiming `waiting_for_user`. Capacity is released with `needs-evidence` only when that exact interruption, accepted final status, cleaned backend session, and releasing lease lineage agree, and restart uses the same bounded interruption projection. Interrupted-worker checkpoint rows expose inspection, request-human guidance, and retry-to-ready, while caller-selected terminal checkpoint cleanup remains absent because caller input cannot replace final-status and complete closeout proof. Retry remains unavailable while the scheduler lease is `awaiting-reconnect` or retains `needs-evidence`. Adapter-native in-flight Session resume remains disabled because the checkpoint read model is not a replay instruction. Generic pending-user-turn persistence and every generic mutation or recovery projection remain absent; the exact S16 Goal pending owner, verified S39 delivery projection, terminal follow-up, and cancellation are implemented without restoring that platform. Scheduler admission rows expose retry for denied admissions and cancellation for queued or denied admissions through the same public surfaces. Known non-goals for this implementation are checkpoint Session resume execution and Agent switching execution from the Action Center; those actions remain disabled with explicit reasons when projected.
+Knowledge proposal accept, reject, and defer decisions are the accepted Action Center projection. Changing a proposal title, summary, or content requires a new proposal; there is no `edited` decision and no mutation of a pending proposal. Claim-promotion and worker-control proposal-summary producers remain absent, and accepted Claims may guide only the ordinary complete `knowledge.proposal-draft` command. Durable Workspace Sync Review rows expose executable `accepted`, `needs_refinement`, `rejected`, and `blocked` decisions through App API, `@openkit/core-client`, and OpenAPI even when the backing Artifact is unavailable; no Artifact route can decide or apply them. Live Goal Review rows created by human-reviewed steps expose executable accept, refinement, retry, and abort actions with no preselected verdict; Core Client, Web, and the unified Skill's `goal.review-decide` CLI operation submit the canonical decision, and cancelling required text collection leaves the Review unresolved. Direct Task and Goal Gate response closeout, exact replay, and boot checkpoint classification use the existing Item, Turn, AgentSession, checkpoint, mode, backend, lease, capacity, and receipt owners; complete exact tuples close once, while incomplete or contradictory tuples remain `recovery_required`. If an AEP worker reports accepted `blocked` plus `ask_user` without a transport that names an exact Core Gate, NanoCore preserves that worker outcome, completes backend cleanup, marks the Product Turn and AgentSession `interrupted` with `worker_human_gate_unavailable`, and returns `recovery_required`; it does not synthesize a Gate or Action Center row. The mode checkpoint stays `preparing` with null `stopReason` and `workerSessionId`, so boot leaves it discoverable as `recovery_required` instead of claiming `waiting_for_user`. Capacity is released with `needs-evidence` only when that exact interruption, accepted final status, cleaned backend session, and releasing lease lineage agree, and restart uses the same bounded interruption projection. Interrupted-worker checkpoint rows expose inspection, request-human guidance, and retry-to-ready, while caller-selected terminal checkpoint cleanup remains absent because caller input cannot replace final-status and complete closeout proof. Retry remains unavailable while the scheduler lease is `awaiting-reconnect` or retains `needs-evidence`. Adapter-native in-flight AgentSession resume remains disabled because the checkpoint read model is not a replay instruction. Generic pending-user-turn persistence and every generic mutation or recovery projection remain absent; the exact S16 Goal pending owner, verified S39 delivery projection, terminal follow-up, and cancellation are implemented without restoring that platform. Scheduler admission rows expose retry for denied admissions and cancellation for queued or denied admissions through the same public surfaces. Known non-goals for this implementation are checkpoint AgentSession resume execution and Agent switching execution from the Action Center; those actions remain disabled with explicit reasons when projected.
 
 ## Layer Ownership
 

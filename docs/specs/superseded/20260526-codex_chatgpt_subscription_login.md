@@ -1,17 +1,35 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-21
+current-guidance: "`docs/specs/20260721-provider_subscription_accounts.md`, `docs/specs/20260708-pi_ai_unified_llm_backend.md`, `docs/specs/20260526-llm_gateway_responses_api.md`"
+decision-evidence: "`docs/specs/20260721-provider_subscription_accounts.md`, `docs/specs/20260708-pi_ai_unified_llm_backend.md`, `docs/specs/20260526-llm_gateway_responses_api.md`"
+---
 # Codex ChatGPT Subscription Login
 
-Status: Accepted
-Implementation: Implemented
+## Lifecycle Reason
 
-## Owns
+The provider-neutral subscription-account contract replaced this Codex-specific design. The accepted target moves login and refresh to stock pi-ai, stores credentials through the OpenKit Vault, adds xAI subscription accounts, removes Codex app-server and `CODEX_HOME`, and routes Codex inference through the same pi-ai backend as every other provider. This document therefore no longer owns current account, route, storage, refresh, or Gateway behavior.
+
+## Retention Reason
+
+This document preserves the historical Codex-specific App API, multi-slot metadata, isolated Codex-home, app-server login, UI, and security decisions so maintainers can interpret the implementation being removed and its tests during the clean-target migration.
+
+## Current Guidance
+
+Current provider-subscription account lifecycle, storage, App API, quota, and multi-slot behavior belongs to `docs/specs/20260721-provider_subscription_accounts.md`. Unified provider transport belongs to `docs/specs/20260708-pi_ai_unified_llm_backend.md`, and the public `/v1/*` route contract belongs to `docs/specs/20260526-llm_gateway_responses_api.md`.
+
+The remaining content is historical and must not be extended. The migration has no compatibility obligation for the Codex-specific routes, config field, credential homes, app-server dependency, or dedicated backend described below.
+
+## Historical Ownership
 
 This spec owns server-owned Codex ChatGPT subscription account slots, sanitized account App API routes, account-scoped login and logout behavior, and the binding between Codex account slots and Gateway provider instances.
 
-## Does Not Own
+## Historical Exclusions
 
 This spec does not own LLM Gateway request routing, Chat Completions or Responses semantics, vault backend storage, user-owned BYOK behavior, general OAuth provider support, or `packages/protocol` schemas.
 
-## Core References
+## Historical Core References
 
 - `docs/core/identity.md`
 - `docs/core/vault.md`
@@ -19,13 +37,13 @@ This spec does not own LLM Gateway request routing, Chat Completions or Response
 - `docs/core/metering.md`
 - `docs/core/audit.md`
 
-## Summary
+## Historical Summary
 
 This spec adds server-owned OpenAI Codex/ChatGPT subscription account management to NanoCore and the Web UI. The implementation supports one NanoCore server managing multiple isolated account slots and binding Gateway provider instances to those slots by non-secret references.
 
-The inference surface is covered by [LLM Gateway Responses API](./20260526-llm_gateway_responses_api.md), which adds native Responses routing for `openai_codex` while preserving this login API as the user-facing account control surface.
+The inference surface was covered by [LLM Gateway Responses API](../20260526-llm_gateway_responses_api.md), which added native Responses routing for `openai_codex` while preserving this login API as the user-facing account control surface.
 
-## Current Implementation Projection
+## Historical Implementation Projection
 
 NanoCore exposes server-owned Codex account-slot management through account-scoped App API routes under `/api/app/oauth/openai-codex/accounts`.
 
@@ -127,7 +145,7 @@ Each account slot starts Codex app-server with `CODEX_HOME=<slot>/codex-home`, s
 
 ## Data-root Placement
 
-The login slice follows the canonical server config and data-root layout from [Server Config and Data Layout](./20260628-nanocore_config_identity_contract.md) and [Layered User and Workspace Configuration](./20260628-nanocore_config_identity_contract.md).
+The login slice followed the canonical server config and data-root layout from [Server Config and Data Layout](../20260628-nanocore_config_identity_contract.md) and [Layered User and Workspace Configuration](../20260628-nanocore_config_identity_contract.md).
 
 `DATA_ROOT/config` remains server-owned authored runtime config only:
 

@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Implemented
+---
 # OpenKit Policy Model
-
-Status: Accepted
-Implementation: Implemented
 
 ## Summary
 
@@ -33,6 +34,7 @@ This spec owns the policy-kernel model and package boundary. `docs/core/permissi
 - Authentication, identity sessions, membership storage, organization roles, or UI copy.
 - Vault secret values, Knowledge Store content, audit record persistence, runtime session storage, or protocol record schemas.
 - Runtime scheduling, workspace synchronization, agent capability gateway routing, or AEP resolution.
+- Runtime Epoch lifecycle, OpenShell operations, Sandbox Integration, or runtime transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 - Product-level `PermissionDecision` result categories beyond the low-level kernel's allow or deny effect.
 
 ## Core References
@@ -103,7 +105,7 @@ The intended flow is:
 4. OpenShell enforces those artifacts inside the selected sandbox and returns backend evidence such as policy apply status, network deny events, supervisor logs, OCSF records, transcript files, artifacts, and collected workspace changes.
 5. NanoCore normalizes backend evidence back into OpenKit audit, usage, review, artifact, and worker session records.
 
-This layering is compatible with the existing OpenShell-first backend strategy. Official, unmodified OpenShell `0.0.80` remains the first-class local and remote container backend inside one single-slot disposable Cell, and it should strongly influence runtime policy materialization, provider vocabulary, endpoint declarations, binary allowlists, and enforcement evidence. Remote placement is valid only when its fixed SSH lifecycle target, operator-managed loopback HTTP Gateway origin, and explicit credential-free HTTP(S) `/api/worker-control` URL identify one coherent Cell path.
+This layering is compatible with the accepted OpenShell-first target. Official, unmodified OpenShell `0.0.99` is the first-class target container backend inside the configured NanoHost's private Runtime Epoch, with one loopback-only stock Gateway and the current one active worker slot. It should strongly influence runtime policy materialization, provider vocabulary, endpoint declarations, binary allowlists, and enforcement evidence without becoming lifecycle authority outside the NanoHost.
 
 OpenShell must not become the canonical OpenKit permission model. Public App API, end-user CLI, Web UI, Action Center, storage records, and audit records must not require consumers to understand OpenShell-native sandbox ids, gateway names, provider handles, raw policy YAML, supervisor logs, or backend-private environment values.
 
@@ -115,9 +117,9 @@ The unacceptable dependency is durable OpenKit product state or public protocol 
 
 NanoCore owns policy decisions, audit linkage, product lineage, approval workflow, and redacted user-facing explanations.
 
-OpenShell owns sandbox-local runtime enforcement only for OpenShell-backed worker sessions. That enforcement includes backend isolation, file transport, filesystem policy, process policy, network policy, provider attachment, credential projection, and inference routing. OpenKit's fixed Cell helper owns whole-runtime prepare and recycle; sandbox or provider deletion is not teardown proof or a fallback success path.
+OpenShell owns sandbox-local runtime enforcement only for OpenShell-backed worker sessions. That enforcement includes backend isolation, file transport, filesystem policy, process policy, network policy, provider attachment, credential projection, and inference routing. The NanoHost is the sole OpenShell lifecycle authority; its Sandbox Integration projects worker-local APIs onto the distinct `/worker-control/*`, `/inference/*`, and `/capabilities/*` route families without merging their credentials or semantics. Runtime cleanup and uncertain-operation invalidation remain exclusively owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
-A naked or shared Gateway, insecure Gateway mode, custom OpenShell binary, fork, patch, replacement artifact, or historical compatibility path is outside the runtime-policy contract.
+A publicly or remotely exposed Gateway, insecure Gateway mode, custom OpenShell binary, fork, patch, replacement artifact, custom multiplexer, or historical compatibility path is outside the runtime-policy contract.
 
 Other backends may enforce the same OpenKit decisions through different artifacts. For example, Docker may use container options and copied workspaces, Kubernetes may use pod security context and network policy, and a hosted sandbox may use provider file APIs and managed egress rules.
 
@@ -367,6 +369,8 @@ The current package implements the first standard-aligned subset in this spec:
 - NanoCore does not yet route all product authorization through `@openkit/policy-kernel`; that integration remains tracked by `docs/specs/20260703-policy_enforcement_mapping.md` rather than by this package-level policy model spec.
 - OpenShell policy YAML rendering exists as derived runtime policy code in NanoCore, not as a dependency of `@openkit/policy-kernel`.
 - Current product and protocol surfaces use `knowledge.*` naming for knowledge-related capability and policy vocabulary.
+
+The Runtime Epoch and stock RelayStream plus nested standard HTTP/2 transport are implemented by NanoHost. The policy kernel and derived OpenShell policy renderer remain policy projections and do not authorize a Cell, SSH, Gateway-forward, or direct worker endpoint alternative.
 
 ## Deferred / Future Work
 

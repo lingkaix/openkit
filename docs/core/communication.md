@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Communication Model
-
-Status: Accepted
 
 This document defines OpenKit core communication semantics.
 
@@ -8,7 +9,7 @@ This document owns how clients, channels, Core, agent adapters, agent runtimes, 
 
 This document owns communication layers, transport projections, communication planes, mediation boundaries, deployment-specific communication mapping, and transport independence.
 
-This document does not own stable protocol records, event envelope shape, event families, command semantics, lifecycle states, stream replay semantics, command idempotency semantics, error shape, complete HTTP endpoint lists, app read models, database tables, provider-native payloads, or agent runtime private schemas.
+This document does not own stable protocol records, event envelope shape, event families, the semantics of individual typed commands, lifecycle states, abstract stream replay or terminal-proof semantics, command idempotency semantics, error shape, complete HTTP endpoint lists, app read models, database tables, provider-native payloads, or agent runtime private schemas. It does own the interaction classification that distinguishes conversation, observation, and command before transport projects an owning operation, plus the concrete HTTP and SSE projection of replay semantics.
 
 Normative protocol semantics live in `docs/core/protocol.md`. This document may reference those semantics, but it must only define how they move across participants, planes, transports, and deployment shapes.
 
@@ -21,9 +22,9 @@ Client / Channel <-> Core
 Core / Adapter   <-> Agent Runtime
 ```
 
-`Client / Channel <-> Core` is product protocol communication. It carries workspace, thread, turn, item, approval, artifact, and app-visible agent session events.
+`Client / Channel <-> Core` is product protocol communication. It carries Workspace, Thread, Turn, Item, Approval, Artifact, and product-safe runtime-availability events. It does not expose AgentSession identity or lifecycle to an ordinary client.
 
-`Core / Adapter <-> Agent Runtime` is agent control communication. It initializes agent sessions, starts turns, interrupts work, receives agent events, coordinates workspace and artifact movement, and brokers capabilities.
+`Core / Adapter <-> Agent Runtime` is agent control communication. It initializes AgentSessions, starts turns, interrupts work, receives agent events, coordinates workspace and artifact movement, and brokers capabilities.
 
 These layers may use different transports. They share the same core concepts, but they are not the same wire protocol.
 
@@ -31,27 +32,17 @@ These layers may use different transports. They share the same core concepts, bu
 
 Transport choices are projections of the protocol, not the protocol itself.
 
-The core protocol must not depend on whether a message crosses:
-
-- HTTP
-- SSE
-- WebSocket
-- stdio
-- JSON-RPC
-- Unix socket
-- container exec
-- SSH
-- mutually authenticated service transport
-- in-process function calls
+The core protocol MUST NOT depend on whether communication is in-process or crosses a governed local, remote, isolation, or authenticated service boundary.
 
 The transport must preserve stable command semantics, event ordering, IDs, lifecycle states, and error shape.
 
 ## Principles
 
+- Within OpenKit, the term `plane` is reserved for logical communication concerns and does not name an OpenKit-owned product, service, host, deployment target, authority, or failure domain. Core's named OpenKit communication planes are Control, Workspace, Artifact, and Capability; qualified external terminology and generic logical data-plane or communication-plane descriptions remain permitted.
 - Transport choices are projections of protocol semantics, not protocol semantics themselves.
 - Communication should preserve ordering, terminal proof, request correlation, idempotency, and redaction across transports.
 - Client/Core communication and Core/agent communication may use different transports, but they share the same core concepts.
-- Core-to-agent work should use separate control, workspace, artifact, and capability planes rather than forcing every byte through one stream.
+- Core-to-agent work MUST preserve separate control, workspace, artifact, and capability semantics even when multiple planes share one physical connection, process, or transport session.
 - Runtime mediation components are communication substrate, not business-logic owners.
 
 ## Client To Core Projection
@@ -63,7 +54,9 @@ The default UI-to-Core projection is:
 
 HTTP and SSE are preferred for browser, desktop, embedded local server, and simple remote server scenarios because they are easy to debug, proxy, log, and validate.
 
-WebSocket, stdio, and JSON-RPC are not the default UI-to-Core transport. They may be supported later as transport projections if they preserve the same command and event semantics.
+NanoCore projects this Client/Core surface through its App HTTP/1.1 listener. The separate NanoHost rendezvous listener accepts only its private native HTTP/2 carriage; it is not a Client/Core endpoint. The App listener rejects that private carriage, and the NanoHost listener rejects App API, Gateway, diagnostics, authentication, and SSE requests. A deployment frontend may proxy the App listener but MUST NOT proxy or synthesize the NanoHost physical connection.
+
+Other client transports MAY be supported as governed projections if they preserve the same command and event semantics.
 
 ## Capability Discovery Projection
 
@@ -97,9 +90,9 @@ Client -> Core: read workspace resources
 Client -> Core: list, create, read, or re-enter threads
 ```
 
-All threads, turns, items, artifacts, knowledge records, agent sessions, and workspace resources are scoped by workspace.
+All threads, turns, items, artifacts, knowledge records, AgentSessions, and workspace resources are scoped by workspace.
 
-Thread selection brings the user or channel into a durable work container. It does not imply that an agent session already exists.
+Thread selection brings the user or channel into a durable work container. It does not imply that an AgentSession already exists.
 
 ## Turn Communication Flow
 
@@ -117,6 +110,39 @@ Core -> Client: ordered events until terminal turn event
 Communication projections MUST preserve the protocol distinction between command acceptance and terminal turn proof.
 
 Interrupt and cancellation commands may be accepted before the turn is terminal. Clients should treat the turn as terminal only after a terminal turn event or equivalent read-model state appears.
+
+## Interaction Semantics
+
+Every accepted user interaction MUST be projected as exactly one of three semantic classes before it can affect product or external state:
+
+- `conversation` produces advice, explanation, drafting, or clarification and has no work-state or external effect by itself.
+- `observation` reads actor-authorized durable state or source observations and has no mutation authority.
+- `command` invokes an exact typed operation with an authenticated actor, exact target, expected effect, current authorization, current-state preconditions, request and causation identity, required decision strength, delivery rule, and authoritative outcome.
+
+These classes describe the interaction boundary, not three durable entities or three new lifecycle machines. The typed command's owner remains the unique authority for its operation, resource lifecycle, idempotency, conflict handling, delivery, and result. A channel, client, Assistant, model, or parser may propose the class and exact command, but it cannot create command authority from natural language.
+
+### Classification Lifecycle
+
+Classification is created for one accepted input and terminates when that input produces conversation output, an observation result, a typed command preview or outcome, or a bounded clarification. It is not updated in place after an effect begins. A materially changed request, clarified answer, replacement target, or retry is classified again against current state and retains causation to the earlier interaction where applicable.
+
+Conversation and observation terminate without mutation. A command proposal terminates without effect when the user rejects it, the required decision is absent, or its owner refuses it. An accepted command follows its owning lifecycle and MUST NOT be reported as applied, completed, or recovered until that owner returns the corresponding authoritative outcome.
+
+Progress questions MUST use observation rather than injecting a message into active work. Conversation may recommend a command but MUST NOT imply that the recommendation changed state. Ambiguous consequential language MUST produce a preview or clarification rather than a guessed mutation.
+
+### Conflict, Failure, And Recovery
+
+Missing actor, target, effect, authorization, current-state precondition, request identity, confirmation, delivery contract, or owning command prevents command acceptance. A stale, incompatible, terminal, busy, conflicted, rejected, failed, interrupted, or unknown result is preserved exactly; a client or model MUST NOT retarget the command, infer application, or translate it into success.
+
+Transport loss after command submission is not evidence that no effect occurred. Retry uses the same request identity when seeking exact replay and a new request identity only when the user requests a genuinely new attempt under the owning command contract. Restart reconstructs classification context from durable Items, current resource state, and accepted command lineage rather than channel memory or provider memory.
+
+Contradictory human intent is not a communication arbitration problem. The authenticated human who supplied the accepted input is the actor of its Item or command, and that actor plus request lineage MUST be preserved through every projection. NanoCore serializes accepted transitions and applies authorization, stale-state, safe-point, revision, and effect rules, but it does not decide which human is socially correct, distinguish disagreement from a change of mind, or introduce consensus, priority, or veto semantics.
+
+### Observable Acceptance
+
+- Asking for an explanation or status MUST NOT change a Plan, priority, Worker context, scheduler state, resource lifecycle, or external system.
+- A consequential natural-language request MUST expose its exact target and effect through the decision form required by `docs/core/permissions.md` before admission.
+- Every accepted command MUST preserve actor and request lineage and expose the owning accepted, queued, delivered, applied, rejected, stale, conflicted, failed, interrupted, unknown, or otherwise typed outcome without client inference.
+- Reconnect, retry, and channel replacement MUST reconstruct from durable owners and MUST NOT duplicate an effect or rely on hidden channel or provider state.
 
 ## Active-Turn Input Projection
 
@@ -152,7 +178,7 @@ Transport projections MUST preserve command idempotency semantics from `docs/cor
 
 Communication owns retry placement and transport failure handling, not the idempotency ledger definition.
 
-If an HTTP request, SSE reconnect, bridge retry, agent retry, or client retry repeats the same command with the same `requestId`, Core must not create duplicate turns, items, approvals, artifacts, knowledge records, or agent sessions.
+If an HTTP request, SSE reconnect, bridge retry, agent retry, or client retry repeats the same command with the same `requestId`, Core must not create duplicate turns, items, approvals, artifacts, knowledge records, or AgentSessions.
 
 Transport-specific retry behavior is allowed only when the semantic command result remains idempotent.
 
@@ -165,13 +191,13 @@ For a turn-scoped stream:
 - `sequence` is monotonic within the stream
 - events are emitted in causal order
 - duplicate or stale events can be ignored by sequence
-- `turn.completed` is terminal for that turn stream
+- only the canonical exact-owner terminal-affiliated envelope defined by Core Protocol Stream Cursor And Replay is terminal proof for that turn stream
 
-Clients should close a turn stream only after receiving a terminal event or after a reconnect/replay path confirms the terminal state.
+Clients should close a turn stream only after receiving that canonical exact-owner terminal-affiliated envelope or after a reconnect/replay path confirms the same terminal state.
 
-The normative cursor, reconnect, `204 No Content`, and opaque-close rules live in `docs/core/protocol.md`.
+Status-aware HTTP replay MAY return `204 No Content` only when the reconnect cursor is already at or beyond a retained canonical exact-owner terminal-affiliated envelope. In the HTTP/SSE projection, that status is the only silent terminal replay signal. Opaque SSE close events, transport errors, or EventSource error callbacks are not terminal proof unless the client has already observed that canonical envelope.
 
-Reconnect and missed-event recovery should use sequence-aware replay when supported.
+Clients that cannot observe HTTP status MUST rely on the canonical exact-owner terminal-affiliated envelope or a surfaced stream failure. A status-aware replay client may also rely on the explicit HTTP response above. A protocol-validation failure closes the active transport and makes that subscription hard-incompatible: it exposes no private recovery cursor, performs no automatic recovery, and adds no public recovery shape. A later caller-created subscription supplies only a caller-owned `since` value or no `since`, and it may fail again until an authoritative read establishes usable state or a compatible client-server upgrade is installed.
 
 ## Stream Cursor Projection
 
@@ -182,11 +208,11 @@ Streams have separate cursor scopes by stream kind.
 | Workspace stream | `(workspaceId, sequence)` | Conceptual cursor scope |
 | Thread stream | `(workspaceId, threadId, sequence)` | Conceptual cursor scope |
 | Turn stream | `(workspaceId, threadId, turnId, sequence)` | Conceptual cursor scope |
-| Agent session stream | `(workspaceId, agentSessionId, sequence)` | Conceptual cursor scope |
+| Internal or operator AgentSession stream | `(workspaceId, agentSessionId, sequence)` | Conceptual cursor scope; never ordinary App API discovery or navigation |
 
 Concrete live stream availability belongs in protocol and communication specs.
 
-The protocol owns sequence semantics, replay semantics, cursor-expired errors, and terminal replay rules.
+The protocol owns sequence semantics, abstract replay semantics, cursor-expired errors, and terminal-proof rules. Communication owns only their transport projection, including the HTTP `204 No Content` confirmation and the rule that an opaque SSE close is not proof.
 
 Transport projections SHOULD expose replay as a `since` cursor or equivalent field when retained events are available.
 
@@ -205,7 +231,7 @@ Core -> Client: item.created approval-request
 Core -> Client: turn.updated awaiting_human with approval gate
 Client -> Core: respond to approval
 Core -> Client: item.created approval-decision
-Core -> Client: turn.updated running | failed | cancelled
+Core -> Client: turn.updated running | failed | interrupted; denial remains distinguishable through the approval-decision Item and terminal stopReason
 ```
 
 Approval decisions must be auditable.
@@ -246,19 +272,17 @@ Artifact   - generated outputs, reports, diffs, bundles, assets
 Capability - LLM, MCP, vault, knowledge base, external APIs, network proxy
 ```
 
-These planes have different shapes and should not be forced through one transport.
+These planes have different owners, authorization scopes, payload bounds, ordering needs, retry rules, and failure semantics. They MUST remain logically distinct, but two or more planes MAY share one physical connection, process, or transport session when the projection preserves those differences and prevents traffic from being interpreted under another plane's authority.
 
-The adapter chooses a transport per plane based on agent setup contract, deployment mode, runtime capability, and workspace policy.
+The adapter chooses a transport projection for each plane based on the owning `AgentManifest` defined by `docs/core/agent-supply.md`, deployment mode, runtime capability, and workspace policy. One projection MAY carry multiple planes, but shared carriage MUST NOT create a shared token, permission scope, payload limit, retry rule, failure meaning, or protocol owner.
 
 ## Control Plane
 
-The control plane starts agent sessions, starts turns, interrupts turns, receives agent events, and tracks lifecycle state.
+The control plane starts AgentSessions, starts turns, interrupts turns, receives agent events, and tracks lifecycle state.
 
-Governed workers use an authenticated direct NanoCore control connection. A capability gateway, proxy, backend relay, or sandbox-local alias MUST NOT become an alternative worker-control path.
+Governed workers use one authenticated end-to-end worker-control contract. A transport intermediary MAY carry that contract over a shared connection, but it MUST preserve the worker-control identity, ordering, correlation, replay, and failure semantics and MUST NOT create an alternative worker-control contract or authority.
 
-Inside a governed Codex-like worker, the shim may adapt NanoCore control into a runtime-native structured protocol such as JSON-RPC over stdio. Container exec, SSH, sockets, or backend APIs may support lifecycle and diagnostics, but they do not replace the direct worker-control contract.
-
-For ACP-native, A2A-native, SDK-native, or future runtimes, the adapter may use that runtime's structured control protocol directly.
+An adapter MAY project worker control into a governed runtime-native structured interface. Deployment, lifecycle, capability, and diagnostic mechanisms MUST NOT replace or reinterpret the worker-control contract.
 
 Screen scraping and keystroke-only adapters are not the default communication model because they cannot reliably preserve approvals, interrupts, item boundaries, and lifecycle events.
 
@@ -302,7 +326,7 @@ Agents should use standard local interfaces where possible, such as OpenAI-compa
 
 Vault credentials should be injected outside the agent's prompt context and should not become visible to agent memory, files, manifests, or item payloads.
 
-Capability calls should carry audit metadata such as agent session ID, workspace ID, thread ID, turn ID, and request ID where practical.
+Capability calls should carry audit metadata such as AgentSession ID, workspace ID, thread ID, turn ID, and request ID where practical.
 
 Detailed gateway semantics belong to `docs/core/agent-capability.md`.
 
@@ -328,12 +352,20 @@ Mediation non-responsibilities:
 - deciding provider fallback
 - owning rate limits
 - deciding which tools are visible
+- deciding which capabilities exist or remain available
 - persisting sensitive responses
+- owning product, workflow, or approval state
+- deciding permission policy
+- owning credentials, metering, or usage attribution
 - implementing business logic
+
+A capability mediation responsibility is not a worker-control owner and not a worker agent. The same outer transport projection or process MAY also carry a separately authenticated worker-control plane, but the capability mediation responsibility MUST NOT inspect, authorize, synthesize, retry, or reinterpret worker-control messages. Co-location and shared carriage MUST NOT change which participant owns a decision.
 
 ## Deployment Projections
 
 The same communication planes can map to different deployment modes.
+
+Deployment chooses transports; `docs/core/architecture.md` owns the invariant that deployment does not change Core semantics. The communication consequence is that the control, workspace, artifact, and capability planes MUST stay distinct in every mode even when they share one physical network path, one host, one container network, or one tunnel. Sharing infrastructure is a transport decision; merging planes is a semantic change and is not one.
 
 ### Local Container
 
@@ -341,7 +373,7 @@ In local-container mode, the agent runs in a container on the same machine as Co
 
 Typical mapping:
 
-- Control: authenticated direct NanoCore worker control.
+- Control: authenticated end-to-end worker control over the deployment-selected projection.
 - Workspace: bind mount.
 - Artifact: bind mount.
 - Capability: disabled unless the Agent Environment Package explicitly projects a governed gateway route.
@@ -352,12 +384,12 @@ In remote-agent mode, the agent runs in a different controlled environment.
 
 Typical mapping:
 
-- Control: authenticated direct NanoCore worker control over an explicitly reachable endpoint.
+- Control: authenticated end-to-end worker control over the deployment-selected projection.
 - Workspace: remote bind mount, rsync, object store, or workspace service.
 - Artifact: remote bind mount, rsync back, object store, or artifact pointers.
 - Capability: disabled unless the Agent Environment Package explicitly projects a governed gateway route.
 
-Remote placement may use deployment-managed tunnels or routing to make the direct NanoCore control endpoint reachable. Those deployment mechanisms do not become a second control protocol or product-state owner.
+Remote placement may use deployment-managed transport infrastructure to carry worker control. That infrastructure does not become a second control protocol or product-state owner.
 
 ## Transport Independence
 
@@ -381,7 +413,7 @@ Audit records should be able to answer:
 
 - which workspace initiated the action
 - which thread and turn caused it
-- which agent session executed it
+- which AgentSession executed it
 - which capability or external resource was used
 - whether a vault reference was used
 - which transformer or policy path applied
@@ -395,7 +427,10 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 - Raw heterogeneous streaming payloads MUST NOT replace the core event envelope for live product events.
 - Client and channel adapters MUST NOT infer active-turn delivery outcomes beyond the exact human-gate or accepted active-work delivery result returned by Core.
 - Workspace bytes and artifact bytes SHOULD NOT travel through the control stream except for intentionally small inline previews.
-- Capability mediation components MUST NOT carry worker-control traffic, choose models, decide provider fallback, own rate limits, decide tool visibility, persist sensitive responses, or implement business logic.
+- Capability mediation responsibilities MUST NOT own, inspect, authorize, synthesize, retry, or reinterpret worker-control traffic; choose models; decide provider fallback; own rate limits; decide tool visibility or capability availability; persist sensitive responses; own credentials, metering, or usage attribution; decide permission policy; own product or workflow state; or implement business logic. A shared outer transport or process may carry the separately authenticated control plane without transferring those responsibilities.
+- Transport and deployment-mode choices MUST preserve the deployment-semantic invariant owned by `docs/core/architecture.md`.
+- Control, workspace, artifact, and capability planes MUST remain distinct in every deployment shape, including shapes where they share physical network infrastructure.
+- Sharing one connection, process, or transport session MUST NOT merge plane tokens, permission scopes, payload limits, ordering, retry rules, failure semantics, or protocol ownership.
 
 ## Related Docs
 

@@ -1,11 +1,12 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-worker_agent_capability.md`, `docs/specs/20260703-workspace_synchronization.md`"
+decision-evidence: "`docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-worker_agent_capability.md`, `docs/specs/20260703-workspace_synchronization.md`"
+date: 2026-05-07
+---
 # Codex Agent Communication Modes
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/specs/20260629-worker_runtime_communication_model.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-worker_agent_capability.md`, `docs/specs/20260703-workspace_synchronization.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
-Date: 2026-05-07
 
 
 ## Lifecycle Reason
@@ -40,7 +41,7 @@ The central design principle is a **four-plane separation** of communication con
 - Define the internal `Core <-> Agent` adapter API surface in detail. That belongs to the host agent adapter spec; this spec only defines what travels under it.
 - Standardise on ACP, A2A, or MCP as a wire format between Core and agent runtimes.
 - Specify the `openkit-bridge` wire format with full schema. This spec defines its responsibilities and structural shape; a follow-up spec will define the bridge protocol.
-- Solve multi-tenant scheduling, persistence, or production authentication. v0.0.1 constraints from `docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md` still apply.
+- Solve multi-tenant scheduling, persistence, or production authentication. The historical v0.0.1 constraints still apply.
 - Implement remote container support in the first iteration. The mode is fully designed here so it does not require redesign later.
 
 ## Background

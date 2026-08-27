@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Identity Model
-
-Status: Accepted
 
 This document defines OpenKit identity semantics.
 
@@ -52,7 +53,7 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 `IntegrationIdentity` is an external system identity such as a webhook source, repository app, or provider integration.
 
-`ActorRef` is the stable, non-secret identity summary attached to shared history and governed actions. It is a closed tagged union: a human actor carries `kind=user` and its stable `id`, and that same ID is the responsible user by definition; an `agent`, `automation`, `integration`, or `system` actor additionally carries nullable `responsibleUserId`. This avoids duplicating a human identifier in two fields and keeps the complete invariant representable in both the canonical Zod schema and generated JSON Schema. Credential kind, credential ID, channel, display name, and email are request or audit projections rather than part of the stable actor reference.
+`ActorRef` is the stable, non-secret identity summary attached to shared history and governed actions. It is a closed tagged union: a human actor carries `kind=user` and its stable `id`, and that same ID is the responsible user by definition; an `agent`, `automation`, `integration`, or `system` actor additionally carries nullable `responsibleUserId`. This avoids duplicating a human identifier in two fields and keeps the complete invariant representable in the canonical protocol schema and its generated representations. Credential kind, credential ID, channel, display name, and email are request or audit projections rather than part of the stable actor reference.
 
 These are conceptual record families, not a complete field list.
 
@@ -77,6 +78,8 @@ Workspace member status values may include:
 active
 removed
 ```
+
+`removed` is a durable membership tombstone that denies new Workspace authority while preserving the historical edge. Discovery, import, and other projections MUST NOT synthesize a missing membership or implicitly revive a removed membership. Reactivation requires an explicit authorized operation that updates the canonical membership record and preserves its history.
 
 `AuthSession` record areas include user ID, client or channel summary, issued time, last seen time, expiration time, revoked time, and status.
 

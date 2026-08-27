@@ -1,7 +1,9 @@
+---
+status: Accepted
+implementation: Partial
+updated: 2026-08-13
+---
 # Workspace Synchronization
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
@@ -11,6 +13,7 @@ worker-agent work:
 - workspace input snapshotting
 - worker workspace materialization
 - turn-dynamic population of predeclared workspace slots
+- independent per-AgentSession materialization, output collection, conflict handling, review, and apply in a shared Sandbox
 - backend transport boundaries
 - worker output collection
 - workspace change sets
@@ -32,7 +35,7 @@ This spec does not own general worker runtime communication, the worker control
 protocol, full Git hosting integration, external domain-system writeback,
 general storage hierarchy, Action Center UI layout, vault credential storage,
 agent capability routing, session-static workspace layout, session compatibility
-keys, or backend-native file-transfer protocols.
+keys, Runtime Epoch lifecycle, shared control transport, or backend-native file-transfer protocols.
 
 This spec does not own generic Artifact Review decisions. An Artifact may present one staged workspace change set, but that presentation never owns the Workspace Sync Review decision or workspace apply.
 
@@ -50,7 +53,12 @@ truth, and host-local staging is not a product Worker Agent runtime.
 - `docs/core/agent-session.md`
 - `docs/core/agent-capability.md`
 - `docs/core/permissions.md`
+
+## Related Docs
+
 - `docs/specs/20260704-session_static_workspace_materialization.md`
+- `docs/specs/20260801-nanohost_workspace_data_boundary.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
 
 ## Summary
 
@@ -109,7 +117,7 @@ becoming the canonical source of workspace truth.
 - Let backends use native transport primitives without exposing backend internals as product contracts.
 - Support Git repositories as the first implementation path for the OpenKit self-improvement loop.
 - Support non-Git workspaces through filesystem snapshots, change manifests, staged review, and conflict-checked apply.
-- Keep direct NanoCore worker control focused on metadata and small events instead of large file synchronization.
+- Keep the bounded `/worker-control/*` route focused on metadata and small events instead of large file synchronization.
 - Make synchronization reviewable, auditable, resumable, and safe across local mode, server mode, OpenShell, Docker, remote VM, and future managed sandbox backends.
 
 ### Non-goals
@@ -121,6 +129,7 @@ becoming the canonical source of workspace truth.
 - Do not require every backend to support every synchronization strategy.
 - Do not replace Goal Mode, Action Center, artifacts, or review decisions with Git commit state.
 - Do not implement unattended recursive self-modification.
+- Do not define large-data lazy access or unversioned object manifests in this slice.
 
 ## Decision
 
@@ -147,7 +156,7 @@ Restart handling consults the exact scheduler and worker-control outcome before 
 
 The materialization plan binds turn inputs to predeclared workspace slots when a reusable session already exists.
 
-If a turn cannot fit the existing session's static workspace layout, provider envelope, policy envelope, or backend capability envelope, NanoCore must ask the agent-session/AEP layer for a replacement session before materializing the turn.
+If a turn cannot fit the existing session's static workspace layout, provider envelope, policy envelope, or backend capability envelope, NanoCore must ask the AgentSession/AEP layer for a replacement session before materializing the turn.
 
 For Git repositories, the first strategy uses clone or fetch into the worker
 runtime and collects a patch back into NanoCore. Git bundles may be added when
@@ -179,7 +188,7 @@ operations:
 The boundary is implemented by backend-specific adapters, but the records it
 returns use OpenKit vocabulary.
 
-## Session Slots And Turn Materialization
+## AgentSession Slots And Turn Materialization
 
 Workspace synchronization owns per-turn content movement, not the canonical session-static workspace skeleton.
 
@@ -194,8 +203,24 @@ Rules:
 - `WorkerOutputManifest` records changed files, artifacts, transcripts, logs, and evidence under declared output, worktree, session, and artifact slots.
 - `WorkspaceChangeSet` is produced only after NanoCore verifies output manifests against the baseline slot manifests and policy.
 - Backends may use bind mounts, copies, uploads, downloads, tar streams, rsync, Git checkout, provider file APIs, object-store staging, or future FUSE mounts, but those are transport projections rather than product truth.
-- Direct worker control may announce slot materialization and output readiness, but large file payloads must move through backend data transport.
+- `/worker-control/*` may announce slot materialization and output readiness, but large Workspace and Artifact payloads must move through an existing native or bounded data-transfer owner outside every control or semantic-route stream; the exact NanoHost single-file carriage may share the authoritative outer physical HTTP/2 connection as one distinct fixed data stream.
 - A new static slot, static mount path, provider placeholder, working directory, image, user, group, or control endpoint requirement must be handled by session replacement before this spec's materialization step proceeds.
+
+## Per-AgentSession Materialization And Canonical Handoff
+
+Each active Turn owns one logical `WorkspaceInputSnapshot` and one materialization lineage bound to its exact Workspace, Thread, Turn, AgentSession, AEP package snapshot, selected slots, sources, and baselines. Two AgentSessions in one shared Sandbox never share a mutable materialization record, writable worktree, output staging root, transcript root, backend handle, change set, review, or apply attempt. They may reference the same proved immutable baseline or unchanged source revision without making that physical reuse a shared record owner.
+
+Before `turn.start`, NanoCore captures the selected canonical Workspace and supported declared-source revisions, compares them with the exact AgentSession-private proved baseline, and materializes the bounded delta into that AgentSession's declared slots. A new snapshot may reuse unchanged verified bytes or read-only references while preserving distinct Turn and delivery lineage. This freshness barrier does not authorize the large-data lazy-access policy or unversioned object-manifest design deferred by this specification.
+
+An active Turn stays pinned to the snapshot it received. A later canonical Workspace revision does not mutate its slots. Collection compares the AgentSession's output to its own baseline and current canonical truth, produces its own `WorkerOutputManifest` and `WorkspaceChangeSet`, and stages the result under the existing durable Workspace Sync Review owner. Output from a sibling AgentSession is never treated as this Turn's baseline, evidence, or accepted input merely because both ran in one Sandbox.
+
+Two AgentSessions changing the same path produce two preserved candidate change sets. Completion order never selects a winner, merges bytes, overwrites the earlier candidate, or authorizes apply. The existing serialized apply owner checks each accepted review against current canonical baselines; overlap, path conflict, stale source identity, digest mismatch, binary risk, unsupported permission change, or changed authority produces the existing conflicted, blocked, quarantined, failed, or refinement outcome without mutation.
+
+Per-AgentSession materialization is created from one accepted input snapshot, updated only through verified transport and collection transitions, and terminates after required outputs and evidence are collected or truthfully marked partial, quarantined, failed, or abandoned. A retry creates a new Turn snapshot and materialization lineage from current truth; it does not reuse a failed transfer identity or blindly replay an apply. Restart first follows exact scheduler and worker-control ownership: exact adoption retains the same AgentSession materialization and handle, while failed adoption enters the existing reconciliation path without substituting a sibling or claiming cross-domain atomicity.
+
+Missing, stale, inaccessible, contradictory, cross-AgentSession, or dependency-failed inputs block readiness or enter reconciliation according to the existing state owner. Unprovable output or cleanup remains inspectable and may require human action; it never becomes canonical by inference. Core storage and the external runtime remain separate effect domains, so accepted review and apply use the existing preflight and result boundary rather than a settlement or automatic repair protocol.
+
+Observable acceptance requires two resident AgentSessions to carry distinct snapshots, slots, backend handles, output manifests, change sets, and review lineage; unchanged supported inputs to avoid unnecessary byte movement while retaining new Turn lineage; two overlapping candidates to remain preserved and conflict-checked; only the exact accepted durable Workspace Sync Review to authorize apply; and restart to retain the exact original materialization or expose reconciliation, interruption, or uncertainty without sibling substitution. No decision class is not applicable.
 
 ## Current Implementation Projection
 
@@ -213,12 +238,12 @@ The current implementation realizes the accepted base V1 synchronization behavio
 - `apps/nanocore/src/runtime/workspace-apply-plans.ts` records and lists durable workspace apply plans.
 - `apps/nanocore/src/runtime/workspace-reconciliation-records.ts` records and lists durable workspace reconciliation records.
 - `apps/nanocore/src/runtime/workspace-sync-records.ts` records one compact `EvidenceBundle` index and one normalized `RuntimeEvidence` row when a workspace materialization record is first stored, carrying backend readiness evidence and policy digest without raw backend payloads. It also records one linked workspace audit event and one compact `EvidenceBundle` index when a staged workspace review is first stored, and skips duplicate audit and evidence rows on review upsert.
-- `apps/nanocore/src/runtime/workspace-materializer.ts` builds input snapshot and materialization records, parses worker change-set manifests, and stages change sets into pending reviews.
+- `apps/nanocore/src/runtime/workspace-materializer.ts` builds input snapshot and materialization records, rejects present semantically empty worker change-set manifests, parses nonempty manifests, and stages change sets into pending reviews.
 - `apps/nanocore/src/runtime/filesystem-workspace-sync.ts` implements content-addressed filesystem manifests, filesystem change-set comparison, staged copy, and conflict-checked apply.
 - `apps/nanocore/src/app.ts` and `@openkit/core-client` expose workspace-sync read APIs, and the unified `openkit` Skill projects the same operations through its bundled CLI, including redacted backend workspace handle, worker output manifest, workspace apply plan, and workspace reconciliation record readback. The durable Workspace Sync Review decision schema and route accept exactly `accepted`, `needs_refinement`, `rejected`, or `blocked`, pass the selected value through unchanged, and permit apply only for `accepted`. The generic unversioned Artifact Review route, artifact-to-durable decision fallback, identifier-prefix inference, and verdict translation are absent. A backing Artifact can still supply a read-only legacy review projection when no durable row exists, but that projection performs no write and cannot be decided or applied; durable authority takes precedence whenever present.
 - `apps/nanocore/src/runtime/workspace-apply-results.ts` records one linked workspace audit event and one compact `EvidenceBundle` index when a new durable apply result is stored, and skips duplicate audit and evidence rows on idempotent apply-result replay.
 - `apps/nanocore/src/runtime/worker-governance-turn-executor.ts` imports worker workspace changes into review artifacts and durable records.
-- Worker governance tests cover local and remote disposable-Cell OpenShell evidence persistence. The remote materialization and Cell-lifecycle path is active; the full real-Codex remote Goal Mode acceptance story remains required before remote provenance is accepted as complete.
+- Worker governance tests cover the current NanoHost package import and workspace evidence path, while the retained A1 Unit F gate proves the NanoHost transport and fault scenarios. No Cell, SSH, Gateway-forward, or direct worker route remains selectable.
 - Server tests cover review listing, Git patch apply, filesystem staging apply, filesystem permission-change apply, and persisted apply results after app restart.
 - `WorkspaceSynchronizationBackendKindSchema` still includes `host` for host-local staging and deterministic harnesses. It must not be read as permission to reintroduce host execution as a product Worker Agent runtime.
 
@@ -226,7 +251,7 @@ The implementation now persists redacted `BackendWorkspaceHandle` rows at materi
 
 ## Record Contract
 
-Workspace synchronization uses workspace-owned records. The named synchronization graph is authoritative in `workspace.sqlite`; any inspectable or portable file form is a non-authoritative projection or manifest. Every record carries workspace, thread, turn, agent session, package snapshot, backend summary, and digest references where applicable.
+Workspace synchronization uses workspace-owned records. The named synchronization graph is authoritative in `workspace.sqlite`; any inspectable or portable file form is a non-authoritative projection or manifest. Every record carries workspace, thread, turn, AgentSession, package snapshot, backend summary, and digest references where applicable.
 
 `WorkspaceInputSnapshot` records what NanoCore intended to expose:
 
@@ -412,24 +437,19 @@ review affordances. The exact artifact-only size threshold remains policy.
 
 ## Control Channel And Data Transport
 
-Direct NanoCore worker control is for small messages: heartbeat, turn events,
-approval state, artifact notices, change-set ready notices, and final status.
+The shared control HTTP/2 session carries bounded metadata. Its `/worker-control/*` family may carry heartbeat, turn events, approval state, Artifact notices, change-set ready notices, and final status under the worker-control credential and semantics.
 
-Backend-native data transport moves large payloads: repositories, patches,
-bundles, logs, generated artifacts, changed files, raw transcripts, and evidence
-exports.
+Existing native or bounded data-transfer owners move large payloads: repositories, patches, bundles, logs, generated Artifacts, changed files, raw transcripts, and evidence exports. `/worker-control/*`, `/inference/*`, and `/capabilities/*` MUST NOT carry these bulk bytes merely because they share one HTTP/2 connection.
 
 Examples:
 
-- OpenShell: `openshell sandbox upload`, `openshell sandbox download`, sandbox exec, and future file primitives.
+- OpenShell: one NanoHost-owned fixed single-file data stream on the authoritative outer physical connection plus the fixed sandbox helper, without using a control stream or exposing the loopback Gateway or lifecycle handles to NanoCore.
 - Docker: bind mounts, `docker cp`, tar streams, or container diff.
 - Host worktree: direct filesystem operations in a temporary worktree or staging root.
-- Remote VM: Git, rsync, tar over SSH, or artifact upload.
+- Remote VM: native Git, rsync, or bounded Artifact upload under its existing data owner.
 - Managed sandbox: provider file APIs.
 
-The control channel may announce that `/openkit/session/workspace-changes.json`
-is ready, but it should not carry full patches or file payloads except for small
-metadata previews allowed by policy.
+The control channel may announce that `/openkit/session/workspace-changes.json` is ready, but it should not carry full patches or file payloads except for small metadata previews allowed by policy. A NanoHost output declaration predeclares only its slot-relative path; NanoHost computes the produced digest and length after the terminal barrier, NanoCore verifies and atomically stages the exact file, and only then may the existing `WorkerOutputManifest`, transcript import, or `WorkspaceChangeSet` owner classify it as canonical handoff input. Because the worker writes this manifest only when changes exist, NanoCore marks this one export `optional`; the exact secure absence result produces zero `WorkspaceChangeSet` candidates, staging files, digests, reviews, or apply effects. A present zero-byte, malformed, or semantically empty manifest remains present and fails validation without creating a change set, review, or apply effect; it is never reclassified as absence.
 
 ## Backend Capability Selection
 
@@ -596,7 +616,7 @@ evidence summary, and the closed set of safe recovery choices (resume
 collection, stage what was verified, quarantine, abandon with evidence
 retained). Rows resolve when the reconciliation reaches a terminal state.
 
-Recovery triggering binds to the scheduler: `awaiting-reconnect` MUST preserve nonterminal synchronization lifecycle records and MUST NOT trigger collection, review staging, or teardown. Exact adoption keeps using the same records. A session lease reaching `stale`, `lost`, or a fenced takeover per `docs/specs/20260703-durable_scheduler_design.md` MUST trigger reconciliation evaluation for any non-terminal synchronization lifecycle records tied to that lease's agent session, while a `releasing` lease with accepted final status resumes existing terminal handoff. Workspace synchronization owns what recovery does; the scheduler owns whether execution remains live.
+Recovery triggering binds to the scheduler: `awaiting-reconnect` MUST preserve nonterminal synchronization lifecycle records and MUST NOT trigger collection, review staging, or teardown. Exact adoption keeps using the same records. A session lease reaching `stale`, `lost`, or a fenced takeover per `docs/specs/20260703-durable_scheduler_design.md` MUST trigger reconciliation evaluation for any non-terminal synchronization lifecycle records tied to that lease's AgentSession, while a `releasing` lease with accepted final status resumes existing terminal handoff. Workspace synchronization owns what recovery does; the scheduler owns whether execution remains live.
 
 ## Action Center Projection
 
@@ -637,11 +657,11 @@ Git is a strategy, not the abstraction.
 
 ### Stream All Files Through Worker Control
 
-Streaming all file data through the direct worker-control connection would simplify one code path but
+Streaming all file data through the `/worker-control/*` route would simplify one code path but
 would overload the control plane, create large-message and retry problems, and
 duplicate backend file APIs.
 
-The control plane announces and indexes data; backend transport moves bulk data.
+The control route announces and indexes bounded metadata; native or bounded data transport moves bulk data.
 
 ### Backend-Owned Synchronization
 
@@ -697,11 +717,12 @@ file APIs, object-store transfer, and optional ephemeral Git branch workflows.
 - Schema tests for workspace synchronization records, path safety, and raw-secret rejection.
 - Migration tests for synchronization, staging, and apply-result tables.
 - Runtime tests for input snapshot construction, materialization record construction, manifest parsing, path allowlists, and staged review creation.
+- Workspace-change collection tests prove exact optional absence yields no candidate or staging, while a present zero-byte, malformed, or schema-valid but semantically empty manifest fails before change-set, review, or apply creation.
 - Contract and route tests that accept only `accepted`, `needs_refinement`, `rejected`, or `blocked`, reject generic Artifact Review vocabulary without translation, and prove that only `accepted` may create an apply plan or mutate a workspace.
 - Action Center and route tests that classify workspace-review Artifacts only through the exact durable `artifactId` relationship, never an id prefix, and reject the generic Artifact Review route for those Artifacts even when the backing Artifact remains readable.
 - Git apply tests that validate digest, byte count, `git apply --check`, durable apply result persistence, and restart-readable apply result records.
 - Filesystem apply tests that validate content-addressed manifests, staged copy, conflict preflight, delete handling, and durable apply result persistence.
-- Worker governance tests for local disposable-Cell OpenShell materialization, evidence persistence, change-set import, review artifact creation, and whole-Cell recycle.
+- Worker governance tests for target NanoHost-owned stock OpenShell materialization, evidence persistence, change-set import, review Artifact creation, sandbox-local normal cleanup, and epoch invalidation on unproved cleanup.
 - Restart recovery tests for awaiting-reconnect with no collection or teardown, exact adoption with the same materialization and backend handle, accepted final status resuming collection without another heartbeat, reconnect timeout entering existing reconciliation, reachable and unreachable backend sessions, partial collection, digest mismatch, quarantine, and `requires-human`.
 - Binary, permission-change, generated-file, and object-store staged file tests before those paths are marked implemented.
 
@@ -751,6 +772,8 @@ Contract above; their build-out is implementation work tracked through the
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260704-session_static_workspace_materialization.md`
+- `docs/specs/20260801-nanohost_workspace_data_boundary.md`
+- `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
@@ -759,6 +782,5 @@ Contract above; their build-out is implementation work tracked through the
 - `docs/core/audit.md`
 - `docs/core/agent-workflow.md`
 - `docs/product-vision.md`
-- [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md)
 - [NVIDIA/NemoClaw](https://github.com/NVIDIA/NemoClaw)
 - [NVIDIA OpenShell documentation](https://docs.nvidia.com/openshell/)

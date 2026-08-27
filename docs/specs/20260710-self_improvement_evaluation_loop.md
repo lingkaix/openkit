@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Implemented
+---
 # Explicit Work Reflection And Knowledge Improvement
-
-Status: Accepted
-Implementation: Implemented
 
 ## Owns
 
@@ -143,7 +144,3 @@ Acceptance requires no new reflection owner; one source-linked create-only pendi
 - Skill or prompt improvement, automated promotion, general Knowledge updates or merges, and cross-Workspace learning under separate accepted designs.
 
 ## Links
-
-- `docs/changes/202607111600390001-self_improvement_loop_foundations.md`
-- `docs/changes/202607172152230001-openkit_execution_program.md`
-- `docs/changes/202607111941330001-core_spec_implementation_alignment_audit.md`

@@ -1,25 +1,24 @@
+---
+status: Accepted
+---
 # Metering Model
-
-Status: Accepted
 
 This document owns the system-wide principles for measuring resource consumption, including runtime, storage, and network usage that is not naturally defined by one agent-capability-mediated call.
 
-This document does not own concrete usage schemas, provider usage semantics, billing policy, provider pricing, audit events, storage layout, budget enforcement, or runtime implementation details.
+This document does not own the `UsageRecord` schema, provider usage semantics, billing policy, provider pricing, audit events, storage layout, budget enforcement, or runtime implementation details.
 
 ## Purpose
 
 OpenKit needs to explain resource consumption across agent work without confusing measurement with billing, audit, or policy.
 
-Agent Capability owns the canonical `UsageRecord` and the measured usage attached to provider, model, MCP, tool, knowledge-retrieval, credential-mediated, and other governed capability calls. Metering owns how non-gateway runtime, storage, and network measurements join that record family and how system-wide aggregation remains attributable and explainable.
-
-Current measurement already covers a deliberately coarse foundation beyond LLM gateway calls: terminal worker-session counts, workspace export and import file and byte inventories, and Git publication request counts. Duration, CPU, memory, storage-at-rest, traffic volume, budgets, and cost projection remain incomplete.
+Agent Capability owns the canonical `UsageRecord` and capability-call producer semantics. Metering owns the measurement policy applied across capability and non-gateway producers, how runtime, storage, and network measurements join that record family, cross-producer aggregation, and cost projection.
 
 ## Principles
 
 - Measurements represent observed consumption in explicit units. They are not inferred prices or independent billing truth.
 - Every measurement should retain the narrowest available work and actor attribution without inventing identity that the producer cannot prove.
 - Capability-mediated usage remains defined by Agent Capability; Metering extends the same attribution and record principles to non-gateway resources.
-- Coarse current units must not be presented as finer measurements. A terminal worker-session count is not sandbox duration, CPU time, or memory allocation.
+- Coarse units must not be presented as finer measurements they did not observe.
 - Audit remains separate from metering. Metering measures consumption; Audit explains actions, actors, policy paths, affected resources, and outcomes.
 - Cost and budget decisions must be derived from measured units and explicit policy or pricing inputs.
 
@@ -31,32 +30,7 @@ Current measurement already covers a deliberately coarse foundation beyond LLM g
 
 `Aggregation` means combining compatible measured units across attributable scopes without changing their meaning or losing their source lineage.
 
-`Cost projection` means a derived estimate that applies explicit pricing or allocation rules to measured usage. It is not an independent source-of-truth record.
-
-## Current Measurement Boundary
-
-Current non-gateway measurement covers:
-
-- terminal worker execution counted in worker-session units
-- workspace export and import inventories measured in files and bytes
-- governed Git publication network calls measured in request units
-
-These measurements establish durable attribution and aggregation paths. They do not yet measure continuous sandbox lifetime, compute allocation, storage retention, or transferred network bytes.
-
-Gateway-mediated provider and tool measurements remain owned by `agent-capability.md` even when system-wide reports aggregate them beside non-gateway measurements.
-
-## Deferred Measurement Coverage
-
-The system-wide model may expand when an implementation can observe meaningful units for:
-
-- sandbox duration and active runtime lifetime
-- runtime CPU, memory, accelerator, and allocation time
-- retained storage bytes and artifact lifetime
-- workspace synchronization and external network traffic volume
-- background jobs, indexing, maintenance, and rebuild work
-- warm capacity and scheduler reservation consumption
-
-New units should be introduced only with a concrete producer, reliable observation boundary, clear attribution, and tests that prevent double counting.
+`Cost projection` means a derived estimate that applies explicit pricing or allocation rules to measured usage. It is not an independent source-of-truth record, and a provider-reported monetary value such as USD does not by itself constitute a full cost projection.
 
 ## Boundaries And Non-Goals
 
@@ -73,16 +47,16 @@ Metering does not store secret values, raw provider payloads, unrestricted file 
 - Every measurement MUST use an explicit unit and MUST preserve its producer and available work attribution.
 - Measurements with incompatible units MUST NOT be summed as one quantity.
 - Coarse measurements MUST NOT be presented as duration, compute, traffic, or retained-storage measurements they did not observe.
-- Agent-capability-mediated usage MUST remain canonically defined by `agent-capability.md`.
+- `UsageRecord` and capability-call producer semantics MUST remain canonically defined by `agent-capability.md`; Metering MUST own cross-producer measurement policy and aggregation.
 - Metering MUST remain separate from Audit, authorization, budget enforcement, and billing.
-- Cost projections MUST derive from measured usage plus explicit pricing or allocation inputs.
+- Cost projections MUST derive from measured usage plus explicit pricing or allocation inputs; provider-reported monetary values MUST NOT be presented as a full pricing or allocation projection on their own.
 - Metering records MUST NOT store secret values, raw provider payloads, unrestricted file contents, or backend-private runtime handles.
 - Retries and replay MUST NOT double count the same measured consumption when the producer declares an idempotent identity.
-- New measurement families SHOULD preserve attribution to workspace, thread, turn, item, agent session, capability call, user, automation, or external effect when those scopes are provable.
+- New measurement families SHOULD preserve attribution to workspace, thread, turn, item, AgentSession, capability call, user, automation, or external effect when those scopes are provable.
 
 ## Relationships To Other Core Aspects
 
-`agent-capability.md` owns `UsageRecord`, capability-call attribution, provider and tool usage, and gateway usage semantics.
+`agent-capability.md` owns `UsageRecord`, capability-call attribution, provider and tool usage, and gateway usage semantics. Metering owns their system-wide aggregation with other producers and every cost projection derived from them.
 
 `audit.md` owns accountability projections and action history rather than resource quantities.
 

@@ -1,7 +1,9 @@
+---
+status: Accepted
+implementation: Partial
+updated: 2026-08-13
+---
 # Audit, Usage, And Evidence Records
-
-Status: Accepted
-Implementation: Partial
 
 ## Summary
 
@@ -18,7 +20,6 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 - Product visibility and redaction rules for audit-visible, item-visible, diagnostics-only, and restricted evidence layers.
 - Current protocol and NanoCore implementation projection for audit, usage, capability-call, verification, checkpoint, workspace-sync, and runtime evidence records.
 - Producer obligations for recording or explicitly omitting audit, usage, and evidence at stable boundaries.
-- Forward-compatible reader behavior for optional audit, usage, and evidence fields.
 
 ## Does Not Own
 
@@ -38,6 +39,9 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 - `docs/core/storage.md`
 - `docs/core/vault.md`
 - `docs/core/permissions.md`
+
+## Related Docs
+
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 
 ## Goals
@@ -45,7 +49,7 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 - Define durable record families for audit, usage, and evidence.
 - Decide which records are SQLite source of truth and which are file-backed evidence.
 - Normalize OpenShell and worker-shim evidence without making backend-native records product truth.
-- Link every governed action to workspace, thread, turn, agent session, capability call, policy decision, vault grant, and artifact where applicable.
+- Link every governed action to workspace, thread, turn, AgentSession, capability call, policy decision, vault grant, and artifact where applicable.
 - Establish redaction and product visibility rules.
 
 ## Non-goals
@@ -69,6 +73,8 @@ Use these record families:
 - `RuntimeEvidence`: records backend lifecycle and worker evidence summaries.
 
 `CapabilityCall`, `UsageRecord`, `PermissionDecision`, and `VaultUse` are linked record families, not replacements for audit.
+
+A terminal `CapabilityCall` whose external result cannot be proved after a crash is `unknown`; one whose execution is known to have stopped without a complete result is `interrupted`. Either may retain partial redacted audit, usage, and evidence links, but neither proves whether an external effect occurred. `unknown` is never automatic replay authority; external inspection or reconciliation, or a fresh authorized request, is required.
 
 ## Storage Ownership
 
@@ -111,7 +117,7 @@ Workspace deletion MUST produce a sealed, server-owned audit closure export unde
 
 ## Schema Evolution
 
-Audit, usage, capability-call, permission-decision, vault-use, evidence-bundle, and runtime-evidence records follow `docs/specs/20260703-schema_evolution_record_envelope.md`, which owns the general unknown-field and required-feature rules.
+Audit, usage, capability-call, permission-decision, vault-use, evidence-bundle, and runtime-evidence records follow the general unknown-field and fail-closed rules in `docs/core/contract-evolution.md` and the concrete envelope mechanics in `docs/specs/20260703-schema_evolution_record_envelope.md`.
 
 Domain-specific additions owned by this spec:
 
@@ -133,7 +139,7 @@ Domain-specific additions owned by this spec:
 - thread id when applicable
 - turn id when applicable
 - agent id when applicable
-- agent session id when applicable
+- AgentSession id when applicable
 - item id when applicable
 - capability call id when applicable
 - permission decision id when applicable
@@ -160,7 +166,7 @@ The actor and subject fields are nullable `ActorRef` values. The actor is the au
 - workspace id
 - thread id when applicable
 - turn id when applicable
-- agent session id when applicable
+- AgentSession id when applicable
 - capability call id when applicable
 - responsible user id when attributable consumption or an automated effect occurs on behalf of a user
 - provider reference
@@ -200,8 +206,9 @@ The current implementation provides the aligned record families below:
 - `apps/nanocore/src/audit-events.ts` provides the first general audit recorder skeleton for server and workspace databases. Core DB and workspace databases create `audit_events` through `0014_audit_events`, `workspace_0014_audit_events`, and the `0040_audit_event_linkage` migration; `recordServerAuditEvent` and `recordWorkspaceAuditEvent` validate against `AuditEventSchema`, preserve optional capability call, permission decision, and vault grant lineage, and reject raw payload-shaped field names before writing rows. Server-owned audit events are exposed through `GET /api/app/audit/events`, `client.app.listServerAuditEvents`, and the bundled CLI `audit.server-list` operation; workspace-owned audit events are exposed through `GET /api/app/workspaces/:workspaceId/audit/events`, `client.app.listWorkspaceAuditEvents`, and `audit.workspace-list`.
 - Access-token lifecycle routes in `apps/nanocore/src/auth/access-token-routes.ts` now write server-owned general `AuditEvent` rows for successful bootstrap consumption, token issuance, token revocation, and token rotation. These events record stable action names, token ids, scopes, owners, and authenticated actor ids when present, but never record bootstrap tokens, plaintext access-token secrets, token hashes, credential-store material, or raw authorization headers.
 - Server-owned vault-use evidence rows are exposed through `GET /api/app/vault/use-records`, `client.app.listServerVaultUseRecords`, and the bundled CLI `vault.server-use-list` operation. Workspace-owned vault-use evidence rows are exposed through `GET /api/app/workspaces/:workspaceId/vault/use-records`, `client.app.listWorkspaceVaultUseRecords`, and `vault.use-list`. Both surfaces contain only non-secret `VaultUse` metadata and linked audit ids, not credential material or backend secret locators, and their authorization follows the owning matrix in `docs/specs/20260704-vault_backend_implementation.md`.
+- `apps/nanocore/src/llm/provider-subscription-accounts.ts` implements and actively emits the exact server `AuditEvent` actions `provider_subscription.account.create`, `provider_subscription.account.update`, `provider_subscription.account.delete`, `provider_subscription.credential.store`, `provider_subscription.credential.rotate`, `provider_subscription.credential.revoke`, and `provider_subscription.reconcile`, plus credential reads through the existing audited `vault.resolve` producer. Each lifecycle row uses the fixed redacted resource `provider-subscription:<subscriptionProviderId>:<accountSlotId>`, an outcome-specific fixed summary, `null` on success or one stable provider-subscription error code on failure, and no credential, Vault reference, provider body, raw account id, or path. Composition adds no provider-subscription-specific public audit schema, route, operation, or readback contract.
 - `apps/nanocore/src/policy/permission-decisions.ts` writes durable `PermissionDecision` rows for boot policy self-checks, OpenAI-compatible LLM gateway policy outcomes, Goal Mode worker-launch allow decisions, real bounded worker-turn launch decisions, and policy-originated approval or escalation rows. Boot and gateway decisions are server-scoped; workspace decisions are stored in the owning `workspace.sqlite`. Both server- and workspace-owned permission decisions now receive a linked `AuditEvent` row through the general audit recorder with `permissionDecisionId` filled. Server-owned permission decisions are exposed through `GET /api/app/permission-decisions`, `client.app.listServerPermissionDecisions`, and the bundled CLI `permission.server-list` operation; workspace-owned permission decisions are exposed through `GET /api/app/workspaces/:workspaceId/permission-decisions`, `client.app.listWorkspacePermissionDecisions`, and `permission.workspace-list`.
-- `apps/nanocore/src/capability/usage-ledger.ts` writes workspace-scoped `CapabilityCall` and `UsageRecord` rows through a shared recorder skeleton, persists stable source id arrays for source-aware calls, and emits linked terminal `AuditEvent` rows when capability calls finish, fail, cancel, or recover after restart. Workspace Knowledge Store entry writes, source registration, source read, retrieval, maintenance writes, Knowledge Manager answer, proposal draft, repair suggestion, health check, and context preparation persist durable `knowledge` capability calls and one linked `category: "tool"`, `unit: "capability_calls"` usage row for each successful App API operation. QuickChatAgent LLM calls persist durable `CapabilityCall` and linked `UsageRecord` rows when provider usage is available. Public `/v1/chat/completions` and `/v1/responses` calls routed through the pi-ai adapter persist durable `CapabilityCall` and linked `UsageRecord` rows when the request carries `metadata.openkit.workspaceId`; unattributed public calls remain process-local diagnostics only. Terminal worker checkpoints emit one durable `runtime.worker_turn` capability call plus one `category: "runtime"`, `unit: "sandbox_sessions"` usage row, workspace export and import emit linked storage usage, and attempted host-side Git push execution emits linked network usage when the fixed Git runner is invoked. Authenticated worker knowledge, artifact, diagnostic, and MCP capability producers are not implemented while the AEP capability plane is disabled; when rebuilt, they MUST reuse this recorder rather than introduce another usage owner. Workspace import strips unknown optional fields from imported capability calls and usage records before storage.
+- `apps/nanocore/src/capability/usage-ledger.ts` writes workspace-scoped `CapabilityCall` and `UsageRecord` rows through a shared recorder skeleton, persists stable source id arrays for source-aware calls, and emits linked terminal `AuditEvent` rows when capability calls finish or fail. Restart recovery currently marks every leftover `running` call as `cancelled` with `capability_call_recovered_after_restart`; that implementation cannot express the Core-owned `unknown` result and is a known divergence rather than accepted recovery semantics. Workspace Knowledge Store entry writes, source registration, source read, retrieval, maintenance writes, Knowledge Manager answer, proposal draft, repair suggestion, health check, and context preparation persist durable `knowledge` capability calls and one linked `category: "tool"`, `unit: "capability_calls"` usage row for each successful App API operation. QuickChatAgent LLM calls persist durable `CapabilityCall` and linked `UsageRecord` rows when provider usage is available. Public `/v1/chat/completions` and `/v1/responses` calls routed through the pi-ai adapter persist durable `CapabilityCall` and linked `UsageRecord` rows when the request carries `metadata.openkit.workspaceId`; unattributed public calls remain process-local diagnostics only. Terminal worker checkpoints emit one durable `runtime.worker_turn` capability call plus one `category: "runtime"`, `unit: "sandbox_sessions"` usage row, workspace export and import emit linked storage usage, and attempted host-side Git push execution emits linked network usage when the fixed Git runner is invoked. Authenticated worker knowledge, artifact, diagnostic, and MCP capability producers are not implemented while the AEP capability plane is disabled; when rebuilt, they MUST reuse this recorder rather than introduce another usage owner. Workspace import strips unknown optional fields from imported capability calls and usage records before storage.
 - Workspace-attributed pi-ai gateway calls now project one terminal raw usage observation into positive input, output, cache-read, and cache-write `tokens` rows plus one positive estimated-`usd` row when reported. Provider-error and aborted terminal observations are recorded before public normalization; public responses, errors, diagnostics, and durable rows never retain the raw usage object or prompt-cache key.
 - `apps/nanocore/src/evidence-bundles.ts` stores workspace-owned compact `EvidenceBundle` indexes in `workspace.sqlite` through `0043_evidence_bundles`. Automatic producer-owned bundle creation and readback use `GET /api/app/workspaces/:workspaceId/evidence-bundles`, `client.app.listWorkspaceEvidenceBundles`, and the bundled CLI `evidence.bundle-list` operation; no manual App API, Core Client, or Agent Skill Interface creation command exists. Runtime provenance creates separate restricted-raw and product-safe normalized-index bundles: ordinary reads hide the stored restricted raw refs, deterministic expiry deletes only `evidence/backend/<rawBundleId>/`, clears the row refs, and marks it `expired`, while the normalized index remains governed and resolvable. Default workspace export carries an expired ref-free source-digest row plus the normalized index and omits restricted files and locators; import remints linked product-safe lineage and rejects incomplete or unsupported authority.
 - `apps/nanocore/src/runtime/runtime-evidence.ts` stores workspace-owned normalized `RuntimeEvidence` indexes in `workspace.sqlite` through `0044_runtime_evidence`. Existing producers cover terminal worker checkpoints and materialization readiness, and the deterministic transcript-collection producer records provenance capture completeness, stream/frame and origin counts, worker-inference reconciliation counts, gateway completeness, and linked raw/index EvidenceBundle ids without copying raw backend payloads or native identifiers. NanoCore exposes readback through `GET /api/app/workspaces/:workspaceId/runtime-evidence`, `client.app.listWorkspaceRuntimeEvidence`, and the bundled CLI `evidence.runtime-list` operation. Workspace export/import carries these rows through `records/runtime-evidence.jsonl`, remints linked ids for provenance imports, and strips unknown optional fields before storage.
@@ -223,13 +230,15 @@ The current usage schema has durable workspace storage, a shared recorder, inter
 
 Current `UsageRecordSchema` ownership fields include `workspaceId`, optional `threadId`, optional `turnId`, optional `itemId`, optional `capabilityCallId`, optional `agentId`, optional `agentSessionId`, and `sourceIds`.
 
-Stage 7 adds exactly one required nullable `responsibleUserId` to `UsageRecord`. A Workspace-attributed row produced by an authenticated request or AEP-backed runtime effect must store the non-null user derived by the successful current-authority predicate; a server diagnostic or system-only measurement with no user-accountable Workspace effect stores `null`. A fresh apply or Git-push request attributes its own authenticated command actor rather than the originating worker. The value is immutable historical attribution after removal or disable and never authorizes an effect, selects storage, or substitutes for current Core membership and policy. Existing CapabilityCall, AuditEvent, RuntimeEvidence, scheduler, and worker-control records gain no Stage 7 actor field: they retain their existing Turn, Agent Session, AEP snapshot, request, and cross-record links, with `AEP.scope.triggerActor` remaining the sole runtime actor authority.
+Stage 7 adds exactly one required nullable `responsibleUserId` to `UsageRecord`. A Workspace-attributed row produced by an authenticated request or AEP-backed runtime effect must store the non-null user derived by the successful current-authority predicate; a server diagnostic or system-only measurement with no user-accountable Workspace effect stores `null`. A fresh apply or Git-push request attributes its own authenticated command actor rather than the originating worker. The value is immutable historical attribution after removal or disable and never authorizes an effect, selects storage, or substitutes for current Core membership and policy. Existing CapabilityCall, AuditEvent, RuntimeEvidence, scheduler, and worker-control records gain no Stage 7 actor field: they retain their existing Turn, AgentSession, AEP snapshot, request, and cross-record links, with `AEP.scope.triggerActor` remaining the sole runtime actor authority.
 
 Current measurement fields include `unit`, `quantity`, `category`, `providerRef`, `modelId`, `source`, `recordedAt`, and `requestId`. The closed unit vocabulary includes `usd` only for provider-reported cost estimates; it does not establish billing, currency conversion, or allocation policy.
 
 The current `category` enum covers `llm`, `tool`, `runtime`, `storage`, and `network`. This target spec still keeps `sandbox` as a future conceptual category until an active sandbox usage producer lands.
 
 The current implementation has a boot-lifecycle durable audit table, boot lifecycle server `AuditEvent` producers, first server- and workspace-scoped general `audit_events` tables and recorder skeletons, terminal capability-call audit producers, public server and workspace audit-event readback, server and workspace permission-decision audit producers with permission-decision linkage, public server and workspace permission-decision readback, server/workspace VaultUse audit producers with vault-grant linkage when grant-backed, vault admin server `AuditEvent` producers linked to `vault_admin_audit_events`, access-token lifecycle server `AuditEvent` producers for bootstrap consumption, token issuance, token revocation, and token rotation, staged workspace-review audit producers, workspace apply-result audit producers, goal and goal-task creation audit producers, goal and goal-task status transition audit producers, terminal worker-checkpoint audit producers, first-slice terminal worker-checkpoint and materialization-readiness `RuntimeEvidence` producers with import-boundary unknown-field stripping, terminal worker-turn runtime usage producers, workspace export/import storage usage producers, goal verification audit producers, goal review audit producers, scheduler admission retry and cancel workspace audit producers, workspace data source catalog authority-edit audit producers, workspace import audit producers, first-slice workspace-owned compact `EvidenceBundle` indexes with read-only App API, Core Client, and bundled CLI projections backed by automatic trusted producers, import-boundary unknown-field stripping, import-boundary unknown-kind quarantine, and ephemeral-diagnostic compaction, durable QuickChat and workspace-attributed public LLM usage producers for pi-ai, native OpenAI-compatible, and Codex gateway paths, usage-ledger and Git push record import unknown-field stripping, and first-slice durable permission decision producers for boot policy self-checks, LLM gateway policy outcomes, Goal Mode worker-launch allow decisions, worker-turn launch decisions, and policy-originated approval or escalation rows. Worker Knowledge, artifact, diagnostic, MCP capability, and exact S16 pending-input audit producers remain future. Future product boundary producers can fill the available permission decision and vault grant linkage as those boundaries ship.
+
+The seven provider-subscription lifecycle producers and their existing audited `vault.resolve` dependency are active through the composed manager and provider-neutral App API. Unified pi-ai Gateway calls continue to project provider-reported terminal usage through the existing durable workspace-attributed recorder, including positive input, output, cache-read, cache-write, and estimated-`usd` rows when reported; quota reads add no usage owner or durable ledger. Physical removal of the legacy provider artifacts is complete. This spec remains `Partial` because its broader producer and retention gaps remain as listed below, while reviewed provider-pair cleanup and credential-backed provider verification are not yet complete.
 
 ## EvidenceBundle
 
@@ -240,7 +249,7 @@ The current implementation has a boot-lifecycle durable audit table, boot lifecy
 - workspace id when applicable
 - thread id when applicable
 - turn id when applicable
-- agent session id when applicable
+- AgentSession id when applicable
 - backend type when applicable
 - source kind
 - normalized summary
@@ -268,9 +277,7 @@ Unknown or unsupported evidence kinds must remain unpromoted.
 
 ## Retention Classes
 
-The first implementation should use explicit retention classes instead of ad hoc deletion.
-
-Baseline retention classes:
+`docs/core/storage.md` owns the closed retention-class vocabulary and legal-hold deletion boundary. This spec assigns those classes to audit, usage, and evidence material:
 
 | Class | Purpose | Default handling |
 | --- | --- | --- |
@@ -278,9 +285,27 @@ Baseline retention classes:
 | `turn-evidence` | Evidence needed to explain one worker turn, artifact, workspace review, or verification result. | Retain with the turn until workspace retention policy compacts or archives it. |
 | `workspace-audit` | Audit, usage, permission, capability, and vault-use rows needed for workspace governance. | Retain according to workspace audit policy and export with workspace audit bundles. |
 | `restricted-raw` | Raw backend logs, raw payload snippets, sensitive operational traces, and quarantined evidence. | Restrict by default, retain for a bounded window, and expose only redacted manifests. |
-| `legal-hold` | Material explicitly held by policy, administrator action, or external compliance requirement. | Do not compact or delete until the hold is removed. |
+| `legal-hold` | Material explicitly held by policy, administrator action, or external compliance requirement. | Follow the Core deletion block until the hold is removed. |
 
 When a record has both product and restricted evidence, the product-safe record should reference the restricted evidence bundle by id and digest rather than duplicating restricted content.
+
+### Agent Data Mapping
+
+Agent-produced and Agent-adjacent data uses the existing classes above without a new Agent retention vocabulary:
+
+- Raw audio and runtime-private reasoning are not retained by default. When a demonstrated diagnostic or verification need authorizes a bounded raw capture, that capture is `restricted-raw`; a bounded redacted health, retry, or feature-negotiation summary is `ephemeral-diagnostic`. Neither is an Item, completion proof, review authority, or recovery prerequisite.
+- Raw provider payloads, native Worker transcripts, unrestricted logs, sensitive traces, quarantined output, and private runtime provenance retained for a bounded need are `restricted-raw`. Product-safe evidence carries only the restricted bundle id, digest, redacted summary, sensitivity, import status, and applicable lineage.
+- Normalized evidence needed to explain one Worker Turn, Artifact, Workspace Sync Review, or verification result is `turn-evidence`. Promotion of a normalized record never promotes its linked restricted bytes or extends their bounded window.
+- Agent-related audit, usage, permission, capability, Vault-use, deletion, revocation, and authority-change facts needed for Workspace governance are `workspace-audit`. Server control-plane facts retain their existing server home while using the class their owner already assigns.
+- `legal-hold` may block deletion of any covered retained material, but it grants no read, promotion, recovery, or Agent authority.
+
+Search indexes, embeddings, summaries, prompt caches, provider sessions, runtime materializations, and other derived projections are reconstructible and cannot support an authority or evidence requirement merely because they exist. Source deletion, authorization loss, incompatible revision, or policy change makes them ineligible immediately and triggers invalidation or rebuild from remaining current sources. A persisted short-lived invalidation diagnostic is `ephemeral-diagnostic`; a normalized proof required to explain one governed Turn or review is `turn-evidence`; no derived bytes are copied into a new evidence family merely to preserve them.
+
+Deletion follows the responsibility and resource owner recorded in lineage. The current owner check prevents future reads and promotions immediately, then the applicable Thread, Turn, Item, Artifact, Knowledge, evidence, audit, Workspace, user, or Vault lifecycle controls physical removal, closure export, independent retention, and legal hold. Deleting a source does not rewrite historical commands, Reviews, Goal outcomes, or separately accepted resources, and Agent code cannot guess a cascade or delete evidence independently.
+
+If deletion, restricted-raw expiry, invalidation, or revocation cannot be proved, ordinary product reads fail closed and the owning record reports its existing degraded, restricted, quarantined, expired, or recovery-required outcome. Core does not infer external-runtime erasure, replay deletion blindly, promote stale evidence, or build a settlement workflow. Restart resumes from the owning durable record and file manifest; retry is a fresh authorized owner operation.
+
+The durable lifecycle class is explicitly not applicable to raw audio and private reasoning under the default because no durable record is created. Definition, authority and projection, failure, and acceptance remain applicable: observable acceptance requires no default raw audio or private-reasoning row or file, every retained raw diagnostic to use `restricted-raw` with hidden ordinary refs, normalized proof to use `turn-evidence`, governance facts to use `workspace-audit`, derived reads to fail after deletion or revocation, owner-specific resources to retain independent lifecycle, and `legal-hold` to block deletion without authorizing access.
 
 ## Runtime Evidence
 
@@ -297,6 +322,7 @@ Runtime evidence includes:
 - workspace change collection summary
 - teardown summary
 - backend error summary
+- execution-substrate epoch invalidation report reference at restricted visibility, as an evidence input carrying no authority
 - runtime-native event capture and runtime-origin index collection summary when `worker.runtime-provenance.v1` is required
 
 OpenShell-native records are evidence inputs. NanoCore-owned runtime evidence records are normalized outputs.
@@ -311,7 +337,7 @@ Normalize:
 - local or remote placement
 - gateway or target summary without secret endpoint tokens
 - sandbox name or backend session summary as a redacted locator
-- workspace id, thread id, turn id, agent session id, and package snapshot id when known
+- workspace id, thread id, turn id, AgentSession id, and package snapshot id when known
 - policy file digest and policy summary
 - worker image, source, or sandbox profile summary
 - upload manifest paths, sizes, and digests
@@ -382,8 +408,24 @@ NanoCore should emit or import audit and usage records at these boundaries:
 - artifact registration
 - knowledge proposal and review
 - runtime teardown
+- execution-substrate epoch invalidation
+- execution-substrate readiness that returns fenced capacity
 
-If a producer is not implemented, diagnostics must not claim that audit or usage is complete.
+### Execution-Substrate Epoch Boundaries
+
+The two epoch boundaries above are `AuditEvent` records in the same family as the existing restart-recovery and capacity-release rows: runtime and scheduler control-plane events. They introduce no new record family, no new storage scope, and no new retention class.
+
+They home in `core.sqlite` with evidence under `server/evidence/`, and they take the same `ownerScope` and retention class as the existing scheduler control-plane audit events. That homing is what makes them representable: one epoch may host AgentSessions belonging to more than one Workspace, so a single Workspace-homed row could not carry the event. One control-plane row per boundary carries the affected AgentSession lineage the same way the existing restart-recovery rows carry lease and workspace lineage, and a Workspace audit read model MAY aggregate by `workspaceId` without copying or dual-writing.
+
+An epoch-invalidation event uses the exact audit action `runtime.epoch.invalidate` and carries the elapsed epoch lifetime, the outcome, and redacted lineage for the AgentSessions it interrupted. An epoch-readiness event uses the exact audit action `runtime.epoch.ready` and carries the elapsed time from fence to advertised capacity. Both exist so that invalidation frequency and rebuild cost are answerable from durable records, because the substrate's own evidence does not survive the epoch it describes.
+
+The `action` value is an audit-owned name. The substrate's own invalidation classification is carried as a bounded resource or summary value, never as the `action`, so a runtime specification's classification vocabulary cannot become the audit action vocabulary and cannot change this record's shape by changing its own list.
+
+Both records are audit-visible, alongside the other backend-lifecycle events, because an epoch invalidation interrupts every AgentSession it hosts and is not health-check or retry detail. Private substrate identity, process identifiers, roots, sockets, and backend handles are redacted to a stable opaque reference or omitted. Neither record becomes item-visible, and neither substitutes for the affected AgentSessions' own terminal records.
+
+A substrate's private invalidation report is an evidence input only. It is not an `EvidenceBundle`, it is not imported wholesale, and a reference to it carries no authority — it must not be read to resume, adopt, settle, or classify an external effect, and no readiness or capacity decision may depend on it.
+
+If a producer is not implemented, diagnostics must not claim that audit or usage is complete. Neither epoch boundary is implemented today, so no current diagnostic may present epoch invalidation frequency or rebuild cost as measured.
 
 ## Resolved Decisions
 
@@ -401,7 +443,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Audit-family rows home with their authoritative responsibility owner. Workspace-content audit lives in `workspace.sqlite`; Core-owned registry, membership, invitation, ownership-transfer, administrator-recovery, and user-disable audit lives only in `core.sqlite` even when it carries `workspaceId`. Portable export excludes that deployment-local access history, while a full deployment backup retains it.
 - Stable actor references remain historical lineage after membership removal, user disable, or portable import and never reconstruct an access grant.
 - Membership, invitation, owner-transfer, shared-write, approval, review, and user-lifecycle mutations are required audit producer families in the multi-user baseline.
-- For the bounded WP-5 Approval slice, the terminal `PermissionDecision` is the decision authority and its same-transaction linked Workspace `AuditEvent` is the sole actor and winning-request projection. The terminal row is complete only when it matches the originating `require_approval` row's Workspace, approval id, action, resource summary, subject summary, and approval kind, `PermissionDecision.auditEventId` equals that AuditEvent id, and `AuditEvent.permissionDecisionId` equals the terminal decision id. `PermissionDecision` does not duplicate `ActorRef`; a missing or contradictory source tuple or audit link makes the claim incomplete and fail closed.
+- For the bounded Approval projection, the terminal `PermissionDecision` is the decision authority and its same-transaction linked Workspace `AuditEvent` is the sole actor and winning-request projection. The terminal row is complete only when it matches the originating `require_approval` row's Workspace, approval id, action, resource summary, subject summary, and approval kind, `PermissionDecision.auditEventId` equals that AuditEvent id, and `AuditEvent.permissionDecisionId` equals the terminal decision id. `PermissionDecision` does not duplicate `ActorRef`; a missing or contradictory source tuple or audit link makes the claim incomplete and fail closed.
 - Spanning events home at the responsibility subject; server-side copies are derived aggregates, never a second source of truth.
 - Workspace deletion produces a sealed server-owned audit closure export before removal; `legal-hold` blocks deletion.
 - The first OpenShell evidence normalization pass should keep product-safe launch, policy, upload/download, transcript, artifact, workspace-change, control, capability, outcome, and redacted error summaries while leaving raw backend-native payloads as restricted evidence.
@@ -412,7 +454,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Add durable usage producers for future knowledge gateway metering, additional storage producers, network producers, broader sandbox lifecycle measurements, and any denied or failed capability attempts where measurable resources are consumed.
 - Extend automatic `EvidenceBundle` promotion and evidence-kind normalization beyond the current producers; extend `RuntimeEvidence` beyond terminal worker checkpoints, materialization readiness, and transcript collection into richer OpenShell launch, heartbeat, file-transfer, workspace-change, teardown, and backend-error normalization.
 - Wire every relevant producer to fill the available permission decision and vault-use audit links.
-- Add credential-channel context and broader producer linkage outside the exact WP-5 Stage 6 and Stage 7 families only when an owning specification requires it. Stage 7 owns the single UsageRecord responsible-user projection and current implemented governed-effect paths above; automation execution remains with the recurring-trigger specification, and broader usage coverage remains future work.
+- Add credential-channel context and broader producer linkage outside the exact current actor-attribution and usage producer families only when an owning specification requires it. The current usage projection owns the single UsageRecord responsible-user projection and current implemented governed-effect paths above; automation execution remains with the recurring-trigger specification, and broader usage coverage remains future work.
 - Extend retention compaction beyond explicit ephemeral-diagnostic and restricted-provenance expiry into scheduled maintenance, workspace policy configuration, and broader retention classes.
 - Normalize broader OpenShell evidence fields beyond the first terminal-checkpoint and materialization-readiness runtime evidence slices.
 - Implement the ownership-scope homing and workspace deletion closure export defined in Storage Scope Homing.
@@ -425,7 +467,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Producer tests for key NanoCore boundaries.
 - Import tests for OpenShell-style evidence.
 - Redaction tests with provider tokens, host paths, and env vars.
-- Query tests by workspace, thread, turn, agent session, capability call, and policy decision.
+- Query tests by workspace, thread, turn, AgentSession, capability call, and policy decision.
 - Retention tests for raw evidence and compacted usage.
 - Schema evolution tests proving optional fields are tolerated while unsupported responsibility, policy, vault, retention, redaction, and evidence-promotion semantics fail closed.
 - Contract tests proving manual evidence-bundle creation is absent from App API, OpenAPI, Core Client, and the Agent Skill Interface while automatic producers and read-only bundle access remain available.
@@ -450,5 +492,4 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
-- [Evidence Surface Simplification](../changes/202607111848520001-evidence_surface_simplification.md)
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`

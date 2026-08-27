@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Workflow Coordinator Internal Core Role
-
-Status: Accepted
-Implementation: Implemented
 
 ## Owns
 
@@ -9,6 +10,7 @@ Implementation: Implemented
 - Request classification across Chat Mode handoff, Task Mode, Goal Mode, review, refinement, retry, and unsupported requests.
 - Worker selection, routing decisions, semantic structured-worker-request composition, delegation drafts, complete request-scoped Goal Plan decisions, and Goal stop decisions.
 - The structured boundary by which mode services supply knowledge, readiness, context, and evidence summaries and consume Coordinator decisions.
+- The Goal-scoped Orchestrator role assembly, its exact Tool set, its boundary from deterministic Goal control, and the independent quality-role requirements applied to its completion proposals.
 
 ## Does Not Own
 
@@ -18,6 +20,7 @@ Implementation: Implemented
 - Worker runtime control, scheduler, AEP, context package file format, workspace sync, or Git write execution.
 - Durable Chat or Task owner tuples, Goal state, workflow progression effects, or context persistence, materialization, and delivery.
 - Future Task Evaluator behavior.
+- Goal truth, Goal autonomy fields, wake state, scheduling, worker execution, or terminal transition authority. `docs/specs/20260704-goal_mode_coordination.md` owns Goal progression and composes those existing owners.
 
 ## Core References
 
@@ -31,7 +34,7 @@ Implementation: Implemented
 
 ## Summary
 
-Workflow Coordinator is the Internal Core Role that turns caller-supplied intent and authorized summaries into structured coordination decisions. It classifies requests, chooses the appropriate mode, selects worker agents, semantically composes bounded worker requests, drafts delegation and Goal plan projections, and produces Goal-level stop decisions from lower-level outcomes and supplied evidence.
+Workflow Coordinator is the deterministic Internal Core Role that turns caller-supplied intent and authorized summaries into structured coordination decisions. It classifies requests, chooses the appropriate mode, selects worker agents, semantically composes bounded worker requests, drafts delegation and Goal plan projections, and produces Goal-level stop decisions from lower-level outcomes and supplied evidence. The independent Goal Orchestrator is a separate bounded semantic role assembly over the shared internal Agent runtime; it does not convert Workflow Coordinator into a provider-backed service.
 
 It is not a worker runtime. It does not execute shell commands, edit files, push commits, or maintain the Knowledge Store directly. It coordinates NanoCore services and worker agents through existing contracts.
 
@@ -66,6 +69,7 @@ This specification fixes the implementation-facing deterministic interface share
 - Mode services call Coordinator; Coordinator does not own product routes by itself.
 - Mode services perform authorized Knowledge Manager reads and provide the resulting source-traceable references to Coordinator. Coordinator owns their semantic inclusion in the structured worker request; the caller owns the read effect plus context persistence, materialization, and worker delivery.
 - Coordinator may recommend Task Mode or Goal Mode, but the mode services apply decisions through the named durable owner tuples; Task Mode has no durable mode record.
+- A Goal Orchestrator Turn is bound to exactly one Goal and uses the role-agnostic runtime owned by `docs/specs/20260813-internal_agent_runtime.md`. No ambient global Orchestrator, cross-Goal mutation authority, Goal Supervisor, or second mutation-capable coordinator is admitted.
 
 ## Contract / Expected Behavior
 
@@ -114,9 +118,46 @@ Coordinator outputs are request-scoped deterministic values, not durable records
 
 For a Goal worker step, Coordinator converts the lower-level worker-step decision into the Goal-level stop decision. `review`, `ask_user`, `block`, and `abort` remain unchanged. Goal Mode V1 always supplies `remainingWorkerIterations=0` to the lower-level worker envelope, so a lower-level `continue` is invalid and returns `goal_stop_decision_invalid` before Goal, Goal Task, Goal Review, terminal-reason, checkpoint-success-clear, or next-step mutation. The already durable worker Turn, checkpoint, and Item or Artifact evidence remain unchanged for diagnosis. Lower-level `complete` becomes Goal-level `continue` when `hasOtherIncompleteTasksAfterAddressedTaskCompletion=true` and remains `complete` only when no other incomplete Goal Task remains. `shouldStop` is false only for the generated Goal-level `continue`. Coordinator copies caller-supplied Item and Artifact evidence ids and MUST NOT infer evidence, launch another step, or mutate Goal state.
 
+### Goal Orchestrator role assembly
+
+The Goal Orchestrator is an independent logical role from Assistant and Workflow Coordinator. Every Orchestrator Turn is bound to one exact Goal, current actor, output audience, and current Goal autonomy fields. It receives a compact reconstructible projection of the objective, accepted Plan revision, active and settled Task summaries, evidence index, pending human attention, remaining budget, and stop or recovery facts, then reads additional Goal-scoped facts on demand. It receives no unrelated personal or portfolio history, ambient Workspace authority, raw worker transcript, runtime handle, or authority over another Goal.
+
+The role is long-lived only through its durable Goal and Goal Main Thread; each Orchestrator invocation is a short Turn that wakes, reads current state, decides, dispatches or requests attention, and settles in seconds to minutes. `goal.task.dispatch` returns after current authorization, command admission, Task creation, and scheduler acceptance or queueing, with the authoritative receipt and Task reference. An Orchestrator Turn never waits for a Worker or human, never appends a delayed Tool result to a settled Turn, and never treats loop quiescence, timeout, local limits, provider memory, or model confidence as Goal state.
+
+The complete Goal Orchestrator Tool set is exactly:
+
+| Tool | Semantic boundary |
+| --- | --- |
+| `goal.plan.propose` | Submit a new immutable Plan or Plan revision to the Goal and Plan owners without mutating an accepted Plan in place. |
+| `goal.task.dispatch` | Submit one bounded Goal Task through current Goal autonomy, permission, budget, scheduler, worker, context, and evidence admission, then return on accepted or queued admission rather than Worker completion. |
+| `goal.task.read` | Read current status and bounded evidence for one Task belonging to the bound Goal without contacting a live Worker merely for progress. |
+| `goal.task.respond` | Answer one exact durable pending Worker request with its Task, expected revision, and permitted response shape; it is not a free-form hidden Worker channel. |
+| `goal.task.cancel` | Request cancellation of one exact queued or running Task through its owning control and Turn-interruption contracts; corrected work is a later dispatch and never an edit of the running attempt. |
+| `goal.attention.request` | Create the exact Gate, Approval, Review, or other human-attention request admitted by current Goal state and autonomy. |
+| `goal.blocked.report` | Submit the exact reason and evidence for authoritative blocked-state handling. |
+| `goal.completion.propose` | Submit completion claims, outputs, unresolved risks, and evidence to the independent verification and Goal-closure path. |
+
+Every Tool implementation binds the exact Goal and current autonomy fields, reauthorizes each call through current durable owners, and returns the exact accepted, queued, applied, rejected, stale, conflicted, blocked, failed, unknown, or recovery-required result. Tool presence is not authority. Missing or stale Goal, Task, request, Plan, budget, permission, evidence, or revision state fails through that owner and is never repaired from model memory. An unknown external outcome remains unknown until its effect owner reconciles it; retry uses a new admitted command or Turn from current durable truth and never blindly repeats an effect.
+
+`goal.task.respond` is admitted only while its exact request remains pending, and `goal.task.cancel` is admitted only for a Task belonging to the bound Goal. In-flight Orchestrator steering is excluded: there is no `goal.task.steer`, safe-point payload, queued-versus-applied steering state, or second writer into a running Worker Turn. The Orchestrator normally lets work settle and dispatches the next Task; when continued execution is wasteful it requests cancellation and later dispatches corrected work.
+
+Deterministic Goal control remains responsible for current-state validation, single-flight admission, dependency and conflict checks, budget and revision enforcement, wake handling, review policy, and terminal predicates. It uses direct operations or stable routing when the next action is mechanically decidable. A bounded Orchestrator Turn is admitted only when decomposition, reassignment, synthesis, or recovery requires semantic judgement that those deterministic facts cannot express. No model router chooses between these paths; deterministic Goal facts make that choice, and an unavailable semantic dependency yields a typed blocked, attention, failed, or recovery-required outcome without weakening the deterministic boundary.
+
+Only one primary Orchestrator may propose Plans, dispatch or cancel Tasks, answer pending Worker requests, request human attention, report blocked work, and propose completion for one Goal revision. This is a single-writer rule over ordinary Goal Main Thread Turn admission, not a persistent process or provider Session. Restart reconstructs the next Turn from durable Goal owners; a missing or stale provider context loses no authority, and duplicate or concurrent admission is rejected or coalesced by Goal Mode rather than resolved by two model roles.
+
+Independent quality work has four admitted role postures: a producer creates a result and evidence; a reviewer judges one released result without editing it; a verifier attempts to falsify a frozen predicate or completion proposal; and an auditor measures whether review and verification detect representative faults. These postures create no parallel Goal owner and receive only the Tools required by their exact assignment.
+
+Independence has three separately enforced dimensions. Context independence uses a separate AgentSession and clean assignment without the producer's hidden reasoning or success narrative. Objective independence requires review to judge and verification to falsify rather than help production continue. Model independence uses a different model family when the Goal's `completionVerification` or risk policy requires it; missing required independence produces a truthful pending, attention, blocked, or unverifiable result and never falls back to a weaker success-shaped verdict. A separate Harness or Sandbox is additionally required when shared process memory, plugins, mutable caches, credentials, writable state, or execution effects could invalidate the independence claim.
+
+An owning review, verification, or audit policy creates a quality-role assignment only after its subject and criteria are frozen, and the resulting Turn terminates with one typed finding, verdict, falsification result, calibration result, or exact runtime failure. Its output is evidence or a proposal to the owning Goal, Review, or audit path and never direct production mutation. Rejection or retry creates a new clean assignment and preserves the prior result. Restart reconstructs from the frozen subject, criteria, evidence, and policy; missing input, stale subject revision, conflicting verdict lineage, unavailable required independence, or dependency failure yields pending, blocked, attention, unverifiable, or recovery-required through that owner rather than an inferred success. Observable acceptance identifies the role, frozen subject, criteria, all three independence dimensions, result, and owning consumer for every quality claim.
+
+An Orchestrator Turn ends after its admitted Tool work is quiescent or the shared runtime returns its exact abort, limit, or failure outcome; none closes the Goal. The only closure path begins with an accepted `goal.completion.propose`, continues through the independently admitted verifier required by the Goal's current `completionVerification`, and ends when the Goal owner validates that proposal, verifier identity and independence, evidence, current Goal and Plan revision, autonomy and budget state, unresolved risks, and terminal predicate. Rejection or missing independence returns typed findings for bounded replanning, new work, human attention, blocked reporting, or a non-success outcome. The Orchestrator that planned or dispatched the work cannot verify its own completion proposal.
+
+Observable acceptance requires that every Orchestrator Turn names one Goal; only the eight listed Tools are model-visible; dispatch returns without waiting for Worker completion; deterministic cases activate no Orchestrator; stale, missing, unknown, or dependency-failed inputs never become success; restart reconstructs from durable owners; independent-role requirements are inspectable across context, objective, and model dimensions; and no Goal closes from Worker success, reviewer approval alone, Orchestrator quiescence, model confidence, or a local runtime outcome.
+
 ## Accepted Design
 
-Implement Coordinator as pure deterministic functions over caller-supplied request, worker-readiness, Thread, Workspace, authorized context-reference, Goal progression, and evidence or failure summaries. Task Mode persists and applies its Turn, Item, checkpoint, evidence, and command tuple; Goal Mode persists and applies Goal, Plan, Goal Task, Review, Turn, checkpoint, evidence, and command state. Both mode services perform Knowledge Manager reads, context persistence and materialization, scheduler requests, Action Center source mutations, and evidence reads through their existing owners. A future provider-backed implementation requires an accepted design and demonstrated need; it must remain concrete to this role and must not add a generic agent framework.
+Implement Workflow Coordinator as pure deterministic functions over caller-supplied request, worker-readiness, Thread, Workspace, authorized context-reference, Goal progression, and evidence or failure summaries. Task Mode persists and applies its Turn, Item, checkpoint, evidence, and command tuple; Goal Mode persists and applies Goal, Plan, Goal Task, Review, Turn, checkpoint, evidence, and command state. Both mode services perform Knowledge Manager reads, context persistence and materialization, scheduler requests, Action Center source mutations, and evidence reads through their existing owners. Separately, Goal Mode may assemble the accepted Goal-scoped Orchestrator role over `docs/specs/20260813-internal_agent_runtime.md` when deterministic control identifies a demonstrated semantic need; this does not make Workflow Coordinator provider-backed or add another agent framework.
 
 ## Current Implementation Projection
 
@@ -128,7 +169,7 @@ Goal Mode consumes the implemented slice for complete plans, worker selection, e
 
 Chat Mode now consumes this slice for explicit Assistant handoffs. Bounded worker requests create a Task Mode handoff through Workflow Coordinator and longer-running requests create a Goal Mode handoff from the Coordinator's `goal` decision through the shared Goal Mode objective path; the unified `openkit` Skill exposes this entry through the `chat.start` bundled-CLI operation. When Coordinator returns a non-quick-chat decision that does not select a worker turn, such as `clarify`, `blocked`, `retry`, `review`, `refinement`, `handoff`, or `unsupported`, Chat Mode records a refused status item with the Coordinator explanation instead of falling through to Knowledge Manager or provider-backed quick chat. Historical deterministic L6 evidence covered both paths: Task handoff created the visible status item, started bounded worker progress, and exposed the worker approval gate, while Goal handoff created a durable planning goal. The retired MCP-only story is not an active release gate.
 
-The deterministic V1 routing, complete Goal Plan decision, exact worker-request composition and byte delivery, immutable Goal Task request-fact path, and Goal stop decision are implemented, and the generic runtime and diagnostics boundary defect is closed. Goal Mode supplies lower-level `remainingWorkerIterations=0` and the pre-mutation `hasOtherIncompleteTasksAfterAddressedTaskCompletion` predicate; Coordinator rejects lower-level `continue`, converts an accepted Task completion to Goal `continue` or `complete`, and returns the decision before the Goal service mutates its owners. The Goal service then validates and commits the matching owner tuple rather than treating the Coordinator output as an after-the-fact summary. The Worker Context Package and Work Resource Interaction Model specifications still own materialized Context Package delivery, while Goal command replay and launch recovery remain Goal Mode Coordination and Worker Turn Reliability Envelope work rather than Coordinator state. Dynamic planning, multi-worker graph planning, Task Evaluator integration, and workspace-authored workflow recipes remain deferred future work rather than blockers for the V1 decision contract.
+The deterministic V1 routing, complete Goal Plan decision, exact worker-request composition and byte delivery, immutable Goal Task request-fact path, and Goal stop decision are implemented, and the generic runtime and diagnostics boundary defect is closed. Goal Mode supplies lower-level `remainingWorkerIterations=0` and the pre-mutation `hasOtherIncompleteTasksAfterAddressedTaskCompletion` predicate; Coordinator rejects lower-level `continue`, converts an accepted Task completion to Goal `continue` or `complete`, and returns the decision before the Goal service mutates its owners. The Goal service then validates and commits the matching owner tuple rather than treating the Coordinator output as an after-the-fact summary. The Worker Context Package and Work Resource Interaction Model specifications still own materialized Context Package delivery, while Goal command replay and launch recovery remain Goal Mode Coordination and Worker Turn Reliability Envelope work rather than Coordinator state. The Goal-scoped Orchestrator role assembly, eight-Tool boundary, and independent completion-verifier path are not implemented, so this specification is Partial; the implemented deterministic Coordinator remains the fallback only for decisions it already owns and cannot impersonate the missing semantic role or completion verifier.
 
 ## Alternatives Considered
 
@@ -148,9 +189,10 @@ The deterministic V1 routing, complete Goal Plan decision, exact worker-request 
 - L2: contract tests for Coordinator outputs consumed by Task Mode and Goal Mode.
 - L3: NanoCore black-box tests for Task Mode delegation and Goal Mode plan/step using Coordinator outputs.
 - L3: Goal Mode fixes lower-level `remainingWorkerIterations=0`, rejects any lower-level `continue`, supplies the durable pre-mutation `hasOtherIncompleteTasksAfterAddressedTaskCompletion` summary, validates the Coordinator stop decision, and consumes it before mutating Goal, task, review, or evidence state.
+- L2/L3: prove one-Goal Orchestrator scope, the exact eight-Tool assembly, dispatch return-on-admission, typed stale and unknown results, no in-flight steering Tool, deterministic-path non-activation, restart reconstruction, and independent completion verification across the required dimensions.
 - L6: story acceptance where a user request moves through Assistant, Coordinator, worker execution, evidence, and final result.
 
-Acceptance: Coordinator decisions match the three exact V1 shapes, public projections validate at their owning route boundary, worker selection uses only supplied readiness, and no Coordinator function reads or mutates scheduler, permission, vault, worker control, Knowledge, Action Center, Task-owner, or Goal state.
+Acceptance: Coordinator decisions match the three exact V1 shapes, public projections validate at their owning route boundary, worker selection uses only supplied readiness, no Coordinator function reads or mutates scheduler, permission, vault, worker control, Knowledge, Action Center, Task-owner, or Goal state, and any semantic Orchestrator Turn remains one-Goal-scoped, eight-Tool-bounded, reconstructible, non-blocking, and unable to verify or close its own completion proposal.
 
 ## Risks & Mitigations
 
@@ -168,6 +210,7 @@ Previously open questions are resolved by accepted V1 defaults: the Coordinator 
 - Multi-worker graph planning.
 - Task Evaluator integration.
 - Workspace-authored workflow recipes.
+- Goal Supervisor or any cross-Goal coordinator.
 
 ## Links
 
@@ -179,3 +222,4 @@ Previously open questions are resolved by accepted V1 defaults: the Coordinator 
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
 - `docs/specs/20260703-worker_context_package.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
+- `docs/specs/20260813-internal_agent_runtime.md`

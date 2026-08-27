@@ -1,17 +1,20 @@
+---
+status: Accepted
+implementation: Partial
+updated: 2026-08-21
+---
 # Codex Worker Adapter
-
-Status: Accepted
-Implementation: Implemented
 
 ## Summary
 
-The Codex Worker Adapter translates one resolved Agent Environment Package into one bounded `codex exec` process and translates Codex-native output and optional rollout evidence into the shared OpenKit worker harness result.
+The Codex Worker Adapter translates one open AgentSession and each freshly resolved Turn into a bounded `codex exec` process, resumes the exact Codex conversation across later process instances, and translates Codex-native output and optional rollout evidence into the shared OpenKit Harness result.
 
 The adapter is worker-side integration code. It is not a NanoCore runtime, transport, policy engine, product model, or provider owner.
 
 ## Owns
 
-- Codex command construction for one bounded worker turn
+- Codex session-local state and restricted native conversation-handle lifecycle
+- Codex command construction for one first or resumed bounded worker Turn
 - Codex final assistant message collection
 - Codex JSONL stdout forwarding into optional native provenance capture
 - Codex state-root discovery required by the accepted provenance contract
@@ -27,17 +30,30 @@ The adapter is worker-side integration code. It is not a NanoCore runtime, trans
 - workspace snapshot, review, apply, or durable product state
 - Goal Mode, Action Center, scheduling, placement, or backend lifecycle
 
+## Core References
+
+- `docs/core/runtime-model.md`
+- `docs/core/agent-session.md`
+- `docs/core/agent-supply.md`
+- `docs/core/sandbox.md`
+
 ## Upstream Contract
 
 The accepted implementation pin is Codex CLI `0.144.1`, matching the real worker image and runtime-provenance fixtures.
 
-The bounded native command is equivalent to:
+The first bounded native command is equivalent to:
 
 ```text
-codex exec --json --ignore-user-config --ignore-rules --strict-config [--ephemeral] --output-last-message <session-final-message-path> --cd <workspace> <adapter-owned -c provider projection> --model <model> --dangerously-bypass-approvals-and-sandbox <turn-input>
+codex exec --json --ignore-user-config --ignore-rules --strict-config --output-last-message <turn-final-message-path> --cd <workspace> <adapter-owned -c provider projection> --model <model> --dangerously-bypass-approvals-and-sandbox <turn-input>
 ```
 
-Every invocation also uses `--ignore-user-config` and `--ignore-rules`. When S33 provenance is disabled it uses `--ephemeral`; when S33 provenance is required it omits `--ephemeral` only so the pinned rollout files can be captured from a fresh turn-scoped `CODEX_HOME`.
+Every later Turn uses the same accepted safe flags and provider projection with the pinned native resume surface; the Harness sets the child working directory because the resume subcommand has no `--cd` option:
+
+```text
+codex exec resume --json --ignore-user-config --ignore-rules --strict-config --output-last-message <turn-final-message-path> <adapter-owned -c provider projection> --model <model> --dangerously-bypass-approvals-and-sandbox <exact-native-thread-id> <turn-input>
+```
+
+Codex `0.144.1` exposes `exec resume [SESSION_ID] [PROMPT]`; a UUID selects the exact thread and neither `--last`, title search, cwd search, nor another discovery fallback is permitted. Session-continuity mode never uses `--ephemeral`, because persistence beneath the AgentSession-private `CODEX_HOME` is the native mechanism that a later process instance resumes. Every invocation uses `--ignore-user-config` and `--ignore-rules`.
 
 The approval and sandbox bypass flag is permitted only because the authored AgentManifest and resolved AEP declare the filesystem, network, credential, image, and binary authority that stock OpenShell enforces around the process, while NanoCore retains canonical review and external-side-effect decisions. It must never be used to create a host runtime path.
 
@@ -48,26 +64,28 @@ The shared harness supplies the adapter with:
 - adapter id
 - turn input
 - worker working directory
-- session directory and final-message path
+- AgentSession-private state directory and Turn-private final-message path
 - the provider, model, endpoint, and credential bindings from the AEP's one already resolved LLM route
 - optional native provenance declaration
 - a safe child environment that excludes the worker-control credential
 
 The adapter must not read NanoCore private storage or invent missing provider, model, policy, or credential decisions.
 
-The shared harness supplies one fresh empty session state root. `prepare` selects a turn-scoped `CODEX_HOME` beneath it but returns no config or authentication files. AEP-resolved authentication and provider material may enter the child only through the backend-materialized credential bindings and adapter-owned argv or safe environment; executable MCP server entries, hooks, memories, prior sessions, and ambient user state are absent. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating workspace policy files as hidden execution authority.
+The shared Harness supplies one fresh empty AgentSession-private state root. `openSession` selects its fixed `CODEX_HOME`, reports the native handle `pending`, and starts no process because the pinned CLI creates a conversation only with the first prompt. `prepareTurn` selects a fresh Turn-private final-message path beneath that AgentSession, uses the first command when no handle exists, and uses exact UUID resume when the binding already holds one proved handle. It returns no config or authentication files. AEP-resolved authentication and provider material may enter the child only through backend-materialized credential bindings and adapter-owned argv or safe environment; executable MCP server entries, hooks, memories, sibling AgentSessions, and ambient user state are absent. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating Workspace policy files as hidden execution authority.
 
 ## Launch Plan
 
-`prepare` returns a native launch plan containing command argv, safe child environment additions, whether exact stdout capture is required, and the final assistant extraction strategy. The plan has no config-artifact field.
+`prepareTurn` returns a native launch plan containing command argv, safe child environment additions, whether exact stdout capture is required, and the final assistant extraction strategy. The plan has no config-artifact field.
 
 No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced argv. Tests inject a process runner or a static test adapter without creating a production command override.
 
-The adapter contract has no separate interrupt or provenance operation. The shared harness owns process-group termination, while `prepare` may attach the existing Codex-local provenance sink lifecycle to the launch plan.
+`collectTurn` requires exactly one `thread.started` event whose UUID equals the binding's existing native handle on resume or establishes the handle on the first Turn. It also requires the session-local rollout metadata to identify that same thread before returning the lowercase SHA-256 handle digest used by private Harness proof. The raw UUID remains only in the AgentSession-private adapter state and is never a product field, ordinary diagnostic, command result, or authorization input.
+
+`inspectSession` proves whether no child is active, whether the exact handle and same-thread session metadata remain available, and whether Turn-private writers are absent. `closeSession` is admitted only without an active child, removes the complete AgentSession-private `CODEX_HOME` and Turn-local outputs, and returns exact absence proof. The adapter contract has no separate interrupt or provenance operation; the shared Harness owns process-group termination, while `prepareTurn` may attach the existing Codex-local provenance sink lifecycle to the launch plan.
 
 ## Native Output Mapping
 
-Codex writes the final assistant response to the bounded `--output-last-message` file. `collect` validates that the path is a regular file, applies the shared 16 MiB bound, decodes UTF-8, trims surrounding whitespace, and returns either one assistant message or no message.
+Codex writes the final assistant response to the bounded `--output-last-message` file. `collectTurn` validates that the path is a regular file, applies the shared 16 MiB bound, decodes UTF-8, trims surrounding whitespace, and returns either one assistant message or no message together with the exact native-handle proof above.
 
 Codex JSONL stdout is not imported directly into NanoCore product state. When runtime provenance is enabled, exact stdout bytes are passed to the Codex provenance capture implementation and finalized only after a successful shared harness lifecycle.
 
@@ -75,16 +93,20 @@ Outside the separately bounded streaming provenance path, native result content 
 
 Malformed native events may invalidate provenance evidence, but they must not bypass candidate terminal classification or cause NanoCore to accept native Codex schemas.
 
-`collect` returns normalized assistant content or a product-safe failure classification. The shared harness emits schema-conformant candidate records, and NanoCore alone validates and commits canonical Items and terminal state.
+`collectTurn` returns normalized assistant content or a product-safe failure classification. The shared Harness emits schema-conformant candidate records, and NanoCore alone validates and commits canonical Items and terminal state.
 
 ## Control Mapping
 
-The currently implemented OpenKit worker envelope is one bounded turn.
+The target OpenKit worker envelope is one open Codex AgentSession with zero or more sequential bounded Turns and at most one active Turn in that AgentSession.
 
-- `interrupt` terminates the supervised Codex process group through the shared harness.
-- native approval requests, questions, steering, and session continuation are not advertised by this adapter in the bounded path.
+- `session.open` creates the private state root and a pending handle without starting Codex;
+- the first `turn.start` launches a new conversation and settles with a pending handle once the supervised child is running; successful terminal `collectTurn` establishes the exact returned thread UUID and `session.inspect` proves it before reuse;
+- a later `turn.start` launches a fresh `codex exec resume` process against that exact UUID and same private `CODEX_HOME`;
+- `turn.interrupt` terminates only the supervised process group for that AgentSession through the shared Harness;
+- `session.inspect` and `session.close` use the fixed adapter operations above;
+- native approval requests, questions, steering, and follow-up remain unsupported.
 
-The Codex adapter implements only `prepare` and `collect`; it does not implement an adapter-local interrupt operation.
+Another resident AgentSession belongs to another Thread and has a distinct private `CODEX_HOME`, native handle, child process, Turn slots, route credentials, and cleanup proof even when it selects the same Agent, image, model, or provider. The Codex adapter implements no adapter-local interrupt operation and never selects an AgentSession by `--last`, title, cwd, sibling state, or ambient Codex home.
 
 ## Skills And MCP
 
@@ -102,7 +124,7 @@ For the trusted NanoCore relay, the adapter uses the fixed adapter-owned provide
 model_provider="openkit-worker-inference"
 web_search="disabled"
 model_providers.openkit-worker-inference.name="OpenKit Worker Inference"
-model_providers.openkit-worker-inference.base_url="<exact workerBaseUrl>"
+model_providers.openkit-worker-inference.base_url="http://127.0.0.1:17892/inference/v1"
 model_providers.openkit-worker-inference.env_key="OPENKIT_WORKER_INFERENCE_TOKEN"
 model_providers.openkit-worker-inference.wire_api="responses"
 model_providers.openkit-worker-inference.requires_openai_auth=false
@@ -124,9 +146,9 @@ Codex-specific install commands, binary paths, state directories, auth paths, an
 
 Codex runtime provenance is optional and governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
 
-The Codex adapter owns the optional capture lifecycle attached by `prepare` that streams pinned native rollout evidence and projects its index and manifest into the shared session evidence directory. The shared harness owns lifecycle timing and failure cleanup; NanoCore owns evidence verification and import.
+The Codex adapter owns the optional capture lifecycle attached by `prepareTurn` that streams pinned native rollout evidence and projects its index and manifest into the shared session evidence directory. The shared Harness owns lifecycle timing and failure cleanup; NanoCore owns evidence verification and import.
 
-Without S33, `--ephemeral` prevents rollout persistence and the harness removes the turn-scoped `CODEX_HOME` after collection. With S33, the harness retains only the AEP-declared bounded provenance artifacts after capture and removes the remaining native state root.
+The AgentSession-private rollout forest is required native continuity state and remains until `session.close`, independent of whether S33 product-safe provenance export is enabled. S33 controls only bounded evidence projection into declared outputs; it does not control native state persistence. Turn-private final-message and transient capture files are removed after collection, while `session.close` removes the remaining private `CODEX_HOME` after exact child and writer absence.
 
 No other adapter is required to imitate Codex rollout files.
 
@@ -136,6 +158,8 @@ No other adapter is required to imitate Codex rollout files.
 - a present final-message path that is not a readable regular UTF-8 file or exceeds 16 MiB fails collection closed
 - a non-zero native exit returns a failed adapter classification with bounded, redacted stdout and stderr summaries even when a final-message file exists
 - process interruption produces `interrupted` regardless of a partial final-message file
+- missing, malformed, multiple, changed, or sibling `thread.started` identity fails the Turn and makes the binding non-reusable until exact cleanup
+- missing or conflicting same-thread rollout metadata, exact resume refusal, or a resume that reports another thread drains the AgentSession binding and never falls back to a new conversation
 - provenance capture failure invalidates provenance evidence and fails according to the accepted provenance contract
 - worker-control failure remains a shared harness failure and stops Codex
 
@@ -149,7 +173,7 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 - interrupt by process termination: supported
 - live native token streaming into product Items: not supported
 - native approval or question round trips: not supported
-- multi-turn native session resume: not supported by this adapter contract
+- multi-Turn native continuity through exact UUID and AgentSession-private `CODEX_HOME`: implemented
 - optional runtime provenance: supported only by the pinned image and accepted AEP feature
 
 ## Tests
@@ -160,11 +184,11 @@ Required adapter tests cover:
 - proof that credential values never enter argv or evidence and direct routes fail before spawn
 - rejection of retired environment and AEP-extension command overrides
 - final-message success, absence, non-file, and size-bound behavior
-- isolated `CODEX_HOME`, ignored ambient config/rules, ephemeral cleanup without S33, and bounded retained artifacts with S33
+- distinct-Thread AgentSession-private `CODEX_HOME` roots, rejection of two current bindings for one Thread, ignored ambient config/rules, pending first-start settlement, exact handle establishment through terminal `collectTurn` and `session.inspect`, exact-UUID resume by a later process instance, sibling rejection, and complete AgentSession-close cleanup
 - non-zero exit and redacted failure diagnostics
 - exact stdout forwarding when provenance is enabled
 - conformance with the shared adapter contract
-- rejection of unsupported interactive capabilities
+- rejection of `--last`, title, cwd, ambient-home, missing-handle, conflicting-handle, and unsupported interactive capability paths
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.
 
@@ -172,7 +196,7 @@ Required image smoke covers the pinned `codex --version`, machine-readable `code
 
 ## Implementation Evidence And Limit
 
-The Codex `0.144.1` adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented. On A1, the arm64 image was built directly, passed its smoke check, and stock unpatched OpenShell `0.0.80` created a sandbox from it, uploaded the AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
+The Codex `0.144.1` session-continuity adapter, static registry entry, authored manifest, pinned worker image definition, five-operation adapter tests, retained AgentSession-private state, exact first-Turn handle binding, exact-UUID resume, inspection, close, and multi-AgentSession Harness integration are implemented and pass local checks. OpenCode and Pi retain their bounded `prepare`/`collect` paths. The earlier 2026-07-21 arm64 image build passed its complete smoke, and the earlier minimal arm64 image passed stock unpatched OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1; the current image bytes plus refreshed stock OpenShell, provider, interrupt, reconnect, and recovery evidence are still required.
 
 This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
@@ -182,7 +206,7 @@ This adapter is clean only when deleting it and its image removes all Codex-nati
 
 ## Related Documents
 
-- `docs/changes/202607160036500001-worker_agent_adapter_boundary.md`
+
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-worker_control_protocol.md`

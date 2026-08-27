@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-03
+current-guidance: "`docs/core/protocol.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260703-worker_agent_capability.md`"
+decision-evidence: "`docs/core/protocol.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260703-worker_agent_capability.md`"
+---
 # Nano-Core Meta Capability Metadata
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-03
-Current Guidance: `docs/core/protocol.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260703-worker_agent_capability.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
 
 ## Lifecycle Reason
 

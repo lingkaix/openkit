@@ -1,7 +1,8 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Knowledge Store Governance Rules
-
-Status: Accepted
-Implementation: Partial
 
 Implementation note: the accepted V1 validation, source, maintenance-record, create-only proposal review and application, unchanged-page reversal, and S39-only worker-delivery boundaries are implemented. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority.
 
@@ -206,7 +207,7 @@ Only an authorized human Knowledge Review may accept, reject, or defer a generat
 
 Policy MAY validate, route, batch, or prioritize proposals, but it MUST NOT substitute for human acceptance.
 
-An authorized human MAY create or edit knowledge directly with `review_state: user-authored`; that write MUST pass current validation and creates no synthetic proposal or review identifier. G07 does not expand the existing direct-mutation concurrency, command, or Audit contract and does not create a historical-content record family.
+An authorized human MAY create or edit knowledge directly with `review_state: user-authored`; that write MUST pass current validation and creates no synthetic proposal or review identifier. The accepted Knowledge scope does not expand the existing direct-mutation concurrency, command, or Audit contract and does not create a historical-content record family.
 
 Rejecting a proposal closes it without an active Knowledge mutation.
 

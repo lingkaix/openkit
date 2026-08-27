@@ -1,10 +1,11 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-07-18
+current-guidance: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260704-app_api_openapi_projection.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/app-api.md`, `apps/nanocore/README.md`"
+decision-evidence: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260704-app_api_openapi_projection.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/app-api.md`, `apps/nanocore/README.md`"
+---
 # Protocol Contract Consolidation
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-07-18
-Current Guidance: `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260704-app_api_openapi_projection.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/app-api.md`, `apps/nanocore/README.md`
-Decision Evidence: `docs/changes/202607111941330001-core_spec_implementation_alignment_audit.md`, `docs/changes/202607131935040001-openkit_agent_skill_interface.md`
 
 ## Lifecycle Reason
 

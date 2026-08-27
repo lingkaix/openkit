@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Agent Supply
-
-Status: Accepted
 
 This document defines OpenKit agent supply semantics.
 
@@ -8,13 +9,13 @@ This document owns how OpenKit declares, discovers, resolves, explains, and prep
 
 This document does not own runtime continuity, capability-call routing, permission decisions, sandbox containment, complete config fields, native adapter config files, launch arguments, database tables, UI endpoints, or provider payloads.
 
-It covers agent catalogs, agent setup contracts, profiles, capability summaries, readiness, and additive setup evolution.
+It covers agent catalogs, Agent Manifests, profiles, capability summaries, readiness, and additive manifest evolution.
 
 ## Purpose
 
 OpenKit needs a stable way to describe what agents are available in a workspace, what supply they require, and how Core can initialize them.
 
-The agent catalog is the discovery layer. One agent setup contract plus one selected nested profile is the declarative runtime setup input. Core alone resolves that input into a policy-checked setup and one immutable launch package; a governance backend materializes the package, and a worker-side adapter produces runtime-native launch details.
+The agent catalog is the discovery layer. One selected `AgentManifest` plus one selected nested profile is the authored runtime setup input. Core alone resolves that input into a policy-checked setup and one immutable launch package; a governance backend materializes the package, and a worker-side adapter produces runtime-native launch details.
 
 The supply model must stay open-ended because OpenKit will add agent fields over time for model routing, runtime selection, workspace inputs, MCP and skills, knowledge/context injection, vault references, sandbox policy, observability, and deployment modes.
 
@@ -26,11 +27,11 @@ Resolution, governance materialization, and runtime adaptation are one-way proje
 
 Agent catalogs are workspace-visible selection surfaces, not runtime launch manifests.
 
-Agent setup contracts should describe required supply without embedding secret values, absolute local paths, provider-native payloads, or adapter-private launch details.
+Agent Manifests should describe required supply without embedding secret values, absolute local paths, provider-native payloads, or adapter-private launch details.
 
 Runtime capability access belongs to `agent-capability.md`; agent supply may declare which capability categories an agent needs, but it does not own agent capability routing, gateway projection, or metering semantics.
 
-Agent sessions materialize resolved supply into live or resumable runtime continuity; agent supply does not own session lifecycle.
+AgentSessions materialize resolved supply into live or resumable runtime continuity; agent supply does not own session lifecycle.
 
 ## Scope
 
@@ -40,13 +41,13 @@ A workspace may include:
 
 - built-in agents
 - user-installed agents
-- server-owned agent setup config projected into the workspace catalog
+- server-owned Agent Manifests projected into the workspace catalog
 - workspace-local setup entries when a future policy allows them
 - organization-provided agents
 - remote or managed agents in future versions
 - disabled or unavailable agents kept for current catalog visibility
 
-Global, server-owned, or built-in agent setup sources may exist, but a workspace-visible catalog is the effective selection surface Core uses for routing work.
+Global, server-owned, or built-in Agent Manifest sources may exist, but a workspace-visible catalog is the effective selection surface Core uses for routing work.
 
 ## Catalog Model
 
@@ -56,7 +57,7 @@ The conceptual catalog relationship is:
 Workspace
   AgentCatalog
     AgentCatalogEntry
-      AgentSetupContract
+      AgentManifest
         AgentProfile[]
 ```
 
@@ -64,7 +65,7 @@ Workspace
 
 `AgentCatalogEntry` is one selectable supply record.
 
-`AgentSetupContract` is the declarative setup file or document referenced by the catalog entry.
+`AgentManifest` is the authored manifest selected by Core as the declarative setup document for one agent supply unit.
 
 `AgentProfile` is an optional setup-local behavior profile.
 
@@ -114,9 +115,9 @@ Typical entry areas include:
 
 These are catalog areas, not a closed field list.
 
-## Agent Setup Contract
+## AgentManifest
 
-The agent setup contract is the declarative setup source used to initialize and operate one agent supply unit.
+The `AgentManifest` is the sole authored setup source used to initialize and operate one agent supply unit.
 
 It may declare:
 
@@ -143,7 +144,7 @@ These are open catalog areas. This document intentionally does not enumerate all
 
 ## AgentProfile
 
-An `AgentProfile` is an optional setup-local profile for selecting behavior inside one agent setup contract.
+An `AgentProfile` is an optional setup-local profile for selecting behavior inside one `AgentManifest`.
 
 Examples:
 
@@ -161,7 +162,7 @@ Profiles can declare or reference behavior-oriented settings such as instruction
 
 Profiles are not standalone agents, top-level core objects, or protocol-level agent registries.
 
-If setup config does not declare profiles, Core treats it as one implicit default behavior profile.
+If an `AgentManifest` does not declare profiles, Core treats it as one implicit default behavior profile.
 
 ## Capability Catalog Areas
 
@@ -191,7 +192,7 @@ Launch-time capability availability is the intersection of authored requirements
 
 Readiness should not be a boolean.
 
-Catalog and agent setup resolution should support common readiness states:
+Catalog and Agent Manifest resolution should support common readiness states:
 
 ```text
 ready
@@ -201,7 +202,7 @@ disabled
 unknown
 ```
 
-These five states are the internal resolution vocabulary used during agent setup resolution. The product-visible protocol `AgentCatalogEntry` does not carry this enum directly; it instead projects `health.status` (unknown, starting, ready, running, offline, failed) together with a separate `status` field (enabled, disabled).
+These five states are the internal vocabulary used during Agent Manifest resolution. Product-visible protocol records project only a readiness and health summary under the protocol owner rather than adopting this internal enum.
 
 Readiness should explain what was checked and what the user or system can do about failures.
 
@@ -218,7 +219,7 @@ Examples:
 
 ## Resolution
 
-Core selects exactly one current `AgentManifest` and one nested profile before starting an agent session. Catalogs, grants, policy, and request context resolve references or restrict that setup; they never supply missing launch authority.
+Core selects exactly one current `AgentManifest` and one nested profile before starting an AgentSession. Catalogs, grants, policy, and request context resolve references or restrict that setup; they never supply missing launch authority.
 
 Conceptual layers:
 
@@ -231,27 +232,17 @@ one selected AgentManifest plus nested profile
   -> immutable launch package
 ```
 
-The resolved result is captured in one immutable launch package used to initialize an agent session.
+The resolved result is captured in one immutable launch package used to initialize an AgentSession.
 
 The exact resolved-setup, launch-package, and materialization records remain implementation-facing projections. They must preserve this authority chain without becoming additional authored setup models.
 
 ## Materialization
 
-Materialization converts the immutable launch package into a governed runtime environment. The governance backend starts a generic worker supervisor, and the selected worker-side adapter converts resolved adapter input into one runtime-native process.
-
-Examples:
-
-- Codex config files
-- Pi Agent launch flags
-- OpenCode config files
-- environment variables
-- container image and volume mounts
-- governed service endpoints
-- sandbox provider payloads
+Materialization converts the immutable launch package into a governed runtime environment. The selected runtime and adapter project that package into runtime-native process, configuration, workspace, capability, and containment inputs.
 
 Generated native files are outputs, not the canonical agent setup source.
 
-Core should be able to explain which setup source and resolution inputs produced an agent session, even if the runtime-native materialization is adapter-specific.
+Core should be able to explain which setup source and resolution inputs produced an AgentSession, even if the runtime-native materialization is adapter-specific.
 
 ## Extension Namespaces
 
@@ -262,11 +253,11 @@ The current manifest schema is validated strictly. Unknown or unsupported author
 ## Invariants
 
 - Agent catalogs MUST remain selection and explanation surfaces, not runtime launch manifests.
-- Agent setup contracts MUST NOT embed secret values, absolute local paths, provider-native payloads, or adapter-private launch details as canonical fields.
+- Agent Manifests MUST NOT embed secret values, absolute local paths, provider-native payloads, or adapter-private launch details as canonical fields.
 - Agent supply MAY declare capability categories, but it MUST NOT own runtime capability routing, gateway projection, metering, permission decisions, or sandbox containment.
 - Agent profiles MUST remain setup-local behavior profiles unless a future core design promotes a standalone concept.
 - Generated native config files MUST remain materialization outputs, not the canonical agent setup source.
-- Each launch MUST derive from exactly one agent setup contract and one selected setup-local profile; resolution, governance materialization, and runtime adaptation MUST NOT become additional authored supply authorities.
+- Each launch MUST derive from exactly one `AgentManifest` and one selected setup-local profile; resolution, governance materialization, and runtime adaptation MUST NOT become additional authored supply authorities.
 - Launch-time capability availability MUST be the intersection of authored requirements and selected runtime adapter and image proof; missing required proof MUST block readiness, and optional unproven capability MUST remain unavailable.
 - Agent supply MUST NOT create a direct or runtime-native MCP execution route; worker MCP access belongs to the governed capability plane owned by `agent-capability.md`.
 
@@ -275,7 +266,8 @@ The current manifest schema is validated strictly. Unknown or unsupported author
 - `docs/core/core-concepts.md` owns canonical concept definitions.
 - `docs/core/runtime-model.md` owns execution semantics.
 - `docs/core/agent-session.md` owns runtime continuity.
-- `docs/core/agent-capability.md` owns runtime capability access, gateway projection, routing, metering, and audit metadata.
+- `docs/core/agent-capability.md` owns runtime capability access, gateway projection, routing, capability-call `UsageRecord` production, and audit metadata.
+- `docs/core/metering.md` owns system-wide measurement policy, cross-producer aggregation, and cost projection.
 - `docs/core/permissions.md` owns authorization.
 - `docs/core/sandbox.md` owns execution isolation.
 - `docs/core/knowledge.md` owns reusable knowledge and context injection.

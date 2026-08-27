@@ -1,13 +1,16 @@
+---
+status: Accepted
+implementation: Partial
+---
 # Chat Mode And Core Assistant
-
-Status: Accepted
-Implementation: Partial
 
 ## Owns
 
 - Chat Mode as the lightweight user interaction path before delegated worker work starts.
 - The Core Assistant role contract for quick replies, clarification, simple workspace state lookup, and routing triage.
-- The Assistant tool boundary for V1: bounded workspace state reads, optional read-only working-directory inspection, and Knowledge Manager query.
+- The Assistant's ordinary conversational entry path and its complete fixed Tool set: bounded Workspace state reads, bounded read-only working-directory inspection, Knowledge Manager query, Workspace creation, and Task or Goal handoff.
+- The Assistant information-source model, request-scoped read selection, output-audience projection, and continuity precedence.
+- The narrowed administration entry path that reuses the Assistant role without mixing administration Tools into ordinary conversation.
 - The handoff contract from Assistant to Workflow Coordinator.
 - Thread and item projection rules for Assistant replies and handoff decisions.
 - Chat command identity, exact replay, and conflict behavior across every routing outcome.
@@ -20,6 +23,8 @@ Implementation: Partial
 - Knowledge Store format, retrieval governance, or Knowledge Manager maintenance loops. Those are owned by `docs/core/knowledge.md`, `docs/specs/20260702-knowledge_store_governance_rules.md`, `docs/specs/20260703-knowledge_store_implementation.md`, and `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`.
 - A general web search, browser, shell, filesystem write, MCP tool, or worker execution capability for the Assistant.
 - Direct provider error codes, redaction, and retry semantics. `docs/specs/20260531-worker_turn_reliability_envelope.md` owns that exact call-boundary contract.
+- The generic internal Agent loop or Tool contract. `docs/specs/20260813-internal_agent_runtime.md` owns those mechanisms; this specification owns only the Assistant role assembly projected onto them.
+- Permission evaluation or disclosure authorization. `docs/core/permissions.md` owns `AssistantReadScope`, `OutputAudience`, per-call authorization, approval strength, and the publication guard; this specification narrows and projects those decisions for Assistant Turns.
 
 ## Core References
 
@@ -31,12 +36,13 @@ Implementation: Partial
 - `docs/core/agent-capability.md`
 - `docs/core/knowledge.md`
 - `docs/core/audit.md`
+- `docs/core/permissions.md`
 
 ## Summary
 
 Chat Mode is the immediate interaction path for simple answers, clarification, and workspace state lookup. It is implemented by the Core Assistant, an Internal Core Role that stays inside the Core coordination plane and must not become a worker runtime.
 
-The Assistant may answer directly only when the request fits its limited tool boundary. If the request needs non-trivial work, long-running execution, file edits, external side effects, broad repository analysis, risky actions, or multi-step planning, the Assistant must hand off explicitly to the Workflow Coordinator. The user-facing transition from Chat Mode to Task Mode or Goal Mode must be visible in thread history.
+The Assistant may answer directly only when the request fits its limited role boundary. If the request needs non-trivial work, long-running execution, file edits, external side effects, broad repository analysis, risky actions, or multi-step planning, the Assistant must hand off explicitly through the owning Task or Goal path. The user-facing transition from Chat Mode to Task Mode or Goal Mode must be visible in Thread history.
 
 ## Goals / Non-goals
 
@@ -66,28 +72,110 @@ The missing V1 contract is the concrete Assistant boundary: which tools it may u
 
 - Chat Mode is served by the Core Assistant.
 - The Assistant is an Internal Core Role, not a worker agent, agent supply entry, selectable runtime, or private agent framework.
-- The Assistant may use only explicitly enabled lightweight tools.
+- Every ordinary conversational Turn receives the ordinary entry path's complete fixed Tool set in stable deterministic order.
 - The Assistant must choose one successful routing outcome for every accepted user request: answer, clarify, hand off to Task Mode, hand off to Goal Mode, or refuse. System failure uses the typed App API error contract and is not a success-shaped routing outcome.
 - Handoff to Workflow Coordinator is explicit Core state and must be visible through item history or a stable App API projection.
 - Assistant calls to the LLM gateway must use the same capability, usage, and audit foundation as other gateway-mediated LLM calls.
 
 ## Contract / Expected Behavior
 
-### Assistant tool boundary
+### Assistant Tool Boundary
 
-V1 Assistant tools are limited to:
+The ordinary conversational entry path has this complete fixed semantic Tool set, in this stable order:
 
-- workspace summary reads: current workspace, linked repositories, active threads, recent task state, pending Action Center rows, configured agents, and high-level readiness diagnostics
-- thread summary reads for the active thread
-- Knowledge Manager query for source-traceable knowledge answers or uncertainty reports
-- optional read-only working-directory inspection when workspace policy enables it
+1. Bounded Workspace and work-state read for the exact selected resource.
+2. Bounded Thread-history read beyond the initial admitted Thread range or summary.
+3. Governed Knowledge query for source-traceable answers or uncertainty reports.
+4. Bounded read-only working-directory inspection.
+5. `workspace.create` for an empty project Workspace required by an accepted handoff.
+6. `task.start` for an explicit Task handoff.
+7. `goal.start` for an explicit Goal handoff.
+
+These semantic operations MUST map to the Tool contract owned by `docs/specs/20260813-internal_agent_runtime.md`; provider-safe names may be projected by that owner without changing membership or order. No worker-execution, file-write, Git-write, credential, policy, runtime-management, broad MCP, or administration Tool belongs to this entry path.
 
 Rules:
 
+- The Turn carries this entry path's complete fixed Tool set in this stable deterministic order on every ordinary conversational Turn, regardless of what the user said.
+- Whether the model would call a Tool is a model decision and is not an admission rule.
+- Absence from the set is reserved for an operation that is unreachable from this entry path, never for an operation that is merely rare, currently unavailable, unauthorized for this actor, or unnecessary for this message.
+- Tool presence is permission to request an operation, never proof that the current actor, source, target, audience, or effect is authorized.
+- Every Tool call MUST reauthorize through its current Core owner. A present Tool that cannot currently execute MUST return its product-safe typed refusal reason as a Tool result rather than disappear from the set.
+- A request for an operation belonging to another entry path MUST produce a proposed new Thread for that entry path rather than a refusal or an in-place Tool-array change.
 - Read-only working-directory inspection must be bounded by workspace root policy, file size limits, path exclusions, and redaction rules.
 - Assistant tools must not expose secrets, raw vault material, bearer tokens, provider-native payloads, raw worker checkpoints, or raw `DATA_ROOT` paths.
 - Assistant tools must not mutate workspace files, Knowledge Store records, Git state, runtime state, vault records, or policy configuration.
 - Assistant tool results may be summarized into an assistant message, but restricted evidence must stay behind its owning visibility boundary.
+
+Policy-disabled read-only inspection and currently unavailable handoff operations remain present because their worst case is contained by read-only enforcement, typed refusal, or explicit approval. Tool invocation performs no action when authorization, policy, resource state, dependency availability, or the required user decision is missing.
+
+The Tool set is reconstructed from the server-resolved entry path for each new Turn and remains pinned for that Turn. Retry or restart admits a new Turn from current owners; it does not reuse a message-selected array or treat the previous array as authorization. A mid-conversation pivot to a Tool already in the fixed set needs no array change. A pivot to an administration or other distinct entry path proposes a new Thread whose own entry path has its own complete fixed Tool set.
+
+Acceptance is observable when two ordinary conversational Turns with different messages expose the same ordered Tool definitions, a no-Tool answer still exposes that set while calling none of it, a refused present Tool returns a typed Tool result, and a request for another entry path creates a proposed new Thread without mutating the current Turn's set.
+
+### Assistant Information Sources
+
+The Assistant has exactly five semantic information-source classes:
+
+| Source class | Included material | Freshness and persistence rule |
+| --- | --- | --- |
+| Active Thread history | Durable conversation, accepted user corrections, and decision context from the current Thread. | Use the smallest relevant Item range or a governed source-attributed summary. Durable Thread Items remain truth; a summary is replaced when its source range, authorization, correction, deletion, or retention state makes it stale. |
+| Governed Knowledge | Reviewed or directly user-authored reusable understanding eligible for the request and audience. | Query on demand through the Knowledge owner with source, version, scope, freshness, sensitivity, conflict, and exclusion evidence. It is never loaded merely because the Thread belongs to a Workspace. |
+| External observation | Current information obtained from an explicitly admitted observation capability. | Retrieve on demand with source identity, observation time, bounds, and provenance. It is untrusted observation, is not promoted into Knowledge automatically, and supplies no instruction or effect authority. |
+| Operational context | Current actor-authorized Workspace, Thread, Task, Goal, Worker, readiness, attention, and product-state projections. | Query current read models on demand and retain the observation time and uncertainty. Do not copy complete operational state into a prompt or durable Knowledge. |
+| Orchestration interaction | Typed handoff, status request, gate response, promotion, or other coordination result. | Persist through its existing Thread, Item, Task, Goal, gate, command, or audit owner. Hidden role-to-role chat is not an information source. |
+
+The active Thread is the base conversational source. The other four classes are reachable only by an admitted Tool call or an exact typed result supplied by their owner. A selected Workspace is a scope hint that may narrow defaults or disambiguate a reference; it is not ambient context and does not inject Workspace configuration, files, Knowledge, source catalogs, work history, operational state, credentials, policies, Goal state, Task state, or Worker state.
+
+A general question that can be answered from the current input and admitted Thread context MUST complete with no Workspace, Knowledge, operational, external-observation, Goal, Task, or Worker read. Merely including an unused read Tool retrieves no data and creates no source observation.
+
+For each source used, the Turn input retains its owner, selected revision or observation time, provenance, relevant exclusions, and freshness. Missing, stale, conflicting, unauthorized, deleted, or dependency-failed sources are omitted or returned as explicit uncertainty or a typed Tool failure; the Assistant MUST NOT substitute ambient Workspace data, cached provider material, or another source silently.
+
+On retry or restart, NanoCore rebuilds the source selection from current Thread history and current owners. It does not recover source authority from provider memory, a warm connection, an earlier Tool result, or an earlier read permission.
+
+Acceptance is observable when a general question performs no non-Thread read, Workspace selection alone performs no read, every used source is attributable with freshness, and stale or unavailable source state produces explicit uncertainty or typed failure rather than fabricated or cached fact.
+
+### Read Scope And Output Audience Projection
+
+Every Assistant answer carries one `AssistantReadScope` and one `OutputAudience` resolved under `docs/core/permissions.md`. `AssistantReadScope` determines which exact sources and revisions the Assistant may discover and retrieve for this request. `OutputAudience` independently determines the exact destination and recipients that may receive the result.
+
+The role assembler supplies only source candidates inside the current read scope and excludes material that cannot reach the resolved audience before assembling output-producing context. Every concrete read reauthorizes the current actor, source, Workspace, revision, operation, and audience. Retrieved material retains source, visibility, freshness, provenance, and disclosure restrictions through generation.
+
+The final publication guard reauthorizes the completed result as defense in depth. It may publish to the resolved audience, redirect to an authorized owner-private Thread, require an explicit typed promotion or sharing decision, or fail closed. It MUST NOT use post-generation redaction as the primary boundary, and a summary derived from restricted material MUST NOT be treated as automatically declassified.
+
+Read scope and audience are reconstructed for every new Turn and rechecked for every Tool call and publication attempt. Authorization loss, audience change, source revision, deletion, stale membership, restart, or dependency failure invalidates the affected use immediately; provider memory and prior successful calls cannot restore it.
+
+Acceptance is observable when the same actor can receive a more detailed owner-private answer than a shared audience without leaking protected content or metadata, every broader transfer leaves an explicit typed promotion outcome, and publication fails closed when the audience cannot receive any material used to produce the answer.
+
+### Context And Continuity Precedence
+
+Assistant continuity is reconstructible in this precedence order:
+
+1. NanoCore-owned Thread history, accepted commands, work records, permission records, and terminal evidence are durable product truth.
+2. Exact governed source revisions and current operational observations are request-scoped inputs selected from their owners.
+3. The bounded Turn input records the admitted Thread range or summary, selected sources, Tool evidence, important exclusions, freshness, and destination audience needed to explain a consequential answer.
+4. Provider-native conversation state, prompt caches, and warm connections are replaceable latency caches that add no authority and hold no unique product truth.
+
+A new Turn is assembled from the smallest relevant durable Thread range or governed summary plus current request-scoped sources. A warm provider context may be reused only while its prompt, Tool set, read scope, output audience, source revisions, policy, and retained Thread context remain compatible; otherwise NanoCore discards it and reconstructs from current owners.
+
+User correction, authorization revocation, deletion, retention change, source revision, audience change, policy change, or incompatible role configuration invalidates affected summaries and provider caches for later calls. An in-progress Turn remains pinned to its admitted input, but publication still performs the current audience guard and may fail closed.
+
+Provider loss, process restart, dependency failure, or cache eviction MUST NOT lose authoritative work or require hidden provider memory to continue. Retry creates a new Turn from current durable truth, preserves causation to the failed or interrupted attempt, and never splices a new provider into an already dispatched attempt or blindly replays Tool effects.
+
+Acceptance is observable when replacing the provider or deleting all provider-side conversation state changes latency at most, a user correction or authorization change affects the next admitted Turn, and a consequential answer can identify the material Thread range or summary, sources, observations, Tools, exclusions, freshness, and audience that grounded it.
+
+### Administration Entry Path
+
+Administration is a narrowed Assistant Turn, not a separate Agent role and not an extension of the ordinary conversational Tool set. Workspace configuration beyond creating an empty project Workspace, Worker Agent supply, execution-environment setup, capability or credential binding, and policy authoring belong only to an administration entry path.
+
+The server admits that entry path only when the arriving surface is the administration surface and the current actor holds the required administration authority. Both facts are server-resolved and model input cannot supply or widen either one. The entry path opens its own Thread and carries its own complete fixed Tool set; an ordinary conversational request for administration produces a proposed administration Thread rather than a refusal, role switch, or in-place Tool-array mutation.
+
+Every administration mutation Tool is `propose`-shaped. The Assistant may produce a candidate with intended effect and rationale, but the product MUST show the exact diff or preview and the owning Core command applies it only after the human decision required by `docs/core/permissions.md`. The administration Turn receives no ordinary conversational observation Tools, so retrieved untrusted material and administration operations do not coexist in one Tool array.
+
+Most administration remains direct validated forms. A model-backed administration Turn is admitted only for drafting, explanation, or diagnosis that benefits from semantic assistance; this does not add authority or bypass the form and command owners.
+
+An administration proposal terminates when it is accepted, rejected, expires, becomes stale, conflicts, or fails. Retry or recovery starts a new Turn against current actor authority and current resource state; it never treats a prior proposal, approval, provider cache, or Tool presence as authority. Missing actor role, wrong surface, stale target, authorization loss, dependency failure, or absent human decision fails closed without applying the proposal.
+
+Acceptance is observable when ordinary conversational Turns contain no administration Tool, an administration request opens a proposed separate Thread, every administration effect has an exact human-approved Core command outcome, and a stale or unauthorized proposal cannot apply after retry or restart.
 
 ### Routing outcomes
 
@@ -106,6 +194,8 @@ The outcome must include a short explanation suitable for diagnostics and option
 - The Assistant must hand off to Goal Mode when the request is long-running, ambiguous, high-risk, multi-step, multi-agent, or benefits from explicit plan approval.
 - The Assistant must not silently start worker execution. It hands off to Workflow Coordinator for the bounded routing, worker, and Goal decision; the owning Task or Goal mode service owns durable state and effects.
 - Handoff records must preserve the original user request, Assistant rationale, selected target mode, and relevant context references.
+- When the current conversation is owned by Quick Chat, the one handoff confirmation MUST also resolve an existing eligible executing Workspace or propose creation of an empty project Workspace. Acceptance creates or resolves the executing Workspace, creates the new execution Thread there, and submits the Task or Goal handoff as one visible user decision; Quick Chat itself gains no worker capability.
+- If no executing Workspace can be resolved or created because exact authorization is missing, the Assistant MUST create a durable refusal Item naming the exact missing authorization and MUST create no Task, Goal, Worker Turn, or execution Thread.
 
 ### Thread and item projection
 
@@ -126,9 +216,9 @@ For `task-handoff` and `goal-handoff`, the initiating Chat command is the only c
 
 A Chat command may publish `task-handoff` or `goal-handoff` only after the complete downstream tuple is durable. If the downstream mode rejects before accepting a command or effect, the Assistant must complete the same Chat Turn as `clarification-needed` when one bounded answer can make the request executable or as `refused` otherwise; it MUST NOT publish a handoff Item or receipt that names nonexistent downstream work.
 
-When the owning Workspace is Quick Chat and the Assistant selects `task-handoff` or `goal-handoff`, the project-eligibility guard converts that result before downstream effects into the Chat-owned `refused` tuple with stable reason code `project_workspace_required`. The same terminal Chat Turn, initiating user Item, refusal Item, and outer command receipt own replay; no Task or Goal tuple, nested receipt, checkpoint, or scheduler admission exists. This is a product-boundary outcome, not a system error.
+When the owning Workspace is Quick Chat and the Assistant selects `task-handoff` or `goal-handoff`, the project-eligibility guard keeps Quick Chat ineligible and resolves or proposes an eligible executing Workspace inside the one handoff confirmation. An accepted confirmation creates or selects that Workspace and creates the downstream execution Thread there while the originating Quick Chat Thread retains the handoff Item and causation. Only when exact Workspace resolution or creation authority is unavailable does the Chat command complete with a durable refusal Item naming that missing authorization; no Task, Goal, Worker Turn, checkpoint, or scheduler admission exists in that refusal case.
 
-The exact `turn.input.submit` command owns continuation of a Chat clarification. After validating the active gate, it stores the matching response Item and returns the same Chat Turn to `running`, then invokes the same bounded Chat decision path over the original input plus that response. Its accepted result is one answer, refusal, handoff, or replacement clarification tuple in the same Turn. The input command acknowledges only after that tuple is durable; identical replay returns it, changed answers conflict, and a response/outcome half-state returns `recovery_required`. It does not resume a worker Session or require a second `chat.start` request.
+The exact `turn.input.submit` command owns continuation of a Chat clarification. After validating the active gate, it stores the matching response Item and returns the same Chat Turn to `running`, then invokes the same bounded Chat decision path over the original input plus that response. Its accepted result is one answer, refusal, handoff, or replacement clarification tuple in the same Turn. The input command acknowledges only after that tuple is durable; identical replay returns it, changed answers conflict, and a response/outcome half-state returns `recovery_required`. It does not resume a worker AgentSession or require a second `chat.start` request.
 
 ### Usage and audit
 
@@ -147,7 +237,7 @@ This bounded receipt does not solve a crash before receipt publication. Determin
 
 The provider response is not an `answered` Chat Mode outcome until the same Thread owns a durable Turn, its user-message Item, its assistant-message Item, and terminal completed status. The deterministic Turn and initiating user Item MUST be durable before provider dispatch; they are the ordinary narrative owner proving that this Chat attempt began, not a separate reservation. Failure before that pair leaves no Chat records.
 
-After that pair is durable, provider rate limit, request failure, timeout, caller abort, or invalid content MUST terminalize the same Turn with the exact `provider_rate_limited`, `provider_request_failed`, `provider_call_timeout`, `provider_call_aborted`, or `provider_response_invalid` code defined by S05. Caller abort makes the Turn `cancelled`; the other provider failures make it `failed`. The command receipt preserves that typed failure lineage, exact replay does not redispatch, and failure to persist the required terminal tuple returns `recovery_required`.
+After that pair is durable, provider rate limit, request failure, timeout, caller abort, or invalid content MUST terminalize the same Turn with the exact `provider_rate_limited`, `provider_request_failed`, `provider_call_timeout`, `provider_call_aborted`, or `provider_response_invalid` code defined by S05. Caller abort makes the Turn `interrupted`, and the existing `provider_call_aborted` code preserves the cause; the other provider failures make it `failed`. The command receipt preserves that typed failure lineage, exact replay does not redispatch, and failure to persist the required terminal tuple returns `recovery_required`.
 
 `chat_mode_persistence_failed` is reserved for a valid provider response whose assistant Item and completed Turn tuple could not be committed. The implementation MUST terminalize the same Turn as failed when that deterministic failure tuple can be written; it MUST NOT redispatch the provider under the same request, publish a completed assistant Item, or claim `answered`. A partial or contradictory assistant/Turn tuple, or failure to persist terminalization, returns `recovery_required`. The bounded availability compromise is that the user must use a new request id for another provider attempt rather than adding a settlement owner.
 
@@ -155,9 +245,9 @@ Chat Mode does not resume the provider invocation after process failure. The cal
 
 ## Accepted Design
 
-NanoCore implements Core Assistant as a direct app-local service over bounded workspace reads, Knowledge Manager query, deterministic Workflow Coordinator routing, and one direct Quick Chat provider call for the remaining direct-answer fallback. The service either writes an assistant item, opens a user-input gate, or creates a handoff record; it does not own a private execution lifecycle.
+NanoCore implements Core Assistant as one role assembly over the bounded internal Agent runtime owned by `docs/specs/20260813-internal_agent_runtime.md`. The Assistant supplies its role prompt, bounded current Thread input, entry-path-fixed Tool definitions, request-scoped sources, and output audience; the generic loop supplies no Assistant authority or product lifecycle.
 
-The service stays app-local in `apps/nanocore`. Do not introduce a generic internal-agent runtime, registry, event protocol, hook framework, or multi-agent framework for this role.
+The Assistant remains app-local in `apps/nanocore`, owns no private execution lifecycle, and must not introduce a second loop, registry, event protocol, hook framework, or multi-agent framework for this role.
 
 ## Current Implementation Projection
 
@@ -178,7 +268,7 @@ The accepted V1 routing and projection path is implemented. Explicit external se
 ## Consequences
 
 - Users get a fast entry point without losing the ability to escalate into tracked work.
-- The Assistant is an explicit Internal Core Role with a small governed service boundary instead of an ad hoc route handler or generic agent runtime.
+- The Assistant is an explicit Internal Core Role with one small role assembly over the accepted generic internal Agent runtime.
 - Some requests will require visible handoff instead of a direct answer; this is intentional and keeps work traceable.
 
 ## Testing Strategy / Acceptance Criteria
@@ -194,6 +284,8 @@ The accepted V1 routing and projection path is implemented. Explicit external se
 - L6: story acceptance where a user asks a simple workspace question and gets an immediate answer, then asks for a larger change and sees a visible handoff to tracked work.
 
 Acceptance: Assistant never directly starts a worker, never mutates files or knowledge, emits visible thread history, and routes non-trivial work to Workflow Coordinator.
+
+Acceptance also requires identical ordered ordinary-entry Tool definitions across message classes, zero ambient Workspace or operational reads for a general question, current per-call authorization and publication guarding, reconstructible continuity, a separate propose-only administration Thread, and a Quick Chat work request that reaches one confirmed executing Workspace and Task or Goal or leaves an exact durable missing-authorization refusal.
 
 ## Risks & Mitigations
 

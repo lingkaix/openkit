@@ -1,11 +1,12 @@
+---
+status: Superseded
+implementation: N/A
+status-changed: 2026-06-28
+current-guidance: "`docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`"
+decision-evidence: "`docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`"
+date: 2026-05-13
+---
 # Core Protocol Model Notes
-
-Status: Superseded
-Implementation: N/A
-Status Changed: 2026-06-28
-Current Guidance: `docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`
-Decision Evidence: `docs/changes/202607111650190001-spec_lifecycle_governance.md`
-Date: 2026-05-13
 
 
 ## Lifecycle Reason
@@ -32,7 +33,7 @@ The following conclusions are now part of the stable core draft set:
 - `AgentManifest` and `AgentCatalog` are the stable agent supply concepts.
 - `AgentProfile` is a manifest-local optional section, not a top-level core object.
 - The core protocol should be transport-neutral.
-- MVP and v0.0.1 product scope belong in `docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md`, not in `docs/core/core-concepts.md`.
+- MVP and v0.0.1 product scope belong in the historical release plan, not in `docs/core/core-concepts.md`.
 - `docs/core/work-model.md` now owns user-facing work semantics.
 - `docs/core/runtime-model.md` now owns execution semantics.
 - `docs/core/agent-session.md` now owns runtime continuity.
@@ -44,7 +45,7 @@ The following conclusions are now part of the stable core draft set:
 - `docs/core/identity.md`, `docs/core/vault.md`, `docs/core/agent-capability.md`, `docs/core/metering.md`, `docs/core/audit.md`, and `docs/core/contract-evolution.md` now own thin first-class definitions for cross-cutting areas that are deferred in v0.0.1.
 - `protocolVersion`, command `requestId` idempotency, stream cursor semantics, item delta kinds, stable error namespaces, UUIDv7 durable IDs, and agent session naming rules are now promoted to core protocol constraints.
 - Stream cursor scopes, discovery response shape, approval status family, no-`cancelling` turn-state rule, concurrent active-turn input ordering, capability-call visibility rules, audit producers, memory supersession fields, item-log invariants, and capability flag governance have been promoted into core docs.
-- The old top-level `docs/architecture.md` and `docs/protocol.md` were superseded by core docs and removed.
+- The old top-level `docs/core/architecture.md` and `docs/core/protocol.md` were superseded by core docs and removed.
 
 Do not duplicate those definitions here.
 
@@ -69,7 +70,7 @@ These points remain intentionally open:
 
 `docs/core/core-concepts.md` owns the canonical glossary, core concept definitions, ownership hierarchy, scope boundaries, and naming rules. It should not carry MVP planning, open questions, endpoint sketches, schema recipes, or discussion history.
 
-`docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md` owns MVP and v0.0.1 product scope.
+The historical v0.0.1 release plan owns that release's product scope.
 
 `docs/core/work-model.md` should own the user-facing work model, including task presentation, product-level goals, deliverables, review, steering, redo, and refinement.
 
@@ -105,7 +106,7 @@ These points remain intentionally open:
 
 `docs/core/README.md` should own requirement keyword usage, while `docs/core/contract-evolution.md` should own OpenKit compliance levels.
 
-Implementation-specific documents such as `docs/app-api.md` and `docs/specs/20260416-host_agent_adapter.md` should reference the core model instead of redefining it.
+Implementation-specific documents such as `docs/app-api.md` and `docs/specs/superseded/worker-runtime/20260416-host_agent_adapter.md` should reference the core model instead of redefining it.
 
 Superseded top-level architecture and protocol documents have been deleted after active references were updated.
 
@@ -185,14 +186,14 @@ Superseded top-level architecture and protocol documents have been deleted after
 
 - Decision: Build the current MVP as the smallest workable app and system, then evolve the architecture through dogfooding and real usage.
 - Rationale: The core model should stay extensible, but implementing complex orchestration, session management, memory, capability negotiation, permission policy, and hardened sandboxing too early would slow down product learning.
-- Promotes to: `docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md`, `docs/core/architecture.md`, `docs/deployment.md`, `docs/core/contract-evolution.md`
+- Promotes to: historical v0.0.1 release plan, `docs/core/architecture.md`, `docs/deployment.md`, `docs/core/contract-evolution.md`
 - Still open: Which minimal protocol records must exist in MVP to avoid a later migration cliff.
 
 ### 2026-05-13 — Keep remote agents and sidecars out of v0.0.1
 
 - Decision: v0.0.1 does not implement remote agents or bridge sidecars. If a real agent is used, prefer the simplest host-mode integration.
 - Rationale: Remote agents and sidecars are important long-term architecture concepts, but they add deployment, networking, security, and recovery complexity that would slow the first product loop.
-- Promotes to: `docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md`, `docs/core/communication.md`, `docs/deployment.md`
+- Promotes to: historical v0.0.1 release plan, `docs/core/communication.md`, `docs/deployment.md`
 - Still open: Exact remote-agent connection establishment strategies for later versions.
 
 ### 2026-05-13 — Make sidecar connection direction deployment-specific
@@ -213,21 +214,21 @@ Superseded top-level architecture and protocol documents have been deleted after
 
 - Decision: The MVP protocol should prioritize `Workspace`, `Thread`, `Turn`, `Item`, `Agent`, `AgentSession`, `Artifact`, and `ApprovalRequest`, with communication expressed as transport-neutral commands, events, and envelopes.
 - Rationale: The first app needs request and event-stream semantics for real usage, while `Memory`, `PermissionDecision`, and `SandboxPolicy` can start as concepts or optional future schemas.
-- Promotes to: `docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md`, `docs/core/protocol.md`, `docs/core/communication.md`
+- Promotes to: historical v0.0.1 release plan, `docs/core/protocol.md`, `docs/core/communication.md`
 - Still open: Exact event family names and the minimum resume, cancellation, and error semantics needed for MVP.
 
 ### 2026-05-13 — Promote cross-cutting audit findings without expanding MVP scope
 
 - Decision: Add first-class thin core docs for identity, vault, capability gateway, usage, audit, and conformance. Also promote protocol hard constraints for `protocolVersion`, command `requestId`, stream cursor, item delta kinds, stable error code namespaces, UUIDv7 durable IDs, item causation, and agent session naming.
 - Rationale: These concepts cut across permission, sandbox, communication, memory, storage, and agent execution. Naming and protocol invariants become costly to repair after the MVP starts emitting events, but full subsystem implementation is not required for v0.0.1.
-- Promotes to: `docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/sandbox.md`, `docs/core/identity.md`, `docs/core/vault.md`, `docs/core/agent-capability.md`, `docs/core/metering.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`, `docs/working_logs/2026-05-17-openkit-v0-0-1/prd-v0.0.1.md`
+- Promotes to: `docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/sandbox.md`, `docs/core/identity.md`, `docs/core/vault.md`, `docs/core/agent-capability.md`, `docs/core/metering.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`, and the historical v0.0.1 release plan
 - Still open: Concrete identity, vault, capability gateway, usage, audit, and conformance-fixture implementations after the MVP protocol package is built.
 
 ### 2026-05-13 — Tighten protocol edge semantics without adding MVP implementation scope
 
 - Decision: Clarify closed item delta kinds, stream cursor scopes, discovery response shape, approval lifecycle statuses, async cancellation state discipline, concurrent input ordering, thread resume semantics, capability-call visibility, audit producer responsibility, memory supersession fields, item-log storage invariants, capability flag governance, and conformance fixture version metadata.
 - Rationale: These are small normative edges that prevent UI, adapter, and storage implementations from inventing incompatible behavior during MVP dogfooding.
-- Promotes to: `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/agent-capability.md`, `docs/core/knowledge.md`, `docs/core/storage.md`, `docs/core/contract-evolution.md`, `docs/core/core-concepts.md`, `docs/specs/20260513-protocol_package_organization.md`
+- Promotes to: `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/agent-capability.md`, `docs/core/knowledge.md`, `docs/core/storage.md`, `docs/core/contract-evolution.md`, `docs/core/core-concepts.md`, `docs/specs/superseded/protocol-hardening/20260513-protocol_package_organization.md`
 - Still open: Full subsystem implementation details for post-v0.0.1 identity, permission policy, audit retention, usage billing, vault backend, capability gateway routing, and schema generation.
 
 ### 2026-05-13 — Adopt Codex app-server-style item delta taxonomy
@@ -236,7 +237,7 @@ Superseded top-level architecture and protocol documents have been deleted after
 - Replaced design: The previous four-kind generic enum was `append`, `replace`, `patch`, and `structured`. That model was simpler but too easy to overload and too far from Codex app-server's item-specific event shape.
 - Rationale: Codex app-server models item streaming through `item/started`, item-specific delta or request notifications, and authoritative `item/completed`. Matching that shape gives clients clearer rendering behavior, preserves reasoning parts, aligns adapters, and keeps completed items authoritative.
 - OpenKit-only kinds retained: `artifact-updated` and `memory-injection-updated`.
-- Promotes to: `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `docs/specs/20260513-protocol_package_organization.md`
+- Promotes to: `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `docs/specs/superseded/protocol-hardening/20260513-protocol_package_organization.md`
 - Still open: Exact `packages/protocol` schema names, generated fixture coverage for each item delta kind, binary framing limits, and whether a future fine-grained structured patch delta is needed for very large diffs.
 
 ## Immediate Next Steps
@@ -249,9 +250,9 @@ The old UI-first and communication-flow specs have been absorbed and removed.
 
 The remaining specs are implementation-layer specs:
 
-- `docs/specs/20260416-host_agent_adapter.md`
-- `docs/specs/20260416-unified_agent_setup_manifest.md`
-- `docs/specs/20260507-codex_agent_communication_modes.md`
-- `docs/specs/20260513-protocol_package_organization.md`
+- `docs/specs/superseded/worker-runtime/20260416-host_agent_adapter.md`
+- `docs/specs/superseded/agent-setup-runtime-supply/20260416-unified_agent_setup_manifest.md`
+- `docs/specs/superseded/worker-runtime/20260507-codex_agent_communication_modes.md`
+- `docs/specs/superseded/protocol-hardening/20260513-protocol_package_organization.md`
 
 Keep these remaining specs only while they contain implementation details that should not move into `docs/core/`.
