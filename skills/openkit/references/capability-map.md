@@ -29,6 +29,7 @@ Use this intent map to choose search terms; do not treat it as the authoritative
 | Move or protect workspace data | `backup`, `export`, `import`, `restore`, `portability` | [administration.md](administration.md) |
 | Manage Workspace access | `member`, `invitation`, `ownership`, `access recovery` | [administration.md](administration.md) |
 | Administer deployment access | `access token`, `user disable`, `credential` | [administration.md](administration.md) |
+| Administer the NanoHost execution host | `nanohost`, `transport token`, `enroll`, `decommission` | [administration.md](administration.md) |
 
 ## Respect coverage boundaries
 

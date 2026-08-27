@@ -7,7 +7,7 @@ Use this cookbook when a repository based on this template needs to add a Go app
 - Follow this cookbook instead of inventing a custom Go setup flow.
 - Use `mise` to install and manage the Go toolchain and Go development tools for this sub-project.
 - Keep Go-related tool versions in the appropriate `mise.toml` for the scope that owns the toolchain.
-- Run Go setup and maintenance commands through `mise exec -- ...`.
+- Run Go setup and maintenance commands as bare commands. `docs/toolchain.md` owns how the pinned toolchain reaches `PATH`; do not reintroduce a per-command `mise exec --` prefix.
 - Use Go modules as the package management model.
 - Use `go build` as the default builder.
 - Use `gofmt` as the formatter.
@@ -25,7 +25,7 @@ Use this cookbook when a repository based on this template needs to add a Go app
 
 ## Setup Flow
 
-1. Scaffold the module with `mise exec -- go mod init ...`.
+1. Scaffold the module with `go mod init ...`.
 2. Add a local `README.md`.
 3. Add project-level commands for build, test, lint, and format.
 4. Add a local `AGENTS.md` only when the module has local agent execution rules.

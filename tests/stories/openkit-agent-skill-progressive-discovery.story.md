@@ -1,5 +1,5 @@
 ---
-id: story-openkit-agent-skill-progressive-discovery
+id: openkit-agent-skill-progressive-discovery
 title: Discover and complete one bounded OpenKit operation through the unified Skill
 persona: End user asking a Skill-capable agent to create and confirm an OpenKit workspace
 entrypoint: skill

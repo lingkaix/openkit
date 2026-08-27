@@ -64,11 +64,26 @@ test('release preflight rejects unpinned release worker base images', () => {
   );
 });
 
+test('release preflight rejects worker images without an explicit build target', () => {
+  const repoRoot = makeReleaseFixture({ omitWorkerTarget: true });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /Worker image worker-codex is missing target/
+  );
+});
+
 /**
  * Creates a small release-shaped repository fixture.
  *
  * @param {object} [options] Fixture options.
  * @param {string} [options.packageVersion] Version written into the workspace package.
+ * @param {boolean} [options.omitWorkerTarget] Whether to omit the worker Docker target.
  * @param {string} [options.workerBaseImage] Worker base image manifest value.
  * @returns {string} Temporary repository root.
  */
@@ -128,6 +143,7 @@ function makeReleaseFixture(options = {}) {
         release: true,
         workerContract: 'openkit-worker-v1',
         baseImage: workerBaseImage,
+        ...(options.omitWorkerTarget ? {} : { target: 'worker-codex' }),
         platforms: ['linux/amd64'],
         smoke: 'containers/worker-codex/smoke.sh',
         smokeCommand: 'openkit-worker-codex-smoke',

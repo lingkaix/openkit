@@ -1,0 +1,222 @@
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import test from 'node:test';
+
+const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8');
+
+const miseConfig = read('.mise.toml');
+const nanohostMiseConfig = read('apps/nanohost/mise.toml');
+const rootManifest = JSON.parse(read('package.json'));
+const nodeVersionFile = read('.node-version').trim();
+const nvmrc = read('.nvmrc').trim();
+const ciWorkflow = read('.github/workflows/ci.yml');
+const lefthookConfig = read('lefthook.yml');
+const repoInitScript = read('scripts/repo-init.sh');
+const testImageDockerfile = read('containers/test-env/Dockerfile');
+
+/**
+ * Reads one `[tools]` version from a mise.toml body without a TOML dependency.
+ *
+ * The file is deliberately small enough that a line read is sufficient, and a
+ * parser dependency here would outweigh the invariant it serves.
+ *
+ * @param {string} source Text of the mise.toml file.
+ * @param {string} relativePath Path used in assertion messages.
+ * @param {string} tool Tool key as it appears in the `[tools]` table.
+ * @returns {string} Declared version value.
+ */
+function misePinFrom(source, relativePath, tool) {
+  const match = source.match(new RegExp(`^${tool}\\s*=\\s*"([^"]+)"`, 'mu'));
+  assert.ok(match, `${relativePath} does not pin ${tool}`);
+  return match[1];
+}
+
+/**
+ * Reads one `[tools]` version from root `.mise.toml`.
+ *
+ * @param {string} tool Tool key as it appears in the `[tools]` table.
+ * @returns {string} Declared version value.
+ */
+function misePin(tool) {
+  return misePinFrom(miseConfig, '.mise.toml', tool);
+}
+
+/**
+ * Reads one pinned version out of the test execution image Dockerfile.
+ *
+ * @param {RegExp} pattern Pattern whose first capture group is the version.
+ * @param {string} description Human name of the pin, used in the failure message.
+ * @returns {string} Declared version value.
+ */
+function testImagePin(pattern, description) {
+  const match = testImageDockerfile.match(pattern);
+  assert.ok(match, `containers/test-env/Dockerfile does not pin ${description}`);
+  return match[1];
+}
+
+test('.mise.toml stays a version anchor and defines no tasks', () => {
+  // docs/toolchain.md Toolchain Provisioning Boundary: root package.json owns the
+  // command surface, so a mise task table would restore a second owner for it.
+  assert.doesNotMatch(
+    miseConfig,
+    /^\[tasks[.\]]/mu,
+    '.mise.toml defines tasks; repository commands are owned by root package.json scripts'
+  );
+});
+
+test('every declaration of the pnpm version agrees', () => {
+  const pinned = misePin('pnpm');
+  assert.match(
+    pinned,
+    /^\d+\.\d+\.\d+$/u,
+    `.mise.toml pnpm pin "${pinned}" is not an exact version`
+  );
+  assert.equal(rootManifest.packageManager, `pnpm@${pinned}`);
+  assert.equal(testImagePin(/corepack prepare pnpm@(\S+) --activate/u, 'pnpm'), pinned);
+});
+
+test('every declaration of the exact Node version agrees', () => {
+  const pinned = misePin('node');
+  assert.match(
+    pinned,
+    /^\d+\.\d+\.\d+$/u,
+    `.mise.toml Node pin "${pinned}" is not an exact version`
+  );
+  assert.equal(nodeVersionFile, pinned);
+  assert.equal(nvmrc, pinned);
+  assert.equal(rootManifest.engines.node, pinned);
+  assert.equal(testImagePin(/^FROM node:(\d+\.\d+\.\d+)-/mu, 'an exact Node base image'), pinned);
+});
+
+test('every declaration of the exact Biome version agrees', () => {
+  const pinned = misePin('biome');
+  assert.match(
+    pinned,
+    /^\d+\.\d+\.\d+$/u,
+    `.mise.toml Biome pin "${pinned}" is not an exact version`
+  );
+  assert.equal(rootManifest.devDependencies['@biomejs/biome'], pinned);
+});
+
+test('the NanoHost Rust pin and the test image Rust pin agree exactly', () => {
+  // apps/nanohost/mise.toml owns the NanoHost-scoped Rust version. The test
+  // execution image must mirror that exact version without mise: the stable
+  // parseable declaration is a single Dockerfile line
+  // `ENV RUST_VERSION=<major.minor.patch>` (unquoted), which rustup install
+  // steps must consume rather than hard-coding a second literal.
+  const pinned = misePinFrom(nanohostMiseConfig, 'apps/nanohost/mise.toml', 'rust');
+  assert.match(
+    pinned,
+    /^\d+\.\d+\.\d+$/u,
+    `apps/nanohost/mise.toml Rust pin "${pinned}" is not an exact version`
+  );
+  assert.equal(
+    testImagePin(/^ENV RUST_VERSION=(\d+\.\d+\.\d+)\s*$/mu, 'an exact RUST_VERSION'),
+    pinned
+  );
+});
+
+test('the generic test execution image does not provision Codex', () => {
+  // docs/toolchain.md Test Execution Environment: real Codex checks run on the host or in a dedicated worker image.
+  assert.doesNotMatch(
+    testImageDockerfile,
+    /codex/iu,
+    'containers/test-env/Dockerfile provisions Codex; the generic repository-gate image must not install a worker runtime'
+  );
+});
+
+test('CI provisions no runtime of its own and takes it from the test execution image', () => {
+  // docs/toolchain.md Test Execution Environment: the image is the single
+  // declared capability and runtime set, so a second CI-side provisioning step
+  // would reintroduce the mirror this decision removed.
+  assert.doesNotMatch(
+    ciWorkflow,
+    /uses:\s*pnpm\/action-setup@/u,
+    'ci.yml provisions pnpm directly; the test execution image already pins it'
+  );
+  assert.doesNotMatch(
+    ciWorkflow,
+    /uses:\s*actions\/setup-node@/u,
+    'ci.yml provisions Node directly; the test execution image already pins it'
+  );
+});
+
+test('root hook gates use the test execution image', () => {
+  for (const scriptName of ['lint:staged', 'commitmsg:check']) {
+    assert.match(
+      rootManifest.scripts[scriptName],
+      /^bash scripts\/test-env\.sh image\b/u,
+      `package.json script ${scriptName} bypasses test-image placement`
+    );
+  }
+});
+
+test('the tracked hooks activate the root image-placed gates', () => {
+  // CONTRIBUTING.md Local Validation Workflow: initialized repositories run
+  // staged checks before commit and validate Conventional Commit messages.
+  assert.match(
+    lefthookConfig,
+    /^commit-msg:\s*[\s\S]*?^\s+run:\s*pnpm run commitmsg:check -- \{1\}\s*$/mu,
+    'lefthook.yml does not activate commit-msg through the root commitmsg:check image-placement script'
+  );
+  assert.match(
+    lefthookConfig,
+    /^pre-commit:\s*[\s\S]*?^\s+run:\s*pnpm run lint:staged\s*$/mu,
+    'lefthook.yml does not activate pre-commit through the root lint:staged image-placement script'
+  );
+  assert.doesNotMatch(
+    lefthookConfig,
+    /^\s+run:\s*bash scripts\/check-commit-msg\.sh\s/mu,
+    'lefthook.yml invokes the commit-message checker directly on the host'
+  );
+});
+
+test('tracked lefthook config is the single hook configuration owner', () => {
+  assert.deepEqual(
+    {
+      exampleConfigExists: existsSync(new URL('../lefthook.example.yml', import.meta.url)),
+      repoInitPromotesExample: repoInitScript.includes('lefthook.example.yml'),
+    },
+    {
+      exampleConfigExists: false,
+      repoInitPromotesExample: false,
+    },
+    'lefthook.example.yml and its repo-init promotion duplicate the tracked lefthook.yml owner'
+  );
+});
+
+test('CI derives the test image build context and Dockerfile from the image manifest', () => {
+  const testImageJob = ciWorkflow.match(
+    /\n {2}test-image:\n(?: {4}.*\n|\n)+?(?=\n {2}pr-check:)/u
+  )?.[0];
+  assert.ok(testImageJob, 'ci.yml does not declare the test-image job');
+  assert.match(
+    testImageJob,
+    /containers\/images\.json/u,
+    'ci.yml test-image job does not read containers/images.json'
+  );
+  assert.match(
+    testImageJob,
+    /context:\s*\$\{\{\s*steps\.expected\.outputs\.context\s*\}\}/u,
+    'ci.yml test-image build context is not derived from the manifest output'
+  );
+  assert.match(
+    testImageJob,
+    /file:\s*\$\{\{\s*steps\.expected\.outputs\.dockerfile\s*\}\}/u,
+    'ci.yml test-image Dockerfile is not derived from the manifest output'
+  );
+});
+
+test('every CI gate that runs repository checks runs inside the test execution image', () => {
+  const gateJobs = ['pr-check', 'l0-l2', 'nano-core-e2e', 'web-e2e', 'smoke', 'release-preflight'];
+
+  for (const job of gateJobs) {
+    const block = ciWorkflow.match(new RegExp(`\\n  ${job}:\\n(?:    .*\\n|\\n)+`, 'u'));
+    assert.ok(block, `ci.yml does not declare the ${job} job`);
+    assert.match(
+      block[0],
+      /container:\s*\n\s*image:\s*\$\{\{\s*needs\.test-image\.outputs\.image\s*\}\}/u,
+      `ci.yml job ${job} does not run inside the test execution image`
+    );
+  }
+});

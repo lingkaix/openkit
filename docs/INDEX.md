@@ -8,19 +8,21 @@ and are not listed here.
 
 ## Governance
 
-- `docs/change-tracking.md` — This document owns the change-record execution rules every agent applies during work: when to write specs and change records, the material change lifecycle, lo…
+- `docs/change-execution.md` — This document owns coordination for material repository work: preserving user intent, selecting and revising a method, composing agent capabilities, retaining…
 - `docs/documentation-model.md` — This document owns the OpenKit documentation type system: the closed set of document types, each type's scope, authority, lifecycle, naming, and location, the…
+- `docs/verification-instruments.md` — `docs/verification-instruments.md` owns the evidence layer: which evidence to go and get and what it costs, and whether the verdict it yields can be believed.
 
 ## Intent
 
-- `docs/engineering-doctrine.md` — This document records why this repository works the way it does: the delegation premise, the role documents play, the verification philosophy, and the criteria…
+- `docs/change-execution-rationale.md` — This intent document preserves observations behind `docs/change-execution.md`.
+- `docs/engineering-doctrine.md` — This document explains the delegation premise and the observations behind repository governance.
 - `docs/product-vision.md` — The accepted implementation path is NanoCore-first and end-user Agent-Skill-first.
 - `docs/roadmap.md` — This document records design areas that are acknowledged as necessary for the complete OpenKit system but are intentionally not being designed or implemented y…
 
 ## Core Model
 
-- `docs/core/agent-capability.md` — This document defines OpenKit agent capability semantics.
-- `docs/core/agent-session.md` — This document defines OpenKit agent session semantics.
+- `docs/core/agent-capability.md` — This document defines OpenKit agent capability semantics for worker capability supply and internal-role Tool projection.
+- `docs/core/agent-session.md` — This document defines the Core identity and continuity rules for `AgentSession`.
 - `docs/core/agent-supply.md` — This document defines OpenKit agent supply semantics.
 - `docs/core/agent-workflow.md` — This document owns the Core workflow mechanisms used to coordinate worker-agent work.
 - `docs/core/architecture.md` — This document owns the stable App/Core/Agent layer boundary, the split between Core coordination and agent execution, the adapter translation boundary, interna…
@@ -42,26 +44,25 @@ and are not listed here.
 
 ## Specifications
 
-- `docs/specs/20260522-vendor_snapshot_packages.md` — Accepted, Implemented — This spec owns the repository packaging contract for externally sourced runtime and catalog snapshots under `packages/`.
-- `docs/specs/20260526-codex_chatgpt_subscription_login.md` — Accepted, Implemented — This spec owns server-owned Codex ChatGPT subscription account slots, sanitized account App API routes, account-scoped login and logout behavior, and the bindi…
-- `docs/specs/20260526-llm_gateway_responses_api.md` — Accepted, Implemented — This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the public endpoint capability vocabulary,…
-- `docs/specs/20260528-core_client_boundary.md` — Accepted, Implemented — This spec owns the package boundary between `@openkit/protocol`, `@openkit/app-api-schemas`, `@openkit/core-client`, NanoCore App API routes, and Web UI client…
-- `docs/specs/20260529-l6_story_acceptance.md` — Accepted, Partial — This specification owns the L6 story-acceptance boundary: when a realistic user-intent workflow deserves L6 proof, the minimum story artifact, execution role s…
-- `docs/specs/20260529-test_strategy.md` — Accepted, Implemented — This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, deterministic gate policy, smoke and artifact health posture, real-provider…
+- `docs/specs/20260522-vendor_snapshot_packages.md` — Accepted, Partial — This spec owns the repository packaging contract for externally sourced runtime and catalog snapshots under `packages/`.
+- `docs/specs/20260526-llm_gateway_responses_api.md` — Accepted, Partial — This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, model discovery, public endpoint-capability…
+- `docs/specs/20260528-core_client_boundary.md` — Accepted, Partial — This spec owns the package boundary between `@openkit/protocol`, `@openkit/app-api-schemas`, `@openkit/core-client`, NanoCore App API routes, and Web UI client…
+- `docs/specs/20260529-l6_story_acceptance.md` — Accepted, Partial — This specification owns the L6 story-acceptance boundary: L6 admission, the minimum story artifact and its on-disk shape, the execution model, execution role s…
+- `docs/specs/20260529-test_strategy.md` — Accepted, Partial — This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundaries, deterministic gate policy, test data and fixture hygiene, smoke and artifac…
 - `docs/specs/20260531-human_attention_intervention_model.md` — Accepted, Partial — This spec owns the implementation-facing model for human attention in OpenKit workflows, including approval gates, elicitation gates, exact Goal-bound steering…
 - `docs/specs/20260531-worker_turn_reliability_envelope.md` — Accepted, Partial — This spec owns the implementation-facing reliability envelope for the direct Quick Chat provider call and worker-turn execution, including stop reasons, termin…
-- `docs/specs/20260616-agent_environment_package.md` — Accepted, Partial — This spec owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's worker-execution source of truth and worker gov…
-- `docs/specs/20260628-nanocore_config_identity_contract.md` — Accepted, Implemented — The current NanoCore local-mode and server-mode identity contract.
+- `docs/specs/20260616-agent_environment_package.md` — Accepted, Partial — This specification owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's resolved worker-execution authority an…
+- `docs/specs/20260628-nanocore_config_identity_contract.md` — Accepted, Partial — The current NanoCore local-mode and server-mode identity contract.
 - `docs/specs/20260628-web_product_surface_projection.md` — Accepted, Partial — The Web UI posture as a product surface over NanoCore and App API contracts.
 - `docs/specs/20260629-openkit_policy_model.md` — Accepted, Implemented — The `@openkit/policy-kernel` package concept and scope.
 - `docs/specs/20260629-worker_runtime_communication_model.md` — Accepted, Partial — The high-level worker runtime communication model for governed container workers.
 - `docs/specs/20260702-knowledge_store_governance_rules.md` — Accepted, Partial — OKF-compatible Markdown as the portable knowledge envelope.
-- `docs/specs/20260703-agent_manifest_aep_resolution.md` — Accepted, Partial — The authored agent setup document used as a manifest input.
+- `docs/specs/20260703-agent_manifest_aep_resolution.md` — Accepted, Partial — The concrete `AgentManifest` schema and validation for authored manifest inputs.
 - `docs/specs/20260703-audit_usage_evidence_records.md` — Accepted, Partial — Cross-record linkage between `AuditEvent`, `UsageRecord`, `EvidenceBundle`, `CapabilityCall`, `PermissionDecision`, `VaultUse`, and `RuntimeEvidence`.
-- `docs/specs/20260703-durable_scheduler_design.md` — Accepted, Partial — The current single-writer NanoCore scheduler for one configured local or remote worker target.
+- `docs/specs/20260703-durable_scheduler_design.md` — Accepted, Partial — The current single-writer NanoCore scheduler for one configured `RuntimeTarget` that projects one local or remote NanoHost.
 - `docs/specs/20260703-knowledge_store_implementation.md` — Accepted, Partial — The pinned OKF version decision and the conformance relationship between OpenKit and the OKF snapshot.
 - `docs/specs/20260703-openshell_mechanism_internalization.md` — Accepted, Partial — The internalization principle for OpenShell-backed credential injection, injection audit, and policy enforcement mechanisms: NanoCore definitions are canonical…
-- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` — Accepted, Implemented — This spec owns NanoCore's adoption of the stock published `@earendil-works/pi-ai` package as an internal provider-adapter dependency, its exact version pin and…
+- `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` — Accepted, Partial — This spec owns NanoCore's adoption of the stock published `@earendil-works/pi-ai` package as the single internal LLM provider-adapter dependency, its exact ver…
 - `docs/specs/20260703-policy_enforcement_mapping.md` — Accepted, Partial — Product fact vocabulary for mapping NanoCore subjects, actions, resources, and context into policy evaluation.
 - `docs/specs/20260703-runtime_scheduling_scale.md` — Accepted, Partial — The current separation between Core mode and worker runtime placement.
 - `docs/specs/20260703-schema_evolution_record_envelope.md` — Accepted, Implemented — Forward-compatible extension rules for OpenKit-authored storage records and manifest-like files.
@@ -69,44 +70,52 @@ and are not listed here.
 - `docs/specs/20260703-vault_secret_injection.md` — Accepted, Partial — Vault reference, grant, injection plan, injection receipt, and vault-use record requirements.
 - `docs/specs/20260703-worker_agent_capability.md` — Accepted, Partial — The worker-facing agent capability plane and its gateway projection.
 - `docs/specs/20260703-worker_context_package.md` — Accepted, Partial — Worker-facing context package inputs, manifest shape, materialized file layout, trace records, and replay requirements.
-- `docs/specs/20260703-worker_control_protocol.md` — Accepted, Partial — The worker-visible control-plane protocol between a governed worker shim and NanoCore.
+- `docs/specs/20260703-worker_control_protocol.md` — Accepted, Partial — The worker-visible end-to-end control-plane protocol between Sandbox Integration and NanoCore.
 - `docs/specs/20260703-workspace_synchronization.md` — Accepted, Partial — This spec owns the backend-portable workspace synchronization contract for
-- `docs/specs/20260704-agent_session_continuity.md` — Accepted, Partial — The current durable Agent Session identity and its relationship to one worker Turn and scheduler lease.
+- `docs/specs/20260704-agent_session_continuity.md` — Accepted, Partial — The current durable AgentSession identity, one-current-per-Thread selection, historical replacement lineage, and relationship to one worker Turn and scheduler…
 - `docs/specs/20260704-app_api_openapi_projection.md` — Accepted, Implemented — The rule that the shared Zod schema packages remain the single contract source for the App API, and that OpenAPI is a generated projection, never a source.
 - `docs/specs/20260704-capability_usage_gateway_foundation.md` — Accepted, Partial — The shared ledger foundation used by every current NanoCore `CapabilityCall` producer and required by the future worker MCP producer.
 - `docs/specs/20260704-chat_mode_assistant.md` — Accepted, Partial — Chat Mode as the lightweight user interaction path before delegated worker work starts.
 - `docs/specs/20260704-git_write_workflow.md` — Accepted, Partial — The commit-on-apply contract: creating commits in linked repositories from accepted workspace reviews.
 - `docs/specs/20260704-goal_mode_coordination.md` — Accepted, Partial — Goal Mode as the V1 long-running objective-driven workflow mode.
-- `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` — Accepted, Implemented — The deterministic app-local service interface for the Knowledge Manager Internal Core Role.
+- `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` — Accepted, Partial — The deterministic app-local service interface for the Knowledge Manager Internal Core Role.
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md` — Accepted, Partial — The ordered NanoCore boot phase contract, including which phases fail closed and which degrade.
-- `docs/specs/20260704-remote_auth_credential_bootstrap.md` — Accepted, Partial — The OpenKit access-token format, lifecycle, and the closed v1 scope set.
-- `docs/specs/20260704-session_static_workspace_materialization.md` — Accepted, Partial — The contract that separates agent-session static sandbox layout from per-turn dynamic workspace materialization.
+- `docs/specs/20260704-remote_auth_credential_bootstrap.md` — Accepted, Partial — The human remote-access token format, lifecycle, and closed v1 scope set.
+- `docs/specs/20260704-session_static_workspace_materialization.md` — Accepted, Partial — The contract that separates AgentSession-static sandbox layout from per-turn dynamic workspace materialization.
 - `docs/specs/20260704-task_mode_worker_delegation.md` — Accepted, Partial — Task Mode as the delegated-work path for bounded, near-term user requests.
 - `docs/specs/20260704-vault_backend_implementation.md` — Accepted, Partial — The `VaultBackend` boundary that NanoCore uses to resolve, store, rotate, revoke, list, and health-check secret material.
-- `docs/specs/20260704-worker_mcp_tool_supply.md` — Accepted, Partial — The `mcp.` capability route family on `capability.local`: `mcp.listservers`, `mcp.listtools`, `mcp.calltool`.
-- `docs/specs/20260704-workflow_coordinator_internal_agent.md` — Accepted, Implemented — The reusable Workflow Coordinator Internal Core Role contract.
+- `docs/specs/20260704-worker_mcp_tool_supply.md` — Accepted, Partial — The `mcp.` capability route family on worker-local `capability.local`, projected through `/capabilities/mcp/`: `mcp.listservers`, `mcp.listtools`, `mcp.calltoo…
+- `docs/specs/20260704-workflow_coordinator_internal_agent.md` — Accepted, Partial — The reusable Workflow Coordinator Internal Core Role contract.
 - `docs/specs/20260704-workspace_backup_export_import.md` — Accepted, Partial — The workspace export format: export tree layout, root manifest shape, content inventory, and offline verifiability rules.
-- `docs/specs/20260704-workspace_data_source_catalog.md` — Accepted, Implemented — The workspace-owned catalog of named external and local data sources available to agent work in one workspace.
+- `docs/specs/20260704-workspace_data_source_catalog.md` — Accepted, Partial — The workspace-owned catalog of named external and local data sources available to agent work in one workspace.
 - `docs/specs/20260708-container_image_packaging.md` — Accepted, Partial — The canonical OpenKit container image taxonomy.
-- `docs/specs/20260708-pi_ai_unified_llm_backend.md` — Accepted, Partial — This spec is the sole owner of non-Codex LLM backend selection and provider routing, including request, response, streaming, provider-error, usage, credential,…
+- `docs/specs/20260708-pi_ai_unified_llm_backend.md` — Accepted, Partial — This spec is the sole owner of NanoCore LLM provider transport and routing through `@earendil-works/pi-ai`, including request, response, streaming, provider-er…
 - `docs/specs/20260709-quick_chat_workspace.md` — Accepted, Partial — The product and implementation contract for the built-in Quick Chat workspace kind.
 - `docs/specs/20260709-worker_credential_access_declarations.md` — Accepted, Partial — The generic worker credential declaration contract that replaces hard-coded worker credential use cases with list-driven launch-time resolution.
-- `docs/specs/20260709-worker_sandbox_freedom_policy.md` — Accepted, Implemented — Worker sandbox freedom principles for process execution, filesystem access, network access, and user-provided secret injection.
+- `docs/specs/20260709-worker_sandbox_freedom_policy.md` — Accepted, Partial — Worker sandbox freedom principles for process execution, filesystem access, network access, and user-provided secret injection.
 - `docs/specs/20260710-self_improvement_evaluation_loop.md` — Accepted, Implemented — The V1 composition by which an authorized agent explicitly reviews exact completed Workspace work and may create one existing source-linked pending Knowledge P…
-- `docs/specs/20260710-web_ui_rebuild_stack.md` — Accepted, Not Started — The implementation stack for the rebuilt OpenKit Web UI: UI framework, client state, routing, server-state access pattern, styling engine, design-system source…
+- `docs/specs/20260710-web_ui_rebuild_stack.md` — Accepted, Partial — The implementation stack for the rebuilt OpenKit Web UI: UI framework, client state, routing, server-state access pattern, styling engine, design-system source…
 - `docs/specs/20260711-evaluation_harness_design.md` — Draft, Not Started — The activation gates and mandatory safety predicates that any future OpenKit Evaluation Harness proposal must satisfy before it can become an accepted contract.
 - `docs/specs/20260711-scheduler_recurring_event_triggers.md` — Draft, Not Started — The entry conditions and minimum safety boundaries for any future recurring or event-triggered worker admission capability.
 - `docs/specs/20260711-skill_catalog_versioning_pinning.md` — Draft, Not Started — The entry conditions and minimum integrity boundaries for a possible future worker Skill catalog.
-- `docs/specs/20260711-worker_runtime_subagent_provenance.md` — Accepted, Implemented — The boundary between one NanoCore-owned worker execution and runtime-internal sub-agents created by Codex or another Worker Agent runtime.
-- `docs/specs/20260713-openkit_agent_skill_interface.md` — Accepted, Implemented — This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill, its progressively disclosed reference material, its bundle…
+- `docs/specs/20260711-worker_runtime_subagent_provenance.md` — Accepted, Partial — The boundary between one NanoCore-owned worker execution and runtime-internal sub-agents created by Codex or another Worker Agent runtime.
+- `docs/specs/20260713-openkit_agent_skill_interface.md` — Accepted, Partial — This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill, its progressively disclosed reference material, its bundle…
 - `docs/specs/20260713-work_resource_interaction_model.md` — Accepted, Partial — This spec owns the implementation-facing interaction model that lets users express precise intent against work resources without requiring every interaction to…
 - `docs/specs/20260715-contract_stability_baseline.md` — Accepted, Partial — The current OpenKit stability classification for contract families that matter before a product release.
 - `docs/specs/20260715-multi_user_workspace_system.md` — Accepted, Implemented — The target design for several authenticated users sharing one canonical Workspace inside one NanoCore deployment.
-- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` — Accepted, Implemented — The source-free lifecycle boundary that OpenKit requires around stock OpenShell worker execution.
-- `docs/specs/20260716-codex_worker_adapter.md` — Accepted, Implemented — Codex command construction for one bounded worker turn
+- `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` — Deprecated, Partial — The per-AgentSession disposable Cell contract is deprecated because the accepted target moves all OpenShell lifecycle effects onto one configured NanoHost and…
+- `docs/specs/20260716-codex_worker_adapter.md` — Accepted, Partial — Codex session-local state and restricted native conversation-handle lifecycle
 - `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Implemented — OpenCode command construction for one bounded worker turn
 - `docs/specs/20260716-pi_worker_adapter.md` — Accepted, Implemented — Pi command construction for one bounded worker turn
-- `docs/specs/20260719-verification_calibration.md` — Draft, Not Started — This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineeri…
+- `docs/specs/20260719-verification_calibration.md` — Accepted, Not Started — This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineeri…
+- `docs/specs/20260721-provider_subscription_accounts.md` — Accepted, Partial — This spec owns deployment-admin management of server-owned LLM subscription account slots, the binding from one provider profile to one slot, the slot-scoped b…
+- `docs/specs/20260721-worker_execution_environment_images.md` — Accepted, Partial — This specification owns the common execution-environment baseline for the supported Worker Agent images, the published common base artifact and what extending…
+- `docs/specs/20260729-documentation_field_contract.md` — Accepted, Implemented — The three-layer separation for documentation metadata: YAML frontmatter as the syntax layer, an allowed value subset as the schema layer, and loud-failing stri…
+- `docs/specs/20260731-operational_telemetry_standardization.md` — Draft, Not Started — The non-authoritative operational telemetry projection for OpenKit runtime and repository-test execution.
+- `docs/specs/20260801-nanohost_workspace_data_boundary.md` — Accepted, Not Started — The separation between NanoCore durable product authority and one independently deployed NanoHost that performs already-authorized worker execution.
+- `docs/specs/20260802-nanohost_runtime_and_transport.md` — Accepted, Implemented — The implementation-facing definition, lifecycle, failure boundary, recovery, and readiness contract for one configured NanoHost and its private Runtime Epoch.
+- `docs/specs/20260811-execution_residue_measurement.md` — Accepted, Not Started — This specification owns task-external measurement of the repository's execution framework from evidence left by completed work: its audit-side trigger, compara…
+- `docs/specs/20260813-internal_agent_runtime.md` — Accepted, Not Started — This specification owns the role-agnostic bounded runtime used by NanoCore-internal model-using roles: its assembled input, transient loop algorithm, emergency…
 
 ## Terminal Specifications
 
@@ -128,6 +137,7 @@ and are not listed here.
 - `docs/specs/superseded/20260513-core_protocol_model_notes.md` — Superseded
 - `docs/specs/superseded/20260517-openai_compat_facade.md` — Superseded
 - `docs/specs/superseded/20260518-staging_docker_distribution.md` — Superseded
+- `docs/specs/superseded/20260526-codex_chatgpt_subscription_login.md` — Superseded
 - `docs/specs/superseded/20260526-codex_oauth_account_ux.md` — Superseded
 - `docs/specs/superseded/20260529-remove_legacy_compatibility.md` — Superseded
 - `docs/specs/superseded/20260617-openkit_ai_interface.md` — Superseded
@@ -171,38 +181,24 @@ and are not listed here.
 - `docs/specs/superseded/worker-runtime/20260507-codex_agent_communication_modes.md` — Superseded
 - `docs/specs/superseded/worker-runtime/20260526-workspace_data_mounts.md` — Superseded
 
-## Change Records
+## Change Plans
 
-- `docs/changes/202607092122010001-nanocore_data_root_cleanup.md` — standalone-change, verified — NanoCore Data Root Cleanup
-- `docs/changes/202607111531450001-nanocore_maintainability_recovery.md` — change-plan, complete — NanoCore Maintainability Recovery
-- `docs/changes/202607111600390001-self_improvement_loop_foundations.md` — change-plan, verified — Self-Improvement Loop Foundations
-- `docs/changes/202607111622590001-external_snapshot_refresh.md` — change-plan, verified — External Snapshot Refresh
-- `docs/changes/202607111650190001-spec_lifecycle_governance.md` — change-plan, verified — Spec Lifecycle Governance And Repository-Wide Reclassification
-- `docs/changes/202607111848520001-evidence_surface_simplification.md` — change-plan, verified — Evidence Surface Simplification
-- `docs/changes/202607111937290001-worker_runtime_subagent_provenance.md` — change-plan, verified — Worker Runtime Sub-Agent Provenance And Gateway Identity
-- `docs/changes/202607111941330001-core_spec_implementation_alignment_audit.md` — change-plan, verified — Core, Specification, Implementation, And Test Alignment Audit
-- `docs/changes/202607121123210001-goal_mode_review_gate_and_completion_repair.md` — change-plan, completed — Goal Mode Review Gate and Completion Repair
-- `docs/changes/202607121259140001-pi_ai_usage_ledger_repair.md` — change-plan, complete — Pi AI Usage Ledger Repair
-- `docs/changes/202607121259140002-vault_key_file_boot_repair.md` — change-plan, complete — Vault Key File Boot Repair
-- `docs/changes/202607131935040001-openkit_agent_skill_interface.md` — change-plan, verified — OpenKit Agent Skill Interface
-- `docs/changes/202607132212000001-work_resource_interaction_model.md` — change-plan, in-progress — Work Resource Interaction Model
-- `docs/changes/202607160021540001-contract_stability_multi_user_workspaces.md` — change-plan, verified — Contract Stability And Single-Deployment Multi-User Workspaces
-- `docs/changes/202607160036500001-worker_agent_adapter_boundary.md` — change-plan, verified — Worker Agent Adapter Boundary Change Plan
-- `docs/changes/202607160042050001-nanocore_restart_reconnection.md` — change-plan, verified — NanoCore Restart Reconnection Contraction
-- `docs/changes/202607172152230001-openkit_execution_program.md` — change-plan, verified — OpenKit Execution Program
-- `docs/changes/202607190046240001-l6_execution_role_separation.md` — change-plan, verified — L6 Execution Role Separation And Adjudication Contract
-- `docs/changes/202607190201330001-documentation_model_and_calibration_foundations.md` — change-plan, verified — Documentation Model And Calibration Foundations
-- `docs/changes/202607191752510001-provider_external_effect_entry_corrections.md` — change-plan, complete — Provider And External-Effect Entry Corrections
+Change plans are not indexed. List `docs/changes/` to see them.
 
-## Guides
+## Audit Records
 
-- `docs/app-api.md` — This document is the boundary map for NanoCore App API surfaces.
-- `docs/deployment.md` — This document defines OpenKit deployment semantics.
-- `docs/nanocore-data-root-config.en.md` — This guide explains the user-editable files under `DATAROOT/config` for NanoCore.
-- `docs/nanocore-data-root-config.zh.md` — zh translation of `docs/nanocore-data-root-config.en.md`
-- `docs/nanocore-deployment-modes.en.md` — This guide explains how to deploy, configure, start, and verify NanoCore across the supported product modes and the governed container worker runtime.
-- `docs/nanocore-deployment-modes.zh.md` — zh translation of `docs/nanocore-deployment-modes.en.md`
-- `docs/template-overview.md` — This document is the high-level source of truth for the monorepo template itself.
+- `docs/audits/20260821-agent_coordination_playbook.md` — Agent Coordination Playbook Audit
+
+## Platform References
+
+- `docs/app-api.md` — This guide answers one cross-cutting question: where does an App API contract live, and what may the App API layer decide for itself.
+- `docs/deployment.md` — Calibrated premises about scope and optimization target, formed from team shape and current operating conditions rather than derived from a contract.
+- `docs/toolchain.md` — This guide answers one cross-cutting question: which tools does this repository use, and where is each version pinned.
+
+## User Manuals
+
+- `docs/manual/nanocore-data-root-config.en.md` — Accepted — This manual explains the user-editable files under `DATAROOT/config` for NanoCore.
+- `docs/manual/nanocore-deployment-modes.en.md` — Accepted — This manual explains the two supported NanoCore product modes and their shared NanoHost worker-runtime boundary.
 
 ## External Snapshots
 
@@ -212,8 +208,9 @@ and are not listed here.
 
 - `docs/cookbooks/claude-design-web-ui-loop.md` — Claude Design + Claude Code Web UI Loop
 - `docs/cookbooks/docker-app.md` — Docker App Image
-- `docs/cookbooks/docker-dev-e2e.md` — Docker Dev/E2E Image
+- `docs/cookbooks/docker-test-env.md` — Test Execution Image
 - `docs/cookbooks/go-setup.md` — Go Setup Cookbook
+- `docs/cookbooks/nanohost-real-use-host.md` — NanoHost Real-Use Host
 - `docs/cookbooks/python-setup.md` — Python Setup Cookbook
 - `docs/cookbooks/release.md` — Release Cookbook
 - `docs/cookbooks/rust-setup.md` — Rust Setup Cookbook

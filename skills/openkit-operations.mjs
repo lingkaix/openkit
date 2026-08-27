@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 const EMPTY_INPUT = z.object({}).strict();
 const IDENTIFIER = z.string().min(1);
+const SUBSCRIPTION_PROVIDER_ID = appSchemas.SubscriptionProviderIdSchema;
 const STANDARD = Object.freeze({
   inputSensitivity: 'standard',
   outputSensitivity: 'redacted public response',
@@ -30,6 +31,10 @@ const SERVER_ADMIN_TOKEN_ACCESS = Object.freeze({
 const workspaceScope = { workspaceId: protocol.WorkspaceIdSchema };
 const threadScope = { ...workspaceScope, threadId: protocol.ThreadIdSchema };
 const turnScope = { ...threadScope, turnId: protocol.TurnIdSchema };
+const providerSubscriptionAccountScope = {
+  subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID,
+  accountSlotId: appSchemas.CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId,
+};
 
 /**
  * Creates one strict flat input schema by combining URL scope fields with a shared request body.
@@ -224,6 +229,100 @@ export const operationCatalog = [
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.enroll',
+    source: 'app-api',
+    appOperationId: 'enrollNanoHost',
+    clientMethod: 'app.enrollNanoHost',
+    group: 'nanohost',
+    summary: 'Enroll the configured NanoHost identity and first named-slot transport token.',
+    mutating: true,
+    inputSchema: strictShared(appSchemas.EnrollNanoHostRequestSchema),
+    handler: ({ client }, input) => client.app.enrollNanoHost(input),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.token-list',
+    source: 'app-api',
+    appOperationId: 'listNanoHostTransportTokens',
+    clientMethod: 'app.listNanoHostTransportTokens',
+    group: 'nanohost',
+    summary: 'List redacted NanoHost transport tokens.',
+    mutating: false,
+    inputSchema: EMPTY_INPUT,
+    handler: ({ client }) => client.app.listNanoHostTransportTokens(),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.token-issue',
+    source: 'app-api',
+    appOperationId: 'issueNanoHostTransportToken',
+    clientMethod: 'app.issueNanoHostTransportToken',
+    group: 'nanohost',
+    summary: 'Issue one NanoHost transport token through a named execution-host slot.',
+    mutating: true,
+    inputSchema: strictShared(appSchemas.IssueNanoHostTransportTokenRequestSchema),
+    handler: ({ client }, input) => client.app.issueNanoHostTransportToken(input),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.token-revoke',
+    source: 'app-api',
+    appOperationId: 'revokeNanoHostTransportToken',
+    clientMethod: 'app.revokeNanoHostTransportToken',
+    group: 'nanohost',
+    summary: 'Revoke one NanoHost transport token.',
+    mutating: true,
+    inputSchema: strictScope({ tokenId: IDENTIFIER }),
+    handler: ({ client }, input) => client.app.revokeNanoHostTransportToken(input.tokenId),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.token-rotate',
+    source: 'app-api',
+    appOperationId: 'rotateNanoHostTransportToken',
+    clientMethod: 'app.rotateNanoHostTransportToken',
+    group: 'nanohost',
+    summary: 'Rotate one NanoHost transport token through a named execution-host slot.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RotateNanoHostTransportTokenRequestSchema, {
+      tokenId: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.rotateNanoHostTransportToken(input.tokenId, bodyWithout(input, 'tokenId')),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.token-rotation-abort',
+    source: 'app-api',
+    appOperationId: 'abortNanoHostTransportTokenRotation',
+    clientMethod: 'app.abortNanoHostTransportTokenRotation',
+    group: 'nanohost',
+    summary: 'Abort one pending NanoHost transport token rotation.',
+    mutating: true,
+    inputSchema: strictScope({ tokenId: IDENTIFIER }),
+    handler: ({ client }, input) => client.app.abortNanoHostTransportTokenRotation(input.tokenId),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.decommission',
+    source: 'app-api',
+    appOperationId: 'decommissionNanoHost',
+    clientMethod: 'app.decommissionNanoHost',
+    group: 'nanohost',
+    summary: 'Decommission the configured NanoHost identity and clear both credential slots.',
+    mutating: true,
+    inputSchema: EMPTY_INPUT,
+    handler: ({ client }) => client.app.decommissionNanoHost(),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
     id: 'runtime.reload',
     source: 'app-api',
     appOperationId: 'reloadRuntimeConfig',
@@ -311,19 +410,6 @@ export const operationCatalog = [
     mutating: false,
     inputSchema: strictShared(appSchemas.RuntimeConfigValidationRequestSchema),
     handler: ({ client }, input) => client.runtimeConfig.validate(input),
-  },
-  {
-    ...STANDARD,
-    id: 'runtime.restart-stale-session',
-    source: 'app-api',
-    appOperationId: 'restartRuntimeConfigStaleSession',
-    clientMethod: 'runtimeConfig.restartStaleSession',
-    group: 'runtime',
-    summary: 'Retire one stale runtime session.',
-    mutating: true,
-    inputSchema: strictScope({ ...workspaceScope, sessionId: IDENTIFIER }),
-    handler: ({ client }, input) =>
-      client.runtimeConfig.restartStaleSession(input.workspaceId, input.sessionId),
   },
   {
     ...STANDARD,
@@ -415,124 +501,173 @@ export const operationCatalog = [
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.account-list',
+    id: 'provider-subscription.provider-list',
     source: 'app-api',
-    appOperationId: 'listOpenAICodexOAuthAccounts',
-    clientMethod: 'oauth.openaiCodex.listAccounts',
-    group: 'oauth',
-    summary: 'List OpenAI Codex OAuth account slots.',
+    appOperationId: 'listSubscriptionProviders',
+    clientMethod: 'providerSubscriptions.listProviders',
+    group: 'provider-subscription',
+    summary: 'List supported provider subscriptions.',
     mutating: false,
     inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.oauth.openaiCodex.listAccounts(),
+    handler: ({ client }) => client.providerSubscriptions.listProviders(),
   },
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.account-create',
+    id: 'provider-subscription.account-list',
     source: 'app-api',
-    appOperationId: 'createOpenAICodexOAuthAccount',
-    clientMethod: 'oauth.openaiCodex.createAccount',
-    group: 'oauth',
-    summary: 'Create one OpenAI Codex OAuth account slot.',
-    mutating: true,
-    inputSchema: strictShared(appSchemas.CreateOpenAICodexOAuthAccountRequestSchema),
-    handler: ({ client }, input) => client.oauth.openaiCodex.createAccount(input),
-  },
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.account-update',
-    source: 'app-api',
-    appOperationId: 'updateOpenAICodexOAuthAccount',
-    clientMethod: 'oauth.openaiCodex.updateAccount',
-    group: 'oauth',
-    summary: 'Rename one OpenAI Codex OAuth account slot.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.UpdateOpenAICodexOAuthAccountRequestSchema, {
-      accountSlotId: IDENTIFIER,
-    }),
-    handler: ({ client }, input) =>
-      client.oauth.openaiCodex.updateAccount(
-        input.accountSlotId,
-        bodyWithout(input, 'accountSlotId')
-      ),
-  },
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.account-delete',
-    source: 'app-api',
-    appOperationId: 'deleteOpenAICodexOAuthAccount',
-    clientMethod: 'oauth.openaiCodex.deleteAccount',
-    group: 'oauth',
-    summary: 'Delete one OpenAI Codex OAuth account slot.',
-    mutating: true,
-    inputSchema: strictScope({ accountSlotId: IDENTIFIER }),
-    handler: ({ client }, input) => client.oauth.openaiCodex.deleteAccount(input.accountSlotId),
-  },
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.status',
-    source: 'app-api',
-    appOperationId: 'getOpenAICodexOAuthAccountStatus',
-    clientMethod: 'oauth.openaiCodex.getAccountStatus',
-    group: 'oauth',
-    summary: 'Read one OpenAI Codex OAuth account status.',
+    appOperationId: 'listProviderSubscriptionAccounts',
+    clientMethod: 'providerSubscriptions.listAccounts',
+    group: 'provider-subscription',
+    summary: 'List provider-subscription account slots.',
     mutating: false,
-    inputSchema: strictScope({ accountSlotId: IDENTIFIER }),
-    handler: ({ client }, input) => client.oauth.openaiCodex.getAccountStatus(input.accountSlotId),
+    inputSchema: strictScope({ subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID }),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.listAccounts(input.subscriptionProviderId),
   },
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.start',
+    id: 'provider-subscription.account-create',
     source: 'app-api',
-    appOperationId: 'startOpenAICodexOAuthAccountLogin',
-    clientMethod: 'oauth.openaiCodex.startAccount',
-    group: 'oauth',
-    summary: 'Start one OpenAI Codex OAuth login.',
+    appOperationId: 'createProviderSubscriptionAccount',
+    clientMethod: 'providerSubscriptions.createAccount',
+    group: 'provider-subscription',
+    summary: 'Create one provider-subscription account slot.',
     mutating: true,
-    inputSchema: flatRequest(appSchemas.StartOpenAICodexOAuthRequestSchema, {
-      accountSlotId: IDENTIFIER,
+    inputSchema: flatRequest(appSchemas.CreateProviderSubscriptionAccountRequestSchema, {
+      subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID,
     }),
     handler: ({ client }, input) =>
-      client.oauth.openaiCodex.startAccount(
-        input.accountSlotId,
-        bodyWithout(input, 'accountSlotId')
+      client.providerSubscriptions.createAccount(
+        input.subscriptionProviderId,
+        bodyWithout(input, 'subscriptionProviderId')
       ),
   },
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.cancel',
+    id: 'provider-subscription.account-update',
     source: 'app-api',
-    appOperationId: 'cancelOpenAICodexOAuthAccountLogin',
-    clientMethod: 'oauth.openaiCodex.cancelAccount',
-    group: 'oauth',
-    summary: 'Cancel one pending OpenAI Codex OAuth login.',
+    appOperationId: 'updateProviderSubscriptionAccount',
+    clientMethod: 'providerSubscriptions.updateAccount',
+    group: 'provider-subscription',
+    summary: 'Update one provider-subscription account slot.',
     mutating: true,
-    inputSchema: flatRequest(appSchemas.CancelOpenAICodexOAuthRequestSchema, {
-      accountSlotId: IDENTIFIER,
-    }),
+    inputSchema: flatRequest(
+      appSchemas.UpdateProviderSubscriptionAccountRequestSchema,
+      providerSubscriptionAccountScope
+    ),
     handler: ({ client }, input) =>
-      client.oauth.openaiCodex.cancelAccount(
+      client.providerSubscriptions.updateAccount(
+        input.subscriptionProviderId,
         input.accountSlotId,
-        bodyWithout(input, 'accountSlotId')
+        bodyWithout(input, 'subscriptionProviderId', 'accountSlotId')
       ),
   },
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'oauth.logout',
+    id: 'provider-subscription.account-delete',
     source: 'app-api',
-    appOperationId: 'logoutOpenAICodexOAuthAccount',
-    clientMethod: 'oauth.openaiCodex.logoutAccount',
-    group: 'oauth',
-    summary: 'Log out one OpenAI Codex OAuth account.',
+    appOperationId: 'deleteProviderSubscriptionAccount',
+    clientMethod: 'providerSubscriptions.deleteAccount',
+    group: 'provider-subscription',
+    summary: 'Delete one provider-subscription account slot.',
     mutating: true,
-    inputSchema: strictScope({ accountSlotId: IDENTIFIER }),
-    handler: ({ client }, input) => client.oauth.openaiCodex.logoutAccount(input.accountSlotId),
+    inputSchema: strictScope(providerSubscriptionAccountScope),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.deleteAccount(input.subscriptionProviderId, input.accountSlotId),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'provider-subscription.account-status',
+    source: 'app-api',
+    appOperationId: 'getProviderSubscriptionAccountStatus',
+    clientMethod: 'providerSubscriptions.getAccountStatus',
+    group: 'provider-subscription',
+    summary: 'Read one provider-subscription account status.',
+    mutating: false,
+    inputSchema: strictScope(providerSubscriptionAccountScope),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.getAccountStatus(
+        input.subscriptionProviderId,
+        input.accountSlotId
+      ),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'provider-subscription.account-login-start',
+    source: 'app-api',
+    appOperationId: 'startProviderSubscriptionAccountLogin',
+    clientMethod: 'providerSubscriptions.startAccountLogin',
+    group: 'provider-subscription',
+    summary: 'Start one provider-subscription account login.',
+    mutating: true,
+    inputSchema: flatRequest(
+      appSchemas.StartProviderSubscriptionAccountLoginRequestSchema,
+      providerSubscriptionAccountScope
+    ),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.startAccountLogin(
+        input.subscriptionProviderId,
+        input.accountSlotId,
+        bodyWithout(input, 'subscriptionProviderId', 'accountSlotId')
+      ),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'provider-subscription.account-login-cancel',
+    source: 'app-api',
+    appOperationId: 'cancelProviderSubscriptionAccountLogin',
+    clientMethod: 'providerSubscriptions.cancelAccountLogin',
+    group: 'provider-subscription',
+    summary: 'Cancel one pending provider-subscription account login.',
+    mutating: true,
+    inputSchema: flatRequest(
+      appSchemas.CancelProviderSubscriptionAccountLoginRequestSchema,
+      providerSubscriptionAccountScope
+    ),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.cancelAccountLogin(
+        input.subscriptionProviderId,
+        input.accountSlotId,
+        bodyWithout(input, 'subscriptionProviderId', 'accountSlotId')
+      ),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'provider-subscription.account-logout',
+    source: 'app-api',
+    appOperationId: 'logoutProviderSubscriptionAccount',
+    clientMethod: 'providerSubscriptions.logoutAccount',
+    group: 'provider-subscription',
+    summary: 'Log out one provider-subscription account.',
+    mutating: true,
+    inputSchema: strictScope(providerSubscriptionAccountScope),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.logoutAccount(input.subscriptionProviderId, input.accountSlotId),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'provider-subscription.account-quota',
+    source: 'app-api',
+    appOperationId: 'getProviderSubscriptionAccountQuota',
+    clientMethod: 'providerSubscriptions.getAccountQuota',
+    group: 'provider-subscription',
+    summary: 'Read one provider-subscription account quota.',
+    mutating: false,
+    inputSchema: strictScope(providerSubscriptionAccountScope),
+    handler: ({ client }, input) =>
+      client.providerSubscriptions.getAccountQuota(
+        input.subscriptionProviderId,
+        input.accountSlotId
+      ),
   },
   {
     ...STANDARD,
@@ -1818,25 +1953,26 @@ export const operationCatalog = [
     ...STANDARD,
     id: 'vault.injection-plan-list',
     source: 'app-api',
-    appOperationId: 'listWorkspaceInjectionPlans',
-    clientMethod: 'app.listWorkspaceInjectionPlans',
+    appOperationId: 'listWorkspaceVaultInjectionPlans',
+    clientMethod: 'app.listWorkspaceVaultInjectionPlans',
     group: 'vault',
     summary: 'List non-secret vault injection plans for one workspace.',
     mutating: false,
     inputSchema: strictScope(workspaceScope),
-    handler: ({ client }, input) => client.app.listWorkspaceInjectionPlans(input.workspaceId),
+    handler: ({ client }, input) => client.app.listWorkspaceVaultInjectionPlans(input.workspaceId),
   },
   {
     ...STANDARD,
     id: 'vault.injection-receipt-list',
     source: 'app-api',
-    appOperationId: 'listWorkspaceInjectionReceipts',
-    clientMethod: 'app.listWorkspaceInjectionReceipts',
+    appOperationId: 'listWorkspaceVaultInjectionReceipts',
+    clientMethod: 'app.listWorkspaceVaultInjectionReceipts',
     group: 'vault',
     summary: 'List non-secret vault injection receipts for one workspace.',
     mutating: false,
     inputSchema: strictScope(workspaceScope),
-    handler: ({ client }, input) => client.app.listWorkspaceInjectionReceipts(input.workspaceId),
+    handler: ({ client }, input) =>
+      client.app.listWorkspaceVaultInjectionReceipts(input.workspaceId),
   },
   {
     ...STANDARD,
@@ -2620,6 +2756,13 @@ export const operationExclusions = [
     name: 'getThreadDashboard',
     reason: 'The thread dashboard is a Web-only presentation read model.',
     owner: 'docs/specs/20260704-app_api_openapi_projection.md',
+  },
+  {
+    source: 'app-api',
+    name: 'getNanoHostRuntimeTargetStatus',
+    reason:
+      'Host bring-up uses the App API RuntimeTarget route directly; no accepted Skill or Core Client caller exists.',
+    owner: 'docs/specs/20260802-nanohost_runtime_and_transport.md',
   },
   {
     source: 'app-api',

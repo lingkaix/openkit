@@ -6,7 +6,7 @@ It builds `@openkit/protocol`, `@openkit/core-client`, `nanocore`, and `web`, th
 
 The image exposes only the public Caddy HTTP port.
 
-NanoCore stays loopback-only and is not exposed except through Caddy.
+NanoCore's App HTTP/1.1 listener stays loopback-only and is exposed through Caddy. A configured private NanoHost HTTP/2 listener uses a different local port and is never published or proxied by the app image.
 
 ## Build
 
@@ -46,7 +46,7 @@ Existing app provider entries that still contain inline credential fields such a
 docker run --rm -it -p 8080:8080 -v /tmp/openkit-data:/data/openkit openkit/app:dev
 ```
 
-Caddy serves the SPA from `/srv/web`, proxies `/api/*` to NanoCore on loopback, proxies `/internal/*` to NanoCore on loopback without stripping the route prefixes, and disables gzip plus enables immediate flushing for turn SSE routes.
+Caddy serves the SPA from `/srv/web`, proxies ordinary `/api/*` and `/internal/*` requests to the NanoCore App HTTP/1.1 listener on loopback without stripping route prefixes, returns `404` for `/api/nanohost/transport/*`, and disables gzip plus enables immediate flushing for turn SSE routes.
 
 ## Smoke
 

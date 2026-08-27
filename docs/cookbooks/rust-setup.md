@@ -7,7 +7,7 @@ Use this cookbook when a repository based on this template needs to add a Rust a
 - Follow this cookbook instead of inventing a custom Rust setup flow.
 - Use `mise` to install and manage the Rust toolchain and Rust development tools for this sub-project.
 - Keep Rust-related tool versions in the appropriate `mise.toml` for the scope that owns the toolchain.
-- Run Rust setup and maintenance commands through `mise exec -- ...`.
+- Run Rust setup and maintenance commands as bare commands. `docs/toolchain.md` owns how the pinned toolchain reaches `PATH`; do not reintroduce a per-command `mise exec --` prefix.
 - Use `cargo` for package management and builds.
 - Use `cargo fmt` as the formatter.
 - Use `cargo clippy` as the linter.
@@ -24,7 +24,7 @@ Use this cookbook when a repository based on this template needs to add a Rust a
 
 ## Setup Flow
 
-1. Scaffold the project with `mise exec -- cargo new ...`.
+1. Scaffold the project with `cargo new ...`.
 2. Add a local `README.md`.
 3. Add package-level commands for build, test, lint, and format.
 4. Add a local `AGENTS.md` only when the project has local agent execution rules.

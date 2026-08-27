@@ -1,5 +1,5 @@
 ---
-id: story-worker-mcp-governed-tool-use
+id: worker-mcp-governed-tool-use
 title: Complete governed Worker MCP tool use
 persona: Product evaluator validating an agent workspace with MCP tool supply
 entrypoint: web

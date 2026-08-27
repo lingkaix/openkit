@@ -1,6 +1,7 @@
+---
+status: Accepted
+---
 # Design Roadmap
-
-Status: Living document
 
 This document records design areas that are acknowledged as necessary for the complete OpenKit system but are intentionally not being designed or implemented yet. It exists so that deferred areas stay visible, keep their boundary declarations in core docs, and do not silently re-enter scope through implementation drift.
 
@@ -62,7 +63,7 @@ The accepted V1 self-improvement contract in `docs/specs/20260710-self_improveme
 
 ### Scheduler release closeout, scale-out, warm-session reuse, and multi-node placement
 
-The durable scheduler design (`docs/specs/20260703-durable_scheduler_design.md`) covers durable records, admission, leases, same-snapshot renewal, and restart recovery. The active restart slice now uses one memory-only shim process key whose hash is bound to the lease at sequence zero, requires `lastWorkerSequence >= 1` as proof that post-launch recovery was enabled and child execution began, and adopts only with the exact lineage and next sequence. It keeps one preserved `awaiting-reconnect` deadline, uses one timeout CAS to `needs-evidence` with cleanup failure fenced until the next boot, restores the existing backend session read-only, and closes directly through existing final-status, checkpoint, workspace, cleanup, turn, lease, and capacity records. A sequence-zero-only supervisor uses existing cleanup. Final status is the last durable-output barrier after provenance and workspace publication; its asynchronous restart closeout gets one process-local attempt and remains `releasing` until the next boot if that attempt fails without replay. It adds no Ed25519 challenge, settlement table or workflow, recovery-serving subsystem, compatibility path, OpenShell fork, or patch. Acceptance is one deterministic NanoCore kill/restart L3 plus one thin A1 runner against the stock remote Gateway and surviving sandbox. Durable `releasingAt` and `releaseDeadline` handling for a stuck release without accepted terminal evidence remains required before the accepted five-minute release grace becomes active. The first stock OpenShell runtime remains a single-slot disposable Cell with local and remote placement (`docs/specs/20260715-openshell_disposable_cell_lifecycle.md`); multiple Cells, target selection, warm reuse, live cross-snapshot AEP refresh, and multi-node scheduling remain deferred until measured demand and independent capacity, network identity, and teardown proof justify them.
+The durable scheduler design (`docs/specs/20260703-durable_scheduler_design.md`) covers durable records, admission, leases, same-snapshot renewal, and restart recovery. The active restart slice now uses one memory-only shim process key whose hash is bound to the lease at sequence zero, requires `lastWorkerSequence >= 1` as proof that post-launch recovery was enabled and child execution began, and adopts only with the exact lineage and next sequence. It keeps one preserved `awaiting-reconnect` deadline, uses one timeout CAS to `needs-evidence` with cleanup failure fenced until the next boot, restores the existing backend session read-only, and closes directly through existing final-status, checkpoint, workspace, cleanup, turn, lease, and capacity records. A sequence-zero-only supervisor uses existing cleanup. Final status is the last durable-output barrier after provenance and workspace publication; its asynchronous restart closeout gets one process-local attempt and remains `releasing` until the next boot if that attempt fails without replay. It adds no Ed25519 challenge, settlement table or workflow, recovery-serving subsystem, compatibility path, OpenShell fork, or patch. Acceptance now includes the retained A1 F1 through F4 and Aggregate fault gate against the stock NanoHost path. Durable `releasingAt` and `releaseDeadline` handling for a stuck release without accepted terminal evidence remains required before the accepted five-minute release grace becomes active. The first stock OpenShell runtime is one configured NanoHost RuntimeTarget with one stock private OpenShell deployment; Cell placement, multiple runtime targets, warm reuse, live cross-snapshot AEP refresh, and multi-node scheduling remain absent until measured demand and independent capacity, network identity, and teardown proof justify them.
 
 The existing scheduler lease-maintenance interval is the sole lease time owner for reconnect expiry. It invokes the timeout CAS and cleanup path without a reconnect-specific timer or shutdown branch.
 
@@ -92,7 +93,7 @@ The vision (§5.2) plans generative interfaces where model output produces rich 
 
 ### Desktop application packaging
 
-The vision (§1) targets wrapping the SPA into a Tauri desktop app after the SPA form is mature. Packaging, update channels, local NanoCore bundling versus remote connection, and OS keychain integration for local credentials are undesigned. Prerequisite: Web UI completion.
+The vision (§1) targets wrapping the SPA into a Tauri desktop app after the SPA form is mature. Packaging, update channels, local NanoCore bundling versus remote connection, and OS Keychain storage for the desktop client's remote NanoCore bearer token are undesigned. That future client-channel credential is separate from NanoCore Vault backend material. Prerequisite: Web UI completion.
 
 ### Rebuilt Web projection for multi-user Workspaces
 
@@ -104,10 +105,10 @@ OpenKit-authored end-user Skills ship in-repo today (`skills/README.md`), but th
 
 ## Recently Activated (moved out of this list)
 
-- Cross-aspect Foundation doctrine, with Metering retained as a separate active Core owner: `docs/core/foundation.md`, `docs/core/metering.md`, and `docs/changes/202607111941330001-core_spec_implementation_alignment_audit.md`.
+- Cross-aspect Foundation doctrine, with Metering retained as a separate active Core owner: `docs/core/foundation.md` and `docs/core/metering.md`.
 - System-wide measurement now has durable non-gateway runtime, storage, and Git network producers; broader resource measurement, budgets, and cost projection remain in the deferred entry above: `docs/core/metering.md`.
 - Unified non-Codex LLM routing through `@earendil-works/pi-ai`: `docs/specs/20260708-pi_ai_unified_llm_backend.md`.
-- Generic direct-Task and Goal worker Context Package delivery plus accepted Goal steering through the single S39 Turn-owned trace: `docs/specs/20260703-worker_context_package.md`, `docs/specs/20260704-goal_mode_coordination.md`, and `docs/changes/202607132212000001-work_resource_interaction_model.md`.
+- Generic direct-Task and Goal worker Context Package delivery plus accepted Goal steering through the single S39 Turn-owned trace: `docs/specs/20260703-worker_context_package.md` and `docs/specs/20260704-goal_mode_coordination.md`.
 - Explicit, source-traceable self-improvement through an existing pending Knowledge Proposal, human Knowledge Review, later S39 delivery, and bounded reversal: `docs/specs/20260710-self_improvement_evaluation_loop.md`. Automated evaluation, recurring triggers, Task Evaluator promotion, and a runtime Skill Catalog remain deferred above.
 - Worker sandbox freedom and explicit process, filesystem, network, credential, and review boundaries: `docs/specs/20260709-worker_sandbox_freedom_policy.md`.
 - Worker runtime sub-agent provenance, trusted inference identity, and runtime-cache lineage are implemented and A1-verified against stock OpenShell `0.0.80` and Codex `0.144.1`: `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
@@ -124,9 +125,9 @@ OpenKit-authored end-user Skills ship in-repo today (`skills/README.md`), but th
 - Shared capability usage ledger and durable LLM producers are active; the worker MCP producer remains pending: `docs/specs/20260704-capability_usage_gateway_foundation.md`.
 - NanoCore boot, readiness, and recovery: `docs/specs/20260704-nanocore_bootstrap_readiness.md`.
 - Remote auth bootstrap and channel credential storage: `docs/specs/20260704-remote_auth_credential_bootstrap.md`.
-- Vault backends (OS keychain and encrypted local store): `docs/specs/20260704-vault_backend_implementation.md`.
+- Encrypted-file Vault backend for both local and server modes: `docs/specs/20260704-vault_backend_implementation.md`.
 - Workspace backup, export, import, and data-root migration: `docs/specs/20260704-workspace_backup_export_import.md`.
-- Agent Session continuity through exact same-worker reconnect or truthful interruption and a fresh authorized request; snapshot, generic resume, rollback, fork, clone, and automatic replacement remain non-authorizing future directions: `docs/specs/20260704-agent_session_continuity.md`.
+- AgentSession continuity through exact same-worker reconnect or truthful interruption and a fresh authorized request; snapshot, generic resume, rollback, fork, clone, and automatic replacement remain non-authorizing future directions: `docs/specs/20260704-agent_session_continuity.md`.
 - Git write workflow (commit-on-apply, review branches, GitHub-only approval-gated push): `docs/specs/20260704-git_write_workflow.md`.
 
 ## Links

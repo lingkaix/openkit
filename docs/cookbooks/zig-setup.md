@@ -7,7 +7,7 @@ Use this cookbook when a repository based on this template needs to add a Zig pa
 - Follow this cookbook instead of inventing a custom Zig setup flow.
 - Use `mise` to install and manage the Zig toolchain and Zig development tools for this sub-project.
 - Keep Zig-related tool versions in the appropriate `mise.toml` for the scope that owns the toolchain.
-- Run Zig setup and maintenance commands through `mise exec -- ...`.
+- Run Zig setup and maintenance commands as bare commands. `docs/toolchain.md` owns how the pinned toolchain reaches `PATH`; do not reintroduce a per-command `mise exec --` prefix.
 - Use Zig for native libraries, C/C++ bridge layers, and WebAssembly outputs when the same core library must serve both native and web targets.
 - Use `zig build` as the builder.
 - Use `zig fmt` as the formatter.
@@ -22,7 +22,7 @@ Use this cookbook when a repository based on this template needs to add a Zig pa
 
 ## Setup Flow
 
-1. Scaffold the package with `mise exec -- zig init`.
+1. Scaffold the package with `zig init`.
 2. Add a local `README.md`.
 3. Document output targets for native artifacts, C ABI bridges, or WebAssembly if applicable.
 4. Add package-level commands for build and format.

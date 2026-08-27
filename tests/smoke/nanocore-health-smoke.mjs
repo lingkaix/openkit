@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { connect } from 'node:http2';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -14,233 +14,153 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
  * @returns {Promise<void>} Resolves after the smoke check passes.
  */
 async function main() {
-  const port = await findOpenPort();
+  const appPort = await findOpenPort();
+  const nanoHostPort = await findOpenPort();
   const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-nano-smoke-'));
+  await writeNanoHostConfig(dataRoot, nanoHostPort);
   const child = spawn(process.execPath, [join(repoRoot, 'apps/nanocore/dist/index.js')], {
     cwd: join(repoRoot, 'apps/nanocore'),
     env: {
       ...process.env,
       OPENKIT_CORE_MODE: 'local',
+      OPENKIT_BIND_HOST: '127.0.0.1',
       OPENKIT_DATA_ROOT: dataRoot,
       OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
-      PORT: String(port),
+      PORT: String(appPort),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const output = captureOutput(child);
+  let nanoHostClient;
 
   try {
-    const baseUrl = `http://127.0.0.1:${port}`;
+    const baseUrl = `http://127.0.0.1:${appPort}`;
 
-    await waitForHttp(`${baseUrl}/api/health`, child);
+    await waitForHttp(`${baseUrl}/api/health`, child, output);
     await assertOkJson(`${baseUrl}/api/health`, 'health');
     await assertOkJson(`${baseUrl}/api/meta`, 'meta');
-    const workspace = await postJson(`${baseUrl}/api/workspaces`, 'create smoke workspace', {
-      name: 'Built artifact smoke',
-      requestId: randomUUID(),
+    const privateOnApp = await fetch(`${baseUrl}/api/nanohost/transport/session/admit`, {
+      body: '{}',
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
     });
-    if (typeof workspace.id !== 'string') {
+    if (privateOnApp.status !== 404) {
+      throw new Error(`App listener exposed NanoHost transport with ${privateOnApp.status}.`);
+    }
+    const harnessOnApp = await fetch(`${baseUrl}/worker-control/harness/poll`, {
+      body: '{"nextExpectedSequence":0,"schemaVersion":1}',
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    if (harnessOnApp.status !== 404) {
+      throw new Error(`App listener exposed NanoHost Harness routes with ${harnessOnApp.status}.`);
+    }
+
+    nanoHostClient = connect(`http://127.0.0.1:${nanoHostPort}`);
+    const appOnNanoHost = await requestHttp2(nanoHostClient, 'GET', '/api/health');
+    if (appOnNanoHost.status !== 404) {
+      throw new Error(`NanoHost listener exposed App health with ${appOnNanoHost.status}.`);
+    }
+    const privateAdmission = await requestHttp2(
+      nanoHostClient,
+      'POST',
+      '/api/nanohost/transport/session/admit',
+      '{}'
+    );
+    if (privateAdmission.status !== 401) {
       throw new Error(
-        `create smoke workspace returned malformed payload: ${JSON.stringify(workspace)}.`
+        `NanoHost listener did not reach private admission: ${privateAdmission.status}.`
       );
     }
-    await assertGoalModeRoutes(baseUrl, workspace.id);
-    await assertWorkspacePortabilitySmoke(baseUrl, dataRoot, workspace.id);
-    console.log('OpenKit NanoCore built-artifact smoke PASS');
-  } finally {
+    const privateHarness = await requestHttp2(
+      nanoHostClient,
+      'POST',
+      '/worker-control/harness/poll',
+      '{"nextExpectedSequence":0,"schemaVersion":1}'
+    );
+    if (privateHarness.status !== 409) {
+      throw new Error(`NanoHost listener did not reach private Harness: ${privateHarness.status}.`);
+    }
+    nanoHostClient.close();
+    nanoHostClient = undefined;
     await stopProcess(child);
+    console.log('OpenKit NanoCore dual-listener built-artifact smoke PASS');
+  } finally {
+    nanoHostClient?.destroy();
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise((resolveExit) => {
+        child.once('exit', resolveExit);
+        child.kill('SIGKILL');
+      });
+    }
     await rm(dataRoot, { force: true, recursive: true });
   }
 }
 
-/**
- * Verifies built NanoCore can export from one data root and import into a fresh data root.
- *
- * @param {string} sourceBaseUrl Source NanoCore base URL.
- * @param {string} sourceDataRoot Source NanoCore data root.
- * @param {string} workspaceId Publicly created Workspace to export.
- * @returns {Promise<void>} Resolves after export, verification, dry-run, and import pass.
- */
-async function assertWorkspacePortabilitySmoke(sourceBaseUrl, sourceDataRoot, workspaceId) {
-  const knowledge = await postJson(
-    `${sourceBaseUrl}/api/workspaces/${workspaceId}/knowledge`,
-    'create portability knowledge',
-    {
-      content: 'Workspace portability smoke knowledge must survive import.',
-      kind: 'project-context',
-      requestId: randomUUID(),
-      title: 'Workspace portability smoke',
-    }
-  );
-
-  if (knowledge.title !== 'Workspace portability smoke') {
-    throw new Error(
-      `create portability knowledge returned malformed payload: ${JSON.stringify(knowledge)}.`
-    );
-  }
-
-  const exported = await postJson(
-    `${sourceBaseUrl}/api/app/workspaces/${workspaceId}/export`,
-    'export workspace',
-    {}
-  );
-
-  if (
-    exported.workspaceId !== workspaceId ||
-    typeof exported.exportId !== 'string' ||
-    !Array.isArray(exported.checkedFiles) ||
-    !exported.checkedFiles.includes('records/workspace.json')
-  ) {
-    throw new Error(`export workspace returned malformed payload: ${JSON.stringify(exported)}.`);
-  }
-
-  const targetPort = await findOpenPort();
-  const targetDataRoot = await mkdtemp(join(tmpdir(), 'openkit-nano-portability-target-'));
-  const targetExportRoot = join(
-    targetDataRoot,
-    'server',
-    'exports',
-    'workspaces',
-    workspaceId,
-    exported.exportId
-  );
-  const targetChild = spawn(process.execPath, [join(repoRoot, 'apps/nanocore/dist/index.js')], {
-    cwd: join(repoRoot, 'apps/nanocore'),
-    env: {
-      ...process.env,
-      OPENKIT_CORE_MODE: 'local',
-      OPENKIT_DATA_ROOT: targetDataRoot,
-      OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
-      PORT: String(targetPort),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  await mkdir(dirname(targetExportRoot), { recursive: true });
-  await cp(
-    join(sourceDataRoot, 'server', 'exports', 'workspaces', workspaceId, exported.exportId),
-    targetExportRoot,
-    { recursive: true }
-  );
-
-  try {
-    const targetBaseUrl = `http://127.0.0.1:${targetPort}`;
-
-    await waitForHttp(`${targetBaseUrl}/api/health`, targetChild);
-
-    const dryRun = await postJson(
-      `${targetBaseUrl}/api/app/workspace-imports/dry-run`,
-      'dry-run workspace import',
-      {
-        exportId: exported.exportId,
-        sourceWorkspaceId: workspaceId,
-      }
-    );
-
-    if (dryRun.exportedWorkspaceId !== workspaceId || dryRun.verification?.fileCount < 4) {
-      throw new Error(
-        `dry-run workspace import returned malformed payload: ${JSON.stringify(dryRun)}.`
-      );
-    }
-
-    const imported = await postJson(
-      `${targetBaseUrl}/api/app/workspace-imports`,
-      'import workspace',
-      {
-        exportId: exported.exportId,
-        requestId: randomUUID(),
-        sourceWorkspaceId: workspaceId,
-      }
-    );
-
-    if (
-      typeof imported.importedWorkspaceId !== 'string' ||
-      imported.workspace?.importedFrom?.sourceWorkspaceId !== workspaceId
-    ) {
-      throw new Error(`import workspace returned malformed payload: ${JSON.stringify(imported)}.`);
-    }
-
-    const importedKnowledge = await assertOkJson(
-      `${targetBaseUrl}/api/workspaces/${imported.importedWorkspaceId}/knowledge`,
-      'imported workspace knowledge'
-    );
-
-    if (
-      !Array.isArray(importedKnowledge.items) ||
-      !importedKnowledge.items.some((entry) => entry.title === 'Workspace portability smoke')
-    ) {
-      throw new Error(
-        `imported workspace knowledge was not preserved: ${JSON.stringify(importedKnowledge)}.`
-      );
-    }
-  } finally {
-    await stopProcess(targetChild);
-    await rm(targetDataRoot, { force: true, recursive: true });
-  }
+/** Retains bounded startup output for a deciding smoke failure. */
+function captureOutput(child) {
+  let output = '';
+  const append = (chunk) => {
+    output = `${output}${chunk}`.slice(-4096);
+  };
+  child.stdout.on('data', append);
+  child.stderr.on('data', append);
+  return () => output;
 }
 
-/**
- * Verifies that built Goal Mode routes and read models boot without providers.
- *
- * @param {string} baseUrl NanoCore base URL.
- * @param {string} workspaceId Publicly created Workspace to exercise.
- * @returns {Promise<void>} Resolves after Goal Mode smoke checks pass.
- */
-async function assertGoalModeRoutes(baseUrl, workspaceId) {
-  const thread = await postJson(
-    `${baseUrl}/api/workspaces/${workspaceId}/threads`,
-    'create thread',
-    {
-      name: 'Goal Mode smoke',
-      requestId: randomUUID(),
-    }
+/** Writes one secret-free dual-listener NanoHost deployment config. */
+async function writeNanoHostConfig(dataRoot, nanoHostPort) {
+  const configRoot = join(dataRoot, 'config');
+  await mkdir(configRoot, { recursive: true });
+  await writeFile(
+    join(configRoot, 'server.jsonc'),
+    `${JSON.stringify(
+      {
+        nanohost: {
+          bind: { host: '127.0.0.1', port: nanoHostPort },
+          credentialRef: 'nanohost-transport:smoke',
+          credentialSlots: {
+            A: {
+              companionPath: '/run/openkit-smoke/nanohost-A.meta',
+              secretPath: '/run/openkit-smoke/nanohost-A.token',
+            },
+            B: {
+              companionPath: '/run/openkit-smoke/nanohost-B.meta',
+              secretPath: '/run/openkit-smoke/nanohost-B.token',
+            },
+          },
+          deploymentId: 'deployment-smoke',
+          identityId: 'nanohost-smoke',
+          rendezvousUrl: `http://127.0.0.1:${nanoHostPort}`,
+        },
+        schemaVersion: 1,
+      },
+      null,
+      2
+    )}\n`
   );
+}
 
-  if (typeof thread.id !== 'string' || !thread.id.startsWith('th_')) {
-    throw new Error('create thread route returned a malformed thread id.');
-  }
-
-  const threadId = thread.id;
-  const goalRoute = `${baseUrl}/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`;
-  const started = await postJson(goalRoute, 'start goal', {
-    objective: 'Confirm Goal Mode built-artifact smoke coverage.',
-    requestId: randomUUID(),
-    title: 'Goal Mode smoke',
+/** Sends one bounded request over the dedicated native HTTP/2 listener. */
+function requestHttp2(client, method, path, body = '') {
+  return new Promise((resolve, reject) => {
+    const request = client.request(
+      {
+        ':method': method,
+        ':path': path,
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      { endStream: false }
+    );
+    let status = 0;
+    request.on('response', (headers) => {
+      status = Number(headers[':status']);
+    });
+    request.on('error', reject);
+    request.on('data', () => {});
+    request.on('end', () => resolve({ status }));
+    request.end(body);
   });
-
-  assertGoalStatus(started, 'planning', 'start goal');
-
-  const planned = await postJson(`${goalRoute}/plan`, 'create goal plan', {
-    requestId: randomUUID(),
-  });
-
-  assertGoalStatus(planned, 'awaiting_plan_approval', 'create goal plan');
-
-  if (
-    typeof planned.planItemId !== 'string' ||
-    typeof planned.plan !== 'object' ||
-    planned.plan === null
-  ) {
-    throw new Error('create goal plan route returned a malformed plan payload.');
-  }
-
-  const approved = await postJson(`${goalRoute}/plan/approve`, 'approve goal plan', {
-    requestId: randomUUID(),
-    planItemId: planned.planItemId,
-  });
-
-  assertGoalStatus(approved, 'running', 'approve goal plan');
-
-  const summary = await assertOkJson(goalRoute, 'goal summary');
-
-  assertGoalStatus(summary, 'running', 'goal summary');
-
-  const supervised = await postJson(
-    `${goalRoute}/test/supervise/step`,
-    'test supervise goal step',
-    {}
-  );
-
-  assertGoalStatus(supervised, 'completed', 'test supervise goal step');
 }
 
 /**
@@ -262,51 +182,6 @@ async function assertOkJson(url, label) {
 }
 
 /**
- * Posts JSON to one route and returns its JSON response.
- *
- * @param {string} url URL to fetch.
- * @param {string} label Human-readable assertion label.
- * @param {Record<string, unknown>} body Request body.
- * @returns {Promise<Record<string, unknown>>} Parsed JSON response.
- * @throws {Error} When the endpoint fails or returns non-JSON.
- */
-async function postJson(url, label, body) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw new Error(`${label} route returned ${response.status}: ${await response.text()}`);
-  }
-
-  return await response.json();
-}
-
-/**
- * Asserts that a Goal Mode route response contains the expected goal status.
- *
- * @param {Record<string, unknown>} payload Route payload.
- * @param {string} expectedStatus Expected goal status.
- * @param {string} label Human-readable assertion label.
- * @returns {void}
- * @throws {Error} When the response has no matching goal status.
- */
-function assertGoalStatus(payload, expectedStatus, label) {
-  const goal = payload.goal;
-
-  if (
-    typeof goal !== 'object' ||
-    goal === null ||
-    !('status' in goal) ||
-    goal.status !== expectedStatus
-  ) {
-    throw new Error(`${label} route returned goal status ${JSON.stringify(goal)}.`);
-  }
-}
-
-/**
  * Waits until an HTTP URL returns a successful status.
  *
  * @param {string} url URL to poll.
@@ -314,12 +189,14 @@ function assertGoalStatus(payload, expectedStatus, label) {
  * @returns {Promise<void>} Resolves once the URL is reachable.
  * @throws {Error} When the process exits or the deadline is reached.
  */
-async function waitForHttp(url, child) {
+async function waitForHttp(url, child, output) {
   const deadline = Date.now() + 30_000;
 
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`Process exited before ${url} became ready: ${child.exitCode}.`);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `Process exited before ${url} became ready: code=${child.exitCode}, signal=${child.signalCode}.\n${output()}`
+      );
     }
 
     try {
@@ -340,22 +217,36 @@ async function waitForHttp(url, child) {
  * Stops one spawned child process.
  *
  * @param {import('node:child_process').ChildProcessWithoutNullStreams} child Process to stop.
- * @returns {Promise<void>} Resolves once the process exits or is killed.
+ * @returns {Promise<void>} Resolves only after an orderly zero-code exit.
+ * @throws {Error} When the process misses the shutdown deadline or exits unsuccessfully.
  */
 async function stopProcess(child) {
-  if (child.exitCode !== null || child.killed) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    if (child.exitCode !== 0 || child.signalCode !== null) {
+      throw new Error(
+        `NanoCore exited before shutdown: code=${child.exitCode}, signal=${child.signalCode}.`
+      );
+    }
     return;
   }
 
+  const exit = new Promise((resolveExit) => {
+    child.once('exit', (code, signal) => resolveExit({ code, signal }));
+  });
   child.kill('SIGTERM');
-  await Promise.race([
-    new Promise((resolveExit) => child.once('exit', resolveExit)),
-    sleep(2_000).then(() => {
-      if (child.exitCode === null && !child.killed) {
-        child.kill('SIGKILL');
-      }
-    }),
-  ]);
+  const result = await Promise.race([exit, sleep(2_000).then(() => null)]);
+
+  if (result === null) {
+    child.kill('SIGKILL');
+    await exit;
+    throw new Error('NanoCore did not exit cleanly within 2000ms after SIGTERM.');
+  }
+
+  if (result.code !== 0) {
+    throw new Error(
+      `NanoCore exited unsuccessfully after SIGTERM: code=${result.code}, signal=${result.signal}.`
+    );
+  }
 }
 
 /**

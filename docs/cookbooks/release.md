@@ -44,7 +44,7 @@ The release workspace is the root package, `apps/*`, `packages/*`, and `mcp`.
 
 4. Update the release change record.
 
-Use `docs/changes/<timestamp>-${OPENKIT_RELEASE_VERSION//./_}_release_plan.md` for the version checklist, important decisions, known limitations, manual gate results, image digests, and final verification summary.
+Use `docs/changes/<timestamp>-${OPENKIT_RELEASE_VERSION//./_}_release_plan/plan.md` for the version checklist, important decisions, known limitations, manual gate results, image digests, and final verification summary. The file is the required member of a `change-plan` bundle; add `state.json` and `findings.md` beside it only when the release program produces those optional evidence members.
 
 5. Check the image manifest.
 
@@ -76,8 +76,9 @@ pnpm -w verify:release
 
 ```bash
 pnpm -w test:e2e:web
-pnpm -w test:stories
 ```
+
+Run an admitted L6 story separately under the L6 story-acceptance specification when that agentic product-intent evidence is required.
 
 9. Merge the release preparation branch into `main`.
 
@@ -157,9 +158,9 @@ The notes must include the tag, source commit, workflow run, image tags, and pus
 
 ## Manual Gates
 
-L4 Web e2e and deterministic L6 stories are manual release confidence checks.
+L4 Web e2e and L6 story acceptance are manual release confidence checks. Run Web e2e when the release owner wants browser-flow evidence beyond the default gate, and execute admitted L6 stories under the L6 story-acceptance specification when agentic product-intent evidence is required.
 
-Run them when the release owner wants browser-flow or story-level evidence beyond the default release gate.
+The app-owned `test:e2e:real-provider`, `test:e2e:real-subscription`, and `test:e2e:real-task-mode` gates remain explicit opt-ins.
 
 Do not wire real-provider, real-Codex, subscription-auth, or quota-consuming tests into automatic tag release CI.
 

@@ -6,7 +6,7 @@ It is not another heavy agent runtime. OpenKit coordinates mature runtimes such 
 
 ## Why OpenKit Exists
 
-Individual agent sessions are useful, but they are hard to manage as a work system. Context is scattered, approvals are ad hoc, artifacts are easy to lose, follow-up work is detached from prior attempts, and long-running tasks rarely have a durable record that humans can inspect.
+Individual AgentSessions are useful, but they are hard to manage as a work system. Context is scattered, approvals are ad hoc, artifacts are easy to lose, follow-up work is detached from prior attempts, and long-running tasks rarely have a durable record that humans can inspect.
 
 OpenKit turns those isolated sessions into a managed workspace:
 
@@ -52,7 +52,7 @@ Workspace -> Thread -> Turn -> Item[]
 ## What Works Now
 
 - NanoCore local and server-mode foundations.
-- Durable workspace, thread, turn, item, artifact, knowledge, agent session, approval, automation, and review-related storage foundations.
+- Durable workspace, thread, turn, item, artifact, knowledge, AgentSession, approval, automation, and review-related storage foundations.
 - Goal Mode for objective capture, plan review, bounded steps, verification evidence, and terminal completion state.
 - Action Center read models for human attention, approvals, blocked work, and follow-up decisions.
 - Workspace repository linking, sync records, review records, apply results, artifacts, and evidence bundles through public NanoCore contracts.
@@ -75,7 +75,7 @@ The Web UI is still part of the product. In the current development model, it is
 Run the local Web surface when you need to inspect the current browser experience:
 
 ```bash
-mise exec -- pnpm --filter @openkit/web dev
+pnpm --filter @openkit/web dev
 ```
 
 NanoCore listens on `http://localhost:3000` by default, and the Web app uses its Vite `/api` proxy for local development.
@@ -85,23 +85,36 @@ NanoCore listens on `http://localhost:3000` by default, and the Web app uses its
 Use the deployment docs instead of this README for operational detail.
 
 - [`docs/deployment.md`](./docs/deployment.md) defines the stable deployment model.
-- [`docs/nanocore-deployment-modes.en.md`](./docs/nanocore-deployment-modes.en.md) explains source and container deployment modes.
+- [`docs/manual/nanocore-deployment-modes.en.md`](./docs/manual/nanocore-deployment-modes.en.md) explains source and container deployment modes.
 - [`docs/cookbooks/release.md`](./docs/cookbooks/release.md) explains how to cut a version tag, run the release gate, publish release images, and verify GitHub Release notes.
 - [`docs/cookbooks/docker-app.md`](./docs/cookbooks/docker-app.md) explains the local app container image workflow.
 
 ## Common Commands
 
-Prefer `mise exec --` or `mise run` so the repository toolchain comes from `.mise.toml`.
+Repository commands are the `scripts` in root `package.json` and are invoked as bare `pnpm ...`. `bash scripts/repo-init.sh` installs the pinned toolchain and checks that bare `node` and `pnpm` resolve to it.
 
 ```bash
-mise exec -- pnpm run check:repo
-mise exec -- pnpm --filter @openkit/nanocore test
-mise run verify
-mise run verify-release
-mise run verify-full
+pnpm run check:repo
+pnpm --filter @openkit/nanocore test
+pnpm verify
+pnpm verify:release
+pnpm verify:full
 ```
 
+Prepare and prove the repository's admitted A1 test host before real NanoHost acceptance work:
+
+```bash
+pnpm host:provision a1
+pnpm host:assert a1
+pnpm host:nanohost:bring-up a1
+pnpm host:teardown a1
+```
+
+The bring-up command requires attempt-local NanoCore admin inputs and always tears down the NanoHost service and its credential slots. Retain the redacted two-cycle result at `temp/state/nanohost/host-manifest/a1/result.json`; see the [NanoHost real-use host cookbook](./docs/cookbooks/nanohost-real-use-host.md).
+
 Use focused package commands while developing and run release gates before tagging.
+
+Checks run inside the `test-env` container image, which they enter on their own. Docker must be running; nothing else about the host changes what a check may do, which is why the same command behaves the same on a laptop, in CI, and inside an agent sandbox. The first run builds the image. The NanoCore restart gate and the real-provider, real-subscription, and real-task-mode gates drive Docker themselves and therefore stay on the host. See the Test Execution Environment decision in [`docs/toolchain.md`](./docs/toolchain.md).
 
 ## Repository Layout
 
@@ -110,9 +123,9 @@ Use focused package commands while developing and run release gates before taggi
 ├── apps/                   # NanoCore and Web product surfaces
 ├── packages/               # Shared protocol, App API, config, and client packages
 ├── skills/                 # Unified end-user Skill and bundled CLI
-├── docs/                   # Core docs, specs, cookbooks, changes, and working logs
+├── docs/                   # Core docs, specs, cookbooks, changes, and audits
 ├── scripts/                # Bootstrap and helper scripts
-├── .mise.toml              # Tool versions and top-level tasks
+├── .mise.toml              # Pinned tool versions for bootstrap
 ├── AGENTS.md               # Agent execution rules
 └── CONTRIBUTING.md         # Human workflow and review guide
 ```
@@ -126,10 +139,10 @@ Use focused package commands while developing and run release gates before taggi
 - [`docs/product-vision.md`](./docs/product-vision.md): long-term product direction.
 - [`docs/roadmap.md`](./docs/roadmap.md): roadmap and version-scope planning.
 - [`docs/specs/20260713-openkit_agent_skill_interface.md`](./docs/specs/20260713-openkit_agent_skill_interface.md): canonical end-user Agent Skill Interface contract.
-- [`docs/changes/202607131935040001-openkit_agent_skill_interface.md`](./docs/changes/202607131935040001-openkit_agent_skill_interface.md): staged implementation and clean-removal plan.
 - [`apps/README.md`](./apps/README.md): application sub-project expectations.
 - [`packages/README.md`](./packages/README.md): shared package inventory.
-- [`docs/change-tracking.md`](./docs/change-tracking.md): rules for specs, changes, and working logs.
+- [`docs/change-execution.md`](./docs/change-execution.md): governance for material change execution and change-record content.
+- [`docs/verification-instruments.md`](./docs/verification-instruments.md): governance for what makes a verdict believable — oracle classification, harness admission, and execution environment.
 
 ## License
 

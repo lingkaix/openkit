@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import * as appSchemas from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import * as protocol from '@openkit/protocol';
 
@@ -54,6 +63,23 @@ test('the OpenKit Skill ships only the accepted release tree', () => {
   assert.equal(statSync(cliPath).mode & 0o111, 0o111);
 });
 
+test('provider-subscription operations reuse the App API provider-id schema', async () => {
+  const { operationCatalog } = await operations();
+  const [providerList, ...accountOperations] = operationCatalog.filter((entry) =>
+    entry.id.startsWith('provider-subscription.')
+  );
+
+  assert.equal(providerList.id, 'provider-subscription.provider-list');
+  assert.equal(providerList.inputSchema.shape.subscriptionProviderId, undefined);
+  for (const entry of accountOperations) {
+    assert.strictEqual(
+      entry.inputSchema.shape.subscriptionProviderId,
+      appSchemas.SubscriptionProviderIdSchema,
+      entry.id
+    );
+  }
+});
+
 test('one catalog covers the checked App API and public Core projection', async () => {
   const { operationCatalog, operationExclusions } = await operations();
   const client = createCoreClient({ baseUrl: 'http://127.0.0.1' });
@@ -87,6 +113,7 @@ test('one catalog covers the checked App API and public Core projection', async 
     'app-api:acceptWorkspaceInvitation',
     'app-api:createOpenKitAccessToken',
     'app-api:declineWorkspaceInvitation',
+    'app-api:getNanoHostRuntimeTargetStatus',
     'app-api:getThreadDashboard',
     'app-api:getWorkspaceDashboard',
     'app-api:leaveWorkspace',
@@ -115,6 +142,90 @@ test('one catalog covers the checked App API and public Core projection', async 
     operationCatalog.filter((entry) => entry.source === 'local-only').map((entry) => entry.id),
     ['credential.store', 'credential.delete']
   );
+  assert.deepEqual(
+    operationCatalog
+      .filter((entry) => entry.id.startsWith('provider-subscription.'))
+      .map((entry) => [
+        entry.id,
+        entry.appOperationId,
+        entry.clientMethod,
+        entry.mutating,
+        Object.keys(entry.inputSchema.shape).sort(),
+      ]),
+    [
+      [
+        'provider-subscription.provider-list',
+        'listSubscriptionProviders',
+        'providerSubscriptions.listProviders',
+        false,
+        [],
+      ],
+      [
+        'provider-subscription.account-list',
+        'listProviderSubscriptionAccounts',
+        'providerSubscriptions.listAccounts',
+        false,
+        ['subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-create',
+        'createProviderSubscriptionAccount',
+        'providerSubscriptions.createAccount',
+        true,
+        ['accountSlotId', 'displayName', 'subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-update',
+        'updateProviderSubscriptionAccount',
+        'providerSubscriptions.updateAccount',
+        true,
+        ['accountSlotId', 'displayName', 'subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-delete',
+        'deleteProviderSubscriptionAccount',
+        'providerSubscriptions.deleteAccount',
+        true,
+        ['accountSlotId', 'subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-status',
+        'getProviderSubscriptionAccountStatus',
+        'providerSubscriptions.getAccountStatus',
+        false,
+        ['accountSlotId', 'subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-login-start',
+        'startProviderSubscriptionAccountLogin',
+        'providerSubscriptions.startAccountLogin',
+        true,
+        ['accountSlotId', 'mode', 'subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-login-cancel',
+        'cancelProviderSubscriptionAccountLogin',
+        'providerSubscriptions.cancelAccountLogin',
+        true,
+        ['accountSlotId', 'interactionId', 'subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-logout',
+        'logoutProviderSubscriptionAccount',
+        'providerSubscriptions.logoutAccount',
+        true,
+        ['accountSlotId', 'subscriptionProviderId'],
+      ],
+      [
+        'provider-subscription.account-quota',
+        'getProviderSubscriptionAccountQuota',
+        'providerSubscriptions.getAccountQuota',
+        false,
+        ['accountSlotId', 'subscriptionProviderId'],
+      ],
+    ]
+  );
+  assert.equal(operationCatalog.filter((entry) => entry.id.startsWith('oauth.')).length, 0);
 
   for (const entry of operationCatalog) {
     assert.match(entry.id, /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/);
@@ -219,15 +330,24 @@ test('one catalog covers the checked App API and public Core projection', async 
       'backup.verify',
       'diagnostics.app',
       'diagnostics.setup',
-      'oauth.account-create',
-      'oauth.account-delete',
-      'oauth.account-list',
-      'oauth.account-update',
-      'oauth.cancel',
-      'oauth.logout',
-      'oauth.start',
-      'oauth.status',
+      'nanohost.decommission',
+      'nanohost.enroll',
+      'nanohost.token-issue',
+      'nanohost.token-list',
+      'nanohost.token-revoke',
+      'nanohost.token-rotate',
+      'nanohost.token-rotation-abort',
       'permission.server-list',
+      'provider-subscription.account-create',
+      'provider-subscription.account-delete',
+      'provider-subscription.account-list',
+      'provider-subscription.account-login-cancel',
+      'provider-subscription.account-login-start',
+      'provider-subscription.account-logout',
+      'provider-subscription.account-quota',
+      'provider-subscription.account-status',
+      'provider-subscription.account-update',
+      'provider-subscription.provider-list',
       'runtime.file-create',
       'runtime.file-list',
       'runtime.file-read',
@@ -459,6 +579,55 @@ test('catalog search is concise and describe returns one machine-readable input 
   assert.ok(!('handler' in description));
 });
 
+test('the encrypted-file Vault cutover removes only the obsolete NanoCore Keychain path', () => {
+  const remoteCredentialStorePath = join(repoRoot, 'skills', 'openkit-secrets.mjs');
+  assert.equal(existsSync(remoteCredentialStorePath), true);
+  assert.match(
+    readFileSync(remoteCredentialStorePath, 'utf8'),
+    /export function createDefaultOpenKitCredentialStore/
+  );
+
+  const violations = [];
+  for (const path of [
+    'apps/nanocore/src/vault/vault-os-keychain-backend.ts',
+    'apps/nanocore/src/vault/vault-os-keychain-backend.test.ts',
+  ]) {
+    if (existsSync(join(repoRoot, path))) {
+      violations.push(`obsolete Vault Keychain file remains: ${path}`);
+    }
+  }
+
+  for (const [path, forbiddenTerms] of [
+    [
+      'apps/nanocore/src/app.ts',
+      ['vaultOsKeychainAdapter', 'osKeychainAdapter', 'localDefaultBackend', 'os-keychain'],
+    ],
+    [
+      'apps/nanocore/src/vault/vault-unlock-state.ts',
+      [
+        'vault-os-keychain-backend',
+        'OsKeychainVaultAdapter',
+        'CreateOsKeychainVaultUnlockStateInput',
+        'osKeychainBackend',
+        'os-keychain',
+      ],
+    ],
+    ['apps/nanocore/src/index.ts', ['localDefaultBackend']],
+    ['apps/nanocore/src/storage/schema/vault-references.ts', ['os-keychain']],
+    ['packages/config-schema/src/server.ts', ['localDefaultBackend', 'os-keychain']],
+    ['apps/nanocore/src/vault/vault-backend.ts', ['os-keychain']],
+  ]) {
+    const source = readFileSync(join(repoRoot, path), 'utf8');
+    for (const forbiddenTerm of forbiddenTerms) {
+      if (source.includes(forbiddenTerm)) {
+        violations.push(`obsolete Vault term ${forbiddenTerm} remains in ${path}`);
+      }
+    }
+  }
+
+  assert.deepEqual(violations, []);
+});
+
 test('credential resolution is endpoint-scoped, fail-closed, and redacted', async (t) => {
   const {
     createDefaultOpenKitCredentialStore,
@@ -546,6 +715,27 @@ test('credential keychains keep token material out of command arguments', async 
     assert.doesNotMatch(JSON.stringify(write.args), /okt_stdin_only/);
     assert.equal(write.options.input, 'okt_stdin_only');
   }
+});
+
+test('the bundled CLI rejects obsolete os-keychain Vault responses', async () => {
+  const result = await runCli(
+    ['ops', 'call', 'vault.status', '--input', '-'],
+    {
+      OPENKIT_NANOCORE_URL: 'http://nanocore.example',
+      OPENKIT_NANOCORE_TOKEN: '',
+    },
+    '{}',
+    [
+      responseModule(200, {
+        backendKind: 'os-keychain',
+        diagnostic: 'Obsolete backend response.',
+        state: 'available',
+      }),
+    ]
+  );
+
+  assert.equal(result.code, 3);
+  assert.equal(JSON.parse(result.stdout).error.code, 'incompatible_contract');
 });
 
 test('the bundled CLI performs one typed call with fixed audit headers', async () => {

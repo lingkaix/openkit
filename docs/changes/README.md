@@ -1,64 +1,38 @@
 # Change Records
 
-This directory contains material change lifecycle records for important repository changes.
+This directory contains non-authoritative lifecycle evidence for material repository work. `docs/change-execution.md` owns when to create a record and how material work proceeds; `docs/documentation-model.md` owns the type and precedence rules.
 
-Use [`docs/change-tracking.md`](../change-tracking.md) as the canonical policy for when to create, update, and close change records.
+## When To Write One
 
-## Purpose
-
-- Preserve plans, related design links, execution checkpoints, final summaries, and verification context that would be hard to reconstruct from code diffs alone.
-- Keep important PR, branch, standalone, and release context discoverable without turning this directory into a command transcript.
-- Link material changes back to the relevant core docs, product docs, specs, working logs, PRs, branches, and commits.
-
-## When To Write A Change Record
-
-Create or update one change record when work is material enough to need future audit.
-
-Typical triggers include cross-surface changes, protocol or API decisions, data layout work, rollout or migration risk, multi-agent work, long-running execution, or a curated release summary.
-
-Do not create change records for routine implementation steps, temporary fixes, test-only follow-ups, mechanical renames, or intermediate long-run progress that belongs in `docs/working_logs/`.
+Use one record when intent, accepted decisions, evidence, or recovery context must survive the chat or commit diff. Typical cases are cross-surface, public-contract, durable-data, rollout, multi-agent, long-running, strict-effect, or likely-audit work. Routine implementation, mechanical changes, and noisy progress stay out of this directory.
 
 ## Record Types
 
-- `change-plan`: lifecycle record for major or significant planned work.
-- `pr-summary`: curated summary for one pull request or branch.
-- `standalone-change`: small but important change that does not need a full spec.
-- `release-summary`: curated summary for a completed long-run release cycle.
+- `change-plan`: material work from intent through closeout.
+- `pr-summary`: curated context for one pull request or branch.
+- `standalone-change`: important bounded work that does not need a plan.
+- `release-summary`: a completed release cycle.
 
-## Status Values
+Lifecycle status is `planned`, `in-progress`, `blocked`, `implemented`, `verified`, or `superseded`.
 
-- `planned`: the change is planned but implementation has not started.
-- `in-progress`: implementation is underway.
-- `blocked`: implementation cannot proceed until a named blocker is resolved.
-- `implemented`: implementation is complete but final verification or review is still pending.
-- `verified`: implementation and final verification are complete.
-- `superseded`: another change record, spec, or decision replaced this record.
+## Change Plans
 
-## Filename Convention
+Name a new bundle `YYYYMMDDHHMMSSssss-short_name/`. It contains required `plan.md`, optional `findings.md`, optional `route-log.md`, and optional unchanged legacy `state.json` only when an older program produced one. Each of the three approved pilot plans keeps a `route-log.md` in the shape `docs/change-execution.md` defines; no other plan owes one. Scripts, probes, attempt evidence, and raw output stay uncommitted under `temp/changes/`, in a directory with the same name as this bundle. A plan may still reference and use other `temp/` paths where the work needs them.
 
-Use a fixed-width sortable timestamp and short slug:
+A material long-running plan records append-only Intent Epochs for outcome, non-negotiables, acceptance, and effect boundary. Never edit or delete a recorded epoch; append a sourced epoch when intent changes. Keep current facts, unknowns, method, frontier, and the predicted Next Action in a clearly marked rewritable checkpoint.
 
-```text
-YYYYMMDDHHMMSSssss-short_name.md
-```
+When a bundle has `findings.md`, keep its `Follow-up Index` at the start and keep each item in the fixed `open`, `deferred`, or `closed` shape owned by `docs/change-execution.md`. The index is a non-table projection: unchecked entries are unresolved, and an entry first listed there remains checked after later work closes the same finding; historical checked-line retention is self-reported because the current-file validator has no prior snapshot.
 
-Example:
+Do not freeze a complete future work-package queue, role order, correction count, artifact inventory, or event budget. Historical matrices, queues, assignments, gates, and state remain evidence and carry no dispatch authority.
 
-```text
-202602142008590001-ui_refactor.md
-```
+## Content And Closeout
 
-## Required Links
+Link relevant Core and accepted specifications. Preserve accepted product decisions and direct evidence; do not restate their contracts as plan authority. Keep findings non-authorizing until user intent or an accepted owner admits them.
 
-Every material change record must link relevant design context, especially:
+At closeout, record the actual implementation, commits, exact verification, external effects, cleanup, unresolved findings, and residual risk. Every unresolved finding appears unchecked in the findings `Follow-up Index`; later closure checks that line, changes the item status, retains the append-only `Next action` history, and appends the closing verdict and closure evidence together. Promote durable decisions to their owner before anything depends on them.
 
-- `docs/core/architecture.md`
-- `docs/core/work-model.md`
-- `docs/product-vision.md`
-- relevant `docs/core/*.md`
-- relevant `docs/specs/*.md`
-- relevant `docs/working_logs/...` archives
+Change records may be pruned after no current owner or active plan depends on them. Historical deletion must not make current intent or behavior ambiguous.
 
-## Local Agent Rules
+## Local Rules
 
-See [`AGENTS.md`](./AGENTS.md) for local execution rules that apply when creating, moving, updating, or closing change records.
+Read `AGENTS.md` before editing records here.

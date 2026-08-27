@@ -1,6 +1,6 @@
 ---
 name: openkit
-description: Operate OpenKit as an agent helping an end user through its public NanoCore interface. Use for end-user setup, connection diagnostics, workspace and repository operation, Chat Mode, Task Mode, Goal Mode, bounded loop coordination, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, audit, usage, automations, Git operations, backup, export, import, and workspace portability. Do not use for OpenKit source development, repository self-improvement, arbitrary shell or HTTP access, private NanoCore internals, or worker-side capability supply.
+description: Operate OpenKit as an agent helping an end user through its public NanoCore interface. Use for end-user setup, connection diagnostics, workspace and repository operation, Chat Mode, Task Mode, Goal Mode, bounded loop coordination, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, NanoHost execution-host administration, audit, usage, automations, Git operations, backup, export, import, and workspace portability. Do not use for OpenKit source development, repository self-improvement, arbitrary shell or HTTP access, private NanoCore internals, or worker-side capability supply.
 ---
 
 # OpenKit
@@ -55,7 +55,7 @@ Adapt this sequence to the task, but preserve its authority and safety boundarie
 - Load [loop.md](references/loop.md) for workspace work, mode selection, plans, bounded execution, Action Center decisions, artifacts, evidence, review, or completion.
 - Load [knowledge.md](references/knowledge.md) for knowledge sources, observations, claims, conflicts, retrieval, bounded context preparation, proposals, repair, or knowledge health.
 - Load [recovery.md](references/recovery.md) for interrupted or unknown work, retries, checkpoints, restarts, stale state, `recovery_required`, or local aborts.
-- Load [administration.md](references/administration.md) for runtime configuration, access administration, vault operations, audit, usage, automations, Git administration, backup, export, import, or workspace portability.
+- Load [administration.md](references/administration.md) for runtime configuration, access administration, NanoHost execution-host credentials, vault operations, audit, usage, automations, Git administration, backup, export, import, or workspace portability.
 - Load [capability-map.md](references/capability-map.md) when the user intent does not clearly identify a capability group or when an operation cannot be found.
 
 Do not load all references or enumerate the complete operation catalog by default. Let CLI search and description provide the current machine-readable operation contract.

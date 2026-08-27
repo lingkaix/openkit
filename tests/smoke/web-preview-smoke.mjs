@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const PROCESS_TERMINATION_GRACE_MS = 500;
+const PROCESS_KILL_TIMEOUT_MS = 2_000;
 
 /**
  * Runs the Web built-artifact preview smoke check.
@@ -27,17 +29,19 @@ async function main() {
     ],
     {
       cwd: repoRoot,
+      detached: process.platform !== 'win32',
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
+  const childClose = new Promise((resolveClose) => child.once('close', resolveClose));
 
   try {
     await waitForHttp(url, child);
     await assertBuiltIndex(url);
     console.log('OpenKit Web built-artifact smoke PASS');
   } finally {
-    await stopProcess(child);
+    await stopProcess(child, childClose);
   }
 }
 
@@ -108,22 +112,90 @@ async function waitForHttp(url, child) {
  * Stops one spawned child process.
  *
  * @param {import('node:child_process').ChildProcessWithoutNullStreams} child Process to stop.
- * @returns {Promise<void>} Resolves once the process exits or is killed.
+ * @param {Promise<unknown>} childClose Resolves after the child closes and its stdio drains.
+ * @returns {Promise<void>} Resolves once the process group exits and the child closes.
+ * @throws {Error} When signaling fails or the process remains live after bounded cleanup.
  */
-async function stopProcess(child) {
-  if (child.exitCode !== null || child.killed) {
-    return;
+async function stopProcess(child, childClose) {
+  const cleanupPhases = [
+    ['SIGTERM', PROCESS_TERMINATION_GRACE_MS],
+    ['SIGKILL', PROCESS_KILL_TIMEOUT_MS],
+  ];
+
+  if (process.platform === 'win32' || child.pid === undefined) {
+    for (const [signal, timeoutMs] of cleanupPhases) {
+      if (
+        child.exitCode === null &&
+        child.signalCode === null &&
+        !child.kill(signal) &&
+        child.exitCode === null &&
+        child.signalCode === null
+      ) {
+        throw new Error(`Could not deliver ${signal} to the Web preview process.`);
+      }
+      if (await waitForClose(childClose, timeoutMs)) {
+        return;
+      }
+    }
+    throw new Error('Web preview process did not close after SIGTERM and SIGKILL.');
   }
 
-  child.kill('SIGTERM');
-  await Promise.race([
-    new Promise((resolveExit) => child.once('exit', resolveExit)),
-    sleep(2_000).then(() => {
-      if (child.exitCode === null && !child.killed) {
-        child.kill('SIGKILL');
+  const processGroupId = child.pid;
+  for (const [signal, timeoutMs] of cleanupPhases) {
+    try {
+      process.kill(-processGroupId, signal);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) {
+        throw error;
       }
-    }),
-  ]);
+    }
+    if (await waitForProcessGroupCleanup(processGroupId, childClose, timeoutMs)) {
+      return;
+    }
+  }
+
+  throw new Error(
+    'Web preview process group remained live after the SIGTERM and SIGKILL cleanup deadlines.'
+  );
+}
+
+/**
+ * Waits for a detached process group to vanish and its leader's stdio to drain.
+ *
+ * @param {number} processGroupId Detached process-group id.
+ * @param {Promise<unknown>} childClose Resolves after the child closes and its stdio drains.
+ * @param {number} timeoutMs Cleanup deadline in milliseconds.
+ * @returns {Promise<boolean>} True when both cleanup conditions settle before the deadline.
+ * @throws {Error} When the process group cannot be probed.
+ */
+async function waitForProcessGroupCleanup(processGroupId, childClose, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    try {
+      process.kill(-processGroupId, 0);
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ESRCH') {
+        return await waitForClose(childClose, Math.max(0, deadline - Date.now()));
+      }
+      throw error;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await sleep(10);
+  }
+}
+
+/**
+ * Waits a bounded interval for one child close event.
+ *
+ * @param {Promise<unknown>} childClose Resolves after the child closes and its stdio drains.
+ * @param {number} timeoutMs Close deadline in milliseconds.
+ * @returns {Promise<boolean>} True when close settles before the deadline.
+ */
+async function waitForClose(childClose, timeoutMs) {
+  return await Promise.race([childClose.then(() => true), sleep(timeoutMs).then(() => false)]);
 }
 
 /**
