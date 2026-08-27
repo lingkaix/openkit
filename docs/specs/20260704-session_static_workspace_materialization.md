@@ -244,7 +244,7 @@ Backends MAY use different concrete paths when required, but the AEP and materia
 
 ### AgentSession Namespaces And Turn Slots
 
-One shared Sandbox may contain multiple open AgentSessions, but each AgentSession has one separately addressable mutable namespace for its worktree, inputs, outputs, scratch, generated context, instructions, transcript, native conversation files, local route bindings, and writable caches. The namespace is part of the AgentSession-static layout and remains bound to that exact AgentSession until close. Another AgentSession never receives it as its own slot set, and a different Thread never inherits it through compatible placement.
+One shared Sandbox may contain multiple open AgentSessions, but each AgentSession has one separately addressable mutable namespace for its worktree, inputs, outputs, scratch, generated context, instructions, transcript, native conversation files, local route bindings, and writable caches. That namespace is Workspace-write isolation, not security and adjudication isolation. The namespace is part of the AgentSession-static layout and remains bound to that exact AgentSession until close. Another AgentSession never receives it as its own slot set, and a different Thread never inherits it through compatible placement.
 
 The shared immutable baseline and proved immutable or content-addressed read-only caches may be projected into more than one AgentSession namespace. No shared writable canonical Workspace tree is permitted. Filesystem namespacing under one OS identity proves Workspace-write isolation only; it is not security and adjudication isolation, and work requiring that stronger boundary uses proved OS isolation or a separate Sandbox.
 

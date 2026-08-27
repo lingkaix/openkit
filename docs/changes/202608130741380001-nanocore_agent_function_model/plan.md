@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 date: 2026-08-13
 ---
 # NanoCore Agent Function Model
@@ -109,11 +109,11 @@ Admitted to **WP-13**.
 
 ### What Already Landed
 
-The predecessor record's RT-1 and RT-2 checkpoints both read `Commit/PR: pending`, and that is wrong. All 22 files of their candidate are committed in `14f1e47b`, including the RT-2 concrete-imperative `use` classification now at `apps/nanocore/src/internal-agents/worker-coordinator.ts`. The candidate's test-first and independent-review history is real and is not repeated by this program. Only RT-3 was unfinished.
+The predecessor record's RT-1 and RT-2 checkpoints both read `Commit/PR: pending`, and that is wrong. Current-tree `apps/nanocore/src/internal-agents/worker-coordinator.ts` is the primary RT-2 evidence: it contains the concrete-imperative `use` classification. The candidate's test-first and independent-review history is real and is not repeated by this program. Only RT-3 was unfinished.
 
-The predecessor measured its candidate at `+3181/-613` while it was uncommitted. That figure does not reproduce: the same 22 files measure `+3272/-613` in `14f1e47b`, and the commit as a whole is 29 files at `+4112/-620` because it also carries work from another package. The `+3181/-613` figure is therefore a historical working measurement rather than a property of the commit, and a later package comparing against it would be comparing against a different artifact.
+Commit `14f1e47b` and its diffstat (`+3181/-613` while uncommitted, later `+3272/-613` on 22 files, and 29 files at `+4112/-620` for the whole commit) are historical and non-reproducible evidence of that landing, not a current-tree probe and not a property later packages may compare against.
 
-This correction is load-bearing: a successor that treated RT-1 and RT-2 as unfinished would rebuild work that is already in git and already reviewed.
+This correction is load-bearing: a successor that treated RT-1 and RT-2 as unfinished would rebuild work that is already in the current tree and already reviewed.
 
 The accepted Chat-subordinate Gate identity carries forward unchanged — a non-secret Chat-subordinate Gate under the sole outer `chat.start` receipt with no nested `task.start`. WP-8 and WP-9 must preserve it.
 
@@ -324,30 +324,30 @@ The shared current precondition for every row is a fresh entry and exit gate ove
 
 ## Work Package Queue
 
-The original queue has sixteen numbered packages. WP-0 is verified; WP-1 through WP-6 produced documentation and remain implemented pending verification; WP-7 through WP-11 and WP-13 remain necessary; WP-12 and WP-14 are superseded before entry by the necessity dispositions above; and WP-15 remains closeout.
+The original queue has sixteen numbered packages. WP-0 through WP-4 are verified. WP-5 and WP-6 have landed implementation artifacts but are blocked: WP-5 on deferred F-9 unmet acceptance gates, and WP-6 on WP-5 verification or F-9. WP-7 is blocked by deferred F-15. WP-8 is blocked by deferred F-11, F-12, and WP-7. WP-9 is blocked by deferred F-9, F-11, and WP-8. WP-10 is blocked by deferred F-9 and WP-9. WP-11 is blocked by deferred F-10, F-12, WP-8, and WP-10. WP-12 and WP-14 are superseded. WP-13's relay-only focused suite passed 26/26 with ordinary independent reviewer PASS, but its predicate remains blocked by deferred F-13 and F-14. WP-15 is verified closeout: `mise exec -- pnpm -w verify:full` exit 0; `mise exec -- pnpm run check:repo` exit 0 with one unrelated informational Biome notice; relay focused 26/26; storage focused 24/24; NanoCore typecheck exit 0; targeted Biome exit 0; `git diff --check` exit 0; ordinary closeout reviewer PASS; critical Cursor CLI Claude Opus 5 final verifier/auditor PASS after inspecting the actual full diff.
 
-Ordering rationale. WP-1 precedes the owners expressed through its record model; WP-2 precedes the Assistant and Orchestrator assemblies; WP-5 precedes WP-6; and all six absorption packages require verification before dependent implementation under `[AUTH-003]`. WP-7 precedes WP-8 because a role assembly needs the accepted loop, WP-9 precedes WP-10 because decomposition makes more than one resident AgentSession expressible, and WP-10 precedes WP-11 because Goal progression requires its admitted execution topology. WP-13 depends only on verified WP-6 and may open whenever the one-writer and Tier-4 gates permit. WP-15 opens only after every still-necessary package is verified and both superseded-package dispositions are accounted for.
+Ordering rationale. WP-1 precedes the owners expressed through its record model; WP-2 precedes the Assistant and Orchestrator assemblies; WP-5 precedes WP-6; and all six absorption packages require verification before dependent implementation under `[AUTH-003]`. WP-7 precedes WP-8 because a role assembly needs the accepted loop, WP-9 precedes WP-10 because decomposition makes more than one resident AgentSession expressible, and WP-10 precedes WP-11 because Goal progression requires its admitted execution topology. WP-13 depends on WP-6 for its instrument, while its remaining predicate is blocked by deferred F-13 and F-14. WP-15 opens only when every Coverage Map item is verified, rejected with authority, blocked with a named dependency, or deferred with an owner and activation condition, and both superseded-package dispositions are accounted for.
 
 The 2026-08-13 predicted queue is not an authorizing freeze after the 2026-08-20 recheck. Every still-necessary unopened package must refreeze all nine gate fields, the named predicate failure, smallest sufficient shape, exact non-overlapping artifact and apparatus inventory, risk tier, and expected magnitude from present observations before writes; the historical package blocks below preserve criteria and planning evidence and cannot themselves open a lease.
 
 | Package | Mode | Status | Depends on |
 | --- | --- | --- | --- |
 | WP-0 Predecessor Retirement And Reference Repair | deletion | verified | none |
-| WP-1 Conversation Record Model | implementation | implemented | WP-0 |
-| WP-2 Internal Agent Mechanism And Tool Boundary | implementation | implemented | WP-1 |
-| WP-3 Assistant Contract And Interaction Semantics | implementation | implemented | WP-2 |
-| WP-4 Goal Orchestration And Delegation Authority | implementation | implemented | WP-2 |
-| WP-5 Shared Sandbox Topology And Capacity | implementation | implemented | WP-1 |
-| WP-6 Continuity, Materialization, And Agent Data | implementation | implemented | WP-5 |
-| WP-7 Internal Agent Loop And Tool Contract | implementation | planned | WP-2 |
-| WP-8 Assistant Role Assembly | implementation | planned | WP-3, WP-4, WP-7 |
-| WP-9 Runtime Record Decomposition And Thread-Affine AgentSession | implementation | planned | WP-5, WP-6, WP-8 |
-| WP-10 Multiple Open AgentSessions In One Harness | implementation | planned | WP-9 |
-| WP-11 Goal-Scoped Orchestrator And Bounded Progression | implementation | planned | WP-4, WP-8, WP-10 |
+| WP-1 Conversation Record Model | implementation | verified | WP-0 |
+| WP-2 Internal Agent Mechanism And Tool Boundary | implementation | verified | WP-1 |
+| WP-3 Assistant Contract And Interaction Semantics | implementation | verified | WP-2 |
+| WP-4 Goal Orchestration And Delegation Authority | implementation | verified | WP-2 |
+| WP-5 Shared Sandbox Topology And Capacity | implementation | blocked | WP-1; artifacts exist; blocked deferred F-9 unmet acceptance gates |
+| WP-6 Continuity, Materialization, And Agent Data | implementation | blocked | WP-5; artifacts exist; blocked on WP-5 verification or F-9 |
+| WP-7 Internal Agent Loop And Tool Contract | implementation | blocked | WP-2; blocked deferred F-15 |
+| WP-8 Assistant Role Assembly | implementation | blocked | WP-3, WP-4, WP-7; blocked deferred F-11, F-12, WP-7 |
+| WP-9 Runtime Record Decomposition And Thread-Affine AgentSession | implementation | blocked | WP-5, WP-6, WP-8; blocked deferred F-9, F-11, WP-8 |
+| WP-10 Multiple Open AgentSessions In One Harness | implementation | blocked | WP-9; blocked deferred F-9, WP-9 |
+| WP-11 Goal-Scoped Orchestrator And Bounded Progression | implementation | blocked | WP-4, WP-8, WP-10; blocked deferred F-10, F-12, WP-8, WP-10 |
 | WP-12 Side Chat, Direct Addressing, And Promotion | implementation | superseded | no accepted implementation owner; criteria moved to Backlog |
-| WP-13 Real Responses Relay For Worker Images | implementation | planned | WP-6 |
+| WP-13 Real Responses Relay For Worker Images | implementation | blocked | WP-6; artifacts exist; relay-only focused suite 26/26 with ordinary independent reviewer PASS; predicate blocked deferred F-13, F-14 |
 | WP-14 Primary End-To-End Proof | real-use verification | superseded | criteria distributed to WP-9, WP-10, WP-11, WP-13, S16, and Side Chat Backlog |
-| WP-15 Closeout | closeout | planned | WP-1 through WP-11 and WP-13 verified; WP-12 and WP-14 dispositions preserved |
+| WP-15 Closeout | closeout | verified | Coverage Map items verified, rejected, blocked, or deferred with owner/activation; WP-12 and WP-14 superseded; completed `mise exec -- pnpm -w verify:full` exit 0, `mise exec -- pnpm run check:repo` exit 0 with one unrelated informational Biome notice, relay focused 26/26, storage focused 24/24, NanoCore typecheck exit 0, targeted Biome exit 0, `git diff --check` exit 0, ordinary closeout reviewer PASS, critical Cursor CLI Claude Opus 5 final verifier/auditor PASS |
 
 ### WP-0 — Predecessor Retirement And Reference Repair — landed 2026-08-13
 
@@ -658,14 +658,18 @@ Six files, roughly 200 to 300 added lines. `agent_session_continuity.md` is wher
 
 ### WP-15 — Closeout
 
-- **Scope:** implementation summary, final verification evidence, remaining follow-ups, commit and PR links, `state.json`, `findings.md`, and status transition. No new behavior
+- **Scope:** implementation summary, final verification evidence, remaining follow-ups, commit and PR links, `findings.md`, and status transition. No new behavior. The legacy `temp/state/202608130741380001-nanocore_agent_function_model.state.json` remains absent and is not reconstructed as bundle `state.json`
 - **Mode and permitted writes:** closeout
 - **Risk tier:** Tier 1
-- **Dependencies:** WP-1 through WP-11 and WP-13 verified; WP-12 and WP-14 dispositions preserved
+- **Dependencies:** every Coverage Map item verified, rejected with authority, blocked with a named dependency, or deferred with an owner and activation condition; WP-12 and WP-14 dispositions preserved
 - **Predicate:** every Coverage Map item is verified, rejected with authority, blocked with a named dependency, or deferred with an owner and activation condition; no projection describes a superseded state; the input proposal is no longer required by any accepted document
 - **Oracle:** `strong`; `pnpm -w verify:full` and `pnpm run check:repo`, plus one verifier run unconditionally before close. The named predicate failure is either command returning nonzero for its own repository check or the independent verifier naming one unresolved Coverage Map item, stale projection, missing required input disposition, incoherent receiving-package transfer, or other falsified closeout predicate; setup, permission, or collection failure leaves closeout undecided
 - **Failure disposition:** an unmet Coverage Map item blocks closeout and receives a disposition rather than a summary
 - **Next owner:** engineer
+
+## Closeout Summary
+
+This closeout documents the stable NanoCore-user, NanoCore-NanoHost, and NanoCore-Worker-Agent interaction boundaries. Nullable NanoCore-private `pinnedGoalId` physical storage and migration landed on ordinary `SandboxRuntimeRecord` with no production selection, read, write, reuse, or queue behavior. The relay-only default-off harness landed and passed 26/26 but does not prove real provider, governed images, or function-tool. WP-1 through WP-4 are verified; WP-5 through WP-11 and WP-13 are blocked through deferred F-9 through F-15; WP-12 and WP-14 are superseded. This closeout adds no special Sandbox, public field, denial state, compatibility path, or legacy state reconstruction.
 
 ## Verification
 
@@ -676,7 +680,9 @@ Tests precede every production change under `[TEST-002]`. Producers release exac
 - **Real use, WP-13 only.** One recorded session per predicate against real dependencies, with the environment identity asserted before the attempt, distilled into this record and then discarded. WP-14 opens no session because its criteria are distributed to their lowest sufficient owners.
 - **Program exit, WP-15 only.** `pnpm -w verify:full` and `pnpm run check:repo`, plus one verifier unconditionally before close.
 
-Machine-readable execution state lives at `temp/state/202608130741380001-nanocore_agent_function_model.state.json` while the program runs and is committed once as this bundle's `state.json` at closeout. Out-of-scope findings go to `findings.md` in the same bundle.
+**2026-08-28 final evidence.** `mise exec -- pnpm -w verify:full` exit 0; `mise exec -- pnpm run check:repo` exit 0 with one unrelated informational Biome notice; relay focused 26/26; storage focused 24/24; NanoCore typecheck exit 0; targeted Biome exit 0; `git diff --check` exit 0; ordinary closeout reviewer PASS; critical Cursor CLI Claude Opus 5 final verifier/auditor PASS after inspecting the actual full diff. A1 action was only read-only `pnpm host:assert a1` at identity digest `8b9f2b84ba56f9284e45466f096b9b3f4c70238a20433892e783332861948e97`; no service start, stop, or mutation. Commit is this single closeout commit; PR not requested.
+
+The legacy `temp/state/202608130741380001-nanocore_agent_function_model.state.json` remains absent and must not be appended or reconstructed as this bundle's `state.json`. Out-of-scope findings go to `findings.md` in the same bundle.
 
 A coherence verifier runs at each work-package exit, because every package here touches two or more owners.
 
@@ -700,6 +706,7 @@ Stating this openly is the point. An earlier freeze declared the absorption orac
 
 ## Checkpoints
 
+- 2026-08-28 — Verdict: verified. Bounded landing: stable three interaction boundaries documented; nullable NanoCore-private `pinnedGoalId` physical storage and migration on ordinary `SandboxRuntimeRecord` with no production selection, read, write, reuse, or queue behavior; relay-only default-off harness 26/26 without real provider, governed-image, or function-tool proof. Unresolved findings F-9 through F-15 remain deferred. Ordinary closeout reviewer PASS. Critical Cursor CLI Claude Opus 5 final verifier/auditor PASS after inspecting the actual full diff. Commit/PR: this single closeout commit; PR not requested.
 - 2026-08-20 — Verdict: stalled plan reconciled against current authority, repository observations, and the unmodified historical state file; no queued package opened. Commit/PR: pending. Predicate: each never-opened package has a present-evidence necessity disposition, each package oracle names its predicate failure, WP-1 through WP-6 have explicit closure obligations and verifier status, and repeated tier, dispatch, and lease falsifications change future entry and handoff behavior. Deviation: WP-12 is superseded before entry because no accepted Side Chat owner exists, WP-14 is superseded because the current L6 owner rejects its bundled exact trajectory, and `F-8` records that revision 9 and 75 retroactively reconstructed or incompletely gated events cannot substantiate contemporaneous execution history.
 - 2026-08-13 — Verdict: WP-1 built and independently reviewed; review returned PREDICATE NOT MET; correction round opened; WP-2 opened. Commit/PR: pending. Predicate: every WP-1 decision is stated by the owner this record names and carries `[DOC-017]`'s five classes, and no accepted document contradicts what WP-1 accepted. Deviation: the reviewer found that the Goal Main Thread's reference Item was stated with no lifecycle and no failure semantics, that `docs/core/runtime-model.md` still permitted sequential Turns by different Agents inside one Thread while a neighbouring line removed the only reason that would happen, and that `docs/core/agent-session.md` converted an optional binding list into whole-life mandatory bindings this record never admitted. Deviation: retiring `cancelled` left four accepted documents still producing it, which is the corpus-wide contradiction this record had carried as an open obligation and which the review made finite and therefore fixable now rather than at program exit. Deviation: three further contradictions were routed to `findings.md` as `F-1`, `F-2`, and `F-3` because their owners are WP-4 and WP-6, and `docs/specs/20260704-task_mode_worker_delegation.md` was found to be in no package's lease while holding one of them. Deviation: WP-2 opened before WP-1 was verified, recorded as `F-6`. The oracle claims on WP-3 through WP-6 were also corrected, and the correction was not uniform: only WP-4 and WP-5 carried a genuinely corpus-quantified claim and were split, while WP-3 and WP-6 were quantified over named documents all along and needed their instrument named rather than their predicate reduced.
 - 2026-08-13 — Verdict: freeze block independently reviewed by a different model family and corrected; WP-1 opened. Commit/PR: pending. Predicate: the absorption packages name the documents that actually own the decisions they land, and no package declares an oracle that decides more than it can. Deviation: the review found WP-1 and WP-2 assigned to the wrong owners — `docs/core/work-model.md` is a product projection while `docs/core/core-concepts.md` owns the canonical Thread and Turn definitions and `docs/core/protocol.md` owns lifecycle states and interruption, and `docs/core/agent-workflow.md` explicitly disclaims agent runtime substrate. Deviation: it also found that `docs/core/runtime-model.md` and `docs/core/core-concepts.md` currently assert the opposite of this program's central invariant, a conflict neither the input nor this record had recorded; the engineer decided under `[PRECEDENCE-003]` that Core yields, which makes WP-1 a reversal of an accepted Core decision rather than a statement of a new one. Deviation: WP-8, WP-11, and WP-12 were reclassified from Tier 3 to Tier 4, WP-13 to Tier 4 from entry, and nine decisions absent from the Coverage Map were dispositioned.
@@ -711,15 +718,23 @@ Stating this openly is the point. An earlier freeze declared the absorption orac
 
 The accepted product, ownership, and strict-risk intent in this record is unchanged. Its earlier package queue, matrices, assignments, gates, events, exact leases, ceilings, denominators, and fixed role sequence remain historical Evidence only and no longer authorize dispatch. Accepted decisions, observed facts, and produced artifacts remain inputs to current work; none is deleted or reconstructed.
 
+### Intent Epoch 2 — 2026-08-28 / engineer's current request (append-only)
+
+Finish and close this plan, then make one commit. Independent Claude consultant review of blockers continues, and a consultant PASS authorizes continuation. Execution uses Herdr with an independent Cursor Grok test-author or tester and builder and a Claude verifier or auditor. A1 and local `~/.codex/auth.json` are authorized only when a slice needs them. Small in-scope issues are fixed in place; large out-of-scope architecture or module gaps are recorded in findings. Accepted product, ownership, and strict-risk intent from Epoch 1 is unchanged.
+
+### Intent Epoch 3 — 2026-08-28 / engineer's Goal pin and boundary-stability clarification (append-only)
+
+Internal agent implementation and Goal scheduling may change substantially, while the NanoCore-user, NanoCore-NanoHost, and NanoCore-Worker-Agent interaction boundaries remain stable. The Goal Mode Orchestrator must not dispatch Goal work through the default standby-worker selection; on first worker-bearing admission it pins one compatible ordinary Sandbox to that Goal as a NanoCore scheduling strategy, retains it warm for later compatible Goal worker AgentSessions, and uses an ordinary Sandbox rather than a GoalSandbox, new isolation class, NanoHost verb, AEP or worker-control field, or user or App API field.
+
 ### Current checkpoint
 
-- **Next Action:** a fresh context directly inspects the actual WP-1 artifact and diff against its accepted owners, then selects only the smallest material defect; it does not recreate the old package or its coordination machinery.
-- **Expected change:** Belief — WP-1 becomes either artifact-backed as aligned or narrowed to one concrete owner mismatch.
-- **Expected observable:** the finite owner-to-artifact comparison either confirms the current WP-1 bytes or names the first mismatch with its file and direct evidence.
-- **Evidence that changes route:** a confirmed WP-1 match advances direct inspection to WP-2; a concrete mismatch selects its smallest repair; missing authority, an owner conflict, or a strict-risk expansion causes Ask Human.
-- **Human-only decision:** the WP-4 Core-versus-Workflow `AgentSession` disposition and any WP-6 authorization for raw audio or private reasoning.
+- **Next Action:** Terminal handoff to the engineer; this plan is verified.
+- **Expected change:** Artifact — closeout documentation now matches current bytes: WP-1 through WP-4 verified, WP-5 and WP-6 blocked with landed artifacts preserved, physical Goal-pin schema landed without production behavior, WP-13 relay-only focused suite 26/26 with ordinary independent reviewer PASS, and F-9 through F-15 deferred with named receivers.
+- **Expected observable:** plan frontmatter is `status: verified`; findings Follow-up Index lists deferred F-9 through F-15; WP-15 is verified; Sandbox Core names the existing queued admission and non-terminal Goal outcome with no new denial branch.
+- **Evidence that changes route:** a later Goal-aware placement selector, NanoCore-private receiving-Thread projection, Goal-creation autonomy-field write, function-call correlation oracle, real-relay environment, WP-7 classifier decision, or WP-5/WP-6 Tier-4 gates would reframe the matching deferred finding rather than this checkpoint's package table.
+- **Human-only decision:** This slice used only the read-only `pnpm host:assert a1`; no service start, stop, or mutation. A1 and local `~/.codex/auth.json` remain authorized only when a later slice needs them.
 
-The plan history reports WP-1 through WP-6 candidate bytes, but that claim remains unverified until the current artifacts and diffs are inspected. WP-7 through WP-11 and WP-13 remain necessary; WP-12 and WP-14 remain superseded. The plan records that `temp/state/202608130741380001-nanocore_agent_function_model.state.json` once existed as a legacy execution record, but it is absent at cutover and is not current evidence. Do not append or reconstruct it.
+WP-1 through WP-4 are verified. WP-5 and WP-6 have landed implementation artifacts but are blocked: WP-5 on deferred F-9 unmet acceptance gates, and WP-6 on WP-5 verification or F-9. WP-7 is blocked by deferred F-15. WP-8 is blocked by deferred F-11, F-12, and WP-7. WP-9 is blocked by deferred F-9, F-11, and WP-8. WP-10 is blocked by deferred F-9 and WP-9. WP-11 is blocked by deferred F-10, F-12, WP-8, and WP-10. WP-12 and WP-14 remain superseded. WP-13's deterministic relay-only focused suite passed 26/26 with ordinary independent reviewer PASS; Harness Admission dynamically covers detached success, nonzero, timeout/SIGKILL, cleanup settlement, timeout and cleanup independent attribution, malformed or exact-credential RESULT rejection, and exactly-one terminal evidence. That instrument remains relay-only and does not prove real NanoCore, provider, image, or function-tool behavior and does not discharge IP-2; the real-relay half is blocked by deferred F-14 and the function half by deferred F-13. WP-15 is verified: ordinary closeout reviewer PASS and critical Cursor CLI Claude Opus 5 final verifier/auditor PASS after inspecting the actual full diff; `mise exec -- pnpm -w verify:full` exit 0; `mise exec -- pnpm run check:repo` exit 0 with one unrelated informational Biome notice; relay focused 26/26; storage focused 24/24; NanoCore typecheck exit 0; targeted Biome exit 0; `git diff --check` exit 0. F-9 through F-15 are deferred with named receivers and activation conditions and are not discharged here. The nullable private `SandboxRuntimeRecord.pinnedGoalId` physical schema, migration, and harness-record physical-home plus wire-boundary test landed with reviewer PASS; production placement still has no Goal-aware selector, read, or write, current admission lacks Goal, and same-Goal reuse plus other-Goal existing-scheduler queued retry with a non-terminal Goal remain unimplemented. No public, wire, special-Sandbox, or new-denial pin is claimed. The current WP-7 observer-equivalence oracle concerns only loop-owned messages and exit; caller tests own Items and evidence. The historical WP-7 package block retains its original predicate text as evidence and is not rewritten. The legacy `temp/state/202608130741380001-nanocore_agent_function_model.state.json` remains absent and must not be appended or reconstructed. `refs/stash` currently protects `515a7e9c`, `14f1e47b`, and `e70ad9d9`; do not drop, pop, or clear it, and create no preservation refs.
 
 ### Pilot start boundary
 

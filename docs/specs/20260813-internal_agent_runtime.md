@@ -16,6 +16,7 @@ This specification owns the role-agnostic bounded runtime used by NanoCore-inter
 - `docs/core/agent-workflow.md` owns durable workflow progression, bounded worker steps, gates, decisions, evidence, retry, and closeout.
 - The loop does not own or know product records, role selection, durable state, scheduling, recovery, provider configuration, capability catalogs, authorization policy, budgets, credentials, output audiences, or external-effect settlement.
 - This specification does not redefine Worker Agent execution, Worker runtime continuity, Harnesses, Sandboxes, or worker capability supply.
+- This specification owns no Sandbox, pinning, or placement. `docs/specs/20260704-goal_mode_coordination.md` owns Goal worker ordinary-Sandbox pin policy, and `docs/specs/20260703-runtime_scheduling_scale.md` owns its NanoCore-private scheduling and binding projection.
 
 ## Core References
 
@@ -40,26 +41,28 @@ interface InternalAgentLoopInput {
   systemPrompt: string;
   messages: readonly AgentMessage[];
   tools: readonly AgentTool[];
-  model: ModelRef;
+  model: unknown;
   limits: {
     maxModelTurns: number;
     maxToolCalls: number;
-    deadline: string;
+    deadlineMs: number;
   };
   signal: AbortSignal;
   onTextIncrement?: (text: string) => void;
 }
 ```
 
-`systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
+`systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the resolved provider-and-model identity already selected by that caller; this runtime does not own provider configuration or model catalogs. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
 
-`maxModelTurns` counts provider round trips, `maxToolCalls` counts environment touches through supplied Tool closures, and `deadline` bounds wall-clock duration. These three values are the complete in-loop fuse vector.
+`maxModelTurns` and `maxToolCalls` MUST be positive integers; `maxModelTurns` counts provider round trips and `maxToolCalls` counts environment touches through supplied Tool closures. `deadlineMs` MUST be a positive integer millisecond duration that bounds wall-clock duration. These three values are the complete in-loop fuse vector.
 
 The loop owns only its transient prompt, transcript, provider responses, Tool calls and observations, counters, abort observation, and terminal runtime outcome. Creation begins when the caller invokes the loop with an accepted input; updates are append-only within that in-memory run; termination returns exactly one typed exit; retry and recovery always occur outside the loop as a new run reconstructed by the caller.
 
 Missing or invalid required input fails before the first provider call. Stale product facts, conflicting authority, unavailable dependencies, and authorization changes are not resolved by the loop; trusted assembly or the bound Tool owner rejects them, and the loop returns or relays the resulting bounded failure without inventing replacement state.
 
 Acceptance requires the same loop implementation to execute different internal roles by changing only its assembled input, with no product-domain import or conditional branch.
+
+`InternalAgentLoopInput`, `AgentMessage`, `AgentTool`, `InternalAgentLoopExit`, and the provider projection are NanoCore-private. They MUST NOT be exported through protocol, App API, config schema, AEP, worker-control, or NanoHost. Callers map loop exits through existing product owners. This runtime owns no Sandbox, pinning, or placement.
 
 ## Emergency Fuses
 
@@ -69,7 +72,7 @@ Output-token limits belong to the model request. Monetary and usage budgets belo
 
 Fuses are deliberately large emergency stops for ghost loops, runaway Tool use, and provider failure. They are not normal capacity targets, completion conditions, or evidence that any product operation succeeded.
 
-Initial conversational objectives are configuration values in the internal-role execution profile: first visible text within 2 seconds at p95 for a run with no Tool call, settled output within 10 seconds at p95 with no Tool call and within 30 seconds at p95 with at most two Tool calls, and ordinary Assistant model spend roughly one order of magnitude below the smallest per-Goal budget unit. The deadline fuse MUST be at least four times the applicable settled-answer objective.
+Initial conversational objectives are configuration values in the internal-role execution profile: first visible text within 2 seconds at p95 for a run with no Tool call, settled output within 10 seconds at p95 with no Tool call and within 30 seconds at p95 with at most two Tool calls, and ordinary Assistant model spend roughly one order of magnitude below the smallest per-Goal budget unit. The deadline fuse MUST be at least four times the applicable profile-owned settled-answer objective.
 
 Objectives and fuse values are created or changed through the accepted execution-profile configuration rollout, never by branching runtime code or revising this design. A missed objective reports degraded performance, while a reached fuse terminates with `limit_reached`; restart selects the current accepted profile and does not inherit an exhausted counter.
 
@@ -95,7 +98,7 @@ type InternalAgentLoopExit =
 
 There is no fifth `stopped` exit. Model text cannot create a runtime exit or authoritative stop flag, and an internal role that must end its owning product execution early MUST cancel through the abort signal and receive `aborted`.
 
-Every exit terminates only the bounded runtime run. No exit proves workflow completion, command acceptance, durable mutation, publication, or external-effect settlement, and callers MUST map it through the applicable product owner.
+Every exit terminates only the bounded runtime run. No exit proves workflow completion, command acceptance, durable mutation, publication, or external-effect settlement, and callers MUST map it through the applicable product owner. Those exit values remain NanoCore-private loop results and MUST NOT become protocol, App API, config-schema, AEP, worker-control, or NanoHost fields.
 
 Retry after `failed`, `aborted`, or `limit_reached` is a newly admitted run from current trusted inputs. Recovery MUST NOT reinterpret one of those exits as `quiescent` or resume hidden provider reasoning.
 
@@ -105,7 +108,7 @@ Acceptance requires all termination paths to produce one of these four outcomes 
 
 The loop MUST perform these steps in order:
 
-1. Initialize an in-memory transcript from the accepted messages and check abort, deadline, and positive fuse capacity.
+1. Initialize an in-memory transcript from the accepted messages and check abort, deadlineMs, and positive fuse capacity.
 2. Call the selected model with the assembled system prompt, transcript, and provider-visible Tool definitions, then append the complete assistant response.
 3. If the provider response failed or cancellation occurred, terminate with the exact typed outcome.
 4. If a truncated provider response contains any Tool call, execute none of its Tool calls; when another model round trip remains admissible, append bounded safe error results for correction, and otherwise terminate with the applicable fuse or failure.
@@ -147,7 +150,23 @@ interface AgentToolResult {
   details?: unknown;
   isError?: boolean;
 }
+
+interface AgentToolCall {
+  callId: string;
+  name: string;
+  arguments: unknown;
+}
+
+interface AgentMessage {
+  role: "user" | "assistant" | "tool";
+  text: string;
+  toolCalls: readonly AgentToolCall[];
+  truncated: boolean;
+  callId?: string;
+}
 ```
+
+`AgentMessage` is the loop-local assembled-message shape: role, text content, an ordered `AgentToolCall` list, and a completion or truncation marker. `callId` is required exactly when `role` is `"tool"` and names the `AgentToolCall.callId` that the result answers. `AgentToolCall` reuses `callId` from `ToolExecutionContext` and `name` from `AgentTool` and carries no provider fields. Tool-result text is the sanitized model-visible projection of `AgentToolResult` onto a `tool` role message.
 
 Only `name`, `description`, and `inputSchema` are eligible for provider projection. The `execute` closure, internal result `details`, authoritative command identity, actor and role bindings, credentials, policy facts, and audit data remain server-side.
 
@@ -254,6 +273,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 ## Acceptance Predicates
 
 - One role-agnostic loop runs distinct internal roles from assembled inputs without importing or branching on product concepts.
+- `InternalAgentLoopInput`, `AgentMessage`, `AgentTool`, `InternalAgentLoopExit`, and provider projection remain NanoCore-private and are absent from protocol, App API, config schema, AEP, worker-control, and NanoHost surfaces.
 - Exactly three fuses and four typed exits cover every local termination path, and none becomes product success.
 - Truncated or incomplete Tool calls execute zero environment operations, while complete calls execute sequentially after schema validation.
 - Provider projection contains only Tool name, description, and input schema, and bound execution and internal details stay server-side.

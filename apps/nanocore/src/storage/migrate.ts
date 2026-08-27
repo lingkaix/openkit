@@ -47,6 +47,10 @@ const migrations: MigrationFile[] = [
     id: 'core_0010_nanohost_last_fresh_ready',
     fileName: '0010_core_nanohost_last_fresh_ready.sql',
   },
+  {
+    id: 'core_0011_nanohost_sandbox_pinned_goal',
+    fileName: '0011_core_nanohost_sandbox_pinned_goal.sql',
+  },
 ];
 
 const workspaceMigrations: MigrationFile[] = [

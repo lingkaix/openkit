@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+updated: 2026-08-28
 ---
 # Durable Scheduler Design
 
@@ -10,10 +11,12 @@ implementation: Partial
 - Durable admission and lease authority sufficient to prevent untracked or duplicate worker launch.
 - One active-Turn slot, bounded lease timing, exact same-worker reconnect, terminal release, and safe interruption.
 - The scheduler boundary with end-to-end worker control, NanoHost readiness, sandbox cleanup, and Runtime Epoch invalidation.
+- The physical home of nullable `pinnedGoalId` on the existing `SandboxRuntimeRecord` / `sandbox_runtime_records` placement and lifecycle projection.
 
 ## Does Not Own
 
 - Product workflow progression, Goal or Task lifecycle, review, Gate, Item, Artifact, or Workspace-apply decisions.
+- Goal pin semantics and lifecycle. `docs/specs/20260703-runtime_scheduling_scale.md` owns those; this specification owns only the physical home of `pinnedGoalId` on the existing `SandboxRuntimeRecord`.
 - Worker-control envelopes, process-key transport, message sequencing, or final-status schema.
 - Storage layout or table DDL.
 - Dynamic multi-target placement, fairness, aging, affinity, warm pools, per-scope scale policy, high availability, multi-process Core, or distributed takeover.
@@ -63,7 +66,7 @@ The V1 contract requires only these durable facts:
 - proof of whether worker launch has not occurred, is live, is inside the bounded reconnect window, is cleanup-owned, or is terminal
 - the last accepted worker sequence and process-key hash needed for exact reconnect
 
-NanoHost identity, connection generation, readiness, predecessor fence, and redacted cleanup result may be referenced only as the current target projection needed to gate admission and preserve a wider cleanup fence. Runtime Epoch identity, Gateway identity, container-runtime identity, host paths, and Sandbox inventory remain NanoHost-private and MUST NOT become scheduler capacity records.
+NanoHost identity, connection generation, readiness, predecessor fence, and redacted cleanup result may be referenced only as the current target projection needed to gate admission and preserve a wider cleanup fence. Runtime Epoch identity, Gateway identity, container-runtime identity, host paths, and Sandbox inventory remain NanoHost-private and MUST NOT become scheduler capacity records. NanoCore's existing `SandboxRuntimeRecord` (`sandbox_runtime_records`) is the durable placement and lifecycle projection, not NanoHost inventory. Its nullable `pinnedGoalId` is the physical durable home of the Goal-to-ordinary-Sandbox pin: the field survives between ordinary worker AgentSessions until ordinary terminal release, grants no capacity, effect, or execution authority, and its semantics and lifecycle are owned by `docs/specs/20260703-runtime_scheduling_scale.md`.
 
 Existing placement-plan, pool, scheduler capacity, target-health, priority, and related rows are Private implementation projections. The active scheduler lease and scheduler capacity row are the sole active-Turn grant. A RuntimeTarget `active_lease_id` or mutable `capacity_state` duplicates that authority and MUST NOT exist; a fixed slot declaration and current readiness projection may remain. `HarnessInstanceRecord.active_turn_count` is a runtime occupancy projection and cannot grant or release a scheduler slot.
 
@@ -120,7 +123,7 @@ A complete terminal owner tuple may finish through the existing owner transactio
 
 ## Current Implementation Projection
 
-NanoCore currently persists admission entries, placement plans, leases, pool and scheduler capacity rows, target-health summaries, worker-control bindings, and scheduler epochs. Dispatch, lease maintenance, health probing, and restart scanning run as in-process services. Ordinary successful NanoHost Turns release scheduler capacity after Turn-local backend cleanup while retaining the shared Sandbox. The duplicate RuntimeTarget `active_lease_id`, mutable `capacity_state`, and test-only claim or settle helpers have been deleted through the strict current migration; scheduler leases and capacity rows remain the only active-Turn grant.
+NanoCore currently persists admission entries, placement plans, leases, pool and scheduler capacity rows, target-health summaries, worker-control bindings, and scheduler epochs. Dispatch, lease maintenance, health probing, and restart scanning run as in-process services. Ordinary successful NanoHost Turns release scheduler capacity after Turn-local backend cleanup while retaining the shared Sandbox. The duplicate RuntimeTarget `active_lease_id`, mutable `capacity_state`, and test-only claim or settle helpers have been deleted through the strict current migration; scheduler leases and capacity rows remain the only active-Turn grant. The nullable `sandbox_runtime_records.pinned_goal_id` column now exists as this specification's physical home; current scheduler and placement code has no Goal-aware reader, writer, or selector for it, and no Goal pin behavior is implemented.
 
 The pre-listen restart scan now performs only durable classification, fencing, read-only restoration, and deterministic result-only expectation registration. The existing post-listener single-flight maintenance service resumes exact cleanup and fail-closed accepted-final-status recovery through ordinary transport. Worker-governance preparation consumes the sole configured NanoHost readiness projection before any fresh, reused, or replacement AgentSession can acquire a lease; runtime-binding and Sandbox uncertainty remain non-reusable and preserve the existing capacity fence. Real restart, reconnect, cleanup, and saturation acceptance remains outstanding.
 

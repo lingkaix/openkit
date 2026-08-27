@@ -43,6 +43,7 @@ describe('storage layout report', () => {
         'core_0008_drop_session_snapshots',
         'core_0009_retire_workspace_readwrite',
         'core_0010_nanohost_last_fresh_ready',
+        'core_0011_nanohost_sandbox_pinned_goal',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

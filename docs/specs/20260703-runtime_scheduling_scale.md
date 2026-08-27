@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-13
+updated: 2026-08-28
 ---
 # Runtime Scheduling And Scale
 
@@ -10,16 +10,17 @@ updated: 2026-08-13
 - The current separation between Core mode and worker runtime placement.
 - The configured V1 `RuntimeTarget` projecting one NanoHost, fixed open-AgentSession and active-Turn capacity, bounded worker steps, readiness gate, and target-loss fallback.
 - NanoCore ownership of capacity grants, Harness-declared `maxOpenSessions` and `maxActiveTurns`, Sandbox aggregate bounds, occupancy derivation, and release barriers.
+- The semantics and lifecycle of the NanoCore-private nullable `pinnedGoalId` Goal-to-ordinary-Sandbox pin on the existing durable Sandbox placement and lifecycle projection; not a new entity, occupancy field, or capacity owner. `docs/specs/20260703-durable_scheduler_design.md` owns that field's physical home on the existing `SandboxRuntimeRecord`.
 - The canonical statement of the current small-deployment profile — its process, writer, target, and slot counts — and the boundary beyond which scale work is not authorized.
 
 ## Does Not Own
 
-- Product workflow progression, planning, Goal state, review gates, or Item semantics.
+- Product workflow progression, planning, Goal state, review gates, or Item semantics. `docs/specs/20260704-goal_mode_coordination.md` owns Goal worker pin policy; this specification owns that pin's semantics and lifecycle.
 - Worker-control message schemas, reconnect authentication, or sequence verification.
-- Scheduler table shapes or service implementation.
+- Scheduler table shapes or service implementation. `docs/specs/20260703-durable_scheduler_design.md` owns the physical home of `pinnedGoalId` on the existing `SandboxRuntimeRecord` / `sandbox_runtime_records` projection.
 - AEP resolution, Workspace synchronization, provider billing, or sandbox containment.
 - NanoHost identity, transport, Runtime Epoch composition, OpenShell lifecycle, sandbox create or delete, and epoch recovery.
-- Dynamic multi-target placement, worker-pool policy, warm pools, cross-workspace fairness, per-user quotas, high availability, multi-process Core, or distributed takeover. These are deferred and non-authorizing.
+- Dynamic multi-target placement, generic fleet worker-pool policy, generic warm pools, cross-workspace fairness, per-user quotas, high availability, multi-process Core, or distributed takeover. These remain deferred and non-authorizing. One Goal-to-ordinary-Sandbox pin is admitted below and is not a generic warm pool.
 
 ## Core References
 
@@ -27,6 +28,7 @@ updated: 2026-08-13
 - `docs/core/agent-session.md`
 - `docs/core/agent-workflow.md`
 - `docs/core/sandbox.md`
+- `docs/core/architecture.md`
 
 ## Summary
 
@@ -50,9 +52,9 @@ Goals:
 Non-goals:
 
 - Do not dynamically select among multiple targets.
-- Do not implement fairness, aging, affinity optimization, warm reuse, autoscaling, hot failover, or multi-process scheduler coordination.
+- Do not implement fairness, aging, generic affinity optimization, generic fleet warm reuse, autoscaling, hot failover, or multi-process scheduler coordination.
 - Do not guarantee continuous availability or automatic repair after every process, transport, SQLite-to-runtime, or runtime-to-Workspace boundary.
-- Do not create records, states, configuration, runners, harnesses, or tests for deferred scale.
+- Do not create records, states, configuration, runners, harnesses, or tests for deferred generic scale.
 
 ## Current Concepts
 
@@ -76,7 +78,7 @@ For the first slice, persisted AgentSession runtime bindings plus exact Harness 
 
 `BoundedStep` is one scheduler-controlled worker execution interval with explicit lease, heartbeat, stop, and evidence boundaries.
 
-`WorkerPool`, `PlacementPlan`, `CapacityRecord`, `ScalePolicy`, affinity, fairness, and multi-target selection are not stable V1 product or scheduling concepts. Existing records with those names are private implementation projections of the current scheduler and may be retained, simplified, merged, or deleted without preserving a future scaled shape.
+`WorkerPool`, `PlacementPlan`, `CapacityRecord`, `ScalePolicy`, generic affinity, fairness, and multi-target selection are not stable V1 product or scheduling concepts. Existing records with those names are private implementation projections of the current scheduler and may be retained, simplified, merged, or deleted without preserving a future scaled shape. The unique durable Goal-to-Sandbox scheduling source of truth is one nullable `pinnedGoalId` on the existing durable NanoCore-private Sandbox placement and lifecycle projection (`SandboxRuntimeRecord` / `sandbox_runtime_records`); null means that Sandbox currently pins no Goal, and a non-null value survives between ordinary worker AgentSessions of that Goal until terminal release. It is a field on that existing placement and lifecycle owner, not occupancy, a new entity, capacity owner, GoalRecord field, public contract, NanoHost verb, AEP field, worker-control field, or isolation mechanism. It grants no capacity, effect, or execution authority. This specification owns the field's semantics and lifecycle; `docs/specs/20260703-durable_scheduler_design.md` owns its physical home on the existing record. NanoCore resolves `pinnedGoalId` before placement and then issues the existing NanoHost `session.open` and `turn.start` wires unchanged.
 
 ## Decision
 
@@ -84,6 +86,11 @@ For the first slice, persisted AgentSession runtime bindings plus exact Harness 
 - The configured target has fixed two-dimensional capacity. The first shared-runtime slice requires `maxOpenSessions > 1` and fixes `maxActiveTurns = 1`; increasing active concurrency is a later phase and is not authorized here.
 - The target may admit work only while the configured NanoHost reports current ready capacity through its one authoritative predecessor-fenced transport session.
 - NanoCore MUST durably bind the exact Workspace, Thread, Turn, AgentSession, Agent, package snapshot, target, and lease before worker launch.
+- On first worker-bearing Goal admission, NanoCore writes `pinnedGoalId` on the chosen compatible ordinary Sandbox's `SandboxRuntimeRecord` and MUST prefer that Sandbox for later compatible Goal worker AgentSessions while the pin is active; NanoCore MUST NOT dispatch Goal worker work through the default standby-worker selection.
+- Another Goal MUST NOT co-reside on that pinned ordinary Sandbox while `pinnedGoalId` names the first Goal. The second Goal MAY use another ordinary compatible Sandbox; if the one-Sandbox profile has no remaining compatible capacity, its existing scheduler admission entry stays queued for normal dispatch retry and the Goal remains non-terminal. This creates no new denial, queue, or attention state, and NanoHost wires remain unchanged.
+- Strict-risk separation and Goal `completionVerification` or adjudication independence MUST use another ordinary Sandbox when shared retained state could undermine them. Incompatibility, revocation, and cleanup uncertainty remain ordinary lifecycle selection or drain cases and MAY replace the pin through ordinary cleanup and a newly admitted compatible ordinary Sandbox.
+- An absent `pinnedGoalId` before first worker-bearing admission, or an ordinarily released pin with no conflicting live binding or occupancy, creates a new pin on a freshly admitted compatible ordinary Sandbox through ordinary scheduling. Only stale or contradictory `pinnedGoalId` that conflicts with live binding or occupancy fails closed. Lost warm Sandbox state costs latency only and is not a recovery dependency. NanoCore MUST NOT use default standby-worker selection.
+- Every Turn still performs fresh authority, AEP, context, and lease checks. Warm retained state is never durable authority, permission, recovery truth, completion proof, or unique required progress. Restart reconstructs the pin only from `SandboxRuntimeRecord.pinnedGoalId` and other NanoCore-private scheduling and binding truth.
 - NanoCore MUST NOT authorize a second live attempt for the same AgentSession, Thread, Turn, or occupied active-Turn unit while the first lease remains live, reconnecting, or cleanup-owned.
 - Opening or retaining an idle AgentSession consumes open-session capacity but grants no active-Turn capacity, lease time, inference, capability, provider, Vault, or execution authority.
 - Local SQLite transactions own NanoCore coordination state only. They do not make sandbox, provider, repository, or remote worker effects atomic with Core truth.
@@ -114,12 +121,13 @@ The target is one configured local or remote NanoHost with fixed scheduler-visib
 
 Ordinary Turn completion releases its active-Turn unit only after existing terminal, output, evidence, route-revocation, and cleanup owners agree. Ordinary AgentSession close releases its open-session unit after exact native-context and AgentSession-local cleanup while a compatible sibling and shared Sandbox may remain ready. Unprovable local cleanup drains and fences the wider Harness, Sandbox, or Runtime Epoch boundary and keeps every affected capacity unit unavailable until that owner proves cleanup and readiness. Epoch or execution-server failure interrupts every attached AgentSession independently; it does not infer a common terminal result, automatic replacement, or successful cleanup.
 
-The Runtime Epoch may structurally contain zero or more Sandboxes. The first shared-runtime slice authorizes multiple open AgentSessions in one compatible Sandbox and Harness but still authorizes only one active Turn across that Harness. This structure does not authorize concurrent active Turns, multiple Harnesses, warm-pool policy, a second target, or fleet state. A future need for a smaller failure blast radius uses multiple independently configured NanoHosts under a separate accepted scale design, not a per-AgentSession Cell or Runtime Epoch.
+The Runtime Epoch may structurally contain zero or more Sandboxes. The first shared-runtime slice authorizes multiple open AgentSessions in one compatible Sandbox and Harness but still authorizes only one active Turn across that Harness. An active `SandboxRuntimeRecord.pinnedGoalId` further excludes other Goals from that Sandbox; a second Goal uses another ordinary compatible Sandbox when one exists, otherwise its existing scheduler admission entry stays queued for normal dispatch retry. This structure does not authorize concurrent active Turns, multiple Harnesses, generic warm-pool policy, a second target, or fleet state. A future need for a smaller failure blast radius uses multiple independently configured NanoHosts under a separate accepted scale design, not a per-AgentSession Cell or Runtime Epoch.
 
 ## Failure Semantics
 
 - Missing configured target or failed readiness denies admission with a typed diagnostic.
 - Missing, stale, contradictory, or overcommitted Harness or Sandbox capacity denies admission; NanoCore does not borrow a sibling's slot, trust an unproved occupancy report, or infer capacity from process idleness.
+- An absent `pinnedGoalId` before first worker-bearing admission, or an ordinarily released pin with no conflicting live binding or occupancy, is not a recovery failure: ordinary scheduling writes a new pin on a freshly admitted compatible ordinary Sandbox and MUST NOT use default standby-worker selection. Only stale or contradictory `pinnedGoalId` that conflicts with live binding or occupancy fails closed and remains inspectable as `recovery_required`. Lost warm Sandbox state costs latency only and is not a recovery dependency.
 - Missing or conflicting launch authority prevents worker start.
 - A missed heartbeat or NanoCore restart never by itself proves Turn failure or success.
 - Exact reconnect proof over the successor authoritative NanoHost session preserves the original attempt; failed proof preserves no availability or cleanup claim and follows the owning interruption and NanoHost-lifecycle boundaries.
@@ -131,19 +139,20 @@ The Runtime Epoch may structurally contain zero or more Sandboxes. The first sha
 
 ## Current Implementation Projection
 
-NanoCore currently grants the active-Turn slot through scheduler lease and scheduler capacity rows, while AgentSession runtime bindings and Harness occupancy distinguish retained open AgentSessions from active Turns. Ordinary successful Turns release scheduler capacity after exact Turn-local cleanup while retaining the shared Sandbox. Dormant RuntimeTarget `active_lease_id` and mutable `capacity_state` fields and test-only helpers duplicate the active-Turn authority and must be deleted. Scheduler candidate selection also must consume the existing authoritative NanoHost readiness projection as a gate without letting readiness grant capacity.
+NanoCore currently grants the active-Turn slot through scheduler lease and scheduler capacity rows, while AgentSession runtime bindings and Harness occupancy distinguish retained open AgentSessions from active Turns. Ordinary successful Turns release scheduler capacity after exact Turn-local cleanup while retaining the shared Sandbox. Today `SandboxRuntimeRecord` carries placement, cleanup, sandbox binding ref, and a nullable NanoCore-private `pinnedGoalId` column with no production reader, writer, or Goal-aware selector; `AgentSessionRuntimeBinding` carries Workspace and Thread and has no Goal discriminator; current admission lacks Goal, so the pin has no behavior, another Goal can co-reside, and Goal work can use ordinary selection. Dormant RuntimeTarget `active_lease_id` and mutable `capacity_state` fields and test-only helpers duplicate the active-Turn authority and must be deleted. Scheduler candidate selection also must consume the existing authoritative NanoHost readiness projection as a gate without letting readiness grant capacity.
 
 The configured NanoHost, shared Runtime Epoch, one NanoHost transport session, predecessor fencing, Sandbox-local Integration routes, shared Harness records, and normal Sandbox-preserving Turn close are implemented. Effect-free boot classification, post-listener recovery drain, strict readiness-gated scheduler admission, exact widened-cleanup fencing, and refreshed A1 acceptance remain incomplete. Exact target reconnect and terminal closeout remain Partial until those paths are verified without another recovery platform.
 
 ## Testing Strategy / Acceptance Criteria
 
 - L1 covers configured local versus remote target selection, `maxOpenSessions`, `maxActiveTurns`, aggregate Sandbox bounds, duplicate-launch rejection, heartbeat deadline, exact reconnect predicates, and separate open-session and active-Turn release.
+- L1 for the Goal-to-ordinary-Sandbox pin, when sibling runtime-path ownership clears, proves same-Goal reuse of the `SandboxRuntimeRecord.pinnedGoalId` Sandbox, other-Goal exclusion from that Sandbox with another ordinary Sandbox or existing-scheduler queued retry, fresh per-Turn authority, AEP, context, and lease checks, absent-or-released pin creating a new pin through ordinary scheduling, fail-closed only for stale or contradictory pin state that conflicts with live binding or occupancy, and unchanged protocol, App API, AEP, worker-control, and NanoHost `session.open` and `turn.start` wires; the nullable `pinnedGoalId` column now exists, but production has no Goal-aware selector, read, or write, current admission lacks Goal, and this criterion remains unmet.
 - L2 covers worker-control token, lineage, process-key, and sequence enforcement at the lease boundary.
 - L3 keeps one deterministic kill/restart scenario that proves either exact same-worker adoption with no duplicate launch or the documented interrupted fallback after timeout.
 - L5 or opt-in A1 acceptance proves one local or remote NanoHost path, ordinary Turn release with the shared Sandbox retained, definite physical cleanup, uncertain-cleanup epoch invalidation, and post-fence fresh-ready capacity release. Existing runners must be reused.
-- No current test obligation exists for fairness, aging, affinity, multi-target selection, warm pools, multi-process Core, hot failover, or every possible crash instruction boundary.
+- No current test obligation exists for fairness, aging, generic affinity optimization, multi-target selection, generic warm pools, multi-process Core, hot failover, or every possible crash instruction boundary.
 
-Acceptance requires no unauthorized or duplicate worker launch, no secret-bearing control state, truthful exact reconnect or interruption, one working configured `RuntimeTarget` projecting one local or remote NanoHost, at least two retained compatible AgentSessions from distinct Threads in the first-slice Harness, exactly one active Turn across them, exact local close before open-session capacity returns, complete Turn barriers before the scheduler-owned active-Turn capacity returns, no second RuntimeTarget capacity owner, and definite cleanup or post-fence fresh-ready proof before wider affected capacity returns after invalidation. Concurrent active Turns and scaled-profile behavior are not acceptance criteria.
+Acceptance requires no unauthorized or duplicate worker launch, no secret-bearing control state, truthful exact reconnect or interruption, one working configured `RuntimeTarget` projecting one local or remote NanoHost, at least two retained compatible AgentSessions from distinct Threads in the first-slice Harness, exactly one active Turn across them, exact local close before open-session capacity returns, complete Turn barriers before the scheduler-owned active-Turn capacity returns, no second RuntimeTarget capacity owner, and definite cleanup or post-fence fresh-ready proof before wider affected capacity returns after invalidation. The nullable `SandboxRuntimeRecord.pinnedGoalId` column now exists without a production reader, writer, or selector, so Goal pin semantics are not implemented. When production placement reads and writes that field, acceptance additionally requires same-Goal reuse of that ordinary Sandbox, other-Goal exclusion from that Sandbox with another ordinary Sandbox or existing-scheduler queued retry and a non-terminal Goal, fresh per-Turn authority, absent-or-released pin creating a new pin through ordinary scheduling, fail-closed only for stale or contradictory pin state that conflicts with live binding or occupancy, no default-standby selection, and unchanged NanoCore-user, NanoCore-NanoHost, and NanoCore-Worker-Agent wires including existing `session.open` and `turn.start`. Concurrent active Turns and scaled-profile behavior are not acceptance criteria.
 
 ## Consequences
 
@@ -155,7 +164,7 @@ Acceptance requires no unauthorized or duplicate worker launch, no secret-bearin
 
 - Multiple independently configured NanoHosts and dynamic target selection after a measured capacity, locality, compliance, or blast-radius need exists.
 - Concurrent active Turns after a Harness proves independent routing, interruption, context, output, and cleanup and a later accepted phase raises fixed `maxActiveTurns` above one.
-- Multiple Harness Instances, fairness, per-workspace or per-user caps, affinity optimization, and richer target health policy after real contention exists.
+- Multiple Harness Instances, fairness, per-workspace or per-user caps, generic affinity optimization, generic warm pools, and richer target health policy after real contention exists.
 - Multi-process Core, shared scheduler state, high availability, and hot failover under a separately accepted deployment design.
 
 Deferred work is non-authorizing and creates no current schema, implementation, migration, runner, harness, or test requirement.
@@ -169,4 +178,5 @@ Deferred work is non-authorizing and creates no current schema, implementation, 
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/core/agent-session.md`
+- `docs/specs/20260704-goal_mode_coordination.md`
 - `docs/deployment.md`

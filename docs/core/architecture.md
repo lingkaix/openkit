@@ -97,6 +97,8 @@ Internal roles may produce decisions or proposals only through normal Core servi
 - Core MUST NOT claim atomic completion across its durable store and an external runtime effect without an owning contract that supplies real proof. An unprovable outcome MUST remain explicit rather than being repaired by inference.
 - Adding an agent runtime MUST NOT add runtime-specific product, workflow, policy, governance, or canonical-schema branches to Core.
 - Internal Core roles MUST remain inside the coordination plane and MUST NOT maintain private product or workflow state.
+- Role, Agent, AgentSession, Harness, and Sandbox MUST remain independent axes; co-location or a shared physical binding transfers no identity or authority among them.
+- The NanoCore-user, NanoCore-NanoHost, and NanoCore-Worker-Agent interaction boundaries MUST remain stable while the internal Agent loop, internal-role assembly, Goal scheduling, Goal worker pinning, and placement remain private changeable NanoCore strategies; those strategies MUST NOT leak role or Goal semantics or runtime identities across those edges.
 - Workspace services MUST expose governed Core contracts and MUST NOT expose raw storage, credentials, provider clients, sandbox control, or adapter internals.
 - Deployment placement, storage backend, and release artifacts MUST NOT change the Core semantics of workspace, thread, turn, item, artifact, approval, agent, AgentSession, knowledge, vault, audit, or usage. This includes their ownership, policy authority, review semantics, trust boundaries, audit meaning, and usage attribution.
 

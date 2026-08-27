@@ -402,6 +402,7 @@ describe('storage migrations', () => {
         'core_0008_drop_session_snapshots',
         'core_0009_retire_workspace_readwrite',
         'core_0010_nanohost_last_fresh_ready',
+        'core_0011_nanohost_sandbox_pinned_goal',
       ]);
       expect(listTableNames(coreDb)).toEqual(CORE_TABLES);
       expect(listColumnNames(coreDb, 'users')).toEqual([
@@ -539,6 +540,7 @@ describe('storage migrations', () => {
         'cleanup_state',
         'created_at',
         'updated_at',
+        'pinned_goal_id',
       ]);
       expect(listColumnNames(coreDb, 'harness_instance_records')).toEqual([
         'harness_instance_id',
@@ -1266,6 +1268,22 @@ describe('storage migrations', () => {
            '2026-08-21T00:00:08.000Z', 1),
           ('target_not_ready', 'identity_a1', 'deployment_a1', 1, 1, 0, 1,
            '2026-08-21T00:00:09.000Z', 1);
+        CREATE TABLE sandbox_runtime_records (
+          sandbox_runtime_id text PRIMARY KEY NOT NULL,
+          runtime_target_id text NOT NULL,
+          sandbox_binding_ref text NOT NULL,
+          sandbox_compatibility_key text NOT NULL,
+          image_digest text NOT NULL,
+          environment_class text NOT NULL,
+          max_open_sessions integer NOT NULL,
+          max_active_turns integer NOT NULL,
+          lifecycle_state text NOT NULL,
+          health_state text NOT NULL,
+          drain_state text NOT NULL,
+          cleanup_state text NOT NULL,
+          created_at text NOT NULL,
+          updated_at text NOT NULL
+        );
         INSERT INTO schema_migrations (id, applied_at) VALUES
           ('core_0000_baseline', '2026-08-21T00:00:00.000Z'),
           ('core_0001_workspace_sharing', '2026-08-21T00:00:01.000Z'),
@@ -1305,6 +1323,7 @@ describe('storage migrations', () => {
         'core_0008_drop_session_snapshots',
         'core_0009_retire_workspace_readwrite',
         'core_0010_nanohost_last_fresh_ready',
+        'core_0011_nanohost_sandbox_pinned_goal',
       ]);
       expect(listTableNames(coreDb)).not.toContain('session_snapshots');
       expect(

@@ -1,5 +1,6 @@
 ---
 status: Accepted
+updated: 2026-08-28
 ---
 # Sandbox Model
 
@@ -97,11 +98,11 @@ Every Sandbox isolation claim MUST name exactly one of these levels:
 
 Filesystem namespacing under one OS identity provides Workspace-write isolation only. It is logical separation, not a security boundary, and MUST NOT be described as security and adjudication isolation. Shared-Sandbox AgentSessions occupy one compromise domain unless stronger intra-Sandbox isolation is separately proved.
 
-Independent adjudication, adversarial work, incompatible credential visibility, incompatible responsible-user trust, authorization-sensitive work, and strict-risk work MUST use separate Sandboxes whenever shared process memory, writable state, credentials, context, or model state could undermine security and adjudication isolation.
+Independent adjudication, adversarial work, incompatible credential visibility, incompatible responsible-user trust, authorization-sensitive work, and strict-risk work MUST use separate ordinary Sandboxes whenever shared process memory, writable state, credentials, context, retained warm state, or model state could undermine security and adjudication isolation.
 
 ## Shared-Sandbox Lifecycle And Failure
 
-Shared-Sandbox creation admits the static compatibility envelope before any AgentSession opens. AgentSession admission rechecks the current envelope, open-session capacity, one-current-per-Thread rule, and required isolation level; a missing or conflicting input blocks admission rather than selecting an approximately compatible Sandbox.
+Shared-Sandbox creation admits the static compatibility envelope before any AgentSession opens. AgentSession admission rechecks the current envelope, open-session capacity, one-current-per-Thread rule, required isolation level, and active NanoCore-private scheduling reservation or Goal pin compatibility; a missing or conflicting static-envelope input blocks admission rather than selecting an approximately compatible Sandbox. A Goal excluded by an active private scheduling reservation uses another compatible ordinary Sandbox; if no remaining compatible ordinary Sandbox exists, its existing scheduler admission stays queued for normal dispatch retry and the Goal remains non-terminal. This creates no new denial, queue, or attention state.
 
 An update that changes a static compatibility input makes the resident Sandbox stale for new AgentSessions and requires an ordinary drain and replacement. Existing non-security-sensitive Turns MAY finish under their pinned authority; credential compromise, permission revocation, containment uncertainty, or another security-sensitive change follows immediate interruption and the owning cleanup boundary.
 

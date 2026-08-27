@@ -476,6 +476,119 @@ describe('private NanoHost Harness records', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('keeps pinned_goal_id nullable on sandbox_runtime_records and keeps session.open and turn.start free of pin fields', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-goal-pin-')));
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      const sandboxColumns = coreDb.sqlite
+        .prepare('PRAGMA table_info(sandbox_runtime_records)')
+        .all() as { name: string; notnull: number }[];
+      expect(sandboxColumns.map((column) => column.name)).toContain('pinned_goal_id');
+      expect(sandboxColumns.find((column) => column.name === 'pinned_goal_id')?.notnull).toBe(0);
+
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.144.1',
+        harnessBindingRef: 'harness-binding-1',
+        harnessInstanceId: 'harness-1',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        sandboxBindingRef: 'sandbox-binding-1',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxRuntimeId: 'sandbox-runtime-1',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: 'thread-1',
+        timestamp: now,
+        workspaceId: 'workspace-1',
+      });
+
+      const sessionOpenBody = {
+        adapterId: 'codex',
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        effectiveSetupGeneration: 1,
+        threadId: 'thread-1',
+        workspaceId: 'workspace-1',
+      };
+      queueNanoHostHarnessOperation(coreDb, {
+        body: sessionOpenBody,
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open',
+        timestamp: now,
+      });
+      const sessionOpenCommand = dispatchNanoHostHarnessOperation(coreDb, {
+        harnessBindingRef: 'harness-binding-1',
+        nextExpectedSequence: 0,
+      });
+      expect(Object.keys(sessionOpenCommand?.body ?? {}).sort()).toEqual(
+        Object.keys(sessionOpenBody).sort()
+      );
+      expect(sessionOpenCommand?.body).not.toHaveProperty('goalId');
+      expect(sessionOpenCommand?.body).not.toHaveProperty('pin');
+      expect(sessionOpenCommand?.body).not.toHaveProperty('pinnedGoalId');
+      settleNanoHostHarnessOperation(coreDb, {
+        harnessBindingRef: 'harness-binding-1',
+        result: {
+          body: {
+            maxActiveTurns: 1,
+            nativeHandleDigest: null,
+            nativeHandleState: 'pending',
+            state: 'open',
+          },
+          disposition: 'succeeded',
+          operationId: sessionOpenCommand!.operationId,
+          schemaVersion: 1,
+          sequence: 0,
+        },
+        timestamp: now,
+      });
+
+      seedLease(coreDb);
+      const turnStartBody = {
+        aepRef: 'sandbox://aep/1',
+        agentSessionId: 'agent-session-1',
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        contextPackageId: 'context-package-1',
+        contextRef: 'sandbox://context/1',
+        deadline: '2099-01-01T00:00:00.000Z',
+        leaseId: 'lease-1',
+        packageSnapshotId: 'package-snapshot-1',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        turnSequence: 0,
+        workspaceId: 'workspace-1',
+      };
+      queueNanoHostHarnessOperation(coreDb, {
+        body: turnStartBody,
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.start',
+        timestamp: now,
+      });
+      const queuedTurnStart = JSON.parse(
+        (
+          coreDb.sqlite
+            .prepare('SELECT command_body_json AS commandBodyJson FROM harness_instance_records')
+            .get() as { commandBodyJson: string }
+        ).commandBodyJson
+      ) as Record<string, unknown>;
+      expect(Object.keys(queuedTurnStart).sort()).toEqual(Object.keys(turnStartBody).sort());
+      expect(queuedTurnStart).not.toHaveProperty('goalId');
+      expect(queuedTurnStart).not.toHaveProperty('pin');
+      expect(queuedTurnStart).not.toHaveProperty('pinnedGoalId');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });
 
 /** Seeds the existing Turn execution lease used by one private `turn.start`. */

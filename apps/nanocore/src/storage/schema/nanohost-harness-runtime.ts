@@ -33,6 +33,8 @@ export const sandboxRuntimeRecords = sqliteTable(
     createdAt: text('created_at').notNull(),
     /** Last transition timestamp. */
     updatedAt: text('updated_at').notNull(),
+    /** NanoCore-private Goal pin; null means this ordinary Sandbox currently pins no Goal. */
+    pinnedGoalId: text('pinned_goal_id'),
   },
   (table) => [
     uniqueIndex('sandbox_runtime_records_binding_idx').on(table.sandboxBindingRef),

@@ -55,7 +55,7 @@ pnpm -w verify:release
 pnpm -w verify:full
 ```
 
-The real-provider, real-subscription, and real-task-mode L3 gates are explicit opt-ins and return a clean skip when their required environment is absent.
+The real-provider, real-subscription, real-task-mode, and worker Responses relay L3 gates are explicit opt-ins and return a clean skip when their required environment is absent.
 
 ## Local Integration
 
@@ -72,6 +72,8 @@ OPENKIT_E2E_REAL_CODEX=1 OPENKIT_E2E_REAL_CODEX_CREDENTIAL=1 pnpm -w test:e2e:re
 ```
 
 Without `OPENKIT_E2E_REAL_CODEX=1`, the gate skips cleanly. After explicit opt-in, if `codex` is absent from `PATH` or no credential marker is set, it fails with the missing prerequisite named. It is excluded from `test:e2e` and refuses to run inside the test execution image, which carries no worker runtime. See the Test Execution Environment decision in `docs/toolchain.md`.
+
+The worker Responses relay runner is default-off and relay-only: it proves Codex and OpenCode Responses via Workspace `defaultAgentId` and excludes function-tool (`function_call` / `function_call_output`) proof. The deterministic harness is `node --test apps/nanocore/e2e/worker-responses-relay-real-provider-runner.test.mjs`. The real runner is `node apps/nanocore/e2e/worker-responses-relay-real-provider-runner.mjs`; it is fail-closed, skips when required environment is absent, and a skip or blocked environment is not a product PASS.
 
 The App server listens with HTTP/1.1 for browser, CLI, and SSE traffic. When `nanohost` is configured, NanoCore starts a separate native HTTP/2 listener at `nanohost.bind` for `/api/nanohost/transport/*`; the two listeners use different local ports, and a reverse proxy must expose only the App listener.
 
@@ -295,6 +297,19 @@ OPENKIT_L6_TASK_PRODUCT_COMMIT=<40-lowercase-hex-commit> \
 OPENKIT_L6_TASK_HOST_MANIFEST_DIGEST=<64-lowercase-hex-digest> \
 OPENKIT_L6_EVIDENCE_DIR=/owner-only/evidence-directory \
 pnpm -w test:e2e:real-task-mode
+```
+
+The worker Responses relay L3 run uses the same fail-closed evidence posture: it skips rather than PASS when opt-in, quota acknowledgement, host-manifest digest, Codex or OpenCode image refs, NanoCore URL, or evidence directory is absent, or when exactly one of `OPENKIT_NANOCORE_TOKEN` and `OPENKIT_NANOCORE_SESSION_COOKIE` is set; set both or omit both for local mode. The runner excludes function-tool proof.
+
+```bash
+OPENKIT_L6_WORKER_RESPONSES_RELAY=1 \
+OPENKIT_L6_ALLOW_PROVIDER_QUOTA=1 \
+OPENKIT_L6_WORKER_RESPONSES_HOST_MANIFEST_DIGEST=<64-lowercase-hex-digest> \
+OPENKIT_L6_WORKER_RESPONSES_CODEX_IMAGE_REF=<exact-codex-image-ref> \
+OPENKIT_L6_WORKER_RESPONSES_OPENCODE_IMAGE_REF=<exact-opencode-image-ref> \
+OPENKIT_L6_WORKER_RESPONSES_NANOCORE_URL=http://127.0.0.1:3000 \
+OPENKIT_L6_EVIDENCE_DIR=/owner-only/evidence-directory \
+node apps/nanocore/e2e/worker-responses-relay-real-provider-runner.mjs
 ```
 
 The authoritative runtime contract is [NanoHost Runtime And Transport](../../docs/specs/20260802-nanohost_runtime_and_transport.md), and the host workflow is [NanoHost real-use host](../../docs/cookbooks/nanohost-real-use-host.md).
