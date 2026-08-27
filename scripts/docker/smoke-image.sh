@@ -32,7 +32,26 @@ process.stdout.write(String(value));
 
 cd "${REPO_ROOT}"
 
-tag="${IMAGE_TAG:-$(read_image_field localTag)}"
+if [[ -n "${IMAGE_TAG}" ]]; then
+  tag="${IMAGE_TAG}"
+elif [[ "${IMAGE_ID}" == "test-env" ]]; then
+  tag="$(node scripts/docker/test-image-tag.mjs)"
+else
+  tag="$(read_image_field localTag)"
+fi
 smoke_command="$(read_image_field smokeCommand)"
+
+if [[ "${IMAGE_ID}" == "test-env" ]]; then
+  expected_build_input_digest="$(node scripts/docker/test-image-tag.mjs --digest)"
+  actual_build_input_digest="$(
+    docker image inspect \
+      --format '{{ index .Config.Labels "org.openkit.test-env.build-input-digest" }}' \
+      "${tag}" 2>/dev/null || true
+  )"
+  if [[ "${actual_build_input_digest}" != "${expected_build_input_digest}" ]]; then
+    echo "Test execution image ${tag} has an invalid build-input digest label." >&2
+    exit 1
+  fi
+fi
 
 docker run --rm "${tag}" "${smoke_command}"

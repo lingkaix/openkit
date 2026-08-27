@@ -4,7 +4,7 @@ import { AgentIdSchema, AgentProfileIdSchema, AgentSessionIdSchema } from '../co
 import { TimestampSchema } from '../common/timestamps.js';
 
 /**
- * Closed lifecycle states for agent sessions.
+ * Closed lifecycle states for AgentSessions.
  */
 export const AgentSessionStatusSchema = z.enum([
   'created',
@@ -20,12 +20,12 @@ export const AgentSessionStatusSchema = z.enum([
 ]);
 
 /**
- * Closed lifecycle state for an agent session.
+ * Closed lifecycle state for an AgentSession.
  */
 export type AgentSessionStatus = z.infer<typeof AgentSessionStatusSchema>;
 
 /**
- * Product-safe sandbox summary for an agent or session.
+ * Product-safe sandbox summary for an agent or AgentSession.
  */
 export const AgentSandboxSummarySchema = z.object({
   access: z.enum(['none', 'read-only', 'read-write']),
@@ -34,7 +34,7 @@ export const AgentSandboxSummarySchema = z.object({
 });
 
 /**
- * Product-visible agent session record without adapter-native launch details.
+ * Product-visible AgentSession record without adapter-native launch details.
  */
 export const AgentSessionSchema = z.object({
   id: AgentSessionIdSchema,
@@ -49,7 +49,7 @@ export const AgentSessionSchema = z.object({
 });
 
 /**
- * Product-visible agent session record.
+ * Product-visible AgentSession record.
  */
 export type AgentSession = z.infer<typeof AgentSessionSchema>;
 

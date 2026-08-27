@@ -62,6 +62,20 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
     summary: 'Embedded provider supply is server-owned and takes effect after restart.',
   },
   {
+    kind: 'server',
+    path: '$.nanohost',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'forbidden',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'restart-required',
+    secretPolicy: 'no-secret',
+    summary:
+      'NanoHost identity, rendezvous endpoint, and non-secret credential reference are server-owned and restart-required.',
+  },
+
+  {
     kind: 'provider',
     path: '$',
     owner: 'server',

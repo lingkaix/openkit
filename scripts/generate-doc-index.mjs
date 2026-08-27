@@ -2,21 +2,24 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseFrontmatter } from './lib/doc-fields.mjs';
 import { classifyDocuments } from './validate-doc-model.mjs';
 
 const INDEX_PATH = 'docs/INDEX.md';
 const SUMMARY_LIMIT = 160;
-const METADATA_LINE_PATTERN =
-  /^(Status|Implementation|Date|Updated|Type|Started|Completed|Branch):/u;
 const SECTIONS = [
   { title: 'Governance', types: ['governance'] },
   { title: 'Intent', types: ['intent'] },
   { title: 'Core Model', types: ['core'] },
   { title: 'Specifications', types: ['spec'] },
   { title: 'Terminal Specifications', types: ['spec-terminal'] },
-  { title: 'Change Records', types: ['change'] },
+  {
+    pointer: 'Change plans are not indexed. List `docs/changes/` to see them.',
+    title: 'Change Plans',
+  },
   { title: 'Audit Records', types: ['audit'] },
-  { title: 'Guides', types: ['guide', 'guide-translation'] },
+  { title: 'Platform References', types: ['platform-reference'] },
+  { title: 'User Manuals', types: ['manual'] },
   { title: 'External Snapshots', types: ['snapshot'] },
   { title: 'Cookbooks', types: ['cookbook'] },
 ];
@@ -25,11 +28,13 @@ const SECTIONS = [
  * Generates the documentation index content for the committed corpus.
  *
  * The index is a generated projection defined by `docs/documentation-model.md`:
- * every classified document except local guides and the index itself, grouped
- * by type, one deterministic line per document.
+ * every classified document except local guides, the index itself, and change
+ * records, grouped by type, one deterministic line per document. Change plans
+ * are pointed at `docs/changes/` rather than enumerated.
  *
  * @param {string} repoRoot Repository root.
  * @returns {string} Complete `docs/INDEX.md` content.
+ * @throws {Error} When document metadata is invalid or repository files cannot be read.
  */
 export function generateDocIndex(repoRoot) {
   const documents = classifyDocuments(repoRoot);
@@ -44,6 +49,11 @@ export function generateDocIndex(repoRoot) {
   ];
 
   for (const section of SECTIONS) {
+    if (section.pointer) {
+      lines.push('', `## ${section.title}`, '', section.pointer);
+      continue;
+    }
+
     const entries = documents.filter((document) => section.types.includes(document.type));
 
     if (entries.length === 0) {
@@ -67,51 +77,47 @@ export function generateDocIndex(repoRoot) {
  * @param {string} repoRoot Repository root.
  * @param {{path: string, type: string}} entry Classified document.
  * @returns {string} One Markdown list line.
+ * @throws {Error} When the document metadata is invalid.
  */
 function formatEntry(repoRoot, entry) {
   const content = readFileSync(join(repoRoot, entry.path), 'utf8');
+  const metadata = parseFrontmatter(content);
+
+  if (metadata.kind === 'invalid') {
+    throw new Error(`${entry.path}: ${metadata.errors.join(' ')}`);
+  }
+
+  const { bodyOffset, fields } = metadata;
 
   if (entry.type === 'spec' || entry.type === 'spec-terminal') {
-    const status = headerField(content, 'Status') ?? 'unknown';
-    const implementation = headerField(content, 'Implementation');
+    const status = fields.status ?? 'unknown';
+    const implementation = fields.implementation;
     const state = implementation ? `${status}, ${implementation}` : status;
 
     if (entry.type === 'spec-terminal') {
       return `- \`${entry.path}\` — ${status}`;
     }
 
-    return `- \`${entry.path}\` — ${state} — ${summarize(content, true)}`;
-  }
-
-  if (entry.type === 'change') {
-    const type = headerField(content, 'Type') ?? 'unknown';
-    const status = headerField(content, 'Status') ?? 'unknown';
-
-    return `- \`${entry.path}\` — ${type}, ${status} — ${title(content)}`;
+    return `- \`${entry.path}\` — ${state} — ${summarize(content, bodyOffset, true)}`;
   }
 
   if (entry.type === 'audit' || entry.type === 'cookbook') {
     return `- \`${entry.path}\` — ${title(content)}`;
   }
 
-  if (entry.type === 'guide-translation') {
-    const canonical = entry.path.replace(/\.zh\.md$/u, '.en.md');
+  if (entry.type === 'manual') {
+    const status = fields.status ?? 'unknown';
 
-    return `- \`${entry.path}\` — zh translation of \`${canonical}\``;
+    if (entry.path.endsWith('.zh.md')) {
+      const canonical = entry.path.replace(/\.zh\.md$/u, '.en.md');
+
+      return `- \`${entry.path}\` — ${status} — zh translation of \`${canonical}\``;
+    }
+
+    return `- \`${entry.path}\` — ${status} — ${summarize(content, bodyOffset, false)}`;
   }
 
-  return `- \`${entry.path}\` — ${summarize(content, false)}`;
-}
-
-/**
- * Reads one `Field: value` header line from document content.
- *
- * @param {string} content Markdown content.
- * @param {string} field Field name.
- * @returns {string|null} Field value when present.
- */
-function headerField(content, field) {
-  return new RegExp(`^${field}:\\s*(.+?)\\s*$`, 'mu').exec(content)?.[1] ?? null;
+  return `- \`${entry.path}\` — ${summarize(content, bodyOffset, false)}`;
 }
 
 /**
@@ -128,21 +134,23 @@ function title(content) {
  * Extracts one short summary line from document content.
  *
  * Specifications prefer the first sentence of their Owns section; other
- * documents use the first content line after the title.
+ * documents use the first content line after the metadata block. The metadata
+ * is skipped by the body offset `scripts/lib/doc-fields.mjs` reports, so the
+ * generator holds no notion of what a metadata line looks like.
  *
  * @param {string} content Markdown content.
+ * @param {number} bodyOffset Character offset of the content after the metadata.
  * @param {boolean} preferOwns Whether to prefer the Owns section.
  * @returns {string} Plain summary text.
  */
-function summarize(content, preferOwns) {
-  const source = preferOwns
-    ? (content.split(/^## Owns\s*$/mu)[1] ?? content)
-    : content.replace(/^#\s+.+$/mu, '');
+function summarize(content, bodyOffset, preferOwns) {
+  const body = content.slice(bodyOffset);
+  const source = preferOwns ? (body.split(/^## Owns\s*$/mu)[1] ?? body) : body;
 
   for (const rawLine of source.split('\n')) {
     const line = rawLine.trim();
 
-    if (line === '' || line.startsWith('#') || METADATA_LINE_PATTERN.test(line)) {
+    if (line === '' || line.startsWith('#')) {
       continue;
     }
 
@@ -187,6 +195,7 @@ function truncate(value) {
  *
  * @param {string} repoRoot Repository root.
  * @returns {string} Written index content.
+ * @throws {Error} When document metadata is invalid or repository files cannot be read or written.
  */
 export function writeDocIndex(repoRoot) {
   const content = generateDocIndex(repoRoot);
@@ -200,6 +209,7 @@ export function writeDocIndex(repoRoot) {
  *
  * @param {string} repoRoot Repository root.
  * @returns {{current: boolean}} Drift result.
+ * @throws {Error} When document metadata is invalid or repository files cannot be read.
  */
 export function checkDocIndex(repoRoot) {
   const indexPath = join(repoRoot, INDEX_PATH);

@@ -10,8 +10,8 @@ import type { CapabilitiesClient } from './capabilities.js';
 import { createCapabilitiesClient } from './capabilities.js';
 import type { CoreProjectionClient } from './core.js';
 import { createCoreProjectionClient } from './core.js';
-import type { OpenAICodexOAuthClient } from './oauth.js';
-import { createOpenAICodexOAuthClient } from './oauth.js';
+import type { ProviderSubscriptionsClient } from './provider-subscriptions.js';
+import { createProviderSubscriptionsClient } from './provider-subscriptions.js';
 import type { WorkspaceRepositoryClient } from './repository.js';
 import { createWorkspaceRepositoryClient } from './repository.js';
 import type { RuntimeConfigClient } from './runtime-config.js';
@@ -21,7 +21,10 @@ import { type ClientTransportOptions, createClientTransport } from './transport.
 
 /** Options for creating the composed OpenKit client. */
 export interface CreateCoreClientOptions extends ClientTransportOptions {
-  /** Optional EventSource constructor used by browser hosts that prefer EventSource SSE. */
+  /**
+   * Optional constructor that selects EventSource for turn SSE while HTTP keeps the configured
+   * fetch transport.
+   */
   eventSource?: EventSourceConstructor;
 }
 
@@ -33,11 +36,8 @@ export interface CoreClient {
   readonly app: AppApiClient;
   /** Runtime config editor and reload routes. */
   readonly runtimeConfig: RuntimeConfigClient;
-  /** OAuth account clients grouped by provider. */
-  readonly oauth: {
-    /** OpenAI Codex ChatGPT OAuth account client. */
-    readonly openaiCodex: OpenAICodexOAuthClient;
-  };
+  /** Provider-subscription inventory, account, login, and quota routes. */
+  readonly providerSubscriptions: ProviderSubscriptionsClient;
   /** Browser authentication clients grouped by credential method. */
   readonly auth: {
     /** Better Auth email/password client. */
@@ -59,7 +59,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const core = createCoreProjectionClient(transport, options.eventSource);
   const app = createAppApiClient(transport);
   const runtimeConfig = createRuntimeConfigClient(transport);
-  const openaiCodex = createOpenAICodexOAuthClient(transport);
+  const providerSubscriptions = createProviderSubscriptionsClient(transport);
   const email = createEmailAuthClient(transport);
   const capabilities = createCapabilitiesClient(core.meta);
   const agents = createAgentCatalogClient(transport);
@@ -73,7 +73,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
     auth: { email },
     capabilities,
     core,
-    oauth: { openaiCodex },
+    providerSubscriptions,
     repositories,
     runtimeConfig,
   };

@@ -4,12 +4,35 @@ import {
   getConfigPolicyCatalog,
   getConfigSchemaCatalog,
   parseWorkspaceDataSourceCatalog,
+  requireCredentialFreeHttpsGitLocator,
   resolveWorkspaceDataSourceReference,
   WorkspaceDataSourceCatalogSchema,
   WorkspaceDataSourceSchema,
 } from './index.js';
 
 describe('workspace data source catalog schema', () => {
+  it('requires one exact credential-free HTTPS Git locator', () => {
+    const commit = '0123456789abcdef0123456789abcdef01234567';
+    expect(() =>
+      requireCredentialFreeHttpsGitLocator({
+        commit,
+        url: 'https://git.example.test/openkit/repository.git',
+      })
+    ).not.toThrow();
+
+    for (const locator of [
+      { commit, url: 'https://git.example.test/openkit/repository.git?ref=private-review' },
+      { commit, url: 'https://git.example.test/openkit/repository.git#private-review' },
+      { commit, url: 'https://user@git.example.test/openkit/repository.git' },
+      { commit, extra: 'not-accepted', url: 'https://git.example.test/openkit/repository.git' },
+      { url: 'https://git.example.test/openkit/repository.git' },
+      { commit },
+      { commit: 'main', url: 'https://git.example.test/openkit/repository.git' },
+    ]) {
+      expect(() => requireCredentialFreeHttpsGitLocator(locator)).toThrow();
+    }
+  });
+
   it('accepts endpoint-bearing sources with non-secret locators', () => {
     const parsed = parseWorkspaceDataSourceCatalog({
       schemaVersion: 1,

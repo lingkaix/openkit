@@ -1,4 +1,8 @@
-import { ForwardCompatibleSseEventEnvelopeSchema } from '@openkit/protocol';
+import {
+  ForwardCompatibleSseEventEnvelopeSchema,
+  ProductSseEventEnvelopeSchema,
+  ProductTurnSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 
 import { ProtocolValidationError } from './errors.js';
@@ -10,7 +14,60 @@ type FetchLike = typeof globalThis.fetch;
 /**
  * Validated SSE event envelope delivered by the core event stream.
  */
-export type SseEventEnvelope = z.infer<typeof ForwardCompatibleSseEventEnvelopeSchema>;
+export type SseEventEnvelope = z.infer<typeof ProductSseEventEnvelopeSchema>;
+
+interface DecodedSseFrame {
+  readonly envelope: SseEventEnvelope | null;
+  readonly sequence: number;
+}
+
+/**
+ * Parses one ordinary SSE frame while tolerating a leaked internal AgentSession event.
+ *
+ * @param data JSON SSE frame data.
+ * @returns Product envelope or a withheld internal sequence.
+ */
+function decodeSseFrame(data: string): DecodedSseFrame {
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(data) as unknown;
+  } catch (error) {
+    throw new ProtocolValidationError(
+      {
+        path: [],
+        code: 'invalid_payload',
+        message: 'SSE event failed protocol validation.',
+      },
+      { cause: error }
+    );
+  }
+
+  const product = ProductSseEventEnvelopeSchema.safeParse(payload);
+
+  if (product.success) {
+    return { envelope: product.data, sequence: product.data.sequence };
+  }
+
+  const internal = ForwardCompatibleSseEventEnvelopeSchema.safeParse(payload);
+
+  if (
+    internal.success &&
+    (internal.data.event === 'agent.session.updated' ||
+      internal.data.data.type === 'agent-session-updated')
+  ) {
+    return { envelope: null, sequence: internal.data.sequence };
+  }
+
+  throw new ProtocolValidationError(
+    product.error.issues[0] ?? {
+      path: [],
+      code: 'invalid_payload',
+      message: 'SSE event failed protocol validation.',
+    },
+    { cause: product.error }
+  );
+}
 
 /**
  * Options for subscribing to one turn's event stream.
@@ -31,6 +88,46 @@ interface QueueState {
   readonly values: SseEventEnvelope[];
   readonly errors: unknown[];
   readonly resolvers: Array<() => void>;
+}
+
+/**
+ * Classifies delivery for an envelope affiliated with the subscribed Turn's terminal event.
+ *
+ * @param envelope Validated forward-compatible stream envelope.
+ * @param options Subscription owner identifiers.
+ * @returns Whether to deliver an ordinary event, withhold a noncanonical terminal-affiliated envelope, or deliver the canonical terminal event and stop.
+ */
+function classifyTurnEventDelivery(
+  envelope: SseEventEnvelope,
+  options: SubscribeTurnEventsOptions
+): 'deliver' | 'withhold' | 'terminal' {
+  const terminalAffiliated =
+    envelope.event === 'turn.completed' || envelope.data.type === 'turn-completed';
+
+  if (!terminalAffiliated) {
+    return 'deliver';
+  }
+
+  if (envelope.event !== 'turn.completed' || envelope.data.type !== 'turn-completed') {
+    return 'withhold';
+  }
+
+  const turn = ProductTurnSchema.parse(envelope.data.turn);
+  const terminal =
+    turn.status === 'completed' ||
+    turn.status === 'interrupted' ||
+    turn.status === 'cancelled' ||
+    turn.status === 'failed';
+
+  return terminal &&
+    envelope.workspaceId === options.workspaceId &&
+    envelope.threadId === options.threadId &&
+    envelope.turnId === options.turnId &&
+    turn.workspaceId === options.workspaceId &&
+    turn.threadId === options.threadId &&
+    turn.id === options.turnId
+    ? 'terminal'
+    : 'withhold';
 }
 
 /**
@@ -100,33 +197,34 @@ function subscribeTurnEventsWithFetch(
 
   const pushEvent = (data: string): void => {
     try {
-      const parsed = ForwardCompatibleSseEventEnvelopeSchema.safeParse(JSON.parse(data) as unknown);
+      const decoded = decodeSseFrame(data);
 
-      if (!parsed.success) {
-        throw new ProtocolValidationError(
-          parsed.error.issues[0] ?? {
-            path: [],
-            code: 'invalid_payload',
-            message: 'SSE event failed protocol validation.',
-          },
-          { cause: parsed.error }
-        );
-      }
-
-      if (parsed.data.sequence <= lastSeen) {
+      if (decoded.sequence <= lastSeen) {
         return;
       }
 
-      lastSeen = parsed.data.sequence;
-      queue.values.push(parsed.data);
+      lastSeen = decoded.sequence;
 
-      if (parsed.data.event === 'turn.completed') {
+      if (decoded.envelope === null) {
+        return;
+      }
+
+      const delivery = classifyTurnEventDelivery(decoded.envelope, options);
+
+      if (delivery === 'withhold') {
+        return;
+      }
+
+      queue.values.push(decoded.envelope);
+
+      if (delivery === 'terminal') {
         stopped = true;
         activeController?.abort();
       }
 
       wake();
     } catch (error) {
+      queue.values.length = 0;
       pushError(error);
     }
   };
@@ -243,34 +341,37 @@ function subscribeTurnEventsWithEventSource(
       return;
     }
 
-    source?.close();
+    const previousSource = source;
+    source = null;
+    previousSource?.close();
     source = new eventSourceFactory(buildUrl());
+    const openedSource = source;
 
     source.addEventListener('message', (event) => {
+      if (stopped || source !== openedSource) return;
+
       try {
-        const parsed = ForwardCompatibleSseEventEnvelopeSchema.safeParse(
-          JSON.parse((event as MessageEvent<string>).data) as unknown
-        );
+        const decoded = decodeSseFrame((event as MessageEvent<string>).data);
 
-        if (!parsed.success) {
-          throw new ProtocolValidationError(
-            parsed.error.issues[0] ?? {
-              path: [],
-              code: 'invalid_payload',
-              message: 'SSE event failed protocol validation.',
-            },
-            { cause: parsed.error }
-          );
-        }
-
-        if (parsed.data.sequence <= lastSeen) {
+        if (decoded.sequence <= lastSeen) {
           return;
         }
 
-        lastSeen = parsed.data.sequence;
-        queue.values.push(parsed.data);
+        lastSeen = decoded.sequence;
 
-        if (parsed.data.event === 'turn.completed') {
+        if (decoded.envelope === null) {
+          return;
+        }
+
+        const delivery = classifyTurnEventDelivery(decoded.envelope, options);
+
+        if (delivery === 'withhold') {
+          return;
+        }
+
+        queue.values.push(decoded.envelope);
+
+        if (delivery === 'terminal') {
           terminalSeen = true;
           stopped = true;
           source?.close();
@@ -278,19 +379,31 @@ function subscribeTurnEventsWithEventSource(
 
         wake();
       } catch (error) {
+        queue.values.length = 0;
         queue.errors.push(error);
+        stopped = true;
+        source?.close();
         wake();
       }
     });
 
     source.addEventListener('error', () => {
+      if (source !== openedSource) return;
+
       if (terminalSeen) {
         source?.close();
         wake();
         return;
       }
 
-      reopen();
+      try {
+        reopen();
+      } catch (error) {
+        queue.values.length = 0;
+        queue.errors.push(error);
+        stopped = true;
+        wake();
+      }
     });
   };
 

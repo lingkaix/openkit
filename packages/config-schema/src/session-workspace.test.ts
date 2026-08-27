@@ -27,7 +27,7 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
     },
     runtime: {
       image: {
-        kind: 'container-image',
+        kind: 'reference',
         ref: 'ghcr.io/openkit/codex-worker:test',
         digest: 'sha256:demo',
       },
@@ -292,7 +292,7 @@ describe('session workspace planner', () => {
       environmentPackage: packageFixture({
         runtime: {
           image: {
-            kind: 'container-image',
+            kind: 'reference',
             ref: 'ghcr.io/openkit/codex-worker:test2',
             digest: 'sha256:changed',
           },

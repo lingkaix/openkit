@@ -5,9 +5,13 @@ node_modules
 dist
 **/dist
 .git
+.codegraph
 temp
 data
 **/data
+target
+**/target
 **/.DS_Store
 **/.cache
 **/coverage
+**/test-results

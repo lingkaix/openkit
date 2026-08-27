@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getConfigPolicyCatalog, OpenKitConfigSchema } from './index.js';
+import { getConfigPolicyCatalog, getConfigSchemaCatalog, OpenKitConfigSchema } from './index.js';
 
 describe('server config schema', () => {
   it.each([
@@ -69,20 +69,23 @@ describe('server config schema', () => {
     );
   });
 
-  it('accepts local vault backend default configuration', () => {
-    expect(
+  it.each([
+    'encrypted-file',
+    'os-keychain',
+  ])('rejects the removed local vault backend selector value %s', (localDefaultBackend) => {
+    expect(() =>
       OpenKitConfigSchema.parse({
         schemaVersion: 1,
         vault: {
-          localDefaultBackend: 'encrypted-file',
+          localDefaultBackend,
         },
       })
-    ).toEqual({
-      schemaVersion: 1,
-      vault: {
-        localDefaultBackend: 'encrypted-file',
-      },
-    });
+    ).toThrow();
+  });
+
+  it('omits the removed local vault backend selector from config catalogs', () => {
+    expect(JSON.stringify(getConfigSchemaCatalog())).not.toContain('localDefaultBackend');
+    expect(JSON.stringify(getConfigPolicyCatalog())).not.toContain('localDefaultBackend');
   });
 
   it('accepts an absolute encrypted-file vault key path', () => {
@@ -137,5 +140,124 @@ describe('server config schema', () => {
         },
       })
     ).toThrow();
+  });
+
+  /**
+   * S-2b-1 predicate start: NanoCore deployment config must project exactly one
+   * configured NanoHost identity, rendezvous endpoint, and non-secret credential
+   * reference (`docs/specs/20260628-nanocore_config_identity_contract.md`).
+   * Fail-on-absence until `server.ts` grows the `nanohost` object.
+   */
+  it('accepts the secret-free NanoHost deployment projection', () => {
+    expect(
+      OpenKitConfigSchema.parse({
+        schemaVersion: 1,
+        nanohost: {
+          bind: { host: '0.0.0.0', port: 4318 },
+          identityId: 'integration_nanohost_primary',
+          deploymentId: 'deploy_primary',
+          rendezvousUrl: 'https://nanocore.example:8443',
+          credentialRef: 'nanohost-transport:primary',
+          credentialSlots: {
+            A: {
+              secretPath: '/run/credentials/nanohost-a.token',
+              companionPath: '/run/credentials/nanohost-a.meta',
+            },
+            B: {
+              secretPath: '/run/credentials/nanohost-b.token',
+              companionPath: '/run/credentials/nanohost-b.meta',
+            },
+          },
+        },
+      })
+    ).toEqual({
+      schemaVersion: 1,
+      nanohost: {
+        bind: { host: '0.0.0.0', port: 4318 },
+        identityId: 'integration_nanohost_primary',
+        deploymentId: 'deploy_primary',
+        rendezvousUrl: 'https://nanocore.example:8443',
+        credentialRef: 'nanohost-transport:primary',
+        credentialSlots: {
+          A: {
+            secretPath: '/run/credentials/nanohost-a.token',
+            companionPath: '/run/credentials/nanohost-a.meta',
+          },
+          B: {
+            secretPath: '/run/credentials/nanohost-b.token',
+            companionPath: '/run/credentials/nanohost-b.meta',
+          },
+        },
+      },
+    });
+  });
+
+  it('requires one exact dedicated NanoHost listener bind', () => {
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        nanohost: {
+          credentialRef: 'nanohost-transport:primary',
+          credentialSlots: {
+            A: {
+              companionPath: '/run/credentials/nanohost-a.meta',
+              secretPath: '/run/credentials/nanohost-a.token',
+            },
+            B: {
+              companionPath: '/run/credentials/nanohost-b.meta',
+              secretPath: '/run/credentials/nanohost-b.token',
+            },
+          },
+          deploymentId: 'deploy_primary',
+          identityId: 'integration_nanohost_primary',
+          rendezvousUrl: 'https://nanocore.example:8443',
+        },
+      })
+    ).toThrow();
+  });
+
+  it('rejects Cell topology keys and raw NanoHost token material in server config', () => {
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        schemaVersion: 1,
+        openshellCellSshTarget: 'root@127.0.0.1',
+      })
+    ).toThrow();
+
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        schemaVersion: 1,
+        nanohost: {
+          bind: { host: '127.0.0.1', port: 4318 },
+          credentialSlots: {
+            A: {
+              companionPath: '/run/credentials/nanohost-a.meta',
+              secretPath: '/run/credentials/nanohost-a.token',
+            },
+            B: {
+              companionPath: '/run/credentials/nanohost-b.meta',
+              secretPath: '/run/credentials/nanohost-b.token',
+            },
+          },
+          deploymentId: 'deploy_primary',
+          identityId: 'integration_nanohost_primary',
+          rendezvousUrl: 'https://nanocore.example:8443',
+          credentialRef: 'nanohost-transport:primary',
+          token: 'okt_raw_secret_must_not_be_config',
+        },
+      })
+    ).toThrow();
+  });
+
+  it('marks NanoHost deployment configuration restart-required and secret-free', () => {
+    expect(getConfigPolicyCatalog()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'server',
+          path: '$.nanohost',
+          reloadClass: 'restart-required',
+          secretPolicy: 'no-secret',
+        }),
+      ])
+    );
   });
 });

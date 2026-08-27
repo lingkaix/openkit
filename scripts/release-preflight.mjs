@@ -108,10 +108,11 @@ function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
   }
 
   const ids = new Set();
+  const workerTargets = new Set();
   const releaseImages = [];
 
   for (const image of manifest.images) {
-    validateImageEntry(repoRoot, image, ids, requireReleaseWorkerDigests);
+    validateImageEntry(repoRoot, image, ids, workerTargets, requireReleaseWorkerDigests);
     if (image.release === true) {
       releaseImages.push(image.id);
     }
@@ -130,9 +131,10 @@ function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
  * @param {string} repoRoot Repository root.
  * @param {Record<string, unknown>} image Image entry.
  * @param {Set<string>} ids Seen image ids.
+ * @param {Set<string>} workerTargets Seen worker Docker targets.
  * @param {boolean} requireReleaseWorkerDigests Whether release worker bases must be digest-pinned.
  */
-function validateImageEntry(repoRoot, image, ids, requireReleaseWorkerDigests) {
+function validateImageEntry(repoRoot, image, ids, workerTargets, requireReleaseWorkerDigests) {
   for (const field of [
     'id',
     'repository',
@@ -154,7 +156,7 @@ function validateImageEntry(repoRoot, image, ids, requireReleaseWorkerDigests) {
   }
   ids.add(image.id);
 
-  if (!['app', 'worker', 'dev'].includes(image.kind)) {
+  if (!['app', 'worker', 'test'].includes(image.kind)) {
     throw new Error(`Image ${image.id} has invalid kind: ${image.kind}`);
   }
   if (!Array.isArray(image.platforms) || image.platforms.length === 0) {
@@ -164,11 +166,18 @@ function validateImageEntry(repoRoot, image, ids, requireReleaseWorkerDigests) {
   assertRelativeExistingPath(repoRoot, image.smoke, `Image ${image.id} smoke`);
 
   if (image.kind === 'worker') {
-    for (const field of ['runtime', 'workerContract', 'baseImage']) {
+    for (const field of ['runtime', 'workerContract', 'baseImage', 'target']) {
       if (!image[field]) {
         throw new Error(`Worker image ${image.id} is missing ${field}.`);
       }
     }
+    if (image.target !== image.id) {
+      throw new Error(`Worker image ${image.id} target must equal its image id.`);
+    }
+    if (workerTargets.has(image.target)) {
+      throw new Error(`Duplicate worker image target: ${image.target}`);
+    }
+    workerTargets.add(image.target);
     if (
       image.release === true &&
       requireReleaseWorkerDigests &&

@@ -1,12 +1,69 @@
 import { z } from 'zod';
 import {
   AgentEnvironmentBinarySchema,
+  AgentEnvironmentDockerfileInputSchema,
+  EMPTY_BUILD_CONTEXT_DIGEST,
+  EMPTY_BUILD_CONTEXT_REF,
   WorkerGovernanceBackendCapabilitySchema,
   WorkerGovernanceBackendKindSchema,
   WorkerSandboxAccessSchema,
 } from './agent-environment.js';
 import { ProviderReadinessSchema } from './provider.js';
 import { isRegisteredRequiredFeature } from './schema-evolution.js';
+
+const BUILD_ARGUMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SECRET_SHAPED_BUILD_ARGUMENT_PATTERN =
+  /(api.?key|authorization|client.?secret|credential|password|secret|token)/i;
+
+/** Authored published-image reference. */
+const AuthoredAgentRuntimeImageReferenceSchema = z
+  .object({
+    kind: z.literal('reference'),
+    pullPolicy: z.enum(['always', 'if-not-present', 'never']),
+    ref: z.string().min(1),
+  })
+  .strict();
+
+/** Authored bounded image build definition. */
+const AuthoredAgentRuntimeImageBuildSchema = z
+  .object({
+    arguments: z.record(z.string().regex(BUILD_ARGUMENT_NAME_PATTERN), z.string()).default({}),
+    contextDigest: z.literal(EMPTY_BUILD_CONTEXT_DIGEST),
+    contextRef: z.literal(EMPTY_BUILD_CONTEXT_REF),
+    egress: z
+      .array(
+        z
+          .object({
+            host: z
+              .string()
+              .min(1)
+              .refine((host) => !host.includes('*')),
+            port: z.number().int().min(1).max(65_535),
+          })
+          .strict()
+      )
+      .min(1),
+    input: AgentEnvironmentDockerfileInputSchema,
+    kind: z.literal('build'),
+    layerLimit: z.number().int().min(1).max(128),
+    outputLimitBytes: z.number().int().min(1).max(21_474_836_480),
+    timeLimitSeconds: z.number().int().min(1).max(1800),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    for (const [name, argument] of Object.entries(value.arguments)) {
+      if (
+        SECRET_SHAPED_BUILD_ARGUMENT_PATTERN.test(name) ||
+        SECRET_SHAPED_BUILD_ARGUMENT_PATTERN.test(argument)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Build arguments must not contain secret-shaped names or values.',
+          path: ['arguments', name],
+        });
+      }
+    }
+  });
 
 /**
  * Authored opaque worker runtime declaration.
@@ -15,12 +72,10 @@ export const AuthoredAgentRuntimeSchema = z
   .object({
     adapter: z.string().min(1),
     binaries: z.array(AgentEnvironmentBinarySchema).min(1),
-    image: z
-      .object({
-        pullPolicy: z.enum(['always', 'if-not-present', 'never']),
-        ref: z.string().min(1),
-      })
-      .strict(),
+    image: z.discriminatedUnion('kind', [
+      AuthoredAgentRuntimeImageReferenceSchema,
+      AuthoredAgentRuntimeImageBuildSchema,
+    ]),
     kind: z.string().min(1),
     version: z.string().min(1).optional(),
   })
@@ -41,6 +96,9 @@ export const AuthoredAgentProviderSchema = z
  */
 export const AuthoredAgentWorkspaceInputSchema = z
   .object({
+    access: z.enum(['read-only', 'read-write']).optional(),
+    id: z.string().min(1).optional(),
+    sourceRef: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
   })
   .passthrough();

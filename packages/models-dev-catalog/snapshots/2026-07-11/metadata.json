@@ -11,8 +11,82 @@
   "checksumSha256": "41661afc7178a74c4cce1963fa0386f688c1b97b4888b855ba16e5479510a680",
   "maintenanceNote": "Vendored for OpenKit provider-template traceability. The observed source revision records repository state at fetch time and is not claimed as deployment provenance for the rolling API response.",
   "piAiReconciliation": {
-    "piAiVersion": "0.80.3",
+    "piAiVersion": "0.84.2",
     "priceToleranceRatio": 0.05,
+    "acceptedPriceDifferences": [
+      {
+        "field": "input",
+        "modelId": "gpt-5.6-luna",
+        "modelsDev": 1,
+        "modelsDevProviderId": "openai",
+        "piAi": 0.2,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "output",
+        "modelId": "gpt-5.6-luna",
+        "modelsDev": 6,
+        "modelsDevProviderId": "openai",
+        "piAi": 1.2,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "cacheRead",
+        "modelId": "gpt-5.6-luna",
+        "modelsDev": 0.1,
+        "modelsDevProviderId": "openai",
+        "piAi": 0.02,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "cacheWrite",
+        "modelId": "gpt-5.6-luna",
+        "modelsDev": 1.25,
+        "modelsDevProviderId": "openai",
+        "piAi": 0.25,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "input",
+        "modelId": "gpt-5.6-terra",
+        "modelsDev": 2.5,
+        "modelsDevProviderId": "openai",
+        "piAi": 2,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "output",
+        "modelId": "gpt-5.6-terra",
+        "modelsDev": 15,
+        "modelsDevProviderId": "openai",
+        "piAi": 12,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "cacheRead",
+        "modelId": "gpt-5.6-terra",
+        "modelsDev": 0.25,
+        "modelsDevProviderId": "openai",
+        "piAi": 0.2,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "cacheWrite",
+        "modelId": "gpt-5.6-terra",
+        "modelsDev": 3.125,
+        "modelsDevProviderId": "openai",
+        "piAi": 2.5,
+        "piAiProviderId": "openai-codex"
+      },
+      {
+        "field": "cacheRead",
+        "modelId": "grok-4.5",
+        "modelsDev": 0.5,
+        "modelsDevProviderId": "xai",
+        "piAi": 0.3,
+        "piAiProviderId": "xai"
+      }
+    ],
     "providers": [
       {
         "modelsDevProviderId": "anthropic",
@@ -24,9 +98,17 @@
         "modelIds": ["gemini-2.5-pro"]
       },
       {
+        "modelsDevProviderId": "openai",
+        "piAiProviderId": "openai-codex"
+      },
+      {
         "modelsDevProviderId": "openrouter",
         "piAiProviderId": "openrouter",
         "modelIds": ["openai/gpt-5.1"]
+      },
+      {
+        "modelsDevProviderId": "xai",
+        "piAiProviderId": "xai"
       }
     ]
   },

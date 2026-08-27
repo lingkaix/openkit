@@ -1,8 +1,4 @@
-import {
-  AgentSandboxSummarySchema,
-  AgentSessionStatusSchema,
-  TimestampSchema,
-} from '@openkit/protocol';
+import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
@@ -19,17 +15,30 @@ export const RuntimeConfigFileKindSchema = z.enum([
 ]);
 
 /** Materialized workspace root projection captured for worker sessions. */
-export const MaterializedWorkspaceRootSchema = z.object({
-  id: z.string().min(1),
-  sourceKind: z.enum(['host-dir', 'materialized-dir']),
-  sourcePath: z.string().min(1),
-  sourceCommit: z
-    .string()
-    .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
-    .optional(),
-  workerPath: z.string().min(1),
-  access: z.enum(['read-only', 'read-write']),
-});
+export const MaterializedWorkspaceRootSchema = z.discriminatedUnion('sourceKind', [
+  z
+    .object({
+      id: z.string().min(1),
+      sourceKind: z.enum(['host-dir', 'materialized-dir']),
+      sourcePath: z.string().min(1),
+      sourceCommit: z
+        .string()
+        .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
+        .optional(),
+      workerPath: z.string().min(1),
+      access: z.enum(['read-only', 'read-write']),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().min(1),
+      sourceKind: z.literal('remote-git'),
+      sourceCommit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+      workerPath: z.string().min(1),
+      access: z.enum(['read-only', 'read-write']),
+    })
+    .strict(),
+]);
 
 /** Runtime config change category assigned by NanoCore diffing. */
 export const RuntimeConfigChangeCategorySchema = z.enum([
@@ -158,34 +167,6 @@ export const RuntimeConfigReloadSummarySchema = z.object({
   message: z.string().min(1).nullable().default(null),
 });
 
-/** Recovery choice exposed for active stale runtime config sessions. */
-export const RuntimeConfigStaleSessionRecoveryChoiceSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('inspect'),
-    label: z.string().min(1),
-    recommended: z.literal(true),
-  }),
-  z.object({
-    kind: z.literal('restart_session'),
-    label: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal('request_human'),
-    label: z.string().min(1),
-  }),
-]);
-
-/** Active session running with an older runtime config snapshot. */
-export const RuntimeConfigStaleSessionSchema = z.object({
-  sessionId: z.string().min(1),
-  threadId: z.string().min(1),
-  agentId: z.string().min(1),
-  capturedVersion: z.number().int().positive().nullable(),
-  currentVersion: z.number().int().positive(),
-  reasons: z.array(z.string().min(1)),
-  choices: z.array(RuntimeConfigStaleSessionRecoveryChoiceSchema).min(1).max(10),
-});
-
 /** Redacted runtime config status for diagnostics and reload responses. */
 export const RuntimeConfigStatusSchema = z.object({
   currentVersion: z.number().int().positive(),
@@ -193,23 +174,6 @@ export const RuntimeConfigStatusSchema = z.object({
   lastReload: RuntimeConfigReloadSummarySchema.nullable(),
   lastFailedReload: RuntimeConfigReloadSummarySchema.nullable(),
   pendingRestart: z.array(RuntimeConfigChangeSchema),
-  staleSessions: z.array(RuntimeConfigStaleSessionSchema),
-});
-
-/** Response payload returned after retiring one stale runtime config session. */
-export const RestartRuntimeConfigStaleSessionResponseSchema = z.object({
-  restarted: z.boolean(),
-  session: z
-    .object({
-      id: z.string().min(1),
-      status: AgentSessionStatusSchema,
-      message: z.string().min(1).nullable(),
-      configVersion: z.number().int().positive().nullable(),
-      workspaceRoots: z.array(MaterializedWorkspaceRootSchema),
-      stale: z.boolean(),
-      sandboxSummary: AgentSandboxSummarySchema.nullable(),
-    })
-    .nullable(),
 });
 
 /** Runtime config reload response payload. */
@@ -275,18 +239,8 @@ export type RuntimeConfigReloadPlan = z.infer<typeof RuntimeConfigReloadPlanSche
 export type RuntimeConfigReloadRequest = z.infer<typeof RuntimeConfigReloadRequestSchema>;
 /** Runtime config reload summary. */
 export type RuntimeConfigReloadSummary = z.infer<typeof RuntimeConfigReloadSummarySchema>;
-/** Runtime config stale session recovery choice. */
-export type RuntimeConfigStaleSessionRecoveryChoice = z.infer<
-  typeof RuntimeConfigStaleSessionRecoveryChoiceSchema
->;
-/** Runtime config stale session. */
-export type RuntimeConfigStaleSession = z.infer<typeof RuntimeConfigStaleSessionSchema>;
 /** Runtime config status. */
 export type RuntimeConfigStatus = z.infer<typeof RuntimeConfigStatusSchema>;
-/** Runtime config stale-session restart response. */
-export type RestartRuntimeConfigStaleSessionResponse = z.infer<
-  typeof RestartRuntimeConfigStaleSessionResponseSchema
->;
 /** Runtime config reload response. */
 export type RuntimeConfigReloadResponse = z.infer<typeof RuntimeConfigReloadResponseSchema>;
 /** Runtime config validation request. */

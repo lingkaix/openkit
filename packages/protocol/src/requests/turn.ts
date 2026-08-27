@@ -1,12 +1,13 @@
 import { z } from 'zod';
 
 import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '../common/ids.js';
-import { TurnSchema } from '../models/turn.js';
+import { ProductTurnSchema, TurnSchema } from '../models/turn.js';
 
 /** Strict release-coupled Turn read variants with accepted package delivery evidence. */
 const StrictTurnReadProjectionSchema = z.union(
   TurnSchema.options.map((variant) =>
     variant
+      .omit({ agentSessionId: true })
       .extend({
         contextPackageDigest: z
           .string()
@@ -18,9 +19,12 @@ const StrictTurnReadProjectionSchema = z.union(
 );
 
 /**
- * Release-coupled Turn read projection with nullable accepted Context Package evidence.
+ * Release-coupled ordinary Turn read projection with nullable accepted Context Package evidence.
  */
-export const TurnReadProjectionSchema = z.intersection(StrictTurnReadProjectionSchema, TurnSchema);
+export const TurnReadProjectionSchema = z.intersection(
+  StrictTurnReadProjectionSchema,
+  ProductTurnSchema
+);
 
 const OrdinaryTurnInputRequestSchema = z
   .object({

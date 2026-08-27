@@ -39,7 +39,7 @@ const scannedPaths = [
   'tests',
   'docs/product-vision.md',
   'docs/deployment.md',
-  'docs/nanocore-deployment-modes.en.md',
+  'docs/manual',
 ];
 const forbiddenNeedles = [
   '@openkit/mcp',

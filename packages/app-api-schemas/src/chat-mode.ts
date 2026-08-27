@@ -1,4 +1,4 @@
-import { ItemSchema, TurnSchema } from '@openkit/protocol';
+import { ItemSchema, ProductTurnSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Request body for one thread-scoped Chat Mode Assistant turn. */
@@ -29,7 +29,7 @@ export const ChatModeHandoffSchema = z.object({
 export const StartChatModeResponseSchema = z.object({
   outcome: ChatModeOutcomeSchema,
   explanation: z.string().min(1),
-  turn: TurnSchema,
+  turn: ProductTurnSchema,
   item: ItemSchema,
   handoff: ChatModeHandoffSchema.nullable(),
 });

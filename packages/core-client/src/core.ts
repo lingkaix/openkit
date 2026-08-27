@@ -15,11 +15,11 @@ import {
   ListThreadsResponseSchema,
   ListWorkspacesResponseSchema,
   MetaResponseSchema,
+  ProductTurnSchema,
   type RespondToApprovalRequestSchema,
   type SubmitTurnInputRequestSchema,
   ThreadSchema,
   TurnReadProjectionSchema,
-  TurnSchema,
   type UpdateKnowledgeEntryRequestSchema,
   type UpdateThreadRequestSchema,
   type UpdateWorkspaceRequestSchema,
@@ -72,7 +72,7 @@ export type UpdateThreadInput = OptionalRequestId<z.infer<typeof UpdateThreadReq
 /** Thread archive input. */
 export type ArchiveThreadInput = OptionalRequestId<z.infer<typeof ArchiveThreadRequestSchema>>;
 /** Turn record. */
-export type Turn = z.infer<typeof TurnSchema>;
+export type Turn = z.infer<typeof ProductTurnSchema>;
 /** Turn read projection with nullable verified Context Package evidence. */
 export type TurnReadProjection = z.infer<typeof TurnReadProjectionSchema>;
 /** Turn start input. */
@@ -267,7 +267,7 @@ export function createCoreProjectionClient(
         ThreadSchema
       );
     },
-    startTurn: (input) => transport.postJson('/api/turns', withRequestId(input), TurnSchema),
+    startTurn: (input) => transport.postJson('/api/turns', withRequestId(input), ProductTurnSchema),
     getTurn: (workspaceId, threadId, turnId) =>
       transport.getJson(
         `/api/workspaces/${workspaceId}/threads/${threadId}/turns/${turnId}`,
@@ -278,7 +278,7 @@ export function createCoreProjectionClient(
       return transport.postJson(
         `/api/workspaces/${request.workspaceId}/threads/${request.threadId}/turns/${request.turnId}/interrupt`,
         request,
-        TurnSchema
+        ProductTurnSchema
       );
     },
     respondApproval: (approvalRequestId, input) =>
@@ -303,9 +303,8 @@ export function createCoreProjectionClient(
       subscribeTurnEvents({
         ...subscribeOptions,
         baseUrl: transport.baseUrl,
-        fetch: transport.fetch,
         ...(transport.headers === undefined ? {} : { headers: transport.headers }),
-        ...(eventSource === undefined ? {} : { eventSource }),
+        ...(eventSource === undefined ? { fetch: transport.fetch } : { eventSource }),
       }),
   };
 }

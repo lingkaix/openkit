@@ -7,7 +7,7 @@ This directory holds reusable libraries, shared configuration packages, internal
 - Each package must live in its own subdirectory (for example `packages/ui`, `packages/utils`).
 - Each important package directory must include a local `README.md` once it is scaffolded.
 - Add a local `AGENTS.md` only when the package has local agent execution rules that are not already covered by the root `AGENTS.md` or its local `README.md`.
-- Scaffold new packages with an official CLI or approved template. Do not hand-compose starter files unless a cookbook explicitly allows it.
+- Scaffolding source preference and the handcrafted-starter-file prohibition are owned by `docs/toolchain.md` under `## Owns`, Setup And Dependency Procedure.
 
 ## After scaffolding
 
@@ -24,7 +24,7 @@ This directory holds reusable libraries, shared configuration packages, internal
 - `@openkit/config-schema`: shared OpenKit config schemas, policy metadata, and workspace root materialization helpers.
 - `@openkit/policy-kernel`: shared standard-aligned NGAC subset policy kernel for relation-backed authorization decisions and decision traces.
 - `@openkit/worker-protocol`: canonical `Core <-> Worker` schemas for governed container worker records, control envelopes, transcript records, capability summaries, workspace-change manifests, and worker errors.
-- `@openkit/openshell-schema-snapshot`: vendored exact-version boundary snapshot for the stock OpenShell `0.0.80` provider profile, sandbox policy, CLI surface, and reserved namespace consumed by NanoCore.
+- `@openkit/openshell-schema-snapshot`: legacy immutable stock OpenShell `0.0.80` snapshot retained only for the current NanoCore policy renderer's conformance helper; it grants no runtime authority, is not refreshed, and is deleted when that policy consumer migrates, while the current pin lives with NanoHost.
 - `@openkit/codex-app-server-schema`: vendored Codex app-server JSON Schema snapshot for the NanoCore host adapter boundary.
 - `@openkit/models-dev-catalog`: vendored `models.dev` catalog snapshots for provider-template traceability.
 

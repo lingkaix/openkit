@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { ActorRefSchema } from '@openkit/protocol';
 import { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -5,6 +7,8 @@ import { ProviderProfileSchema } from './provider.js';
 import { OpenKitProviderInstanceSchema } from './server.js';
 
 const RAW_SECRET_FIELD_NAMES = new Set(['apiKey', 'clientSecret', 'secret', 'token', 'password']);
+const SECRET_SHAPED_BUILD_ARGUMENT_PATTERN =
+  /(api.?key|authorization|client.?secret|credential|password|secret|token)/i;
 const BACKEND_PRIVATE_FIELD_NAMES = new Set([
   'backendContainerId',
   'backendSessionId',
@@ -15,6 +19,51 @@ const BACKEND_PRIVATE_FIELD_NAMES = new Set([
 const WORKER_CREDENTIAL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const WORKER_SANDBOX_ACCESS_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY = 'trusted-worker-inference-relay';
+const LOWERCASE_SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const UNPAIRED_SURROGATE_PATTERN =
+  /(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u;
+
+/** Sole V1 immutable build-context reference. */
+export const EMPTY_BUILD_CONTEXT_REF = 'build-context://empty/v1';
+
+/** SHA-256 digest of the V1 zero-length build-context content sequence. */
+export const EMPTY_BUILD_CONTEXT_DIGEST =
+  'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/** Inclusive V1 upper bound for exact UTF-8 Dockerfile input bytes. */
+export const DOCKERFILE_INPUT_MAX_BYTES = 268_435_456;
+
+/** Exact independently digested inline Dockerfile build input. */
+export const AgentEnvironmentDockerfileInputSchema = z
+  .object({
+    content: z.string(),
+    digest: z.string().regex(LOWERCASE_SHA256_PATTERN),
+    kind: z.literal('dockerfile'),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const byteLength = Buffer.byteLength(value.content, 'utf8');
+    if (
+      byteLength < 1 ||
+      byteLength > DOCKERFILE_INPUT_MAX_BYTES ||
+      UNPAIRED_SURROGATE_PATTERN.test(value.content)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `Dockerfile input must contain 1 through ${DOCKERFILE_INPUT_MAX_BYTES} UTF-8 bytes.`,
+        path: ['content'],
+      });
+      return;
+    }
+    const digest = `sha256:${createHash('sha256').update(value.content, 'utf8').digest('hex')}`;
+    if (value.digest !== digest) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Dockerfile input digest must match its exact UTF-8 bytes.',
+        path: ['digest'],
+      });
+    }
+  });
 
 /** Exact NanoCore worker-control POST paths available to governed workers. */
 export const OPENKIT_WORKER_CONTROL_POST_PATHS = [
@@ -29,62 +78,6 @@ export const OPENKIT_WORKER_CONTROL_POST_PATHS = [
 ] as const;
 
 export { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
-
-const TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA = z
-  .object({
-    action: z.literal('allow'),
-    binaries: z.tuple([
-      z.literal('/usr/local/bin/node'),
-      z.literal('/usr/local/bin/openkit-worker-shim'),
-    ]),
-    host: z.string().min(1),
-    id: z.literal('openkit-worker-control'),
-    port: z.number().int().min(1).max(65535),
-    protocol: z.literal('rest'),
-    rules: z
-      .array(
-        z
-          .object({
-            method: z.literal('POST'),
-            path: z.enum(OPENKIT_WORKER_CONTROL_POST_PATHS),
-          })
-          .strict()
-      )
-      .length(OPENKIT_WORKER_CONTROL_POST_PATHS.length)
-      .refine(
-        (rules) => new Set(rules.map((rule) => rule.path)).size === rules.length,
-        'Trusted worker control paths must be unique.'
-      ),
-  })
-  .strict();
-const TRUSTED_WORKER_INFERENCE_NETWORK_RULE_SCHEMA = z
-  .object({
-    action: z.literal('allow'),
-    binaries: z.array(z.string().min(1).startsWith('/')).min(1),
-    host: z.string().min(1),
-    id: z.literal('openkit-worker-inference'),
-    port: z.number().int().min(1).max(65535),
-    protocol: z.literal('rest'),
-    rules: z.tuple([
-      z
-        .object({
-          method: z.literal('POST'),
-          path: z.literal('/api/worker-inference/v1/chat/completions'),
-        })
-        .strict(),
-      z
-        .object({
-          method: z.literal('POST'),
-          path: z.literal('/api/worker-inference/v1/responses'),
-        })
-        .strict(),
-    ]),
-  })
-  .strict();
-const TRUSTED_WORKER_INFERENCE_NETWORK_RULES_SCHEMA = z.tuple([
-  TRUSTED_WORKER_CONTROL_NETWORK_RULE_SCHEMA,
-  TRUSTED_WORKER_INFERENCE_NETWORK_RULE_SCHEMA,
-]);
 
 /**
  * Field classes used by Agent Environment Package schema documentation.
@@ -218,13 +211,59 @@ export const AgentEnvironmentBinarySchema = z
  * Worker runtime image declaration.
  */
 export const AgentEnvironmentRuntimeImageSchema = z
-  .object({
-    kind: z.enum(['container-image', 'vm-image', 'remote-template', 'managed-sandbox-template']),
-    ref: z.string().min(1),
-    digest: z.string().min(1).nullable().optional(),
-    pullPolicy: z.enum(['always', 'if-not-present', 'never']),
-  })
-  .strict();
+  .discriminatedUnion('kind', [
+    z
+      .object({
+        kind: z.literal('reference'),
+        pullPolicy: z.enum(['always', 'if-not-present', 'never']),
+        ref: z.string().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        arguments: z.record(z.string().min(1), z.string()).default({}),
+        argumentsDigest: z.string().min(1),
+        contextDigest: z.literal(EMPTY_BUILD_CONTEXT_DIGEST),
+        contextRef: z.literal(EMPTY_BUILD_CONTEXT_REF),
+        egress: z
+          .array(
+            z
+              .object({
+                host: z
+                  .string()
+                  .min(1)
+                  .refine((host) => !host.includes('*')),
+                port: z.number().int().min(1).max(65_535),
+              })
+              .strict()
+          )
+          .min(1),
+        input: AgentEnvironmentDockerfileInputSchema,
+        kind: z.literal('build'),
+        layerLimit: z.number().int().min(1).max(128),
+        outputLimitBytes: z.number().int().min(1).max(21_474_836_480),
+        timeLimitSeconds: z.number().int().min(1).max(1800),
+      })
+      .strict(),
+  ])
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+    if (value.kind !== 'build') {
+      return;
+    }
+    for (const [name, argument] of Object.entries(value.arguments)) {
+      if (
+        SECRET_SHAPED_BUILD_ARGUMENT_PATTERN.test(name) ||
+        SECRET_SHAPED_BUILD_ARGUMENT_PATTERN.test(argument)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Build arguments must not contain secret-shaped names or values.',
+          path: ['arguments', name],
+        });
+      }
+    }
+  });
 
 /**
  * Worker process command declaration.
@@ -489,23 +528,10 @@ export const AgentEnvironmentControlTranscriptSchema = z
 /**
  * Canonical NanoCore worker-control endpoint.
  */
-export const AgentEnvironmentControlEndpointSchema = z
+export const AgentEnvironmentControlBindingSchema = z
   .object({
-    kind: z.literal('direct-url'),
-    baseUrl: z.string().url(),
-    required: z.literal(true),
-    implementation: z.literal('direct-nanocore'),
-  })
-  .strict();
-
-/**
- * Worker control authentication material reference.
- */
-export const AgentEnvironmentControlAuthSchema = z
-  .object({
-    kind: z.literal('sandbox-session-token'),
-    tokenRef: z.literal('runtime://openkit/control-token'),
-    credentialVisibility: z.literal('environment'),
+    pathPrefix: z.string().min(1),
+    tokenRef: z.string().min(1).startsWith('runtime://openkit/'),
   })
   .strict();
 
@@ -529,7 +555,6 @@ export const AgentEnvironmentControlAdapterSchema = z
   .object({
     kind: z.literal('openkit-worker-shim'),
     targetRuntime: z.string().min(1),
-    targetTransport: z.string().min(1),
   })
   .strict();
 
@@ -539,10 +564,15 @@ export const AgentEnvironmentControlAdapterSchema = z
 export const AgentEnvironmentControlSchema = z
   .object({
     protocol: z.literal('openkit-worker-control-v1'),
-    mode: z.literal('direct-nanocore'),
+    mode: z.literal('sandbox-integration'),
+    bindings: z
+      .object({
+        capabilities: AgentEnvironmentControlBindingSchema,
+        inference: AgentEnvironmentControlBindingSchema,
+        workerControl: AgentEnvironmentControlBindingSchema,
+      })
+      .strict(),
     transcript: AgentEnvironmentControlTranscriptSchema,
-    endpoint: AgentEnvironmentControlEndpointSchema,
-    auth: AgentEnvironmentControlAuthSchema,
     channels: AgentEnvironmentControlChannelsSchema,
     commands: z.tuple([z.literal('interrupt')]),
     events: z.array(z.string().min(1)).default([]),
@@ -550,28 +580,28 @@ export const AgentEnvironmentControlSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
-    const endpointUrl = new URL(value.endpoint.baseUrl);
-    const endpointIsCanonical =
-      (endpointUrl.protocol === 'http:' || endpointUrl.protocol === 'https:') &&
-      !endpointUrl.username &&
-      !endpointUrl.password &&
-      !endpointUrl.search &&
-      !endpointUrl.hash &&
-      endpointUrl.pathname.replace(/\/+$/, '') === '/api/worker-control';
-    const targetTransport = endpointUrl.protocol === 'http:' ? 'outbound-http' : 'outbound-https';
-
-    if (!endpointIsCanonical) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Direct NanoCore control requires one canonical HTTP(S) endpoint.',
-        path: ['endpoint'],
-      });
+    const expectedBindings = {
+      capabilities: ['/capabilities/', 'runtime://openkit/capability-token'],
+      inference: ['/inference/', 'runtime://openkit/inference-token'],
+      workerControl: ['/worker-control/', 'runtime://openkit/worker-control-token'],
+    } as const;
+    const tokenRefs = new Set<string>();
+    for (const [family, expected] of Object.entries(expectedBindings)) {
+      const binding = value.bindings[family as keyof typeof value.bindings];
+      tokenRefs.add(binding.tokenRef);
+      if (binding.pathPrefix !== expected[0] || binding.tokenRef !== expected[1]) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Sandbox Integration ${family} binding is not canonical.`,
+          path: ['bindings', family],
+        });
+      }
     }
-    if (value.adapter.targetTransport !== targetTransport) {
+    if (tokenRefs.size !== 3) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Direct NanoCore control adapter transport must match its endpoint scheme.',
-        path: ['adapter'],
+        message: 'Sandbox Integration route families require distinct token references.',
+        path: ['bindings'],
       });
     }
   });
@@ -710,20 +740,51 @@ export const WorkerSandboxFilesystemGrantSchema = z
   });
 
 /**
- * User-authored network grant for one worker sandbox launch.
+ * Bounded HTTP rule allowed inside an exact REST network grant.
  */
-export const WorkerSandboxNetworkGrantSchema = z
+export const WorkerSandboxRestRuleSchema = z
+  .object({
+    method: z.enum(['GET', 'POST']),
+    path: z.string().min(1).startsWith('/'),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (/[\r\n]/.test(value.path)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Worker sandbox REST rule paths cannot contain line breaks.',
+        path: ['path'],
+      });
+    }
+  });
+
+const WORKER_SANDBOX_NETWORK_GRANT_BASE_SCHEMA = z
   .object({
     id: z.string().regex(WORKER_SANDBOX_ACCESS_ID_PATTERN),
     host: z.string().min(1),
     port: z.number().int().min(1).max(65535),
-    protocol: z.enum(['rest', 'http', 'https']).default('rest'),
-    access: z.enum(['read-only', 'read-write']).default('read-only'),
     purpose: z.string().min(1),
     binaries: z.array(z.string().min(1).startsWith('/')).min(1),
     scope: z.enum(['session', 'reusable']).default('session'),
   })
-  .strict()
+  .strict();
+
+/**
+ * User-authored network grant for one worker sandbox launch.
+ */
+export const WorkerSandboxNetworkGrantSchema = z
+  .union([
+    WORKER_SANDBOX_NETWORK_GRANT_BASE_SCHEMA.extend({
+      access: z.enum(['read-only', 'read-write']).default('read-only'),
+      protocol: z.enum(['rest', 'http', 'https']).default('rest'),
+      rules: z.never().optional(),
+    }),
+    WORKER_SANDBOX_NETWORK_GRANT_BASE_SCHEMA.extend({
+      access: z.never().optional(),
+      protocol: z.literal('rest').default('rest'),
+      rules: z.array(WorkerSandboxRestRuleSchema).min(1),
+    }),
+  ])
   .superRefine((value, ctx) => {
     if (value.host.includes('*')) {
       ctx.addIssue({
@@ -866,7 +927,7 @@ export const AgentEnvironmentLlmSchema = z
     const route = value.routes[0];
     const expected =
       value.mode === 'gateway'
-        ? (['placeholder', 'openai-compatible', 'nanocore-gateway', true] as const)
+        ? (['placeholder', 'openai-compatible', 'nanocore-gateway', false] as const)
         : value.mode === 'direct-external'
           ? (['environment', 'provider-compatible', 'direct-provider', false] as const)
           : (['none', 'backend-local', 'backend-local', false] as const);
@@ -924,14 +985,28 @@ export const AgentEnvironmentBackendRequirementsSchema = z
     degrade: z.record(z.string(), z.unknown()).optional(),
     extensions: z.record(z.string(), z.unknown()).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.requiredCapabilities.includes('remote-gateway') ||
+      Object.keys(value.extensions ?? {}).some((key) =>
+        ['gatewayEndpoint', 'gatewayName', 'gatewayUrlRef', 'placement'].includes(key)
+      )
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Agent Environment Packages cannot select a remote Gateway or placement.',
+        path: ['extensions'],
+      });
+    }
+  });
 
 /**
  * Canonical NanoCore-owned package passed to worker governance backends.
  */
 export const AgentEnvironmentPackageSchema = z
   .object({
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     packageId: z.string().min(1),
     snapshotId: z.string().min(1),
     createdAt: z.string().datetime(),
@@ -974,6 +1049,12 @@ export const AgentEnvironmentPackageSchema = z
           ctx.addIssue({
             code: 'custom',
             message: `Policy network binary is not declared by the runtime: ${String(binary)}`,
+            path: ['policy', 'network', 'rules', ruleIndex, 'binaries', binaryIndex],
+          });
+        } else if (binary === '/usr/local/bin/openkit-worker-shim') {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Worker Shim control and inference must use Sandbox Integration.',
             path: ['policy', 'network', 'rules', ruleIndex, 'binaries', binaryIndex],
           });
         }
@@ -1050,58 +1131,51 @@ export const AgentEnvironmentPackageSchema = z
       });
     }
 
-    const workerBaseUrl = route?.endpoint.workerBaseUrl;
-    const workerUrl = workerBaseUrl ? new URL(workerBaseUrl) : null;
-
-    if (
-      !workerUrl ||
-      !['http:', 'https:'].includes(workerUrl.protocol) ||
-      !workerUrl.hostname ||
-      workerUrl.username !== '' ||
-      workerUrl.password !== '' ||
-      workerUrl.hostname === 'inference.local' ||
-      workerUrl.pathname !== '/api/worker-inference/v1' ||
-      workerUrl.search !== '' ||
-      workerUrl.hash !== ''
-    ) {
+    if (route?.endpoint.workerBaseUrl) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Trusted worker inference requires the exact NanoCore worker-inference base path.',
+        message: 'Trusted worker inference derives its endpoint from Sandbox Integration.',
         path: ['llm', 'routes', 0, 'endpoint', 'workerBaseUrl'],
       });
     }
 
-    if (workerUrl && ['http:', 'https:'].includes(workerUrl.protocol)) {
-      const networkRules = value.policy.network?.rules ?? [];
-      const relayNetworkRules =
-        TRUSTED_WORKER_INFERENCE_NETWORK_RULES_SCHEMA.safeParse(networkRules);
-      const expectedPort = Number(
-        workerUrl.port || (workerUrl.protocol === 'https:' ? '443' : '80')
-      );
-      const controlUrl = value.control.endpoint ? new URL(value.control.endpoint.baseUrl) : null;
-      const expectedControlPort = controlUrl
-        ? Number(controlUrl.port || (controlUrl.protocol === 'https:' ? '443' : '80'))
-        : null;
-      const controlRule = relayNetworkRules.success ? relayNetworkRules.data[0] : null;
-      const inferenceRule = relayNetworkRules.success ? relayNetworkRules.data[1] : null;
-
-      if (
-        value.policy.network?.default !== 'deny' ||
-        value.policy.network?.enforcement !== 'openshell' ||
-        !controlUrl ||
-        !controlRule ||
-        controlRule.host !== controlUrl.hostname ||
-        controlRule.port !== expectedControlPort ||
-        !inferenceRule ||
-        inferenceRule.host !== workerUrl.hostname ||
-        inferenceRule.port !== expectedPort
-      ) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Trusted worker inference requires exact relay-only network policy.',
-          path: ['policy', 'network', 'rules'],
-        });
+    const targetRuntimeBinaryIds = new Set([
+      value.control.adapter.targetRuntime,
+      `${value.control.adapter.targetRuntime}-native`,
+    ]);
+    const targetRuntimeBinaryPaths = new Set(
+      value.runtime.binaries
+        .filter((binary) => targetRuntimeBinaryIds.has(binary.id))
+        .map((binary) => binary.path)
+    );
+    for (const [ruleIndex, rule] of (value.policy.network?.rules ?? []).entries()) {
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+        continue;
       }
+      const binaries = (rule as { binaries?: unknown }).binaries;
+      if (!Array.isArray(binaries)) {
+        continue;
+      }
+      for (const [binaryIndex, binary] of binaries.entries()) {
+        if (typeof binary === 'string' && targetRuntimeBinaryPaths.has(binary)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Trusted inference runtime binaries cannot receive external network grants.',
+            path: ['policy', 'network', 'rules', ruleIndex, 'binaries', binaryIndex],
+          });
+        }
+      }
+    }
+
+    if (
+      value.policy.network?.default !== 'deny' ||
+      value.policy.network?.enforcement !== 'openshell'
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Trusted worker inference requires deny-by-default OpenShell network enforcement.',
+        path: ['policy', 'network'],
+      });
     }
 
     if (value.providers.attachments.length > 0) {
@@ -1136,7 +1210,7 @@ export const AgentEnvironmentPackageSchema = z
       !providerInstance ||
       providerInstance.kind !== 'gateway' ||
       !providerInstance.models.includes(route?.model ?? '') ||
-      Boolean(providerInstance.secretRef) ||
+      providerInstance.secretRef ||
       providerInstance.vaultRefIds.length > 0
     ) {
       ctx.addIssue({
@@ -1157,7 +1231,7 @@ export const AgentEnvironmentPackageSchema = z
       !providerProfile ||
       providerProfile.kind !== 'gateway' ||
       !providerProfile.models.includes(route?.model ?? '') ||
-      Boolean(providerProfile.secretRef)
+      providerProfile.secretRef
     ) {
       ctx.addIssue({
         code: 'custom',
@@ -1457,7 +1531,11 @@ function redactRuntimeReferences(value: unknown): unknown {
   }
 
   if (!value || typeof value !== 'object') {
-    if (value === 'runtime://openkit/control-token') {
+    if (
+      value === 'runtime://openkit/worker-control-token' ||
+      value === 'runtime://openkit/inference-token' ||
+      value === 'runtime://openkit/capability-token'
+    ) {
       return value;
     }
 

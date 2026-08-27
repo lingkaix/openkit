@@ -1,19 +1,16 @@
 import {
-  AgentSandboxSummarySchema,
-  AgentSessionStatusSchema,
   ArtifactSchema,
   ItemSchema,
+  ProductTurnSchema,
   StopReasonSchema,
   ThreadSchema,
   TimestampSchema,
-  TurnSchema,
   TurnStatusSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { GoalReviewResolutionOutcomeSchema, GoalReviewVerdictSchema } from './action-center.js';
 import { WorkspaceMaterialRevisionSummarySchema } from './material.js';
-import { MaterializedWorkspaceRootSchema } from './runtime-config.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
 
 /** Product work modes surfaced by app-level dashboard read models. */
@@ -424,7 +421,6 @@ export const ReviseThreadGoalPlanResponseSchema = z.object({
 export const GoalStepContextAssemblySchema = z.object({
   contextDigest: z.string().min(1),
   contextRefs: z.array(TaskModeContextRefSchema).min(1).max(50),
-  repositoryResourceId: z.string().min(1),
 });
 
 /** Request body for running one real bounded Goal Mode worker step. */
@@ -590,61 +586,6 @@ export const ListSchedulerAdmissionsResponseSchema = z.object({
   items: z.array(SchedulerAdmissionReadModelSchema),
 });
 
-/** Product-safe live worker control summary for one backend session. */
-export const AgentSessionBackendControlSummarySchema = z.object({
-  heartbeat: z
-    .object({
-      status: z.enum([
-        'starting',
-        'running',
-        'idle',
-        'awaiting_command',
-        'stopping',
-        'completed',
-        'failed',
-      ]),
-      sequence: z.number().int().nonnegative(),
-      lastHeartbeatAt: z.string().min(1),
-    })
-    .nullable(),
-  artifactNoticeCount: z.number().int().nonnegative(),
-  queuedCommandCount: z.number().int().nonnegative(),
-  deliveredCommandCount: z.number().int().nonnegative(),
-});
-
-/** Agent session read model enriched with NanoCore app-local runtime state. */
-export const AgentSessionBackendSummarySchema = z.object({
-  kind: z.enum([
-    'host',
-    'openshell',
-    'docker',
-    'kubernetes',
-    'vm',
-    'managed-sandbox',
-    'custom',
-    'unknown',
-  ]),
-  health: z.enum(['ready', 'unavailable', 'unknown', 'not-applicable']),
-  controlMode: z.literal('direct-nanocore').nullable(),
-  control: AgentSessionBackendControlSummarySchema.nullable().default(null),
-  gatewayName: z.string().min(1).nullable(),
-  gatewayEndpoint: z.string().min(1).nullable(),
-  version: z.string().min(1).nullable(),
-  sandboxName: z.string().min(1).nullable(),
-});
-
-/** Agent session read model enriched with NanoCore app-local runtime state. */
-export const AgentSessionReadModelSchema = z.object({
-  id: z.string().min(1),
-  status: AgentSessionStatusSchema,
-  message: z.string().min(1).nullable(),
-  configVersion: z.number().int().positive().nullable(),
-  workspaceRoots: z.array(MaterializedWorkspaceRootSchema),
-  stale: z.boolean(),
-  sandboxSummary: AgentSandboxSummarySchema.nullable().default(null),
-  backend: AgentSessionBackendSummarySchema.nullable().default(null),
-});
-
 /** Workspace dashboard response payload. */
 export const WorkspaceDashboardResponseSchema = z.object({
   workspace: WorkspaceRecordSchema,
@@ -676,8 +617,7 @@ export const WorkspaceDashboardResponseSchema = z.object({
 /** Thread dashboard response payload. */
 export const ThreadDashboardResponseSchema = z.object({
   thread: ThreadSchema,
-  activeSession: AgentSessionReadModelSchema.nullable(),
-  turns: z.array(TurnSchema),
+  turns: z.array(ProductTurnSchema),
   artifacts: z.array(DashboardArtifactSummarySchema),
   workStatus: ThreadWorkStatusSchema,
   composer: z.object({
@@ -700,7 +640,6 @@ export const AgentHealthRefreshResponseSchema = z.object({
       checkedAt: z.string().nullable(),
     })
   ),
-  sessions: z.array(AgentSessionReadModelSchema),
 });
 
 /** Thread item replay response payload. */
@@ -843,10 +782,6 @@ export type CancelSchedulerAdmissionResponse = z.infer<
 export type SchedulerAdmissionReadModel = z.infer<typeof SchedulerAdmissionReadModelSchema>;
 /** Response payload listing workspace-filtered scheduler admissions. */
 export type ListSchedulerAdmissionsResponse = z.infer<typeof ListSchedulerAdmissionsResponseSchema>;
-/** Product-safe live worker control summary for one backend session. */
-export type AgentSessionBackendControlSummary = z.infer<
-  typeof AgentSessionBackendControlSummarySchema
->;
 /** Workspace dashboard response payload. */
 export type WorkspaceDashboardResponse = z.infer<typeof WorkspaceDashboardResponseSchema>;
 /** Thread dashboard response payload. */

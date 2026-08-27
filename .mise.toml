@@ -1,52 +1,12 @@
+# Bootstrap installer and version anchor only.
+#
+# Not a command entry point: repository commands are the `scripts` in root `package.json`,
+# invoked as bare `pnpm ...` once the shims directory is on PATH.
+# Not a CI or container dependency: `containers/` pins its own Node and pnpm and never reads
+# this file, and `.github/workflows/ci.yml` takes both from the test execution image.
+#
+# Scope, maintenance procedure, and the mirrored-declaration rule: `docs/toolchain.md`.
 [tools]
-node = "24"
-pnpm = "latest"
-bun = "latest"
-
-[tasks.install]
-description = "Install workspace dependencies"
-run = "pnpm install"
-
-[tasks.hooks]
-description = "Install tracked git hooks via Lefthook"
-run = "pnpm run hooks:install"
-
-[tasks.build]
-description = "Build all workspace packages"
-run = "pnpm build"
-
-[tasks.test]
-description = "Run all workspace tests"
-run = "pnpm test"
-
-[tasks.typecheck]
-description = "Run all workspace type checks"
-run = "pnpm typecheck"
-
-[tasks.lint]
-description = "Run lint tasks across the repository"
-run = "pnpm lint"
-
-[tasks.fmt]
-description = "Run workspace format tasks"
-run = "pnpm fmt"
-
-[tasks.dev]
-description = "Run workspace development tasks"
-run = "pnpm dev"
-
-[tasks.clean]
-description = "Clean workspace build outputs"
-run = "pnpm clean"
-
-[tasks.verify]
-description = "Run repository validation commands"
-run = "pnpm verify"
-
-[tasks.verify-release]
-description = "Run the tag release gate without browser or story tests"
-run = "pnpm -w verify:release"
-
-[tasks.verify-full]
-description = "Run the full local gate including browser and story tests"
-run = "pnpm -w verify:full"
+node = "24.16.0"
+pnpm = "10.33.3"
+biome = "2.5.3"

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
 /** Vault admin backend kinds exposed through the App API. */
-export const VaultAdminBackendKindSchema = z.enum(['encrypted-file', 'os-keychain']);
+export const VaultAdminBackendKindSchema = z.enum(['encrypted-file']);
 
 /** Vault admin backend health states exposed through the App API. */
 export const VaultAdminHealthStateSchema = z.enum(['available', 'locked', 'unavailable']);

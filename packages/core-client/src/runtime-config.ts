@@ -1,6 +1,4 @@
 import {
-  type RestartRuntimeConfigStaleSessionResponse,
-  RestartRuntimeConfigStaleSessionResponseSchema,
   type RuntimeConfigFileListResponse,
   RuntimeConfigFileListResponseSchema,
   type RuntimeConfigFileReadResponse,
@@ -38,11 +36,6 @@ export interface RuntimeConfigClient {
   validate(input: RuntimeConfigValidationRequest): Promise<RuntimeConfigValidationResponse>;
   /** Reads editor JSON Schema catalog entries for runtime config files. */
   getSchemas(): Promise<RuntimeConfigSchemaCatalogResponse>;
-  /** Retires one stale runtime config session so future work starts a fresh session. */
-  restartStaleSession(
-    workspaceId: string,
-    sessionId: string
-  ): Promise<RestartRuntimeConfigStaleSessionResponse>;
 }
 
 /** Creates the runtime config App API client. */
@@ -81,11 +74,5 @@ export function createRuntimeConfigClient(transport: ClientTransport): RuntimeCo
       ),
     getSchemas: () =>
       transport.getJson('/api/admin/config/schemas', RuntimeConfigSchemaCatalogResponseSchema),
-    restartStaleSession: (workspaceId, sessionId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/runtime-config/stale-sessions/${sessionId}/restart`,
-        {},
-        RestartRuntimeConfigStaleSessionResponseSchema
-      ),
   };
 }

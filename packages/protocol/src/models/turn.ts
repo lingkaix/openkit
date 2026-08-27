@@ -138,56 +138,77 @@ function nonHumanGatedTurnSchema(status: Exclude<TurnStatus, 'awaiting_human'>) 
   });
 }
 
+const TurnUnionSchema = z.union([
+  nonHumanGatedTurnSchema('pending'),
+  nonHumanGatedTurnSchema('running'),
+  TurnBaseSchema.extend({
+    status: z.literal('awaiting_human'),
+    humanGate: TurnHumanGateSchema,
+  }),
+  nonHumanGatedTurnSchema('completed'),
+  nonHumanGatedTurnSchema('interrupted'),
+  nonHumanGatedTurnSchema('cancelled'),
+  nonHumanGatedTurnSchema('failed'),
+]);
+
 /**
- * An attributable round of work within a thread.
+ * Enforces user-input request/response ownership inside one Turn.
+ *
+ * @param turn Parsed Turn variant.
+ * @param context Zod refinement context.
  */
-export const TurnSchema = z
-  .union([
-    nonHumanGatedTurnSchema('pending'),
-    nonHumanGatedTurnSchema('running'),
-    TurnBaseSchema.extend({
-      status: z.literal('awaiting_human'),
-      humanGate: TurnHumanGateSchema,
-    }),
-    nonHumanGatedTurnSchema('completed'),
-    nonHumanGatedTurnSchema('interrupted'),
-    nonHumanGatedTurnSchema('cancelled'),
-    nonHumanGatedTurnSchema('failed'),
-  ])
-  .superRefine((turn, context) => {
-    const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
+function refineTurnItemRelationships(
+  turn: z.infer<typeof TurnUnionSchema>,
+  context: z.RefinementCtx
+): void {
+  const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
 
-    for (const [index, item] of turn.items.entries()) {
-      if (item.type === 'user-input-response') {
-        const matchingRequests = turn.items
-          .filter((candidate) => candidate.type === 'user-input-request')
-          .filter((candidate) => candidate.userInputRequestId === item.userInputRequestId);
+  for (const [index, item] of turn.items.entries()) {
+    if (item.type === 'user-input-response') {
+      const matchingRequests = turn.items
+        .filter((candidate) => candidate.type === 'user-input-request')
+        .filter((candidate) => candidate.userInputRequestId === item.userInputRequestId);
 
-        if (matchingRequests.length !== 1) {
-          context.addIssue({
-            code: 'custom',
-            message: 'User-input response must match exactly one request in the same Turn.',
-            path: ['items', index, 'userInputRequestId'],
-          });
-        } else if (item.actor.id !== matchingRequests[0]!.responsibleUserId) {
-          context.addIssue({
-            code: 'custom',
-            message: 'User-input response actor must match the request responsible user.',
-            path: ['items', index, 'actor', 'id'],
-          });
-        }
-      }
-
-      if (item.type !== 'user-input-request') {
-        continue;
-      }
-
-      if (item.responsibleUserId !== responsibleUserId) {
+      if (matchingRequests.length !== 1) {
         context.addIssue({
           code: 'custom',
-          message: 'User-input request responsible user must match the turn trigger actor.',
-          path: ['items', index, 'responsibleUserId'],
+          message: 'User-input response must match exactly one request in the same Turn.',
+          path: ['items', index, 'userInputRequestId'],
+        });
+      } else if (item.actor.id !== matchingRequests[0]!.responsibleUserId) {
+        context.addIssue({
+          code: 'custom',
+          message: 'User-input response actor must match the request responsible user.',
+          path: ['items', index, 'actor', 'id'],
         });
       }
     }
-  });
+
+    if (item.type !== 'user-input-request') {
+      continue;
+    }
+
+    if (item.responsibleUserId !== responsibleUserId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'User-input request responsible user must match the turn trigger actor.',
+        path: ['items', index, 'responsibleUserId'],
+      });
+    }
+  }
+}
+
+/**
+ * An attributable round of work within a thread.
+ */
+export const TurnSchema = TurnUnionSchema.superRefine(refineTurnItemRelationships);
+
+/**
+ * Ordinary product-surface Turn projection that omits hidden AgentSession identity.
+ */
+export const ProductTurnSchema = z
+  .union(TurnUnionSchema.options.map((variant) => variant.omit({ agentSessionId: true })))
+  .superRefine(refineTurnItemRelationships);
+
+/** Ordinary product-surface Turn without AgentSession identity. */
+export type ProductTurn = z.infer<typeof ProductTurnSchema>;

@@ -3,16 +3,23 @@
   "ui": "tui",
   "globalDependencies": [
     ".mise.toml",
+    "apps/nanohost/mise.toml",
     "biome.json",
     "package.json",
     "pnpm-workspace.yaml",
     "tsconfig.base.json"
   ],
+  "globalPassThroughEnv": ["CARGO_HOME", "RUSTUP_HOME", "RUST_VERSION"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "pnpm-lock.yaml", "tsconfig.base.json"],
       "outputs": ["dist/**", "build/**", ".next/**", "out/**"]
+    },
+    "@openkit/nanohost#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "Cargo.toml", "Cargo.lock"],
+      "outputs": ["target/debug/nanohost", "target/debug/nanohost.d"]
     },
     "test": {
       "dependsOn": ["^test"],

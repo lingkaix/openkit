@@ -1,52 +1,35 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const STATUS_VALUES = new Set([
-  'Draft',
-  'Accepted',
-  'Deprecated',
-  'Superseded',
-  'Retired',
-  'Rejected',
-]);
-const IMPLEMENTATION_VALUES = new Set([
-  'Not Started',
-  'In Progress',
-  'Partial',
-  'Implemented',
-  'Diverged',
-  'N/A',
-]);
+import { parseFrontmatter, validateFields } from './lib/doc-fields.mjs';
+
 const ROOT_STATUS_VALUES = new Set(['Draft', 'Accepted', 'Deprecated']);
+const TERMINAL_STATUS_VALUES = new Set(['Superseded', 'Retired', 'Rejected']);
 const TERMINAL_DIRECTORY_STATUS = new Map([
   ['rejected', 'Rejected'],
   ['retired', 'Retired'],
   ['superseded', 'Superseded'],
 ]);
-const DATE_PATTERN = /^20\d{2}-\d{2}-\d{2}$/;
 const SPEC_FILE_PATTERN = /^20\d{6}-[a-z0-9_]+\.md$/;
-const REPOSITORY_MARKDOWN_PATH_PATTERN = /docs\/[a-zA-Z0-9_./-]+\.md/g;
+const EVIDENCE_PATH_PATTERN = /(?:docs\/|\.\.?\/)[a-zA-Z0-9_./-]*(?:\.md|\/)/g;
 const PLACEHOLDER_PATTERN = /^(?:none|pending|tbd|todo|unknown|n\/a)$/i;
 
 /**
- * Validates every non-inventoried specification lifecycle document.
+ * Validates every specification lifecycle document.
  *
  * @param {string} repoRoot Repository root.
- * @param {{legacyPaths?: Set<string>}} [options] Validation options.
  * @returns {string[]} Stable repository-relative validation errors.
  */
-export function validateSpecLifecycle(repoRoot, options = {}) {
-  const legacyPaths = options.legacyPaths ?? new Set();
+export function validateSpecLifecycle(repoRoot) {
   const errors = [];
+  const evidenceGraph = new Map();
 
   for (const relativePath of listSpecPaths(repoRoot)) {
-    if (legacyPaths.has(relativePath)) {
-      continue;
-    }
-
-    validateSpec(repoRoot, relativePath, errors);
+    validateSpec(repoRoot, relativePath, errors, evidenceGraph);
   }
+
+  validateDecisionEvidenceCycles(evidenceGraph, errors);
 
   return errors.sort();
 }
@@ -89,60 +72,70 @@ function listSpecPaths(repoRoot) {
 /**
  * Validates one specification document.
  *
+ * Field reads, required fields, canonical values, and date shapes belong to
+ * `scripts/lib/doc-fields.mjs`. This validator owns the lifecycle rules that
+ * depend on more than one field or on the document's location and sections: a
+ * specification recording a lifecycle transition, whether it is `Deprecated` in
+ * the root or terminal in its matching subdirectory, carries the terminal field
+ * set, so the terminal schema row is the one its fields are checked against.
+ *
  * @param {string} repoRoot Repository root.
  * @param {string} relativePath Repository-relative spec path.
  * @param {string[]} errors Mutable validation error list.
+ * @param {Map<string, string[]>} evidenceGraph Terminal-spec decision-evidence edges.
  */
-function validateSpec(repoRoot, relativePath, errors) {
+function validateSpec(repoRoot, relativePath, errors, evidenceGraph) {
   const content = readFileSync(join(repoRoot, relativePath), 'utf8');
-  const header = content.split(/\n##\s+/u, 1)[0];
-  const status = requiredField(relativePath, header, 'Status', errors);
-  const implementation = requiredField(relativePath, header, 'Implementation', errors);
+  const metadata = parseFrontmatter(content);
+  const fields = metadata.fields;
+  const status = typeof fields.status === 'string' ? fields.status : null;
+  const implementation = typeof fields.implementation === 'string' ? fields.implementation : null;
+  const transitional = status === 'Deprecated' || TERMINAL_STATUS_VALUES.has(status);
+  const fieldErrors =
+    metadata.kind === 'invalid'
+      ? metadata.errors
+      : validateFields(transitional ? 'spec-terminal' : 'spec', fields);
 
-  if (status && !STATUS_VALUES.has(status)) {
-    errors.push(`${relativePath}: Status must use one canonical value; found "${status}".`);
+  for (const message of fieldErrors) {
+    errors.push(`${relativePath}: ${message}`);
   }
-  if (implementation && !IMPLEMENTATION_VALUES.has(implementation)) {
-    errors.push(
-      `${relativePath}: Implementation must use one canonical value; found "${implementation}".`
-    );
+
+  const decisionEvidence =
+    typeof fields['decision-evidence'] === 'string' ? fields['decision-evidence'] : null;
+  if (decisionEvidence) {
+    validateDecisionEvidenceAuthority(repoRoot, relativePath, decisionEvidence, errors);
   }
 
   validateLocation(relativePath, status, errors);
 
   if (status === 'Deprecated') {
-    validateLifecycleMetadata(repoRoot, relativePath, content, header, status, errors);
+    validateLifecycleMetadata(
+      repoRoot,
+      relativePath,
+      content,
+      fields,
+      status,
+      errors,
+      evidenceGraph
+    );
     if (!/^## Rollout \/ Migration Plan\s*$/mu.test(content)) {
       errors.push(`${relativePath}: Deprecated specs require a Rollout / Migration Plan section.`);
     }
-  } else if (status && ['Superseded', 'Retired', 'Rejected'].includes(status)) {
+  } else if (transitional) {
     if (implementation !== 'N/A') {
       errors.push(`${relativePath}: ${status} specs require Implementation: N/A.`);
     }
-    validateLifecycleMetadata(repoRoot, relativePath, content, header, status, errors);
+    validateLifecycleMetadata(
+      repoRoot,
+      relativePath,
+      content,
+      fields,
+      status,
+      errors,
+      evidenceGraph
+    );
     validateReasonSection(relativePath, content, 'Retention Reason', errors);
   }
-}
-
-/**
- * Reads one required header field and reports missing or duplicate values.
- *
- * @param {string} relativePath Repository-relative spec path.
- * @param {string} header Header content before the first level-two section.
- * @param {string} field Field name.
- * @param {string[]} errors Mutable validation error list.
- * @returns {string|null} Field value when exactly one exists.
- */
-function requiredField(relativePath, header, field, errors) {
-  const pattern = new RegExp(`^${field}:\\s*(.+?)\\s*$`, 'gmu');
-  const values = [...header.matchAll(pattern)].map((match) => match[1]);
-
-  if (values.length !== 1) {
-    errors.push(`${relativePath}: expected exactly one ${field} field near the top.`);
-    return null;
-  }
-
-  return values[0];
 }
 
 /**
@@ -174,23 +167,32 @@ function validateLocation(relativePath, status, errors) {
 }
 
 /**
- * Validates metadata and reasons required by a lifecycle transition.
+ * Validates the guidance, evidence, and reasons a lifecycle transition requires.
+ *
+ * Presence and date shape of the transition fields belong to the field
+ * contract; the rules here relate one field's value to another document.
  *
  * @param {string} repoRoot Repository root.
  * @param {string} relativePath Repository-relative spec path.
  * @param {string} content Full spec content.
- * @param {string} header Header content before the first level-two section.
+ * @param {Record<string, unknown>} fields Parsed metadata fields.
  * @param {string} status Parsed lifecycle status.
  * @param {string[]} errors Mutable validation error list.
+ * @param {Map<string, string[]>} evidenceGraph Terminal-spec decision-evidence edges.
  */
-function validateLifecycleMetadata(repoRoot, relativePath, content, header, status, errors) {
-  const statusChanged = requiredField(relativePath, header, 'Status Changed', errors);
-  const currentGuidance = requiredField(relativePath, header, 'Current Guidance', errors);
-  const decisionEvidence = requiredField(relativePath, header, 'Decision Evidence', errors);
-
-  if (statusChanged && !DATE_PATTERN.test(statusChanged)) {
-    errors.push(`${relativePath}: Status Changed must use YYYY-MM-DD.`);
-  }
+function validateLifecycleMetadata(
+  repoRoot,
+  relativePath,
+  content,
+  fields,
+  status,
+  errors,
+  evidenceGraph
+) {
+  const currentGuidance =
+    typeof fields['current-guidance'] === 'string' ? fields['current-guidance'] : null;
+  const decisionEvidence =
+    typeof fields['decision-evidence'] === 'string' ? fields['decision-evidence'] : null;
 
   if (currentGuidance) {
     if (status === 'Retired' && currentGuidance !== 'None') {
@@ -212,6 +214,13 @@ function validateLifecycleMetadata(repoRoot, relativePath, content, header, stat
   if (decisionEvidence) {
     if (PLACEHOLDER_PATTERN.test(stripMarkdown(decisionEvidence))) {
       errors.push(`${relativePath}: Decision Evidence must identify trustworthy evidence.`);
+    } else if (!hasIndependentDecisionEvidence(repoRoot, relativePath, decisionEvidence)) {
+      const namedPath = resolveEvidencePaths(repoRoot, relativePath, decisionEvidence)[0];
+      errors.push(
+        namedPath
+          ? `${relativePath}: Decision Evidence must name an existing Markdown file: ${namedPath}.`
+          : `${relativePath}: Decision Evidence must identify evidence outside this document.`
+      );
     } else {
       validateRepositoryPaths(
         repoRoot,
@@ -221,9 +230,34 @@ function validateLifecycleMetadata(repoRoot, relativePath, content, header, stat
         errors
       );
     }
+
+    if (TERMINAL_STATUS_VALUES.has(status)) {
+      evidenceGraph.set(
+        relativePath,
+        resolveEvidencePaths(repoRoot, relativePath, decisionEvidence).filter((path) =>
+          path.startsWith('docs/specs/')
+        )
+      );
+    }
   }
 
   validateReasonSection(relativePath, content, 'Lifecycle Reason', errors);
+}
+
+/**
+ * Rejects decision-evidence values that name change-record execution evidence.
+ *
+ * @param {string} repoRoot Repository root.
+ * @param {string} relativePath Repository-relative spec path.
+ * @param {string} value Decision-evidence field value.
+ * @param {string[]} errors Mutable validation error list.
+ */
+function validateDecisionEvidenceAuthority(repoRoot, relativePath, value, errors) {
+  for (const path of resolveEvidencePaths(repoRoot, relativePath, value)) {
+    if (path.startsWith('docs/changes/')) {
+      errors.push(`${relativePath}: Decision Evidence must not name a change record: ${path}.`);
+    }
+  }
 }
 
 /**
@@ -244,7 +278,9 @@ function validateRepositoryPaths(
   errors,
   requirePath = false
 ) {
-  const paths = value.match(REPOSITORY_MARKDOWN_PATH_PATTERN) ?? [];
+  const paths = resolveEvidencePaths(repoRoot, relativePath, value).filter((path) =>
+    path.endsWith('.md')
+  );
 
   if (requirePath && paths.length === 0) {
     errors.push(`${relativePath}: ${field} must name a repository-relative Markdown path.`);
@@ -254,6 +290,90 @@ function validateRepositoryPaths(
     if (!existsSync(join(repoRoot, path))) {
       errors.push(`${relativePath}: ${field} path does not exist: ${path}.`);
     }
+  }
+}
+
+/**
+ * Resolves repository paths named by one lifecycle metadata value.
+ *
+ * @param {string} repoRoot Repository root.
+ * @param {string} relativePath Repository-relative spec path containing the value.
+ * @param {string} value Lifecycle metadata value.
+ * @returns {string[]} Resolved repository-relative paths in source order.
+ */
+function resolveEvidencePaths(repoRoot, relativePath, value) {
+  return (value.match(EVIDENCE_PATH_PATTERN) ?? []).map((path) => {
+    const resolvedPath = path.startsWith('docs/')
+      ? path
+      : toRepositoryPath(repoRoot, resolve(repoRoot, dirname(relativePath), path));
+
+    return resolvedPath.replace(/\/$/u, '');
+  });
+}
+
+/**
+ * Detects an independently inspectable repository, audit, PR, issue, or commit reference.
+ *
+ * @param {string} repoRoot Repository root.
+ * @param {string} relativePath Repository-relative spec path containing the value.
+ * @param {string} value Decision-evidence field value.
+ * @returns {boolean} Whether the value names independently inspectable evidence.
+ */
+function hasIndependentDecisionEvidence(repoRoot, relativePath, value) {
+  return (
+    resolveEvidencePaths(repoRoot, relativePath, value).some(
+      (path) =>
+        path.endsWith('.md') && lstatSync(join(repoRoot, path), { throwIfNoEntry: false })?.isFile()
+    ) || /https?:\/\/\S+\/(?:commit|pull|issues?)\/\S+/iu.test(value)
+  );
+}
+
+/**
+ * Rejects direct and transitive cycles among terminal-spec decision evidence.
+ *
+ * @param {Map<string, string[]>} evidenceGraph Terminal spec dependency graph.
+ * @param {string[]} errors Mutable validation error list.
+ */
+function validateDecisionEvidenceCycles(evidenceGraph, errors) {
+  const cyclic = new Set();
+  const visited = new Set();
+  const active = new Set();
+  const stack = [];
+
+  /**
+   * Visits one terminal specification and records any active-stack cycle.
+   *
+   * @param {string} path Terminal specification path.
+   */
+  function visit(path) {
+    if (active.has(path)) {
+      for (const member of stack.slice(stack.indexOf(path))) {
+        cyclic.add(member);
+      }
+      return;
+    }
+    if (visited.has(path)) {
+      return;
+    }
+
+    active.add(path);
+    stack.push(path);
+    for (const target of evidenceGraph.get(path) ?? []) {
+      if (evidenceGraph.has(target)) {
+        visit(target);
+      }
+    }
+    stack.pop();
+    active.delete(path);
+    visited.add(path);
+  }
+
+  for (const path of evidenceGraph.keys()) {
+    visit(path);
+  }
+
+  for (const path of cyclic) {
+    errors.push(`${path}: Decision Evidence must not form a terminal-spec dependency cycle.`);
   }
 }
 
@@ -315,38 +435,15 @@ function toRepositoryPath(repoRoot, path) {
   return relative(repoRoot, path).split('\\').join('/');
 }
 
-/**
- * Loads the temporary legacy spec inventory when it exists.
- *
- * @param {string} repoRoot Repository root.
- * @returns {Set<string>} Inventoried legacy spec paths.
- */
-function readLegacyPaths(repoRoot) {
-  const path = join(repoRoot, 'scripts', 'spec-lifecycle-legacy.txt');
-  if (!existsSync(path)) {
-    return new Set();
-  }
-
-  return new Set(
-    readFileSync(path, 'utf8')
-      .split(/\r?\n/u)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#'))
-  );
-}
-
 const scriptPath = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
   const repoRoot = resolve(dirname(scriptPath), '..');
-  const legacyPaths = readLegacyPaths(repoRoot);
-  const errors = validateSpecLifecycle(repoRoot, { legacyPaths });
+  const errors = validateSpecLifecycle(repoRoot);
 
   if (errors.length > 0) {
     console.error(errors.join('\n'));
     process.exitCode = 1;
   } else {
-    console.log(
-      `Validated spec lifecycle metadata (${legacyPaths.size} temporary legacy entries).`
-    );
+    console.log('Validated spec lifecycle metadata.');
   }
 }

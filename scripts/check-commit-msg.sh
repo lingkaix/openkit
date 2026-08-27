@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+# pnpm's script shorthand forwards its option separator to the script.
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
+
 commit_msg_file=${1:?commit message file is required}
 IFS= read -r first_line < "$commit_msg_file"
 

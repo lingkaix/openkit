@@ -3,13 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { parseWorkspaceSharingError } from './app.js';
 import { type CoreClient, createCoreClient } from './client.js';
 import { ApiCallError, ProtocolValidationError } from './errors.js';
-import { subscribeTurnEvents } from './events.js';
+import { type SseEventEnvelope, subscribeTurnEvents } from './events.js';
+import * as coreClientExports from './index.js';
 
 const timestamp = '2026-05-28T00:00:00.000Z';
 const requestId = '00000000-0000-4000-8000-000000000001';
 
 interface RecordedRequest {
   readonly body: unknown;
+  readonly hasBody: boolean;
   readonly headers: Record<string, string>;
   readonly method: string;
   readonly path: string;
@@ -32,7 +34,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /** Creates a current protocol API error fixture. */
 function apiError(code: string, message: string): Record<string, string> {
-  return { protocolVersion: '0.4.0', code, message };
+  return { protocolVersion: '0.5.0', code, message };
 }
 
 /** Creates a tiny SSE response from complete event payloads. */
@@ -71,7 +73,13 @@ function createFakeClient(routes: RouteMap): {
       body = JSON.parse(init.body) as unknown;
     }
 
-    requests.push({ body, headers: headersToRecord(init?.headers), method, path });
+    requests.push({
+      body,
+      hasBody: init?.body !== undefined,
+      headers: headersToRecord(init?.headers),
+      method,
+      path,
+    });
 
     if (!route) {
       return jsonResponse(apiError('not_found', path), 404);
@@ -386,31 +394,6 @@ function runtimeConfigStatus() {
     lastReload: null,
     lastFailedReload: null,
     pendingRestart: [],
-    staleSessions: [
-      {
-        sessionId: 'as_stale',
-        threadId: 'th_demo',
-        agentId: 'agent_codex_host',
-        capturedVersion: 1,
-        currentVersion: 2,
-        reasons: ['runtime-config'],
-        choices: [
-          {
-            kind: 'inspect',
-            label: 'Inspect stale session details',
-            recommended: true,
-          },
-          {
-            kind: 'restart_session',
-            label: 'Restart the stale session before continuing',
-          },
-          {
-            kind: 'request_human',
-            label: 'Ask the user how to handle the stale session',
-          },
-        ],
-      },
-    ],
   };
 }
 
@@ -447,7 +430,6 @@ function appDiagnostics() {
         {
           id: 'provider_demo',
           displayName: 'Provider Demo',
-          dispatchFamily: 'provider-api',
           gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
           kind: 'gateway',
           models: ['gpt-demo'],
@@ -470,20 +452,6 @@ function appDiagnostics() {
     defaults: {
       quickChat: { providerId: 'provider_demo', model: 'gpt-demo' },
       gateway: { providerId: null, model: null },
-    },
-    oauth: {
-      openaiCodexAccounts: {
-        accounts: [
-          {
-            providerId: 'openai_codex',
-            accountSlotId: 'default',
-            boundProviderIds: [],
-            isDefault: true,
-            status: 'logged_out',
-          },
-        ],
-        defaultAccountSlotId: 'default',
-      },
     },
     capabilities: ['core.questions'],
     runtimeConfig: runtimeConfigStatus(),
@@ -606,34 +574,6 @@ function workspaceDashboard() {
 function threadDashboard() {
   return {
     thread: thread(),
-    activeSession: {
-      id: 'as_openshell_1',
-      status: 'busy',
-      message: null,
-      configVersion: 1,
-      workspaceRoots: [],
-      stale: false,
-      sandboxSummary: null,
-      backend: {
-        kind: 'openshell',
-        health: 'ready',
-        controlMode: 'direct-nanocore',
-        control: {
-          heartbeat: {
-            status: 'running',
-            sequence: 2,
-            lastHeartbeatAt: timestamp,
-          },
-          artifactNoticeCount: 1,
-          queuedCommandCount: 2,
-          deliveredCommandCount: 1,
-        },
-        gatewayName: 'openshell',
-        gatewayEndpoint: 'https://127.0.0.1:17670',
-        version: '0.0.63',
-        sandboxName: 'openkit-as-openshell-1',
-      },
-    },
     turns: [turn()],
     artifacts: [
       {
@@ -1138,7 +1078,7 @@ function workspaceAuditEventsResponse() {
       {
         id: 'aud_1',
         workspaceId: 'ws_demo',
-        protocolVersion: '0.4.0',
+        protocolVersion: '0.5.0',
         threadId: 'th_demo',
         turnId: 'turn_demo',
         itemId: null,
@@ -1172,7 +1112,7 @@ function serverAuditEventsResponse() {
       {
         id: 'aud_server_1',
         workspaceId: null,
-        protocolVersion: '0.4.0',
+        protocolVersion: '0.5.0',
         threadId: null,
         turnId: null,
         itemId: null,
@@ -1468,7 +1408,7 @@ function interruptedWorkerState() {
 /** Returns one valid turn event envelope. */
 function turnEvent(sequence: number, event = 'turn.started') {
   return {
-    protocolVersion: '0.4.0',
+    protocolVersion: '0.5.0',
     event,
     sequence,
     requestId,
@@ -1487,14 +1427,152 @@ function turnEvent(sequence: number, event = 'turn.started') {
   };
 }
 
+/** Returns one internal-only AgentSession stream event. */
+function agentSessionEvent(sequence: number) {
+  return {
+    protocolVersion: '0.5.0',
+    event: 'agent.session.updated',
+    sequence,
+    requestId,
+    timestamp,
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    turnId: 'turn_demo',
+    data: {
+      type: 'agent-session-updated',
+      agentSession: {
+        id: 'as_demo',
+        agentId: 'agent_demo',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        status: 'busy',
+        message: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    },
+  } as const;
+}
+
+const pseudoTerminalCases = [
+  [
+    'turn-completed data under another event',
+    { ...turnEvent(5, 'turn.completed'), event: 'error' },
+  ],
+  ['another known data type under turn.completed', { ...turnEvent(5), event: 'turn.completed' }],
+  [
+    'forward-compatible unknown data under turn.completed',
+    { ...turnEvent(5, 'turn.completed'), data: { type: 'future-terminal-event' } },
+  ],
+  [
+    'a running Turn under turn.completed',
+    {
+      ...turnEvent(5, 'turn.completed'),
+      data: { ...turnEvent(5, 'turn.completed').data, turn: turn() },
+    },
+  ],
+  [
+    'a pending Turn under turn.completed',
+    {
+      ...turnEvent(5, 'turn.completed'),
+      data: {
+        ...turnEvent(5, 'turn.completed').data,
+        turn: { ...turn(), status: 'pending', startedAt: null },
+      },
+    },
+  ],
+  [
+    'a mismatched envelope Workspace',
+    { ...turnEvent(5, 'turn.completed'), workspaceId: 'ws_other' },
+  ],
+  ['a mismatched envelope Thread', { ...turnEvent(5, 'turn.completed'), threadId: 'th_other' }],
+  ['a mismatched envelope Turn', { ...turnEvent(5, 'turn.completed'), turnId: 'turn_other' }],
+  [
+    'a mismatched payload Workspace',
+    {
+      ...turnEvent(5, 'turn.completed'),
+      data: {
+        ...turnEvent(5, 'turn.completed').data,
+        turn: {
+          ...turn(),
+          status: 'completed',
+          completedAt: timestamp,
+          workspaceId: 'ws_other',
+        },
+      },
+    },
+  ],
+  [
+    'a mismatched payload Thread',
+    {
+      ...turnEvent(5, 'turn.completed'),
+      data: {
+        ...turnEvent(5, 'turn.completed').data,
+        turn: { ...turn(), status: 'completed', completedAt: timestamp, threadId: 'th_other' },
+      },
+    },
+  ],
+  [
+    'a mismatched payload Turn',
+    {
+      ...turnEvent(5, 'turn.completed'),
+      data: {
+        ...turnEvent(5, 'turn.completed').data,
+        turn: { ...turn(), status: 'completed', completedAt: timestamp, id: 'turn_other' },
+      },
+    },
+  ],
+] as const;
+
+/** Minimal EventSource test double for reconnect and delivery assertions. */
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+
+  readonly listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+  readonly url: string;
+  closed = false;
+
+  /** Records one opened EventSource URL for deterministic assertions. */
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.instances.push(this);
+  }
+
+  /** Registers a listener for one EventSource event type. */
+  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  /** Marks this EventSource instance as closed. */
+  close(): void {
+    this.closed = true;
+  }
+
+  /** Delivers one JSON-encoded event payload to registered listeners. */
+  emit(type: string, data: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener({ data: JSON.stringify(data) } as MessageEvent<string>);
+    }
+  }
+}
+
 describe('createCoreClient', () => {
+  it('exports only the ordinary product SSE envelope type', () => {
+    // @ts-expect-error AgentSession events are internal and cannot inhabit the ordinary SSE type.
+    const internalOnlyEvent: SseEventEnvelope = agentSessionEvent(1);
+
+    expect(internalOnlyEvent.data.type).toBe('agent-session-updated');
+  });
+
   it('exposes composed sub-clients without deprecated flat aliases', () => {
     const { client } = createFakeClient({});
+    const providerSubscriptions = Reflect.get(client, 'providerSubscriptions') as
+      | Record<string, unknown>
+      | undefined;
 
     expect(client.core).toBeDefined();
     expect(client.app).toBeDefined();
     expect(client.runtimeConfig).toBeDefined();
-    expect(client.oauth.openaiCodex).toBeDefined();
     expect(client.auth.email).toBeDefined();
     expect(client.capabilities).toBeDefined();
     expect(client.agents).toBeDefined();
@@ -1517,8 +1595,38 @@ describe('createCoreClient', () => {
       expect(alias in client).toBe(false);
     }
 
-    for (const alias of ['getStatus', 'start', 'cancel', 'logout']) {
-      expect(alias in client.oauth.openaiCodex).toBe(false);
+    expect.soft('oauth' in client).toBe(false);
+    expect.soft('createOpenAICodexOAuthClient' in coreClientExports).toBe(false);
+    expect.soft(providerSubscriptions).toBeDefined();
+
+    for (const alias of [
+      'listProviders',
+      'listAccounts',
+      'createAccount',
+      'updateAccount',
+      'deleteAccount',
+      'getAccountStatus',
+      'startAccountLogin',
+      'cancelAccountLogin',
+      'logoutAccount',
+      'getAccountQuota',
+    ]) {
+      expect(alias in client).toBe(false);
+    }
+
+    if (providerSubscriptions) {
+      expect(Object.keys(providerSubscriptions)).toEqual([
+        'listProviders',
+        'listAccounts',
+        'createAccount',
+        'updateAccount',
+        'deleteAccount',
+        'getAccountStatus',
+        'startAccountLogin',
+        'cancelAccountLogin',
+        'logoutAccount',
+        'getAccountQuota',
+      ]);
     }
 
     for (const removedEvidenceOperation of [
@@ -1600,7 +1708,7 @@ describe('createCoreClient', () => {
     const { client, requests } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.4.0',
+          protocolVersion: '0.5.0',
           capabilities: [],
           eventFamilies: [],
         },
@@ -1865,7 +1973,7 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.4.0' });
+    await expect(client.core.meta()).resolves.toMatchObject({ protocolVersion: '0.5.0' });
     await expect(client.core.getWorkspace('ws_demo')).resolves.toEqual(workspace());
     await expect(client.core.updateWorkspace('ws_demo', { status: 'archived' })).resolves.toEqual(
       workspace()
@@ -2156,7 +2264,7 @@ describe('createCoreClient', () => {
       await client.app.getWorkspaceMaterialRevision('ws_demo', 'material_demo', 'revision_demo'),
       await client.app.getThreadMaterial('ws_demo', 'th_demo'),
       await client.app.bindThreadMaterial('ws_demo', 'th_demo', 'material_demo', {
-        expectedBindingState: 'absent',
+        expectedBindingState: 'not_bound',
       }),
       await client.app.unbindThreadMaterial('ws_demo', 'th_demo', 'material_demo', {
         expectedBindingState: 'bound',
@@ -2202,7 +2310,7 @@ describe('createCoreClient', () => {
       },
       null,
       null,
-      { requestId: expect.any(String), expectedBindingState: 'absent' },
+      { requestId: expect.any(String), expectedBindingState: 'not_bound' },
       { requestId: expect.any(String), expectedBindingState: 'bound' },
       {
         requestId: expect.any(String),
@@ -2461,7 +2569,7 @@ describe('createCoreClient', () => {
       code: 'revision_conflict',
       details: { current: workspaceMember(), resource: 'membership' },
       message: 'Workspace membership revision changed.',
-      protocolVersion: '0.4.0',
+      protocolVersion: '0.5.0',
       requestId,
     });
     expect(parseWorkspaceSharingError(malformedConflict)).toBeNull();
@@ -3224,10 +3332,10 @@ describe('createCoreClient', () => {
     await expect(client.app.listWorkspaceVaultGrants('ws_demo')).resolves.toEqual(
       workspaceVaultGrantsResponse()
     );
-    await expect(client.app.listWorkspaceInjectionPlans('ws_demo')).resolves.toEqual(
+    await expect(client.app.listWorkspaceVaultInjectionPlans('ws_demo')).resolves.toEqual(
       workspaceInjectionPlansResponse()
     );
-    await expect(client.app.listWorkspaceInjectionReceipts('ws_demo')).resolves.toEqual(
+    await expect(client.app.listWorkspaceVaultInjectionReceipts('ws_demo')).resolves.toEqual(
       workspaceInjectionReceiptsResponse()
     );
     await expect(client.app.listWorkspaceVaultUseRecords('ws_demo')).resolves.toEqual(
@@ -3463,7 +3571,7 @@ describe('createCoreClient', () => {
     await expect(client.app.search('protocol design')).resolves.toEqual({
       items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }],
     });
-    await client.agents.refreshHealth('ws_demo');
+    await expect(client.agents.refreshHealth('ws_demo')).resolves.not.toHaveProperty('sessions');
     await expect(client.agents.list()).resolves.toEqual({ items: [agent()] });
     await expect(client.agents.get('agent_demo')).resolves.toEqual(agent());
     await expect(client.actionCenter.listHumanAttention('ws_demo')).resolves.toEqual({
@@ -3679,6 +3787,16 @@ describe('createCoreClient', () => {
     expect(requests[3]?.body).toEqual({ authJsonBase64 });
   });
 
+  it('rejects an obsolete os-keychain vault response as a protocol violation', async () => {
+    const { client } = createFakeClient({
+      'GET /api/app/vault/status': {
+        body: { ...vaultAdminStatus('available'), backendKind: 'os-keychain' },
+      },
+    });
+
+    await expect(client.app.getVaultAdminStatus()).rejects.toBeInstanceOf(ProtocolValidationError);
+  });
+
   it('routes workspace repository resource calls through repository sub-client', async () => {
     const { client, requests } = createFakeClient({
       'GET /api/app/workspaces/ws_demo/repositories': {
@@ -3790,25 +3908,7 @@ describe('createCoreClient', () => {
     });
   });
 
-  it('routes remaining App API, OAuth, and feedback methods through sub-clients', async () => {
-    const oauthLoggedOut = {
-      providerId: 'openai_codex',
-      accountSlotId: 'default',
-      boundProviderIds: [],
-      isDefault: true,
-      status: 'logged_out',
-    };
-    const oauthPending = {
-      providerId: 'openai_codex',
-      accountSlotId: 'default',
-      boundProviderIds: [],
-      isDefault: true,
-      status: 'pending',
-      mode: 'device_code',
-      loginId: 'login_demo',
-      verificationUrl: 'https://chatgpt.com/activate',
-      userCode: 'OPEN-KIT',
-    };
+  it('routes remaining App API and feedback methods through sub-clients', async () => {
     const goalPlan = goalPlanPayload();
     const proposalPageDigest = `sha256:${'e'.repeat(64)}`;
     const proposalDigest = `sha256:${'f'.repeat(64)}`;
@@ -3976,23 +4076,13 @@ describe('createCoreClient', () => {
           createdAt: timestamp,
         },
       },
-      'GET /api/app/oauth/openai-codex/accounts': {
-        body: { accounts: [oauthLoggedOut], defaultAccountSlotId: 'default' },
-      },
-      'POST /api/app/oauth/openai-codex/accounts': { body: oauthLoggedOut },
-      'PATCH /api/app/oauth/openai-codex/accounts/default': { body: oauthLoggedOut },
-      'DELETE /api/app/oauth/openai-codex/accounts/default': { status: 204 },
-      'GET /api/app/oauth/openai-codex/accounts/default/status': { body: oauthLoggedOut },
-      'POST /api/app/oauth/openai-codex/accounts/default/start': { body: oauthPending },
-      'POST /api/app/oauth/openai-codex/accounts/default/cancel': { body: oauthLoggedOut },
-      'POST /api/app/oauth/openai-codex/accounts/default/logout': { body: oauthLoggedOut },
     });
 
     await expect(client.app.getWorkspaceDashboard('ws_demo')).resolves.toEqual(
       workspaceDashboard()
     );
-    await expect(client.app.getThreadDashboard('ws_demo', 'th_demo')).resolves.toEqual(
-      threadDashboard()
+    await expect(client.app.getThreadDashboard('ws_demo', 'th_demo')).resolves.not.toHaveProperty(
+      'activeSession'
     );
     await expect(client.app.getThreadGoalSummary('ws_demo', 'th_demo')).resolves.toEqual(
       threadGoalSummary()
@@ -4152,35 +4242,6 @@ describe('createCoreClient', () => {
       client.app.submitTurnFeedback('turn_demo', { rating: 'good', note: null })
     ).resolves.toMatchObject({ turnId: 'turn_demo', rating: 'good' });
 
-    await expect(client.oauth.openaiCodex.listAccounts()).resolves.toEqual({
-      accounts: [oauthLoggedOut],
-      defaultAccountSlotId: 'default',
-    });
-    await expect(
-      client.oauth.openaiCodex.createAccount({
-        accountSlotId: 'default',
-        displayName: 'Default',
-      })
-    ).resolves.toEqual(oauthLoggedOut);
-    await expect(
-      client.oauth.openaiCodex.updateAccount('default', { displayName: 'Default' })
-    ).resolves.toEqual(oauthLoggedOut);
-    await expect(client.oauth.openaiCodex.deleteAccount('default')).resolves.toBeUndefined();
-    await expect(client.oauth.openaiCodex.getAccountStatus('default')).resolves.toEqual(
-      oauthLoggedOut
-    );
-    await expect(
-      client.oauth.openaiCodex.startAccount('default', { mode: 'device_code' })
-    ).resolves.toMatchObject({
-      loginId: 'login_demo',
-    });
-    await expect(client.oauth.openaiCodex.cancelAccount('default')).resolves.toEqual(
-      oauthLoggedOut
-    );
-    await expect(client.oauth.openaiCodex.logoutAccount('default')).resolves.toEqual(
-      oauthLoggedOut
-    );
-
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
       'GET /api/app/workspaces/ws_demo/dashboard',
       'GET /api/app/workspaces/ws_demo/threads/th_demo/dashboard',
@@ -4201,14 +4262,6 @@ describe('createCoreClient', () => {
       'POST /api/app/automations',
       'PATCH /api/app/automations/auto_demo',
       'POST /api/turns/turn_demo/feedback',
-      'GET /api/app/oauth/openai-codex/accounts',
-      'POST /api/app/oauth/openai-codex/accounts',
-      'PATCH /api/app/oauth/openai-codex/accounts/default',
-      'DELETE /api/app/oauth/openai-codex/accounts/default',
-      'GET /api/app/oauth/openai-codex/accounts/default/status',
-      'POST /api/app/oauth/openai-codex/accounts/default/start',
-      'POST /api/app/oauth/openai-codex/accounts/default/cancel',
-      'POST /api/app/oauth/openai-codex/accounts/default/logout',
     ]);
     expect(requests.find((request) => request.path.endsWith('/goal/steering'))?.body).toMatchObject(
       {
@@ -4269,6 +4322,283 @@ describe('createCoreClient', () => {
     });
   });
 
+  it('routes and validates the exact provider-subscription client surface', async () => {
+    const providers = {
+      providers: [
+        {
+          subscriptionProviderId: 'openai-codex',
+          displayName: 'OpenAI Codex',
+          loginModes: ['device_code'],
+          quotaCapability: 'available',
+        },
+        {
+          subscriptionProviderId: 'xai',
+          displayName: 'xAI',
+          loginModes: ['device_code'],
+          quotaCapability: 'unsupported',
+        },
+      ],
+    };
+    const loggedOutAccount = {
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'default',
+      boundProviderIds: ['provider_primary'],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      displayName: 'Default',
+      status: 'logged_out',
+    };
+    const loggedInAccount = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'team_slot',
+      boundProviderIds: ['provider_xai'],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      status: 'logged_in',
+    };
+    const pendingAccount = {
+      ...loggedOutAccount,
+      status: 'pending',
+      interaction: {
+        mode: 'device_code',
+        interactionId: 'interaction_demo',
+        verificationUrl: 'https://auth.openai.test/device',
+        userCode: 'OPEN-KIT',
+        expiresAt: timestamp,
+      },
+    };
+    const quota = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'team_slot',
+      availability: 'unsupported',
+      observedAt: timestamp,
+    };
+    const encodedStatusPath =
+      '/api/app/provider-subscriptions/xai%2Fpreview/accounts/slot%20%EF%BF%BD%2Fa/status';
+    const leadingBomDeletePath =
+      '/api/app/provider-subscriptions/openai-codex/accounts/%EF%BB%BFdefault';
+    const operations = [
+      {
+        args: [],
+        body: null,
+        method: 'listProviders',
+        request: 'GET /api/app/provider-subscriptions',
+        response: providers,
+        route: { body: providers },
+      },
+      {
+        args: ['xai'],
+        body: null,
+        method: 'listAccounts',
+        request: 'GET /api/app/provider-subscriptions/xai/accounts',
+        response: { accounts: [loggedInAccount] },
+        route: { body: { accounts: [loggedInAccount] } },
+      },
+      {
+        args: ['xai', { accountSlotId: 'team_slot', displayName: 'Team' }],
+        body: { accountSlotId: 'team_slot', displayName: 'Team' },
+        method: 'createAccount',
+        request: 'POST /api/app/provider-subscriptions/xai/accounts',
+        response: loggedInAccount,
+        route: { body: loggedInAccount },
+      },
+      {
+        args: ['openai-codex', 'default', { displayName: 'Default' }],
+        body: { displayName: 'Default' },
+        method: 'updateAccount',
+        request: 'PATCH /api/app/provider-subscriptions/openai-codex/accounts/default',
+        response: loggedOutAccount,
+        route: { body: loggedOutAccount },
+      },
+      {
+        args: ['openai-codex', 'default'],
+        body: null,
+        method: 'deleteAccount',
+        request: 'DELETE /api/app/provider-subscriptions/openai-codex/accounts/default',
+        response: undefined,
+        route: { status: 204 },
+      },
+      {
+        args: ['openai-codex', 'default'],
+        body: null,
+        method: 'getAccountStatus',
+        request: 'GET /api/app/provider-subscriptions/openai-codex/accounts/default/status',
+        response: loggedOutAccount,
+        route: { body: loggedOutAccount },
+      },
+      {
+        args: ['openai-codex', 'default', { mode: 'device_code' }],
+        body: { mode: 'device_code' },
+        method: 'startAccountLogin',
+        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login',
+        response: pendingAccount,
+        route: { body: pendingAccount },
+      },
+      {
+        args: ['openai-codex', 'default', { interactionId: 'interaction_demo' }],
+        body: { interactionId: 'interaction_demo' },
+        method: 'cancelAccountLogin',
+        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login/cancel',
+        response: loggedOutAccount,
+        route: { body: loggedOutAccount },
+      },
+      {
+        args: ['openai-codex', 'default'],
+        body: null,
+        method: 'logoutAccount',
+        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/logout',
+        response: loggedOutAccount,
+        route: { body: loggedOutAccount },
+      },
+      {
+        args: ['xai', 'team_slot'],
+        body: null,
+        method: 'getAccountQuota',
+        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/quota',
+        response: quota,
+        route: { body: quota },
+      },
+    ] as const;
+    const routes = Object.fromEntries(
+      operations.map((operation) => [operation.request, operation.route])
+    ) as RouteMap;
+    routes[`GET ${encodedStatusPath}`] = { body: loggedOutAccount };
+    routes[`DELETE ${leadingBomDeletePath}`] = { status: 204 };
+    const { client, requests } = createFakeClient(routes);
+    const providerSubscriptions = Reflect.get(client, 'providerSubscriptions') as
+      | Record<
+          | 'listProviders'
+          | 'listAccounts'
+          | 'createAccount'
+          | 'updateAccount'
+          | 'deleteAccount'
+          | 'getAccountStatus'
+          | 'startAccountLogin'
+          | 'cancelAccountLogin'
+          | 'logoutAccount'
+          | 'getAccountQuota',
+          (...args: unknown[]) => Promise<unknown>
+        >
+      | undefined;
+
+    expect(providerSubscriptions).toBeDefined();
+
+    if (!providerSubscriptions) {
+      return;
+    }
+
+    for (const operation of operations) {
+      const method = providerSubscriptions[operation.method];
+      await expect(Reflect.apply(method, providerSubscriptions, operation.args)).resolves.toEqual(
+        operation.response
+      );
+    }
+
+    await expect(
+      providerSubscriptions.getAccountStatus('xai/preview', 'slot \uD800/a')
+    ).resolves.toEqual(loggedOutAccount);
+    await expect(
+      providerSubscriptions.deleteAccount('openai-codex', '\uFEFFdefault')
+    ).resolves.toBeUndefined();
+
+    expect(
+      requests.slice(0, operations.length).map((request) => `${request.method} ${request.path}`)
+    ).toEqual(operations.map((operation) => operation.request));
+    expect(requests.slice(0, operations.length).map((request) => request.body)).toEqual(
+      operations.map((operation) => operation.body)
+    );
+    expect(
+      requests.find((request) => request.path.endsWith('/accounts/default/logout'))?.hasBody
+    ).toBe(false);
+    expect(requests.at(-2)).toMatchObject({
+      body: null,
+      method: 'GET',
+      path: encodedStatusPath,
+    });
+    expect(requests.at(-1)).toMatchObject({
+      body: null,
+      hasBody: false,
+      method: 'DELETE',
+      path: leadingBomDeletePath,
+    });
+
+    const malformedCases = [
+      {
+        args: [],
+        method: 'listProviders',
+        request: 'GET /api/app/provider-subscriptions',
+        route: { body: { ...providers, legacyProvider: 'openai_codex' } },
+      },
+      {
+        args: ['xai'],
+        method: 'listAccounts',
+        request: 'GET /api/app/provider-subscriptions/xai/accounts',
+        route: { body: { accounts: [], defaultAccountSlotId: 'default' } },
+      },
+      {
+        args: ['xai', { accountSlotId: 'team_slot', displayName: 'Team' }],
+        method: 'createAccount',
+        request: 'POST /api/app/provider-subscriptions/xai/accounts',
+        route: { body: { ...loggedOutAccount, credential: 'secret' } },
+      },
+      {
+        args: ['openai-codex', 'default', { displayName: 'Default' }],
+        method: 'updateAccount',
+        request: 'PATCH /api/app/provider-subscriptions/openai-codex/accounts/default',
+        route: { body: { ...loggedOutAccount, credential: 'secret' } },
+      },
+      {
+        args: ['openai-codex', 'default'],
+        method: 'getAccountStatus',
+        request: 'GET /api/app/provider-subscriptions/openai-codex/accounts/default/status',
+        route: { body: { ...loggedOutAccount, credential: 'secret' } },
+      },
+      {
+        args: ['openai-codex', 'default', { mode: 'device_code' }],
+        method: 'startAccountLogin',
+        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login',
+        route: { body: { ...loggedOutAccount, credential: 'secret' } },
+      },
+      {
+        args: ['openai-codex', 'default', { interactionId: 'interaction_demo' }],
+        method: 'cancelAccountLogin',
+        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login/cancel',
+        route: { body: { ...loggedOutAccount, credential: 'secret' } },
+      },
+      {
+        args: ['openai-codex', 'default'],
+        method: 'logoutAccount',
+        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/logout',
+        route: { body: { ...loggedOutAccount, credential: 'secret' } },
+      },
+      {
+        args: ['xai', 'team_slot'],
+        method: 'getAccountQuota',
+        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/quota',
+        route: { body: { ...quota, rawQuota: {} } },
+      },
+    ] as const;
+    const { client: malformedClient } = createFakeClient(
+      Object.fromEntries(
+        malformedCases.map((testCase) => [testCase.request, testCase.route])
+      ) as RouteMap
+    );
+    const malformedProviderSubscriptions = Reflect.get(
+      malformedClient,
+      'providerSubscriptions'
+    ) as NonNullable<typeof providerSubscriptions>;
+
+    for (const testCase of malformedCases) {
+      await expect(
+        Reflect.apply(
+          malformedProviderSubscriptions[testCase.method],
+          malformedProviderSubscriptions,
+          testCase.args
+        )
+      ).rejects.toBeInstanceOf(ProtocolValidationError);
+    }
+  });
+
   it('parses Goal Mode read model states consumed by Web', () => {
     for (const status of ['no_goal', 'planning', 'running', 'awaiting_user', 'completed']) {
       const payload = threadGoalSummaryForStatus(status);
@@ -4314,7 +4644,7 @@ describe('createCoreClient', () => {
     }
   });
 
-  it('uses strict diagnostics and OAuth schemas without unsupported response shapes', async () => {
+  it('uses the strict diagnostics schema without unsupported response shapes', async () => {
     const { client } = createFakeClient({
       'GET /api/app/diagnostics': {
         body: {
@@ -4322,19 +4652,9 @@ describe('createCoreClient', () => {
           providers: [],
         },
       },
-      'GET /api/app/oauth/openai-codex/accounts/default/status': {
-        body: {
-          providerId: 'openai_codex',
-          status: 'logged_out',
-          authorizationUrl: 'https://example.test/unsupported',
-        },
-      },
     });
 
     await expect(client.app.getDiagnostics()).rejects.toBeInstanceOf(ProtocolValidationError);
-    await expect(client.oauth.openaiCodex.getAccountStatus('default')).rejects.toBeInstanceOf(
-      ProtocolValidationError
-    );
   });
 
   it('validates email auth responses with concrete schemas', async () => {
@@ -4423,20 +4743,6 @@ describe('createCoreClient', () => {
       'GET /api/admin/config/schemas': {
         body: { schemas: [{ kind: 'server', title: 'Server config', schema: {} }] },
       },
-      'POST /api/app/workspaces/ws_demo/runtime-config/stale-sessions/as_stale/restart': {
-        body: {
-          restarted: true,
-          session: {
-            id: 'as_stale',
-            status: 'interrupted',
-            message: 'Runtime config stale session retired; start a new worker session.',
-            configVersion: 2,
-            workspaceRoots: [],
-            stale: false,
-            sandboxSummary: null,
-          },
-        },
-      },
       'DELETE /api/app/automations/auto_demo': { status: 204 },
     });
 
@@ -4459,12 +4765,7 @@ describe('createCoreClient', () => {
     await expect(client.runtimeConfig.getSchemas()).resolves.toEqual({
       schemas: [{ kind: 'server', title: 'Server config', schema: {} }],
     });
-    await expect(
-      client.runtimeConfig.restartStaleSession('ws_demo', 'as_stale')
-    ).resolves.toMatchObject({
-      restarted: true,
-      session: { id: 'as_stale', stale: false },
-    });
+    expect(client.runtimeConfig).not.toHaveProperty('restartStaleSession');
     await expect(client.app.deleteAutomation('auto_demo')).resolves.toBeUndefined();
   });
 
@@ -4495,7 +4796,7 @@ describe('createCoreClient', () => {
     const { client } = createFakeClient({
       'GET /api/meta': {
         body: {
-          protocolVersion: '0.4.0',
+          protocolVersion: '0.5.0',
           capabilities: ['core.questions'],
           eventFamilies: ['turn.started', 'turn.completed'],
         },
@@ -4515,21 +4816,144 @@ describe('createCoreClient', () => {
     );
   });
 
-  it('surfaces SSE validation errors through the async iterator', async () => {
-    const fetcher: typeof fetch = async () =>
-      sseResponse([
-        {
-          protocolVersion: '0.4.0',
-          event: 'turn.completed',
-          sequence: 'not-a-number',
-          requestId,
-          timestamp,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: 'turn_demo',
-          data: { type: 'turn-started', turnId: 'turn_demo', status: 'running' },
+  it('uses explicit EventSource for composed turn SSE while HTTP keeps the supplied fetch', async () => {
+    FakeEventSource.instances = [];
+    const fetchCalls: string[] = [];
+    const client = createCoreClient({
+      baseUrl: 'https://nanocore.test',
+      eventSource: FakeEventSource,
+      fetch: async (input) => {
+        const url = String(input);
+        fetchCalls.push(url);
+
+        if (url.includes('/events?')) {
+          return sseResponse([turnEvent(1, 'turn.completed')]);
+        }
+
+        return jsonResponse({
+          protocolVersion: '0.5.0',
+          capabilities: [],
+          eventFamilies: [],
+        });
+      },
+    });
+
+    await client.core.meta();
+    const iterator = client.core
+      .subscribeTurnEvents({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_demo',
+      })
+      [Symbol.asyncIterator]();
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(fetchCalls).toEqual(['https://nanocore.test/api/meta']);
+    const source = FakeEventSource.instances[0]!;
+    expect(source.url).toBe(
+      'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0'
+    );
+
+    source.emit('message', turnEvent(1, 'turn.completed'));
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { event: 'turn.completed', sequence: 1 },
+    });
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(fetchCalls).toEqual(['https://nanocore.test/api/meta']);
+  });
+
+  it('withholds AgentSession events and projects embedded Turns over fetch SSE', async () => {
+    const terminal = turnEvent(2, 'turn.completed');
+    const iterator = subscribeTurnEvents({
+      baseUrl: 'https://nanocore.test',
+      fetch: async () =>
+        sseResponse([
+          agentSessionEvent(1),
+          {
+            ...terminal,
+            data: {
+              ...terminal.data,
+              turn: {
+                ...turn(),
+                agentSessionId: 'as_demo',
+                status: 'completed',
+                completedAt: timestamp,
+              },
+            },
+          },
+        ]),
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+
+    const result = await iterator.next();
+
+    expect(result).toMatchObject({
+      done: false,
+      value: { event: 'turn.completed', sequence: 2 },
+    });
+    expect(result.value).not.toHaveProperty('data.turn.agentSessionId');
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+  });
+
+  it('withholds AgentSession events and projects embedded Turns over EventSource SSE', async () => {
+    FakeEventSource.instances = [];
+    const terminal = turnEvent(2, 'turn.completed');
+    const iterator = subscribeTurnEvents({
+      baseUrl: '',
+      eventSource: FakeEventSource,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const source = FakeEventSource.instances[0]!;
+
+    source.emit('message', agentSessionEvent(1));
+    source.emit('message', {
+      ...terminal,
+      data: {
+        ...terminal.data,
+        turn: {
+          ...turn(),
+          agentSessionId: 'as_demo',
+          status: 'completed',
+          completedAt: timestamp,
         },
-      ]);
+      },
+    });
+    const result = await iterator.next();
+
+    expect(result).toMatchObject({
+      done: false,
+      value: { event: 'turn.completed', sequence: 2 },
+    });
+    expect(result.value).not.toHaveProperty('data.turn.agentSessionId');
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(source.closed).toBe(true);
+  });
+
+  it.each([
+    [
+      'an invalid outer envelope',
+      {
+        ...turnEvent(1, 'turn.completed'),
+        sequence: 'not-a-number',
+      },
+    ],
+    [
+      'an unparseable known turn-completed payload',
+      {
+        ...turnEvent(1, 'turn.completed'),
+        data: {
+          ...turnEvent(1, 'turn.completed').data,
+          turn: { ...turn(), status: 'future-terminal' },
+        },
+      },
+    ],
+  ])('surfaces %s through the fetch iterator', async (_label, invalidEvent) => {
+    const fetcher: typeof fetch = async () => sseResponse([invalidEvent]);
     const client = createCoreClient({ baseUrl: 'https://nanocore.test', fetch: fetcher });
     const iterator = client.core
       .subscribeTurnEvents({
@@ -4542,13 +4966,102 @@ describe('createCoreClient', () => {
     await expect(iterator.next()).rejects.toBeInstanceOf(ProtocolValidationError);
   });
 
-  it('streams fetch SSE events in sequence and stops on terminal events', async () => {
+  it('terminates fetch without reconnecting when an outer SSE frame contains malformed JSON', async () => {
+    let activeSignal: AbortSignal | null | undefined;
+    const requests: string[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      requests.push(String(input));
+      activeSignal = init?.signal;
+      return new Response('data: {\n\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+    const iterator = subscribeTurnEvents({
+      baseUrl: 'https://nanocore.test',
+      fetch: fetcher,
+      since: 4,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    let delivered = false;
+    let failure: unknown;
+
+    try {
+      delivered = !(await iterator.next()).done;
+    } catch (error) {
+      failure = error;
+    }
+
+    expect({
+      aborted: activeSignal?.aborted,
+      delivered,
+      failureIsProtocolValidationError: failure instanceof ProtocolValidationError,
+      next: await iterator.next(),
+      requests,
+    }).toEqual({
+      aborted: true,
+      delivered: false,
+      failureIsProtocolValidationError: true,
+      next: { value: undefined, done: true },
+      requests: [
+        'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=4',
+      ],
+    });
+  });
+
+  it('discards queued fetch events when protocol validation fails', async () => {
+    let activeSignal: AbortSignal | null | undefined;
+    let fetchCalls = 0;
+    let resolveAbort = (): void => {};
+    const aborted = new Promise<void>((resolve) => {
+      resolveAbort = resolve;
+    });
+    const fetcher: typeof fetch = async (_input, init) => {
+      fetchCalls += 1;
+      activeSignal = init?.signal;
+      activeSignal?.addEventListener('abort', resolveAbort, { once: true });
+      return sseResponse([turnEvent(1), { ...turnEvent(2), sequence: 'bad' }, turnEvent(3)]);
+    };
+    const iterator = subscribeTurnEvents({
+      baseUrl: 'https://nanocore.test',
+      fetch: fetcher,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+
+    await aborted;
+    await expect(iterator.next()).rejects.toBeInstanceOf(ProtocolValidationError);
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(activeSignal?.aborted).toBe(true);
+    expect(fetchCalls).toBe(1);
+  });
+
+  it.each([
+    ['completed', 'completed'],
+    ['interrupted', 'aborted'],
+    ['cancelled', 'aborted'],
+    ['failed', 'error'],
+  ] as const)('stops fetch delivery on a canonical %s Turn', async (status, stopReason) => {
+    const terminalEvent = turnEvent(2, 'turn.completed');
     const fetcher: typeof fetch = async (input, init) => {
       expect(String(input)).toBe(
         'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0'
       );
       expect(headersToRecord(init?.headers)).toEqual({ accept: 'text/event-stream' });
-      return sseResponse([turnEvent(1), turnEvent(1), turnEvent(2, 'turn.completed')]);
+      return sseResponse([
+        turnEvent(1),
+        turnEvent(1),
+        {
+          ...terminalEvent,
+          data: {
+            ...terminalEvent.data,
+            stopReason,
+            turn: { ...turn(), status, completedAt: timestamp },
+          },
+        },
+      ]);
     };
     const client = createCoreClient({ baseUrl: 'https://nanocore.test/', fetch: fetcher });
     const iterator = client.core
@@ -4570,6 +5083,35 @@ describe('createCoreClient', () => {
     await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
   });
 
+  it.each(
+    pseudoTerminalCases
+  )('withholds %s and reconnects fetch with its sequence', async (_label, pseudoTerminal) => {
+    let fetchCalls = 0;
+    const fetcher: typeof fetch = async (input) => {
+      fetchCalls += 1;
+      expect(String(input)).toContain(`since=${fetchCalls === 1 ? 4 : 5}`);
+
+      return fetchCalls === 1
+        ? sseResponse([pseudoTerminal])
+        : sseResponse([turnEvent(6, 'turn.completed')]);
+    };
+    const iterator = subscribeTurnEvents({
+      baseUrl: 'https://nanocore.test',
+      fetch: fetcher,
+      since: 4,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { event: 'turn.completed', sequence: 6 },
+    });
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(fetchCalls).toBe(2);
+  });
+
   it('applies configured HTTP headers to JSON requests and fetch SSE requests', async () => {
     const jsonRequests: RecordedRequest[] = [];
     const jsonClient = createCoreClient({
@@ -4577,13 +5119,14 @@ describe('createCoreClient', () => {
       fetch: async (_input, init) => {
         jsonRequests.push({
           body: typeof init?.body === 'string' ? JSON.parse(init.body) : null,
+          hasBody: init?.body !== undefined,
           headers: headersToRecord(init?.headers),
           method: init?.method ?? 'GET',
           path: '/api/meta',
         });
 
         return jsonResponse({
-          protocolVersion: '0.4.0',
+          protocolVersion: '0.5.0',
           capabilities: [],
           eventFamilies: [],
         });
@@ -4680,34 +5223,20 @@ describe('createCoreClient', () => {
     ).rejects.toThrow('network failed');
   });
 
-  it('supports the EventSource iterator fallback with queued validation errors', async () => {
-    class FakeEventSource {
-      static instances: FakeEventSource[] = [];
-
-      readonly listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
-      readonly url: string;
-      closed = false;
-
-      constructor(url: string) {
-        this.url = url;
-        FakeEventSource.instances.push(this);
-      }
-
-      addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
-        this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-      }
-
-      close(): void {
-        this.closed = true;
-      }
-
-      emit(type: string, data: unknown): void {
-        for (const listener of this.listeners.get(type) ?? []) {
-          listener({ data: JSON.stringify(data) } as MessageEvent<string>);
-        }
-      }
-    }
-
+  it.each([
+    ['an invalid outer envelope', { ...turnEvent(2), sequence: 'bad' }],
+    [
+      'an unparseable known turn-completed payload',
+      {
+        ...turnEvent(2, 'turn.completed'),
+        data: {
+          ...turnEvent(2, 'turn.completed').data,
+          turn: { ...turn(), status: 'future-terminal' },
+        },
+      },
+    ],
+  ])('surfaces %s without advancing the EventSource cursor', async (_label, invalidEvent) => {
+    FakeEventSource.instances = [];
     const stream = subscribeTurnEvents({
       baseUrl: '',
       eventSource: FakeEventSource,
@@ -4724,20 +5253,99 @@ describe('createCoreClient', () => {
 
     source.emit('message', turnEvent(1));
     source.emit('message', turnEvent(1));
-
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
       value: { sequence: 1 },
     });
+    source.emit('message', invalidEvent);
+    await expect(iterator.next()).rejects.toBeInstanceOf(ProtocolValidationError);
+    expect(source.closed).toBe(true);
+    source.emit('error', null);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+  });
 
-    source.emit('message', {
-      ...turnEvent(2),
-      sequence: 'bad',
+  it('terminates EventSource without reconnecting when an outer SSE frame contains malformed JSON', async () => {
+    FakeEventSource.instances = [];
+    const iterator = subscribeTurnEvents({
+      baseUrl: '',
+      eventSource: FakeEventSource,
+      since: 4,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const source = FakeEventSource.instances[0]!;
+
+    source.listeners.get('message')![0]!({ data: '{' } as MessageEvent<string>);
+    source.emit('error', null);
+    let delivered = false;
+    let failure: unknown;
+
+    try {
+      delivered = !(await iterator.next()).done;
+    } catch (error) {
+      failure = error;
+    }
+
+    expect({
+      closed: source.closed,
+      delivered,
+      failureIsProtocolValidationError: failure instanceof ProtocolValidationError,
+      instanceCount: FakeEventSource.instances.length,
+      next: await iterator.next(),
+      url: source.url,
+    }).toEqual({
+      closed: true,
+      delivered: false,
+      failureIsProtocolValidationError: true,
+      instanceCount: 1,
+      next: { value: undefined, done: true },
+      url: '/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=4',
     });
+  });
+
+  it('discards queued EventSource events when embedded Turn validation fails', async () => {
+    FakeEventSource.instances = [];
+    const iterator = subscribeTurnEvents({
+      baseUrl: '',
+      eventSource: FakeEventSource,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const source = FakeEventSource.instances[0]!;
+    const invalidEvent = turnEvent(2, 'turn.completed');
+
+    source.emit('message', turnEvent(1));
+    source.emit('message', {
+      ...invalidEvent,
+      data: {
+        ...invalidEvent.data,
+        turn: { ...turn(), status: 'future-terminal' },
+      },
+    });
+    const closedAfterValidation = source.closed;
+    source.emit('message', turnEvent(3));
+    source.emit('error', null);
 
     await expect(iterator.next()).rejects.toBeInstanceOf(ProtocolValidationError);
+    expect({
+      closedAfterValidation,
+      instanceCount: FakeEventSource.instances.length,
+      next: await iterator.next(),
+    }).toEqual({
+      closedAfterValidation: true,
+      instanceCount: 1,
+      next: { value: undefined, done: true },
+    });
+  });
 
-    const completed = subscribeTurnEvents({
+  it.each(
+    pseudoTerminalCases
+  )('withholds %s and reconnects EventSource with its sequence', async (_label, pseudoTerminal) => {
+    FakeEventSource.instances = [];
+    const stream = subscribeTurnEvents({
       baseUrl: 'https://nanocore.test',
       eventSource: FakeEventSource,
       since: 4,
@@ -4745,15 +5353,202 @@ describe('createCoreClient', () => {
       turnId: 'turn_demo',
       workspaceId: 'ws_demo',
     });
-    const completedIterator = completed[Symbol.asyncIterator]();
-    const completedSource = FakeEventSource.instances[1]!;
-    completedSource.emit('message', turnEvent(5, 'turn.completed'));
+    const iterator = stream[Symbol.asyncIterator]();
+    const source = FakeEventSource.instances[0]!;
+    source.emit('message', pseudoTerminal);
+    source.emit('error', null);
+    const reopenedSource = FakeEventSource.instances[1]!;
+    expect(reopenedSource.url).toBe(
+      'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=5'
+    );
+    reopenedSource.emit('message', turnEvent(6, 'turn.completed'));
 
-    await expect(completedIterator.next()).resolves.toMatchObject({
+    await expect(iterator.next()).resolves.toMatchObject({
       done: false,
-      value: { event: 'turn.completed', sequence: 5 },
+      value: { event: 'turn.completed', sequence: 6 },
     });
-    await expect(completedIterator.next()).resolves.toEqual({ value: undefined, done: true });
-    expect(completedSource.closed).toBe(true);
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(reopenedSource.closed).toBe(true);
+  });
+
+  it('discards queued EventSource events when replacement construction fails', async () => {
+    const constructionError = new Error('replacement EventSource construction failed');
+    let constructionCount = 0;
+
+    /** EventSource fake whose replacement construction fails. */
+    class FailingReplacementEventSource extends FakeEventSource {
+      /** Opens the initial source and rejects its replacement. */
+      constructor(url: string) {
+        constructionCount += 1;
+
+        if (constructionCount > 1) {
+          throw constructionError;
+        }
+
+        super(url);
+      }
+    }
+
+    FakeEventSource.instances = [];
+    const iterator = subscribeTurnEvents({
+      baseUrl: 'https://nanocore.test',
+      eventSource: FailingReplacementEventSource,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const source = FakeEventSource.instances[0]!;
+
+    source.emit('message', turnEvent(1));
+    expect(() => source.emit('error', null)).not.toThrow();
+    source.emit('message', turnEvent(2));
+    source.emit('error', null);
+
+    await expect(iterator.next()).rejects.toBe(constructionError);
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect({
+      constructionCount,
+      instances: FakeEventSource.instances,
+      sourceClosed: source.closed,
+    }).toEqual({
+      constructionCount: 2,
+      instances: [source],
+      sourceClosed: true,
+    });
+  });
+
+  it('ignores callbacks from a superseded EventSource transport', async () => {
+    FakeEventSource.instances = [];
+    const iterator = subscribeTurnEvents({
+      baseUrl: 'https://nanocore.test',
+      eventSource: FakeEventSource,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const supersededSource = FakeEventSource.instances[0]!;
+
+    supersededSource.emit('error', null);
+    const currentSource = FakeEventSource.instances[1]!;
+    supersededSource.emit('message', turnEvent(9));
+    supersededSource.emit('error', null);
+    currentSource.emit('error', null);
+    const canonicalSource = FakeEventSource.instances.at(-1)!;
+    canonicalSource.emit('message', turnEvent(1, 'turn.completed'));
+
+    const first = await iterator.next();
+    await iterator.return?.();
+    expect({
+      first,
+      instanceCount: FakeEventSource.instances.length,
+      url: canonicalSource.url,
+    }).toEqual({
+      first: {
+        done: false,
+        value: expect.objectContaining({ event: 'turn.completed', sequence: 1 }),
+      },
+      instanceCount: 3,
+      url: 'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0',
+    });
+  });
+
+  it('isolates synchronous callbacks while superseding an EventSource transport', async () => {
+    /** EventSource fake that emits one final callback pair synchronously from close. */
+    class SynchronousCloseEventSource extends FakeEventSource {
+      private emittedCloseCallbacks = false;
+
+      /** Closes the source and emits the transport's final synchronous callbacks once. */
+      override close(): void {
+        super.close();
+
+        if (this.emittedCloseCallbacks) {
+          return;
+        }
+
+        this.emittedCloseCallbacks = true;
+        this.emit('message', turnEvent(9));
+        this.emit('error', null);
+      }
+    }
+
+    FakeEventSource.instances = [];
+    const iterator = subscribeTurnEvents({
+      baseUrl: 'https://nanocore.test',
+      eventSource: SynchronousCloseEventSource,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const supersededSource = FakeEventSource.instances[0]!;
+
+    supersededSource.emit('error', null);
+    const stateBeforeReturn = FakeEventSource.instances.map(({ closed, url }) => ({ closed, url }));
+    await iterator.return?.();
+
+    expect(stateBeforeReturn).toEqual([
+      {
+        closed: true,
+        url: 'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0',
+      },
+      {
+        closed: false,
+        url: 'https://nanocore.test/api/workspaces/ws_demo/threads/th_demo/events?turnId=turn_demo&since=0',
+      },
+    ]);
+  });
+
+  it.each([
+    ['completed', 'completed'],
+    ['interrupted', 'aborted'],
+    ['cancelled', 'aborted'],
+    ['failed', 'error'],
+  ] as const)('stops EventSource delivery on a canonical %s Turn', async (status, stopReason) => {
+    FakeEventSource.instances = [];
+    const terminalEvent = turnEvent(1, 'turn.completed');
+    const iterator = subscribeTurnEvents({
+      baseUrl: '',
+      eventSource: FakeEventSource,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const source = FakeEventSource.instances[0]!;
+    source.emit('message', {
+      ...terminalEvent,
+      data: {
+        ...terminalEvent.data,
+        stopReason,
+        turn: { ...turn(), status, completedAt: timestamp },
+      },
+    });
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { data: { turn: { status } }, event: 'turn.completed', sequence: 1 },
+    });
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(source.closed).toBe(true);
+  });
+
+  it('ignores a second EventSource terminal event received before iterator drain', async () => {
+    FakeEventSource.instances = [];
+    const iterator = subscribeTurnEvents({
+      baseUrl: '',
+      eventSource: FakeEventSource,
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      workspaceId: 'ws_demo',
+    })[Symbol.asyncIterator]();
+    const source = FakeEventSource.instances[0]!;
+
+    source.emit('message', turnEvent(1, 'turn.completed'));
+    source.emit('message', turnEvent(2, 'turn.completed'));
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { event: 'turn.completed', sequence: 1 },
+    });
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(source.closed).toBe(true);
   });
 });

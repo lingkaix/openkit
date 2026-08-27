@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { AuthoredAgentConfigSchema } from './agent.js';
@@ -13,6 +14,7 @@ function validAgentConfig() {
       kind: 'future-runtime',
       adapter: 'future-adapter',
       image: {
+        kind: 'reference',
         ref: 'ghcr.io/openkit/worker-fixture:0.1.0',
         pullPolicy: 'if-not-present',
       },
@@ -38,6 +40,124 @@ function validAgentConfig() {
 }
 
 describe('AuthoredAgentConfigSchema', () => {
+  it('accepts exactly one reference or bounded build image form', () => {
+    const config = validAgentConfig();
+    const dockerfile = 'FROM node:24.16.0';
+    const dockerfileDigest = `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`;
+    const reference = {
+      ...config,
+      runtime: {
+        ...config.runtime,
+        image: {
+          kind: 'reference',
+          pullPolicy: 'if-not-present',
+          ref: 'ghcr.io/openkit/worker-fixture:0.1.0',
+        },
+      },
+    };
+    const build = {
+      ...config,
+      runtime: {
+        ...config.runtime,
+        image: {
+          arguments: { NODE_VERSION: '24.16.0' },
+          contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+          contextRef: 'build-context://empty/v1',
+          egress: [{ host: 'registry.npmjs.org', port: 443 }],
+          input: { content: dockerfile, digest: dockerfileDigest, kind: 'dockerfile' },
+          kind: 'build',
+          layerLimit: 128,
+          outputLimitBytes: 21_474_836_480,
+          timeLimitSeconds: 1800,
+        },
+      },
+    };
+
+    expect(AuthoredAgentConfigSchema.parse(reference).runtime.image).toEqual(
+      reference.runtime.image
+    );
+    expect(AuthoredAgentConfigSchema.parse(build).runtime.image).toEqual(build.runtime.image);
+    const atMaximum = 'a'.repeat(268_435_456);
+    for (const [content, accepted] of [
+      ['', false],
+      ['a', true],
+      [atMaximum, true],
+      [`${atMaximum}a`, false],
+    ] as const) {
+      const image = {
+        ...build.runtime.image,
+        input: {
+          content,
+          digest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+          kind: 'dockerfile' as const,
+        },
+      };
+      expect(
+        AuthoredAgentConfigSchema.safeParse({
+          ...config,
+          runtime: { ...config.runtime, image },
+        }).success,
+        `Dockerfile UTF-8 byte length ${Buffer.byteLength(content)} had the wrong disposition`
+      ).toBe(accepted);
+    }
+    expect(
+      AuthoredAgentConfigSchema.safeParse({
+        ...build,
+        runtime: {
+          ...build.runtime,
+          image: {
+            ...build.runtime.image,
+            input: { ...build.runtime.image.input, digest: `sha256:${'0'.repeat(64)}` },
+          },
+        },
+      }).success
+    ).toBe(false);
+    expect(
+      AuthoredAgentConfigSchema.safeParse({
+        ...build,
+        runtime: {
+          ...build.runtime,
+          image: {
+            ...build.runtime.image,
+            layerLimit: 1,
+            outputLimitBytes: 1,
+            timeLimitSeconds: 1,
+          },
+        },
+      }).success
+    ).toBe(true);
+    for (const image of [
+      {},
+      { ...reference.runtime.image, ...build.runtime.image },
+      { ...build.runtime.image, contextRef: undefined },
+      { ...build.runtime.image, contextDigest: undefined },
+      { ...build.runtime.image, contextRef: 'workspace://build-context' },
+      { ...build.runtime.image, contextRef: 'build-context://empty/v2' },
+      { ...build.runtime.image, egress: undefined },
+      { ...build.runtime.image, egress: [{ host: '*', port: 443 }] },
+      { ...build.runtime.image, pullPolicy: 'always' },
+      { ...build.runtime.image, arguments: { token: 'forbidden-secret' } },
+      { ...build.runtime.image, layerLimit: 129 },
+      { ...build.runtime.image, outputLimitBytes: 21_474_836_481 },
+      { ...build.runtime.image, timeLimitSeconds: 1801 },
+      { ...build.runtime.image, egress: [{ host: 'registry.npmjs.org' }] },
+      { ...build.runtime.image, layerLimit: 0 },
+      { ...build.runtime.image, outputLimitBytes: 0 },
+      { ...build.runtime.image, timeLimitSeconds: 0 },
+      { ...build.runtime.image, layerLimit: undefined },
+      { ...build.runtime.image, outputLimitBytes: undefined },
+      { ...build.runtime.image, timeLimitSeconds: undefined },
+    ]) {
+      expect(
+        AuthoredAgentConfigSchema.safeParse({
+          ...config,
+          runtime: { ...config.runtime, image },
+        }).success,
+        `accepted invalid image ${JSON.stringify(image)}`
+      ).toBe(false);
+    }
+  });
+
   it('accepts one strict opaque runtime declaration', () => {
     const parsed = AuthoredAgentConfigSchema.parse(validAgentConfig());
 

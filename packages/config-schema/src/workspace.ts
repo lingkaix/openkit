@@ -120,23 +120,38 @@ export type WorkspaceRoot = z.infer<typeof WorkspaceRootSchema>;
  */
 export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
 
-/**
- * Materialized workspace root passed to worker launch.
- */
-export interface MaterializedWorkspaceRoot {
+/** Fields shared by every materialized workspace root passed to worker launch. */
+interface MaterializedWorkspaceRootBase {
   /** Stable authored workspace root id. */
   id: string;
-  /** Resolved source kind. */
-  sourceKind: 'host-dir' | 'materialized-dir';
-  /** Host path resolved under the workspace root. */
-  sourcePath: string;
-  /** Immutable Git commit captured for a linked repository root. */
-  sourceCommit?: string;
   /** Worker-visible path for V1 host workers. */
   workerPath: string;
   /** Declared access intent. */
   access: 'read-only' | 'read-write';
 }
+
+/** NanoCore-local directory root passed to worker launch. */
+export interface MaterializedLocalWorkspaceRoot extends MaterializedWorkspaceRootBase {
+  /** Resolved local directory source kind. */
+  sourceKind: 'host-dir' | 'materialized-dir';
+  /** Host path resolved under the workspace root. */
+  sourcePath: string;
+  /** Immutable Git commit captured for a local Git root, when applicable. */
+  sourceCommit?: string;
+}
+
+/** Credential-free remote Git root selected from the Workspace source catalog. */
+export interface MaterializedRemoteGitWorkspaceRoot extends MaterializedWorkspaceRootBase {
+  /** Remote Git materialization discriminant. */
+  sourceKind: 'remote-git';
+  /** Exact remote commit selected before scheduler admission. */
+  sourceCommit: string;
+}
+
+/** Materialized workspace root passed to worker launch. */
+export type MaterializedWorkspaceRoot =
+  | MaterializedLocalWorkspaceRoot
+  | MaterializedRemoteGitWorkspaceRoot;
 
 /**
  * Input accepted by workspace root materialization.

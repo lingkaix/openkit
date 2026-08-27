@@ -14,7 +14,12 @@ import { ApprovalRequestSchema } from '../models/approval.js';
 import { ArtifactSchema } from '../models/artifact.js';
 import { ItemSchema, ItemTypeSchema } from '../models/item.js';
 import { ThreadSchema } from '../models/thread.js';
-import { StopReasonSchema, TurnSchema, TurnStatusSchema } from '../models/turn.js';
+import {
+  ProductTurnSchema,
+  StopReasonSchema,
+  TurnSchema,
+  TurnStatusSchema,
+} from '../models/turn.js';
 import { WorkspaceRecordSchema } from '../models/workspace.js';
 
 /**
@@ -348,7 +353,7 @@ export const ApprovalResolvedEventSchema = z.object({
 });
 
 /**
- * Agent session update event.
+ * AgentSession update event.
  */
 export const AgentSessionUpdatedEventSchema = z.object({
   type: z.literal('agent-session-updated'),
@@ -559,4 +564,48 @@ export const ForwardCompatibleSseEventEnvelopeSchema = z.object({
   threadId: ThreadIdSchema.optional(),
   turnId: TurnIdSchema.optional(),
   data: ForwardCompatibleServerEventSchema,
+});
+
+const ProductTurnUpdatedEventSchema = TurnUpdatedEventSchema.extend({
+  turn: ProductTurnSchema,
+});
+
+const ProductTurnCompletedEventSchema = TurnCompletedEventSchema.extend({
+  turn: ProductTurnSchema,
+});
+
+const ProductServerEventSchema = z.discriminatedUnion('type', [
+  WorkspaceUpdatedEventSchema,
+  ThreadCreatedEventSchema,
+  ThreadUpdatedEventSchema,
+  TurnStartedEventSchema,
+  ProductTurnUpdatedEventSchema,
+  ItemCreatedEventSchema,
+  ItemDeltaEventSchema,
+  ItemCompletedEventSchema,
+  ApprovalRequestedEventSchema,
+  ApprovalResolvedEventSchema,
+  ArtifactCreatedEventSchema,
+  ArtifactUpdatedEventSchema,
+  ProductTurnCompletedEventSchema,
+  ErrorEventSchema,
+]);
+
+const ProductForwardCompatibleServerEventSchema = z.union([
+  ProductServerEventSchema,
+  ForwardCompatibleItemCreatedEventSchema,
+  ForwardCompatibleItemDeltaEventSchema,
+  ForwardCompatibleItemCompletedEventSchema,
+  UnknownServerEventSchema,
+]);
+
+/**
+ * Ordinary product SSE envelope without hidden AgentSession identity.
+ */
+export const ProductSseEventEnvelopeSchema = ForwardCompatibleSseEventEnvelopeSchema.extend({
+  event: z
+    .string()
+    .min(1)
+    .refine((event) => event !== 'agent.session.updated', 'AgentSession events are internal.'),
+  data: ProductForwardCompatibleServerEventSchema,
 });

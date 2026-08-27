@@ -181,6 +181,9 @@ async function validatePiAiReconciliation(modelsDevApi, metadata) {
   const expectedVersion = reconciliation.piAiVersion;
   const tolerance = reconciliation.priceToleranceRatio;
   const providers = reconciliation.providers;
+  const acceptedPriceDifferences = readAcceptedPriceDifferences(
+    reconciliation.acceptedPriceDifferences
+  );
 
   if (typeof expectedVersion !== 'string') {
     throw new Error('metadata.piAiReconciliation.piAiVersion must be a string');
@@ -211,8 +214,49 @@ async function validatePiAiReconciliation(modelsDevApi, metadata) {
   }
 
   for (const entry of providers) {
-    validatePiAiProvider(modelsDevApi, piAiProviders, entry, tolerance);
+    validatePiAiProvider(modelsDevApi, piAiProviders, entry, tolerance, acceptedPriceDifferences);
   }
+  if (acceptedPriceDifferences.size > 0) {
+    throw new Error('pi-ai reconciliation contains an unused accepted price difference');
+  }
+}
+
+/**
+ * Reads the exact release-bound price differences accepted during dependency review.
+ *
+ * @param {unknown} value Metadata candidate.
+ * @returns {Map<string, {modelsDev: number, piAi: number}>} Unconsumed exact differences.
+ */
+function readAcceptedPriceDifferences(value) {
+  if (!Array.isArray(value)) {
+    throw new Error('metadata.piAiReconciliation.acceptedPriceDifferences must be an array');
+  }
+  const accepted = new Map();
+  for (const entry of value) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      Array.isArray(entry) ||
+      Object.keys(entry).sort().join(',') !==
+        'field,modelId,modelsDev,modelsDevProviderId,piAi,piAiProviderId' ||
+      !['input', 'output', 'cacheRead', 'cacheWrite'].includes(entry.field) ||
+      typeof entry.modelId !== 'string' ||
+      typeof entry.modelsDevProviderId !== 'string' ||
+      typeof entry.piAiProviderId !== 'string' ||
+      typeof entry.modelsDev !== 'number' ||
+      typeof entry.piAi !== 'number'
+    ) {
+      throw new Error('Invalid pi-ai accepted price difference');
+    }
+    const key = [entry.modelsDevProviderId, entry.piAiProviderId, entry.modelId, entry.field].join(
+      '\0'
+    );
+    if (accepted.has(key)) {
+      throw new Error('Duplicate pi-ai accepted price difference');
+    }
+    accepted.set(key, { modelsDev: entry.modelsDev, piAi: entry.piAi });
+  }
+  return accepted;
 }
 
 /**
@@ -222,8 +266,15 @@ async function validatePiAiReconciliation(modelsDevApi, metadata) {
  * @param {Record<string, unknown>} piAiProviders pi-ai generated provider model maps.
  * @param {unknown} entry Provider reconciliation metadata.
  * @param {number} tolerance Relative price tolerance.
+ * @param {Map<string, {modelsDev: number, piAi: number}>} acceptedPriceDifferences Exact reviewed differences.
  */
-function validatePiAiProvider(modelsDevApi, piAiProviders, entry, tolerance) {
+function validatePiAiProvider(
+  modelsDevApi,
+  piAiProviders,
+  entry,
+  tolerance,
+  acceptedPriceDifferences
+) {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
     throw new Error('Expected pi-ai reconciliation provider object');
   }
@@ -265,7 +316,9 @@ function validatePiAiProvider(modelsDevApi, piAiProviders, entry, tolerance) {
         modelId,
         modelsDevModels[modelId],
         piAiModels[modelId],
-        tolerance
+        tolerance,
+        piAiProviderId,
+        acceptedPriceDifferences
       );
     }
 
@@ -285,7 +338,9 @@ function validatePiAiProvider(modelsDevApi, piAiProviders, entry, tolerance) {
       modelId,
       modelsDevModels[modelId],
       piAiModel,
-      tolerance
+      tolerance,
+      piAiProviderId,
+      acceptedPriceDifferences
     );
   }
 
@@ -304,8 +359,18 @@ function validatePiAiProvider(modelsDevApi, piAiProviders, entry, tolerance) {
  * @param {unknown} modelsDevModel models.dev model record.
  * @param {unknown} piAiModel pi-ai model record.
  * @param {number} tolerance Relative price tolerance.
+ * @param {string} piAiProviderId pi-ai provider id used in the exact difference identity.
+ * @param {Map<string, {modelsDev: number, piAi: number}>} acceptedPriceDifferences Exact reviewed differences.
  */
-function validatePiAiModelCost(providerId, modelId, modelsDevModel, piAiModel, tolerance) {
+function validatePiAiModelCost(
+  providerId,
+  modelId,
+  modelsDevModel,
+  piAiModel,
+  tolerance,
+  piAiProviderId,
+  acceptedPriceDifferences
+) {
   const modelsDevCost = readCost(modelsDevModel, `models.dev ${providerId}/${modelId}`);
   const piAiCost = readCost(piAiModel, `pi-ai ${providerId}/${modelId}`);
   const fields = [
@@ -325,6 +390,12 @@ function validatePiAiModelCost(providerId, modelId, modelsDevModel, piAiModel, t
     const relativeDifference = Math.abs(actual - expected) / Math.max(Math.abs(expected), 1e-12);
 
     if (relativeDifference > tolerance) {
+      const key = [providerId, piAiProviderId, modelId, piAiField].join('\0');
+      const accepted = acceptedPriceDifferences.get(key);
+      if (accepted?.modelsDev === expected && accepted.piAi === actual) {
+        acceptedPriceDifferences.delete(key);
+        continue;
+      }
       throw new Error(
         `pi-ai ${providerId}/${modelId} ${piAiField} price ${actual} differs from models.dev ${expected}`
       );

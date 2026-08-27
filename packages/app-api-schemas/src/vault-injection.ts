@@ -25,7 +25,7 @@ export const WorkspaceVaultGrantSchema = z
   .superRefine((value, ctx) => addRawSecretIssues(value, ctx, []));
 
 /** Non-secret workspace injection plan metadata exposed through the App API. */
-export const WorkspaceInjectionPlanSchema = z
+export const WorkspaceVaultInjectionPlanSchema = z
   .object({
     planId: z.string().min(1),
     grantId: z.string().min(1),
@@ -45,7 +45,7 @@ export const WorkspaceInjectionPlanSchema = z
   .superRefine((value, ctx) => addRawSecretIssues(value, ctx, []));
 
 /** Non-secret workspace injection receipt metadata exposed through the App API. */
-export const WorkspaceInjectionReceiptSchema = z
+export const WorkspaceVaultInjectionReceiptSchema = z
   .object({
     receiptId: z.string().min(1),
     planId: z.string().min(1),
@@ -71,19 +71,19 @@ export const ListWorkspaceVaultGrantsResponseSchema = z
   .superRefine((value, ctx) => addRawSecretIssues(value, ctx, []));
 
 /** Workspace injection plan list response. */
-export const ListWorkspaceInjectionPlansResponseSchema = z
+export const ListWorkspaceVaultInjectionPlansResponseSchema = z
   .object({
     workspaceId: z.string().min(1),
-    items: z.array(WorkspaceInjectionPlanSchema),
+    items: z.array(WorkspaceVaultInjectionPlanSchema),
   })
   .strict()
   .superRefine((value, ctx) => addRawSecretIssues(value, ctx, []));
 
 /** Workspace injection receipt list response. */
-export const ListWorkspaceInjectionReceiptsResponseSchema = z
+export const ListWorkspaceVaultInjectionReceiptsResponseSchema = z
   .object({
     workspaceId: z.string().min(1),
-    items: z.array(WorkspaceInjectionReceiptSchema),
+    items: z.array(WorkspaceVaultInjectionReceiptSchema),
   })
   .strict()
   .superRefine((value, ctx) => addRawSecretIssues(value, ctx, []));
@@ -91,18 +91,18 @@ export const ListWorkspaceInjectionReceiptsResponseSchema = z
 /** Non-secret workspace vault grant metadata. */
 export type WorkspaceVaultGrant = z.infer<typeof WorkspaceVaultGrantSchema>;
 /** Non-secret workspace injection plan metadata. */
-export type WorkspaceInjectionPlan = z.infer<typeof WorkspaceInjectionPlanSchema>;
+export type WorkspaceVaultInjectionPlan = z.infer<typeof WorkspaceVaultInjectionPlanSchema>;
 /** Non-secret workspace injection receipt metadata. */
-export type WorkspaceInjectionReceipt = z.infer<typeof WorkspaceInjectionReceiptSchema>;
+export type WorkspaceVaultInjectionReceipt = z.infer<typeof WorkspaceVaultInjectionReceiptSchema>;
 /** Workspace vault grant list response. */
 export type ListWorkspaceVaultGrantsResponse = z.infer<
   typeof ListWorkspaceVaultGrantsResponseSchema
 >;
 /** Workspace injection plan list response. */
-export type ListWorkspaceInjectionPlansResponse = z.infer<
-  typeof ListWorkspaceInjectionPlansResponseSchema
+export type ListWorkspaceVaultInjectionPlansResponse = z.infer<
+  typeof ListWorkspaceVaultInjectionPlansResponseSchema
 >;
 /** Workspace injection receipt list response. */
-export type ListWorkspaceInjectionReceiptsResponse = z.infer<
-  typeof ListWorkspaceInjectionReceiptsResponseSchema
+export type ListWorkspaceVaultInjectionReceiptsResponse = z.infer<
+  typeof ListWorkspaceVaultInjectionReceiptsResponseSchema
 >;

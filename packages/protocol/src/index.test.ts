@@ -25,6 +25,8 @@ import {
   ListThreadsResponseSchema,
   MetaResponseSchema,
   PROTOCOL_VERSION,
+  ProductSseEventEnvelopeSchema,
+  ProductTurnSchema,
   RespondToApprovalRequestSchema,
   ServerEventSchema,
   SseEventEnvelopeSchema,
@@ -67,7 +69,7 @@ describe('canonical enums', () => {
     ]);
   });
 
-  it('exports the canonical agent session status values', () => {
+  it('exports the canonical AgentSession status values', () => {
     expect(AgentSessionStatusSchema.options).toEqual([
       'created',
       'initializing',
@@ -148,6 +150,104 @@ describe('canonical enums', () => {
 });
 
 describe('protocol schemas', () => {
+  it('projects ordinary SSE without AgentSession events or Turn identity', () => {
+    const turn = {
+      id: 'tu_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      triggerActor: { kind: 'user' as const, id: 'user_demo' },
+      items: [],
+      status: 'running' as const,
+      humanGate: null,
+      error: null,
+      agentSessionId: 'as_demo',
+      configVersion: null,
+      startedAt: '2026-04-15T00:00:00Z',
+      completedAt: null,
+      durationMs: null,
+    };
+    const envelope = {
+      protocolVersion: PROTOCOL_VERSION,
+      sequence: 1,
+      requestId: null,
+      timestamp: '2026-04-15T00:00:00Z',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+    };
+
+    for (const turnEvent of [
+      { event: 'turn.updated', data: { type: 'turn-updated', turn } },
+      {
+        event: 'turn.completed',
+        data: {
+          type: 'turn-completed',
+          stopReason: 'completed',
+          turn: { ...turn, status: 'completed', completedAt: '2026-04-15T00:00:01Z' },
+        },
+      },
+    ]) {
+      const parsed = ProductSseEventEnvelopeSchema.parse({ ...envelope, ...turnEvent });
+
+      expect(parsed.data).not.toHaveProperty('turn.agentSessionId');
+    }
+
+    const agentSessionEvent = {
+      ...envelope,
+      event: 'agent.session.updated',
+      data: {
+        type: 'agent-session-updated',
+        agentSession: {
+          id: 'as_demo',
+          agentId: 'agent_demo',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          status: 'busy',
+          message: null,
+          createdAt: '2026-04-15T00:00:00Z',
+          updatedAt: '2026-04-15T00:00:01Z',
+        },
+      },
+    };
+
+    expect(ForwardCompatibleSseEventEnvelopeSchema.safeParse(agentSessionEvent).success).toBe(true);
+    for (const internalMarker of [
+      agentSessionEvent,
+      { ...agentSessionEvent, event: 'error' },
+      { ...agentSessionEvent, data: { type: 'error', code: 'demo', message: 'Demo.' } },
+    ]) {
+      expect(ProductSseEventEnvelopeSchema.safeParse(internalMarker).success).toBe(false);
+    }
+
+    const malformedTurn = {
+      ...turn,
+      items: [
+        {
+          id: 'it_answer_demo',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: 'tu_demo',
+          status: 'completed' as const,
+          createdAt: '2026-04-15T00:00:02Z',
+          completedAt: '2026-04-15T00:00:03Z',
+          type: 'user-input-response' as const,
+          actor: { kind: 'user' as const, id: 'user_demo' },
+          causationId: 'req_answer_demo',
+          userInputRequestId: 'ui_demo',
+          answers: { question: ['Answer'] },
+        },
+      ],
+    };
+
+    expect(
+      ProductSseEventEnvelopeSchema.safeParse({
+        ...envelope,
+        event: 'turn.updated',
+        data: { type: 'turn-updated', turn: malformedTurn },
+      }).success
+    ).toBe(false);
+  });
+
   it('accepts a workspace-scoped SSE envelope', () => {
     const parsed = SseEventEnvelopeSchema.parse({
       protocolVersion: PROTOCOL_VERSION,
@@ -463,7 +563,7 @@ describe('protocol schemas', () => {
   });
 
   it('exports the pinned protocol version', () => {
-    expect(PROTOCOL_VERSION).toBe('0.4.0');
+    expect(PROTOCOL_VERSION).toBe('0.5.0');
   });
 
   it('requires an explicit nullable responsible user on every usage record', () => {
@@ -484,7 +584,7 @@ describe('protocol schemas', () => {
     ).toBe('user_demo');
   });
 
-  it('accepts product-safe sandbox summaries on agent sessions', () => {
+  it('accepts product-safe sandbox summaries on AgentSessions', () => {
     const session = AgentSessionSchema.parse({
       id: 'session_demo',
       agentId: 'agent_codex_host',
@@ -693,6 +793,58 @@ describe('protocol schemas', () => {
         undocumentedProjectionField: true,
       }).success
     ).toBe(false);
+  });
+
+  it('omits AgentSession identity from ordinary Turn projections while durable Turn retains it', () => {
+    const turn = {
+      id: 'tu_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      triggerActor: { kind: 'user', id: 'user_demo' },
+      items: [],
+      status: 'running' as const,
+      humanGate: null,
+      error: null,
+      agentSessionId: 'as_demo',
+      configVersion: null,
+      startedAt: '2026-04-15T00:00:00Z',
+      completedAt: null,
+      durationMs: null,
+    };
+
+    expect(TurnSchema.parse(turn).agentSessionId).toBe('as_demo');
+    const ordinaryTurn = ProductTurnSchema.parse(turn);
+    expect(ordinaryTurn).not.toHaveProperty('agentSessionId');
+    expect(
+      JSON.stringify(
+        TurnReadProjectionSchema.parse({
+          ...ordinaryTurn,
+          contextPackageDigest: null,
+        })
+      )
+    ).not.toContain('agentSessionId');
+
+    const malformedTurn = {
+      ...turn,
+      items: [
+        {
+          id: 'it_answer_demo',
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: 'tu_demo',
+          status: 'completed' as const,
+          createdAt: '2026-04-15T00:00:02Z',
+          completedAt: '2026-04-15T00:00:03Z',
+          type: 'user-input-response' as const,
+          actor: { kind: 'user' as const, id: 'user_demo' },
+          causationId: 'req_answer_demo',
+          userInputRequestId: 'ui_demo',
+          answers: { question: ['Answer'] },
+        },
+      ],
+    };
+    expect(TurnSchema.safeParse(malformedTurn).success).toBe(false);
+    expect(ProductTurnSchema.safeParse(malformedTurn).success).toBe(false);
   });
 
   it('requires immutable source actors only on the three human-authored item variants', () => {
@@ -1404,7 +1556,7 @@ describe('protocol schemas', () => {
     ]);
   });
 
-  it('parses agent sessions with nullable sandbox summaries', () => {
+  it('parses AgentSessions with nullable sandbox summaries', () => {
     const parsed = AgentSessionSchema.parse({
       id: 'session_demo',
       agentId: 'agent_codex_host',
@@ -1481,7 +1633,7 @@ describe('protocol schemas', () => {
     expect(parsed.name).toBe('Updated thread');
   });
 
-  it('accepts agent session update events', () => {
+  it('accepts AgentSession update events', () => {
     const parsed = AgentSessionUpdatedEventSchema.parse({
       type: 'agent-session-updated',
       agentSession: {

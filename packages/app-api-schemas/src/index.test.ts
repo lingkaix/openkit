@@ -2,11 +2,15 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+import {
+  SubscriptionProviderIdSchema as ConfigSubscriptionProviderIdSchema,
+  ProviderSubscriptionAccountSlotIdSchema,
+} from '@openkit/config-schema/provider-subscription';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import * as appApiSchemas from './index.js';
 import {
-  AgentSessionReadModelSchema,
   AppDiagnosticsResponseSchema,
   ApproveThreadGoalPlanRequestSchema,
   ApproveThreadGoalPlanResponseSchema,
@@ -23,8 +27,6 @@ import {
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
   ChatModeOutcomeSchema,
-  CodexOAuthAccountsPayloadSchema,
-  CodexOAuthStatusPayloadSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
   ConvertGoalSteeringToFollowUpRequestSchema,
@@ -127,7 +129,6 @@ import {
   RequestGitPushApprovalResponseSchema,
   ResolveKnowledgeConflictRequestSchema,
   ResolveKnowledgeConflictResponseSchema,
-  RestartRuntimeConfigStaleSessionResponseSchema,
   RestoreThreadMaterialRequestSchema,
   RestoreThreadMaterialResponseSchema,
   ResumeThreadGoalRequestSchema,
@@ -217,6 +218,25 @@ import {
 } from './index.js';
 
 const timestamp = '2026-05-15T05:17:42.000Z';
+
+/**
+ * Returns whether a JSON-compatible value contains a key at any depth.
+ *
+ * @param value Nested JSON value.
+ * @param key Property name to search for.
+ * @returns True when the key appears recursively.
+ */
+function jsonContainsKey(value: unknown, key: string): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => jsonContainsKey(item, key));
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).some(
+      ([entryKey, nested]) => entryKey === key || jsonContainsKey(nested, key)
+    );
+  }
+  return false;
+}
 const retrievalTraceId = 'krt_123e4567-e89b-42d3-a456-426614174000';
 const knowledgeSourceReference = `source:ks_123e4567-e89b-42d3-a456-426614174000@sha256:${'1'.repeat(64)}`;
 const knowledgePageId = 'lessons/release-review';
@@ -260,6 +280,8 @@ const rawSecretShapes = [
 ] as const;
 const schemaSourceRoot = new URL('.', import.meta.url);
 const allowedRuntimeNeutralImports = new Set([
+  '@openkit/config-schema',
+  '@openkit/config-schema/provider-subscription',
   '@openkit/config-schema/workspace-export',
   '@openkit/protocol',
   'zod',
@@ -301,6 +323,46 @@ describe('app api schema package boundary', () => {
     });
 
     expect(offenders).toEqual([]);
+  });
+
+  it('exports the closed provider-subscription identifier schema from the package root', () => {
+    const schema = Reflect.get(appApiSchemas, 'SubscriptionProviderIdSchema');
+
+    expect(schema).toBeDefined();
+    expect(schema.options).toEqual(['openai-codex', 'xai']);
+    expect(schema.parse('openai-codex')).toBe('openai-codex');
+    expect(schema.parse('xai')).toBe('xai');
+    expect(schema.safeParse('anthropic').success).toBe(false);
+  });
+
+  it('reuses the config-schema provider-subscription identity across public account schemas', () => {
+    expect
+      .soft(appApiSchemas.SubscriptionProviderIdSchema, 'package root')
+      .toBe(ConfigSubscriptionProviderIdSchema);
+    for (const branch of appApiSchemas.ProviderSubscriptionAccountSchema.options) {
+      expect
+        .soft(branch.shape.subscriptionProviderId, `account status ${branch.shape.status.value}`)
+        .toBe(ConfigSubscriptionProviderIdSchema);
+    }
+  });
+
+  it('reuses the config-schema account-slot identity across public account schemas', () => {
+    expect
+      .soft(
+        appApiSchemas.CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId,
+        'create request'
+      )
+      .toBe(ProviderSubscriptionAccountSlotIdSchema);
+    for (const branch of appApiSchemas.ProviderSubscriptionAccountSchema.options) {
+      expect
+        .soft(branch.shape.accountSlotId, `account status ${branch.shape.status.value}`)
+        .toBe(ProviderSubscriptionAccountSlotIdSchema);
+    }
+    for (const branch of appApiSchemas.ProviderSubscriptionQuotaSchema.options) {
+      expect
+        .soft(branch.shape.accountSlotId, `quota ${branch.shape.availability.value}`)
+        .toBe(ProviderSubscriptionAccountSlotIdSchema);
+    }
   });
 });
 
@@ -506,7 +568,7 @@ describe('S16 Material and Artifact Review schemas', () => {
       ],
       [
         BindThreadMaterialRequestSchema,
-        { requestId: 'request_bind', expectedBindingState: 'absent' },
+        { requestId: 'request_bind', expectedBindingState: 'not_bound' },
         'threadId',
       ],
       [
@@ -543,6 +605,15 @@ describe('S16 Material and Artifact Review schemas', () => {
       expect(schema.safeParse({ ...request, requestId: 'import-lineage:reserved' }).success).toBe(
         false
       );
+    }
+
+    for (const removedLiteral of ['absent', 'unbound']) {
+      expect(
+        BindThreadMaterialRequestSchema.safeParse({
+          requestId: 'request_bind',
+          expectedBindingState: removedLiteral,
+        }).success
+      ).toBe(false);
     }
   });
 
@@ -704,7 +775,6 @@ function runtimeConfigStatus(): unknown {
     lastReload: null,
     lastFailedReload: null,
     pendingRestart: [],
-    staleSessions: [],
   };
 }
 
@@ -735,21 +805,6 @@ function defaultProviders(): unknown {
   };
 }
 
-function defaultCodexOAuthAccounts(): unknown {
-  return {
-    accounts: [
-      {
-        accountSlotId: 'default',
-        boundProviderIds: [],
-        isDefault: true,
-        providerId: 'openai_codex',
-        status: 'logged_out',
-      },
-    ],
-    defaultAccountSlotId: 'default',
-  };
-}
-
 /** Builds one valid App Diagnostics payload. */
 function appDiagnosticsPayload(): Record<string, unknown> {
   return {
@@ -761,9 +816,6 @@ function appDiagnosticsPayload(): Record<string, unknown> {
     defaults: {
       quickChat: { providerId: null, model: null },
       gateway: { providerId: null, model: null },
-    },
-    oauth: {
-      openaiCodexAccounts: defaultCodexOAuthAccounts(),
     },
     capabilities: ['core.stream.replay'],
     runtimeConfig: runtimeConfigStatus(),
@@ -1876,13 +1928,6 @@ describe('app api schemas', () => {
       }).state
     ).toBe('locked');
     expect(
-      VaultAdminStatusResponseSchema.parse({
-        backendKind: 'os-keychain',
-        state: 'available',
-        diagnostic: 'Vault backend is available.',
-      }).backendKind
-    ).toBe('os-keychain');
-    expect(
       VaultAdminUnlockRequestSchema.parse({
         masterKeyBase64: Buffer.alloc(32, 7).toString('base64'),
       }).masterKeyBase64
@@ -1950,7 +1995,6 @@ describe('app api schemas', () => {
         diagnostic: 'Vault backend is locked.',
       }).state
     ).toBe('locked');
-
     for (const secret of rawSecretShapes) {
       expect(
         VaultAdminStatusResponseSchema.safeParse({
@@ -1983,6 +2027,135 @@ describe('app api schemas', () => {
         }).success
       ).toBe(false);
     }
+  });
+
+  it.each([
+    {
+      name: 'vault status',
+      payload: {
+        backendKind: 'os-keychain',
+        state: 'available',
+        diagnostic: 'Vault backend is available.',
+      },
+      schema: VaultAdminStatusResponseSchema,
+    },
+    {
+      name: 'Codex auth bootstrap',
+      payload: {
+        backendKind: 'os-keychain',
+        grantId: 'grant_codex_auth_json',
+        grantScope: 'agent-session',
+        referenceId: 'vault_codex_auth_json',
+        secretKind: 'codex-auth-json',
+        targetPath: '/sandbox/.codex/auth.json',
+        expiresAt: null,
+      },
+      schema: VaultAdminBootstrapCodexAuthJsonResponseSchema,
+    },
+    {
+      name: 'workspace reference rebind',
+      payload: {
+        backendKind: 'os-keychain',
+        currentVersion: 1,
+        ownerScope: 'workspace',
+        referenceId: 'vault_imported',
+        secretKind: 'api-token',
+        status: 'active',
+        workspaceId: 'ws_demo',
+      },
+      schema: VaultAdminRebindWorkspaceReferenceResponseSchema,
+    },
+    {
+      name: 'workspace reference list',
+      payload: {
+        items: [
+          {
+            backendKind: 'os-keychain',
+            currentVersion: 0,
+            ownerScope: 'workspace',
+            referenceId: 'vault_imported',
+            secretKind: 'api-token',
+            status: 'unbound',
+            workspaceId: 'ws_demo',
+          },
+        ],
+        workspaceId: 'ws_demo',
+      },
+      schema: VaultAdminListWorkspaceReferencesResponseSchema,
+    },
+    {
+      name: 'vault unlock',
+      payload: {
+        backendKind: 'os-keychain',
+        state: 'available',
+        diagnostic: 'Vault backend is available.',
+      },
+      schema: VaultAdminUnlockResponseSchema,
+    },
+    {
+      name: 'vault lock',
+      payload: {
+        backendKind: 'os-keychain',
+        state: 'locked',
+        diagnostic: 'Vault backend is locked.',
+      },
+      schema: VaultAdminLockResponseSchema,
+    },
+    {
+      name: 'workspace Vault use records',
+      payload: {
+        workspaceId: 'ws_demo',
+        vaultUseRecords: [
+          {
+            useId: 'use_legacy',
+            ownerScope: 'workspace',
+            workspaceId: 'ws_demo',
+            vaultReferenceId: 'vault_legacy',
+            materialVersion: 1,
+            backendKind: 'os-keychain',
+            resolvingPath: 'grant',
+            grantId: 'grant_legacy',
+            planId: null,
+            receiptId: null,
+            agentSessionId: null,
+            capabilityCallId: null,
+            outcome: 'succeeded',
+            failureCode: null,
+            auditEventId: null,
+            usedAt: timestamp,
+          },
+        ],
+      },
+      schema: ListWorkspaceVaultUseRecordsResponseSchema,
+    },
+    {
+      name: 'server Vault use records',
+      payload: {
+        vaultUseRecords: [
+          {
+            useId: 'use_server_legacy',
+            ownerScope: 'server',
+            workspaceId: null,
+            vaultReferenceId: 'vault_legacy',
+            materialVersion: 1,
+            backendKind: 'os-keychain',
+            resolvingPath: 'provider',
+            grantId: null,
+            planId: null,
+            receiptId: null,
+            agentSessionId: null,
+            capabilityCallId: null,
+            outcome: 'succeeded',
+            failureCode: null,
+            auditEventId: null,
+            usedAt: timestamp,
+          },
+        ],
+      },
+      schema: ListServerVaultUseRecordsResponseSchema,
+    },
+  ])('rejects obsolete os-keychain backend values in $name payloads', ({ payload, schema }) => {
+    expect(schema.safeParse(payload).success).toBe(false);
   });
 
   it('accepts strict app diagnostics and rejects provider arrays', () => {
@@ -2026,7 +2199,6 @@ describe('app api schemas', () => {
           ],
           registry: [
             {
-              dispatchFamily: 'provider-api',
               displayName: 'Provider Demo',
               gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
               id: 'provider_demo',
@@ -2048,7 +2220,6 @@ describe('app api schemas', () => {
       ],
       registry: [
         {
-          dispatchFamily: 'provider-api',
           displayName: 'Provider Demo',
           gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
           id: 'provider_demo',
@@ -2086,9 +2257,8 @@ describe('app api schemas', () => {
     }
   });
 
-  it('requires the provider dispatch backend in diagnostics registry rows', () => {
+  it('preserves provider kind without exposing a dispatch family', () => {
     const provider = {
-      dispatchFamily: 'provider-api',
       displayName: 'Provider Demo',
       gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
       id: 'provider_demo',
@@ -2096,9 +2266,13 @@ describe('app api schemas', () => {
       models: ['gpt-demo'],
     };
 
-    expect(ProviderRegistryEntrySchema.parse(provider).dispatchFamily).toBe('provider-api');
-    const { dispatchFamily: _dispatchFamily, ...withoutDispatchFamily } = provider;
-    expect(ProviderRegistryEntrySchema.safeParse(withoutDispatchFamily).success).toBe(false);
+    expect(ProviderRegistryEntrySchema.parse(provider).kind).toBe('gateway');
+    expect(
+      ProviderRegistryEntrySchema.safeParse({
+        ...provider,
+        dispatchFamily: 'provider-api',
+      }).success
+    ).toBe(false);
   });
 
   it('keeps generic internal-agent runtime state outside App Diagnostics', () => {
@@ -2402,91 +2576,6 @@ describe('app api schemas', () => {
             resourceSummary: { token: rawSecretShapes[0] },
           },
         ],
-      }).success
-    ).toBe(false);
-  });
-
-  it('accepts product-safe OpenShell backend summaries on agent sessions', () => {
-    expect(
-      AgentSessionReadModelSchema.parse({
-        id: 'as_openshell_1',
-        status: 'busy',
-        message: null,
-        configVersion: 1,
-        workspaceRoots: [],
-        stale: false,
-        sandboxSummary: {
-          access: 'read-write',
-          workspaceRootRefs: ['repo'],
-          summary: '1 workspace root materialized.',
-        },
-        backend: {
-          kind: 'openshell',
-          health: 'ready',
-          controlMode: 'direct-nanocore',
-          control: {
-            heartbeat: {
-              status: 'running',
-              sequence: 4,
-              lastHeartbeatAt: '2026-06-16T00:00:03.000Z',
-            },
-            artifactNoticeCount: 1,
-            queuedCommandCount: 2,
-            deliveredCommandCount: 1,
-          },
-          gatewayName: 'openshell',
-          gatewayEndpoint: 'https://127.0.0.1:17670',
-          version: '0.0.63',
-          sandboxName: 'openkit-as-openshell-1',
-        },
-      }).backend
-    ).toEqual({
-      kind: 'openshell',
-      health: 'ready',
-      controlMode: 'direct-nanocore',
-      control: {
-        heartbeat: {
-          status: 'running',
-          sequence: 4,
-          lastHeartbeatAt: '2026-06-16T00:00:03.000Z',
-        },
-        artifactNoticeCount: 1,
-        queuedCommandCount: 2,
-        deliveredCommandCount: 1,
-      },
-      gatewayName: 'openshell',
-      gatewayEndpoint: 'https://127.0.0.1:17670',
-      version: '0.0.63',
-      sandboxName: 'openkit-as-openshell-1',
-    });
-  });
-
-  it.each([
-    'transcript-sink',
-    'backend-relay',
-    'sidecar',
-    'stdio',
-    'disabled',
-  ])('rejects retired agent-session control mode %s', (controlMode) => {
-    expect(
-      AgentSessionReadModelSchema.safeParse({
-        id: 'as_openshell_legacy',
-        status: 'ready',
-        message: null,
-        configVersion: 1,
-        workspaceRoots: [],
-        stale: false,
-        sandboxSummary: null,
-        backend: {
-          kind: 'openshell',
-          health: 'ready',
-          controlMode,
-          control: null,
-          gatewayName: 'openshell',
-          gatewayEndpoint: 'https://127.0.0.1:17670',
-          version: '0.0.80',
-          sandboxName: 'openkit-as-openshell-legacy',
-        },
       }).success
     ).toBe(false);
   });
@@ -3119,8 +3208,18 @@ describe('app api schemas', () => {
       AppDiagnosticsResponseSchema.safeParse({
         ...payload,
         oauth: {
-          ...(payload.oauth as Record<string, unknown>),
-          openaiCodex: { providerId: 'openai_codex', status: 'logged_out' },
+          openaiCodexAccounts: {
+            accounts: [
+              {
+                accountSlotId: 'default',
+                boundProviderIds: [],
+                isDefault: true,
+                providerId: 'openai_codex',
+                status: 'logged_out',
+              },
+            ],
+            defaultAccountSlotId: 'default',
+          },
         },
       }).success
     ).toBe(false);
@@ -3165,52 +3264,119 @@ describe('app api schemas', () => {
     }
   });
 
-  it('accepts setup diagnostics and runtime config reload responses', () => {
-    expect(
-      RuntimeConfigStatusSchema.parse({
-        ...runtimeConfigStatus(),
-        staleSessions: [
-          {
-            sessionId: 'as_stale',
-            threadId: 'th_demo',
-            agentId: 'agent_codex_host',
-            capturedVersion: 1,
-            currentVersion: 2,
-            reasons: ['runtime-config'],
-            choices: [
-              {
-                kind: 'inspect',
-                label: 'Inspect stale session details',
-                recommended: true,
-              },
-              {
-                kind: 'restart_session',
-                label: 'Restart the stale session before continuing',
-              },
-              {
-                kind: 'request_human',
-                label: 'Ask the user how to handle the stale session',
-              },
-            ],
-          },
-        ],
-      }).staleSessions[0]?.choices.map((choice) => choice.kind)
-    ).toEqual(['inspect', 'restart_session', 'request_human']);
-    expect(
-      RestartRuntimeConfigStaleSessionResponseSchema.parse({
-        restarted: true,
-        session: {
-          id: 'as_stale',
-          status: 'interrupted',
-          message: 'Runtime config stale session retired; start a new worker session.',
-          configVersion: 2,
-          workspaceRoots: [],
-          stale: false,
-          sandboxSummary: null,
-        },
-      }).session?.stale
-    ).toBe(false);
+  it('keeps AgentSession continuity out of ordinary App API schemas', () => {
+    expect(appApiSchemas.ThreadDashboardResponseSchema.shape).not.toHaveProperty('activeSession');
+    expect(RuntimeConfigStatusSchema.shape).not.toHaveProperty('staleSessions');
+    expect(appApiSchemas).not.toHaveProperty('RestartRuntimeConfigStaleSessionResponseSchema');
+  });
 
+  it('keeps AgentSession identity out of ordinary agent health refresh schemas', () => {
+    expect(appApiSchemas.AgentHealthRefreshResponseSchema.shape).not.toHaveProperty('sessions');
+  });
+
+  it('keeps AgentSession identity out of ordinary Action Center schemas', () => {
+    expect(appApiSchemas.HumanAttentionRowSchema.shape).not.toHaveProperty('agentSessionId');
+    expect(appApiSchemas.WorkerControlRejectionHumanAttentionSourceSchema.shape).not.toHaveProperty(
+      'agentSessionId'
+    );
+    expect(appApiSchemas.SchedulerOrphanWorkerHumanAttentionSourceSchema.shape).not.toHaveProperty(
+      'agentSessionId'
+    );
+  });
+
+  it('keeps AgentSession identity out of ordinary embedded Turn projections', () => {
+    const turn = {
+      id: 'tu_demo',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      triggerActor: { kind: 'user', id: 'user_1' },
+      items: [],
+      status: 'running' as const,
+      humanGate: null,
+      error: null,
+      agentSessionId: 'as_hidden',
+      configVersion: null,
+      startedAt: timestamp,
+      completedAt: null,
+      durationMs: null,
+    };
+    const dashboard = appApiSchemas.ThreadDashboardResponseSchema.parse({
+      thread: {
+        id: 'th_demo',
+        workspaceId: 'ws_demo',
+        name: 'Demo',
+        preview: 'Demo',
+        status: 'active',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      turns: [turn],
+      artifacts: [],
+      workStatus: {
+        currentMode: 'chat',
+        selectedAgentId: null,
+        activeTurnStatus: 'running',
+        pendingApprovalCount: 0,
+        pendingQuestionCount: 0,
+        latestArtifact: null,
+        routing: {
+          decision: 'idle',
+          explanation: 'Idle.',
+          selectedAgentId: null,
+          confidence: null,
+          requiredUserAction: null,
+        },
+      },
+      composer: {
+        disabled: false,
+        defaultModelId: null,
+        defaultAgentId: null,
+      },
+      itemLog: { href: '/api/app/workspaces/ws_demo/threads/th_demo/items' },
+    });
+    const chat = StartChatModeResponseSchema.parse({
+      outcome: 'answered',
+      explanation: 'Answered.',
+      turn,
+      item: {
+        id: 'it_chat_1',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'tu_demo',
+        type: 'status',
+        status: 'completed',
+        level: 'info',
+        title: 'Answered',
+        summary: 'Answered.',
+        createdAt: timestamp,
+        completedAt: timestamp,
+      },
+      handoff: null,
+    });
+    const task = StartTaskModeResponseSchema.parse({
+      state: 'running',
+      turn,
+      evidence: { itemIds: [], artifactIds: [] },
+    });
+
+    expect(jsonContainsKey(dashboard, 'agentSessionId')).toBe(false);
+    expect(jsonContainsKey(chat, 'agentSessionId')).toBe(false);
+    expect(jsonContainsKey(task, 'agentSessionId')).toBe(false);
+    expect(
+      jsonContainsKey(z.toJSONSchema(appApiSchemas.ThreadDashboardResponseSchema), 'agentSessionId')
+    ).toBe(false);
+    expect(jsonContainsKey(z.toJSONSchema(StartChatModeResponseSchema), 'agentSessionId')).toBe(
+      false
+    );
+    expect(jsonContainsKey(z.toJSONSchema(StartTaskModeResponseSchema), 'agentSessionId')).toBe(
+      false
+    );
+    expect(jsonContainsKey(z.toJSONSchema(RuntimeEvidenceRecordSchema), 'agentSessionId')).toBe(
+      true
+    );
+  });
+
+  it('accepts setup diagnostics and runtime config reload responses', () => {
     expect(
       SetupDiagnosticsResponseSchema.parse(setupDiagnosticsPayload()).runtimeConfig.currentVersion
     ).toBe(1);
@@ -3954,33 +4120,272 @@ describe('app api schemas', () => {
     ).toBe('redacted secret-ref env:OPENAI_API_KEY');
   });
 
-  it('requires Codex OAuth account lists to include a default account row', () => {
-    expect(
-      CodexOAuthAccountsPayloadSchema.parse(defaultCodexOAuthAccounts()).accounts[0]?.isDefault
-    ).toBe(true);
-    expect(
-      CodexOAuthAccountsPayloadSchema.safeParse({
-        accounts: [],
-        defaultAccountSlotId: 'default',
-      }).success
-    ).toBe(false);
-    expect(
-      CodexOAuthAccountsPayloadSchema.safeParse({
-        accounts: [
-          {
-            accountSlotId: 'default',
-            boundProviderIds: [],
-            isDefault: false,
-            providerId: 'openai_codex',
-            status: 'logged_out',
-          },
-        ],
-        defaultAccountSlotId: 'default',
-      }).success
-    ).toBe(false);
+  it('does not export the retired Codex OAuth schema family', () => {
+    for (const exportName of [
+      'CodexOAuthLoginModeSchema',
+      'CodexOAuthStatusSchema',
+      'CodexOAuthStatusPayloadSchema',
+      'CodexOAuthAccountSummarySchema',
+      'CodexOAuthAccountsPayloadSchema',
+      'StartOpenAICodexOAuthRequestSchema',
+      'CancelOpenAICodexOAuthRequestSchema',
+      'CreateOpenAICodexOAuthAccountRequestSchema',
+      'UpdateOpenAICodexOAuthAccountRequestSchema',
+    ]) {
+      expect.soft(exportName in appApiSchemas).toBe(false);
+    }
   });
 
-  it('accepts dashboard, auth, oauth, quick chat, agent catalog, and action center payloads', () => {
+  it('accepts only strict provider-subscription operation requests', () => {
+    const createSchema = Reflect.get(
+      appApiSchemas,
+      'CreateProviderSubscriptionAccountRequestSchema'
+    ) as typeof AppDiagnosticsResponseSchema | undefined;
+    const updateSchema = Reflect.get(
+      appApiSchemas,
+      'UpdateProviderSubscriptionAccountRequestSchema'
+    ) as typeof AppDiagnosticsResponseSchema | undefined;
+    const startLoginSchema = Reflect.get(
+      appApiSchemas,
+      'StartProviderSubscriptionAccountLoginRequestSchema'
+    ) as typeof AppDiagnosticsResponseSchema | undefined;
+    const cancelLoginSchema = Reflect.get(
+      appApiSchemas,
+      'CancelProviderSubscriptionAccountLoginRequestSchema'
+    ) as typeof AppDiagnosticsResponseSchema | undefined;
+
+    for (const schema of [createSchema, updateSchema, startLoginSchema, cancelLoginSchema]) {
+      expect.soft(schema).toBeDefined();
+    }
+    if (!createSchema || !updateSchema || !startLoginSchema || !cancelLoginSchema) {
+      return;
+    }
+
+    expect(createSchema.parse({ accountSlotId: 'work', displayName: 'Work' })).toEqual({
+      accountSlotId: 'work',
+      displayName: 'Work',
+    });
+    expect(updateSchema.parse({ displayName: 'Renamed' })).toEqual({ displayName: 'Renamed' });
+    expect(startLoginSchema.parse({ mode: 'device_code' })).toEqual({ mode: 'device_code' });
+    expect(cancelLoginSchema.parse({ interactionId: 'interaction_1' })).toEqual({
+      interactionId: 'interaction_1',
+    });
+
+    for (const request of [
+      {},
+      { mode: 'browser' },
+      { mode: 'unknown' },
+      { mode: 'device_code', extra: true },
+    ]) {
+      expect(startLoginSchema.safeParse(request).success).toBe(false);
+    }
+    for (const request of [
+      {},
+      { interactionId: 'interaction_1', loginId: 'legacy' },
+      { interactionId: 'id', extra: true },
+    ]) {
+      expect(cancelLoginSchema.safeParse(request).success).toBe(false);
+    }
+    expect(createSchema.safeParse({ accountSlotId: '../work' }).success).toBe(false);
+    expect(createSchema.safeParse({ accountSlotId: 'work', accessToken: 'secret' }).success).toBe(
+      false
+    );
+    expect(updateSchema.safeParse({ displayName: 'Work', extra: true }).success).toBe(false);
+  });
+
+  it('accepts strict provider inventory and sanitized account status branches', () => {
+    const providersSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionsResponseSchema') as
+      | typeof AppDiagnosticsResponseSchema
+      | undefined;
+    const accountsSchema = Reflect.get(
+      appApiSchemas,
+      'ProviderSubscriptionAccountsResponseSchema'
+    ) as typeof AppDiagnosticsResponseSchema | undefined;
+    const accountSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionAccountSchema') as
+      | typeof AppDiagnosticsResponseSchema
+      | undefined;
+
+    for (const schema of [providersSchema, accountsSchema, accountSchema]) {
+      expect.soft(schema).toBeDefined();
+    }
+    if (!providersSchema || !accountsSchema || !accountSchema) {
+      return;
+    }
+
+    const providers = {
+      providers: [
+        {
+          subscriptionProviderId: 'openai-codex',
+          displayName: 'OpenAI Codex',
+          loginModes: ['device_code'],
+          quotaCapability: 'available',
+        },
+        {
+          subscriptionProviderId: 'xai',
+          displayName: 'xAI',
+          loginModes: ['device_code'],
+          quotaCapability: 'unsupported',
+        },
+      ],
+    };
+    const accountBase = {
+      subscriptionProviderId: 'openai-codex',
+      boundProviderIds: ['provider_a', 'provider_b'],
+      createdAt: timestamp,
+      displayName: 'Work account',
+      accountLabel: 'Signed-in account',
+      planLabel: 'Plus',
+      updatedAt: timestamp,
+    };
+    const accounts = [
+      { ...accountBase, accountSlotId: 'error', status: 'error', message: 'Login failed.' },
+      { ...accountBase, accountSlotId: 'logged-in', status: 'logged_in' },
+      { ...accountBase, accountSlotId: 'logged-out', status: 'logged_out' },
+      {
+        ...accountBase,
+        accountSlotId: 'pending',
+        status: 'pending',
+        interaction: {
+          mode: 'device_code',
+          interactionId: 'interaction_1',
+          verificationUrl: 'https://example.test/device',
+          userCode: 'ABCD-EFGH',
+          expiresAt: timestamp,
+        },
+      },
+      {
+        ...accountBase,
+        accountSlotId: 'unavailable',
+        status: 'unavailable',
+        message: 'Provider unavailable.',
+      },
+    ];
+
+    expect(providersSchema.parse(providers)).toEqual(providers);
+    expect(accountsSchema.parse({ accounts })).toEqual({ accounts });
+    for (const account of accounts) {
+      expect(accountSchema.parse(account)).toEqual(account);
+    }
+
+    expect(
+      providersSchema.safeParse({ providers: [...providers.providers].reverse() }).success
+    ).toBe(false);
+    expect(providersSchema.safeParse({ ...providers, extra: true }).success).toBe(false);
+    expect(accountsSchema.safeParse({ accounts: [...accounts].reverse() }).success).toBe(false);
+    expect(accountsSchema.safeParse({ accounts, extra: true }).success).toBe(false);
+    expect(
+      accountSchema.safeParse({ ...accounts[2], status: 'logged_out', message: 'not allowed' })
+        .success
+    ).toBe(false);
+    expect(accountSchema.safeParse({ ...accounts[3], interaction: undefined }).success).toBe(false);
+    expect(accountSchema.safeParse({ ...accounts[4], message: undefined }).success).toBe(false);
+    for (const account of [
+      { ...accounts[2], createdAt: 'not-a-datetime' },
+      { ...accounts[2], updatedAt: 'not-a-datetime' },
+      {
+        ...accounts[3],
+        interaction: {
+          mode: 'device_code',
+          interactionId: 'interaction_1',
+          verificationUrl: 'https://example.test/device',
+          userCode: 'ABCD-EFGH',
+          expiresAt: 'not-a-datetime',
+        },
+      },
+    ]) {
+      expect.soft(accountSchema.safeParse(account).success).toBe(false);
+    }
+    for (const account of [
+      { ...accounts[2], subscriptionProviderId: 'anthropic' },
+      { ...accounts[2], accountSlotId: '../work' },
+      { ...accounts[2], boundProviderIds: ['provider_a', 'provider_a'] },
+      { ...accounts[2], boundProviderIds: ['provider_b', 'provider_a'] },
+    ]) {
+      expect(accountSchema.safeParse(account).success).toBe(false);
+    }
+    for (const secretField of [
+      'accessToken',
+      'refreshToken',
+      'vaultReferenceId',
+      'providerAccountId',
+      'email',
+    ]) {
+      expect(accountSchema.safeParse({ ...accounts[2], [secretField]: 'secret' }).success).toBe(
+        false
+      );
+    }
+  });
+
+  it('accepts only the three provider-subscription quota dispositions', () => {
+    const quotaSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionQuotaSchema') as
+      | typeof AppDiagnosticsResponseSchema
+      | undefined;
+
+    expect(quotaSchema).toBeDefined();
+    if (!quotaSchema) {
+      return;
+    }
+
+    const available = {
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'work',
+      availability: 'available',
+      observedAt: timestamp,
+      planType: 'plus',
+      windows: [
+        {
+          id: 'five-hour',
+          usedPercent: 25,
+          remainingPercent: 75,
+          resetsAt: timestamp,
+        },
+      ],
+    };
+    const unsupported = {
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'work',
+      availability: 'unsupported',
+      observedAt: timestamp,
+    };
+    const unavailable = {
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'work',
+      availability: 'temporarily_unavailable',
+      observedAt: timestamp,
+      retryAfter: timestamp,
+    };
+
+    expect(quotaSchema.parse(available)).toEqual(available);
+    expect(quotaSchema.parse(unsupported)).toEqual(unsupported);
+    expect(quotaSchema.parse(unavailable)).toEqual(unavailable);
+    for (const quota of [
+      { ...available, subscriptionProviderId: 'xai' },
+      { ...unsupported, subscriptionProviderId: 'openai-codex' },
+      {
+        ...available,
+        windows: [{ ...available.windows[0], usedPercent: 101 }],
+      },
+      { ...available, accountSlotId: '../work' },
+      { ...available, accessToken: 'secret' },
+      { ...available, rawProviderResponse: {} },
+    ]) {
+      expect(quotaSchema.safeParse(quota).success).toBe(false);
+    }
+    for (const quota of [
+      { ...available, observedAt: 'not-a-datetime' },
+      {
+        ...available,
+        windows: [{ ...available.windows[0], resetsAt: 'not-a-datetime' }],
+      },
+      { ...unsupported, observedAt: 'not-a-datetime' },
+      { ...unavailable, observedAt: 'not-a-datetime' },
+      { ...unavailable, retryAfter: 'not-a-datetime' },
+    ]) {
+      expect.soft(quotaSchema.safeParse(quota).success).toBe(false);
+    }
+  });
+
+  it('accepts dashboard, auth, quick chat, agent catalog, and action center payloads', () => {
     expect(
       AuthSignUpEmailResponseSchema.parse({
         token: 'session_token',
@@ -4163,22 +4568,6 @@ describe('app api schemas', () => {
             lastUsedSource: 'okt_openkit_secret',
           },
         ],
-      }).success
-    ).toBe(false);
-    expect(
-      CodexOAuthStatusPayloadSchema.parse({
-        accountSlotId: 'default',
-        boundProviderIds: [],
-        isDefault: true,
-        providerId: 'openai_codex',
-        status: 'logged_out',
-      }).providerId
-    ).toBe('openai_codex');
-    expect(CodexOAuthStatusPayloadSchema.safeParse({ status: 'logged_out' }).success).toBe(false);
-    expect(
-      CodexOAuthStatusPayloadSchema.safeParse({
-        status: 'logged_out',
-        authorizationUrl: 'https://example.test/unsupported',
       }).success
     ).toBe(false);
     expect(
@@ -4900,7 +5289,6 @@ describe('app api schemas', () => {
                 { kind: 'workspace', id: 'ws_demo' },
                 { kind: 'thread', id: 'th_demo' },
               ],
-              repositoryResourceId: 'repo_default',
             },
             stopReason: null,
             diagnosticsSummary: 'Interrupted before terminal save.',
@@ -4924,8 +5312,14 @@ describe('app api schemas', () => {
             sourceUpdatedAt: timestamp,
           },
         ],
-      }).items[0]?.contextAssembly?.repositoryResourceId
-    ).toBe('repo_default');
+      }).items[0]?.contextAssembly
+    ).toEqual({
+      contextDigest: 'deterministic:turn_demo',
+      contextRefs: [
+        { kind: 'workspace', id: 'ws_demo' },
+        { kind: 'thread', id: 'th_demo' },
+      ],
+    });
     for (const unownedStage of ['reviewing', 'verifying', 'saving', 'recovering']) {
       expect(WorkerRecoveryStageSchema.safeParse(unownedStage).success).toBe(false);
     }
@@ -5333,7 +5727,6 @@ describe('app api schemas', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_demo',
-        agentSessionId: 'agent_session_demo',
         title: 'Worker checkpoint needs review',
         summary: 'Interrupted before terminal save.',
         severity: 'blocked',
@@ -5432,7 +5825,6 @@ describe('app api schemas', () => {
         id: 'agent-readiness:agent_demo',
         kind: 'agent_readiness',
         workspaceId: 'ws_demo',
-        agentSessionId: 'agent_demo',
         title: 'Agent is blocked',
         summary: 'Runtime binary is not available.',
         severity: 'blocked',
@@ -5588,7 +5980,6 @@ describe('app api schemas', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
         title: 'Worker control evidence was rejected',
         summary: 'A worker control request failed lineage validation.',
         severity: 'risk',
@@ -5599,7 +5990,6 @@ describe('app api schemas', () => {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           turnId: 'turn_demo',
-          agentSessionId: 'as_demo',
           packageSnapshotId: 'pkg_demo',
           route: '/api/worker-control/events/append',
           operation: 'event_append',
@@ -5614,7 +6004,6 @@ describe('app api schemas', () => {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
         turnId: 'turn_demo',
-        agentSessionId: 'as_demo',
         title: 'Worker session needs recovery review',
         summary: 'A scheduler restart found an orphaned worker session.',
         severity: 'risk',
@@ -5626,7 +6015,6 @@ describe('app api schemas', () => {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',
           turnId: 'turn_demo',
-          agentSessionId: 'as_demo',
           packageSnapshotId: 'pkg_demo',
           reason: 'restart-heartbeat-timeout',
           schedulerEpoch: 7,

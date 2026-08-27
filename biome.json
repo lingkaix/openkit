@@ -10,13 +10,17 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
+      "complexity": {
+        "useOptionalChain": "off"
+      },
       "style": {
         "useImportType": "error",
         "noNonNullAssertion": "off"
       },
       "suspicious": {
-        "noExplicitAny": "warn"
+        "noExplicitAny": "warn",
+        "noUndeclaredEnvVars": "off"
       }
     }
   },
@@ -53,6 +57,7 @@
       "!**/node_modules",
       "!**/dist",
       "!**/build",
+      "!**/target",
       "!**/.next",
       "!**/out",
       "!**/.turbo",

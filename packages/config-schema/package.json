@@ -8,6 +8,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./provider-subscription": {
+      "types": "./dist/provider-subscription.d.ts",
+      "default": "./dist/provider-subscription.js"
+    },
     "./workspace-export": {
       "types": "./dist/workspace-export.d.ts",
       "default": "./dist/workspace-export.js"

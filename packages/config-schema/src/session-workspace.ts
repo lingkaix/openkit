@@ -59,7 +59,7 @@ export const WorkspaceSlotSchema = z
   })
   .strict();
 
-/** Session-static worker workspace layout. */
+/** AgentSession-static worker workspace layout. */
 export const SessionWorkspaceLayoutSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -133,7 +133,7 @@ export const SessionWorkspaceLayoutSchema = z
     }
   });
 
-/** Compatibility key for strict V1 agent-session reuse. */
+/** Compatibility key for strict V1 AgentSession reuse. */
 export const SessionCompatibilityKeySchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -164,29 +164,29 @@ export const TurnWorkspaceMaterializationSchema = z
   })
   .strict();
 
-/** Parsed session-static worker workspace layout. */
+/** Parsed AgentSession-static worker workspace layout. */
 export type SessionWorkspaceLayout = z.infer<typeof SessionWorkspaceLayoutSchema>;
 
 /** Parsed worker-visible workspace slot declaration. */
 export type WorkspaceSlot = z.infer<typeof WorkspaceSlotSchema>;
 
-/** Parsed strict V1 session compatibility key. */
+/** Parsed strict V1 AgentSession compatibility key. */
 export type SessionCompatibilityKey = z.infer<typeof SessionCompatibilityKeySchema>;
 
 /** Parsed turn-dynamic workspace materialization plan. */
 export type TurnWorkspaceMaterialization = z.infer<typeof TurnWorkspaceMaterializationSchema>;
 
-/** Existing session summary used by the pure planner. */
+/** Existing AgentSession summary used by the pure planner. */
 export interface ExistingSessionCompatibility {
-  /** Existing agent-session id. */
+  /** Existing AgentSession id. */
   agentSessionId: string;
   /** Stored compatibility-key digest. */
   compatibilityKey: string;
-  /** Current session availability. */
+  /** Current AgentSession availability. */
   status: 'idle' | 'running' | 'stale' | 'failed';
 }
 
-/** Minimal package shape needed for session workspace planning. */
+/** Minimal package shape needed for AgentSession workspace planning. */
 export interface SessionWorkspacePlanningPackage {
   /** Package id used for deterministic record ids. */
   packageId?: string;
@@ -231,17 +231,17 @@ type SessionWorkspacePlanningInput = NonNullable<
   NonNullable<SessionWorkspacePlanningPackage['workspace']>['inputs']
 >[number];
 
-/** Input for the pure session workspace planner. */
+/** Input for the pure AgentSession workspace planner. */
 export interface PlanSessionWorkspaceMaterializationInput {
   /** Package-like static envelope to plan from. */
   environmentPackage: SessionWorkspacePlanningPackage;
-  /** Optional existing session to evaluate for strict V1 reuse. */
+  /** Optional existing AgentSession to evaluate for strict V1 reuse. */
   existingSession?: ExistingSessionCompatibility;
 }
 
-/** Pure planner result for one package and optional existing session. */
+/** Pure planner result for one package and optional existing AgentSession. */
 export interface SessionWorkspaceMaterializationPlan {
-  /** Session-static layout. */
+  /** AgentSession-static layout. */
   layout: SessionWorkspaceLayout;
   /** Strict V1 compatibility key. */
   compatibilityKey: SessionCompatibilityKey;
@@ -255,9 +255,9 @@ export interface SessionWorkspaceMaterializationPlan {
 }
 
 /**
- * Plans the first reusable session workspace layout and turn materialization.
+ * Plans the first reusable AgentSession workspace layout and turn materialization.
  *
- * @param input Package-like static envelope plus optional existing session.
+ * @param input Package-like static envelope plus optional existing AgentSession.
  * @returns Layout, strict compatibility key, materialization plan, and reuse decision.
  */
 export function planSessionWorkspaceMaterialization(
@@ -293,9 +293,9 @@ export function planSessionWorkspaceMaterialization(
 }
 
 /**
- * Computes the strict V1 session compatibility key.
+ * Computes the strict V1 AgentSession compatibility key.
  *
- * @param layout Session-static layout.
+ * @param layout AgentSession-static layout.
  * @param environmentPackage Package-like static envelope.
  * @returns Compatibility key digest and algorithm.
  */
@@ -492,7 +492,7 @@ function slot(
 /**
  * Selects the slot that should receive one workspace input.
  *
- * @param layout Session workspace layout.
+ * @param layout AgentSession workspace layout.
  * @param workspaceInput Workspace input declaration.
  * @param scope Durable package lineage used to validate turn-scoped inputs.
  * @returns Compatible slot.
@@ -534,7 +534,7 @@ function selectSlotForInput(
 /**
  * Returns whether one generated input is the exact immutable S39 Context Package tuple.
  *
- * @param workspaceInput Workspace input considered by the session planner.
+ * @param workspaceInput Workspace input considered by the AgentSession planner.
  * @param scope Durable package lineage that the input must match exactly.
  * @returns True only for the dedicated Context Package input.
  */
@@ -587,9 +587,9 @@ function selectModeForInput(
 /**
  * Selects the strict V1 reuse decision.
  *
- * @param existingSession Existing session summary.
+ * @param existingSession Existing AgentSession summary.
  * @param compatibilityKey Newly computed compatibility key.
- * @returns Session reuse decision.
+ * @returns AgentSession reuse decision.
  */
 function selectSessionDecision(
   existingSession: ExistingSessionCompatibility | undefined,

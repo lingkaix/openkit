@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AuthoredAgentProviderSchema,
-  CodexOAuthAccountSlotIdSchema,
   getConfigSchemaCatalog,
   OpenKitProviderInstanceSchema,
   ProviderProfileSchema,
@@ -49,61 +48,145 @@ describe('provider config schema', () => {
     ).toBe(false);
   });
 
-  it('accepts Codex OAuth account slot references in provider profiles and server providers', () => {
+  it('accepts explicit subscription accounts for normalized supported OAuth families', () => {
     const extension = {
       openkit: {
-        codexOAuth: {
+        subscriptionAccount: {
           accountSlotId: 'work_chatgpt-1',
         },
       },
     };
-
-    expect(
-      ProviderProfileSchema.parse({
-        id: 'openai-codex-work',
+    const profiles = [
+      {
         displayName: 'OpenAI Codex Work',
+        id: ' OPENAI-CODEX ',
         kind: 'oauth',
         models: ['openai-codex/gpt-5.1-codex'],
-        extensions: extension,
-      }).extensions?.openkit?.codexOAuth?.accountSlotId
-    ).toBe('work_chatgpt-1');
-
-    expect(
-      OpenKitProviderInstanceSchema.parse({
-        id: 'openai-codex-work',
-        vendor: 'openai_codex',
-        displayName: 'OpenAI Codex Work',
+        vendor: 'catalog',
+      },
+      {
+        displayName: 'xAI Work',
+        id: 'grok-work',
         kind: 'oauth',
-        models: ['openai-codex/gpt-5.1-codex'],
-        extensions: extension,
-      }).extensions?.openkit?.codexOAuth?.accountSlotId
-    ).toBe('work_chatgpt-1');
+        models: ['xai/grok-4'],
+        vendor: ' XAI ',
+      },
+    ] as const;
+
+    for (const profile of profiles) {
+      for (const schema of [ProviderProfileSchema, OpenKitProviderInstanceSchema]) {
+        expect(schema.parse({ ...profile, extensions: extension }).extensions?.openkit).toEqual(
+          extension.openkit
+        );
+      }
+    }
   });
 
-  it('rejects invalid Codex OAuth account slot ids', () => {
-    expect(() => CodexOAuthAccountSlotIdSchema.parse('Work')).toThrow();
-    expect(() => CodexOAuthAccountSlotIdSchema.parse('../work')).toThrow();
-    expect(() => CodexOAuthAccountSlotIdSchema.parse('')).toThrow();
-    expect(() => CodexOAuthAccountSlotIdSchema.parse('a'.repeat(65))).toThrow();
+  it('rejects conflicting normalized subscription provider families', () => {
+    const profile = {
+      displayName: 'Conflicting Subscription Provider',
+      extensions: {
+        openkit: {
+          subscriptionAccount: {
+            accountSlotId: 'work',
+          },
+        },
+      },
+      id: ' XAI ',
+      kind: 'oauth' as const,
+      models: ['demo'],
+      vendor: ' OpenAI-Codex ',
+    };
 
-    expect(() =>
-      ProviderProfileSchema.parse({
-        id: 'openai-codex-invalid',
-        displayName: 'OpenAI Codex Invalid',
-        kind: 'oauth',
-        models: ['openai-codex/gpt-5.1-codex'],
-        extensions: {
-          openkit: {
-            codexOAuth: {
-              accountSlotId: '../escape',
+    expect(ProviderProfileSchema.safeParse(profile).success).toBe(false);
+    expect(OpenKitProviderInstanceSchema.safeParse(profile).success).toBe(false);
+  });
+
+  it('rejects invalid subscription-account profile combinations', () => {
+    const extension = {
+      openkit: {
+        subscriptionAccount: {
+          accountSlotId: 'work',
+        },
+      },
+    };
+    const codexProfile = {
+      displayName: 'OpenAI Codex',
+      id: 'openai_codex',
+      kind: 'oauth' as const,
+      models: ['openai-codex/gpt-5.1-codex'],
+      vendor: 'openai_codex',
+    };
+    const xaiProfile = {
+      displayName: 'xAI',
+      id: 'xai',
+      kind: 'oauth' as const,
+      models: ['xai/grok-4'],
+      vendor: 'xai',
+    };
+
+    for (const schema of [ProviderProfileSchema, OpenKitProviderInstanceSchema]) {
+      for (const profile of [
+        codexProfile,
+        xaiProfile,
+        { ...codexProfile, extensions: { openkit: { subscriptionAccount: {} } } },
+        { ...codexProfile, extensions: extension, secretRef: 'vault://codex' },
+        { ...xaiProfile, baseUrl: 'https://api.x.ai/v1', extensions: extension },
+        {
+          ...codexProfile,
+          extensions: {
+            openkit: {
+              subscriptionAccount: {
+                accountSlotId: 'work',
+                subscriptionProviderId: 'openai-codex',
+              },
             },
           },
         },
-      })
-    ).toThrow();
+        {
+          ...codexProfile,
+          id: 'openai-codex-work',
+          vendor: 'openai',
+          extensions: extension,
+        },
+        { ...xaiProfile, kind: 'direct' as const, extensions: extension },
+      ]) {
+        expect(schema.safeParse(profile).success).toBe(false);
+      }
+
+      for (const accountSlotId of ['Work', '../work', '', 'a'.repeat(65)]) {
+        expect(
+          schema.safeParse({
+            ...codexProfile,
+            extensions: {
+              openkit: {
+                subscriptionAccount: {
+                  accountSlotId,
+                },
+              },
+            },
+          }).success
+        ).toBe(false);
+      }
+    }
   });
 
-  it('preserves unrelated provider extensions and exposes Codex OAuth schema hints', () => {
+  it('keeps direct xAI profiles outside subscription-account rules', () => {
+    const profile = {
+      baseUrl: 'https://api.x.ai/v1',
+      displayName: 'xAI API',
+      id: 'xai',
+      kind: 'direct' as const,
+      models: ['xai/grok-4'],
+      secretRef: 'vault://xai',
+      vendor: 'xai',
+    };
+
+    expect(ProviderProfileSchema.safeParse(profile).success).toBe(true);
+    expect(OpenKitProviderInstanceSchema.safeParse(profile).success).toBe(true);
+  });
+
+  it('keeps vendor extensions open and the OpenKit namespace strict', () => {
     const parsed = ProviderProfileSchema.parse({
       id: 'custom',
       displayName: 'Custom',
@@ -120,7 +203,33 @@ describe('provider config schema', () => {
     )?.schema;
 
     expect(parsed.extensions?.vendorSpecific).toEqual({ enabled: true });
-    expect(JSON.stringify(providerSchema)).toContain('codexOAuth');
+    for (const schema of [ProviderProfileSchema, OpenKitProviderInstanceSchema]) {
+      for (const openkit of [
+        {
+          codexOAuth: {
+            accountSlotId: 'work',
+          },
+        },
+        {
+          unknownOpenKitField: true,
+        },
+      ]) {
+        expect(
+          schema.safeParse({
+            id: 'custom',
+            displayName: 'Custom',
+            kind: 'custom',
+            models: ['demo'],
+            vendor: 'custom',
+            extensions: {
+              openkit,
+            },
+          }).success
+        ).toBe(false);
+      }
+    }
+    expect(JSON.stringify(providerSchema)).not.toContain('codexOAuth');
+    expect(JSON.stringify(providerSchema)).toContain('subscriptionAccount');
     expect(JSON.stringify(providerSchema)).toContain('accountSlotId');
   });
 

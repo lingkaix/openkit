@@ -4,9 +4,11 @@
 
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.
 
+Provider-subscription payload schemas consume the browser-safe `@openkit/config-schema/provider-subscription` entry point so Web bundles do not traverse the config package's server-only root graph.
+
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
-Agent-session backend summaries expose only the canonical `direct-nanocore` worker-control mode or `null`; retired control transports are not public read-model states.
+This package no longer projects an AgentSession backend-summary schema. Gateway endpoints, Gateway names, native Sandbox names, retired control transports, and hidden AgentSession continuity are not ordinary public read-model states; protected evidence and operator projections may retain only their separately authorized redacted lineage.
 
 Materialized linked-repository roots carry the full NanoCore-captured Git base commit so AEP, input-snapshot, materialization, and review records can enforce one immutable lineage.
 

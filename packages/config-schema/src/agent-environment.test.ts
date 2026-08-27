@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { WORKER_RUNTIME_PROVENANCE_FEATURE as WORKER_PROTOCOL_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
 
@@ -19,13 +20,13 @@ import {
 } from './index.js';
 
 /**
- * Creates a valid OpenShell-targeted package fixture with direct NanoCore control.
+ * Creates a valid NanoHost-targeted package fixture with local Integration bindings.
  *
  * @returns Agent environment package fixture.
  */
 function openshellPackageFixture(): unknown {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     packageId: 'aepkg_demo',
     snapshotId: 'aepsnap_demo',
     createdAt: '2026-06-16T00:00:00.000Z',
@@ -48,9 +49,8 @@ function openshellPackageFixture(): unknown {
     },
     runtime: {
       image: {
-        kind: 'container-image',
+        kind: 'reference',
         ref: 'ghcr.io/openkit/codex-worker:2026-06-16',
-        digest: 'sha256:demo',
         pullPolicy: 'if-not-present',
       },
       binaries: [
@@ -165,7 +165,21 @@ function openshellPackageFixture(): unknown {
     },
     control: {
       protocol: 'openkit-worker-control-v1',
-      mode: 'direct-nanocore',
+      mode: 'sandbox-integration',
+      bindings: {
+        capabilities: {
+          pathPrefix: '/capabilities/',
+          tokenRef: 'runtime://openkit/capability-token',
+        },
+        inference: {
+          pathPrefix: '/inference/',
+          tokenRef: 'runtime://openkit/inference-token',
+        },
+        workerControl: {
+          pathPrefix: '/worker-control/',
+          tokenRef: 'runtime://openkit/worker-control-token',
+        },
+      },
       transcript: {
         root: '/openkit/session',
         eventsPath: '/openkit/session/events.jsonl',
@@ -174,17 +188,6 @@ function openshellPackageFixture(): unknown {
         flush: 'line',
         import: 'turn-end',
         required: true,
-      },
-      endpoint: {
-        kind: 'direct-url',
-        baseUrl: 'https://nanocore.local/api/worker-control',
-        required: true,
-        implementation: 'direct-nanocore',
-      },
-      auth: {
-        kind: 'sandbox-session-token',
-        tokenRef: 'runtime://openkit/control-token',
-        credentialVisibility: 'environment',
       },
       channels: {
         commands: true,
@@ -198,7 +201,6 @@ function openshellPackageFixture(): unknown {
       adapter: {
         kind: 'openkit-worker-shim',
         targetRuntime: 'codex',
-        targetTransport: 'outbound-https',
       },
     },
     capabilities: {
@@ -273,10 +275,8 @@ function openshellPackageFixture(): unknown {
           model: 'gpt-5',
           endpoint: {
             kind: 'openai-compatible',
-            workerBaseUrl: 'https://inference.local/v1',
             upstream: {
               kind: 'nanocore-gateway',
-              baseUrlRef: 'runtime://nanocore/v1',
             },
           },
           credentialVisibility: 'placeholder',
@@ -294,7 +294,7 @@ function openshellPackageFixture(): unknown {
     },
     backend: {
       preferred: 'openshell',
-      allowedKinds: ['openshell', 'docker'],
+      allowedKinds: ['openshell'],
       requiredCapabilities: [
         'container',
         'transcript-sink',
@@ -343,10 +343,8 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
           endpoint: {
             kind: 'openai-compatible',
             upstream: {
-              baseUrlRef: 'runtime://nanocore/worker-inference/v1',
               kind: 'nanocore-gateway',
             },
-            workerBaseUrl: 'http://nanocore.internal/api/worker-inference/v1',
           },
           id: 'worker-inference',
           model: 'openai/gpt-5.2',
@@ -360,38 +358,7 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
       network: {
         default: 'deny',
         enforcement: 'openshell',
-        rules: [
-          {
-            action: 'allow',
-            binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'],
-            host: 'nanocore.local',
-            id: 'openkit-worker-control',
-            port: 443,
-            protocol: 'rest',
-            rules: [
-              { method: 'POST', path: '/api/worker-control/heartbeat' },
-              { method: 'POST', path: '/api/worker-control/artifacts' },
-              { method: 'POST', path: '/api/worker-control/commands/poll' },
-              { method: 'POST', path: '/api/worker-control/commands/ack' },
-              { method: 'POST', path: '/api/worker-control/events/append' },
-              { method: 'POST', path: '/api/worker-control/final-status' },
-              { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
-              { method: 'POST', path: '/api/worker-control/capability-summary' },
-            ],
-          },
-          {
-            action: 'allow',
-            binaries: ['/usr/local/bin/codex', '/usr/local/lib/codex/bin/codex'],
-            host: 'nanocore.internal',
-            id: 'openkit-worker-inference',
-            port: 80,
-            protocol: 'rest',
-            rules: [
-              { method: 'POST', path: '/api/worker-inference/v1/chat/completions' },
-              { method: 'POST', path: '/api/worker-inference/v1/responses' },
-            ],
-          },
-        ],
+        rules: [],
       },
     },
     providers: {
@@ -459,12 +426,118 @@ function runtimeProvenancePackageFixture(): Record<string, unknown> {
 }
 
 describe('agent environment package schema', () => {
-  it('accepts only V2 package scope with one exact trigger actor', () => {
+  it('accepts only strict AEP version 3', () => {
+    const versionThree = openshellPackageFixture() as Record<string, unknown>;
+
+    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(3).success).toBe(true);
+    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(2).success).toBe(false);
+    expect(AgentEnvironmentPackageSchema.parse(versionThree).schemaVersion).toBe(3);
+    expect(
+      AgentEnvironmentPackageSchema.safeParse({ ...versionThree, schemaVersion: 2 }).success
+    ).toBe(false);
+  });
+
+  it('accepts exactly one reference or immutable bounded build image projection', () => {
+    const runtime = (openshellPackageFixture() as { runtime: Record<string, unknown> }).runtime;
+    const dockerfile = 'FROM node:24.16.0-bookworm-slim';
+    const reference = {
+      kind: 'reference',
+      pullPolicy: 'if-not-present',
+      ref: 'ghcr.io/openkit/codex-worker:2026-08-09',
+    };
+    const build = {
+      arguments: { NODE_VERSION: '24.16.0' },
+      argumentsDigest: 'sha256:arguments',
+      contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      contextRef: 'build-context://empty/v1',
+      egress: [{ host: 'registry.npmjs.org', port: 443 }],
+      input: {
+        content: dockerfile,
+        digest: `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`,
+        kind: 'dockerfile',
+      },
+      kind: 'build',
+      layerLimit: 128,
+      outputLimitBytes: 21_474_836_480,
+      timeLimitSeconds: 1800,
+    };
+
+    expect(AgentEnvironmentRuntimeSchema.safeParse({ ...runtime, image: reference }).success).toBe(
+      true
+    );
+    expect(AgentEnvironmentRuntimeSchema.safeParse({ ...runtime, image: build }).success).toBe(
+      true
+    );
+    const recordedDockerfile = 'é'.repeat(965_971);
+    expect(Buffer.byteLength(recordedDockerfile)).toBe(1_931_942);
+    expect(
+      AgentEnvironmentRuntimeSchema.safeParse({
+        ...runtime,
+        image: {
+          ...build,
+          input: {
+            content: recordedDockerfile,
+            digest: `sha256:${createHash('sha256').update(recordedDockerfile).digest('hex')}`,
+            kind: 'dockerfile',
+          },
+        },
+      }).success
+    ).toBe(true);
+    expect(
+      AgentEnvironmentRuntimeSchema.safeParse({
+        ...runtime,
+        image: {
+          ...build,
+          input: { ...build.input, digest: `sha256:${'0'.repeat(64)}` },
+        },
+      }).success
+    ).toBe(false);
+    expect(
+      AgentEnvironmentRuntimeSchema.safeParse({
+        ...runtime,
+        image: { ...build, layerLimit: 1, outputLimitBytes: 1, timeLimitSeconds: 1 },
+      }).success
+    ).toBe(true);
+    for (const image of [
+      {},
+      { ...reference, ...build },
+      { ...build, contextRef: undefined },
+      { ...build, contextDigest: undefined },
+      { ...build, contextRef: 'workspace://build-context' },
+      { ...build, contextRef: 'build-context://empty/v2' },
+      { ...build, contextDigest: `sha256:${'a'.repeat(64)}` },
+      {
+        ...build,
+        contextDigest: `sha256:${'a'.repeat(64)}`,
+        contextRef: 'build-context://empty/v2',
+      },
+      { ...build, egress: [] },
+      { ...build, egress: [{ host: '*', port: 443 }] },
+      { ...build, pullPolicy: 'always' },
+      { ...build, arguments: { NPM_TOKEN: 'secret://npm' } },
+      { ...build, layerLimit: 129 },
+      { ...build, outputLimitBytes: 21_474_836_481 },
+      { ...build, timeLimitSeconds: 1801 },
+      { ...build, egress: [{ host: 'registry.npmjs.org' }] },
+      { ...build, layerLimit: 0 },
+      { ...build, outputLimitBytes: 0 },
+      { ...build, timeLimitSeconds: 0 },
+      { ...build, layerLimit: undefined },
+      { ...build, outputLimitBytes: undefined },
+      { ...build, timeLimitSeconds: undefined },
+    ]) {
+      expect
+        .soft(AgentEnvironmentRuntimeSchema.safeParse({ ...runtime, image }).success)
+        .toBe(false);
+    }
+  });
+
+  it('accepts only V3 package scope with one exact trigger actor', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const scope = fixture.scope as Record<string, unknown>;
     const parsed = AgentEnvironmentPackageSchema.parse(fixture);
 
-    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.schemaVersion).toBe(3);
     expect(parsed.scope.triggerActor).toEqual({ kind: 'user', id: 'user_demo' });
     expect(
       AgentEnvironmentPackageSchema.parse({
@@ -484,6 +557,9 @@ describe('agent environment package schema', () => {
       responsibleUserId: 'user_demo',
     });
     expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, schemaVersion: 1 }).success).toBe(
+      false
+    );
+    expect(AgentEnvironmentPackageSchema.safeParse({ ...fixture, schemaVersion: 2 }).success).toBe(
       false
     );
     expect(
@@ -533,13 +609,30 @@ describe('agent environment package schema', () => {
             protocol: 'rest',
             purpose: 'Install package dependencies',
           },
+          {
+            binaries: ['/usr/bin/git'],
+            host: 'github.com',
+            id: 'github_git_read',
+            port: 443,
+            protocol: 'rest',
+            purpose: 'Clone and fetch Git repositories',
+            rules: [
+              { method: 'GET', path: '/**/info/refs*' },
+              { method: 'POST', path: '/**/git-upload-pack' },
+            ],
+          },
         ],
       })
-    ).toMatchObject({
-      credentialDeclarations: [expect.objectContaining({ id: 'registry_token' })],
-      filesystem: [expect.objectContaining({ id: 'build_cache' })],
-      network: [expect.objectContaining({ id: 'npm_registry' })],
-    });
+    ).toEqual(
+      expect.objectContaining({
+        credentialDeclarations: [expect.objectContaining({ id: 'registry_token' })],
+        filesystem: [expect.objectContaining({ id: 'build_cache' })],
+        network: expect.arrayContaining([
+          expect.objectContaining({ id: 'npm_registry' }),
+          expect.objectContaining({ id: 'github_git_read' }),
+        ]),
+      })
+    );
     expect(
       WorkerSandboxAccessSchema.parse({
         network: [
@@ -555,6 +648,41 @@ describe('agent environment package schema', () => {
     ).toMatchObject({
       network: [expect.objectContaining({ host: 'fcdn.example.com' })],
     });
+  });
+
+  it('rejects ambiguous or unsupported exact worker sandbox REST rules', () => {
+    const base = {
+      binaries: ['/usr/bin/git'],
+      host: 'github.com',
+      id: 'github_git_read',
+      port: 443,
+      protocol: 'rest',
+      purpose: 'Clone and fetch Git repositories',
+      rules: [{ method: 'GET', path: '/**/info/refs*' }],
+    };
+
+    expect(() =>
+      WorkerSandboxAccessSchema.parse({
+        network: [{ ...base, access: 'read-only' }],
+      })
+    ).toThrow();
+    expect(() =>
+      WorkerSandboxAccessSchema.parse({
+        network: [{ ...base, protocol: 'https' }],
+      })
+    ).toThrow();
+    for (const rules of [
+      [{ method: 'DELETE', path: '/repo' }],
+      [{ method: 'GET', path: 'relative/path' }],
+      [{ method: 'GET', path: '/repo\nreceive-pack' }],
+      [],
+    ]) {
+      expect(() =>
+        WorkerSandboxAccessSchema.parse({
+          network: [{ ...base, rules }],
+        })
+      ).toThrow();
+    }
   });
 
   it('rejects unsafe worker sandbox access declarations', () => {
@@ -784,16 +912,24 @@ describe('agent environment package schema', () => {
     ).toThrow();
   });
 
-  it('accepts an OpenShell-targeted package with fail-closed direct NanoCore control', () => {
+  it('accepts a NanoHost-targeted package with fail-closed local Integration bindings', () => {
     const parsed = AgentEnvironmentPackageSchema.parse(openshellPackageFixture());
 
     expect(parsed.control).toMatchObject({
-      mode: 'direct-nanocore',
-      endpoint: {
-        baseUrl: 'https://nanocore.local/api/worker-control',
-        implementation: 'direct-nanocore',
-        kind: 'direct-url',
-        required: true,
+      mode: 'sandbox-integration',
+      bindings: {
+        capabilities: {
+          pathPrefix: '/capabilities/',
+          tokenRef: 'runtime://openkit/capability-token',
+        },
+        inference: {
+          pathPrefix: '/inference/',
+          tokenRef: 'runtime://openkit/inference-token',
+        },
+        workerControl: {
+          pathPrefix: '/worker-control/',
+          tokenRef: 'runtime://openkit/worker-control-token',
+        },
       },
       channels: {
         artifacts: 'batch',
@@ -801,7 +937,8 @@ describe('agent environment package schema', () => {
       },
       commands: ['interrupt'],
     });
-    expect(parsed.control.relay).toBeUndefined();
+    expect(parsed.control).not.toHaveProperty('endpoint');
+    expect(parsed.control).not.toHaveProperty('auth');
     expect(parsed.control.transcript?.itemsPath).toBe('/openkit/session/items.jsonl');
     expect(parsed.supply.skills[0]).toMatchObject({
       id: 'repo-guidelines',
@@ -833,20 +970,15 @@ describe('agent environment package schema', () => {
       protocol: 'openkit-worker-capability-v1',
       routes: [],
     });
-    expect(parsed.llm.routes[0]?.endpoint.workerBaseUrl).toBe('https://inference.local/v1');
+    expect(parsed.llm.routes[0]?.endpoint).not.toHaveProperty('workerBaseUrl');
     expect(parsed.policy.snapshotId).toBe('worker_turn_launch_policy');
   });
 
   it('requires a nonempty runtime-owned list of absolute binaries', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const runtime = fixture.runtime as Record<string, unknown>;
-    const relayFixture = trustedWorkerInferenceRelayPackageFixture();
-    const relayPolicy = relayFixture.policy as Record<string, unknown>;
-    const relayNetwork = relayPolicy.network as { rules: Record<string, unknown>[] };
-    const [controlRule, inferenceRule] = relayNetwork.rules;
-    if (!controlRule || !inferenceRule) {
-      throw new Error('Expected the relay fixture to declare control and inference rules.');
-    }
+    const policy = fixture.policy as Record<string, unknown>;
+    const network = policy.network as Record<string, unknown>;
     const runtimeWithoutBinaries = { ...runtime };
     delete runtimeWithoutBinaries.binaries;
 
@@ -863,12 +995,22 @@ describe('agent environment package schema', () => {
     expect
       .soft(
         AgentEnvironmentPackageSchema.safeParse({
-          ...relayFixture,
+          ...fixture,
           policy: {
-            ...relayPolicy,
+            ...policy,
             network: {
-              ...relayNetwork,
-              rules: [controlRule, { ...inferenceRule, binaries: ['/usr/bin/undeclared'] }],
+              ...network,
+              rules: [
+                {
+                  action: 'allow',
+                  binaries: ['/usr/bin/undeclared'],
+                  host: 'github.com',
+                  id: 'github-read',
+                  port: 443,
+                  protocol: 'rest',
+                  rules: [{ method: 'GET', path: '/**' }],
+                },
+              ],
             },
           },
         }).success
@@ -915,49 +1057,35 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it.each([
-    ['gateway', 'placeholder', 'openai-compatible', 'nanocore-gateway', true],
-    ['direct-external', 'environment', 'provider-compatible', 'direct-provider', false],
-    ['backend-local', 'none', 'backend-local', 'backend-local', false],
-  ])('enforces %s LLM route coherence', (mode, credentialVisibility, endpointKind, upstreamKind, includesWorkerBaseUrl) => {
-    const workerBaseUrl = 'https://nanocore.local/api/worker-inference/v1';
-    const endpoint = { kind: endpointKind, upstream: { kind: upstreamKind } };
+  it('accepts only local Integration gateway inference coherence', () => {
+    const endpoint = { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } };
     const route = {
-      credentialVisibility,
-      endpoint: includesWorkerBaseUrl ? { ...endpoint, workerBaseUrl } : endpoint,
+      credentialVisibility: 'placeholder',
+      endpoint,
       id: 'default',
       model: 'gpt-5',
       providerInstanceId: 'provider',
     };
 
-    expect.soft(AgentEnvironmentLlmSchema.safeParse({ mode, routes: [route] }).success).toBe(true);
+    expect
+      .soft(AgentEnvironmentLlmSchema.safeParse({ mode: 'gateway', routes: [route] }).success)
+      .toBe(true);
 
     for (const invalidRoute of [
-      {
-        ...route,
-        credentialVisibility: mode === 'backend-local' ? 'environment' : 'none',
-      },
-      {
-        ...route,
-        endpoint: {
-          ...route.endpoint,
-          kind: mode === 'gateway' ? 'provider-compatible' : 'openai-compatible',
-        },
-      },
-      {
-        ...route,
-        endpoint: {
-          ...route.endpoint,
-          upstream: { kind: mode === 'gateway' ? 'direct-provider' : 'nanocore-gateway' },
-        },
-      },
-      {
-        ...route,
-        endpoint: includesWorkerBaseUrl ? endpoint : { ...endpoint, workerBaseUrl },
-      },
+      { ...route, credentialVisibility: 'environment' },
+      { ...route, endpoint: { ...endpoint, kind: 'provider-compatible' } },
+      { ...route, endpoint: { ...endpoint, upstream: { kind: 'direct-provider' } } },
+      { ...route, endpoint: { ...endpoint, workerBaseUrl: 'https://nanocore.local' } },
     ]) {
       expect
-        .soft(AgentEnvironmentLlmSchema.safeParse({ mode, routes: [invalidRoute] }).success)
+        .soft(
+          AgentEnvironmentLlmSchema.safeParse({ mode: 'gateway', routes: [invalidRoute] }).success
+        )
+        .toBe(false);
+    }
+    for (const mode of ['direct-external', 'backend-local']) {
+      expect
+        .soft(AgentEnvironmentLlmSchema.safeParse({ mode, routes: [route] }).success)
         .toBe(false);
     }
   });
@@ -980,51 +1108,8 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it('requires the direct control adapter transport to match the endpoint scheme', () => {
-    const fixture = openshellPackageFixture() as Record<string, unknown>;
-    const control = fixture.control as Record<string, unknown>;
-    const endpoint = control.endpoint as Record<string, unknown>;
-    const adapter = control.adapter as Record<string, unknown>;
-    const httpControl = {
-      ...control,
-      endpoint: {
-        ...endpoint,
-        baseUrl: 'http://nanocore.local/api/worker-control',
-      },
-      adapter: {
-        ...adapter,
-        targetTransport: 'outbound-http',
-      },
-    };
-
-    expect(
-      AgentEnvironmentPackageSchema.parse({ ...fixture, control: httpControl }).control
-    ).toEqual(
-      expect.objectContaining({
-        adapter: expect.objectContaining({ targetTransport: 'outbound-http' }),
-      })
-    );
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        control: {
-          ...control,
-          adapter: { ...adapter, targetTransport: 'outbound-http' },
-        },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        control: {
-          ...httpControl,
-          adapter: { ...adapter, targetTransport: 'outbound-https' },
-        },
-      })
-    ).toThrow();
-  });
-
   it.each([
+    'direct-nanocore',
     'transcript-sink',
     'backend-relay',
     'sidecar',
@@ -1093,7 +1178,7 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it('accepts interrupt as the only direct NanoCore control command', () => {
+  it('accepts interrupt as the only worker-control command', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const control = fixture.control as Record<string, unknown>;
 
@@ -1115,32 +1200,34 @@ describe('agent environment package schema', () => {
     );
   });
 
-  it('rejects false direct NanoCore control declarations', () => {
+  it('rejects false local Integration control declarations', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const control = fixture.control as Record<string, unknown>;
-    const endpoint = control.endpoint as Record<string, unknown>;
-    const auth = control.auth as Record<string, unknown>;
+    const bindings = control.bindings as Record<string, Record<string, unknown>>;
     const channels = control.channels as Record<string, unknown>;
     const adapter = control.adapter as Record<string, unknown>;
     const invalidControls = [
       { ...control, transcript: undefined },
-      { ...control, endpoint: undefined },
-      { ...control, endpoint: { ...endpoint, kind: 'sandbox-local-https' } },
-      { ...control, endpoint: { ...endpoint, implementation: 'openkit-sidecar' } },
-      { ...control, endpoint: { ...endpoint, required: false } },
-      { ...control, endpoint: { ...endpoint, baseUrl: 'ftp://nanocore.local/api/worker-control' } },
-      { ...control, endpoint: { ...endpoint, baseUrl: 'https://nanocore.local/wrong' } },
+      { ...control, bindings: undefined },
       {
         ...control,
-        relay: {
-          fallback: 'transcript-sink',
-          kind: 'outbound-websocket',
-          upstream: 'https://nanocore.local/api/worker-control',
+        bindings: {
+          ...bindings,
+          workerControl: { ...bindings.workerControl, pathPrefix: '/wrong/' },
         },
       },
-      { ...control, auth: undefined },
-      { ...control, auth: { ...auth, credentialVisibility: 'none' } },
-      { ...control, auth: { ...auth, tokenRef: 'runtime://wrong-token' } },
+      {
+        ...control,
+        bindings: {
+          ...bindings,
+          inference: {
+            ...bindings.inference,
+            tokenRef: bindings.workerControl?.tokenRef,
+          },
+        },
+      },
+      { ...control, endpoint: { baseUrl: 'https://nanocore.local/api/worker-control' } },
+      { ...control, auth: { tokenRef: 'runtime://openkit/raw-control-token' } },
       { ...control, channels: undefined },
       { ...control, channels: { ...channels, commands: false } },
       { ...control, channels: { ...channels, heartbeats: false } },
@@ -1198,37 +1285,91 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it('accepts only a placeholder-backed NanoCore route for trusted worker inference', () => {
-    const parsed = AgentEnvironmentPackageSchema.parse(trustedWorkerInferenceRelayPackageFixture());
+  it('accepts manifest-authored network grants with a placeholder-backed trusted inference route', () => {
+    const fixture = trustedWorkerInferenceRelayPackageFixture();
+    const policy = fixture.policy as Record<string, unknown>;
+    const networkRule = {
+      action: 'allow',
+      binaries: ['/usr/bin/git'],
+      host: 'github.com',
+      id: 'github-git-read',
+      port: 443,
+      protocol: 'rest',
+      purpose: 'Clone and fetch Git repositories',
+      rules: [
+        { method: 'GET', path: '/**/info/refs*' },
+        { method: 'POST', path: '/**/git-upload-pack' },
+      ],
+      scope: 'session',
+    };
+    const parsed = AgentEnvironmentPackageSchema.parse({
+      ...fixture,
+      policy: {
+        ...policy,
+        network: {
+          default: 'deny',
+          enforcement: 'openshell',
+          rules: [networkRule],
+        },
+      },
+    });
 
     expect(parsed.backend.requiredCapabilities).toContain('trusted-worker-inference-relay');
     expect(parsed.llm.routes).toEqual([
       expect.objectContaining({
         credentialVisibility: 'placeholder',
         endpoint: expect.objectContaining({
-          workerBaseUrl: 'http://nanocore.internal/api/worker-inference/v1',
           upstream: expect.objectContaining({ kind: 'nanocore-gateway' }),
         }),
       }),
     ]);
-    expect(parsed.policy.network?.rules[0]).toEqual({
-      action: 'allow',
-      binaries: ['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'],
-      host: 'nanocore.local',
-      id: 'openkit-worker-control',
-      port: 443,
-      protocol: 'rest',
-      rules: [
-        { method: 'POST', path: '/api/worker-control/heartbeat' },
-        { method: 'POST', path: '/api/worker-control/artifacts' },
-        { method: 'POST', path: '/api/worker-control/commands/poll' },
-        { method: 'POST', path: '/api/worker-control/commands/ack' },
-        { method: 'POST', path: '/api/worker-control/events/append' },
-        { method: 'POST', path: '/api/worker-control/final-status' },
-        { method: 'POST', path: '/api/worker-control/supply-refresh-ack' },
-        { method: 'POST', path: '/api/worker-control/capability-summary' },
-      ],
-    });
+    expect(parsed.llm.routes[0]?.endpoint).not.toHaveProperty('workerBaseUrl');
+    expect(parsed.policy.network?.rules).toEqual([networkRule]);
+
+    for (const networkBoundary of [
+      { default: 'allow', enforcement: 'openshell' },
+      { default: 'deny', enforcement: 'none' },
+    ]) {
+      expect(() =>
+        AgentEnvironmentPackageSchema.parse({
+          ...fixture,
+          policy: {
+            ...policy,
+            network: { ...networkBoundary, rules: [networkRule] },
+          },
+        })
+      ).toThrow();
+    }
+
+    const control = fixture.control as { adapter: { targetRuntime: string } };
+    const runtime = fixture.runtime as {
+      binaries: Array<{ id: string; path: string }>;
+    };
+    for (const binaryId of [
+      control.adapter.targetRuntime,
+      `${control.adapter.targetRuntime}-native`,
+    ]) {
+      const binary = runtime.binaries.find((candidate) => candidate.id === binaryId);
+      if (!binary) {
+        throw new Error(`Trusted inference fixture is missing runtime binary: ${binaryId}`);
+      }
+
+      expect(
+        () =>
+          AgentEnvironmentPackageSchema.parse({
+            ...fixture,
+            policy: {
+              ...policy,
+              network: {
+                default: 'deny',
+                enforcement: 'openshell',
+                rules: [{ ...networkRule, binaries: [binary.path] }],
+              },
+            },
+          }),
+        `expected external network rule for ${binaryId} to be rejected`
+      ).toThrow();
+    }
   });
 
   it('accepts bounded runtime provenance outputs behind the trusted relay feature', () => {
@@ -1497,43 +1638,32 @@ describe('agent environment package schema', () => {
     ).toThrow();
   });
 
-  it('requires an exact HTTP NanoCore base URL for trusted worker inference', () => {
+  it('rejects direct NanoCore inference and worker-control endpoints', () => {
     const fixture = trustedWorkerInferenceRelayPackageFixture();
     const llm = fixture.llm as { routes: Array<Record<string, unknown>> };
     const route = llm.routes[0] as Record<string, unknown>;
     const endpoint = route.endpoint as Record<string, unknown>;
-
-    for (const workerBaseUrl of [
-      'file:///api/worker-inference/v1',
-      'ftp://nanocore.internal/api/worker-inference/v1',
-      'http://user@nanocore.internal/api/worker-inference/v1',
-      'http://nanocore.internal/api/worker-inference/v1?target=other',
-      'http://nanocore.internal/api/worker-inference/v1#other',
-    ]) {
-      expect(() =>
-        AgentEnvironmentPackageSchema.parse({
-          ...fixture,
-          llm: {
-            ...llm,
-            routes: [
-              {
-                ...route,
-                endpoint: { ...endpoint, workerBaseUrl },
-              },
-            ],
-          },
-        })
-      ).toThrow();
-    }
-  });
-
-  it('requires exact relay-only network policy for trusted worker inference', () => {
-    const fixture = trustedWorkerInferenceRelayPackageFixture();
+    const control = fixture.control as Record<string, unknown>;
     const policy = fixture.policy as Record<string, unknown>;
     const network = policy.network as { rules: Array<Record<string, unknown>> };
-    const controlRule = network.rules[0] as Record<string, unknown>;
-    const inferenceRule = network.rules[1] as Record<string, unknown>;
 
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        llm: {
+          ...llm,
+          routes: [
+            { ...route, endpoint: { ...endpoint, workerBaseUrl: 'https://nanocore.local' } },
+          ],
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        control: { ...control, endpoint: { baseUrl: 'https://nanocore.local' } },
+      })
+    ).toThrow();
     expect(() =>
       AgentEnvironmentPackageSchema.parse({
         ...fixture,
@@ -1542,130 +1672,16 @@ describe('agent environment package schema', () => {
           network: {
             ...network,
             rules: [
-              ...network.rules,
               {
                 action: 'allow',
-                host: 'api.openai.com',
-                id: 'direct-provider-egress',
+                binaries: ['/usr/local/bin/openkit-worker-shim'],
+                host: 'nanocore.local',
+                id: 'direct-nanocore-worker-control',
+                port: 443,
+                protocol: 'rest',
+                rules: [{ method: 'POST', path: '/api/worker-control/heartbeat' }],
               },
             ],
-          },
-        },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        policy: {
-          ...policy,
-          network: {
-            ...network,
-            rules: network.rules.map((rule, index) =>
-              index === 0
-                ? {
-                    ...controlRule,
-                    rules: [
-                      { method: 'POST', path: '/api/worker-control/heartbeat' },
-                      { method: 'POST', path: '/api/worker-inference/v1/responses' },
-                    ],
-                  }
-                : rule
-            ),
-          },
-        },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        policy: {
-          ...policy,
-          network: {
-            ...network,
-            rules: network.rules.map((rule, index) =>
-              index === 0 ? { ...controlRule, access: 'read-write', rules: undefined } : rule
-            ),
-          },
-        },
-      })
-    ).toThrow();
-    for (const id of ['codex-control-bypass', 'openkit_worker_inference']) {
-      expect(() =>
-        AgentEnvironmentPackageSchema.parse({
-          ...fixture,
-          policy: {
-            ...policy,
-            network: {
-              ...network,
-              rules: [
-                ...network.rules,
-                {
-                  access: 'read-write',
-                  action: 'allow',
-                  binaries: ['/usr/local/bin/codex'],
-                  host: 'control.local',
-                  id,
-                  port: 3000,
-                  protocol: 'rest',
-                },
-              ],
-            },
-          },
-        })
-      ).toThrow();
-    }
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        policy: {
-          ...policy,
-          network: { ...network, default: 'allow' },
-        },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        policy: {
-          ...policy,
-          network: { ...network, enforcement: 'advisory' },
-        },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        policy: {
-          ...policy,
-          network: {
-            ...network,
-            rules: network.rules.map((rule, index) =>
-              index === 1
-                ? {
-                    ...inferenceRule,
-                    rules: [
-                      { method: 'POST', path: '/api/worker-inference/v1/responses' },
-                      { method: 'GET', path: '/api/worker-inference/v1/models' },
-                    ],
-                  }
-                : rule
-            ),
-          },
-        },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        policy: {
-          ...policy,
-          network: {
-            ...network,
-            rules: network.rules.map((rule, index) =>
-              index === 1
-                ? { ...inferenceRule, binaries: ['/usr/local/bin/codex'], port: 443 }
-                : rule
-            ),
           },
         },
       })
@@ -1745,7 +1761,7 @@ describe('agent environment package schema', () => {
 
     expect(serialized).not.toContain('runtime://nanocore/v1');
     expect(serialized).not.toContain('/Users/m5pro');
-    expect(redacted.control.auth?.tokenRef).toBe('runtime://openkit/control-token');
+    expect(redacted.control.bindings).toEqual(parsed.control.bindings);
     expect(redacted.capabilities).toEqual({
       mode: 'disabled',
       protocol: 'openkit-worker-capability-v1',
@@ -1786,45 +1802,18 @@ describe('agent environment package schema', () => {
     );
   });
 
-  it('accepts remote container transport capabilities required by remote runtime gateways', () => {
-    const parsed = AgentEnvironmentPackageSchema.parse({
-      ...openshellPackageFixture(),
-      backend: {
-        preferred: 'openshell',
-        allowedKinds: ['openshell'],
-        requiredCapabilities: [
-          'container',
-          'remote-gateway',
-          'backend-service-readiness',
-          'file-upload-download',
-          'git-materialization',
-          'change-set-collection',
-          'transcript-sink',
-          'worker-control',
-        ],
-        extensions: {
-          placement: 'remote',
-          gatewayUrlRef: 'runtime://openshell/gateway-url',
+  it('rejects retired remote Gateway backend selection', () => {
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...openshellPackageFixture(),
+        backend: {
+          allowedKinds: ['openshell'],
+          extensions: { gatewayUrlRef: 'runtime://openshell/gateway-url', placement: 'remote' },
+          preferred: 'openshell',
+          requiredCapabilities: ['container', 'remote-gateway'],
         },
-      },
-    });
-    const backend = WorkerGovernanceBackendCapabilitiesSchema.parse({
-      kind: 'openshell',
-      capabilities: [
-        'container',
-        'remote-gateway',
-        'backend-service-readiness',
-        'file-upload-download',
-        'git-materialization',
-        'change-set-collection',
-        'transcript-sink',
-        'worker-control',
-      ],
-      dynamicCapabilities: [],
-      version: '0.0.63',
-    });
-
-    expect(validateAgentEnvironmentPackageForBackend(parsed, backend)).toEqual([]);
+      })
+    ).toThrow();
   });
 
   it('rejects sandbox-local sidecar control as the canonical worker control channel', () => {

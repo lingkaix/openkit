@@ -1,6 +1,5 @@
 import { MetaResponseSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { CodexOAuthAccountsPayloadSchema } from './oauth.js';
 import { addRawSecretIssues } from './raw-secrets.js';
 import { RuntimeConfigStatusSchema } from './runtime-config.js';
 
@@ -33,7 +32,6 @@ export const ProviderDiagnosticSchema = z
 /** Provider registry row returned by App Diagnostics. */
 export const ProviderRegistryEntrySchema = z
   .object({
-    dispatchFamily: z.enum(['codex-oauth', 'provider-api']),
     id: z.string().min(1),
     displayName: z.string().min(1),
     kind: z.string().min(1),
@@ -243,11 +241,6 @@ export const AppDiagnosticsResponseSchema = z
       .object({
         quickChat: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
         gateway: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
-      })
-      .strict(),
-    oauth: z
-      .object({
-        openaiCodexAccounts: CodexOAuthAccountsPayloadSchema,
       })
       .strict(),
     capabilities: MetaResponseSchema.shape.capabilities,

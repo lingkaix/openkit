@@ -34,7 +34,7 @@ export const REQUIRED_FEATURE_REGISTRY = {
   'session.concurrent-turns': {
     id: 'session.concurrent-turns',
     status: 'active',
-    description: 'Agent session may process more than one turn concurrently.',
+    description: 'AgentSession may process more than one turn concurrently.',
   },
   'vault.injection.query-param': {
     id: 'vault.injection.query-param',

@@ -334,7 +334,7 @@ export const SaveWorkspaceMaterialRevisionResponseSchema = z
 export const BindThreadMaterialRequestSchema = z
   .object({
     requestId: requestIdSchema,
-    expectedBindingState: z.enum(['absent', 'unbound']),
+    expectedBindingState: z.enum(['not_bound']),
   })
   .strict();
 

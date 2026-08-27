@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+import {
+  ProviderSubscriptionAccountSlotIdSchema,
+  resolveProviderSubscriptionFamily,
+  type SubscriptionProviderId,
+} from './provider-subscription.js';
+
 /**
  * Supported provider profile kinds.
  */
@@ -10,28 +16,21 @@ export const ProviderKindSchema = z.enum(['direct', 'gateway', 'local', 'oauth',
  */
 export type ProviderKind = z.infer<typeof ProviderKindSchema>;
 
-/**
- * Server-owned Codex OAuth account slot identifier.
- */
-export const CodexOAuthAccountSlotIdSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/);
-
-/**
- * Codex OAuth provider extension schema.
- */
-export const CodexOAuthProviderExtensionSchema = z
+/** Explicit provider-subscription account binding. */
+const ProviderSubscriptionAccountExtensionSchema = z
   .object({
-    accountSlotId: CodexOAuthAccountSlotIdSchema,
+    accountSlotId: ProviderSubscriptionAccountSlotIdSchema,
   })
   .strict();
 
 /**
- * OpenKit-owned provider extension namespace schema.
+ * Strict OpenKit-owned provider extension namespace schema.
  */
 export const OpenKitProviderExtensionSchema = z
   .object({
-    codexOAuth: CodexOAuthProviderExtensionSchema.optional(),
+    subscriptionAccount: ProviderSubscriptionAccountExtensionSchema.optional(),
   })
-  .passthrough();
+  .strict();
 
 /**
  * Provider extension schema with typed OpenKit-owned extensions and open vendor namespaces.
@@ -63,10 +62,8 @@ export const ProviderReadinessSchema = z
   })
   .strict();
 
-/**
- * File-backed provider profile schema.
- */
-export const ProviderProfileSchema = z
+/** Shared provider-profile fields before cross-field validation. */
+const ProviderProfileObjectSchema = z
   .object({
     baseUrl: z
       .string()
@@ -92,6 +89,85 @@ export const ProviderProfileSchema = z
     vendor: z.string().min(1).optional(),
   })
   .strict();
+
+/**
+ * Adds provider-subscription issues shared by profile and server-instance schemas.
+ *
+ * @param profile Provider fields to validate without server-only extensions.
+ * @param context Zod refinement context that receives exact issue paths and messages.
+ */
+function addProviderProfileCrossFieldIssues(
+  profile: z.infer<typeof ProviderProfileObjectSchema>,
+  context: z.RefinementCtx
+): void {
+  const subscriptionAccount = profile.extensions?.openkit?.subscriptionAccount;
+  let subscriptionFamily: SubscriptionProviderId | null;
+
+  try {
+    subscriptionFamily = resolveProviderSubscriptionFamily(profile);
+  } catch {
+    context.addIssue({
+      code: 'custom',
+      message: 'Provider vendor and id select conflicting subscription families.',
+      path: ['vendor'],
+    });
+    return;
+  }
+
+  if (profile.kind === 'oauth' && subscriptionFamily) {
+    if (!subscriptionAccount) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Supported subscription OAuth profiles require an explicit account slot.',
+        path: ['extensions', 'openkit', 'subscriptionAccount'],
+      });
+    }
+    if (profile.secretRef !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Subscription OAuth profiles must not declare secretRef.',
+        path: ['secretRef'],
+      });
+    }
+    if (profile.baseUrl !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Subscription OAuth profiles must not declare baseUrl.',
+        path: ['baseUrl'],
+      });
+    }
+  } else if (subscriptionAccount) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Subscription accounts require a supported OAuth provider family.',
+      path: ['extensions', 'openkit', 'subscriptionAccount'],
+    });
+  }
+}
+
+/**
+ * File-backed provider profile schema.
+ */
+export const ProviderProfileSchema = ProviderProfileObjectSchema.superRefine(
+  addProviderProfileCrossFieldIssues
+);
+
+/**
+ * Configured provider instance schema derived from the canonical provider profile.
+ *
+ * Server-embedded providers require an explicit vendor and cannot declare profile-derived category or readiness state.
+ */
+export const OpenKitProviderInstanceSchema = z
+  .object(ProviderProfileObjectSchema.shape)
+  .omit({
+    category: true,
+    readiness: true,
+  })
+  .extend({
+    vendor: ProviderProfileObjectSchema.shape.vendor.unwrap(),
+  })
+  .strict()
+  .superRefine(addProviderProfileCrossFieldIssues);
 
 /**
  * File-backed provider profile.

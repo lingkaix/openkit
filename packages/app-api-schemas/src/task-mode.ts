@@ -1,4 +1,4 @@
-import { RequestIdSchema, TurnSchema } from '@openkit/protocol';
+import { ProductTurnSchema, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Request body for starting one bounded Task Mode worker delegation. */
@@ -68,7 +68,7 @@ export const TaskModeEvidenceSchema = z.object({
 
 /** Response returned after Task Mode accepts one bounded worker attempt. */
 export const StartTaskModeResponseSchema = z.object({
-  turn: TurnSchema,
+  turn: ProductTurnSchema,
   state: TaskModeAttemptStateSchema,
   completion: TaskModeCompletionSchema.nullable().optional(),
   evidence: TaskModeEvidenceSchema,

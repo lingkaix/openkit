@@ -3,6 +3,7 @@ export * from './agent-environment.js';
 export * from './catalog.js';
 export * from './policy.js';
 export * from './provider.js';
+export * from './provider-subscription.js';
 export * from './schema-evolution.js';
 export * from './server.js';
 export * from './session-workspace.js';

@@ -175,6 +175,53 @@ export interface ResolvedWorkspaceDataSourceReference {
 }
 
 /**
+ * Validates the exact credential-free HTTPS Git locator accepted for runtime materialization.
+ *
+ * @param locator Candidate source-catalog locator.
+ * @returns Exact non-secret Git URL and immutable commit.
+ * @throws Error when the locator shape, URL, or commit is unsafe.
+ */
+export function requireCredentialFreeHttpsGitLocator(locator: unknown): {
+  commit: string;
+  url: string;
+} {
+  if (!locator || typeof locator !== 'object' || Array.isArray(locator)) {
+    throw new Error('Remote Git locator requires exact url and commit fields.');
+  }
+
+  const record = locator as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 2 ||
+    keys[0] !== 'commit' ||
+    keys[1] !== 'url' ||
+    typeof record.commit !== 'string' ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(record.commit) ||
+    typeof record.url !== 'string'
+  ) {
+    throw new Error('Remote Git locator requires exact url and commit fields.');
+  }
+
+  let url: URL;
+  try {
+    url = new URL(record.url);
+  } catch {
+    throw new Error('Remote Git locator URL must be valid HTTPS.');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw new Error('Remote Git locator URL must be credential-free HTTPS without query or hash.');
+  }
+
+  return { commit: record.commit, url: record.url };
+}
+
+/**
  * Parses a workspace data source catalog and fails closed for unsupported required features.
  *
  * @param input Raw workspace data source catalog candidate.
