@@ -31,6 +31,8 @@ interface ContainerImageEntry {
   readonly kind: 'app' | 'worker' | 'test';
   /** Whether version-tag releases publish this image. */
   readonly release: boolean;
+  /** Whether release verification must inspect this image without registry credentials. */
+  readonly anonymousPull?: boolean;
   /** Target build platforms. */
   readonly platforms: readonly string[];
   /** Smoke script path relative to the repository root. */
@@ -41,7 +43,7 @@ interface ContainerImageEntry {
   readonly localTag: string;
   /** Singular catalog runtime for the current declared set; omit when that set is empty. */
   readonly runtime?: string;
-  /** Upstream base image for worker and CI review. */
+  /** Direct base image for release reproducibility and CI review. */
   readonly baseImage?: string;
   /** Worker execution contract implemented by the image. */
   readonly workerContract?: string;
@@ -88,6 +90,7 @@ describe('container image manifest', () => {
         dockerfile: 'containers/workers/Dockerfile',
         kind: 'worker',
         release: true,
+        anonymousPull: true,
         smoke: 'containers/workers/openkit-worker-common-base-smoke.sh',
         target: 'worker-common',
       })
@@ -95,6 +98,7 @@ describe('container image manifest', () => {
     expect(base).not.toHaveProperty('runtime');
     expect(base).not.toHaveProperty('workerContract');
     expect(base?.baseImage).toBeTruthy();
+    expect(manifest.images.filter((image) => image.anonymousPull)).toEqual([base]);
 
     for (const leaf of currentWorkerLeaves) {
       const worker = workers.find((image) => image.id === leaf.id);
@@ -112,16 +116,18 @@ describe('container image manifest', () => {
     expect(new Set(workers.map((image) => image.target)).size).toBe(workers.length);
   });
 
-  it('pins release worker base images by digest', () => {
+  it('pins every release image base by digest', () => {
     const manifest = readManifest();
-    const releaseWorkers = manifest.images.filter(
-      (image) => image.kind === 'worker' && image.release
-    );
+    const releaseImages = manifest.images.filter((image) => image.release);
 
-    expect(releaseWorkers.map((image) => image.id)).toEqual(
-      expect.arrayContaining(['worker-common', ...currentWorkerLeaves.map((leaf) => leaf.id)])
+    expect(releaseImages.map((image) => image.id)).toEqual(
+      expect.arrayContaining([
+        'app',
+        'worker-common',
+        ...currentWorkerLeaves.map((leaf) => leaf.id),
+      ])
     );
-    for (const image of releaseWorkers) {
+    for (const image of releaseImages) {
       expect(image.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/);
     }
   });

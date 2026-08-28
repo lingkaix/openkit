@@ -1,182 +1,189 @@
 # Release Cookbook
 
-Use this cookbook when cutting a new OpenKit version from `main`.
+Use this cookbook to prepare, authorize, publish, verify, and record one OpenKit product release.
 
-OpenKit releases are tag-driven. A pushed semantic version tag such as `v0.0.1` on `main` is the release event, and GitHub Actions owns the release gate, release image publishing, digest summary, and GitHub Release notes.
+The owning contract is [`docs/specs/20260829-release_management.md`](../specs/20260829-release_management.md).
 
-## References
+## Current Release Posture
 
-- [Test strategy](../specs/20260529-test_strategy.md)
-- [L6 story acceptance](../specs/20260529-l6_story_acceptance.md)
-- [Container image packaging](../specs/20260708-container_image_packaging.md)
-- [GitHub workflow policy](../../.github/workflows/README.md)
+The first formal release path starts at `v0.1.0-rc.1`.
 
-## Release Model
+The tag workflow currently rejects stable tags because NanoHost has no admitted distribution artifact.
 
-- Use lowercase tags in the form `v<major>.<minor>.<patch>`, such as `v0.0.1`.
-- Use pre-release tags in the form `v<major>.<minor>.<patch>-<pre>`, such as `v0.0.2-rc.1`.
-- Update package versions before tagging; the tag workflow must not mutate `package.json`.
-- Cut releases only from `main`.
-- Do not move a release tag after it has been pushed.
-- Publish only container images marked with `"release": true` in `containers/images.json`.
-- Keep L4 Web e2e and L6 story acceptance manual unless the test strategy explicitly promotes them into the automatic release gate.
+Do not change the release preflight CLI's prerelease-only default until an accepted owner closes that stable-release blocker.
 
-## Before Tagging
+The repository is currently private, and only `worker-common` is required to be anonymously public in GHCR.
 
-1. Pick the target version.
+Do not change repository or package visibility as an implied part of preparation or publication.
+
+## Release Bundle
+
+One lowercase semantic-version tag identifies the complete product bundle:
+
+- every `release: true` image in `containers/images.json`,
+- `openkit-skill-<tag>.tar.gz`, containing `LICENSE` and the complete `skills/openkit/` tree,
+- `SHA256SUMS` for the Skill archive,
+- one GitHub Release with image digests and gate evidence.
+
+Private workspace packages are not npm release assets, and their `package.json` versions do not follow the product tag.
+
+`test-env`, the internal dogfood image, NanoHost, and GitHub-generated source archives are not controlled product release assets.
+
+## Prepare The Release
+
+1. Start from an up-to-date `main` and create a preparation branch.
 
 ```bash
-export OPENKIT_RELEASE_VERSION=0.0.1
-export OPENKIT_RELEASE_TAG=v${OPENKIT_RELEASE_VERSION}
+export OPENKIT_RELEASE_TAG=v0.1.0-rc.1
+git switch main
+git pull --ff-only
+git switch -c "release/${OPENKIT_RELEASE_TAG}"
 ```
 
-2. Create a release preparation branch from an up-to-date `main`.
+2. Create `docs/changes/<timestamp>-<version>_release/plan.md` and record the intended tag, source commit, current repository visibility, expected image set, manual-gate decision, known limitations, and publication authorization when received.
+
+3. Update user-facing notes and any accepted owner affected by the release contents.
+
+Do not mass-update package versions.
+
+4. Run release preflight.
+
+```bash
+pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
+```
+
+Preflight validates lowercase tag syntax, portable Skill inputs, the release image catalog, smoke paths, the unique public worker base, and digest-pinned bases for every release image.
+
+5. Build the portable assets from the commit that would be released and inspect them.
+
+```bash
+pnpm release:package -- --tag "${OPENKIT_RELEASE_TAG}"
+(cd dist/release && sha256sum -c SHA256SUMS)
+tar -tzf "dist/release/openkit-skill-${OPENKIT_RELEASE_TAG}.tar.gz"
+```
+
+The packager uses `git archive`, so uncommitted files are intentionally excluded.
+
+6. Run the automatic release gate locally.
+
+```bash
+pnpm verify:release
+```
+
+7. When Docker is available, build and smoke each release image on the local host architecture.
+
+```bash
+for image in $(node -e "const m=require('./containers/images.json'); console.log(m.images.filter((i)=>i.release).map((i)=>i.id).join(' '))"); do
+  scripts/docker/build-image.sh "${image}"
+  scripts/docker/smoke-image.sh "${image}"
+done
+```
+
+The tag workflow remains authoritative for both declared platforms because it smokes the exact pushed digest for `linux/amd64` and `linux/arm64` before promotion.
+
+8. Run L4 Web e2e or an admitted L6 story only when the release decision requires that additional confidence.
+
+```bash
+pnpm test:e2e:web
+```
+
+Real-provider, real-subscription, and real-worker gates remain explicit opt-ins and must not be added to automatic tag CI merely for a release.
+
+9. Commit the preparation, obtain normal review, merge it to `main`, and confirm the release commit is clean and contained in `origin/main`.
+
+Each new release tag must point to a commit that has not already been released because the immutable source-revision image tag is part of one release identity; a same-tag rerun continues to use the original commit.
 
 ```bash
 git switch main
 git pull --ff-only
-git switch -c release/${OPENKIT_RELEASE_TAG}
+git status --short
+git merge-base --is-ancestor HEAD origin/main
+pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 ```
 
-3. Update every release workspace `package.json` version to the target version.
+## Publication Authorization
 
-The release workspace is the root package, `apps/*`, `packages/*`, and `mcp`.
+A green gate does not authorize publication.
 
-4. Update the release change record.
+Before creating the tag, obtain explicit engineer authorization for the exact value of `OPENKIT_RELEASE_TAG` and the release bundle listed above, then record that authorization in the release change record.
 
-Use `docs/changes/<timestamp>-${OPENKIT_RELEASE_VERSION//./_}_release_plan/plan.md` for the version checklist, important decisions, known limitations, manual gate results, image digests, and final verification summary. The file is the required member of a `change-plan` bundle; add `state.json` and `findings.md` beside it only when the release program produces those optional evidence members.
+Creating or pushing any other tag requires new authorization.
 
-5. Check the image manifest.
+## Publish
 
-```bash
-node scripts/release-preflight.mjs \
-  --tag "${OPENKIT_RELEASE_TAG}" \
-  --repo-root . \
-  --require-release-worker-digests
-```
-
-This catches package version mismatches, invalid version tags, missing release images, missing smoke scripts, and release worker images that still use tag-only base images.
-
-6. Build and smoke release images locally when Docker is available.
-
-```bash
-scripts/docker/build-image.sh app
-scripts/docker/smoke-image.sh app
-scripts/docker/build-image.sh worker-codex
-scripts/docker/smoke-image.sh worker-codex
-```
-
-7. Run the automatic release gate locally.
-
-```bash
-pnpm -w verify:release
-```
-
-8. Run optional manual confidence gates only when the release owner wants the extra signal.
-
-```bash
-pnpm -w test:e2e:web
-```
-
-Run an admitted L6 story separately under the L6 story-acceptance specification when that agentic product-intent evidence is required.
-
-9. Merge the release preparation branch into `main`.
-
-Do not tag a branch that has not landed on `main`.
-
-## Tag And Push
-
-1. Update local `main` after the release preparation branch merges.
-
-```bash
-git switch main
-git pull --ff-only
-```
-
-2. Run the preflight against the commit that will be tagged.
-
-```bash
-node scripts/release-preflight.mjs \
-  --tag "${OPENKIT_RELEASE_TAG}" \
-  --repo-root . \
-  --require-release-worker-digests
-```
-
-3. Create and push the version tag.
+After exact-tag authorization:
 
 ```bash
 git tag "${OPENKIT_RELEASE_TAG}"
 git push origin "${OPENKIT_RELEASE_TAG}"
 ```
 
-## GitHub Actions Gate
+The tag push is the only publication trigger.
 
-The tag workflow runs these default release jobs:
+The workflow then:
 
-- release preflight,
-- L0-L2 static, unit, and contract verification,
-- L3 NanoCore e2e,
-- L5 smoke,
-- container image manifest matrix generation,
-- release image build and smoke,
-- GHCR publish,
-- GitHub Release notes creation or update.
+- proves that the tagged commit belongs to `main`,
+- reruns L0-L3 and L5,
+- builds the portable Skill assets,
+- derives the image matrix from `containers/images.json`,
+- pushes digest-only multi-platform image candidates,
+- smokes each exact candidate digest on every declared platform,
+- promotes the passed digest to immutable version and source-revision tags,
+- preserves `latest` for prereleases,
+- creates the GitHub prerelease with its two portable attachments,
+- downloads and independently verifies the final assets and image digests,
+- logs out of GHCR and verifies the exact `worker-common` digest anonymously.
 
-The workflow publishes stable tags as `vX.Y.Z`, `X.Y.Z`, `sha-<shortsha>`, and `latest`.
-
-The workflow publishes pre-release tags as `vX.Y.Z-pre`, `X.Y.Z-pre`, and `sha-<shortsha>`.
-
-Pre-release tags must not update `latest`.
-
-The first `worker-common` push creates a private GHCR package.
-After that initial publish step, an administrator must open the package settings, change visibility to public, and rerun the failed release job; the job logs out of GHCR and inspects the exact pushed digest, so an authenticated pull cannot satisfy this gate.
-Public visibility is a deliberate release-policy decision for this end-user extension base and later releases must not depend on restoring private access.
-
-Web bundle-size warnings are informational for release acceptance because the Web UI is a professional-workspace SPA and may later be embedded in a desktop application.
-Do not split chunks or change the Vite warning threshold without a measured performance objective owned by an accepted Web change.
-
-## After The Workflow Passes
-
-1. Open the successful Actions run and inspect the image digest summary.
-
-2. Check that GHCR contains the expected release image tags.
+Watch the run until the terminal verification job completes:
 
 ```bash
-docker pull ghcr.io/<owner>/openkit-app:${OPENKIT_RELEASE_TAG}
-docker pull ghcr.io/<owner>/openkit-worker-codex:${OPENKIT_RELEASE_TAG}
-docker logout ghcr.io
-docker pull ghcr.io/<owner>/openkit-worker-common:${OPENKIT_RELEASE_TAG}
+gh run list --workflow CI --branch "${OPENKIT_RELEASE_TAG}" --limit 1
+gh run watch <run-id> --exit-status
 ```
 
-`worker-common` is the only image in this check that is required to be publicly pullable, so its command runs last after logout and must not use a registry credential or a prior authenticated session.
+## First worker-common Publication
 
-3. Check the GitHub Release notes.
+GitHub creates a new container package as private.
 
-The notes must include the tag, source commit, workflow run, image tags, and pushed digests.
+The first `worker-common` publish therefore stops at the anonymous exact-digest gate until a repository administrator changes that package to public.
 
-4. Copy the final image digest references and known limitations into the release change record.
+This one-time visibility change is an explicit external effect; record its authorization and observed result, then rerun the failed workflow without moving the tag.
 
-5. Mark the release change record as verified when the release gate, image publish, GHCR check, and release notes check are complete.
+The rerun proves and reuses the existing version and source-revision digest instead of rebuilding or overwriting it.
 
-## If The Workflow Fails
+## Verify And Close
 
-- Do not move the pushed tag.
-- Do not force-push the tag.
-- Fix the problem on a new commit.
-- For an unreleased candidate, create a new pre-release tag such as `v0.0.1-rc.2`.
-- For a failed stable release attempt, decide whether the next tag is a patch tag or an RC tag before publishing again.
-- Record the failed run and the new tag decision in the release change record.
+The workflow's `Verify published release` job is the deciding automatic publication check.
 
-## Manual Gates
+After it passes, inspect the public record and copy the tag, source commit, workflow run, image digests, repository and package visibility, portable checksum, manual-gate disposition, and NanoHost limitation into the release change record.
 
-L4 Web e2e and L6 story acceptance are manual release confidence checks. Run Web e2e when the release owner wants browser-flow evidence beyond the default gate, and execute admitted L6 stories under the L6 story-acceptance specification when agentic product-intent evidence is required.
+```bash
+gh release view "${OPENKIT_RELEASE_TAG}" --json tagName,isDraft,isPrerelease,assets,url
+gh run view <run-id>
+```
 
-The app-owned `test:e2e:real-provider`, `test:e2e:real-subscription`, and `test:e2e:real-task-mode` gates remain explicit opt-ins.
+Close the release change record only when the workflow is green, the GitHub Release is published with exactly the two expected attachments, and `worker-common` is anonymously inspectable by digest.
 
-Do not wire real-provider, real-Codex, subscription-auth, or quota-consuming tests into automatic tag release CI.
+## Failure And Retry
 
-## Current First-Release Blockers
+Never move, force-push, delete, or overwrite a published release tag or promoted image tag.
 
-- Every release workspace `package.json` still needs the final release version before the first stable tag.
-- Release worker images must use digest-pinned base images before `--require-release-worker-digests` can pass.
-- The first release change record must capture final image digests and any packaging limitations.
+Before promotion, a build or smoke failure may be retried under the same tag because no release image tag exists.
+
+After partial matrix publication, rerun the same tag only when the workflow proves that every existing version, version-without-`v`, and source-revision tag is complete and resolves to one recorded digest; matching images are reused and missing image identities are built.
+
+A partial or conflicting tag set fails closed and requires operator inspection.
+
+An existing published GitHub Release is immutable to the workflow; a rerun verifies it but does not edit notes or replace assets.
+
+A current stable tag may be rerun only while its `latest` image tags still resolve to its recorded digests; a superseded stable tag or a stable publication that did not complete `latest` fails closed and requires a new stable tag on a new commit rather than moving `latest` backward.
+
+A behaviorally incorrect or ambiguous promoted artifact requires a new prerelease or patch tag on a new commit and new exact-tag authorization.
+
+Record every partial publication, failed boundary, observed digest, corrective decision, and superseding tag in the release change record.
+
+## Web Bundle Size
+
+Web bundle-size warnings are informational because the Web UI is a professional-workspace SPA and may later be embedded in a desktop application.
+
+Do not split chunks or change the Vite warning threshold without a measured performance objective owned by an accepted Web change.

@@ -87,6 +87,7 @@ Use the deployment docs instead of this README for operational detail.
 - [`docs/deployment.md`](./docs/deployment.md) defines the stable deployment model.
 - [`docs/manual/nanocore-deployment-modes.en.md`](./docs/manual/nanocore-deployment-modes.en.md) explains source and container deployment modes.
 - [`docs/cookbooks/release.md`](./docs/cookbooks/release.md) explains how to cut a version tag, run the release gate, publish release images, and verify GitHub Release notes.
+- [`docs/specs/20260829-release_management.md`](./docs/specs/20260829-release_management.md) owns release identity, assets, authorization, retry, and completion.
 - [`docs/cookbooks/docker-app.md`](./docs/cookbooks/docker-app.md) explains the local app container image workflow.
 
 ## Common Commands
@@ -146,4 +147,4 @@ Ordinary checks run on the developer host by default. A Worker Agent sandbox is 
 
 ## License
 
-License information is not finalized yet.
+OpenKit is licensed under the [Apache License 2.0](./LICENSE).

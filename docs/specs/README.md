@@ -92,6 +92,7 @@ Workflow, human attention, and verification:
 - [`20260529-test_strategy.md`](./20260529-test_strategy.md)
 - [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
 - [`20260719-verification_calibration.md`](./20260719-verification_calibration.md)
+- [`20260829-release_management.md`](./20260829-release_management.md)
 
 Worker runtime, supply, and synchronization:
 

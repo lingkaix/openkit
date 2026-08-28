@@ -32,7 +32,7 @@ This guide does not own any contract or implementation fact linked below. Core d
 - Worker placement, scheduling scale, sandboxing, and session continuity: `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/core/sandbox.md`, `docs/core/agent-session.md`, `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
 - Communication, worker control, workspace transfer, and capability supply: `docs/core/communication.md`, `docs/core/agent-capability.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-worker_agent_capability.md`
 - Vault and provider credentials: `docs/core/vault.md`, `docs/specs/20260704-vault_backend_implementation.md`, `docs/specs/20260721-provider_subscription_accounts.md`
-- Release and worker images: `docs/specs/20260708-container_image_packaging.md`, `docs/specs/20260721-worker_execution_environment_images.md`
+- Product releases and worker images: `docs/specs/20260829-release_management.md`, `docs/specs/20260708-container_image_packaging.md`, `docs/specs/20260721-worker_execution_environment_images.md`
 - Operator projections: `docs/manual/nanocore-deployment-modes.en.md`, `docs/manual/nanocore-data-root-config.en.md`
 
 ## Known Debt

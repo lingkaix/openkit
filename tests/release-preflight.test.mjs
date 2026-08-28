@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { validateReleasePreflight } from '../scripts/release-preflight.mjs';
 
-test('release preflight accepts matching package versions and digest-pinned release workers', () => {
-  const repoRoot = makeReleaseFixture();
+const preflightScript = join(process.cwd(), 'scripts', 'release-preflight.mjs');
+
+test('release preflight accepts product tags independently of private package versions', () => {
+  const repoRoot = makeReleaseFixture({ packageVersion: '9.9.9' });
 
   const result = validateReleasePreflight({
     repoRoot,
-    requireReleaseWorkerDigests: true,
+    requireReleaseImageDigests: true,
     tag: 'v0.0.1',
   });
 
@@ -26,10 +29,39 @@ test('release preflight rejects a missing public release worker base', () => {
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /exactly one public release worker base/
+  );
+});
+
+test('release preflight requires one explicitly anonymous public worker base', () => {
+  const missingFlagRoot = makeReleaseFixture({ baseAnonymousPull: false });
+  const invalidFlagRoot = makeReleaseFixture({ baseAnonymousPull: 'yes' });
+  const leafFlagRoot = makeReleaseFixture({ leafAnonymousPull: true });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot: missingFlagRoot,
+        requireReleaseImageDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /must declare anonymousPull: true/
+  );
+  assert.throws(
+    () => validateReleasePreflight({ repoRoot: invalidFlagRoot, tag: 'v0.0.1' }),
+    /anonymousPull must be a boolean/
+  );
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot: leafFlagRoot,
+        requireReleaseImageDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /only the public release worker base/
   );
 });
 
@@ -43,7 +75,7 @@ test('release preflight rejects a structural empty-declared-set worker base that
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /workerContract/
@@ -60,55 +92,99 @@ test('release preflight rejects more than one structural empty-declared-set work
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /empty declared|more than one|duplicate .*base/i
   );
 });
 
-test('release preflight rejects package versions that do not match the tag', () => {
-  const repoRoot = makeReleaseFixture({ packageVersion: '0.0.2' });
+test('release preflight rejects uppercase release tags and prerelease identifiers', () => {
+  const repoRoot = makeReleaseFixture();
+
+  for (const tag of ['V0.0.1', 'v0.0.1-RC.1', 'v0.0.1-Beta']) {
+    assert.throws(
+      () => validateReleasePreflight({ repoRoot, requireReleaseImageDigests: true, tag }),
+      /Release tag must match/
+    );
+  }
+});
+
+test('release preflight rejects non-semantic release tags', () => {
+  const repoRoot = makeReleaseFixture();
+
+  for (const tag of ['v01.0.0', 'v0.0.1-', 'v0.0.1-rc..1', 'v0.0.1-01']) {
+    assert.throws(() => validateReleasePreflight({ repoRoot, tag }), /Release tag must match/);
+  }
+});
+
+test('release preflight can block stable tags while the first stable release is not admitted', () => {
+  const repoRoot = makeReleaseFixture();
 
   assert.throws(
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requirePrerelease: true,
         tag: 'v0.0.1',
       }),
-    /Package version mismatch/
+    /must identify a prerelease/
   );
-});
-
-test('release preflight ignores packages outside the release workspace roots', () => {
-  const repoRoot = makeReleaseFixture();
-  mkdirSync(join(repoRoot, 'ignored'), { recursive: true });
-  writeJson(join(repoRoot, 'ignored', 'package.json'), {
-    name: '@openkit/ignored-fixture',
-    version: '9.9.9',
-  });
-
   assert.doesNotThrow(() =>
-    validateReleasePreflight({
-      repoRoot,
-      requireReleaseWorkerDigests: true,
-      tag: 'v0.0.1',
-    })
+    validateReleasePreflight({ repoRoot, requirePrerelease: true, tag: 'v0.0.1-rc.1' })
   );
 });
 
-test('release preflight rejects unpinned release worker base images', () => {
+test('release preflight CLI defaults to prerelease-only and digest-pinned release inputs', () => {
+  const repoRoot = makeReleaseFixture();
+  const prerelease = runPreflightCli(repoRoot, 'v0.0.1-rc.1');
+  const stable = runPreflightCli(repoRoot, 'v0.0.1');
+  const unpinned = runPreflightCli(
+    makeReleaseFixture({ workerBaseImage: 'node:24-bookworm-slim' }),
+    'v0.0.1-rc.1'
+  );
+
+  assert.equal(prerelease.status, 0, prerelease.stderr);
+  assert.notEqual(stable.status, 0);
+  assert.match(stable.stderr, /must identify a prerelease/);
+  assert.notEqual(unpinned.status, 0);
+  assert.match(unpinned.stderr, /must use a digest-pinned baseImage/);
+});
+
+test('release preflight rejects an unpinned release worker image', () => {
   const repoRoot = makeReleaseFixture({ workerBaseImage: 'node:24-bookworm-slim' });
 
   assert.throws(
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
-    /must use a digest-pinned baseImage/
+    /Release image worker-codex must use a digest-pinned baseImage/
+  );
+});
+
+test('release preflight rejects an unpinned app base image', () => {
+  const repoRoot = makeReleaseFixture({ appBaseImage: 'node:24-bookworm-slim' });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseImageDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /Release image app must use a digest-pinned baseImage/
+  );
+});
+
+test('release preflight rejects a missing portable Skill input', () => {
+  const repoRoot = makeReleaseFixture({ omitSkillManifest: true });
+
+  assert.throws(
+    () => validateReleasePreflight({ repoRoot, tag: 'v0.0.1' }),
+    /Portable release input does not exist: skills\/openkit\/SKILL\.md/
   );
 });
 
@@ -119,7 +195,7 @@ test('release preflight rejects deployment workers without a runtime', () => {
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /Worker image worker-codex is missing runtime/
@@ -133,7 +209,7 @@ test('release preflight rejects deployment workers without a workerContract', ()
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /Worker image worker-codex is missing workerContract/
@@ -147,7 +223,7 @@ test('release preflight rejects non-string worker runtime metadata', () => {
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /runtime must be a non-empty string/
@@ -161,7 +237,7 @@ test('release preflight rejects non-string worker contract metadata', () => {
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /workerContract must be a non-empty string/
@@ -175,33 +251,10 @@ test('release preflight rejects worker images without an explicit build target',
     () =>
       validateReleasePreflight({
         repoRoot,
-        requireReleaseWorkerDigests: true,
+        requireReleaseImageDigests: true,
         tag: 'v0.0.1',
       }),
     /Worker image worker-codex is missing target/
-  );
-});
-
-test('tag release verifies the public worker base without registry credentials', () => {
-  const workflow = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
-  const gateStart = workflow.indexOf('      - name: Verify public worker base anonymous pull\n');
-  const gateEnd = workflow.indexOf('\n      - name:', gateStart + 1);
-
-  assert.match(
-    workflow,
-    /anonymousPull: image\.kind === 'worker' && !Object\.hasOwn\(image, 'runtime'\)/
-  );
-  assert.notEqual(gateStart, -1);
-  assert.notEqual(gateEnd, -1);
-
-  const gate = workflow.slice(gateStart, gateEnd);
-  assert.match(gate, /^\s+if: matrix\.anonymousPull$/m);
-  assert.match(gate, /^\s+DIGEST: \$\{\{ steps\.publish\.outputs\.digest \}\}$/m);
-  assert.match(gate, /^\s+IMAGE: \$\{\{ steps\.image\.outputs\.image \}\}$/m);
-  assert.match(gate, /^\s+docker logout ghcr\.io$/m);
-  assert.match(gate, /^\s+docker buildx imagetools inspect "\$\{IMAGE\}@\$\{DIGEST\}"$/m);
-  assert.ok(
-    gate.indexOf('docker logout ghcr.io') < gate.indexOf('docker buildx imagetools inspect')
   );
 });
 
@@ -210,9 +263,13 @@ test('tag release verifies the public worker base without registry credentials',
  *
  * @param {object} [options] Fixture options.
  * @param {boolean} [options.baseHasWorkerContract] Whether the structural empty-declared-set base also declares workerContract.
+ * @param {unknown} [options.baseAnonymousPull] Anonymous-pull fixture value for the structural base.
  * @param {boolean} [options.includeReleaseWorkerBase] Whether to add one structural worker base with an empty declared runtime set.
  * @param {boolean} [options.includeSecondReleaseWorkerBase] Whether to add a second structural empty-declared-set worker base.
+ * @param {boolean} [options.leafAnonymousPull] Whether the deployment leaf incorrectly declares anonymous pull.
+ * @param {string} [options.appBaseImage] App base image manifest value.
  * @param {string} [options.packageVersion] Version written into the workspace package.
+ * @param {boolean} [options.omitSkillManifest] Whether to omit the Skill manifest.
  * @param {boolean} [options.omitWorkerContract] Whether to omit the deployment workerContract.
  * @param {boolean} [options.omitWorkerRuntime] Whether to omit the deployment worker runtime.
  * @param {boolean} [options.omitWorkerTarget] Whether to omit the worker Docker target.
@@ -225,7 +282,9 @@ function makeReleaseFixture(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-release-preflight-'));
   const version = '0.0.1';
   const packageVersion = options.packageVersion ?? version;
-  const workerBaseImage = options.workerBaseImage ?? 'node:24-bookworm-slim@sha256:abc123';
+  const digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const appBaseImage = options.appBaseImage ?? `node:24-bookworm-slim@sha256:${digest}`;
+  const workerBaseImage = options.workerBaseImage ?? `node:24-bookworm-slim@sha256:${digest}`;
   const includeReleaseWorkerBase = options.includeReleaseWorkerBase !== false;
   const includeSecondReleaseWorkerBase = options.includeSecondReleaseWorkerBase === true;
 
@@ -235,6 +294,16 @@ function makeReleaseFixture(options = {}) {
     version,
   });
   writeFileSync(join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n  - 'packages/*'\n");
+  writeFileSync(join(root, 'LICENSE'), 'fixture license\n');
+  mkdirSync(join(root, 'skills', 'openkit', 'agents'), { recursive: true });
+  mkdirSync(join(root, 'skills', 'openkit', 'scripts'), { recursive: true });
+  if (!options.omitSkillManifest) {
+    writeFileSync(join(root, 'skills', 'openkit', 'SKILL.md'), '# Fixture Skill\n');
+  }
+  writeFileSync(join(root, 'skills', 'openkit', 'agents', 'openai.yaml'), 'interface: fixture\n');
+  const cliPath = join(root, 'skills', 'openkit', 'scripts', 'openkit');
+  writeFileSync(cliPath, '#!/usr/bin/env node\n');
+  chmodSync(cliPath, 0o755);
 
   mkdirSync(join(root, 'apps', 'web'), { recursive: true });
   writeJson(join(root, 'apps', 'web', 'package.json'), {
@@ -272,6 +341,7 @@ function makeReleaseFixture(options = {}) {
         context: '.',
         kind: 'app',
         release: true,
+        baseImage: appBaseImage,
         platforms: ['linux/amd64'],
         smoke: 'containers/app/smoke.sh',
         smokeCommand: 'openkit-app-smoke',
@@ -280,6 +350,7 @@ function makeReleaseFixture(options = {}) {
       ...(includeReleaseWorkerBase
         ? [
             makeReleaseWorkerBaseEntry({
+              anonymousPull: options.baseAnonymousPull ?? true,
               hasWorkerContract: options.baseHasWorkerContract === true,
               id: 'worker-base',
               repository: 'openkit-worker-base',
@@ -290,6 +361,7 @@ function makeReleaseFixture(options = {}) {
       ...(includeSecondReleaseWorkerBase
         ? [
             makeReleaseWorkerBaseEntry({
+              anonymousPull: true,
               id: 'worker-extension-base',
               repository: 'openkit-worker-extension-base',
               target: 'worker-extension-base',
@@ -304,6 +376,7 @@ function makeReleaseFixture(options = {}) {
         kind: 'worker',
         ...(options.omitWorkerRuntime ? {} : { runtime: options.workerRuntime ?? 'codex' }),
         release: true,
+        ...(options.leafAnonymousPull ? { anonymousPull: true } : {}),
         ...(options.omitWorkerContract
           ? {}
           : { workerContract: options.workerContract ?? 'openkit-worker-v1' }),
@@ -324,6 +397,7 @@ function makeReleaseFixture(options = {}) {
  * Builds one structural empty-declared-set release worker catalog entry that is not identified by a reserved id.
  *
  * @param {object} options Entry fields.
+ * @param {boolean} options.anonymousPull Whether the base must be anonymously pullable.
  * @param {boolean} [options.hasWorkerContract] Whether to declare workerContract on the base.
  * @param {string} options.id Catalog id.
  * @param {string} options.repository Image repository.
@@ -339,8 +413,10 @@ function makeReleaseWorkerBaseEntry(options) {
     context: '.',
     kind: 'worker',
     release: true,
+    anonymousPull: options.anonymousPull,
     ...(options.hasWorkerContract ? { workerContract: 'openkit-worker-v1' } : {}),
-    baseImage: 'node:24-bookworm-slim@sha256:abc123',
+    baseImage:
+      'node:24-bookworm-slim@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     platforms: ['linux/amd64'],
     smoke: 'containers/workers/openkit-worker-common-base-smoke.sh',
     smokeCommand: 'openkit-worker-common-base-smoke',
@@ -356,4 +432,11 @@ function makeReleaseWorkerBaseEntry(options) {
  */
 function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** Runs the real release-preflight CLI against one isolated fixture. */
+function runPreflightCli(repoRoot, tag) {
+  return spawnSync(process.execPath, [preflightScript, '--repo-root', repoRoot, '--tag', tag], {
+    encoding: 'utf8',
+  });
 }

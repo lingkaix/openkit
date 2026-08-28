@@ -2,6 +2,7 @@
   "name": "openkit-monorepo",
   "version": "0.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.3",
   "description": "OpenKit monorepo root package; ordinary turbo build, test, lint, and format tasks include @openkit/nanohost Cargo scripts",
   "engines": {
@@ -39,6 +40,8 @@
     "verify": "pnpm run verify:l0-l2",
     "verify:release": "pnpm run verify:l0-l2 && pnpm run test:e2e:nano && pnpm run test:smoke",
     "verify:full": "pnpm run verify:l0-l2 && pnpm run test:e2e:nano && pnpm run test:e2e:web && pnpm run test:smoke",
+    "release:preflight": "node scripts/release-preflight.mjs --repo-root .",
+    "release:package": "node scripts/package-release-assets.mjs --repo-root . --ref HEAD --output-dir dist/release",
     "dev": "turbo run dev",
     "app:run": "bash scripts/test-env.sh host bash scripts/docker/run-app.sh",
     "init": "bash scripts/test-env.sh host bash scripts/repo-init.sh",

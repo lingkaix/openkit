@@ -8,6 +8,7 @@ Package and app unit, contract, integration, and browser tests remain with their
 
 - `story-metadata.test.mjs` provides focused unit coverage for the shared scalar Story parser in `scripts/lib/story-metadata.mjs`.
 - `toolchain-version-mirrors.test.mjs` checks the configuration invariants owned by `docs/toolchain.md` Toolchain Provisioning Boundary, Test Execution Environment, and Version Maintenance: `.mise.toml` defines no tasks; every mirrored Node and pnpm declaration across `.mise.toml`, root `package.json`, `.node-version`, `.nvmrc`, and `containers/test-env/Dockerfile` names the same exact version; the Biome pins in `.mise.toml` and root `package.json` agree on the exact supported version; `.github/workflows/ci.yml` provisions neither runtime itself; and every CI gate job runs inside the test execution image. It asserts configuration values rather than document prose, so it stays inside the `AGENTS.md` rule against asserting source text.
+- `release-preflight.test.mjs`, `release-image-state.test.mjs`, `package-release-assets.test.mjs`, and `release-workflow.test.mjs` enforce release identity, registry failure handling, portable Skill packaging, digest-pinned release inputs, and the candidate-smoke-promotion workflow structure owned by `docs/specs/20260829-release_management.md`.
 - `support/` contains cross-package test data and setup support with demonstrated consumers.
 - `smoke/` contains built-artifact health checks.
 - `stories/` contains versioned L6 Story Markdown artifacts.

@@ -694,6 +694,23 @@ test('runTestSuite rejects Vitest skipped-test summary even when a file-bound de
   }
 });
 
+test('runTestSuite retains full repository-scale reporter output', async () => {
+  const { runTestSuite } = await loadGovernance();
+  const reporter = writeFixtureRepo({
+    'report.mjs': `process.stdout.write('ok 1 - ordinary test\\n'.repeat(100_000));
+`,
+  });
+
+  try {
+    const errors = runTestSuite({
+      command: [process.execPath, join(reporter, 'report.mjs')],
+    });
+    assert.deepEqual(errors, []);
+  } finally {
+    rmSync(reporter, { force: true, recursive: true });
+  }
+});
+
 test('runTestSuite attributes Turbo tap-flat skip lines by hierarchy component', async () => {
   const { runTestSuite } = await loadGovernance();
   const reporter = writeFixtureRepo({

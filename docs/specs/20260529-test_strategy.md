@@ -12,7 +12,7 @@ This spec owns OpenKit's L0-L6 testing layer model, test responsibility boundari
 
 This spec does not own what makes a verdict believable: oracle classification, harness admission, the effect-domain and observation-channel rules, and the execution-environment rules including the container rule and the real-use host manifest belong to `docs/verification-instruments.md`. This spec decides which layer proves which invariant; that document decides whether the instrument deciding it can be believed, and states its own application scope.
 
-This spec does not own individual test implementation files, CI workflow syntax, release management policy, story file content, browser UI design, provider credentials, or package-specific test commands beyond the layer contract.
+This spec does not own individual test implementation files, CI workflow syntax, release management policy owned by `docs/specs/20260829-release_management.md`, story file content, browser UI design, provider credentials, or package-specific test commands beyond the layer contract.
 
 ## Core References
 
@@ -268,7 +268,7 @@ Pull requests should run only the lightweight repository check by default.
 
 Ordinary branch pushes should not run CI by default.
 
-Version tags matching `v*.*.*` or `V*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`.
+Lowercase version tags matching `v*.*.*` should run the release gate as separate named jobs: `l0-l2`, `nanocore-e2e`, and `smoke`.
 
 Manual workflow dispatch should expose `pr-check`, `l0-l2`, `nanocore-e2e`, `web-e2e`, `smoke`, `release-gate`, and `full` selections.
 

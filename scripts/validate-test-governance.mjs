@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
+const TEST_COMMAND_MAX_BUFFER = 64 * 1024 * 1024;
 const IGNORED_DIRECTORIES = new Set(['.git', '.turbo', 'coverage', 'dist', 'node_modules', 'temp']);
 const CHILD_PROCESS_CALLEES = new Set([
   'exec',
@@ -118,6 +119,7 @@ function executeTestSuite(options) {
     cwd: options.cwd ?? process.cwd(),
     encoding: 'utf8',
     env: options.env ?? process.env,
+    maxBuffer: TEST_COMMAND_MAX_BUFFER,
   });
   const stdout = result.stdout ?? '';
   const stderr = result.stderr ?? '';

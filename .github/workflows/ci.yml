@@ -5,7 +5,6 @@ on:
   push:
     tags:
       - "v*.*.*"
-      - "V*.*.*"
   workflow_dispatch:
     inputs:
       gate:
@@ -25,6 +24,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ startsWith(github.ref, 'refs/tags/v') && 'openkit-release' || format('openkit-ci-{0}', github.ref) }}
+  cancel-in-progress: false
+
 jobs:
   # Every gate below runs inside this image. The image is authoritative: when a
   # permitted environment disagrees, the CI result decides. The tag is a digest
@@ -41,7 +44,7 @@ jobs:
       image: ${{ steps.immutable.outputs.image }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Resolve expected image identity from containers/images.json
         id: expected
@@ -58,7 +61,7 @@ jobs:
           echo "platforms=${platforms}" >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -79,11 +82,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.published.outputs.present == 'false'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and publish the test execution image
         if: steps.published.outputs.present == 'false'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ steps.expected.outputs.context }}
           file: ${{ steps.expected.outputs.dockerfile }}
@@ -138,10 +141,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /pnpm/store
           key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
@@ -168,22 +171,21 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Fetch main ref
         run: git fetch --no-tags origin main:refs/remotes/origin/main
 
-      - name: Validate release tag, versions, and images
+      - name: Validate release identity and assets
         run: |
           node scripts/release-preflight.mjs \
             --tag "${GITHUB_REF_NAME}" \
             --repo-root . \
             --sha "${GITHUB_SHA}" \
             --main-ref origin/main \
-            --require-main \
-            --require-release-worker-digests
+            --require-main
 
   l0-l2:
     name: L0-L2 static, unit, contract
@@ -200,10 +202,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /pnpm/store
           key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
@@ -230,10 +232,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /pnpm/store
           key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
@@ -260,10 +262,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /pnpm/store
           key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
@@ -277,7 +279,7 @@ jobs:
 
       - name: Upload Web Playwright artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: web-e2e-playwright-artifacts
           path: |
@@ -300,10 +302,10 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /pnpm/store
           key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
@@ -315,6 +317,43 @@ jobs:
       - name: Run built-artifact smoke tests
         run: pnpm -w test:smoke
 
+  package-release-assets:
+    name: Package portable release assets
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - test-image
+      - release-preflight
+      - l0-l2
+      - nano-core-e2e
+      - smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.test-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Package and verify the end-user Skill
+        run: |
+          pnpm release:package -- --tag "${GITHUB_REF_NAME}"
+          cd dist/release
+          sha256sum -c SHA256SUMS
+          tar -tzf "openkit-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-skill-${GITHUB_REF_NAME}/skills/openkit/SKILL.md"
+          tar -tzf "openkit-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-skill-${GITHUB_REF_NAME}/skills/openkit/scripts/openkit"
+
+      - name: Upload portable release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-portable-assets
+          path: dist/release/
+          if-no-files-found: error
+
   container-image-matrix:
     name: Container image release matrix
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -325,7 +364,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Read release image manifest
         id: matrix
@@ -346,13 +385,11 @@ jobs:
               target: image.target || '',
               workerContract: image.workerContract || '',
               smokeCommand: image.smokeCommand,
-              anonymousPull: image.kind === 'worker' && !Object.hasOwn(image, 'runtime'),
+              anonymousPull: image.anonymousPull === true,
             }));
-
           if (images.length === 0) {
             throw new Error('containers/images.json does not declare release images.');
           }
-
           process.stdout.write(`matrix=${JSON.stringify({ include: images })}\n`);
           NODE
 
@@ -374,22 +411,24 @@ jobs:
       matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tags
+      - name: Compute deterministic image identity
         id: image
         env:
           IMAGE_ID: ${{ matrix.id }}
@@ -398,38 +437,46 @@ jobs:
           WORKER_CONTRACT: ${{ matrix.workerContract }}
           WORKER_RUNTIME: ${{ matrix.runtime }}
         run: |
-          node <<'NODE' >> "${GITHUB_OUTPUT}"
+          created="$(git show -s --format=%cI "${GITHUB_SHA}")"
+          CREATED="${created}" node <<'NODE' >> "${GITHUB_OUTPUT}"
           const owner = process.env.GITHUB_REPOSITORY_OWNER.toLowerCase();
           const repository = process.env.IMAGE_REPOSITORY;
-          const refName = process.env.GITHUB_REF_NAME;
-          const version = refName.replace(/^v/i, '');
-          const versionTag = `v${version}`;
+          const version = process.env.GITHUB_REF_NAME.replace(/^v/, '');
           const image = `ghcr.io/${owner}/${repository}`;
           const shortSha = process.env.GITHUB_SHA.slice(0, 12);
-          const tags = [`${image}:${versionTag}`, `${image}:${version}`, `${image}:sha-${shortSha}`];
+          const tags = [
+            `${image}:${process.env.GITHUB_REF_NAME}`,
+            `${image}:${version}`,
+            `${image}:sha-${shortSha}`,
+          ];
+          const prerelease = version.includes('-');
+          if (!prerelease) {
+            tags.push(`${image}:latest`);
+          }
           const labels = [
             `org.opencontainers.image.title=${repository}`,
             `org.opencontainers.image.description=OpenKit ${process.env.IMAGE_ID} release image`,
             `org.opencontainers.image.source=${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`,
             `org.opencontainers.image.revision=${process.env.GITHUB_SHA}`,
             `org.opencontainers.image.version=${version}`,
-            `org.opencontainers.image.created=${new Date().toISOString()}`,
-            'org.opencontainers.image.licenses=NOASSERTION',
+            `org.opencontainers.image.created=${process.env.CREATED}`,
+            'org.opencontainers.image.licenses=Apache-2.0',
             `org.openkit.image.id=${process.env.IMAGE_ID}`,
             `org.openkit.image.kind=${process.env.IMAGE_KIND}`,
           ];
-
-          if (!version.includes('-')) {
-            tags.push(`${image}:latest`);
-          }
           if (process.env.WORKER_RUNTIME) {
             labels.push(`org.openkit.worker.runtime=${process.env.WORKER_RUNTIME}`);
           }
           if (process.env.WORKER_CONTRACT) {
             labels.push(`org.openkit.worker.contract=${process.env.WORKER_CONTRACT}`);
           }
-
           process.stdout.write(`image=${image}\n`);
+          process.stdout.write(`version=${version}\n`);
+          process.stdout.write(`prerelease=${prerelease}\n`);
+          process.stdout.write(`version_tag=${tags[0]}\n`);
+          process.stdout.write(`version_without_v_tag=${tags[1]}\n`);
+          process.stdout.write(`sha_tag=${tags[2]}\n`);
+          process.stdout.write(`latest_tag=${image}:latest\n`);
           process.stdout.write('tags<<EOF\n');
           process.stdout.write(`${tags.join('\n')}\n`);
           process.stdout.write('EOF\n');
@@ -438,126 +485,357 @@ jobs:
           process.stdout.write('EOF\n');
           NODE
 
-      - name: Build smoke image
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target }}
-          platforms: linux/amd64
-          load: true
-          labels: ${{ steps.image.outputs.labels }}
-          tags: ${{ steps.image.outputs.image }}:ci-smoke-${{ github.run_id }}-${{ matrix.id }}
-
-      - name: Smoke image
+      - name: Inspect existing immutable identity
+        id: existing
         env:
-          SMOKE_TAG: ${{ steps.image.outputs.image }}:ci-smoke-${{ github.run_id }}-${{ matrix.id }}
-          SMOKE_COMMAND: ${{ matrix.smokeCommand }}
-        run: docker run --rm "${SMOKE_TAG}" "${SMOKE_COMMAND}"
+          LATEST_TAG: ${{ steps.image.outputs.latest_tag }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
+        run: |
+          node scripts/release-image-state.mjs \
+            --version-tag "${VERSION_TAG}" \
+            --version-without-v-tag "${VERSION_WITHOUT_V_TAG}" \
+            --sha-tag "${SHA_TAG}" \
+            --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
 
-      - name: Publish image
-        id: publish
-        uses: docker/build-push-action@v6
+      - name: Build digest-only release candidate
+        id: candidate
+        if: steps.existing.outputs.present == 'false'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           platforms: ${{ matrix.platforms }}
-          push: true
           labels: ${{ steps.image.outputs.labels }}
-          tags: ${{ steps.image.outputs.tags }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ steps.image.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Resolve candidate digest
+        id: release
+        env:
+          BUILT_DIGEST: ${{ steps.candidate.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          PRESENT: ${{ steps.existing.outputs.present }}
+        run: |
+          if [ "${PRESENT}" = "true" ]; then
+            digest="${EXISTING_DIGEST}"
+            reused=true
+          else
+            digest="${BUILT_DIGEST}"
+            reused=false
+          fi
+          case "${digest}" in
+            sha256:*) ;;
+            *) echo "Release candidate did not resolve to an OCI digest." >&2; exit 1 ;;
+          esac
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "reused=${reused}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke every candidate platform
+        if: steps.existing.outputs.present == 'false'
+        env:
+          DIGEST: ${{ steps.release.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          PLATFORMS: ${{ matrix.platforms }}
+          SMOKE_COMMAND: ${{ matrix.smokeCommand }}
+        run: |
+          IFS=',' read -ra platforms <<< "${PLATFORMS}"
+          for platform in "${platforms[@]}"; do
+            docker run --rm --platform "${platform}" "${IMAGE}@${DIGEST}" "${SMOKE_COMMAND}"
+          done
+
+      - name: Promote the smoked digest
+        if: steps.existing.outputs.present == 'false'
+        env:
+          DIGEST: ${{ steps.release.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          PRERELEASE: ${{ steps.image.outputs.prerelease }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
+        run: |
+          tags=(--tag "${VERSION_TAG}" --tag "${VERSION_WITHOUT_V_TAG}" --tag "${SHA_TAG}")
+          if [ "${PRERELEASE}" = "false" ]; then
+            tags+=(--tag "${IMAGE}:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${DIGEST}"
+
+      - name: Verify promoted identity
+        env:
+          DIGEST: ${{ steps.release.outputs.digest }}
+          LATEST_BEFORE: ${{ steps.existing.outputs.latest_before }}
+          LATEST_TAG: ${{ steps.image.outputs.latest_tag }}
+          PRERELEASE: ${{ steps.image.outputs.prerelease }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          VERSION_WITHOUT_V_TAG: ${{ steps.image.outputs.version_without_v_tag }}
+        run: |
+          node scripts/release-image-state.mjs \
+            --version-tag "${VERSION_TAG}" \
+            --version-without-v-tag "${VERSION_WITHOUT_V_TAG}" \
+            --sha-tag "${SHA_TAG}" \
+            --latest-tag "${LATEST_TAG}" > release-image-state-after.txt
+          grep -Fx "present=true" release-image-state-after.txt
+          grep -Fx "digest=${DIGEST}" release-image-state-after.txt
+          latest_after="$(sed -n 's/^latest_before=//p' release-image-state-after.txt)"
+          if [ "${PRERELEASE}" = "true" ]; then
+            [ "${latest_after}" = "${LATEST_BEFORE}" ] || { echo "Prerelease changed latest." >&2; exit 1; }
+          else
+            [ "${latest_after}" = "${DIGEST}" ] || { echo "Stable release did not promote latest." >&2; exit 1; }
+          fi
 
       - name: Verify public worker base anonymous pull
         if: matrix.anonymousPull
         env:
-          DIGEST: ${{ steps.publish.outputs.digest }}
+          DIGEST: ${{ steps.release.outputs.digest }}
           IMAGE: ${{ steps.image.outputs.image }}
         run: |
           docker logout ghcr.io
           docker buildx imagetools inspect "${IMAGE}@${DIGEST}"
 
-      - name: Summarize image digest
-        run: |
-          {
-            echo "### ${{ matrix.id }}"
-            echo ""
-            echo "- Image: \`${{ steps.image.outputs.image }}\`"
-            echo "- Digest: \`${{ steps.publish.outputs.digest }}\`"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Write image release notes
+      - name: Write image release record
         env:
+          ANONYMOUS_PULL: ${{ matrix.anonymousPull }}
+          DIGEST: ${{ steps.release.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          IMAGE_ID: ${{ matrix.id }}
           IMAGE_TAGS: ${{ steps.image.outputs.tags }}
+          PRERELEASE: ${{ steps.image.outputs.prerelease }}
+          REUSED: ${{ steps.release.outputs.reused }}
         run: |
-          mkdir -p release-notes
+          mkdir -p release-records
           {
-            echo "### ${{ matrix.id }}"
+            echo "### ${IMAGE_ID}"
             echo ""
-            echo "- Image: \`${{ steps.image.outputs.image }}\`"
-            echo "- Digest: \`${{ steps.publish.outputs.digest }}\`"
+            echo "- Image: \`${IMAGE}\`"
+            echo "- Digest: \`${DIGEST}\`"
+            echo "- Reused immutable release identity: \`${REUSED}\`"
             echo "- Tags:"
-            while IFS= read -r tag; do
-              echo "  - \`${tag}\`"
-            done <<< "${IMAGE_TAGS}"
-          } > "release-notes/${{ matrix.id }}.md"
+            while IFS= read -r tag; do echo "  - \`${tag}\`"; done <<< "${IMAGE_TAGS}"
+          } > "release-records/${IMAGE_ID}.md"
+          node <<'NODE' > "release-records/${IMAGE_ID}.json"
+          const record = {
+            id: process.env.IMAGE_ID,
+            image: process.env.IMAGE,
+            digest: process.env.DIGEST,
+            anonymousPull: process.env.ANONYMOUS_PULL === 'true',
+            prerelease: process.env.PRERELEASE === 'true',
+            reused: process.env.REUSED === 'true',
+            tags: process.env.IMAGE_TAGS.split('\n').filter(Boolean),
+          };
+          process.stdout.write(`${JSON.stringify(record, null, 2)}\n`);
+          NODE
+          cat "release-records/${IMAGE_ID}.md" >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Upload image release notes
-        uses: actions/upload-artifact@v4
+      - name: Upload image release record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-image-${{ matrix.id }}
-          path: release-notes/${{ matrix.id }}.md
+          path: release-records/
           if-no-files-found: error
 
   github-release:
-    name: GitHub Release notes
+    name: Publish GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs:
+      - package-release-assets
       - publish-container-images
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download image release notes
-        uses: actions/download-artifact@v4
+      - name: Download image release records
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-image-*
-          path: release-notes
+          path: release-records
           merge-multiple: true
 
+      - name: Download portable release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-portable-assets
+          path: portable-assets
+
       - name: Create release notes
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
         run: |
+          visibility=public
+          if [ "${REPOSITORY_PRIVATE}" = "true" ]; then visibility=private; fi
+          checksum="$(cut -d ' ' -f1 portable-assets/SHA256SUMS)"
           {
             echo "# OpenKit ${GITHUB_REF_NAME}"
             echo ""
             echo "- Source commit: \`${GITHUB_SHA}\`"
             echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Repository visibility at publication: \`${visibility}\`"
+            echo "- Portable Skill SHA-256: \`${checksum}\`"
             echo ""
             echo "## Images"
             echo ""
-            cat release-notes/*.md
+            cat release-records/*.md
             echo ""
-            echo "## Release Gate"
+            echo "## Automatic Gates"
             echo ""
             echo "- L0-L2 static, unit, and contract verification passed."
             echo "- L3 NanoCore e2e passed."
-            echo "- L5 smoke passed."
-            echo "- Release image build, smoke, and GHCR publish passed."
-            echo "- Public worker base anonymous exact-digest inspection passed."
+            echo "- L5 built-artifact smoke passed."
+            echo "- Every release image platform passed smoke before tag promotion."
+            echo "- Public worker-common anonymous exact-digest inspection passed."
+            echo "- The portable Skill archive and checksum passed local verification."
             echo ""
             echo "## Manual Gates"
             echo ""
-            echo "- L4 Web e2e and L6 story acceptance remain manual confidence gates for this release policy."
+            echo "- L4 Web e2e and L6 story acceptance were not required by the automatic release policy."
+            echo ""
+            echo "## Current Limitation"
+            echo ""
+            echo "- NanoHost is not distributed in this release candidate, so supported Worker Agent execution is unavailable from this bundle."
           } > release-notes.md
 
-      - name: Create or update GitHub Release
+      - name: Create immutable GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md
-          else
-            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag --title "${GITHUB_REF_NAME}" --notes-file release-notes.md
+            draft="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft)"
+            [ "${draft}" = "false" ] || { echo "Existing draft release requires operator inspection." >&2; exit 1; }
+            echo "Existing published GitHub Release is immutable; continuing to verification."
+            exit 0
           fi
+          release_flags=(--verify-tag --title "${GITHUB_REF_NAME}" --notes-file release-notes.md)
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+          else
+            release_flags+=(--latest)
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            "portable-assets/openkit-skill-${GITHUB_REF_NAME}.tar.gz" \
+            portable-assets/SHA256SUMS \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${release_flags[@]}"
+
+  verify-release:
+    name: Verify published release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - test-image
+      - github-release
+      - publish-container-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image release records
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-image-*
+          path: release-records
+          merge-multiple: true
+
+      - name: Verify every published image digest
+        run: |
+          node <<'NODE' > release-records.tsv
+          const fs = require('node:fs');
+          const path = require('node:path');
+          for (const name of fs.readdirSync('release-records').filter((name) => name.endsWith('.json')).sort()) {
+            const record = JSON.parse(fs.readFileSync(path.join('release-records', name), 'utf8'));
+            process.stdout.write(`${record.id}\t${record.image}\t${record.digest}\n`);
+          }
+          NODE
+          resolve_digest() {
+            docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}'
+          }
+          version="${GITHUB_REF_NAME#v}"
+          short_sha="${GITHUB_SHA:0:12}"
+          while IFS=$'\t' read -r id image digest; do
+            for tag in "${GITHUB_REF_NAME}" "${version}" "sha-${short_sha}"; do
+              [ "$(resolve_digest "${image}:${tag}")" = "${digest}" ] || { echo "Post-publish mismatch for ${id}:${tag}." >&2; exit 1; }
+            done
+            if [[ "${GITHUB_REF_NAME}" != *-* ]]; then
+              [ "$(resolve_digest "${image}:latest")" = "${digest}" ] || { echo "Post-publish latest mismatch for ${id}." >&2; exit 1; }
+            fi
+          done < release-records.tsv
+
+      - name: Download and verify GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEST_IMAGE: ${{ needs.test-image.outputs.image }}
+        run: |
+          release_json="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,assets,body)"
+          mkdir release-download
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir release-download
+          checksum="$(cut -d ' ' -f1 release-download/SHA256SUMS)"
+          CHECKSUM="${checksum}" RELEASE_JSON="${release_json}" node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const release = JSON.parse(process.env.RELEASE_JSON);
+          const expectedPrerelease = process.env.GITHUB_REF_NAME.includes('-');
+          const names = release.assets.map((asset) => asset.name).sort();
+          const expected = ['SHA256SUMS', `openkit-skill-${process.env.GITHUB_REF_NAME}.tar.gz`].sort();
+          if (release.tagName !== process.env.GITHUB_REF_NAME || release.isDraft || release.isPrerelease !== expectedPrerelease) {
+            throw new Error('GitHub Release identity or state does not match the tag.');
+          }
+          if (JSON.stringify(names) !== JSON.stringify(expected)) {
+            throw new Error(`GitHub Release assets differ: ${names.join(', ')}`);
+          }
+          const required = [
+            process.env.GITHUB_SHA,
+            '/actions/runs/',
+            'Repository visibility at publication:',
+            `Portable Skill SHA-256: \`${process.env.CHECKSUM}\``,
+            '## Automatic Gates',
+            '## Manual Gates',
+            'NanoHost is not distributed',
+          ];
+          for (const name of fs.readdirSync('release-records').filter((name) => name.endsWith('.json'))) {
+            required.push(JSON.parse(fs.readFileSync(path.join('release-records', name), 'utf8')).digest);
+          }
+          for (const requiredEntry of required) {
+            if (!release.body.includes(requiredEntry)) throw new Error(`GitHub Release notes omit ${requiredEntry}.`);
+          }
+          NODE
+          (cd release-download && sha256sum -c SHA256SUMS)
+          archive="release-download/openkit-skill-${GITHUB_REF_NAME}.tar.gz"
+          prefix="openkit-skill-${GITHUB_REF_NAME}"
+          tar -tzf "${archive}" | grep -Fx "${prefix}/LICENSE"
+          tar -tzf "${archive}" | grep -Fx "${prefix}/skills/openkit/SKILL.md"
+          tar -tzf "${archive}" | grep -Fx "${prefix}/skills/openkit/scripts/openkit"
+          mkdir release-extract
+          tar -xzf "${archive}" -C release-extract
+          docker run --rm \
+            --volume "${PWD}/release-extract:/release:ro" \
+            "${TEST_IMAGE}" \
+            node "/release/${prefix}/skills/openkit/scripts/openkit" ops search workspace
+
+      - name: Verify public worker base without registry credentials
+        run: |
+          common="$(node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const records = fs.readdirSync('release-records')
+            .filter((name) => name.endsWith('.json'))
+            .map((name) => JSON.parse(fs.readFileSync(path.join('release-records', name), 'utf8')))
+            .filter((record) => record.anonymousPull === true);
+          if (records.length !== 1) throw new Error(`Expected one anonymous-pull image record, found ${records.length}.`);
+          process.stdout.write(`${records[0].image}@${records[0].digest}`);
+          NODE
+          )"
+          docker logout ghcr.io
+          docker buildx imagetools inspect "${common}"

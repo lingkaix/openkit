@@ -6,13 +6,18 @@ The current workflow policy is intentionally resource-light:
 
 - Pull requests run only the lightweight repository check.
 - Ordinary branch pushes do not run CI.
-- Version tags matching `v*.*.*` or `V*.*.*` run the release gate through L0-L3 and L5, then publish release container images to GHCR.
+- Lowercase version tags matching `v*.*.*` run the release gate through L0-L3 and L5, then publish the controlled release bundle.
 - L4 Web e2e is a manual workflow-dispatch gate. Agent-first L6 story acceptance has no GitHub Actions job.
-- Release tags run `scripts/release-preflight.mjs` before image publishing to validate tag shape, package versions, main-branch ancestry, the image manifest, and release worker base image digests.
-- Container publishing reads `containers/images.json`, passes each optional `target` to both smoke and publish builds, pushes only entries where `release` is `true`, and verifies the empty-declared-runtime public worker base by a logged-out exact-digest inspection.
-- Published images receive OCI labels, GHCR tags, digest summaries, and GitHub Release notes.
+- Release tags run `scripts/release-preflight.mjs` before publication to validate lowercase tag shape, current prerelease admission, main-branch ancestry, portable Skill inputs, the image manifest, and every release image base digest.
+- Portable publishing uses `scripts/package-release-assets.mjs` to archive the complete `skills/openkit/` tree and `LICENSE` from the tagged Git revision and write `SHA256SUMS`.
+- Container publishing reads `containers/images.json`, pushes only digest-addressed candidates for entries where `release` is `true`, smokes the exact digest on every declared platform, and only then promotes that digest to release tags.
+- Same-tag reruns reuse a complete version, version-without-`v`, and source-revision identity, while partial or conflicting identities fail closed; each new release tag uses a commit that has not already been released.
+- Release tag workflows are serialized, third-party Actions are commit-pinned, and OCI creation time comes from the release commit.
+- The terminal job verifies GitHub Release state and attachments, every image tag and digest, stable or prerelease `latest` behavior, the bundled Skill under the supported Node runtime, and the public worker base through a logged-out exact-digest inspection.
 
 The detailed testing strategy is documented in `docs/specs/20260529-test_strategy.md`.
+
+The release contract and operator sequence are documented in `docs/specs/20260829-release_management.md` and `docs/cookbooks/release.md`.
 
 The detailed L6 story acceptance design is documented in `docs/specs/20260529-l6_story_acceptance.md`.
 
@@ -34,7 +39,7 @@ Future agentic workflow jobs must stay manual unless the L6 spec and release pol
 
 ## Validation
 
-Run `pnpm -w check:repo` after workflow changes.
+Run `node --test tests/release-workflow.test.mjs tests/release-preflight.test.mjs tests/release-image-state.test.mjs tests/package-release-assets.test.mjs` and `pnpm -w check:repo` after release-workflow changes.
 
 Run `git diff --check` before finishing.
 

@@ -16,6 +16,8 @@ This spec does not own NanoCore workflow state, App API routes, Core protocol re
 
 It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_catalog_versioning_pinning.md`, Agent Environment Package Skill supply, public Skill marketplace design, generic shell access, arbitrary HTTP access, or a repository-developer workflow.
 
+It does not own product-wide release identity, authorization, channels, retry, or completion, which are owned by `docs/specs/20260829-release_management.md`.
+
 ## Core References
 
 - `docs/core/architecture.md`
@@ -33,6 +35,7 @@ Related specs:
 ## Related Docs
 
 - `docs/specs/20260721-provider_subscription_accounts.md`
+- `docs/specs/20260829-release_management.md`
 
 ## Summary
 
@@ -104,7 +107,9 @@ The executable is part of the same versioned Skill artifact. It may be built fro
 
 The first distribution is a single-file JavaScript executable with a `node` launcher contract and no runtime package installation, `node_modules`, package-manager command, or OpenKit source checkout. The supported host must provide Node.js 24, matching the repository runtime contract; a different self-contained runtime packaging model requires a later accepted spec change.
 
-The release artifact is the complete `skills/openkit/` directory. A host installs or updates that directory as one unit through its native Skill mechanism; OpenKit does not publish or install a separate CLI package for this interface.
+The logical release artifact is the complete `skills/openkit/` directory. A host installs or updates that directory as one unit through its native Skill mechanism; OpenKit does not publish or install a separate CLI package for this interface.
+
+The GitHub Release attachment is `openkit-skill-<tag>.tar.gz`, with one `openkit-skill-<tag>/` envelope containing the repository `LICENSE` and the complete `skills/openkit/` tree. The sibling `SHA256SUMS` file is the portable checksum authority for that archive.
 
 The CLI calls only public NanoCore behavior through `@openkit/core-client` and shared schemas. It must not import NanoCore implementation, storage, runtime, or adapter modules.
 
@@ -387,6 +392,8 @@ All ten provider-subscription operations are present in the existing literal `ap
 The seven NanoHost transport operations map through that same generic path to `client.app` methods and shared App API schemas. They write secrets only to named execution-host slots and return redacted inventory; they add no CLI credential destination, alias, or second delivery path.
 
 Repository checks enforce public-operation coverage and reject a reachable user-facing MCP package, binary, import, script, release step, Skill metadata entry, active-guide projection, or one of the four former Skill directories. The former user-facing MCP implementation and its dedicated acceptance platform are deleted without an alias or compatibility path.
+
+`scripts/package-release-assets.mjs` now archives the complete Skill and repository license from the tagged Git revision, preserves the executable bit of `skills/openkit/scripts/openkit`, and writes `SHA256SUMS`; the tag workflow publishes and independently verifies those two portable assets.
 
 NanoCore remains authoritative for validation, authorization, idempotency, state, recovery, audit, and execution. Worker-side MCP remains a separate accepted capability plane, and current worker AEPs expose no capability routes. This spec remains `Partial` until the complete public user/operator operation surface satisfies the catalog-or-exclusion acceptance predicate; the provider-subscription subset is aligned and has no separate CLI or Skill package.
 

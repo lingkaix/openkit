@@ -587,11 +587,11 @@ describe('governed worker image contracts', () => {
     expect(buildScript).toContain(`docker build "\${docker_args[@]}" "\${context}"`);
   });
 
-  it('passes the manifest target through smoke and publish builds in release CI', () => {
+  it('passes the manifest target through the release candidate build', () => {
     const workflow = readFileSync(releaseWorkflowPath, 'utf8');
 
     expect(workflow).toContain("target: image.target || ''");
-    expect(workflow.match(/target: \$\{\{ matrix\.target \}\}/g)).toHaveLength(2);
+    expect(workflow.match(/target: \$\{\{ matrix\.target \}\}/g)).toHaveLength(1);
   });
 
   it('keeps the worker Codex version aligned with the vendored app-server schema', () => {

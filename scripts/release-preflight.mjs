@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /**
- * Validates release tag, package versions, image manifest, and optional main-branch ancestry.
+ * Validates release identity, portable inputs, image manifest, and optional main-branch ancestry.
  *
  * @param {object} input Validation input.
  * @param {string} input.repoRoot Repository root.
@@ -13,7 +13,8 @@ import { pathToFileURL } from 'node:url';
  * @param {boolean} [input.requireMain] Whether the tag commit must be contained in mainRef.
  * @param {string} [input.mainRef] Git ref that represents main.
  * @param {string} [input.sha] Commit sha for main ancestry validation.
- * @param {boolean} [input.requireReleaseWorkerDigests] Whether release worker base images must be digest-pinned.
+ * @param {boolean} [input.requirePrerelease] Whether the tag must identify a prerelease.
+ * @param {boolean} [input.requireReleaseImageDigests] Whether release image base images must be digest-pinned.
  * @returns {{ version: string, releaseImages: string[] }} Release summary.
  */
 export function validateReleasePreflight(input) {
@@ -23,21 +24,29 @@ export function validateReleasePreflight(input) {
   if (input.requireMain) {
     assertTagOnMain(repoRoot, input.sha, input.mainRef ?? 'origin/main');
   }
+  if (input.requirePrerelease && !version.includes('-')) {
+    throw new Error(
+      `Release tag must identify a prerelease until stable-release blockers close: ${input.tag}`
+    );
+  }
 
-  validatePackageVersions(repoRoot, version);
-  const releaseImages = validateImageManifest(repoRoot, Boolean(input.requireReleaseWorkerDigests));
+  validatePortableReleaseInputs(repoRoot);
+  const releaseImages = validateImageManifest(repoRoot, Boolean(input.requireReleaseImageDigests));
 
   return { version, releaseImages };
 }
 
 /**
- * Parses a release tag into the package version value.
+ * Parses a release tag into the product version value.
  *
  * @param {string} tag Tag name.
  * @returns {string} Version without leading v.
  */
 export function parseVersionTag(tag) {
-  const match = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/i.exec(tag);
+  const match =
+    /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9a-z-]*[a-z-][0-9a-z-]*)(?:\.(?:0|[1-9]\d*|[0-9a-z-]*[a-z-][0-9a-z-]*))*)?)$/.exec(
+      tag
+    );
   if (!match) {
     throw new Error(
       `Release tag must match v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-<pre>: ${tag}`
@@ -47,54 +56,32 @@ export function parseVersionTag(tag) {
 }
 
 /**
- * Verifies that all release workspace package versions match the release tag version.
+ * Verifies that the portable release inputs exist and the bundled CLI remains executable.
  *
  * @param {string} repoRoot Repository root.
- * @param {string} version Expected package version.
  */
-function validatePackageVersions(repoRoot, version) {
-  for (const packageJsonPath of listPackageJsonPaths(repoRoot)) {
-    const pkg = readJson(packageJsonPath);
-    if (pkg.version !== version) {
-      throw new Error(
-        `Package version mismatch: ${relative(repoRoot, packageJsonPath)} has ${pkg.version ?? '<missing>'}, expected ${version}`
-      );
-    }
+function validatePortableReleaseInputs(repoRoot) {
+  for (const path of [
+    'LICENSE',
+    'skills/openkit/SKILL.md',
+    'skills/openkit/agents/openai.yaml',
+    'skills/openkit/scripts/openkit',
+  ]) {
+    assertRelativeExistingPath(repoRoot, path, 'Portable release input');
   }
-}
-
-/**
- * Lists package.json files that belong to the release workspace.
- *
- * @param {string} repoRoot Repository root.
- * @returns {string[]} Package manifest paths.
- */
-function listPackageJsonPaths(repoRoot) {
-  const paths = [join(repoRoot, 'package.json')];
-
-  for (const parent of ['apps', 'packages']) {
-    const parentPath = join(repoRoot, parent);
-    if (!existsSync(parentPath)) {
-      continue;
-    }
-    for (const entry of readdirSync(parentPath, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        paths.push(join(parentPath, entry.name, 'package.json'));
-      }
-    }
+  if ((statSync(join(repoRoot, 'skills/openkit/scripts/openkit')).mode & 0o111) === 0) {
+    throw new Error('Bundled Skill CLI must be executable: skills/openkit/scripts/openkit');
   }
-
-  return paths.filter((path) => existsSync(path));
 }
 
 /**
  * Validates the container image manifest and returns release image ids.
  *
  * @param {string} repoRoot Repository root.
- * @param {boolean} requireReleaseWorkerDigests Whether release worker images must be digest-pinned.
+ * @param {boolean} requireReleaseImageDigests Whether release images must be digest-pinned.
  * @returns {string[]} Release image ids.
  */
-function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
+function validateImageManifest(repoRoot, requireReleaseImageDigests) {
   const manifest = readJson(join(repoRoot, 'containers', 'images.json'));
 
   if (manifest.schemaVersion !== 1) {
@@ -119,7 +106,7 @@ function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
       ids,
       workerTargets,
       emptyDeclaredSetReleaseWorkers,
-      requireReleaseWorkerDigests
+      requireReleaseImageDigests
     );
     if (image.release === true) {
       releaseImages.push(image.id);
@@ -149,7 +136,7 @@ function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
  * @param {Set<string>} ids Seen image ids.
  * @param {Set<string>} workerTargets Seen worker Docker targets.
  * @param {string[]} emptyDeclaredSetReleaseWorkers Release worker ids whose declared runtime set is empty.
- * @param {boolean} requireReleaseWorkerDigests Whether release worker images must be digest-pinned.
+ * @param {boolean} requireReleaseImageDigests Whether release images must be digest-pinned.
  */
 function validateImageEntry(
   repoRoot,
@@ -157,7 +144,7 @@ function validateImageEntry(
   ids,
   workerTargets,
   emptyDeclaredSetReleaseWorkers,
-  requireReleaseWorkerDigests
+  requireReleaseImageDigests
 ) {
   for (const field of [
     'id',
@@ -180,6 +167,10 @@ function validateImageEntry(
   }
   ids.add(image.id);
 
+  if (image.anonymousPull !== undefined && typeof image.anonymousPull !== 'boolean') {
+    throw new Error(`Image ${image.id} anonymousPull must be a boolean when present.`);
+  }
+
   if (!['app', 'worker', 'test'].includes(image.kind)) {
     throw new Error(`Image ${image.id} has invalid kind: ${image.kind}`);
   }
@@ -188,6 +179,12 @@ function validateImageEntry(
   }
   assertRelativeExistingPath(repoRoot, image.dockerfile, `Image ${image.id} dockerfile`);
   assertRelativeExistingPath(repoRoot, image.smoke, `Image ${image.id} smoke`);
+
+  if (image.release === true && requireReleaseImageDigests) {
+    if (!/^.+@sha256:[a-f0-9]{64}$/.test(String(image.baseImage ?? ''))) {
+      throw new Error(`Release image ${image.id} must use a digest-pinned baseImage.`);
+    }
+  }
 
   if (image.kind === 'worker') {
     for (const field of ['baseImage', 'target']) {
@@ -225,15 +222,19 @@ function validateImageEntry(
       );
     }
     if (!hasRuntime && image.release === true) {
+      if (image.anonymousPull !== true) {
+        throw new Error(`Public release worker base ${image.id} must declare anonymousPull: true.`);
+      }
       emptyDeclaredSetReleaseWorkers.push(image.id);
+    } else if (image.anonymousPull === true) {
+      throw new Error(
+        `Image ${image.id} may not declare anonymousPull: true; only the public release worker base may do so.`
+      );
     }
-    if (
-      image.release === true &&
-      requireReleaseWorkerDigests &&
-      !String(image.baseImage).includes('@sha256:')
-    ) {
-      throw new Error(`Release worker image ${image.id} must use a digest-pinned baseImage.`);
-    }
+  } else if (image.anonymousPull === true) {
+    throw new Error(
+      `Image ${image.id} may not declare anonymousPull: true; only the public release worker base may do so.`
+    );
   }
 }
 
@@ -293,14 +294,21 @@ function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === '--') {
+      continue;
+    }
     if (!arg.startsWith('--')) {
       throw new Error(`Unexpected argument: ${arg}`);
     }
     const key = arg.slice(2);
-    if (['require-main', 'require-release-worker-digests'].includes(key)) {
+    if (key === 'require-main') {
       args[key] = true;
     } else {
-      args[key] = argv[++index];
+      const value = argv[++index];
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error(`Missing value for --${key}.`);
+      }
+      args[key] = value;
     }
   }
   return args;
@@ -315,7 +323,8 @@ function main() {
     mainRef: String(args['main-ref'] ?? 'origin/main'),
     repoRoot: String(args['repo-root'] ?? process.cwd()),
     requireMain: Boolean(args['require-main']),
-    requireReleaseWorkerDigests: Boolean(args['require-release-worker-digests']),
+    requirePrerelease: true,
+    requireReleaseImageDigests: true,
     sha: args.sha ? String(args.sha) : undefined,
     tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
   });

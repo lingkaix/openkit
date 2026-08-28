@@ -24,6 +24,7 @@ implementation: Partial
 - Runtime Epoch lifecycle, Sandbox Integration, RelayStream, route credentials, and runtime transport, which are owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 - Kubernetes, Helm, Docker Compose, installer, desktop-app, or platform-specific deployment packaging.
 - npm package publishing, language package versioning, or third-party marketplace distribution.
+- Product-wide release composition, authorization, retry, and completion semantics, which are owned by `docs/specs/20260829-release_management.md`.
 
 ## Core References
 
@@ -45,6 +46,7 @@ implementation: Partial
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-openshell_mechanism_internalization.md`
 - `docs/specs/20260529-test_strategy.md`
+- `docs/specs/20260829-release_management.md`
 
 ## Summary
 
@@ -130,7 +132,7 @@ The repository-owned image classes are:
 
 | Image id | Release artifact | Purpose | Base image rule |
 | --- | --- | --- | --- |
-| `app` | Yes | Product app image containing NanoCore, Web UI, public HTTP entrypoint, migrations, and data templates. | Use a pinned Node runtime base that matches repository Node policy. |
+| `app` | Yes | Product app image containing NanoCore, Web UI, public HTTP entrypoint, migrations, and data templates. | Use the digest-pinned Node runtime base declared in the image catalog and matching repository Node policy. |
 | `worker-common` | Yes | Published public extension base carrying the shared development environment and worker shim, with an empty declared runtime set. It is the extension point for the current deployment leaves and for user or secondary-developer sandbox images. It is not the `test-env` base. | Use the pinned digest-addressed upstream base under Worker Base Image Policy. |
 | `worker-codex` | Yes | OpenShell sandbox payload for Codex worker execution through OpenKit worker shim. Current leaf whose catalog-declared runtime set is Codex only. | Use the pinned shared OpenKit development stage and add only the Codex runtime leaf. |
 | `worker-opencode` | Yes | OpenShell sandbox payload for OpenCode worker execution through OpenKit worker shim. Current leaf whose catalog-declared runtime set is OpenCode only. | Use the pinned shared OpenKit development stage and add only the OpenCode runtime leaf. |
@@ -163,6 +165,7 @@ The manifest must be valid JSON and must include:
       "context": ".",
       "kind": "app",
       "release": true,
+      "baseImage": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
       "platforms": ["linux/amd64", "linux/arm64"],
       "smoke": "containers/app/smoke.sh",
       "smokeCommand": "openkit-app-smoke",
@@ -185,14 +188,17 @@ Each image entry must include:
 - `smokeCommand`: in-container smoke command installed by the image.
 - `localTag`: local development image tag used by helper scripts.
 
+Every release image entry must also include `baseImage`, a digest-pinned direct base reference.
+
+`anonymousPull` is an optional boolean publication predicate; exactly one public release worker base sets it to `true`, and every other entry omits it or sets it to `false`.
+
 Deployment worker image entries must also include:
 
 - `runtime`: a non-empty string containing singular descriptive catalog metadata for a current leaf, such as `codex`, `opencode`, or `pi`. Omit this field when the declared runtime set is empty. Do not add a `runtimes` array until the first published multi-runtime artifact migrates this metadata together with CI, preflight, and OCI-label consumers.
-- `baseImage`: pinned base image reference. Release worker images must use a digest-pinned reference.
 - `workerContract`: a non-empty string containing the OpenKit worker contract version, initially `openkit-worker-v1`. Required exactly when runtime metadata exists, and forbidden when it does not.
 - `target`: unique shared-Dockerfile build target.
 
-A public release worker base is identified structurally by absent `runtime`, not by a reserved image id. That entry must include `baseImage` and `target`, must omit `runtime` and `workerContract`, and remains `kind: worker` so the existing catalog and release path can build, smoke, and publish it without a parallel image class. The current such entry is `worker-common`. Release preflight must require exactly one empty-declared-set release worker base and must not special-case an image id.
+A public release worker base is identified structurally by absent `runtime` and explicit `anonymousPull: true`, not by a reserved image id. That entry must include `baseImage` and `target`, must omit `runtime` and `workerContract`, and remains `kind: worker` so the existing catalog and release path can build, smoke, publish, and verify it without a parallel image class. The current such entry is `worker-common`. Release preflight must require exactly one such release worker base and must not special-case an image id.
 
 The authored `AgentManifest`, not this packaging catalog or a backend-global environment variable, selects the governed image reference and declares the runtime binary ids and absolute worker-local executable paths. NanoCore resolves that declaration into the AEP without a runtime-specific image branch. `control.adapter.targetRuntime` selects exactly one adapter per session. The image entry records how the selected artifact is built, smoked, and published; it is not a second runtime selector, and image contents confer no authority.
 
@@ -354,7 +360,13 @@ The publish job must run only after release-gate jobs pass.
 
 The publish job must build only manifest entries where `release` is `true`.
 
-The publish job must emit a digest summary for every pushed image.
+The publish job must push one digest-only candidate, smoke that exact digest on every cataloged platform, and assign release tags only after every platform passes.
+
+The publish job must derive mutable metadata from the release commit, serialize tag workflows, and reuse a complete same-tag identity only when its version, version-without-`v`, and source-revision tags resolve to the same digest.
+
+A partial or conflicting existing tag identity must fail closed.
+
+The publish job must emit a digest summary for every promoted or reused image.
 
 The digest summary must be available as a GitHub Actions summary and should be copied into GitHub Release notes.
 
@@ -376,6 +388,8 @@ Published images must include OCI labels:
 
 Labels must not include secrets, local paths, private gateway names, or user-specific runtime data.
 
+`org.opencontainers.image.created` must use the source commit timestamp so a same-tag rebuild is deterministic, and `org.opencontainers.image.licenses` must be `Apache-2.0` while the repository's current license remains in force.
+
 ### CI Gate Policy
 
 The existing CI workflow remains the release gate owner.
@@ -395,7 +409,7 @@ L4 Web browser e2e and deterministic L6 stories remain manual unless the testing
 
 Image publishing must not start if L0-L3 or L5 fails.
 
-Image publishing must not start if image smoke fails.
+Release tag promotion must not start if exact-digest image smoke fails.
 
 ### Local Script Policy
 
@@ -543,7 +557,7 @@ The first layout migration retained the existing Node base. The accepted 2026-07
 
 The existing `CI` workflow should keep release-gate jobs split by test layer.
 
-The image publish path should be added as one or two jobs:
+The image publish path is catalog-driven:
 
 ```text
 image-matrix
@@ -552,9 +566,9 @@ image-matrix
 
 publish-images
   -> needs L0-L2, L3, L5, and image-matrix
-  -> builds each release image
-  -> runs each image smoke check
-  -> pushes to GHCR
+  -> pushes each multi-platform image as a digest-only candidate
+  -> smokes the same digest on every declared platform
+  -> promotes that digest to release tags
   -> emits digest summary
 ```
 
@@ -585,11 +599,11 @@ Pre-release tags do not update `latest`.
 
 ### Image Promotion
 
-OpenKit does not need a separate promotion registry in the first implementation.
+OpenKit uses GHCR's digest namespace as the temporary candidate boundary and does not need a separate promotion registry.
 
-The release tag build is the publishing build.
+The release tag build pushes an untagged digest, and `docker buildx imagetools create` assigns release tags only after that exact digest passes every platform smoke check.
 
-If release reproducibility later requires build-once-promote-later, that can be added as a registry promotion flow without changing the image taxonomy.
+Same-tag reruns reuse a complete, matching immutable identity and build only absent image identities.
 
 ## Current Implementation
 
@@ -633,7 +647,8 @@ Release workflow state:
 
 - `.github/workflows/ci.yml` runs on version tags and manual dispatch.
 - Version tags run the release gate through L0-L3 and L5.
-- After the release gate passes, the workflow publishes `release: true` images from `containers/images.json` to GHCR.
+- After the release gate passes, the workflow pushes, smokes, and promotes `release: true` images from `containers/images.json`, then verifies every published digest.
+- The workflow packages the complete end-user Skill, creates an immutable GitHub Release, and runs the product-wide completion predicates owned by `docs/specs/20260829-release_management.md`.
 
 Runtime default state:
 
@@ -646,7 +661,8 @@ The current catalog contains separate Codex, OpenCode, and Pi worker images. Eac
 
 Release worker base state:
 
-- `containers/images.json` pins all current worker `baseImage` values to `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and selects one unique target per worker artifact.
+- `containers/images.json` pins every current release `baseImage` value to `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and selects one unique target per worker artifact.
+- Both app Dockerfile stages use that exact cataloged digest.
 - `containers/workers/Dockerfile` uses that digest-pinned Node base for the shared shim-builder and common stages, then adds exactly the catalog-declared runtime set in each final target.
 - `test-env` is an internal sibling that pins the same Node digest in its own Dockerfile and does not derive `FROM worker-common`. After first `worker-common` GHCR publication, one internal `release: false` `kind: test` dogfood image may derive that published digest with Codex plus Pi and without OpenCode; that image is design and backlog only here.
 
@@ -733,8 +749,8 @@ Manifest validation:
 - Every `id` is unique.
 - Every release image has at least one platform.
 - Every deployment worker image has `runtime`, `baseImage`, `workerContract`, and a unique `target` consumed by local build scripts and release CI.
-- A release worker base is identified by absent `runtime`, has `baseImage` and a unique `target`, and has neither `runtime` nor `workerContract`. `workerContract` is required exactly when runtime metadata exists.
-- Every release worker image has a digest-pinned `baseImage`.
+- A release worker base is identified by absent `runtime` and explicit `anonymousPull: true`, has `baseImage` and a unique `target`, and has neither `runtime` nor `workerContract`. `workerContract` is required exactly when runtime metadata exists.
+- Every release image has a digest-pinned `baseImage`.
 - No manifest field contains an absolute local path.
 
 Dockerfile static tests:
@@ -806,8 +822,7 @@ CI acceptance:
 
 ## Open Questions
 
-- `[Non-blocking]` Should GitHub Release creation be automated in the same workflow, or should the first image publish flow only emit digest summaries for a human-created release?
-- `[Non-blocking]` Should `latest` be updated for every stable `v*.*.*` tag, or only for releases marked non-draft in GitHub Releases?
+- None.
 
 ## Deferred / Future Work
 
@@ -818,7 +833,6 @@ CI acceptance:
 - Kubernetes, Helm, or Compose packaging.
 - Desktop app packaging with bundled or external NanoCore.
 - Retagging or promoting a derived image built by a user from the published `worker-common` base; a derivation is the user's artifact and OpenKit publishes only its own catalog entries.
-- Dedicated registry promotion from release-candidate images to stable release images.
 
 ## Links
 
