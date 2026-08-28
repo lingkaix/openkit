@@ -199,6 +199,7 @@ Change plans are not indexed. List `docs/changes/` to see them.
 
 - `docs/manual/nanocore-data-root-config.en.md` — Accepted — This manual explains the user-editable files under `DATAROOT/config` for NanoCore.
 - `docs/manual/nanocore-deployment-modes.en.md` — Accepted — This manual explains the two supported NanoCore product modes and their shared NanoHost worker-runtime boundary.
+- `docs/manual/sandbox-container-tests.en.md` — Accepted — A Worker Agent sandbox carries the OpenKit worker baseline and can provision a declared toolchain through mise, and that sandbox cannot start a container of it…
 
 ## External Snapshots
 

@@ -103,7 +103,7 @@ test('states the ceiling exactly once, in the paragraph that owns it', () => {
     'gu'
   );
   const wordFigure = /(?<![\p{L}\p{N}_])\d[\d,_]*(?=(?:\s+words|\s*-\s*word)\b)/gu;
-  const literal = new RegExp(String.raw`at most ${CONTRACT_CEILING} words`, 'gu');
+  const literal = new RegExp(`at most ${CONTRACT_CEILING} words`, 'gu');
   const clause =
     contract.split('\n').find((line) => line.includes(`at most ${CONTRACT_CEILING} words`)) ?? '';
   /**

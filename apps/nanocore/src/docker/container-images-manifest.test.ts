@@ -39,7 +39,7 @@ interface ContainerImageEntry {
   readonly smokeCommand: string;
   /** Local development image tag used by helper scripts. */
   readonly localTag: string;
-  /** Worker runtime name when kind is worker. */
+  /** Singular catalog runtime for the current declared set; omit when that set is empty. */
   readonly runtime?: string;
   /** Upstream base image for worker and CI review. */
   readonly baseImage?: string;
@@ -55,13 +55,14 @@ describe('container image manifest', () => {
 
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.registry).toBe('ghcr.io');
-    expect(manifest.images.map((image) => image.id)).toEqual([
-      'app',
-      'worker-codex',
-      'worker-opencode',
-      'worker-pi',
-      'test-env',
-    ]);
+    expect(manifest.images.map((image) => image.id)).toEqual(
+      expect.arrayContaining([
+        'app',
+        'worker-common',
+        ...currentWorkerLeaves.map((leaf) => leaf.id),
+        'test-env',
+      ])
+    );
 
     for (const image of manifest.images) {
       expect(image.repository).toMatch(/^openkit-/);
@@ -77,31 +78,38 @@ describe('container image manifest', () => {
     }
   });
 
-  it('keeps every manifest-selected worker image explicit and releaseable', () => {
+  it('publishes worker-common as a releaseable empty declared runtime set', () => {
     const manifest = readManifest();
     const workers = manifest.images.filter((image) => image.kind === 'worker');
+    const base = workers.find((image) => image.id === 'worker-common');
 
-    expect(workers.map((image) => image.runtime)).toEqual(['codex', 'opencode', 'pi']);
-    expect(workers.map((image) => image.dockerfile)).toEqual([
-      'containers/workers/Dockerfile',
-      'containers/workers/Dockerfile',
-      'containers/workers/Dockerfile',
-    ]);
-    expect(workers.map((image) => image.target)).toEqual([
-      'worker-codex',
-      'worker-opencode',
-      'worker-pi',
-    ]);
-    expect(new Set(workers.map((image) => image.target)).size).toBe(workers.length);
-    for (const worker of workers) {
-      expect(worker).toMatchObject({
+    expect(base).toEqual(
+      expect.objectContaining({
+        dockerfile: 'containers/workers/Dockerfile',
         kind: 'worker',
         release: true,
-        target: worker.id,
+        smoke: 'containers/workers/openkit-worker-common-base-smoke.sh',
+        target: 'worker-common',
+      })
+    );
+    expect(base).not.toHaveProperty('runtime');
+    expect(base).not.toHaveProperty('workerContract');
+    expect(base?.baseImage).toBeTruthy();
+
+    for (const leaf of currentWorkerLeaves) {
+      const worker = workers.find((image) => image.id === leaf.id);
+
+      expect(worker).toMatchObject({
+        dockerfile: 'containers/workers/Dockerfile',
+        kind: 'worker',
+        release: true,
+        runtime: leaf.runtime,
+        target: leaf.id,
         workerContract: 'openkit-worker-v1',
       });
-      expect(worker.baseImage).toBeTruthy();
+      expect(worker?.baseImage).toBeTruthy();
     }
+    expect(new Set(workers.map((image) => image.target)).size).toBe(workers.length);
   });
 
   it('pins release worker base images by digest', () => {
@@ -110,7 +118,9 @@ describe('container image manifest', () => {
       (image) => image.kind === 'worker' && image.release
     );
 
-    expect(releaseWorkers.length).toBeGreaterThan(0);
+    expect(releaseWorkers.map((image) => image.id)).toEqual(
+      expect.arrayContaining(['worker-common', ...currentWorkerLeaves.map((leaf) => leaf.id)])
+    );
     for (const image of releaseWorkers) {
       expect(image.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/);
     }
@@ -126,6 +136,13 @@ describe('container image manifest', () => {
     });
   });
 });
+
+/** Current OpenKit worker leaves and their singular catalog-declared runtimes. */
+const currentWorkerLeaves = [
+  { id: 'worker-codex', runtime: 'codex' },
+  { id: 'worker-opencode', runtime: 'opencode' },
+  { id: 'worker-pi', runtime: 'pi' },
+] as const;
 
 /**
  * Reads the repository image manifest.

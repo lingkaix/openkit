@@ -19,6 +19,53 @@ test('release preflight accepts matching package versions and digest-pinned rele
   assert.deepEqual(result.releaseImages, ['app', 'worker-codex']);
 });
 
+test('release preflight accepts a structural release worker base with an empty declared runtime set', () => {
+  const repoRoot = makeReleaseFixture({ includeReleaseWorkerBase: true });
+
+  const result = validateReleasePreflight({
+    repoRoot,
+    requireReleaseWorkerDigests: true,
+    tag: 'v0.0.1',
+  });
+
+  assert.equal(result.version, '0.0.1');
+  assert.deepEqual(result.releaseImages, ['app', 'worker-base', 'worker-codex']);
+});
+
+test('release preflight rejects a structural empty-declared-set worker base that declares workerContract', () => {
+  const repoRoot = makeReleaseFixture({
+    baseHasWorkerContract: true,
+    includeReleaseWorkerBase: true,
+  });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /workerContract/
+  );
+});
+
+test('release preflight rejects more than one structural empty-declared-set worker base', () => {
+  const repoRoot = makeReleaseFixture({
+    includeReleaseWorkerBase: true,
+    includeSecondReleaseWorkerBase: true,
+  });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /empty declared|more than one|duplicate .*base/i
+  );
+});
+
 test('release preflight rejects package versions that do not match the tag', () => {
   const repoRoot = makeReleaseFixture({ packageVersion: '0.0.2' });
 
@@ -64,6 +111,62 @@ test('release preflight rejects unpinned release worker base images', () => {
   );
 });
 
+test('release preflight rejects deployment workers without a runtime', () => {
+  const repoRoot = makeReleaseFixture({ omitWorkerRuntime: true });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /Worker image worker-codex is missing runtime/
+  );
+});
+
+test('release preflight rejects deployment workers without a workerContract', () => {
+  const repoRoot = makeReleaseFixture({ omitWorkerContract: true });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /Worker image worker-codex is missing workerContract/
+  );
+});
+
+test('release preflight rejects non-string worker runtime metadata', () => {
+  const repoRoot = makeReleaseFixture({ workerRuntime: [] });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /runtime must be a non-empty string/
+  );
+});
+
+test('release preflight rejects non-string worker contract metadata', () => {
+  const repoRoot = makeReleaseFixture({ workerContract: [] });
+
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /workerContract must be a non-empty string/
+  );
+});
+
 test('release preflight rejects worker images without an explicit build target', () => {
   const repoRoot = makeReleaseFixture({ omitWorkerTarget: true });
 
@@ -82,9 +185,16 @@ test('release preflight rejects worker images without an explicit build target',
  * Creates a small release-shaped repository fixture.
  *
  * @param {object} [options] Fixture options.
+ * @param {boolean} [options.baseHasWorkerContract] Whether the structural empty-declared-set base also declares workerContract.
+ * @param {boolean} [options.includeReleaseWorkerBase] Whether to add one structural worker base with an empty declared runtime set.
+ * @param {boolean} [options.includeSecondReleaseWorkerBase] Whether to add a second structural empty-declared-set worker base.
  * @param {string} [options.packageVersion] Version written into the workspace package.
+ * @param {boolean} [options.omitWorkerContract] Whether to omit the deployment workerContract.
+ * @param {boolean} [options.omitWorkerRuntime] Whether to omit the deployment worker runtime.
  * @param {boolean} [options.omitWorkerTarget] Whether to omit the worker Docker target.
  * @param {string} [options.workerBaseImage] Worker base image manifest value.
+ * @param {unknown} [options.workerContract] Worker contract fixture value.
+ * @param {unknown} [options.workerRuntime] Worker runtime fixture value.
  * @returns {string} Temporary repository root.
  */
 function makeReleaseFixture(options = {}) {
@@ -92,6 +202,8 @@ function makeReleaseFixture(options = {}) {
   const version = '0.0.1';
   const packageVersion = options.packageVersion ?? version;
   const workerBaseImage = options.workerBaseImage ?? 'node:24-bookworm-slim@sha256:abc123';
+  const includeReleaseWorkerBase = options.includeReleaseWorkerBase === true;
+  const includeSecondReleaseWorkerBase = options.includeSecondReleaseWorkerBase === true;
 
   writeJson(join(root, 'package.json'), {
     name: 'fixture-root',
@@ -116,6 +228,14 @@ function makeReleaseFixture(options = {}) {
     writeFileSync(join(root, 'containers', image, 'Dockerfile'), 'FROM scratch\n');
     writeFileSync(join(root, 'containers', image, 'smoke.sh'), '#!/usr/bin/env bash\n');
   }
+  if (includeReleaseWorkerBase || includeSecondReleaseWorkerBase) {
+    mkdirSync(join(root, 'containers', 'workers'), { recursive: true });
+    writeFileSync(join(root, 'containers', 'workers', 'Dockerfile'), 'FROM scratch\n');
+    writeFileSync(
+      join(root, 'containers', 'workers', 'openkit-worker-common-base-smoke.sh'),
+      '#!/usr/bin/env bash\n'
+    );
+  }
 
   writeJson(join(root, 'containers', 'images.json'), {
     schemaVersion: 1,
@@ -133,15 +253,36 @@ function makeReleaseFixture(options = {}) {
         smokeCommand: 'openkit-app-smoke',
         localTag: 'openkit/app:dev',
       },
+      ...(includeReleaseWorkerBase
+        ? [
+            makeReleaseWorkerBaseEntry({
+              hasWorkerContract: options.baseHasWorkerContract === true,
+              id: 'worker-base',
+              repository: 'openkit-worker-base',
+              target: 'worker-base',
+            }),
+          ]
+        : []),
+      ...(includeSecondReleaseWorkerBase
+        ? [
+            makeReleaseWorkerBaseEntry({
+              id: 'worker-extension-base',
+              repository: 'openkit-worker-extension-base',
+              target: 'worker-extension-base',
+            }),
+          ]
+        : []),
       {
         id: 'worker-codex',
         repository: 'openkit-worker-codex',
         dockerfile: 'containers/worker-codex/Dockerfile',
         context: '.',
         kind: 'worker',
-        runtime: 'codex',
+        ...(options.omitWorkerRuntime ? {} : { runtime: options.workerRuntime ?? 'codex' }),
         release: true,
-        workerContract: 'openkit-worker-v1',
+        ...(options.omitWorkerContract
+          ? {}
+          : { workerContract: options.workerContract ?? 'openkit-worker-v1' }),
         baseImage: workerBaseImage,
         ...(options.omitWorkerTarget ? {} : { target: 'worker-codex' }),
         platforms: ['linux/amd64'],
@@ -153,6 +294,34 @@ function makeReleaseFixture(options = {}) {
   });
 
   return root;
+}
+
+/**
+ * Builds one structural empty-declared-set release worker catalog entry that is not identified by a reserved id.
+ *
+ * @param {object} options Entry fields.
+ * @param {boolean} [options.hasWorkerContract] Whether to declare workerContract on the base.
+ * @param {string} options.id Catalog id.
+ * @param {string} options.repository Image repository.
+ * @param {string} options.target Docker target.
+ * @returns {object} Catalog image entry.
+ */
+function makeReleaseWorkerBaseEntry(options) {
+  return {
+    id: options.id,
+    repository: options.repository,
+    dockerfile: 'containers/workers/Dockerfile',
+    target: options.target,
+    context: '.',
+    kind: 'worker',
+    release: true,
+    ...(options.hasWorkerContract ? { workerContract: 'openkit-worker-v1' } : {}),
+    baseImage: 'node:24-bookworm-slim@sha256:abc123',
+    platforms: ['linux/amd64'],
+    smoke: 'containers/workers/openkit-worker-common-base-smoke.sh',
+    smokeCommand: 'openkit-worker-common-base-smoke',
+    localTag: `openkit/${options.id}:dev`,
+  };
 }
 
 /**

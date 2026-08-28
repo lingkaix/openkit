@@ -44,6 +44,9 @@ ARG TARGETARCH
 ARG GH_VERSION="2.96.0"
 ARG GH_AMD64_SHA256="83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60"
 ARG GH_ARM64_SHA256="06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909"
+ARG MISE_VERSION="2026.8.14"
+ARG MISE_AMD64_SHA256="7cd12d6002d5b3c83a89cad79023712faf2a36f9e8b2ee2061dac5135b3de0ed"
+ARG MISE_ARM64_SHA256="bc2c447a7e498b0bed0a421cc2101b407fef09a3195670d35a4aa3f43cd868a1"
 ARG PYTHON_VERSION="3.14.6"
 
 ENV DEBIAN_FRONTEND="noninteractive" \
@@ -118,6 +121,19 @@ RUN set -eux; \
   rm -rf "/tmp/${gh_archive}" "/tmp/gh_${GH_VERSION}_linux_${gh_arch}"; \
   gh --version
 
+RUN set -eux; \
+  case "${TARGETARCH:-amd64}" in \
+    amd64) mise_arch="x64"; mise_sha256="${MISE_AMD64_SHA256}" ;; \
+    arm64) mise_arch="arm64"; mise_sha256="${MISE_ARM64_SHA256}" ;; \
+    *) echo "Unsupported mise Docker target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+  esac; \
+  mise_binary="mise-v${MISE_VERSION}-linux-${mise_arch}"; \
+  curl -fsSL "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/${mise_binary}" -o "/tmp/${mise_binary}"; \
+  echo "${mise_sha256}  /tmp/${mise_binary}" | sha256sum -c -; \
+  install -m 0755 "/tmp/${mise_binary}" /usr/local/bin/mise; \
+  rm -f "/tmp/${mise_binary}"; \
+  mise --version
+
 RUN uv python install "${PYTHON_VERSION}" \
   && python_path="$(uv python find "${PYTHON_VERSION}")" \
   && ln -s "${python_path}" /usr/local/bin/python3 \
@@ -128,6 +144,7 @@ COPY --from=worker-shim-builder /deploy/worker-shim/ /usr/local/lib/openkit/work
 COPY containers/workers/openkit-file-effect /usr/local/bin/openkit-file-effect
 COPY containers/workers/openkit-worker-shim /usr/local/bin/openkit-worker-shim
 COPY containers/workers/smoke-common.sh /usr/local/bin/openkit-worker-common-smoke
+COPY containers/workers/openkit-worker-common-base-smoke.sh /usr/local/bin/openkit-worker-common-base-smoke
 
 RUN /usr/sbin/groupadd --system sandbox \
   && /usr/sbin/useradd --system --gid sandbox --home-dir /sandbox --create-home --shell /bin/bash sandbox \
@@ -162,11 +179,16 @@ RUN /usr/sbin/groupadd --system sandbox \
     'export PS1="\u@\h:\w\$ "' \
     > /sandbox/.bashrc \
   && printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' > /sandbox/.profile \
-  && chmod +x /usr/local/bin/openkit-file-effect /usr/local/bin/openkit-worker-shim /usr/local/bin/openkit-worker-common-smoke \
+  && chmod +x /usr/local/bin/openkit-file-effect /usr/local/bin/openkit-worker-shim /usr/local/bin/openkit-worker-common-smoke /usr/local/bin/openkit-worker-common-base-smoke \
   && chown -R sandbox:sandbox /sandbox /workspace
+
+LABEL org.openkit.image="worker-common"
+LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-common-base-smoke"
 
 ENTRYPOINT ["tini", "-g", "--"]
 CMD ["openkit-worker-shim", "--package", "/openkit/config/package.json"]
+
+USER sandbox
 
 FROM worker-common AS worker-codex
 
@@ -178,6 +200,8 @@ LABEL org.openkit.worker.runtime="codex"
 LABEL org.openkit.worker.contract="openkit-worker-v1"
 LABEL org.openkit.worker-shim="/usr/local/bin/openkit-worker-shim"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-codex-smoke"
+
+USER root
 
 RUN export CODEX_HOME=/tmp/codex-home \
     HOME=/tmp/codex-home \
@@ -228,6 +252,8 @@ LABEL org.openkit.worker.contract="openkit-worker-v1"
 LABEL org.openkit.worker-shim="/usr/local/bin/openkit-worker-shim"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-opencode-smoke"
 
+USER root
+
 RUN export HOME=/tmp/opencode-home \
     NPM_CONFIG_CACHE=/tmp/npm-cache \
     XDG_CACHE_HOME=/tmp/opencode-cache \
@@ -256,6 +282,8 @@ LABEL org.openkit.worker.runtime="pi"
 LABEL org.openkit.worker.contract="openkit-worker-v1"
 LABEL org.openkit.worker-shim="/usr/local/bin/openkit-worker-shim"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-pi-smoke"
+
+USER root
 
 RUN export HOME=/tmp/pi-home \
     NPM_CONFIG_CACHE=/tmp/npm-cache \

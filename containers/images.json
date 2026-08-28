@@ -15,6 +15,20 @@
       "localTag": "openkit/app:dev"
     },
     {
+      "id": "worker-common",
+      "repository": "openkit-worker-common",
+      "dockerfile": "containers/workers/Dockerfile",
+      "target": "worker-common",
+      "context": ".",
+      "kind": "worker",
+      "release": true,
+      "baseImage": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "smoke": "containers/workers/openkit-worker-common-base-smoke.sh",
+      "smokeCommand": "openkit-worker-common-base-smoke",
+      "localTag": "openkit/worker-common:dev"
+    },
+    {
       "id": "worker-codex",
       "repository": "openkit-worker-codex",
       "dockerfile": "containers/workers/Dockerfile",

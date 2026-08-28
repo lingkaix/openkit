@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,7 +18,14 @@ const codexSchemaMetadataPath = join(
   'codex-app-server-schema',
   'metadata.json'
 );
+const workerImageSpecPath = join(
+  repoRoot,
+  'docs',
+  'specs',
+  '20260721-worker_execution_environment_images.md'
+);
 
+/** Current OpenKit worker leaves and their singular catalog-declared runtimes. */
 const workerImageContracts = [
   {
     id: 'worker-codex',
@@ -72,22 +79,30 @@ const canonicalWorkspaceRoots = [
 ] as const;
 
 describe('governed worker image contracts', () => {
-  it('builds three release images from one shared Dockerfile and unique final targets', () => {
+  it('builds current worker images from one shared Dockerfile with unique targets', () => {
     const workers = readWorkerCatalog();
+    const base = workers.find((worker) => worker.id === 'worker-common');
 
-    expect(workers.map((worker) => worker.dockerfile)).toEqual([
-      'containers/workers/Dockerfile',
-      'containers/workers/Dockerfile',
-      'containers/workers/Dockerfile',
-    ]);
-    expect(workers.map((worker) => worker.target)).toEqual([
-      'worker-codex',
-      'worker-opencode',
-      'worker-pi',
-    ]);
-    expect(new Set(workers.map((worker) => worker.target)).size).toBe(3);
+    expect(base).toEqual(
+      expect.objectContaining({
+        dockerfile: 'containers/workers/Dockerfile',
+        target: 'worker-common',
+      })
+    );
+    expect(base).not.toHaveProperty('runtime');
+    expect(base).not.toHaveProperty('workerContract');
+    for (const leaf of workerImageContracts) {
+      const worker = workers.find((entry) => entry.id === leaf.id);
+
+      expect(worker).toMatchObject({
+        dockerfile: 'containers/workers/Dockerfile',
+        runtime: leaf.runtime,
+        target: leaf.id,
+      });
+    }
+    expect(new Set(workers.map((worker) => worker.target)).size).toBe(workers.length);
     expect(new Set(workers.map((worker) => worker.baseImage)).size).toBe(1);
-    expect(workers[0]?.baseImage).toBe(
+    expect(base?.baseImage ?? workers[0]?.baseImage).toBe(
       'node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'
     );
   });
@@ -142,10 +157,7 @@ describe('governed worker image contracts', () => {
       dockerfile.indexOf('&& mkdir -p'),
       dockerfile.indexOf('ENTRYPOINT ["tini"')
     );
-    const workerCommonBuild = dockerfile.slice(
-      dockerfile.indexOf(' AS worker-common'),
-      dockerfile.indexOf('FROM worker-common AS worker-codex')
-    );
+    const workerCommonBuild = dockerCommonSection(dockerfile);
     const workerCommonBuildWrites = workerCommonBuild.replace(/^CMD .*$/gm, '');
 
     expect(dockerfile).toContain('COPY packages/worker-protocol/package.json');
@@ -165,7 +177,10 @@ describe('governed worker image contracts', () => {
     expect(dockerfile).toContain('chown -R sandbox:sandbox /sandbox /workspace');
     expect(workerCommonBuildWrites).not.toContain('/openkit/config/package.json');
     expect(workerCommonBuild).not.toMatch(/^(?:COPY|ADD)\s+.*\s+\/openkit\/config(?:\/|\s|$)/m);
-    expect(dockerfile.match(/USER sandbox/g)).toHaveLength(3);
+    expect(dockerCommonSection(dockerfile)).toContain('USER sandbox');
+    for (const { id } of workerImageContracts) {
+      expect(dockerTargetSection(dockerfile, id)).toContain('USER sandbox');
+    }
     expect(smoke).toContain('test -x /usr/local/bin/openkit-file-effect');
     for (const root of canonicalWorkspaceRoots) {
       expect(commonRuntimeSetup).toContain(root);
@@ -175,19 +190,22 @@ describe('governed worker image contracts', () => {
 
   it.each(
     workerImageContracts
-  )('keeps $runtime target, manifest, version, and exact-one-runtime authority aligned', ({
+  )('keeps $runtime target contents aligned with its catalog-declared runtime set', ({
     id,
     manifest,
     nativeBinary,
     nativeVersion,
     runtime,
   }) => {
-    const image = readWorkerCatalog().find((entry) => entry.id === id);
+    const workers = readWorkerCatalog();
+    const image = workers.find((entry) => entry.id === id);
     const dockerfile = readFileSync(sharedDockerfilePath, 'utf8');
     const targetSection = dockerTargetSection(dockerfile, id);
     const agentManifest = readAgentManifest(manifest);
+    const declaredRuntimes = catalogDeclaredRuntimeSet(image);
 
     expect(image).toMatchObject({ runtime, target: id });
+    expect(declaredRuntimes).toEqual([runtime]);
     expect(targetSection).toContain(`LABEL org.openkit.worker.runtime="${runtime}"`);
     expect(targetSection).toContain(`COPY containers/${id}/smoke.sh`);
     expect(targetSection).toContain('USER sandbox');
@@ -197,11 +215,11 @@ describe('governed worker image contracts', () => {
       version: nativeVersion,
     });
     expect(agentManifest.runtime.binaries.map((binary) => binary.path)).toContain(nativeBinary);
-    for (const otherRuntime of ['codex', 'opencode', 'pi'].filter(
-      (candidate) => candidate !== runtime
+    for (const undeclaredRuntime of firstPartyRuntimes(workers).filter(
+      (candidate) => !declaredRuntimes.includes(candidate)
     )) {
-      expect(targetSection).not.toContain(`org.openkit.worker.runtime="${otherRuntime}"`);
-      expect(targetSection).not.toContain(`containers/worker-${otherRuntime}/smoke.sh`);
+      expect(targetSection).not.toContain(`org.openkit.worker.runtime="${undeclaredRuntime}"`);
+      expect(targetSection).not.toContain(`containers/worker-${undeclaredRuntime}/smoke.sh`);
     }
   });
 
@@ -222,11 +240,38 @@ describe('governed worker image contracts', () => {
     expect(openCodeSection).not.toContain('allow-anthropic-api-key');
   });
 
+  it('keeps the Pi image smoke dry-run on the adapter-accepted direct-provider route', () => {
+    const smoke = readFileSync(join(repoRoot, 'containers', 'worker-pi', 'smoke.sh'), 'utf8');
+    const encodedPackage = /printf '%s\\n' '(\{.*\})'/.exec(smoke)?.[1];
+
+    expect(encodedPackage).toEqual(expect.stringMatching(/^\{/));
+    const route = (
+      JSON.parse(encodedPackage ?? '{}') as {
+        llm?: { routes?: Array<Record<string, unknown>> };
+      }
+    ).llm?.routes?.[0];
+
+    expect(route).toEqual(
+      expect.objectContaining({
+        credentialVisibility: 'environment',
+        endpoint: {
+          kind: 'provider-compatible',
+          upstream: { kind: 'direct-provider' },
+        },
+        model: 'claude-sonnet-4-5',
+        providerInstanceId: 'anthropic',
+      })
+    );
+    expect(encodedPackage).not.toContain('"credentialVisibility":"placeholder"');
+    expect(encodedPackage).not.toContain('"kind":"openai-compatible"');
+    expect(encodedPackage).not.toContain('"kind":"nanocore-gateway"');
+  });
+
   it('keeps root-owned build state out of the writable worker home', () => {
     const dockerfile = readFileSync(sharedDockerfilePath, 'utf8');
     const smoke = readFileSync(commonSmokePath, 'utf8');
 
-    for (const id of ['worker-codex', 'worker-opencode', 'worker-pi']) {
+    for (const { id } of workerImageContracts) {
       const targetSection = dockerTargetSection(dockerfile, id);
 
       expect(targetSection).toContain('NPM_CONFIG_CACHE=/tmp/npm-cache');
@@ -463,6 +508,7 @@ describe('governed worker image contracts', () => {
       'rg',
       'fd',
       'jq',
+      'mise',
     ]) {
       expect(smoke).toContain(`command -v ${command}`);
     }
@@ -471,9 +517,66 @@ describe('governed worker image contracts', () => {
     expect(smoke).toContain('0[.]11[.]30');
     expect(smoke).toContain('gh version 2.96.0');
     expect(smoke).toContain('10.33.3');
+    expect(smoke).toContain('2026.8.14');
+    expect(smoke).toContain('test "$(stat -c \'%u\' /usr/local/bin/mise)" -eq 0');
+    expect(smoke).toContain('test ! -w /usr/local/bin/mise');
     expect(smoke).toContain('test ! -e /etc/openshell/policy.yaml');
     expect(smoke).toContain('find /sandbox /workspace -xdev -uid 0 -print -quit');
     expect(smoke).toContain('/sandbox/.venv');
+  });
+
+  it('pins mise 2026.8.14 into the common stage with architecture-specific SHA256 and ends as sandbox', () => {
+    const dockerfile = readFileSync(sharedDockerfilePath, 'utf8');
+    const common = dockerCommonSection(dockerfile);
+    const specMiseVersion = /^\|\s*mise\s*\|\s*`([^`]+)`/im.exec(
+      readFileSync(workerImageSpecPath, 'utf8')
+    )?.[1];
+    const dockerfileMiseVersion = /^ARG MISE_VERSION="([^"]+)"$/m.exec(common)?.[1];
+
+    expect(specMiseVersion).toEqual(expect.stringMatching(/^\d+\.\d+\.\d+$/));
+    expect(dockerfileMiseVersion).toBe(specMiseVersion);
+    expect(common).toMatch(/ARG MISE_AMD64_SHA256="[a-f0-9]{64}"/);
+    expect(common).toMatch(/ARG MISE_ARM64_SHA256="[a-f0-9]{64}"/);
+    expect(common).toContain('/usr/local/bin/mise');
+    expect(common).toContain('LABEL org.openkit.image="worker-common"');
+    expect(common).toMatch(/LABEL org.openkit.smoke="/);
+    expect(common).toContain('USER sandbox');
+    expect(common).not.toContain('USER root');
+  });
+
+  it('regains root only in deployment stages to install the native runtime, then returns to sandbox', () => {
+    const dockerfile = readFileSync(sharedDockerfilePath, 'utf8');
+
+    for (const { id } of workerImageContracts) {
+      const targetSection = dockerTargetSection(dockerfile, id);
+
+      expect(targetSection).toMatch(/USER root[\s\S]*USER sandbox/);
+      expect(targetSection.match(/USER root/g)).toHaveLength(1);
+      expect(targetSection.match(/USER sandbox/g)).toHaveLength(1);
+    }
+  });
+
+  it('smokes the published empty declared runtime set by reusing common checks and proving no first-party Agent CLI', () => {
+    const workers = readWorkerCatalog();
+    const base = workers.find((entry) => entry.id === 'worker-common');
+    const smokePath = join(repoRoot, base?.smoke ?? 'missing-worker-common-smoke');
+
+    expect(base).toEqual(
+      expect.objectContaining({
+        id: 'worker-common',
+        smoke: 'containers/workers/openkit-worker-common-base-smoke.sh',
+        target: 'worker-common',
+      })
+    );
+    expect(catalogDeclaredRuntimeSet(base)).toEqual([]);
+    expect(existsSync(smokePath)).toBe(true);
+
+    const smoke = readFileSync(smokePath, 'utf8');
+
+    expect(smoke).toContain('openkit-worker-common-smoke');
+    for (const runtime of firstPartyRuntimes(workers)) {
+      expect(smoke).toContain(`! command -v ${runtime}`);
+    }
   });
 
   it('passes the manifest target through local Docker builds', () => {
@@ -510,8 +613,32 @@ interface WorkerImageEntry {
   readonly id: string;
   readonly kind: string;
   readonly localTag: string;
-  readonly runtime: string;
+  readonly runtime?: string;
+  readonly smoke: string;
   readonly target: string;
+  readonly workerContract?: string;
+}
+
+/**
+ * Returns the catalog-declared runtime set for one worker image.
+ *
+ * Singular `runtime` metadata is the current declared set. Omission is the empty set.
+ *
+ * @param entry Worker catalog entry, when present.
+ * @returns Declared runtime names.
+ */
+function catalogDeclaredRuntimeSet(entry: WorkerImageEntry | undefined): string[] {
+  return entry?.runtime ? [entry.runtime] : [];
+}
+
+/**
+ * Collects first-party runtimes currently declared on worker catalog entries.
+ *
+ * @param workers Worker catalog entries.
+ * @returns Unique catalog-declared runtime names.
+ */
+function firstPartyRuntimes(workers: readonly WorkerImageEntry[]): string[] {
+  return [...new Set(workers.flatMap((worker) => catalogDeclaredRuntimeSet(worker)))];
 }
 
 /** One parsed built-in AgentManifest slice required by these tests. */
@@ -568,5 +695,20 @@ function dockerTargetSection(dockerfile: string, target: string): string {
 
   expect(start).toBeGreaterThanOrEqual(0);
   const next = dockerfile.indexOf('\nFROM ', start + marker.length);
+  return dockerfile.slice(start, next === -1 ? undefined : next);
+}
+
+/**
+ * Extracts the published common stage from the shared multi-target Dockerfile.
+ *
+ * @param dockerfile Complete Dockerfile text.
+ * @returns Common stage body through the first deployment target declaration.
+ */
+function dockerCommonSection(dockerfile: string): string {
+  const marker = ' AS worker-common';
+  const start = dockerfile.indexOf(marker);
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = dockerfile.indexOf('\nFROM worker-common AS ', start + marker.length);
   return dockerfile.slice(start, next === -1 ? undefined : next);
 }

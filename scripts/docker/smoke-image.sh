@@ -55,3 +55,29 @@ if [[ "${IMAGE_ID}" == "test-env" ]]; then
 fi
 
 docker run --rm "${tag}" "${smoke_command}"
+
+if [[ "${IMAGE_ID}" == "worker-common" ]]; then
+  derived_tag="openkit/worker-common-derived-smoke:$$"
+  derived_dir="$(mktemp -d "${TMPDIR:-/tmp}/openkit-worker-common-derived.XXXXXX")"
+  derived_built=0
+
+  cleanup_derived() {
+    if [[ "${derived_built}" -eq 1 ]]; then
+      docker image rm -f "${derived_tag}" >/dev/null 2>&1 || true
+    fi
+    rm -rf "${derived_dir}"
+  }
+  trap cleanup_derived EXIT
+
+  cat >"${derived_dir}/Dockerfile" <<EOF
+FROM ${tag}
+USER root
+RUN printf '%s\\n' '#!/bin/sh' 'printf "%s\\n" "openkit-derived-probe"' > /usr/local/bin/openkit-derived-probe \\
+  && chmod 0755 /usr/local/bin/openkit-derived-probe
+USER sandbox
+EOF
+
+  docker build --network=none -t "${derived_tag}" "${derived_dir}"
+  derived_built=1
+  docker run --rm "${derived_tag}" bash -c 'openkit-worker-common-smoke && command -v openkit-derived-probe >/dev/null && test "$(openkit-derived-probe)" = "openkit-derived-probe"'
+fi

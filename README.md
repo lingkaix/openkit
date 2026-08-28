@@ -114,7 +114,7 @@ The bring-up command requires attempt-local NanoCore admin inputs and always tea
 
 Use focused package commands while developing and run release gates before tagging.
 
-Checks run inside the `test-env` container image, which they enter on their own. Docker must be running; nothing else about the host changes what a check may do, which is why the same command behaves the same on a laptop, in CI, and inside an agent sandbox. The first run builds the image. The NanoCore restart gate and the real-provider, real-subscription, and real-task-mode gates drive Docker themselves and therefore stay on the host. See the Test Execution Environment decision in [`docs/toolchain.md`](./docs/toolchain.md).
+Ordinary checks run on the developer host by default. A Worker Agent sandbox is also permitted. CI runs every gate inside the `test-env` image, and that image result is authoritative when environments disagree. An image second opinion is an explicit `OPENKIT_TEST_USE_IMAGE=1` run; it never retries a failed host command, and each result is labelled with `OPENKIT_TEST_ENVIRONMENT`. Docker is not a prerequisite for ordinary commands. The NanoCore restart gate and the real-provider, real-subscription, and real-task-mode gates drive Docker or a real runtime/provider themselves and therefore stay on the host. See the Test Execution Environment decision in [`docs/toolchain.md`](./docs/toolchain.md).
 
 ## Repository Layout
 

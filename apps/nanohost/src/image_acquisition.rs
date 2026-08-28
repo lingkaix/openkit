@@ -1486,20 +1486,20 @@ pub(crate) fn oci_manifest_digest(content: &[u8]) -> Result<String, AcquisitionE
                 key.as_str(),
                 "architecture" | "os" | "os.version" | "os.features" | "variant"
             )
-        }) || !platform
+        }) || platform
             .get("architecture")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-            || !platform
+            .is_none_or(|value| value.is_empty())
+            || platform
                 .get("os")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|value| !value.is_empty())
+                .is_none_or(|value| value.is_empty())
             || platform
                 .get("os.version")
-                .is_some_and(|value| !value.as_str().is_some_and(|value| !value.is_empty()))
+                .is_some_and(|value| value.as_str().is_none_or(|value| value.is_empty()))
             || platform
                 .get("variant")
-                .is_some_and(|value| !value.as_str().is_some_and(|value| !value.is_empty()))
+                .is_some_and(|value| value.as_str().is_none_or(|value| value.is_empty()))
             || platform.get("os.features").is_some_and(|value| {
                 !value.as_array().is_some_and(|features| {
                     features

@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import {
   appendFileSync,
   mkdtempSync,

@@ -101,7 +101,6 @@ Goals:
 Non-goals:
 
 - Do not publish `test-env` by default on product release tags.
-- Do not make one universal worker image for Codex, OpenCode, Pi, and future agents.
 - Do not make OpenShell gateway state, OpenShell policy YAML, or OpenShell provider records canonical OpenKit release artifacts.
 - Do not introduce Docker Compose, Helm, Kubernetes, or desktop-app packaging in this spec.
 - Do not support repository-owned backward compatibility for old Dockerfile paths after the migration lands.
@@ -117,7 +116,7 @@ Before this spec was implemented, the repository had three active Dockerfiles sp
 
 The repository also had `scripts/docker/staging-*` helpers and Docker cookbooks under `docs/cookbooks/`. Those files encoded useful implementation details, but the naming treated staging as the central packaging concept.
 
-The active worker runtime design has moved to governed container workers. Host execution is not a real Worker Agent product runtime. The first serious worker backend is OpenShell, and the worker-facing contract requires the generic `openkit-worker-shim` plus one statically registered runtime adapter inside every real worker container; runtime-specific shim entrypoints and a separate sidecar are not part of the design.
+The active worker runtime design has moved to governed container workers. Host execution is not a real Worker Agent product runtime. The first serious worker backend is OpenShell, and the worker-facing contract requires the generic `openkit-worker-shim` plus a static adapter registry; `control.adapter.targetRuntime` selects exactly one adapter per session. Image contents confer no adapter authority. Runtime-specific shim entrypoints and a separate sidecar are not part of the design.
 
 The historical `docs/specs/superseded/20260518-staging_docker_distribution.md` is not current guidance. It remains useful background for why the staging image exists, but it still carries host-mode and loopback-agent assumptions that must not shape the new release packaging contract.
 
@@ -132,11 +131,11 @@ The repository-owned image classes are:
 | Image id | Release artifact | Purpose | Base image rule |
 | --- | --- | --- | --- |
 | `app` | Yes | Product app image containing NanoCore, Web UI, public HTTP entrypoint, migrations, and data templates. | Use a pinned Node runtime base that matches repository Node policy. |
-| `worker-common` | Yes | Published base carrying the shared development environment and worker shim, with no native Agent runtime. It is the extension point for the three runtime images, for the repository development image, and for user or secondary-developer sandbox images. | Use the pinned digest-addressed upstream base under Worker Base Image Policy. |
-| `worker-codex` | Yes | OpenShell sandbox payload for Codex worker execution through OpenKit worker shim. | Use the pinned shared OpenKit development stage and add only the Codex runtime leaf. |
-| `worker-opencode` | Yes | OpenShell sandbox payload for OpenCode worker execution through OpenKit worker shim. | Use the pinned shared OpenKit development stage and add only the OpenCode runtime leaf. |
-| `worker-pi` | Yes | OpenShell sandbox payload for Pi worker execution through OpenKit worker shim. | Use the pinned shared OpenKit development stage and add only the Pi runtime leaf. |
-| `test-env` | Never on a release tag; published for CI to consume | The environment every repository check executes inside, owned by `docs/toolchain.md` Test Execution Environment. | Use the repository Node base and install only what the gates execute; no worker runtime. |
+| `worker-common` | Yes | Published public extension base carrying the shared development environment and worker shim, with an empty declared runtime set. It is the extension point for the current deployment leaves and for user or secondary-developer sandbox images. It is not the `test-env` base. | Use the pinned digest-addressed upstream base under Worker Base Image Policy. |
+| `worker-codex` | Yes | OpenShell sandbox payload for Codex worker execution through OpenKit worker shim. Current leaf whose catalog-declared runtime set is Codex only. | Use the pinned shared OpenKit development stage and add only the Codex runtime leaf. |
+| `worker-opencode` | Yes | OpenShell sandbox payload for OpenCode worker execution through OpenKit worker shim. Current leaf whose catalog-declared runtime set is OpenCode only. | Use the pinned shared OpenKit development stage and add only the OpenCode runtime leaf. |
+| `worker-pi` | Yes | OpenShell sandbox payload for Pi worker execution through OpenKit worker shim. Current leaf whose catalog-declared runtime set is Pi only. | Use the pinned shared OpenKit development stage and add only the Pi runtime leaf. |
+| `test-env` | Never on a release tag; published for CI to consume | Internal sibling of `worker-common`, owned by `docs/toolchain.md` Test Execution Environment. Pins the same upstream Node digest independently and does not derive `FROM worker-common`. | Use the same digest-pinned Node base as the worker common stage and install only what the gates execute; no worker runtime. |
 
 App image and worker images MUST remain separate release units. The one allowed exception is a single-machine evaluation bundle that an explicit deployment owns and names; a normal release build MUST NOT merge the app and worker units, and the app image MUST NOT bundle worker agent runtimes as its release model.
 
@@ -179,7 +178,7 @@ Each image entry must include:
 - `repository`: GHCR package name suffix.
 - `dockerfile`: repository-relative Dockerfile path.
 - `context`: repository-relative build context.
-- `kind`: `app`, `worker`, or `dev`.
+- `kind`: `app`, `worker`, or `test`.
 - `release`: whether normal version tags publish this image.
 - `platforms`: build platforms.
 - `smoke`: repository-relative smoke script.
@@ -188,14 +187,14 @@ Each image entry must include:
 
 Deployment worker image entries must also include:
 
-- `runtime`: runtime adapter family such as `codex`, `opencode`, or `pi`.
+- `runtime`: a non-empty string containing singular descriptive catalog metadata for a current leaf, such as `codex`, `opencode`, or `pi`. Omit this field when the declared runtime set is empty. Do not add a `runtimes` array until the first published multi-runtime artifact migrates this metadata together with CI, preflight, and OCI-label consumers.
 - `baseImage`: pinned base image reference. Release worker images must use a digest-pinned reference.
-- `workerContract`: OpenKit worker contract version, initially `openkit-worker-v1`.
+- `workerContract`: a non-empty string containing the OpenKit worker contract version, initially `openkit-worker-v1`. Required exactly when runtime metadata exists, and forbidden when it does not.
 - `target`: unique shared-Dockerfile build target.
 
-The published `worker-common` base entry must include `baseImage` and `target`, must omit `runtime` and `workerContract`, and remains `kind: worker` so the existing catalog and release path can build, smoke, and publish it without a parallel image class.
+A public release worker base is identified structurally by absent `runtime`, not by a reserved image id. That entry must include `baseImage` and `target`, must omit `runtime` and `workerContract`, and remains `kind: worker` so the existing catalog and release path can build, smoke, and publish it without a parallel image class. The current such entry is `worker-common`. Release preflight must reject more than one empty-declared-set release worker base and must not special-case an image id.
 
-The authored `AgentManifest`, not this packaging catalog or a backend-global environment variable, selects the governed image reference and declares the runtime binary ids and absolute worker-local executable paths. NanoCore resolves that declaration into the AEP without a runtime-specific image branch. The image entry records how the selected artifact is built, smoked, and published; it is not a second runtime selector.
+The authored `AgentManifest`, not this packaging catalog or a backend-global environment variable, selects the governed image reference and declares the runtime binary ids and absolute worker-local executable paths. NanoCore resolves that declaration into the AEP without a runtime-specific image branch. `control.adapter.targetRuntime` selects exactly one adapter per session. The image entry records how the selected artifact is built, smoked, and published; it is not a second runtime selector, and image contents confer no authority.
 
 The manifest may include optional build args, labels, target names, or publish policy fields when those fields are consumed by scripts and tested.
 
@@ -232,13 +231,13 @@ Caddy is an implementation projection, not a permanent product requirement. A fu
 
 ### Worker Image Contract
 
-`worker-common` is a published artifact but not a deployment image, so the contract below binds the three runtime images and not the base. The base must instead carry the shared development environment and the generic shim package, contain no native runtime, and remain buildable and smokeable on its own; `docs/specs/20260721-worker_execution_environment_images.md` owns those obligations and the extension guarantees a derived image may rely on. A release build that publishes the base without publishing it as a first-class catalog entry, or that treats it as deployable, is invalid.
+`worker-common` is a published artifact but not a deployment image, so the contract below binds current deployment leaves and not the empty-set base. The base must instead carry the shared development environment and the generic shim package, contain exactly its empty declared runtime set, and remain buildable and smokeable on its own; `docs/specs/20260721-worker_execution_environment_images.md` owns those obligations and the extension guarantees a derived image may rely on. A release build that publishes the base without publishing it as a first-class catalog entry, or that treats it as deployable, is invalid.
 
 Every release deployment worker image must:
 
 - run inside OpenShell as a sandbox payload,
 - provide the generic `openkit-worker-shim` entrypoint,
-- include exactly one native runtime and the generic shim package whose existing static registry contains the manifest-selected adapter,
+- include exactly its catalog-declared runtime set and the generic shim package whose existing static registry contains the AEP-selected adapter,
 - provide every runtime binary id and worker-local executable path declared by its authored `AgentManifest`,
 - provide `/openkit/config/package.json`,
 - write `/openkit/session/events.jsonl`,
@@ -250,7 +249,7 @@ Every release deployment worker image must:
 - keep runtime-native config generation inside worker packages,
 - fail clearly when the required agent binary is missing.
 
-Worker images must not discover or load adapters dynamically. A fourth runtime adds one image definition and one entry in the existing `containers/images.json` catalog; it does not add another image registry, plugin loader, or runtime-specific NanoCore selector.
+Worker images must not discover or load adapters dynamically. The published catalog may grow through a reviewed specification and catalog change; that is not a fifth-image prohibition. A new singular leaf still adds one image definition and one `containers/images.json` entry without adding another image registry, plugin loader, or runtime-specific NanoCore selector. The first published multi-runtime artifact must migrate singular `runtime` metadata and its CI, preflight, and OCI-label consumers in the same reviewed change.
 
 Worker images must not:
 
@@ -275,7 +274,7 @@ The base image may use a tag during local development, but release builds must r
 
 Updating the worker base digest is an explicit maintenance change. It must update `containers/images.json`, run worker image smoke checks, and run the real OpenShell worker verification for affected worker images.
 
-OpenKit may use an upstream community sandbox image directly only when it contains exactly one selected Agent runtime, the pinned OpenKit shim, the accepted tool and filesystem baseline, no baked authorization, and every other OpenKit worker invariant. The current upstream base combines multiple Agent runtimes and a broad baked policy, so OpenKit uses it as reference rather than as a final or inherited release image.
+OpenKit may use an upstream community sandbox image directly only when it contains the declared runtime set, the pinned OpenKit shim, the accepted tool and filesystem baseline, no baked authorization, and every other OpenKit worker invariant. The current upstream base combines multiple Agent runtimes and a broad baked policy, so OpenKit uses it as reference rather than as a final or inherited release image.
 
 ### Release Artifact Boundary
 
@@ -635,12 +634,13 @@ Runtime default state:
 - The AEP launches `openkit-worker-shim`; `control.adapter.targetRuntime` selects one adapter in the shim's static registry.
 - Current release documentation uses exact GHCR version or digest references.
 
-The current catalog contains separate Codex, OpenCode, and Pi worker images. Each contains the generic shim and exactly one pinned native runtime: Codex `0.144.1`, OpenCode `1.18.1`, or Pi `0.80.7`.
+The current catalog contains separate Codex, OpenCode, and Pi worker images. Each currently contains the generic shim and a singular catalog-declared runtime: Codex `0.144.1`, OpenCode `1.18.1`, or Pi `0.80.7`. Those leaves remain singular facts because no present need merges them.
 
 Release worker base state:
 
-- `containers/images.json` pins all three worker base images to `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and selects one unique final target per worker artifact.
-- `containers/workers/Dockerfile` uses that digest-pinned Node base for the shared shim-builder and common runtime stages, then adds exactly one native Agent runtime in each final target.
+- `containers/images.json` pins all current worker `baseImage` values to `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and selects one unique target per worker artifact.
+- `containers/workers/Dockerfile` uses that digest-pinned Node base for the shared shim-builder and common stages, then adds exactly the catalog-declared runtime set in each final target.
+- `test-env` is an internal sibling that pins the same Node digest in its own Dockerfile and does not derive `FROM worker-common`. After first `worker-common` GHCR publication, one internal `release: false` `kind: test` dogfood image may derive that published digest with Codex plus Pi and without OpenCode; that image is design and backlog only here.
 
 Worker runtime state:
 
@@ -673,13 +673,13 @@ Rejected. Staging is a validation and dogfooding mode, not the formal product pa
 
 ### Publish One Universal Worker Image
 
-Rejected for now. A universal worker image would be larger, harder to smoke test, harder to reason about for policy, and would force unrelated agent runtimes to release together. Separate worker images keep runtime-specific failures local.
+Not a ban. A universal worker image would couple unrelated runtime releases onto one artifact and enlarge the supply surface every consumer inherits. Those costs are why the current leaves stay separate, not a platform prohibition on a later reviewed multi-runtime artifact.
 
 ### Publish An OpenKit Worker Base — Superseded 2026-08-12
 
 Originally rejected. The measured duplication justified one internal common Docker stage, but no manifest, deployment, or user selected a common artifact, so publishing a fourth image would have added release and compatibility surface without a current consumer.
 
-Superseded because the missing consumer now exists in two forms: the repository's own development image, which `docs/toolchain.md` derives from the base, and any user or secondary developer customizing a sandbox image. The release and compatibility surface named above is accepted rather than disputed, and `docs/specs/20260721-worker_execution_environment_images.md` owns what that obliges. The alternative that stays rejected is publishing a base with no consumer.
+Superseded because users and secondary developers now select the public extension base. The release and compatibility surface named above is accepted rather than disputed, and `docs/specs/20260721-worker_execution_environment_images.md` owns what that obliges. The repository `test-env` image is a sibling, not a derivation consumer of that published digest. The alternative that stays rejected is publishing a base with no consumer.
 
 ### Publish Images On Every Main Push
 
@@ -725,7 +725,7 @@ Manifest validation:
 - Every `id` is unique.
 - Every release image has at least one platform.
 - Every deployment worker image has `runtime`, `baseImage`, `workerContract`, and a unique `target` consumed by local build scripts and release CI.
-- The `worker-common` base entry has `baseImage` and a unique `target`, and has neither `runtime` nor `workerContract`.
+- A release worker base is identified by absent `runtime`, has `baseImage` and a unique `target`, and has neither `runtime` nor `workerContract`. `workerContract` is required exactly when runtime metadata exists.
 - Every release worker image has a digest-pinned `baseImage`.
 - No manifest field contains an absolute local path.
 
@@ -734,17 +734,19 @@ Dockerfile static tests:
 - App image Dockerfile builds NanoCore and Web dependencies in dependency order.
 - App image Dockerfile copies required migrations, data templates, app entrypoint, and app smoke script.
 - The shared worker Dockerfile uses digest-pinned direct image inputs, builds `@openkit/worker-protocol` and `@openkit/worker-shim` once, and exposes one final target per release worker.
-- Every final worker target installs exactly its manifest-declared native runtime and verified binary paths.
+- Every final worker target installs exactly its catalog-declared runtime set and verified binary paths.
 - The shared worker stage creates `/openkit/config`, `/openkit/session`, and `/openkit/artifacts` and declares the sandbox user expected by OpenShell.
 - Codex image and launcher tests separately require a writable runtime home and the governed Node proxy contract when the optional S33 provenance extension is enabled.
 
 Local build acceptance:
 
 - `scripts/docker/build-image.sh app` builds `openkit/app:dev`.
+- `scripts/docker/build-image.sh worker-common` builds `openkit/worker-common:dev`.
 - `scripts/docker/build-image.sh worker-codex` builds `openkit/worker-codex:dev`.
 - `scripts/docker/build-image.sh worker-opencode` builds `openkit/worker-opencode:dev`.
 - `scripts/docker/build-image.sh worker-pi` builds `openkit/worker-pi:dev`.
 - `scripts/docker/smoke-image.sh app` passes.
+- `scripts/docker/smoke-image.sh worker-common` passes, including the throwaway derived-image proof.
 - `scripts/docker/smoke-image.sh worker-codex` passes.
 - `scripts/docker/smoke-image.sh worker-opencode` passes.
 - `scripts/docker/smoke-image.sh worker-pi` passes.

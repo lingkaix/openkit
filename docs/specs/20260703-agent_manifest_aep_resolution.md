@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-10
+updated: 2026-08-28
 ---
 # Agent Manifest And AEP Resolution
 
@@ -21,6 +21,7 @@ Core Agent Supply owns the authored `AgentManifest` concept. This specification 
 - The implementation projection for current `.agent.jsonc` loading, setup resolution, runtime config reload handling, and OpenShell-backed AEP materialization.
 - The boundary between authored setup fields and runtime-native argv, safe environment bindings, and isolated state paths derived inside the selected adapter.
 - Manifest schema evolution, unknown-field handling, and required-feature fail-closed behavior.
+- Copy-on-init built-in AgentManifest development grant templates, including the exact out-of-box five-grant table; later template edits do not mutate existing manifests.
 
 ## Does Not Own
 
@@ -49,6 +50,7 @@ Core Agent Supply owns the authored `AgentManifest` concept. This specification 
 - `docs/specs/20260704-session_static_workspace_materialization.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260801-nanohost_workspace_data_boundary.md`
+- `docs/specs/20260721-worker_execution_environment_images.md`
 
 ## Goals
 
@@ -201,6 +203,24 @@ Resolution must turn workspace declarations into a session-static workspace layo
 `sandbox` declares exact network grants, credential declarations, and backend requirements. Each network grant identifies its host, port, protocol, purpose, and a non-empty explicit binary-path list plus either one access mode or a non-empty bounded REST rule list; omission never means every runtime binary, and every listed path must exactly match a path declared in `runtime.binaries`. Exact REST rules currently allow `GET` or `POST` with absolute OpenShell-compatible paths and cannot be combined with an access preset. Credential declarations identify provider or vault references plus allowed visibility and injection mode without secret values. Backend requirements may identify allowed and preferred backend kinds plus required capabilities only as eligibility constraints; they never name or select a NanoHost, backend instance, Runtime Epoch, local or remote placement, SSH target, Gateway origin, NanoCore endpoint, direct worker endpoint, route credential, or transport.
 
 NanoCore may restrict these declarations during resolution, but neither NanoCore nor a backend may add an endpoint, credential path, provider attachment, binary allow rule, or backend capability that the authored manifest and policy did not authorize. Backend environment variables, built-in endpoints, and deployment defaults must not expand the effective allowlist.
+
+Image contents, OCI labels, and carrier markers confer no network or credential authority. `control.adapter.targetRuntime` selects exactly one adapter per session. A Pi image marker is carrier capability only; `sandbox.credentials.declarations` in the authored manifest resolved into the AEP is the authority for whether `ANTHROPIC_API_KEY` is declared, and a Codex-selected session must not receive that binding merely because a co-installed Pi marker exists.
+
+## Built-In Development Grant Templates
+
+The repository-owned built-in AgentManifest templates copy the same out-of-box development grants at init. Those templates are copy-on-init content: a later edit of this table or of a template file does not mutate an already-created manifest, and a missing grant fails as a denied network operation rather than being inferred from the image or from a hidden shared allowlist.
+
+| Grant | Endpoint | Exact access | Authorized binaries |
+| --- | --- | --- | --- |
+| GitHub Smart HTTP read (`github-git-read`) | `github.com:443` | `GET /**/info/refs*` and `POST /**/git-upload-pack` | `/usr/bin/git` |
+| GitHub REST read (`github-rest-read`) | `api.github.com:443` | OpenShell `read-only` REST access | `/usr/local/bin/gh` |
+| npm package read (`npm-registry-read`) | `registry.npmjs.org:443` | OpenShell `read-only` REST access | Node, npm, npx, pnpm, and pnpx paths declared by the manifest |
+| PyPI index read (`pypi-index-read`) | `pypi.org:443` | OpenShell `read-only` REST access | uv and the writable virtual-environment Python and pip paths declared by the manifest |
+| PyPI artifact read (`pypi-files-read`) | `files.pythonhosted.org:443` | OpenShell `read-only` REST access | The same Python tool paths |
+
+The Git grant deliberately omits `POST /**/git-receive-pack`, so clone, fetch, and pull are available while push is denied. No grant in this table names a mise supply host, language distribution server, release archive host, or registry mirror that exists only to serve a mise provision. Installed image tools confer no authority; a provision against an ungranted host fails denied.
+
+An authored AgentManifest may add a narrower present-use grant when the generic sandbox policy permits it. Missing endpoints fail as a denied network operation, unsupported exact-rule shapes fail before sandbox creation, missing declared binaries fail manifest validation, and backend inability to enforce a grant blocks launch rather than widening access.
 
 `resources` declares CPU, RAM, disk, network, wall-clock, and token budget classes.
 
@@ -379,7 +399,7 @@ The current implementation follows the single authority chain defined by this sp
 - The manifest selects exactly one provider profile and optional model. It owns exact sandbox network grants, credential declarations, and backend eligibility requirements. Network grants name explicit declared binary paths and either an access preset or bounded exact REST rules. No manifest field selects local or remote placement, an SSH target, a Gateway origin, or transport credentials.
 - `apps/nanocore/src/config/agents-loader.ts` loads and validates manifests, while `apps/nanocore/src/agents/setup-resolver.ts` produces a topology-free `ResolvedAgentSetup` containing the selected manifest and resolved provider. Required features, provider and supply references, backend requirements, sandbox authority, and readiness fail closed.
 - `apps/nanocore/src/agents/setup-ledger.ts` stores redacted workspace-scoped resolved-setup records. `/api/setup/diagnostics` reports redacted launchability; deployment and Gateway diagnostics remain scheduler or backend concerns.
-- `apps/nanocore/src/runtime/agent-environment.ts` preserves the manifest-authored image, pull policy, runtime binaries, sandbox envelope, adapter id, provider route, and static supply through one generic OpenShell AEP resolver. It emits the fixed `openkit-worker-shim --package /openkit/config/package.json` command. `control.adapter.targetRuntime` is the sole adapter selector, and `agent.runtimeKind` never selects code.
+- `apps/nanocore/src/runtime/agent-environment.ts` preserves the manifest-authored image, pull policy, runtime binaries, sandbox envelope, adapter id, provider route, and static supply through one generic OpenShell AEP resolver. It emits the fixed `openkit-worker-shim --package /openkit/config/package.json` command. `control.adapter.targetRuntime` is the sole adapter selector per session, `agent.runtimeKind` never selects code, image contents confer no adapter or credential authority, and a Pi carrier marker does not authorize `ANTHROPIC_API_KEY`; `credentials.declarations` does.
 - The current adapter and route intersection is closed and version-pinned: Codex `0.144.1` and OpenCode `1.18.1` accept only the trusted NanoCore relay envelope; Pi `0.80.7` accepts only direct Anthropic `claude-sonnet-4-5`. Zero routes, multiple routes, mixed relay and direct authority, and unsupported runtime-route pairs fail before child launch.
 - The OpenShell materializer compiles network and credential policy only from the immutable AEP. Backend defaults and deployment environment cannot widen it. The backend validates required capabilities before effects and never infers an image, binary, adapter, provider, credential, or endpoint. An exact lowercase digest reference with pull policy `never` reuses the deployment image proved at NanoHost readiness and proceeds directly to `sandbox.create`; other reference forms retain `image.acquire`.
 - The AEP preserves sourceRef lineage, vault-backed attachments, backend requirements, workspace roots, private per-turn input, policy binding, transcript paths, and redacted snapshots. Current Skill and MCP entries are static approved supply metadata; `capabilities` remains explicitly disabled with no callable route or generated native MCP configuration.
@@ -485,8 +505,8 @@ Rejected for the first stable design. Workspace config may restrict and select w
 - Catalog entries are selection and explanation surfaces, not launch manifests.
 - One authored `AgentManifest` with one selected nested behavior profile resolves through one `ResolvedAgentSetup` into one immutable AEP; no runtime-oriented profile or inferred runtime may become a parallel source.
 - AgentManifest owns no `mode`, `deployment`, `transport`, or unstructured `runtimeConfig` field. It carries no NanoHost, Runtime Epoch, SSH, Gateway, NanoCore endpoint, direct worker endpoint, or transport credential. Server configuration and scheduler records select the one configured NanoHost, and the backend resolves only non-secret sandbox-local Integration bindings.
-- The AEP launches only the generic `openkit-worker-shim`; `control.adapter.targetRuntime` is the sole opaque adapter selector, and `agent.runtimeKind` is descriptive.
-- Authored runtime declarations own the exact governed image and non-empty runtime binary id and absolute worker-local path list. Authored sandbox declarations own exact network grants, credential declarations, and backend requirements, and materialization may only restrict them.
+- The AEP launches only the generic `openkit-worker-shim`; `control.adapter.targetRuntime` is the sole opaque adapter selector per session, image contents confer no adapter or credential authority, and `agent.runtimeKind` is descriptive.
+- Authored runtime declarations own the exact governed image and non-empty runtime binary id and absolute worker-local path list. Authored sandbox declarations own exact network grants, credential declarations, and backend requirements, and materialization may only restrict them. The five out-of-box development grants are copy-on-init template content owned here; later template edits do not mutate existing manifests.
 - The V1 authored build form names only the explicit empty-context singleton and its exact digest; the independently digested Dockerfile remains inline immutable content of 1 through 268,435,456 UTF-8 bytes and is not a context entry, and no Dockerfile locator, resolver default, alternate context reference, context transfer authority, configuration, or future variant exists.
 - Launch-time capability advertisement is the intersection of manifest requirements and selected adapter and image proof. Required missing proof blocks launch, and optional unproven support remains unadvertised.
 - Static MCP catalog bindings do not authorize runtime-native MCP config, direct worker connections, or executable routes.

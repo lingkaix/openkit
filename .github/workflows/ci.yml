@@ -26,9 +26,10 @@ permissions:
   contents: read
 
 jobs:
-  # Every gate below runs inside this image, so CI and a developer laptop hold
-  # the same capability set. The tag is a digest of the image build inputs, so a
-  # tree cannot be tested against an image built from a different Dockerfile.
+  # Every gate below runs inside this image. The image is authoritative: when a
+  # permitted environment disagrees, the CI result decides. The tag is a digest
+  # of the image build inputs, so a tree cannot be tested against an image built
+  # from a different Dockerfile.
   # See the Test Execution Environment decision in docs/toolchain.md.
   test-image:
     name: Test execution image

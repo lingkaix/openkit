@@ -85,7 +85,6 @@ test('every declaration of the exact Node version agrees', () => {
   assert.equal(nodeVersionFile, pinned);
   assert.equal(nvmrc, pinned);
   assert.equal(rootManifest.engines.node, pinned);
-  assert.equal(testImagePin(/^FROM node:(\d+\.\d+\.\d+)-/mu, 'an exact Node base image'), pinned);
 });
 
 test('every declaration of the exact Biome version agrees', () => {
@@ -141,28 +140,33 @@ test('CI provisions no runtime of its own and takes it from the test execution i
   );
 });
 
-test('root hook gates use the test execution image', () => {
+test('root hook gates use any placement and do not require Docker', () => {
   for (const scriptName of ['lint:staged', 'commitmsg:check']) {
     assert.match(
       rootManifest.scripts[scriptName],
-      /^bash scripts\/test-env\.sh image\b/u,
-      `package.json script ${scriptName} bypasses test-image placement`
+      /^bash scripts\/test-env\.sh any\b/u,
+      `package.json script ${scriptName} still requires image placement`
+    );
+    assert.doesNotMatch(
+      rootManifest.scripts[scriptName],
+      /test-env\.sh image\b/u,
+      `package.json script ${scriptName} still names retired image placement`
     );
   }
 });
 
-test('the tracked hooks activate the root image-placed gates', () => {
+test('the tracked hooks activate the root any-placed gates', () => {
   // CONTRIBUTING.md Local Validation Workflow: initialized repositories run
   // staged checks before commit and validate Conventional Commit messages.
   assert.match(
     lefthookConfig,
     /^commit-msg:\s*[\s\S]*?^\s+run:\s*pnpm run commitmsg:check -- \{1\}\s*$/mu,
-    'lefthook.yml does not activate commit-msg through the root commitmsg:check image-placement script'
+    'lefthook.yml does not activate commit-msg through the root commitmsg:check any-placement script'
   );
   assert.match(
     lefthookConfig,
     /^pre-commit:\s*[\s\S]*?^\s+run:\s*pnpm run lint:staged\s*$/mu,
-    'lefthook.yml does not activate pre-commit through the root lint:staged image-placement script'
+    'lefthook.yml does not activate pre-commit through the root lint:staged any-placement script'
   );
   assert.doesNotMatch(
     lefthookConfig,

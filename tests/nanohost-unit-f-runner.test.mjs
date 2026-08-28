@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';

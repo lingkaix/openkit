@@ -91,7 +91,7 @@ function listPackageJsonPaths(repoRoot) {
  * Validates the container image manifest and returns release image ids.
  *
  * @param {string} repoRoot Repository root.
- * @param {boolean} requireReleaseWorkerDigests Whether release worker bases must be digest-pinned.
+ * @param {boolean} requireReleaseWorkerDigests Whether release worker images must be digest-pinned.
  * @returns {string[]} Release image ids.
  */
 function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
@@ -109,13 +109,27 @@ function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
 
   const ids = new Set();
   const workerTargets = new Set();
+  const emptyDeclaredSetReleaseWorkers = [];
   const releaseImages = [];
 
   for (const image of manifest.images) {
-    validateImageEntry(repoRoot, image, ids, workerTargets, requireReleaseWorkerDigests);
+    validateImageEntry(
+      repoRoot,
+      image,
+      ids,
+      workerTargets,
+      emptyDeclaredSetReleaseWorkers,
+      requireReleaseWorkerDigests
+    );
     if (image.release === true) {
       releaseImages.push(image.id);
     }
+  }
+
+  if (emptyDeclaredSetReleaseWorkers.length > 1) {
+    throw new Error(
+      'containers/images.json declares more than one release worker base with an empty declared runtime set.'
+    );
   }
 
   if (releaseImages.length === 0) {
@@ -128,13 +142,23 @@ function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
 /**
  * Validates one image manifest entry.
  *
+ * A release worker base is identified by absent runtime metadata rather than image id, and workerContract is required exactly when runtime metadata exists.
+ *
  * @param {string} repoRoot Repository root.
  * @param {Record<string, unknown>} image Image entry.
  * @param {Set<string>} ids Seen image ids.
  * @param {Set<string>} workerTargets Seen worker Docker targets.
- * @param {boolean} requireReleaseWorkerDigests Whether release worker bases must be digest-pinned.
+ * @param {string[]} emptyDeclaredSetReleaseWorkers Release worker ids whose declared runtime set is empty.
+ * @param {boolean} requireReleaseWorkerDigests Whether release worker images must be digest-pinned.
  */
-function validateImageEntry(repoRoot, image, ids, workerTargets, requireReleaseWorkerDigests) {
+function validateImageEntry(
+  repoRoot,
+  image,
+  ids,
+  workerTargets,
+  emptyDeclaredSetReleaseWorkers,
+  requireReleaseWorkerDigests
+) {
   for (const field of [
     'id',
     'repository',
@@ -166,7 +190,7 @@ function validateImageEntry(repoRoot, image, ids, workerTargets, requireReleaseW
   assertRelativeExistingPath(repoRoot, image.smoke, `Image ${image.id} smoke`);
 
   if (image.kind === 'worker') {
-    for (const field of ['runtime', 'workerContract', 'baseImage', 'target']) {
+    for (const field of ['baseImage', 'target']) {
       if (!image[field]) {
         throw new Error(`Worker image ${image.id} is missing ${field}.`);
       }
@@ -178,6 +202,31 @@ function validateImageEntry(repoRoot, image, ids, workerTargets, requireReleaseW
       throw new Error(`Duplicate worker image target: ${image.target}`);
     }
     workerTargets.add(image.target);
+
+    const hasRuntime = Object.hasOwn(image, 'runtime');
+    const hasWorkerContract = Object.hasOwn(image, 'workerContract');
+    if (hasRuntime && (typeof image.runtime !== 'string' || image.runtime.trim().length === 0)) {
+      throw new Error(`Worker image ${image.id} runtime must be a non-empty string when present.`);
+    }
+    if (
+      hasWorkerContract &&
+      (typeof image.workerContract !== 'string' || image.workerContract.trim().length === 0)
+    ) {
+      throw new Error(
+        `Worker image ${image.id} workerContract must be a non-empty string when present.`
+      );
+    }
+    if (hasRuntime && !hasWorkerContract) {
+      throw new Error(`Worker image ${image.id} is missing workerContract.`);
+    }
+    if (!hasRuntime && hasWorkerContract) {
+      throw new Error(
+        `Worker image ${image.id} is missing runtime; workerContract is required exactly when runtime metadata exists.`
+      );
+    }
+    if (!hasRuntime && image.release === true) {
+      emptyDeclaredSetReleaseWorkers.push(image.id);
+    }
     if (
       image.release === true &&
       requireReleaseWorkerDigests &&

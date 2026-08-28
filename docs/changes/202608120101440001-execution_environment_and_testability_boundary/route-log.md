@@ -1,0 +1,3 @@
+Direction check Continue after the manual container-image-build wording was narrowed: the current route remained valid because the unavailable sandbox capability is container-image builds.
+Refuted hypothesis: the final Claude acceptance gate rejected the claim of complete placement/esbuild regression coverage; the missing facts were the unpinned 17 any and 6 host command outcomes, the four-producer esbuild invocations, and the unrecorded NanoHost clippy sentence.
+Failed attempt: the final check:repo run failed because the verified plan lacked the recognized Closeout Summary and Verification Evidence headings.

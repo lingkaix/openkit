@@ -11,6 +11,7 @@ command -v git >/dev/null
 command -v ip >/dev/null
 command -v jq >/dev/null
 command -v lsof >/dev/null
+command -v mise >/dev/null
 command -v nano >/dev/null
 command -v nc >/dev/null
 command -v netstat >/dev/null
@@ -43,6 +44,9 @@ test "$(python --version)" = "Python 3.14.6"
 test "$(python3 --version)" = "Python 3.14.6"
 uv --version | grep -Eq '^uv 0[.]11[.]30([[:space:]]|$)'
 gh --version | grep -Fq 'gh version 2.96.0'
+mise --version | grep -Fq '2026.8.14'
+test "$(stat -c '%u' /usr/local/bin/mise)" -eq 0
+test ! -w /usr/local/bin/mise
 pip --version >/dev/null
 npm --version >/dev/null
 git --version >/dev/null

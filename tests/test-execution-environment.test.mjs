@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -28,7 +28,222 @@ test('real-subscription entrypoint runs only the host runner after separate pref
   );
 });
 
-test('image placement requires baked test-image identity in addition to executor metadata', () => {
+/** Leaf ordinary gates that wrap their command with `any` placement. */
+const ordinaryAnyPlacedScripts = [
+  'build',
+  'build:openkit',
+  'bundle:openkit',
+  'test',
+  'typecheck',
+  'fmt',
+  'format:check',
+  'lint',
+  'check:repo',
+  'lint:staged',
+  'commitmsg:check',
+  'test:unit',
+  'test:coverage',
+  'test:e2e:nano',
+  'test:e2e:web',
+  'test:smoke',
+  'test:e2e:real-subscription:preflight',
+];
+
+/** Host-only gates that wrap their command with `host` placement. */
+const ordinaryHostPlacedScripts = [
+  'app:run',
+  'init',
+  'test:e2e:real-codex',
+  'test:e2e:real-provider',
+  'test:e2e:real-subscription',
+  'test:e2e:real-task-mode',
+];
+
+test('ordinary root scripts use any placement rather than image', () => {
+  assert.deepEqual(
+    Object.fromEntries(
+      ordinaryAnyPlacedScripts.map((scriptName) => [
+        scriptName,
+        typeof rootManifest.scripts[scriptName] === 'string' &&
+          /^bash scripts\/test-env\.sh any\b/u.test(rootManifest.scripts[scriptName]),
+      ])
+    ),
+    Object.fromEntries(ordinaryAnyPlacedScripts.map((scriptName) => [scriptName, true]))
+  );
+  assert.deepEqual(
+    Object.fromEntries(
+      ordinaryHostPlacedScripts.map((scriptName) => [
+        scriptName,
+        typeof rootManifest.scripts[scriptName] === 'string' &&
+          /^bash scripts\/test-env\.sh host\b/u.test(rootManifest.scripts[scriptName]),
+      ])
+    ),
+    Object.fromEntries(ordinaryHostPlacedScripts.map((scriptName) => [scriptName, true]))
+  );
+  const placedRootScripts = Object.entries(rootManifest.scripts)
+    .filter(
+      ([, command]) => typeof command === 'string' && /\bscripts\/test-env\.sh\b/u.test(command)
+    )
+    .map(([name]) => name);
+  const placedRootScriptSet = new Set(placedRootScripts);
+  const aggregateScripts = ['verify', 'verify:full', 'verify:l0-l2', 'verify:release'];
+  assert.deepEqual(
+    Object.fromEntries(
+      aggregateScripts.map((scriptName) => [
+        scriptName,
+        /test-env\.sh/u.test(rootManifest.scripts[scriptName] ?? ''),
+      ])
+    ),
+    Object.fromEntries(aggregateScripts.map((scriptName) => [scriptName, false]))
+  );
+  assert.deepEqual(
+    Object.fromEntries(
+      placedRootScripts.map((scriptName) => {
+        const tokens = (rootManifest.scripts[scriptName] ?? '')
+          .split(/[\s;&|]+/u)
+          .map((token) => token.replace(/^['"]+|['"]+$/gu, ''))
+          .filter(Boolean);
+        const callsPlaced = [];
+        for (let index = 0; index < tokens.length; index += 1) {
+          if (tokens[index] !== 'pnpm') continue;
+          const name = tokens[index + 1] === 'run' ? tokens[index + 2] : tokens[index + 1];
+          if (typeof name !== 'string' || name.startsWith('-')) continue;
+          if (placedRootScriptSet.has(name) && !callsPlaced.includes(name)) callsPlaced.push(name);
+        }
+        return [scriptName, callsPlaced];
+      })
+    ),
+    Object.fromEntries(placedRootScripts.map((scriptName) => [scriptName, []]))
+  );
+  const openkitCliEsbuild = /esbuild skills\/openkit-cli\.mjs(?:\s+--[^\s'"]+)+/u;
+  const esbuildProducers = ['build', 'build:openkit', 'bundle:openkit', 'test:unit'].map(
+    (scriptName) => (rootManifest.scripts[scriptName] ?? '').match(openkitCliEsbuild)?.[0] ?? ''
+  );
+  assert.ok(esbuildProducers[0], 'openkit-cli esbuild producer invocation is missing');
+  assert.deepEqual(esbuildProducers, [
+    esbuildProducers[0],
+    esbuildProducers[0],
+    esbuildProducers[0],
+    esbuildProducers[0],
+  ]);
+});
+
+test('workspace vitest test scripts select tap-flat reporter', () => {
+  const observed = {};
+  for (const workspaceDir of ['apps', 'packages']) {
+    for (const entry of readdirSync(join(repoRoot, workspaceDir), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const relativePath = `${workspaceDir}/${entry.name}/package.json`;
+      const command = JSON.parse(read(relativePath)).scripts?.test;
+      if (typeof command === 'string' && /\bvitest\s+run\b/u.test(command)) {
+        observed[relativePath] = /(^|\s)--reporter=tap-flat(\s|$)/u.test(command);
+      }
+    }
+  }
+  assert.ok(
+    Object.keys(observed).length > 0,
+    'no workspace package test script invokes vitest run'
+  );
+  assert.deepEqual(
+    observed,
+    Object.fromEntries(Object.keys(observed).map((relativePath) => [relativePath, true]))
+  );
+});
+
+test('test-env placements are any and host', () => {
+  assert.match(testEnvScript, /Usage: scripts\/test-env\.sh <any\|host>/u);
+  assert.match(testEnvScript, /^\s*any\)/mu);
+  assert.match(testEnvScript, /^\s*host\)/mu);
+  assert.doesNotMatch(testEnvScript, /^\s*image\)/mu);
+});
+
+test('any placement runs the command directly by default', () => {
+  const result = spawnSync(
+    'bash',
+    [join(repoRoot, 'scripts/test-env.sh'), 'any', 'printf', 'DIRECT_ANY'],
+    { encoding: 'utf8', cwd: repoRoot }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'DIRECT_ANY');
+  assert.doesNotMatch(result.stderr, /Unknown placement/u);
+  assert.doesNotMatch(result.stderr, /Docker is required/u);
+});
+
+test('any placement labels host and image environments distinctly', () => {
+  const hostRun = spawnSync(
+    'bash',
+    [
+      join(repoRoot, 'scripts/test-env.sh'),
+      'any',
+      'bash',
+      '-c',
+      'printf %s "$OPENKIT_TEST_ENVIRONMENT"',
+    ],
+    { encoding: 'utf8', cwd: repoRoot }
+  );
+  const imageFixture = prepareInImageFixture();
+
+  try {
+    const imageRun = spawnSync(
+      'bash',
+      [imageFixture.fixtureScript, 'any', 'bash', '-c', 'printf %s "$OPENKIT_TEST_ENVIRONMENT"'],
+      {
+        cwd: imageFixture.fixtureRoot,
+        encoding: 'utf8',
+        env: { ...process.env, OPENKIT_TEST_EXECUTOR: '1' },
+      }
+    );
+
+    assert.equal(hostRun.status, 0, hostRun.stderr);
+    assert.equal(imageRun.status, 0, imageRun.stderr);
+    assert.equal(hostRun.stdout, 'host');
+    assert.equal(imageRun.stdout, 'image');
+  } finally {
+    rmSync(imageFixture.fixtureRoot, { force: true, recursive: true });
+  }
+});
+
+test('any placement does not re-run a failed command inside the image', () => {
+  const result = spawnSync(
+    'bash',
+    [join(repoRoot, 'scripts/test-env.sh'), 'any', 'bash', '-c', 'exit 7'],
+    { encoding: 'utf8', cwd: repoRoot }
+  );
+
+  assert.equal(result.status, 7, result.stderr);
+  assert.doesNotMatch(result.stderr, /Unknown placement/u);
+  assert.doesNotMatch(result.stderr, /Docker is required/u);
+});
+
+test('host placement refuses to run inside the test image', () => {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-test-env-host-refuse-'));
+  const fixtureScript = join(fixtureRoot, 'scripts/test-env.sh');
+  const fixtureIdentity = join(fixtureRoot, 'openkit-test-env');
+
+  try {
+    mkdirSync(join(fixtureRoot, 'scripts'), { recursive: true });
+    writeFileSync(
+      fixtureScript,
+      testEnvScript.replaceAll('/etc/openkit-test-env', fixtureIdentity),
+      { mode: 0o755 }
+    );
+    writeFileSync(fixtureIdentity, 'identity\n');
+    const result = spawnSync('bash', [fixtureScript, 'host', 'printf', 'HOST_INSIDE_IMAGE'], {
+      cwd: fixtureRoot,
+      encoding: 'utf8',
+      env: { ...process.env, OPENKIT_TEST_EXECUTOR: '1' },
+    });
+
+    assert.equal(result.status, 2);
+    assert.doesNotMatch(result.stdout, /HOST_INSIDE_IMAGE/u);
+    assert.match(result.stderr, /must run on the host/iu);
+  } finally {
+    rmSync(fixtureRoot, { force: true, recursive: true });
+  }
+});
+
+test('in-image execution requires baked test-image identity in addition to executor metadata', () => {
   const functionBody = testEnvScript.match(/inside_test_image\(\)\s*\{([\s\S]*?)\n\}/u)?.[1];
   assert.ok(functionBody, 'scripts/test-env.sh does not declare inside_test_image');
   assert.match(functionBody, /OPENKIT_TEST_EXECUTOR/u);
@@ -82,7 +297,7 @@ test('inside-image placement rejects a stale build-input digest before running t
 
     const result = spawnSync(
       'bash',
-      [fixtureScript, 'image', 'bash', '-c', 'printf STALE_IMAGE_ACCEPTED'],
+      [fixtureScript, 'any', 'bash', '-c', 'printf STALE_IMAGE_ACCEPTED'],
       {
         cwd: fixtureRoot,
         encoding: 'utf8',
@@ -97,12 +312,36 @@ test('inside-image placement rejects a stale build-input digest before running t
     assert.notEqual(
       result.status,
       0,
-      `inside-image placement accepted a stale build-input digest: ${result.stdout}`
+      `inside-image any placement accepted a stale build-input digest: ${result.stdout}`
     );
+    assert.doesNotMatch(result.stderr, /Unknown placement/u);
+    assert.match(result.stderr, /build-input digest/iu);
     assert.doesNotMatch(result.stdout, /STALE_IMAGE_ACCEPTED/u);
   } finally {
     rmSync(fixtureRoot, { force: true, recursive: true });
   }
+});
+
+test('test image uses the exact worker baseline Node digest and does not derive worker-common', () => {
+  const workerFrom = read('containers/workers/Dockerfile').match(
+    /^FROM (node:\d+\.\d+\.\d+-bookworm-slim@sha256:[a-f0-9]{64}) AS worker-common$/mu
+  )?.[1];
+  const testEnvFrom = testImageDockerfile.match(/^FROM (\S+)$/mu)?.[1];
+
+  assert.ok(
+    workerFrom,
+    'containers/workers/Dockerfile does not declare a digest-pinned Node worker-common base'
+  );
+  assert.equal(
+    testEnvFrom,
+    workerFrom,
+    'containers/test-env/Dockerfile Node FROM drifted from the worker baseline digest'
+  );
+  assert.doesNotMatch(
+    testImageDockerfile,
+    /^FROM worker-common\b/mu,
+    'containers/test-env/Dockerfile derives from worker-common; it is an internal sibling of that public base'
+  );
 });
 
 test('test image does not globally select the internal self-check executor', () => {
@@ -329,3 +568,53 @@ test('test image content tag changes with every manifest-selected build input', 
     rmSync(fixtureRoot, { force: true, recursive: true });
   }
 });
+
+/**
+ * Builds a checkout-shaped fixture of test-env.sh that is already inside the image.
+ *
+ * When `digestFileContents` is omitted, the baked digest matches the fixture tree so an in-image `any` command can run.
+ *
+ * @param {string} [digestFileContents] Optional mismatched digest file body.
+ * @returns {{ fixtureRoot: string, fixtureScript: string }} Fixture paths.
+ */
+function prepareInImageFixture(digestFileContents) {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-test-env-in-image-'));
+  const fixtureScript = join(fixtureRoot, 'scripts/test-env.sh');
+  const fixtureIdentity = join(fixtureRoot, 'openkit-test-env');
+
+  for (const directory of ['apps/web', 'containers/test-env', 'scripts/docker']) {
+    mkdirSync(join(fixtureRoot, directory), { recursive: true });
+  }
+  writeFileSync(
+    fixtureScript,
+    testEnvScript
+      .replaceAll('/etc/openkit-test-env', fixtureIdentity)
+      .replaceAll('/workspace', fixtureRoot),
+    { mode: 0o755 }
+  );
+  writeFileSync(
+    join(fixtureRoot, 'scripts/docker/test-image-tag.mjs'),
+    read('scripts/docker/test-image-tag.mjs')
+  );
+  for (const relativePath of [
+    'apps/web/package.json',
+    'containers/images.json',
+    'containers/test-env/Dockerfile',
+    'containers/test-env/smoke.sh',
+  ]) {
+    writeFileSync(join(fixtureRoot, relativePath), read(relativePath));
+  }
+  writeFileSync(fixtureIdentity, 'identity\n');
+  const digest =
+    digestFileContents ??
+    spawnSync(
+      process.execPath,
+      [join(fixtureRoot, 'scripts/docker/test-image-tag.mjs'), '--digest'],
+      { cwd: fixtureRoot, encoding: 'utf8' }
+    ).stdout;
+  writeFileSync(
+    `${fixtureIdentity}-build-input-digest`,
+    digest.endsWith('\n') ? digest : `${digest}\n`
+  );
+  return { fixtureRoot, fixtureScript };
+}

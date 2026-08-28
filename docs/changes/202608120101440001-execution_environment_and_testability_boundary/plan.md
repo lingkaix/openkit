@@ -1,23 +1,23 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 date: 2026-08-12
 ---
 # Execution Environment And Testability Boundary
 
 ## Intent
 
-Realize the execution-environment and test-rule decisions accepted on 2026-08-11 and 2026-08-12, which are recorded in their owning documents and have no implementation, and record the engineering principle those decisions rest on where it can govern later work.
+Realize the execution-environment and test-rule decisions accepted on 2026-08-11 and 2026-08-12, which are recorded in their owning documents, and record the engineering principle those decisions rest on where it can govern later work. Historical (superseded): the 2026-08-12 claim that those decisions had no implementation.
 
-The decisions removed a single mandatory container from the definition of an ordinary check and replaced it with a published base image, a derived development image, three permitted environments, and four test rules. Every one of them is currently a statement about intent rather than a property of this repository: Docker is still required to run any ordinary gate and to make any commit.
+The decisions removed a single mandatory container from the definition of an ordinary check and replaced it with a published base image, a derived development image, three permitted environments, and four test rules. Historical (superseded): the 2026-08-12 claim that every one of them was still a statement about intent rather than a property of this repository, and that Docker was still required to run any ordinary gate and to make any commit.
 
-The governing wording landed first, on 2026-08-12, as WP-1. Core wording is not delegable work: it is distilled discussion context, and a handoff cannot carry the context that the wording is. Everything after WP-1 is therefore the review and cleanup of what that wording implies, against a repository that does not yet satisfy it — which is the ordinary shape of a program whose principle is accepted and whose implementation is not.
+The governing wording landed first, on 2026-08-12, as WP-1. Core wording is not delegable work: it is distilled discussion context, and a handoff cannot carry the context that the wording is. Historical (superseded): the claim that everything after WP-1 was therefore the review and cleanup of what that wording implied, against a repository that did not yet satisfy it.
 
 This record owns coordination, task detail, and verification evidence. The decisions themselves remain owned by `docs/engineering-doctrine.md`, `docs/change-execution.md`, `AGENTS.md`, `docs/toolchain.md`, `docs/specs/20260721-worker_execution_environment_images.md`, `docs/specs/20260708-container_image_packaging.md`, and `docs/specs/20260529-test_strategy.md`.
 
 ## How To Use This Record
 
-Every implementation decision below is settled. The only open question is the engineer-owned program-dependency scope for WP-6 recorded under Authority And Related Context; no package in this program is authorized to re-derive an implementation decision, propose an alternative design, or turn a task into another open question, and a builder that arrives without the originating discussion should not need it.
+Every implementation decision below is settled. Historical (superseded): the statement that the only open question was the engineer-owned program-dependency scope for WP-6 recorded under Authority And Related Context. No package in this program is authorized to re-derive an implementation decision, propose an alternative design, or turn a task into another open question, and a builder that arrives without the originating discussion should not need it.
 
 Where a package changes a document whose wording was decided in that discussion rather than derived from an existing owner, this record carries **reference wording** for it. Reference wording is a draft: it exists so an implementing agent adopts a settled decision instead of inventing one, and so a reviewer judges wording rather than design.
 
@@ -40,12 +40,12 @@ Where a package's work is mechanical rather than editorial, this record carries 
 
 **Governing dependency — engineer decision, 2026-08-20:** As of 2026-08-20 this program depends on the NanoCore Agent Function Model program, change record 202608130741380001, completing first. The engineer's reason is that WP-4 renames `image` placement to `any` across twenty root scripts and both Git hooks, and WP-5 adds two L0 rules enforced across the whole test corpus, so together they change how every gate in this repository is executed — landing that while the NanoCore program still has unopened implementation packages would move the ground under them.
 
-**Open question for the engineer under [OM-002]:** Is WP-6 exempt from this program-level dependency? The case for asking is that WP-6 is Tier 1, produces one manual page, depends only on WP-1, and touches no gate and no script, so the recorded reason does not obviously apply to it. The case against an agent assuming an exemption is that the dependency was decided at program level, so WP-6 remains within it unless the engineer narrows the decision. This plan neither self-authorizes an exemption nor silently treats WP-6 as conclusively blocked; its opening condition is unresolved until the engineer answers.
+**Historical (superseded) open question for the engineer under [OM-002]:** Is WP-6 exempt from this program-level dependency? The case for asking is that WP-6 is Tier 1, produces one manual page, depends only on WP-1, and touches no gate and no script, so the recorded reason does not obviously apply to it. The case against an agent assuming an exemption is that the dependency was decided at program level, so WP-6 remains within it unless the engineer narrows the decision. This plan neither self-authorizes an exemption nor silently treats WP-6 as conclusively blocked; its opening condition is unresolved until the engineer answers. That question is superseded because WP-6 is verified.
 
 ## Scope
 
 - Publish `worker-common` as a base artifact and install mise in it as the workspace-local toolchain provisioner.
-- Rebase the development image onto that base, stop it declaring a Node or pnpm version of its own, and move the repository version anchors to the value the base carries.
+- Keep internal `test-env` a sibling that MUST NOT `FROM worker-common`; it mirrors the exact worker Node digest. Workspace anchors own Node and pnpm versions. Test-image tagging hashes its own manifest-selected inputs, while a structural worker-common-derived throwaway smoke proves the external extension path.
 - Replace `image`/`host` placement with `any`/`host`, remove the container dependency from ordinary gates and from both Git hooks, and give the second-opinion rule a mechanism.
 - Land the enforcement the placement change depends on: an L0 rule and runner assertion for the anti-skip rule, whose only current enforcement is the environment monoculture this program removes.
 - Enforce the container-independence and platform-declaration rules, accepted on 2026-08-12 in `docs/specs/20260529-test_strategy.md` and now owned by `docs/verification-instruments.md`.
@@ -89,8 +89,8 @@ On 2026-08-12 the six projections below were edited to announce these decisions 
 | --- | --- | --- |
 | `containers/README.md` | WP-2 | Four governed worker ids; `worker-common` described as the published base and extension point |
 | `containers/workers/README.md` | WP-2 | Directory owns a published base plus three deployment images; mise named in the common tool set; extension path described |
-| `containers/test-env/README.md` | WP-3, then WP-4 | WP-3: built by derivation, no Node or pnpm of its own. WP-4: authoritative rather than mandatory, and the second-opinion rule |
-| `docs/cookbooks/docker-test-env.md` | WP-3, then WP-4 | WP-3: base digest as a build input. WP-4: the recipe stops being the only way to run a check |
+| `containers/test-env/README.md` | WP-3, then WP-4 | WP-3: internal sibling that MUST NOT `FROM worker-common`, mirrors the exact worker Node digest; workspace anchors own Node/pnpm. WP-4: authoritative rather than mandatory, and the second-opinion rule |
+| `docs/cookbooks/docker-test-env.md` | WP-3, then WP-4 | WP-3: test-image tagging hashes its own manifest-selected inputs. WP-4: the recipe stops being the only way to run a check |
 | `README.md` | WP-4 | Docker stops being a prerequisite for ordinary commands |
 | `CONTRIBUTING.md` | WP-4 | Setup no longer requires Docker; the two Local Validation Workflow bullets stop saying hooks run through the image |
 | `docs/manual/` | WP-6 | New page; no existing page changes |
@@ -105,11 +105,10 @@ Every requirement and finding raised in the originating discussion, each with ex
 | --- | --- |
 | Publish `worker-common`; catalog entry, labels, base smoke | WP-2 |
 | Install and pin mise in the common stage; baseline table row; smoke assertion | WP-2 |
-| Derived-image check proving the external extension path stays exercised | WP-2 |
-| Rebase `containers/test-env` onto the published base | WP-3 |
-| Development image stops declaring Node and pnpm | WP-3 |
-| Node and pnpm anchors follow the worker baseline (`24.16.0` to `24.18.0`) | WP-3 |
-| Base digest becomes a development-image build input | WP-3 |
+| Structural worker-common-derived throwaway smoke proves the external extension path | WP-2 |
+| Internal `test-env` is a sibling that MUST NOT `FROM worker-common` and mirrors the exact worker Node digest | WP-3 |
+| Workspace anchors own Node and pnpm versions | WP-3 |
+| Test-image tagging hashes its own manifest-selected inputs | WP-3 |
 | `any`/`host` placement replaces `image`/`host` | WP-4 |
 | Twenty ordinary scripts stop requiring a container | WP-4 |
 | Git hooks stop requiring a container | WP-4 |
@@ -348,7 +347,7 @@ WP-1 and WP-2 are frozen exact. WP-2 may open only after the program-level depen
 
 Each package exits on its own gate, and no package inherits another's evidence.
 
-The program-level predicate is one observation and it belongs to WP-4: on a machine with no container runtime available, `pnpm test`, `pnpm lint`, `pnpm typecheck`, `pnpm check:repo`, and one commit through both Git hooks all complete. Until that observation exists, the program has not delivered its intent regardless of how many packages have passed.
+The program-level acceptance predicate is the Docker-unavailable program checks (`pnpm test`, `pnpm lint`, `pnpm typecheck`, `pnpm check:repo`) plus both exact hook entrypoint commands (`pnpm run lint:staged` and `pnpm run commitmsg:check`). Historical (superseded): treating one Git commit through both hooks as a pending acceptance step belonging to WP-4. Until the Docker-unavailable observation exists, the program has not delivered its intent regardless of how many packages have passed. The terminal commit is an atomic post-verification handoff that reruns those hook entrypoints, not a remaining acceptance step; if either hook fails before the commit exists, the uncommitted verified claim reopens.
 
 Three measured values are recorded at their gates under the measurement rule in `docs/change-execution.md`: the count of root scripts still requiring a container after WP-4, whose bound is zero outside `host` placement; the count of host-placed scripts reclassified as incidental, which has no bound and states how far the original placement had drifted; and the size of the WP-5 corpus hit list, whose magnitude decides whether the rules were already satisfied or are a migration.
 
@@ -362,7 +361,7 @@ Independent verification is required at WP-2, WP-3, and WP-4 under Tier 3. WP-5 
 - WP-3 to WP-4: the baseline version anchor value, the resolution of the execution-identity task, and the moved mirror test.
 - WP-4 to WP-5: the enumerated placement audit and its disposition list.
 - WP-1 to WP-6: the adopted doctrine section, which the manual page cites rather than restates.
-- Closeout: the program state file and, if any unsolicited observations accumulate, the findings report are committed into this bundle; the three closed Known Debt entries are deleted from `docs/toolchain.md`.
+- Closeout: Historical (superseded): commit a program state file into this bundle. Current: no state file is created; if any unsolicited observations accumulate, the findings report remains in this bundle; the three closed Known Debt entries are deleted from `docs/toolchain.md`.
 
 ## Known Risks
 
@@ -384,7 +383,7 @@ Independent verification is required at WP-2, WP-3, and WP-4 under Tier 3. WP-5 
 - **IMPLEMENTED — 2026-08-12:** WP-1 landed in the four owning documents named in its package section and settled its implementation predicate. Independent review remains open against their current committed text, so WP-1 is not `verified`.
 - **BLOCKED — 2026-08-20:** By engineer decision, no remaining package is authorized to open before the NanoCore Agent Function Model program, change record 202608130741380001, completes, unless the engineer expressly exempts WP-6. The affected predicate is every remaining package entry gate; there is no commit or PR because this is a pre-entry dependency decision.
 
-This program still has no machine state file, and WP-2 through WP-6 remain unopened.
+This program still has no machine state file. Historical (superseded): the 2026-08-20 claim that WP-2 through WP-6 remained unopened.
 
 ## Adaptive-loop pilot cutover
 
@@ -392,20 +391,42 @@ This program still has no machine state file, and WP-2 through WP-6 remain unope
 
 The accepted product and ownership intent in this record is unchanged. Its earlier package queue, matrices, assignments, gates, events, exact leases, ceilings, denominators, and fixed role sequence remain historical Evidence only and no longer authorize dispatch. Accepted decisions, observed facts, and produced artifacts remain inputs to current work; none is deleted or reconstructed.
 
+### Intent Epoch 2 — 2026-08-28 (append-only)
+
+This epoch supersedes the WP-3 derivation that required `test-env` to be built `FROM` a digest-pinned published `worker-common`, and it supersedes the blocker routing that held WP-3 behind first GHCR publication. Every published worker image contains exactly its declared runtime set, whose cardinality may be zero, one, or many; `worker-common` is the empty set; current Codex, OpenCode, and Pi leaves remain singular facts; catalog `runtime` stays singular descriptive metadata until the first published multi-runtime artifact migrates it with CI, preflight, and OCI-label consumers; `control.adapter.targetRuntime` selects exactly one adapter per session; image contents confer no authority. There is no no-fifth-image or universal-image prohibition; combining runtimes is a release-coupling and supply-surface cost. Default out-of-box network grants are copy-on-init AgentManifest templates owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`. Historical Coverage Map rows, WP-3 derivation tasks, and Epoch 1 checkpoint text that required a published digest before WP-3 remain evidence and no longer authorize dispatch.
+
+### Intent Epoch 3 — 2026-08-28 / engineer's worker-image, CI-environment, dogfood, and multi-runtime clarifications in this thread (append-only)
+
+This entry supplies the source omitted from Intent Epoch 2 and records no change to that epoch's accepted content or reason.
+
 ### Current checkpoint
 
-- **Current facts:** The NanoCore Agent Function Model dependency is `verified`; WP-1 is verified by independent review; WP-2 and WP-6 are open; WP-3 requires a digest-pinned published `worker-common` base; and WP-4 and WP-5 retain their accepted internal order behind WP-3.
-- **Current owner reconciliation:** `worker-common` remains an ordinary releaseable `kind: worker` catalog entry with `baseImage` and `target`, but it is not a deployment worker and therefore has neither `runtime` nor `workerContract`; the three deployment worker entries retain both fields, and release preflight plus the NanoCore catalog tests join the WP-2 slice because current source evidence shows they reject or misidentify the base entry.
-- **Current review evidence:** An independent repository reviewer accepted WP-1's current authoritative bytes and focused evidence; the historical Coverage Map's attribution of harness admission and retired frozen-lease mechanics to `docs/change-execution.md` is not current authority, which instead resides in `docs/verification-instruments.md`, and no current dispatch or acceptance criterion depends on the retired lease language.
-- **Next Action:** complete the WP-2 artifacts and named observable evidence, then complete the WP-6 projection; choose review and verification capabilities adaptively from consequence and uncertainty rather than treating the historical role sequence as dispatch authority.
-- **Expected change:** WP-2 adds the catalog base identity, exact mise pin, non-root base, smoke and derived-image proof, owner reconciliation, and container projections; WP-6 adds one canonical English manual page and its manual index entry.
-- **Expected observable:** all four worker targets build and smoke locally, the throwaway derived image inherits the complete baseline and adds one tool, focused catalog and release-preflight checks pass, and documentation validators accept the manual projection.
-- **Evidence that changes route:** a focused WP-2 product failure is repaired locally; a registry, network, Docker-daemon, or collection failure proves no predicate; a published multi-platform digest opens WP-3; no local tag, local registry, source digest, or unpushed manifest substitutes for publication.
-- **Current artifact corrections:** WP-2 also owns `docs/specs/20260708-container_image_packaging.md`, `scripts/release-preflight.mjs`, its focused tests, and `apps/nanocore/src/docker/container-images-manifest.test.ts`; the stale WP-6 `OPENKIT_E2E_REMOTE_OPENSHELL` example is replaced by the current explicitly passed SSH-alias shape owned by `docs/verification-instruments.md`; closeout creates no state file; and the WP-2 to WP-3 handoff is a future release's published digest rather than a WP-2 local exit artifact.
-- **Human-only decision after WP-2 and WP-6:** authorize an earlier version-tag release that publishes `worker-common`, or accept a different release sequence or design for WP-3 through WP-5.
+- **Current facts:** The NanoCore Agent Function Model dependency, WP-1, WP-2, current sibling WP-3, WP-4, WP-5, and WP-6 are verified. WP-2, WP-3, and WP-6 retain passing focused image, test-environment, documentation, local Docker evidence, and an independent repository-review PASS; the post-compaction direction check returned `Continue` after narrowing the manual's unavailable build capability to container-image builds. WP-4 and WP-5 have passing independent test-author fixtures and builder evidence, the ordinary independent repository reviewer returned PASS after four falsification-and-correction rounds, and the final Claude Opus 5 acceptance gate returned PASS after its three local findings were corrected and falsified; dogfood stays design and backlog until after first `worker-common` publication.
+- **Current owner reconciliation:** a release worker base is identified by absent `runtime`, not by image id, and `workerContract` is required exactly when runtime metadata exists; `worker-common` is the empty declared set; the three current leaves retain singular `runtime` plus `workerContract`; five development grants are AEP-owner copy-on-init templates; `test-env` is an internal sibling mirroring the worker Node digest; Pi image smoke is an adjacent closed finding.
+- **Current WP-4 and command-surface result:** the initial twenty `image` and seven `host` scripts became seventeen `any` leaves, four placement-free `verify:*` compositions, and six genuine `host` commands. Sixteen `any` leaves replace former `image` placements; the real-subscription preflight is the seventeenth and was the one incidentally host-placed command. Both Git hooks now reach `any`; `OPENKIT_TEST_USE_IMAGE=1` is the only image second-opinion selector; results are labelled; and no retry, fallback, result store, automatic second opinion, wrapper hierarchy, or Docker prerequisite remains in an ordinary command.
+- **Current WP-5 result:** the static validator rejects runtime-result skips across every enclosing control-flow condition, direct literal container-runtime calls outside an exact host-mapped container-subject declaration, and undeclared members of the bounded platform-interface list. The dynamic runner executes once, rejects unnamed Vitest skip summaries, and authorizes plain TAP or Turbo-prefixed `tap-flat` skips only through a reporter test file that uniquely resolves against the discovered corpus plus an exact test or suite declaration in that file. Ten workspace Vitest `test` scripts select the built-in `tap-flat` reporter; Cargo and Node validator commands are unchanged. The semantic hit list became closed finding EETB-FND-005: thirty-one POSIX declarations, two asserted-divergence declarations, and zero direct container-runtime hits.
+- **Package-command cleanup:** root `package.json` keeps execution placement only on leaf commands and keeps `verify:l0-l2`, `verify`, `verify:release`, and `verify:full` as direct compositions of those leaves, removing four redundant placement entries without creating a raw-command layer or another script owner.
+- **Current focused evidence:** `node --test tests/test-execution-environment.test.mjs tests/test-governance-rules.test.mjs tests/toolchain-version-mirrors.test.mjs tests/release-preflight.test.mjs` passes sixty-one of sixty-one checks under Node 24.18.0; `node scripts/validate-test-governance.mjs`, `bash -n scripts/test-env.sh`, and `git diff --check` exit zero; a Turbo-filtered Vitest command passes through the dynamic runner with `tap-flat` output.
+- **Adjacent NanoHost clippy correction:** Under the app-local Rust 1.97 pin, `apps/nanohost/src/image_acquisition.rs` replaced equivalent negated `is_some_and` OCI-platform checks with `Option::is_none_or`; focused evidence was seven `image_acquisition` tests plus `cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings` exiting 0.
+- **Current program evidence:** with Docker absent from `PATH`, `pnpm test` passes all thirteen workspace tasks, `pnpm lint` passes all thirteen workspace tasks, `pnpm typecheck` passes all ten applicable tasks, `pnpm check:repo` validates 199 documents and 914 Biome files, `pnpm test:unit` passes all thirteen workspace tasks plus 511 root tests and the generated-bundle comparison, `pnpm test:coverage` passes the configured NanoCore and Web thresholds, `pnpm build` passes all eleven applicable tasks, and direct invocations of `pnpm run lint:staged` plus `pnpm run commitmsg:check -- temp/final-commit-message.txt` pass against the staged closeout bundle and requested conventional commit message. The build retains deferred finding EETB-FND-006 for the 987.59 kB Web entry chunk warning. Worker and test-image Docker builds and smokes passed before the final package-command text and test-governance corrections; those corrections changed no Dockerfile, dependency set, smoke subject, or image capability.
+- **Next Action:** Terminal post-verification handoff; no unfinished program work remains. The requested commit is an atomic hook-rerunning handoff of `pnpm run lint:staged` and `pnpm run commitmsg:check`, not a pending acceptance step; if either hook fails before the commit exists, the uncommitted verified claim reopens.
+- **Evidence that changes route:** a product or contract failure is corrected locally; an environment, setup, collection, or unrelated baseline failure proves no predicate; a named residual from the bounded validator is recorded rather than hidden; first `worker-common` GHCR publication activates dogfood design and does not alter WP-4 or WP-5.
+- **Human-only decision after this slice:** authorize a version-tag release that publishes `worker-common`, which then activates the internal Codex-plus-Pi dogfood image as design work, or accept a different release sequence.
 
 This plan intentionally has no legacy state file, and no state file is created for execution or closeout.
 
-### Pilot start boundary
+### Historical pilot start boundary (superseded)
 
-After the dependency closes, inspect the actual WP-1 artifact directly, then run the cheapest current-state probe that can change the route. Do not reconstruct the former package pipeline or dispatch from its historical mechanics. Accept the artifact from its bytes and observed checks, keep one writer per path, and adapt later participation to the risk and uncertainty actually found.
+Historical (superseded): after the dependency closes, inspect the actual WP-1 artifact directly, then run the cheapest current-state probe that can change the route. Do not reconstruct the former package pipeline or dispatch from its historical mechanics. Accept the artifact from its bytes and observed checks, keep one writer per path, and adapt later participation to the risk and uncertainty actually found.
+
+## Closeout Summary
+
+- **Verdict:** The accepted execution-environment and testability boundary is implemented and independently accepted; no production work package remains open in this plan.
+- **Owners and commits:** The accepted Core and specification owners linked in Authority And Related Context govern the durable result, the dependency foundation is preserved in `dbffe4a0`, and the engineer-requested terminal implementation commit is an atomic post-verification handoff that reruns `pnpm run lint:staged` and `pnpm run commitmsg:check` rather than a pending acceptance step; no commit hash is recorded because that commit does not yet exist.
+- **Unresolved findings:** `docs/changes/202608120101440001-execution_environment_and_testability_boundary/findings.md` retains deferred EETB-FND-003 for first-publication GHCR visibility and authentication ownership and deferred EETB-FND-006 for the Web entry-chunk warning; neither changes this closeout verdict.
+- **Closeout state:** No legacy state file, dogfood image, multi-runtime artifact, nested-container mechanism, retry framework, or automatic second-opinion system was added. The required pilot `route-log.md` records only the observed entries named there.
+- **External effects and cleanup:** No publish, push, deploy, or remote write occurred. The anonymous GHCR probe was read-only HTTP 403 and proved no package state. Local read-only inspection found retained `openkit/worker-common:dev`, `worker-codex:dev`, `worker-opencode:dev`, `worker-pi:dev`, `test-env:dev` and content-tagged `test-env` images plus `openkit-test-env-cc4e1f23ae21-*` named volumes; no deletion was performed and provenance of older retained artifacts is not reconstructed.
+
+## Verification Evidence
+
+The current focused suite passes sixty-one of sixty-one checks under Node 24.18.0; the Docker-unavailable program evidence covers test, lint, typecheck, repository checks, unit tests, coverage, and build; direct invocations of both exact hook entrypoint commands `pnpm run lint:staged` and `pnpm run commitmsg:check -- temp/final-commit-message.txt` pass against the staged closeout bundle and requested conventional commit message, and the terminal post-verification commit reruns them; worker and test-image Docker builds and smokes passed before the later command-text and governance-only corrections; ordinary repository review and the final Claude Opus 5 acceptance gate both returned PASS.

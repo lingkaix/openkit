@@ -60,7 +60,7 @@ pnpm verify
 
 `repo-init.sh` installs the pinned toolchain with mise and then checks that bare `node` and `pnpm` resolve to it. If it reports otherwise, follow the `PATH` instruction it prints before running anything else: every command below assumes bare `pnpm` is the pinned pnpm.
 
-Docker must also be running. Repository checks execute inside the `test-env` container image and enter it on their own, so their capability set comes from `containers/test-env/Dockerfile` rather than from your machine or your agent's sandbox. The first check builds the image; later runs reuse it until its build inputs change. Nothing needs configuring per machine. The Test Execution Environment decision in [`docs/toolchain.md`](./docs/toolchain.md) owns this, including the short list of gates that stay on the host because they drive Docker themselves.
+Docker is not required for ordinary checks. They run on this machine by default; a Worker Agent sandbox is also permitted. CI runs the same gates inside the `test-env` image, which is authoritative on disagreement. An explicit `OPENKIT_TEST_USE_IMAGE=1` invocation is a labelled second opinion and never a retry. The Test Execution Environment decision in [`docs/toolchain.md`](./docs/toolchain.md) owns this, including the short list of gates that stay on the host because they drive Docker themselves.
 
 ### 2. Create a New Feature
 
@@ -107,8 +107,8 @@ Before committing, ensure:
 
 - The tracked `lefthook.yml` is the single canonical Git-hook configuration; the repository has no example configuration or promotion lifecycle.
 - `bash scripts/repo-init.sh` installs the Lefthook-managed hooks from that tracked configuration.
-- Pre-commit runs `lint:staged` through the test execution image, so only staged files are validated.
-- Commit-msg runs `commitmsg:check` through the test execution image to validate Conventional Commits.
+- Pre-commit runs `lint:staged`, so only staged files are validated.
+- Commit-msg runs `commitmsg:check` to validate Conventional Commits.
 
 This document owns the commit syntax and allowed types. A commit
 subject is `<type>[optional scope]: <description>`, where type is one of `feat`, `fix`,

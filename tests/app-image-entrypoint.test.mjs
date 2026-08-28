@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

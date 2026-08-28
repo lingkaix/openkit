@@ -2,13 +2,11 @@
 #
 # Places one repository check in the environment that owns it.
 #
-#   scripts/test-env.sh image <command> [args...]
-#     Runs the command inside the test-env test execution image. When it is
-#     already running there, it execs directly, so nesting is a no-op.
+#   scripts/test-env.sh any <command> [args...]
+#     Runs directly in the current permitted environment. Set OPENKIT_TEST_USE_IMAGE=1 on a host for an explicit image second opinion.
 #
 #   scripts/test-env.sh host <command> [args...]
-#     Runs the command on the host and refuses to run inside the image.
-#     Reserved for checks that drive Docker themselves.
+#     Runs the command on the host and refuses to run inside the image. Reserved for commands that require host-only Docker or real-runtime access.
 #
 # Owned by the Test Execution Environment decision in docs/toolchain.md.
 
@@ -24,7 +22,7 @@ PLACEMENT="${1:-}"
 shift || true
 
 if [[ -z "${PLACEMENT}" || $# -eq 0 ]]; then
-  echo "Usage: scripts/test-env.sh <image|host> <command> [args...]" >&2
+  echo "Usage: scripts/test-env.sh <any|host> <command> [args...]" >&2
   exit 2
 fi
 
@@ -35,11 +33,11 @@ inside_test_image() {
 run_host_placement() {
   if inside_test_image; then
     cat >&2 <<'MESSAGE'
-This check drives Docker itself and must run on the host, not inside the
-test-env test execution image. Run it from a host shell.
+This command requires host-only Docker or real-runtime access and must run on the host, not inside the test-env test execution image. Run it from a host shell.
 MESSAGE
     exit 2
   fi
+  export OPENKIT_TEST_ENVIRONMENT=host
   exec "$@"
 }
 
@@ -57,6 +55,7 @@ run_inside_test_image() {
   fi
 
   export PATH="${CONTAINER_REPO_ROOT}/node_modules/.bin:${PATH}"
+  export OPENKIT_TEST_ENVIRONMENT=image
   if [[ "${OPENKIT_TEST_ENV_AUTO_INSTALL:-}" == "1" ]]; then
     pnpm install --frozen-lockfile --prefer-offline
   fi
@@ -68,27 +67,20 @@ require_docker() {
     return 0
   fi
   cat >&2 <<'MESSAGE'
-Docker is required: repository checks run inside the test-env image so that
-their capability set is defined by containers/test-env/Dockerfile rather than
-by whatever host, shell, or agent sandbox invoked them.
+Docker is required: repository checks run inside the test-env image so that their capability set can be compared with containers/test-env/Dockerfile.
 
-Start Docker and retry. See the Test Execution Environment decision in
-docs/toolchain.md.
+Start Docker or omit OPENKIT_TEST_USE_IMAGE for the primary host execution.
+See the Test Execution Environment decision in docs/toolchain.md.
 MESSAGE
   exit 2
 }
 
-# Isolates volume names per checkout so that two working copies of this
-# repository never share an installed dependency tree.
+# Isolates volume names per checkout so that two working copies of this repository never share an installed dependency tree.
 workspace_id() {
   node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 12))' "${REPO_ROOT}"
 }
 
-run_image_placement() {
-  if inside_test_image; then
-    run_inside_test_image "$@"
-  fi
-
+run_image_second_opinion() {
   require_docker
   cd "${REPO_ROOT}"
 
@@ -128,9 +120,7 @@ run_image_placement() {
     --env "CI=${CI:-}"
   )
 
-  # Dependency trees stay in named volumes. A bind-mounted node_modules would
-  # hand the container the host platform's native builds, and better-sqlite3
-  # and esbuild are compiled per platform.
+  # Dependency trees stay in named volumes. A bind-mounted node_modules would hand the container the host platform's native builds, and better-sqlite3 and esbuild are compiled per platform.
   local manifest relative_package volume_suffix
   for manifest in \
     "${REPO_ROOT}/package.json" \
@@ -153,14 +143,23 @@ run_image_placement() {
   fi
 
   exec docker "${docker_args[@]}" "${image_tag}" \
-    bash scripts/test-env.sh image "$@"
+    bash scripts/test-env.sh any "$@"
 }
 
 case "${PLACEMENT}" in
-  image) run_image_placement "$@" ;;
+  any)
+    if inside_test_image; then
+      run_inside_test_image "$@"
+    elif [[ "${OPENKIT_TEST_USE_IMAGE:-}" == "1" ]]; then
+      run_image_second_opinion "$@"
+    else
+      export OPENKIT_TEST_ENVIRONMENT=host
+      exec "$@"
+    fi
+    ;;
   host) run_host_placement "$@" ;;
   *)
-    echo "Unknown placement \"${PLACEMENT}\": expected \"image\" or \"host\"." >&2
+    echo "Unknown placement \"${PLACEMENT}\": expected \"any\" or \"host\"." >&2
     exit 2
     ;;
 esac

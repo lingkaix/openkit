@@ -18,7 +18,7 @@ This directory holds product applications (web apps, APIs, CLIs, agents, and sim
 
 ## NanoHost
 
-`apps/nanohost` (`@openkit/nanohost`) is the Rust execution-host binary. Its app-local `mise.toml` pins the Rust version for developers; the same exact version is mirrored into `containers/test-env` as `ENV RUST_VERSION` for deterministic gates. Package scripts `build`, `test`, `lint`, and `format` invoke Cargo and participate in ordinary root `pnpm build`, `pnpm test`, `pnpm lint`, and `pnpm fmt` through `turbo run` inside the test execution image. Do not add a parallel root command surface for NanoHost.
+`apps/nanohost` (`@openkit/nanohost`) is the Rust execution-host binary. Its app-local `mise.toml` pins the Rust version for developers; the same exact version is mirrored into `containers/test-env` as `ENV RUST_VERSION` for deterministic gates. Package scripts `build`, `test`, `lint`, and `format` invoke Cargo and participate in ordinary root `pnpm build`, `pnpm test`, `pnpm lint`, and `pnpm fmt` through `turbo run` in any permitted test environment; CI selects the test execution image. Do not add a parallel root command surface for NanoHost.
 
 ## Related documentation
 

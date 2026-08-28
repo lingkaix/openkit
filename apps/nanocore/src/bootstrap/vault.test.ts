@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { Buffer } from 'node:buffer';
 import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

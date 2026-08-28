@@ -1,3 +1,4 @@
+// openkit-test-platform-divergence
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

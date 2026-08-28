@@ -6,6 +6,7 @@ This folder holds the User Manual documents. The [User Manuals type](../document
 
 - `nanocore-deployment-modes.en.md` — deploy, configure, start, and verify NanoCore across supported product modes and the container worker runtime.
 - `nanocore-data-root-config.en.md` — the user-editable files under `DATA_ROOT/config`.
+- `sandbox-container-tests.en.md` — structure tests that need a container runtime when the worker sandbox cannot start a container.
 
 ## Local Conventions
 
