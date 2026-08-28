@@ -4,25 +4,29 @@ date: 2026-04-15
 ---
 # Product Vision
 
-## Current Implementation Posture
+## 当前实现路线
 
-The accepted implementation path is NanoCore-first and end-user Agent-Skill-first. OpenKit hardens the core kernel and public API, then projects the complete supported user/operator capability surface through the progressively disclosed `openkit` Skill and bundled CLI before completing the Web UI as the primary product surface. The removed user-facing MCP facade and split setup/loop Skills must not be restored, while worker-side MCP capability supply remains a separate accepted future plane whose current AEP projection is disabled.
+当前接受的实现路线是 NanoCore-first 和 end-user Agent-Skill-first。OpenKit 先强化 Core kernel 与 public API，再通过 progressively disclosed 的 `openkit` Skill 和 bundled CLI 投影完整的 user/operator capability surface，之后才把 Web UI 完善为主要产品界面。已移除的 user-facing MCP facade 以及拆分的 setup/loop Skills 不得恢复；worker-side MCP capability supply 是另一条已接受的未来能力平面，其当前 AEP projection 保持 disabled。
 
-## Strategic Work Resource Thesis
+## 文档语言
 
-Model capability and harness maturity will eliminate interaction created only by the need to operate tools. They will not eliminate interaction required to form intent, exercise taste, judge quality, or explore possibility.
+根据 engineer 的明确指示，本文使用中文书写，proper names、canonical terms、product names、technical identifiers 与其他专有 item 保留 English 原词。这是仅适用于 `docs/product-vision.md` 的 document-local exception；本文只记录该例外，不修改或扩张其他 repository documentation 的 English-only 规则。
 
-As high-quality candidate generation becomes cheaper, users may perform more creative exploration through comparison, preview, selection, and fine adjustment rather than less. High-bandwidth interaction therefore moves from teaching AI how to execute toward jointly deciding what should exist.
+## 战略 Work Resource 命题
 
-OpenKit must cover the continuous transition from delegation to co-creation without reproducing domain production workbenches. This boundary keeps OpenKit an Agent manager while allowing it to grow into a Human + Agent work system.
+模型能力与 harness 成熟度会消灭只是为了操作工具而产生的交互，但不会消灭为了形成意图、判断品味、评估质量和探索可能性而产生的交互。
 
-The higher-layer capability OpenKit owns is judgement grounding: converting human judgement that is difficult to express in prose into Agent input that is precise, localized, executable, and replayable.
+随着高质量 candidate generation 的成本下降，用户会通过比较、预览、选择和细微调整进行更多而不是更少的创造性探索。因此，高带宽交互将从教 AI 如何执行，转向共同判断什么值得存在。
 
-OpenKit should not only let users tell an Agent what to do. It should let users transmit professional judgement that is not yet fully verbalized through selection, comparison, annotation, adjustment, and local modification.
+OpenKit 必须覆盖从 delegation 到 co-creation 的连续过渡，同时不复刻垂直领域的 production workbench。这个边界让 OpenKit 保持为 Agent manager，并能够成长为 Human + Agent 工作系统。
 
-This capability becomes more important as models become stronger because a small intent error can drive an increasingly large amount of correct but misdirected automated execution.
+OpenKit 拥有的更高层能力是 `judgement grounding`：把难以通过文字完整表达的 human judgement 转换成 precise、localized、executable 且 replayable 的 Agent input。
 
-OpenKit's durable product moat is the ability to compress tacit human judgement into signals that an Agent can interpret and act on accurately without requiring OpenKit to become the domain tool itself.
+OpenKit 不应只让用户告诉 Agent 做什么，还应让用户通过选择、比较、标注、调整和局部修改，传递尚未完全语言化的专业判断。
+
+模型越强，这项能力越重要，因为微小的 intent 偏差可能驱动越来越大量的、执行正确但方向错误的自动化工作。
+
+OpenKit 持久的产品护城河，是在不让自身成为垂直领域工具的前提下，把 tacit human judgement 压缩成 Agent 能够准确理解并采取行动的信号。
 
 ## 1. 产品定位
 
@@ -42,19 +46,19 @@ OpenKit 面向高效率学习和工作的专业个人，以及 typically 3-5 人
 
 ## 3. 核心理念
 
-### 3.1 Agents as Teammates
+### 3.1 Agents 作为 Teammates
 
-OpenKit treats agents as real teammates rather than disposable tool calls. Users may work directly with one agent, but the product should also provide one coherent way to direct and supervise the agent team through Core.
+OpenKit 把 agents 视为真实 teammates，而不是一次性的 tool calls。用户可以直接与一个 agent 协作，产品也应提供一种一致的方式，通过 Core 指挥和监督整个 agent team。
 
-The normative rules for bounded delegation, execution accountability, human authority, and durable product truth belong to [Foundation](./core/foundation.md).
+关于 bounded delegation、execution accountability、human authority 和 durable product truth 的规范规则由 [Foundation](./core/foundation.md) 所有。
 
-### 3.2 Human as Leader, Driver, and Supervisor
+### 3.2 Human 作为 Leader、Driver 与 Supervisor
 
-The real human remains the team's leader, driver, and supervisor. The product should give that human clear visibility into work, handoffs, outputs, and risks while agents perform delegated execution.
+真实 human 始终是团队的 leader、driver 和 supervisor。Agents 执行 delegated work 时，产品应让 human 清楚看见工作、handoffs、outputs 和 risks。
 
-[Foundation](./core/foundation.md) owns the normative final-authority, observability, reviewability, and stop-boundary doctrine.
+关于 final authority、observability、reviewability 和 stop boundary 的规范原则由 [Foundation](./core/foundation.md) 所有。
 
-### 3.3 Let Humans Focus on What Humans Do Best
+### 3.3 让 Human 专注于最擅长的事
 
 OpenKit 的 unified interface 应让用户专注于发挥人最重要的能力。
 
@@ -72,23 +76,23 @@ OpenKit 的 unified interface 应让用户专注于发挥人最重要的能力�
 
 OpenKit 的基本架构是 `App + Core + Agent`。
 
-- `App` is the user interaction surface.
-- `Core` is the governed coordination and durable-truth boundary.
-- `Agent` integrates specialized runtimes that perform delegated execution.
+- `App` 是用户交互界面。
+- `Core` 是受治理的 coordination 与 durable-truth boundary。
+- `Agent` 集成执行 delegated work 的 specialized runtimes。
 
-[Foundation](./core/foundation.md) and [Architecture](./core/architecture.md) own the normative responsibility and execution boundaries; this section states only the product shape.
+[Foundation](./core/foundation.md) 与 [Architecture](./core/architecture.md) 拥有规范的 responsibility 和 execution boundaries；本节只说明产品形态。
 
-### 4.2 Core as Hub
+### 4.2 Core 作为 Hub
 
-To the user, Core is the unified operating layer for directing the agent team and observing its work. Its exact services and internal responsibilities belong to [Architecture](./core/architecture.md), not Product Vision.
+对用户而言，Core 是指挥 agent team 并观察其工作的统一 operating layer。Core 的具体服务和内部职责由 [Architecture](./core/architecture.md) 所有，而不是由 Product Vision 定义。
 
-### 4.3 Agents Do the Heavy Lifting
+### 4.3 Agents 承担 Heavy Lifting
 
-The product should delegate complex and runtime-specific execution to specialized agents while keeping coordination coherent for the user. [Foundation](./core/foundation.md) owns the durable Core-versus-runtime boundary.
+产品应把复杂且 runtime-specific 的执行交给 specialized agents，同时为用户保持一致的 coordination 体验。持久的 Core-versus-runtime boundary 由 [Foundation](./core/foundation.md) 所有。
 
-## 5. User Experience
+## 5. 用户体验
 
-### 5.1 Conversation-First Interface
+### 5.1 Conversation-First 界面
 
 UI 应围绕 conversation-first 体验展开，形式上接近 `ChatGPT` 一类的 chat-style interface，但重点不是复刻已有产品，而是为 agent work 提供更清楚的操作面。
 
@@ -102,24 +106,24 @@ UI 应围绕 conversation-first 体验展开，形式上接近 `ChatGPT` 一类�
 - 哪些 artifacts 已经完成，哪些还在处理中。
 - 用户什么时候需要介入，什么时候可以只看结果。
 
-### 5.2 Main UI Capabilities
+### 5.2 主要 UI 能力
 
 - `Conversation UI`：以对话为主入口，适合发起任务、查看进展、继续追问。
 - `Artifacts`：支持展示结构化输出和工作产物，参考 `LibreChat Artifacts` 这类交互形式。
 - `Generative UI`：未来在合适场景下支持生成式界面，让模型输出更丰富的 visual / interactive result。
-- `Config interface`：提供必要配置界面，用于管理 agents、runtime、环境和基础偏好。
+- `Config interface`：只呈现必须由用户提供的目标、约束、授权、偏好和例外决策，不把 agents、runtime、Workspace 或环境的日常管理转嫁给用户。
 - `Task and communication tracking`：以友好方式追踪 task ownership、status、handoff、messages 和 results。
 
-### 5.3 UI Design Principles
+### 5.3 UI 设计原则
 
 - 保持简单，避免过多层级和复杂交互。
 - 保持代码库小而清晰，不因为追求功能完整而把前端做重。
 - 优先让任务可读、状态可见、产物可访问，而不是堆叠额外功能。
 - UI 要 `capable but neat`，既能承载对话、产物和配置，又保持整洁、直接、不过度设计。
 
-## 6. Functional Design
+## 6. 功能设计
 
-### 6.1 Agent Orchestration
+### 6.1 Agent 编排
 
 Core 的首要职责是 orchestrate `UI -> Core -> Agent` 的 agent 工作链路。
 
@@ -129,7 +133,7 @@ Core 的首要职责是 orchestrate `UI -> Core -> Agent` 的 agent 工作链路
 
 `agent config pack` 可以包含 instructions、context、skills 等组合，类似 agent 动态加载 skill 的方式。
 
-### 6.2 Multi-Channel Communication Gateway
+### 6.2 多渠道 Communication Gateway
 
 Core 不仅是 `UI -> Core -> Agent` 的通信、调度和存储中枢，也应成为多渠道通信网关。
 
@@ -144,7 +148,7 @@ Core 不仅是 `UI -> Core -> Agent` 的通信、调度和存储中枢，也应�
 
 Core 统一处理来自不同 channels 的消息，并将其转化为内部任务流。
 
-### 6.3 Lightweight Conversation & Task Execution
+### 6.3 轻量对话与任务执行
 
 Core 本身可以具备简短对话能力，支持类似 ChatGPT 的 quick answer。
 
@@ -152,7 +156,7 @@ Core 也可以完成轻量任务，参考 `nanobot` 的 ultra-lightweight postur
 
 但 Core 不加载额外工具，不承担 heavy execution，复杂任务一律交给 agent 完成。
 
-### 6.4 Specialized Internal Agents
+### 6.4 专用 Internal Agents
 
 随着系统成熟，Core 内部可以实现专门的轻量 agents 来承担特定 coordination 职责。
 
@@ -175,7 +179,7 @@ Unified proxy 覆盖以下能力。
 
 Proxy 的核心价值如下。
 
-- **Auth proxy**: lets an agent access authenticated resources without placing credentials in prompts or stable product records; agent visibility depends on the approved injection path.
+- **Auth proxy**：让 agent 在不把 credentials 放入 prompts 或 stable product records 的情况下访问 authenticated resources；agent 的可见范围取决于经过批准的 injection path。
 - **Access control**：对 agent 可访问的外部资源进行限制和审批。
 - **Load balancing & rate limiting**：在多 agent 并发场景下管理外部资源访问压力。
 - **Audit & logging**：所有外部资源访问都经过 proxy，天然具备访问记录，支持 usage statistics、cost tracking 和 security audit。
@@ -190,7 +194,7 @@ Proxy 的核心价值如下。
 - 每次启动 AgentSession 时，传入对应的 `vault_id`。
 - Agent 调用外部工具时，由 proxy 层自动注入凭证。
 
-Credentials must remain outside agent prompts, context packages, and stable product records. [Vault](./core/vault.md) owns the visibility, containment, redaction, and audit contract for every approved injection path.
+Credentials 必须保持在 agent prompts、context packages 和 stable product records 之外。每条获准 injection path 的 visibility、containment、redaction 与 audit contract 由 [Vault](./core/vault.md) 所有。
 
 ### 6.7 Knowledge Base / Notebook
 
@@ -221,7 +225,7 @@ Generative Kernel 有双向消费模式。
 
 Kernel 持有核心客户数据，用户通过 `Generative UI` 查询和管理，agent 通过 skill + CLI 访问数据，并可以制作 scripts 和 scheduled agent tasks 作为业务逻辑，例如追踪和响应用户转化、自动化 follow-up 等。
 
-## 7. Knowledge Vision
+## 7. Knowledge 愿景
 
 Knowledge 是 OpenKit 长期价值的重要来源，但不应该在 `v1` 阶段做成过于激进、自动推断过多的复杂子系统。
 
@@ -287,26 +291,44 @@ Knowledge 是 OpenKit 长期价值的重要来源，但不应该在 `v1` 阶段�
 
 系统不应把任何自动总结都视为事实，而应把它视为带来源和置信度的工作假设。
 
-## 8. Storage & Deployment
+## 8. Storage 与 Deployment
 
 Core 的结构和部署应保持轻量级。
 
-### 8.1 Storage Strategy
+### 8.1 Storage 策略
 
-OpenKit should keep durable product truth ownership-scoped, inspectable, portable, and operable without a required external database service in the baseline deployment.
+OpenKit 应让 durable product truth 保持 ownership-scoped、inspectable 和 portable，并确保 baseline deployment 无需依赖外部 database service 即可运行。
 
-[Storage](./core/storage.md) owns the rules for persisting OpenKit-owned records and declaring their source of truth. Concrete engines, files, indexes, and physical topology belong to the owning storage specifications; this product vision does not freeze one database engine or one-file-per-scope layout.
+[Storage](./core/storage.md) 拥有 OpenKit-owned records 的持久化规则及其 source of truth 声明。具体 engine、file、index 和 physical topology 由相应 storage specifications 所有；Product Vision 不固定某一种 database engine 或 one-file-per-scope layout。
 
-### 8.2 Storage Benefits
+### 8.2 Storage 收益
 
-- **Low operational dependency**: the baseline deployment requires no PostgreSQL, Redis, or other external database service.
-- **Observability and portability**: authoritative records and required companion state should be inspectable, backup-ready, and migratable through their owning contracts.
-- **Ownership / scope isolation**: server, user, and workspace data must retain clear ownership boundaries, while Storage and its specifications own the physical topology.
+- **Low operational dependency**：baseline deployment 不要求 PostgreSQL、Redis 或其他外部 database service。
+- **Observability and portability**：authoritative records 及其必要 companion state 应当可检查、可备份，并能按照所属 contract 迁移。
+- **Ownership / scope isolation**：server、user 和 Workspace data 必须保持清晰的 ownership boundary，physical topology 则由 Storage 及其 specifications 所有。
 
-## 9. Design Principles
+## 9. 产品设计原则
+
+### 9.1 最低用户管理与配置负担
+
+OpenKit 必须把用户对系统的管理与配置负担降到最低。默认体验不应要求用户自行配置或维护 Workspace、Worker Agent 或新的 sandbox image，也不应要求用户理解 AEP、Policy 或运行中治理的内部机制。
+
+NanoCore 内置的 agent 功能应在 user authorization 与 Core governance 边界内完成这些工作，包括生成和更新 AEP 与 Policy、选择和维护 Worker Agent 与 sandbox image，以及执行 in-the-middle 的监控、管理和更新。用户主要提供目标、约束、授权和必须由 human 作出的判断；只有系统无法安全决定，或需要扩大权限与 external effect 时，才要求用户介入。
+
+系统能够自动完成的管理工作，不应退化成默认的 `Config interface` 负担。
+
+### 9.2 All-in-one Workspace，而非 all-in-one IT system
+
+OpenKit 的目标不是替代用户已经使用的 CMS、CRM、BI、data analytics platform 或其他垂直系统。这些系统继续拥有各自领域的专业能力与 authoritative data。
+
+OpenKit 负责汇总和粘合用户完成工作所需的 components、data、tools、Agents、work resources 与 workflows，并把它们组织成一个连贯的 Workspace 和 workbench。
+
+因此，OpenKit 不是解决用户全部 digital 或 IT 需求的 all-in-one solution，但它是用户的 all-in-one Workspace 和工作台。只有当某项能力直接服务于跨系统整合、协作、governance 或 `judgement grounding` 时，OpenKit 才应把它纳入自身边界，而不重建已有垂直产品。
+
+### 9.3 其他原则
 
 - `Minimal implementation first`：先做最小可用实现，不在一开始追求完整平台化。
-- `Clear responsibility boundaries`: follow Foundation and Architecture instead of growing one component into another product or runtime.
+- `Clear responsibility boundaries`：遵循 Foundation 与 Architecture，不把一个 component 扩张成另一个 product 或 runtime。
 - `Reuse over reinvention`：优先封装 existing runtimes，而不是自研新 runtime。
 - `Speed matters`：系统需要快速响应，至少支持 quick answer 和基础工具调用。
 - `Small codebase`：控制复杂度，保持实现和维护成本可控。
@@ -315,17 +337,17 @@ OpenKit should keep durable product truth ownership-scoped, inspectable, portabl
 - `Optimize agents over time`：agent 的 skills、context injection 和配置策略随着任务积累逐步优化。
 - `Security by design`：credentials、network access、external APIs 和 audit trails 应在 Core / proxy 层统一治理。
 
-## 10. Summary
+## 10. 总结
 
-OpenKit 的本质不是再造一个庞大的 all-in-one agent framework，而是做一个简洁的 agent workspace。
+OpenKit 的本质不是再造一个庞大的 all-in-one agent framework，也不是替代 CMS、CRM、BI 等垂直系统，而是做一个简洁的 agent workspace，以及用户的 all-in-one Workspace 和工作台。
 
-它用 neat 的 UI 承载交互体验，用 minimal Core 做 orchestration，用 Docker-based agents 或其他 agent boundary 封装现有 runtimes 来完成重任务。
+它用 neat 的 UI 承载交互体验，用 minimal Core 做 orchestration，用 Docker-based agents 或其他 agent boundary 封装现有 runtimes 来完成重任务，并通过 NanoCore 内置 agent 功能吸收默认的配置与管理负担。
 
 它把 agents 组织成真实 teammates，由 Core 作为 team manager 驱动协作，并在长期使用中持续积累 knowledge、优化 agent configuration、改进 context supply，并越来越理解 user 的工作方式。
 
 这条路线可以在保持产品清晰度和实现克制的同时，最大化复用现有 agent ecosystem，并为后续扩展留下足够空间。
 
-## 11. References
+## 11. 参考资料
 
 - `LibreChat Artifacts`: https://www.librechat.ai/docs/features/artifacts
 - `Generative UI`: https://research.google/blog/generative-ui-a-rich-custom-visual-interactive-user-experience-for-any-prompt/

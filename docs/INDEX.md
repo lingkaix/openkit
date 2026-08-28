@@ -16,8 +16,8 @@ and are not listed here.
 
 - `docs/change-execution-rationale.md` — This intent document preserves observations behind `docs/change-execution.md`.
 - `docs/engineering-doctrine.md` — This document explains the delegation premise and the observations behind repository governance.
-- `docs/product-vision.md` — The accepted implementation path is NanoCore-first and end-user Agent-Skill-first.
-- `docs/roadmap.md` — This document records design areas that are acknowledged as necessary for the complete OpenKit system but are intentionally not being designed or implemented y…
+- `docs/product-vision.md` — 当前接受的实现路线是 NanoCore-first 和 end-user Agent-Skill-first。OpenKit 先强化 Core kernel 与 public API，再通过 progressively disclosed 的 `openkit` Skill 和 bundled CLI 投影完整的 u…
+- `docs/roadmap.md` — This document is the ordered completion path from the current implementation to the Product Vision.
 
 ## Core Model
 
@@ -116,6 +116,7 @@ and are not listed here.
 - `docs/specs/20260802-nanohost_runtime_and_transport.md` — Accepted, Implemented — The implementation-facing definition, lifecycle, failure boundary, recovery, and readiness contract for one configured NanoHost and its private Runtime Epoch.
 - `docs/specs/20260811-execution_residue_measurement.md` — Accepted, Not Started — This specification owns task-external measurement of the repository's execution framework from evidence left by completed work: its audit-side trigger, compara…
 - `docs/specs/20260813-internal_agent_runtime.md` — Accepted, Not Started — This specification owns the role-agnostic bounded runtime used by NanoCore-internal model-using roles: its assembled input, transient loop algorithm, emergency…
+- `docs/specs/20260829-release_management.md` — Accepted, Implemented — The product-wide release identity and release-channel policy.
 
 ## Terminal Specifications
 
