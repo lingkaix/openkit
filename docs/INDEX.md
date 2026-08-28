@@ -16,7 +16,7 @@ and are not listed here.
 
 - `docs/change-execution-rationale.md` — This intent document preserves observations behind `docs/change-execution.md`.
 - `docs/engineering-doctrine.md` — This document explains the delegation premise and the observations behind repository governance.
-- `docs/product-vision.md` — 当前接受的实现路线是 NanoCore-first 和 end-user Agent-Skill-first。OpenKit 先强化 Core kernel 与 public API，再通过 progressively disclosed 的 `openkit` Skill 和 bundled CLI 投影完整的 u…
+- `docs/product-vision.md` — > 文档说明： 本文使用中文书写，proper names、canonical terms、product names、technical identifiers 与其他专有 item 保留 English 原词；这项 document-local exception 仅适用于 `docs/product-visio…
 - `docs/roadmap.md` — This document is the ordered completion path from the current implementation to the Product Vision.
 
 ## Core Model
@@ -198,9 +198,12 @@ Change plans are not indexed. List `docs/changes/` to see them.
 
 ## User Manuals
 
+- `docs/manual/getting-started.en.md` — Accepted — > Scope placeholder: This page intentionally records what the complete Getting Started manual must contain.
 - `docs/manual/nanocore-data-root-config.en.md` — Accepted — This manual explains the user-editable files under `DATAROOT/config` for NanoCore.
 - `docs/manual/nanocore-deployment-modes.en.md` — Accepted — This manual explains the two supported NanoCore product modes and their shared NanoHost worker-runtime boundary.
+- `docs/manual/nanocore-operations.en.md` — Accepted — > Scope placeholder: This page intentionally records the operator procedures that must be documented before OpenKit has a complete supported operations manual.
 - `docs/manual/sandbox-container-tests.en.md` — Accepted — A Worker Agent sandbox carries the OpenKit worker baseline and can provision a declared toolchain through mise, and that sandbox cannot start a container of it…
+- `docs/manual/using-openkit.en.md` — Accepted — > Scope placeholder: This page intentionally records what the complete end-user manual must contain.
 
 ## External Snapshots
 

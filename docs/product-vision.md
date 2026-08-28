@@ -4,15 +4,7 @@ date: 2026-04-15
 ---
 # Product Vision
 
-## 当前实现路线
-
-当前接受的实现路线是 NanoCore-first 和 end-user Agent-Skill-first。OpenKit 先强化 Core kernel 与 public API，再通过 progressively disclosed 的 `openkit` Skill 和 bundled CLI 投影完整的 user/operator capability surface，之后才把 Web UI 完善为主要产品界面。已移除的 user-facing MCP facade 以及拆分的 setup/loop Skills 不得恢复；worker-side MCP capability supply 是另一条已接受的未来能力平面，其当前 AEP projection 保持 disabled。
-
-## 文档语言
-
-根据 engineer 的明确指示，本文使用中文书写，proper names、canonical terms、product names、technical identifiers 与其他专有 item 保留 English 原词。这是仅适用于 `docs/product-vision.md` 的 document-local exception；本文只记录该例外，不修改或扩张其他 repository documentation 的 English-only 规则。
-
-## 战略 Work Resource 命题
+> **文档说明：** 本文使用中文书写，proper names、canonical terms、product names、technical identifiers 与其他专有 item 保留 English 原词；这项 document-local exception 仅适用于 `docs/product-vision.md`，不修改或扩张其他 repository documentation 的 English-only 规则。
 
 模型能力与 harness 成熟度会消灭只是为了操作工具而产生的交互，但不会消灭为了形成意图、判断品味、评估质量和探索可能性而产生的交互。
 

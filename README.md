@@ -1,149 +1,81 @@
 # OpenKit
 
-OpenKit is an agent workspace for delegating, supervising, preserving, and improving real work across multiple agent runtimes.
+**OpenKit is the workbench for human + agent teams.**
 
-It is not another heavy agent runtime. OpenKit coordinates mature runtimes such as Codex, OpenCode, Pi Agent, and future worker agents through a small Core, durable workspace history, human review points, artifacts, and stable product channels.
+> **Delegate the work. Keep the judgement.**
 
-## Why OpenKit Exists
+**Current campaign:** *You don’t configure OpenKit. You direct it.*
 
-Individual AgentSessions are useful, but they are hard to manage as a work system. Context is scattered, approvals are ad hoc, artifacts are easy to lose, follow-up work is detached from prior attempts, and long-running tasks rarely have a durable record that humans can inspect.
+OpenKit is a work system for professionals and small expert teams who want agents to operate as teammates rather than isolated tools. It brings conversations, delegated work, human decisions, artifacts, evidence, knowledge, and the systems a team already uses into one durable workspace.
 
-OpenKit turns those isolated sessions into a managed workspace:
+## What OpenKit Is
 
-- assign work to agents from a durable thread
-- track progress, risks, approvals, and human attention
-- preserve artifacts, evidence, knowledge, and review records
-- resume or refine work without losing context
-- coordinate agent runtimes without exposing their native internals as the product model
-- keep credentials, permissions, audit, and runtime placement under Core control as the system matures
+OpenKit gives a human leader one place to direct an agent team, see who is doing what, review consequential decisions, preserve useful outputs, and continue work without reconstructing its context from scattered sessions.
+
+It is an all-in-one workspace and workbench, not an all-in-one IT system. OpenKit connects the CMS, CRM, BI, analytics, communication, development, and other specialist systems a team already trusts; it does not try to replace their domain capabilities or authoritative data.
+
+OpenKit is designed to absorb routine operational complexity. NanoCore agents should prepare and maintain Workspaces, Worker Agents, sandbox images, Agent Environment Packages, and Policies within user authorization and Core governance, so users primarily provide goals, constraints, permissions, preferences, and the judgement only a human can supply. Manual configuration remains available to operators for explicit control and exceptional cases.
+
+## Why Use OpenKit
+
+- **Direct a team, not a toolchain.** Delegate work through one consistent model while specialized agents and runtimes handle the execution details.
+- **Keep human judgement in control.** Use review points, comparisons, annotations, approvals, and localized corrections to turn tacit judgement into precise agent direction.
+- **Make work durable.** Preserve work history, artifacts, evidence, knowledge, decisions, and follow-up context instead of losing them at the end of an AgentSession.
+- **Reduce management overhead.** Let the product manage routine agent, Workspace, Policy, and runtime preparation as these capabilities mature, while surfacing only decisions that require human authority.
+- **Fit the systems you already use.** Bring tools, data, people, and agents together without rebuilding every vertical application inside OpenKit.
+- **Improve how the team works.** Use governed outcomes and Telemetry to evaluate and improve Skills, Knowledge, scheduling, sandbox policy, and reusable working models over time.
+
+## Who OpenKit Is For
+
+OpenKit is built for high-agency individuals and typically three-to-five-person expert teams whose work spans research, learning, creation, operations, and software. It is intended for end users, including non-technical users, who want to lead a human + agent team without becoming an agent-runtime operator.
+
+## Product Experience
+
+The primary experience is conversation-first but not chat-only. A user can move from a quick question to a bounded Task or a reviewed Goal, see active work and handoffs, intervene through the Action Center, inspect artifacts and evidence, and carry accepted knowledge into future work.
+
+The durable product backbone is intentionally small: a Workspace holds related Threads, each Thread records bounded Turns, and Items make messages, status, approvals, errors, artifacts, and evidence visible. External systems remain authoritative for the domain data they own.
+
+Read the [Product Vision](./docs/product-vision.md) for the long-term direction, the [Work Model](./docs/core/work-model.md) for the stable product concepts, and the [Product Roadmap](./docs/roadmap.md) for the ordered path from the current system to the complete vision.
 
 ## Current Status
 
-OpenKit is in internal developer-preview development.
+OpenKit is in internal developer preview. The implemented product centers on NanoCore local and server foundations, durable Workspace history, Goal Mode, the Action Center, artifacts, evidence, Knowledge foundations, one end-user `openkit` Skill with its bundled CLI, and bounded worker execution through NanoCore-managed coordination.
 
-The accepted release posture is deliberately NanoCore-first and end-user Agent-Skill-first. Core mechanisms stabilize at the NanoCore App API layer, then one progressively disclosed `openkit` Skill and its bundled CLI project the complete supported user/operator capability surface. The Web UI remains part of the product direction, but it follows stable NanoCore APIs rather than driving core behavior.
+The NanoCore App API is the current stabilization boundary. The Web UI remains part of the product direction and follows stable NanoCore capabilities instead of defining Core behavior.
 
-The unified Skill and bundled CLI are implemented under `skills/openkit/`. User-facing MCP and split setup/loop Skill variants have been removed and must not be reintroduced.
+For end-user guidance, start with the [Getting Started manual](./docs/manual/getting-started.en.md) and [Using OpenKit manual](./docs/manual/using-openkit.en.md). These two pages currently preserve the required manual scope while the release experience is still being completed.
 
-## Core Model
+## For Operators
 
-OpenKit uses a small product backbone:
+### Installation And Deployment
 
-```text
-Workspace -> Thread -> Turn -> Item[]
-```
+Use the [NanoCore Deployment Modes manual](./docs/manual/nanocore-deployment-modes.en.md) for supported source and container deployment paths, prerequisites, startup, and verification. The [Deployment Model](./docs/deployment.md) is the cross-owner map for the underlying contracts.
 
-- `Workspace` owns history, repositories, agents, artifacts, knowledge, settings, permissions, audit records, and future collaboration scope.
-- `Thread` is the durable container for one stream of related work.
-- `Turn` is one bounded execution step or attempt inside a thread.
-- `Item` is the visible event and history unit for messages, status, tool summaries, approvals, errors, artifacts, and evidence.
-- `Artifact` is a durable output that can be reviewed, reused, exported, or referenced later.
+### Manual Configuration
 
-## Main Modules
+Use the [NanoCore DATA_ROOT Config manual](./docs/manual/nanocore-data-root-config.en.md) for server mode, authentication, NanoHost, Vault, providers, agents, defaults, and gateway configuration. Manual configuration is the operator escape hatch; it is not the intended day-to-day end-user experience.
 
-- `apps/nanocore`: the kernel and public App API server for workspaces, threads, Goal Mode, Action Center, artifacts, runtime config, auth, storage, and worker coordination.
-- `skills/`: one end-user `openkit` Skill, its bundled CLI, and progressively disclosed operating guidance.
-- `apps/web`: the browser product surface over stabilized NanoCore APIs.
-- `packages/protocol`: stable Core protocol schemas and generated JSON Schema outputs.
-- `packages/app-api-schemas`: shared NanoCore App API schemas for product read models and admin/config surfaces.
-- `packages/core-client`: typed HTTP and SSE client used by the SPA and protocol tests.
-- `packages/config-schema`: shared configuration schemas, policy metadata, and workspace root materialization helpers.
+### Updates, Maintenance, Backup, And Recovery
 
-## What Works Now
+The [NanoCore Operations manual](./docs/manual/nanocore-operations.en.md) records the required scope for upgrades, health checks, routine maintenance, backup and restore, credential continuity, runtime image changes, troubleshooting, and recovery. Its executable procedures will be filled in as the corresponding release paths stabilize.
 
-- NanoCore local and server-mode foundations.
-- Durable workspace, thread, turn, item, artifact, knowledge, AgentSession, approval, automation, and review-related storage foundations.
-- Goal Mode for objective capture, plan review, bounded steps, verification evidence, and terminal completion state.
-- Action Center read models for human attention, approvals, blocked work, and follow-up decisions.
-- Workspace repository linking, sync records, review records, apply results, artifacts, and evidence bundles through public NanoCore contracts.
-- One end-user-only `openkit` Skill with progressive operation discovery and a bundled CLI over public NanoCore contracts.
-- OpenShell and worker-path foundations for running bounded work through NanoCore-managed coordination.
-- Focused static, package, NanoCore, channel, smoke, and story-test layers for release validation.
+Use the [Sandbox Container Tests manual](./docs/manual/sandbox-container-tests.en.md) only when verifying container behavior from an environment that cannot start nested containers.
 
-## Agent Skill Interface Direction
+## For Developers And Contributors
 
-The accepted AI-native interface is the end-user Skill at `skills/openkit/` with its bundled CLI. The Skill teaches setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loops, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, audit, usage, automations, Git operations, and workspace portability.
+### Start Contributing
 
-The CLI uses a small agent-first command contract: `openkit doctor`, `openkit ops search`, `openkit ops describe`, and `openkit ops call`. It exposes public NanoCore capabilities progressively rather than advertising a flat eager tool catalog. User-facing MCP compatibility layers and developer Skill variants are prohibited.
+Read the [Contributing Guide](./CONTRIBUTING.md) for the development and review workflow. Use the [Toolchain guide](./docs/toolchain.md) for repository setup, dependencies, pinned tools, test environments, and canonical command ownership.
 
-The executable package lives under `skills/openkit/`; agents resolve its `scripts/openkit` entrypoint relative to the installed Skill directory. The owning contract is [`docs/specs/20260713-openkit_agent_skill_interface.md`](./docs/specs/20260713-openkit_agent_skill_interface.md).
+### Understand The System
 
-## Web UI
+Start with the [documentation index](./docs/INDEX.md), then read [Foundation](./docs/core/foundation.md), [Architecture](./docs/core/architecture.md), and the [Work Model](./docs/core/work-model.md). Component-specific entry points live in the [apps guide](./apps/README.md), [packages guide](./packages/README.md), and [Skill guide](./skills/README.md).
 
-The Web UI is still part of the product. In the current development model, it is no longer the default starting point for core behavior. The Web surface should consume stable NanoCore APIs and present the same kernel concepts through a polished product interface after the kernel contract is reliable.
+### Plan, Implement, And Verify Changes
 
-Run the local Web surface when you need to inspect the current browser experience:
+Use [Change Execution](./docs/change-execution.md) for material-work coordination, [Verification Instruments](./docs/verification-instruments.md) for evidence quality, and the [Documentation Model](./docs/documentation-model.md) for document authority and lifecycle. Maintainers preparing a release should follow the [Release Cookbook](./docs/cookbooks/release.md) and its owning [Release Management specification](./docs/specs/20260829-release_management.md).
 
-```bash
-pnpm --filter @openkit/web dev
-```
-
-NanoCore listens on `http://localhost:3000` by default, and the Web app uses its Vite `/api` proxy for local development.
-
-## Deployment And Releases
-
-Use the deployment docs instead of this README for operational detail.
-
-- [`docs/deployment.md`](./docs/deployment.md) defines the stable deployment model.
-- [`docs/manual/nanocore-deployment-modes.en.md`](./docs/manual/nanocore-deployment-modes.en.md) explains source and container deployment modes.
-- [`docs/cookbooks/release.md`](./docs/cookbooks/release.md) explains how to cut a version tag, run the release gate, publish release images, and verify GitHub Release notes.
-- [`docs/specs/20260829-release_management.md`](./docs/specs/20260829-release_management.md) owns release identity, assets, authorization, retry, and completion.
-- [`docs/cookbooks/docker-app.md`](./docs/cookbooks/docker-app.md) explains the local app container image workflow.
-
-## Common Commands
-
-Repository commands are the `scripts` in root `package.json` and are invoked as bare `pnpm ...`. `bash scripts/repo-init.sh` installs the pinned toolchain and checks that bare `node` and `pnpm` resolve to it.
-
-```bash
-pnpm run check:repo
-pnpm --filter @openkit/nanocore test
-pnpm verify
-pnpm verify:release
-pnpm verify:full
-```
-
-Prepare and prove the repository's admitted A1 test host before real NanoHost acceptance work:
-
-```bash
-pnpm host:provision a1
-pnpm host:assert a1
-pnpm host:nanohost:bring-up a1
-pnpm host:teardown a1
-```
-
-The bring-up command requires attempt-local NanoCore admin inputs and always tears down the NanoHost service and its credential slots. Retain the redacted two-cycle result at `temp/state/nanohost/host-manifest/a1/result.json`; see the [NanoHost real-use host cookbook](./docs/cookbooks/nanohost-real-use-host.md).
-
-Use focused package commands while developing and run release gates before tagging.
-
-Ordinary checks run on the developer host by default. A Worker Agent sandbox is also permitted. CI runs every gate inside the `test-env` image, and that image result is authoritative when environments disagree. An image second opinion is an explicit `OPENKIT_TEST_USE_IMAGE=1` run; it never retries a failed host command, and each result is labelled with `OPENKIT_TEST_ENVIRONMENT`. Docker is not a prerequisite for ordinary commands. The NanoCore restart gate and the real-provider, real-subscription, and real-task-mode gates drive Docker or a real runtime/provider themselves and therefore stay on the host. See the Test Execution Environment decision in [`docs/toolchain.md`](./docs/toolchain.md).
-
-## Repository Layout
-
-```text
-.
-├── apps/                   # NanoCore and Web product surfaces
-├── packages/               # Shared protocol, App API, config, and client packages
-├── skills/                 # Unified end-user Skill and bundled CLI
-├── docs/                   # Core docs, specs, cookbooks, changes, and audits
-├── scripts/                # Bootstrap and helper scripts
-├── .mise.toml              # Pinned tool versions for bootstrap
-├── AGENTS.md               # Agent execution rules
-└── CONTRIBUTING.md         # Human workflow and review guide
-```
-
-## Where To Read More
-
-- [`AGENTS.md`](./AGENTS.md): execution rules for agents working in this repository.
-- [`skills/README.md`](./skills/README.md): unified end-user Skill package and interface boundaries.
-- [`docs/core/work-model.md`](./docs/core/work-model.md): stable user-facing work model.
-- [`docs/deployment.md`](./docs/deployment.md): stable deployment model.
-- [`docs/product-vision.md`](./docs/product-vision.md): long-term product direction.
-- [`docs/roadmap.md`](./docs/roadmap.md): roadmap and version-scope planning.
-- [`docs/specs/20260713-openkit_agent_skill_interface.md`](./docs/specs/20260713-openkit_agent_skill_interface.md): canonical end-user Agent Skill Interface contract.
-- [`apps/README.md`](./apps/README.md): application sub-project expectations.
-- [`packages/README.md`](./packages/README.md): shared package inventory.
-- [`docs/change-execution.md`](./docs/change-execution.md): governance for material change execution and change-record content.
-- [`docs/verification-instruments.md`](./docs/verification-instruments.md): governance for what makes a verdict believable — oracle classification, harness admission, and execution environment.
+Agent contributors must also follow the repository [Agent Execution Contract](./AGENTS.md).
 
 ## License
 

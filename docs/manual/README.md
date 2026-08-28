@@ -4,8 +4,11 @@ This folder holds the User Manual documents. The [User Manuals type](../document
 
 ## Contents
 
+- `getting-started.en.md` — scope placeholder for first launch, first Workspace, initial setup, and the first completed piece of work.
+- `using-openkit.en.md` — scope placeholder for daily work with agents, work modes, human attention, artifacts, evidence, and Knowledge.
 - `nanocore-deployment-modes.en.md` — deploy, configure, start, and verify NanoCore across supported product modes and the container worker runtime.
 - `nanocore-data-root-config.en.md` — the user-editable files under `DATA_ROOT/config`.
+- `nanocore-operations.en.md` — scope placeholder for upgrades, maintenance, backup, restore, monitoring, troubleshooting, and recovery.
 - `sandbox-container-tests.en.md` — structure tests that need a container runtime when the worker sandbox cannot start a container.
 
 ## Local Conventions
