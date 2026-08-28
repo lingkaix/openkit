@@ -100,7 +100,6 @@ Goals:
 
 Non-goals:
 
-- Do not publish a fourth OpenKit-specific generic worker base image; shared worker layers remain an internal multi-stage build detail.
 - Do not publish `test-env` by default on product release tags.
 - Do not make one universal worker image for Codex, OpenCode, Pi, and future agents.
 - Do not make OpenShell gateway state, OpenShell policy YAML, or OpenShell provider records canonical OpenKit release artifacts.
@@ -187,11 +186,14 @@ Each image entry must include:
 - `smokeCommand`: in-container smoke command installed by the image.
 - `localTag`: local development image tag used by helper scripts.
 
-Worker image entries must also include:
+Deployment worker image entries must also include:
 
 - `runtime`: runtime adapter family such as `codex`, `opencode`, or `pi`.
 - `baseImage`: pinned base image reference. Release worker images must use a digest-pinned reference.
 - `workerContract`: OpenKit worker contract version, initially `openkit-worker-v1`.
+- `target`: unique shared-Dockerfile build target.
+
+The published `worker-common` base entry must include `baseImage` and `target`, must omit `runtime` and `workerContract`, and remains `kind: worker` so the existing catalog and release path can build, smoke, and publish it without a parallel image class.
 
 The authored `AgentManifest`, not this packaging catalog or a backend-global environment variable, selects the governed image reference and declares the runtime binary ids and absolute worker-local executable paths. NanoCore resolves that declaration into the AEP without a runtime-specific image branch. The image entry records how the selected artifact is built, smoked, and published; it is not a second runtime selector.
 
@@ -722,8 +724,8 @@ Manifest validation:
 - Every `dockerfile`, `context`, and `smoke` path exists.
 - Every `id` is unique.
 - Every release image has at least one platform.
-- Every worker image has `runtime`, `baseImage`, and `workerContract`.
-- Every worker image has a unique `target` consumed by local build scripts and release CI.
+- Every deployment worker image has `runtime`, `baseImage`, `workerContract`, and a unique `target` consumed by local build scripts and release CI.
+- The `worker-common` base entry has `baseImage` and a unique `target`, and has neither `runtime` nor `workerContract`.
 - Every release worker image has a digest-pinned `baseImage`.
 - No manifest field contains an absolute local path.
 

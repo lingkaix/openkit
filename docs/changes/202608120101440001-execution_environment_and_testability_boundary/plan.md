@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: blocked
+status: in-progress
 date: 2026-08-12
 ---
 # Execution Environment And Testability Boundary
@@ -394,13 +394,17 @@ The accepted product and ownership intent in this record is unchanged. Its earli
 
 ### Current checkpoint
 
-- **Next Action:** remain blocked and perform no product work until the NanoCore Agent Function Model plan closes, unless the engineer expressly exempts WP-6.
-- **Expected change:** Decision — the named dependency either closes or receives the one human-authorized WP-6 exemption.
-- **Expected observable:** accepted close evidence for `202608130741380001-nanocore_agent_function_model`, or an explicit engineer decision exempting WP-6; elapsed time or unchanged repository state changes nothing.
-- **Evidence that changes route:** dependency close starts direct artifact review; an explicit WP-6 exemption opens only that boundary; any other observation leaves the plan blocked.
-- **Human-only decision:** whether WP-6 is exempt from the program-level dependency.
+- **Current facts:** The NanoCore Agent Function Model dependency is `verified`; WP-1 is verified by independent review; WP-2 and WP-6 are open; WP-3 requires a digest-pinned published `worker-common` base; and WP-4 and WP-5 retain their accepted internal order behind WP-3.
+- **Current owner reconciliation:** `worker-common` remains an ordinary releaseable `kind: worker` catalog entry with `baseImage` and `target`, but it is not a deployment worker and therefore has neither `runtime` nor `workerContract`; the three deployment worker entries retain both fields, and release preflight plus the NanoCore catalog tests join the WP-2 slice because current source evidence shows they reject or misidentify the base entry.
+- **Current review evidence:** An independent repository reviewer accepted WP-1's current authoritative bytes and focused evidence; the historical Coverage Map's attribution of harness admission and retired frozen-lease mechanics to `docs/change-execution.md` is not current authority, which instead resides in `docs/verification-instruments.md`, and no current dispatch or acceptance criterion depends on the retired lease language.
+- **Next Action:** complete the WP-2 artifacts and named observable evidence, then complete the WP-6 projection; choose review and verification capabilities adaptively from consequence and uncertainty rather than treating the historical role sequence as dispatch authority.
+- **Expected change:** WP-2 adds the catalog base identity, exact mise pin, non-root base, smoke and derived-image proof, owner reconciliation, and container projections; WP-6 adds one canonical English manual page and its manual index entry.
+- **Expected observable:** all four worker targets build and smoke locally, the throwaway derived image inherits the complete baseline and adds one tool, focused catalog and release-preflight checks pass, and documentation validators accept the manual projection.
+- **Evidence that changes route:** a focused WP-2 product failure is repaired locally; a registry, network, Docker-daemon, or collection failure proves no predicate; a published multi-platform digest opens WP-3; no local tag, local registry, source digest, or unpushed manifest substitutes for publication.
+- **Current artifact corrections:** WP-2 also owns `docs/specs/20260708-container_image_packaging.md`, `scripts/release-preflight.mjs`, its focused tests, and `apps/nanocore/src/docker/container-images-manifest.test.ts`; the stale WP-6 `OPENKIT_E2E_REMOTE_OPENSHELL` example is replaced by the current explicitly passed SSH-alias shape owned by `docs/verification-instruments.md`; closeout creates no state file; and the WP-2 to WP-3 handoff is a future release's published digest rather than a WP-2 local exit artifact.
+- **Human-only decision after WP-2 and WP-6:** authorize an earlier version-tag release that publishes `worker-common`, or accept a different release sequence or design for WP-3 through WP-5.
 
-This plan intentionally has no legacy state file, and no state file should be created for the wait.
+This plan intentionally has no legacy state file, and no state file is created for execution or closeout.
 
 ### Pilot start boundary
 
