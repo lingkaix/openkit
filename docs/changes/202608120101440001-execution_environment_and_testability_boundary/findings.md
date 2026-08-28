@@ -6,10 +6,10 @@ These findings preserve observations that do not authorize work beyond this plan
 
 - [x] `EETB-FND-001` [closed] Image kind vocabulary differs between its owner and implementation
 - [x] `EETB-FND-002` [closed] Published base dependency prevents WP-3 entry
-- [ ] `EETB-FND-003` [deferred] External derivation has no accepted GHCR visibility and authentication contract
+- [x] `EETB-FND-003` [closed] External derivation has no accepted GHCR visibility and authentication contract
 - [x] `EETB-FND-004` [closed] Pi worker smoke used a dry-run package the adapter rejects
 - [x] `EETB-FND-005` [closed] Platform-interface enforcement required a bounded corpus migration
-- [ ] `EETB-FND-006` [deferred] Web production entry chunk exceeds the configured size warning
+- [x] `EETB-FND-006` [closed] Web production entry chunk exceeds the configured size warning
 
 ## [closed] EETB-FND-001 — Image kind vocabulary differs between its owner and implementation
 
@@ -31,13 +31,15 @@ These findings preserve observations that do not authorize work beyond this plan
 - **Closing verdict:** Recorded disposition: WP-3 no longer requires a published `worker-common` digest because `test-env` is an internal sibling of that public base. Terminal disposition: the sibling recut leaves no further work under EETB-FND-002.
 - **Closure evidence:** Direct inspection of the 2026-08-28 recut: `containers/test-env/Dockerfile` `FROM` equals the worker-common Node digest `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and is not `FROM worker-common`; Intent Epoch 2 records the supersession.
 
-## [deferred] EETB-FND-003 — External derivation has no accepted GHCR visibility and authentication contract
+## [closed] EETB-FND-003 — External derivation has no accepted GHCR visibility and authentication contract
 
 - **Observation:** The owning specifications make `worker-common` an external extension point but do not decide whether its GHCR package must be public or how external builders authenticate if it is private.
 - **Impact:** A correctly published base can still be unusable by the user and secondary-developer derivation path that its contract promises.
 - **Evidence:** Direct specification and release-workflow inspection on 2026-08-28 found publication mechanics and extension guarantees but no package-visibility or consumer-authentication predicate; an anonymous GHCR token probe returned HTTP 403 and therefore proved no package state.
 - **Owner:** `docs/specs/20260708-container_image_packaging.md` and the release owner that first publishes `worker-common`.
-- **Next action:** Opened during WP-2 entry review on 2026-08-28. Per the engineer's instruction to retain discoveries beyond the current plan instead of expanding it, deferred to the packaging-specification and first-publication owners and activated before the first `worker-common` version-tag release.
+- **Next action:** Opened during WP-2 entry review on 2026-08-28. Per the engineer's instruction to retain discoveries beyond the current plan instead of expanding it, deferred to the packaging-specification and first-publication owners and activated before the first `worker-common` version-tag release. On 2026-08-28 the engineer accepted public anonymous end-user access, and the release-readiness change admitted the owner, workflow gate, and first-publication procedure.
+- **Closing verdict:** `worker-common` is now contractually public and directly usable without registry credentials, while the release cannot pass until the exact pushed digest is anonymously inspectable.
+- **Closure evidence:** `docs/specs/20260708-container_image_packaging.md` owns public anonymous access, `.github/workflows/ci.yml` logs out and inspects the exact digest, `docs/cookbooks/release.md` owns the one-time visibility operation, and `tests/release-preflight.test.mjs` guards the workflow projection.
 
 ## [closed] EETB-FND-004 — Pi worker smoke used a dry-run package the adapter rejects
 
@@ -59,10 +61,12 @@ These findings preserve observations that do not authorize work beyond this plan
 - **Closing verdict:** Recorded disposition: the hit list was a finite declaration migration, not evidence that the platform boundary should be weakened. Terminal disposition: every named file now declares its surface and no unexplained scanner finding remains.
 - **Closure evidence:** Exact repository counts are thirty-one POSIX declarations, two asserted-divergence declarations, and zero container-subject declarations; `node scripts/validate-test-governance.mjs` exits zero and Biome accepts the thirty-three one-line dispositions.
 
-## [deferred] EETB-FND-006 — Web production entry chunk exceeds the configured size warning
+## [closed] EETB-FND-006 — Web production entry chunk exceeds the configured size warning
 
 - **Observation:** The Docker-unavailable closeout build completed but Vite reported the minified Web entry JavaScript chunk at 987.59 kB, above its configured 500 kB warning threshold.
 - **Impact:** The current bundle may impose avoidable parse, transfer, or startup cost, but this program has no page-performance predicate and changing module boundaries or loading behavior would exceed the execution-environment scope.
 - **Evidence:** `pnpm build` on 2026-08-28 completed eleven of eleven tasks and reported `dist/assets/index-DT0NOdh7.js 987.59 kB | gzip: 274.75 kB` followed by Vite's chunk-size warning.
 - **Owner:** `apps/web` and a future accepted Web performance change.
-- **Next action:** Measure actual route and Core Web Vital impact before choosing dynamic imports or output chunking; activate only when an accepted performance objective supplies the deciding oracle.
+- **Next action:** Measure actual route and Core Web Vital impact before choosing dynamic imports or output chunking; activate only when an accepted performance objective supplies the deciding oracle. On 2026-08-28 the engineer accepted that bundle byte size is not a first-release concern for this professional-workspace SPA and possible future desktop embedding, so no Vite or module-boundary work was admitted.
+- **Closing verdict:** The warning is informational and no work remains unless a future accepted measured performance objective establishes a bundle or loading budget.
+- **Closure evidence:** `docs/specs/20260710-web_ui_rebuild_stack.md` records the accepted delivery posture, `docs/cookbooks/release.md` keeps the warning outside release acceptance, and no production Web or Vite configuration changed.

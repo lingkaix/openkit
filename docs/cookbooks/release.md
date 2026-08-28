@@ -128,6 +128,13 @@ The workflow publishes pre-release tags as `vX.Y.Z-pre`, `X.Y.Z-pre`, and `sha-<
 
 Pre-release tags must not update `latest`.
 
+The first `worker-common` push creates a private GHCR package.
+After that initial publish step, an administrator must open the package settings, change visibility to public, and rerun the failed release job; the job logs out of GHCR and inspects the exact pushed digest, so an authenticated pull cannot satisfy this gate.
+Public visibility is a deliberate release-policy decision for this end-user extension base and later releases must not depend on restoring private access.
+
+Web bundle-size warnings are informational for release acceptance because the Web UI is a professional-workspace SPA and may later be embedded in a desktop application.
+Do not split chunks or change the Vite warning threshold without a measured performance objective owned by an accepted Web change.
+
 ## After The Workflow Passes
 
 1. Open the successful Actions run and inspect the image digest summary.
@@ -137,7 +144,11 @@ Pre-release tags must not update `latest`.
 ```bash
 docker pull ghcr.io/<owner>/openkit-app:${OPENKIT_RELEASE_TAG}
 docker pull ghcr.io/<owner>/openkit-worker-codex:${OPENKIT_RELEASE_TAG}
+docker logout ghcr.io
+docker pull ghcr.io/<owner>/openkit-worker-common:${OPENKIT_RELEASE_TAG}
 ```
+
+`worker-common` is the only image in this check that is required to be publicly pullable, so its command runs last after logout and must not use a registry credential or a prior authenticated session.
 
 3. Check the GitHub Release notes.
 

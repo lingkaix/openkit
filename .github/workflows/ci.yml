@@ -346,6 +346,7 @@ jobs:
               target: image.target || '',
               workerContract: image.workerContract || '',
               smokeCommand: image.smokeCommand,
+              anonymousPull: image.kind === 'worker' && !Object.hasOwn(image, 'runtime'),
             }));
 
           if (images.length === 0) {
@@ -466,6 +467,15 @@ jobs:
           labels: ${{ steps.image.outputs.labels }}
           tags: ${{ steps.image.outputs.tags }}
 
+      - name: Verify public worker base anonymous pull
+        if: matrix.anonymousPull
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          docker logout ghcr.io
+          docker buildx imagetools inspect "${IMAGE}@${DIGEST}"
+
       - name: Summarize image digest
         run: |
           {
@@ -535,6 +545,7 @@ jobs:
             echo "- L3 NanoCore e2e passed."
             echo "- L5 smoke passed."
             echo "- Release image build, smoke, and GHCR publish passed."
+            echo "- Public worker base anonymous exact-digest inspection passed."
             echo ""
             echo "## Manual Gates"
             echo ""

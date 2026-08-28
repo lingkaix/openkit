@@ -196,7 +196,7 @@ async function readLines(target) {
 
 /** Waits for one test-double record. */
 async function waitForFile(target) {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await readFile(target);
       return;

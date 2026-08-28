@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -16,20 +16,21 @@ test('release preflight accepts matching package versions and digest-pinned rele
   });
 
   assert.equal(result.version, '0.0.1');
-  assert.deepEqual(result.releaseImages, ['app', 'worker-codex']);
+  assert.deepEqual(result.releaseImages, ['app', 'worker-base', 'worker-codex']);
 });
 
-test('release preflight accepts a structural release worker base with an empty declared runtime set', () => {
-  const repoRoot = makeReleaseFixture({ includeReleaseWorkerBase: true });
+test('release preflight rejects a missing public release worker base', () => {
+  const repoRoot = makeReleaseFixture({ includeReleaseWorkerBase: false });
 
-  const result = validateReleasePreflight({
-    repoRoot,
-    requireReleaseWorkerDigests: true,
-    tag: 'v0.0.1',
-  });
-
-  assert.equal(result.version, '0.0.1');
-  assert.deepEqual(result.releaseImages, ['app', 'worker-base', 'worker-codex']);
+  assert.throws(
+    () =>
+      validateReleasePreflight({
+        repoRoot,
+        requireReleaseWorkerDigests: true,
+        tag: 'v0.0.1',
+      }),
+    /exactly one public release worker base/
+  );
 });
 
 test('release preflight rejects a structural empty-declared-set worker base that declares workerContract', () => {
@@ -181,6 +182,29 @@ test('release preflight rejects worker images without an explicit build target',
   );
 });
 
+test('tag release verifies the public worker base without registry credentials', () => {
+  const workflow = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
+  const gateStart = workflow.indexOf('      - name: Verify public worker base anonymous pull\n');
+  const gateEnd = workflow.indexOf('\n      - name:', gateStart + 1);
+
+  assert.match(
+    workflow,
+    /anonymousPull: image\.kind === 'worker' && !Object\.hasOwn\(image, 'runtime'\)/
+  );
+  assert.notEqual(gateStart, -1);
+  assert.notEqual(gateEnd, -1);
+
+  const gate = workflow.slice(gateStart, gateEnd);
+  assert.match(gate, /^\s+if: matrix\.anonymousPull$/m);
+  assert.match(gate, /^\s+DIGEST: \$\{\{ steps\.publish\.outputs\.digest \}\}$/m);
+  assert.match(gate, /^\s+IMAGE: \$\{\{ steps\.image\.outputs\.image \}\}$/m);
+  assert.match(gate, /^\s+docker logout ghcr\.io$/m);
+  assert.match(gate, /^\s+docker buildx imagetools inspect "\$\{IMAGE\}@\$\{DIGEST\}"$/m);
+  assert.ok(
+    gate.indexOf('docker logout ghcr.io') < gate.indexOf('docker buildx imagetools inspect')
+  );
+});
+
 /**
  * Creates a small release-shaped repository fixture.
  *
@@ -202,7 +226,7 @@ function makeReleaseFixture(options = {}) {
   const version = '0.0.1';
   const packageVersion = options.packageVersion ?? version;
   const workerBaseImage = options.workerBaseImage ?? 'node:24-bookworm-slim@sha256:abc123';
-  const includeReleaseWorkerBase = options.includeReleaseWorkerBase === true;
+  const includeReleaseWorkerBase = options.includeReleaseWorkerBase !== false;
   const includeSecondReleaseWorkerBase = options.includeSecondReleaseWorkerBase === true;
 
   writeJson(join(root, 'package.json'), {

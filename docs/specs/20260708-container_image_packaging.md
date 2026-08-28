@@ -192,7 +192,7 @@ Deployment worker image entries must also include:
 - `workerContract`: a non-empty string containing the OpenKit worker contract version, initially `openkit-worker-v1`. Required exactly when runtime metadata exists, and forbidden when it does not.
 - `target`: unique shared-Dockerfile build target.
 
-A public release worker base is identified structurally by absent `runtime`, not by a reserved image id. That entry must include `baseImage` and `target`, must omit `runtime` and `workerContract`, and remains `kind: worker` so the existing catalog and release path can build, smoke, and publish it without a parallel image class. The current such entry is `worker-common`. Release preflight must reject more than one empty-declared-set release worker base and must not special-case an image id.
+A public release worker base is identified structurally by absent `runtime`, not by a reserved image id. That entry must include `baseImage` and `target`, must omit `runtime` and `workerContract`, and remains `kind: worker` so the existing catalog and release path can build, smoke, and publish it without a parallel image class. The current such entry is `worker-common`. Release preflight must require exactly one empty-declared-set release worker base and must not special-case an image id.
 
 The authored `AgentManifest`, not this packaging catalog or a backend-global environment variable, selects the governed image reference and declares the runtime binary ids and absolute worker-local executable paths. NanoCore resolves that declaration into the AEP without a runtime-specific image branch. `control.adapter.targetRuntime` selects exactly one adapter per session. The image entry records how the selected artifact is built, smoked, and published; it is not a second runtime selector, and image contents confer no authority.
 
@@ -341,6 +341,14 @@ ghcr.io/<github-owner>/openkit-worker-codex:v0.0.1
 ```
 
 The GitHub Actions workflow must authenticate to GHCR with `GITHUB_TOKEN` and `packages: write` permission.
+
+`worker-common` MUST be a public GHCR package that an end user can pull or derive from without registry credentials.
+
+Publishing the public base grants no network, credential, filesystem, runtime-selection, or sandbox authority; those remain governed by the derived image's AgentManifest and runtime admission.
+
+GitHub creates a newly published container package as private, so the first-publication owner MUST change `worker-common` visibility to public after the initial push and before rerunning the failed release job.
+
+The publish job MUST remove its GHCR login and inspect the exact published `worker-common` digest anonymously before the release can pass.
 
 The publish job must run only after release-gate jobs pass.
 
@@ -778,6 +786,7 @@ CI acceptance:
 - Pull requests do not push images.
 - Version tags run the release gate.
 - GHCR publish runs only after the release gate passes.
+- The exact published `worker-common` digest is anonymously pullable after the publish job removes its registry login.
 - Published image digests are emitted in the workflow summary.
 - Pre-release tags do not update `latest`.
 - Stable version tags update `latest`.
@@ -793,6 +802,7 @@ CI acceptance:
 | Staging vocabulary keeps leaking into release docs. | Rename image ids, script names, and docs during migration, and do not keep old names as permanent aliases. |
 | Worker image grows into a second product runtime. | Keep worker image responsibilities limited to runtime adaptation and OpenKit worker records. |
 | GHCR package namespace differs across forks. | Use `github.repository_owner` by default and allow explicit namespace override only for manual workflows. |
+| GitHub creates the first `worker-common` package as private. | Make the package public once after the first push, then rerun the failed release job whose logged-out exact-digest inspection decides anonymous usability. |
 
 ## Open Questions
 

@@ -53,6 +53,7 @@ export async function startNanoCoreHarness(
       ? { BETTER_AUTH_SECRET: 'openkit-nanocore-e2e-server-secret-at-least-32-characters' }
       : {}),
     ...options.env,
+    OPENKIT_BIND_HOST: '127.0.0.1',
     OPENKIT_CORE_MODE: coreMode,
     OPENKIT_DATA_ROOT: dataRoot,
     PORT: String(port),

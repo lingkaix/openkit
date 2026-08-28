@@ -126,9 +126,9 @@ function validateImageManifest(repoRoot, requireReleaseWorkerDigests) {
     }
   }
 
-  if (emptyDeclaredSetReleaseWorkers.length > 1) {
+  if (emptyDeclaredSetReleaseWorkers.length !== 1) {
     throw new Error(
-      'containers/images.json declares more than one release worker base with an empty declared runtime set.'
+      'containers/images.json must declare exactly one public release worker base with an empty declared runtime set.'
     );
   }
 

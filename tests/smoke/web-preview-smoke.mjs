@@ -166,7 +166,7 @@ async function stopProcess(child, childClose) {
  * @param {Promise<unknown>} childClose Resolves after the child closes and its stdio drains.
  * @param {number} timeoutMs Cleanup deadline in milliseconds.
  * @returns {Promise<boolean>} True when both cleanup conditions settle before the deadline.
- * @throws {Error} When the process group cannot be probed.
+ * @throws {Error} When the process-group probe fails for a reason other than absence or permission.
  */
 async function waitForProcessGroupCleanup(processGroupId, childClose, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
@@ -178,7 +178,9 @@ async function waitForProcessGroupCleanup(processGroupId, childClose, timeoutMs)
       if (error instanceof Error && 'code' in error && error.code === 'ESRCH') {
         return await waitForClose(childClose, Math.max(0, deadline - Date.now()));
       }
-      throw error;
+      if (!(error instanceof Error && 'code' in error && error.code === 'EPERM')) {
+        throw error;
+      }
     }
     if (Date.now() >= deadline) {
       return false;

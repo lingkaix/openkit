@@ -14,6 +14,7 @@ This report preserves out-of-scope observations and governance deviations discov
 - [ ] `F-13` [deferred] Stable evidence cannot prove correlated Responses function-tool pairs
 - [ ] `F-14` [deferred] Real worker Responses relay environment is setup/undecided
 - [ ] `F-15` [deferred] WP-7 Tool-result semantic classifier owner is ambiguous
+- [ ] `F-16` [deferred] Absorption source was deleted before WP-6 verification
 
 ## [closed] F-1 — Accepted Task delegation still derives the worker Turn from the originating Chat Thread
 
@@ -150,3 +151,11 @@ This report preserves out-of-scope observations and governance deviations discov
 - **Evidence:** `docs/specs/20260813-internal_agent_runtime.md` requires sanitization of every Tool result and forbids the loop from owning output audiences; no `internal-agent-loop` implementation remains under `apps/nanocore/src/internal-agents/`; consultant PASS TO BLOCK/DISPOSITION withdrew the unsound sanitizer rather than amending the accepted owner.
 - **Owner:** The engineer, with `docs/specs/20260813-internal_agent_runtime.md` remaining the current loop owner until that decision.
 - **Next action:** Activate WP-7 only after an engineer or owner decides whether `AgentToolResult.content` is a Tool-owner audience-safe projection with loop structural fail-closed admission, or names an implementable alternative; do not amend the accepted owner in this closeout. Transition history: this plan defers F-15 at closeout rather than leaving it open. Deferred to the engineer and the current loop owner `docs/specs/20260813-internal_agent_runtime.md`; activate WP-7 when a future change record records whether `AgentToolResult.content` is a Tool-owner audience-safe projection with loop structural fail-closed admission or names an implementable alternative, without amending that owner in this plan.
+
+## [deferred] F-16 — Absorption source was deleted before WP-6 verification
+
+- **Observation:** The engineer-directed first-release cleanup deleted `temp/20260809-nanocore-agent-function-model-proposal.md` and its successor annotations after WP-15 verified that no accepted document required them, while WP-5 and WP-6 still have landed but unverified absorption artifacts under deferred F-9.
+- **Impact:** Accepted owners and Git remain the current sources of design and implementation truth, but if the later WP-5 Tier-4 gate disputes an absorbed decision, the uncommitted discussion source is no longer available to reconcile whether the owner dropped or changed a criterion.
+- **Evidence:** The plan's original retention sentence required the input through WP-6 closure; the current checkpoint states that WP-5 is blocked on F-9 and WP-6 is blocked on WP-5 verification or F-9; direct post-cleanup inspection confirms both uncommitted inputs are absent and no stash tree contains them.
+- **Owner:** The engineer and different-family verifier that own F-9, using the accepted owner bytes and Git history that remain available.
+- **Next action:** Opened by the independent Claude Code Opus 5 release-readiness audit after the deletion. Deferred to the engineer and different-family verifier; activate if the F-9 gate or any future WP-5/WP-6 reconciliation disputes an absorbed decision, use accepted owner bytes and Git as the available evidence, and return any resulting same-concern ambiguity to the engineer rather than reconstructing the deleted source.

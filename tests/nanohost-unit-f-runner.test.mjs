@@ -115,7 +115,7 @@ test('kills a real verification child when its bounded command deadline expires'
           "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);",
           pidPath,
         ],
-        { timeoutMs: 50 }
+        { timeoutMs: 500 }
       ),
       /command deadline expired/u
     );

@@ -76,6 +76,7 @@ The rebuilt `apps/web` MUST use the following stack.
 - **Dependencies are direct.** The Adobe Spectrum token package and the A2UI React renderer are direct dependencies of `apps/web`, not vendored snapshots. A vendored snapshot is a fallback only if a licensing or stability issue later requires it.
 - **Rebuild is in place.** `apps/web` is rebuilt in place on the new stack; no parallel `web-next` app is created.
 - **Data access boundary unchanged:** the Web UI consumes the server only through the composed `@openkit/core-client` sub-clients.
+- **Delivery posture:** the Web UI is a professional-workspace SPA that may later ship inside a desktop application shell, so bundle byte size and Vite chunk-size warnings are informational rather than release acceptance predicates; add a size or loading budget only when an accepted measured transfer, parse, startup, or interaction objective requires one.
 
 ## Contract / Expected Behavior
 
