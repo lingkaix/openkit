@@ -1,12 +1,12 @@
 # OpenKit
 
-**OpenKit is the workbench for human + agent teams.**
+> **The shared AI workspace for smart teams.**
 
-> **Delegate the work. Keep the judgement.**
+**Shared agents. Shared knowledge. One team.**
 
-**Current campaign:** *You don’t configure OpenKit. You direct it.*
+OpenKit gives every member of a small, high-impact human team access to the same agents, tasks, information, Knowledge, Skills, decisions, and work history. Agents are shared teammates rather than personal assistants: one person can delegate work, another can continue or review it, and everyone can build on the same discoveries and results.
 
-OpenKit is a work system for professionals and small expert teams who want agents to operate as teammates rather than isolated tools. It brings conversations, delegated work, human decisions, artifacts, evidence, knowledge, and the systems a team already uses into one durable workspace.
+People and agents work, share, and improve together. Useful discoveries become shared Knowledge, proven ways of working become reusable Skills, and each completed project improves how the whole team works next time.
 
 ## What OpenKit Is
 
