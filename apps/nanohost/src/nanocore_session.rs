@@ -465,8 +465,8 @@ pub enum VerifiedSessionIo {
 }
 
 /// Minimal async rustls client stream over the existing Tokio TCP capability.
-pub struct AsyncRustlsClientStream {
-    socket: TcpStream,
+pub struct AsyncRustlsClientStream<S = TcpStream> {
+    socket: S,
     connection: ClientConnection,
     pending_tls: Vec<u8>,
     pending_tls_offset: usize,
@@ -524,7 +524,10 @@ impl AsyncWrite for VerifiedSessionIo {
     }
 }
 
-impl AsyncRustlsClientStream {
+impl<S> AsyncRustlsClientStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     /// Flushes queued rustls records to the underlying nonblocking socket.
     fn poll_flush_tls(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         loop {
@@ -556,52 +559,68 @@ impl AsyncRustlsClientStream {
         }
     }
 
-    /// Copies available decrypted bytes into the caller's read buffer.
-    fn read_plaintext(&mut self, buffer: &mut ReadBuf<'_>) -> std::io::Result<usize> {
+    /// Copies decrypted bytes or reports that rustls needs more TLS input.
+    fn read_plaintext(&mut self, buffer: &mut ReadBuf<'_>) -> std::io::Result<Option<usize>> {
         let destination = buffer.initialize_unfilled();
-        let read = self.connection.reader().read(destination)?;
-        buffer.advance(read);
-        Ok(read)
+        match self.connection.reader().read(destination) {
+            Ok(read) => {
+                buffer.advance(read);
+                Ok(Some(read))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }
 
-impl AsyncRead for AsyncRustlsClientStream {
+impl<S> AsyncRead for AsyncRustlsClientStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if self.read_plaintext(buffer)? > 0 {
+        if buffer.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
-        if self.connection.wants_write() {
-            let _ = self.poll_flush_tls(cx)?;
-        }
-        let mut encrypted = [0_u8; 16 * 1024];
-        let mut encrypted_buffer = ReadBuf::new(&mut encrypted);
-        match Pin::new(&mut self.socket).poll_read(cx, &mut encrypted_buffer) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) if encrypted_buffer.filled().is_empty() => Poll::Ready(Ok(())),
-            Poll::Ready(Ok(())) => {
-                self.connection
-                    .read_tls(&mut Cursor::new(encrypted_buffer.filled()))?;
-                self.connection
-                    .process_new_packets()
-                    .map_err(std::io::Error::other)?;
-                if self.connection.wants_write() {
-                    let _ = self.poll_flush_tls(cx)?;
+
+        loop {
+            match self.read_plaintext(buffer) {
+                Ok(Some(_)) => return Poll::Ready(Ok(())),
+                Ok(None) => {}
+                Err(error) => return Poll::Ready(Err(error)),
+            }
+            if self.connection.wants_write() {
+                match self.poll_flush_tls(cx) {
+                    Poll::Ready(Ok(())) => {}
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => {}
                 }
-                match self.read_plaintext(buffer) {
-                    Ok(_) => Poll::Ready(Ok(())),
-                    Err(error) => Poll::Ready(Err(error)),
+            }
+
+            let mut encrypted = [0_u8; 16 * 1024];
+            let mut encrypted_buffer = ReadBuf::new(&mut encrypted);
+            match Pin::new(&mut self.socket).poll_read(cx, &mut encrypted_buffer) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Ready(Ok(())) => {
+                    self.connection
+                        .read_tls(&mut Cursor::new(encrypted_buffer.filled()))?;
+                    self.connection
+                        .process_new_packets()
+                        .map_err(std::io::Error::other)?;
                 }
             }
         }
     }
 }
 
-impl AsyncWrite for AsyncRustlsClientStream {
+impl<S> AsyncWrite for AsyncRustlsClientStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -3572,6 +3591,124 @@ mod tests {
         assert!(
             transport.tls_client_config().is_some(),
             "minimum verified TLS client surface must expose a rustls ClientConfig"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_tls_handshake_does_not_report_eof() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let socket = TcpStream::connect(listener.local_addr().expect("test listener address"))
+            .await
+            .expect("test client socket");
+        let (_server_socket, _) = listener.accept().await.expect("test server socket");
+        let config = build_verified_tls_client_config(&TlsTrustMaterial::Platform)
+            .expect("test TLS client config");
+        let connection = ClientConnection::new(
+            config,
+            ServerName::try_from("nanocore.example").expect("test server name"),
+        )
+        .expect("test TLS client connection");
+        let mut stream = AsyncRustlsClientStream {
+            socket,
+            connection,
+            pending_tls: Vec::new(),
+            pending_tls_offset: 0,
+        };
+        let mut byte = [0_u8; 1];
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                tokio::io::AsyncReadExt::read(&mut stream, &mut byte),
+            )
+            .await
+            .is_err(),
+            "an open TLS socket without plaintext must remain pending instead of reporting an error or EOF"
+        );
+    }
+
+    struct BackpressuredReadableIo {
+        read_polled: bool,
+        write_polled: bool,
+        readable: Option<[u8; 5]>,
+    }
+
+    impl AsyncRead for BackpressuredReadableIo {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            self.read_polled = true;
+            if let Some(bytes) = self.readable.take() {
+                buffer.put_slice(&bytes);
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    impl AsyncWrite for BackpressuredReadableIo {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.write_polled = true;
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn readable_tls_socket_is_polled_while_write_is_pending() {
+        let config = build_verified_tls_client_config(&TlsTrustMaterial::Platform)
+            .expect("test TLS client config");
+        let connection = ClientConnection::new(
+            config,
+            ServerName::try_from("nanocore.example").expect("test server name"),
+        )
+        .expect("test TLS client connection");
+        assert!(
+            connection.wants_write(),
+            "test TLS client must queue its ClientHello"
+        );
+        let mut stream = AsyncRustlsClientStream {
+            socket: BackpressuredReadableIo {
+                read_polled: false,
+                write_polled: false,
+                readable: Some([0xff, 0x03, 0x03, 0x00, 0x00]),
+            },
+            connection,
+            pending_tls: Vec::new(),
+            pending_tls_offset: 0,
+        };
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        let mut byte = [0_u8; 1];
+        let mut buffer = ReadBuf::new(&mut byte);
+        let read = Pin::new(&mut stream).poll_read(&mut context, &mut buffer);
+
+        assert!(
+            stream.socket.write_polled,
+            "TLS write backpressure was not exercised"
+        );
+        assert!(
+            stream.socket.read_polled,
+            "readable peer was not polled after write backpressure"
+        );
+        assert!(
+            matches!(read, Poll::Ready(Err(_))),
+            "the invalid readable TLS record must fail closed"
         );
     }
 
