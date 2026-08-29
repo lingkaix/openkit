@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom';
 import { ToastProvider } from '../primitives';
+import { AppSearch } from '../screens/operations';
 import { DisconnectedBanner } from './DisconnectedBanner';
 import { Sidebar } from './Sidebar';
 import { THEME_CLASS, useThemeStore } from './theme-store';
@@ -26,6 +27,7 @@ export function AppShell() {
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <DisconnectedBanner />
+        <AppSearch />
         <main aria-label="Workspace" className="min-h-0 flex-1 overflow-y-auto">
           <Outlet />
         </main>

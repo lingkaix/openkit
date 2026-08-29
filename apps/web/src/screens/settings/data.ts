@@ -13,6 +13,15 @@ import { projectSafeValue } from './secret-safe';
 export const settingsKeys = {
   workspace: (workspaceId: string) => ['settings', 'workspace', workspaceId] as const,
   vault: (workspaceId: string) => ['settings', 'vault', workspaceId] as const,
+  vaultInjectionPlans: (workspaceId: string) =>
+    ['settings', 'vault-injection-plans', workspaceId] as const,
+  vaultInjectionReceipts: (workspaceId: string) =>
+    ['settings', 'vault-injection-receipts', workspaceId] as const,
+  evidenceBundles: (workspaceId: string) => ['settings', 'evidence-bundles', workspaceId] as const,
+  runtimeEvidence: (workspaceId: string) => ['settings', 'runtime-evidence', workspaceId] as const,
+  aepSnapshots: (workspaceId: string) => ['settings', 'aep-snapshots', workspaceId] as const,
+  aepSnapshot: (workspaceId: string, snapshotId: string) =>
+    ['settings', 'aep-snapshot', workspaceId, snapshotId] as const,
   usage: (workspaceId: string) => ['settings', 'usage', workspaceId] as const,
   meta: ['core', 'meta'] as const,
   providerSubscriptions: ['settings', 'provider-subscriptions'] as const,
@@ -97,6 +106,45 @@ export interface VaultProjection {
   uses: VaultUseRow[];
 }
 
+/** Secret-safe Vault injection-plan metadata exposed to the Settings screen. */
+export interface VaultInjectionPlanRow {
+  planId: string;
+  injectionVisibility: string;
+  expirationBehavior: string;
+  status: string;
+}
+
+/** Secret-safe Vault injection-receipt metadata exposed to the Settings screen. */
+export interface VaultInjectionReceiptRow {
+  receiptId: string;
+  backendSummary: string;
+  revocationStatus: string;
+}
+
+/** Product-safe evidence-bundle summary exposed to Debug. */
+export interface EvidenceBundleRow {
+  id: string;
+  summary: string;
+}
+
+/** Product-safe runtime-evidence summary exposed to Debug. */
+export interface RuntimeEvidenceRow {
+  id: string;
+  summary: string;
+}
+
+/** Product-safe Agent Environment Package snapshot list identity. */
+export interface AepSnapshotListRow {
+  snapshotId: string;
+}
+
+/** Product-safe Agent Environment Package snapshot detail. */
+export interface AepSnapshotDetailRow {
+  snapshotId: string;
+  packageId: string;
+  runtimeKind: string;
+}
+
 /** Whitelisted capability-call metadata exposed to Usage & audit. */
 export interface CapabilityUsageCallRow {
   id: string;
@@ -175,6 +223,100 @@ export function projectVault(
       outcome: projectSafeValue(use.outcome) as string,
       usedAt: projectSafeValue(use.usedAt) as string,
     })),
+  };
+}
+
+/**
+ * Projects Workspace Vault injection plans through redaction and an explicit display whitelist.
+ *
+ * @param plans Workspace injection-plan response.
+ * @returns Secret-safe plan rows needed by the Vault screen and nothing else.
+ */
+export function projectVaultInjectionPlans(
+  plans: Awaited<ReturnType<CoreClient['app']['listWorkspaceVaultInjectionPlans']>>
+): VaultInjectionPlanRow[] {
+  return plans.items.map((plan) => ({
+    planId: projectSafeValue(plan.planId) as string,
+    injectionVisibility: projectSafeValue(plan.injectionVisibility) as string,
+    expirationBehavior: projectSafeValue(plan.expirationBehavior) as string,
+    status: projectSafeValue(plan.status) as string,
+  }));
+}
+
+/**
+ * Projects Workspace Vault injection receipts through redaction and an explicit display whitelist.
+ *
+ * @param receipts Workspace injection-receipt response.
+ * @returns Secret-safe receipt rows needed by the Vault screen and nothing else.
+ */
+export function projectVaultInjectionReceipts(
+  receipts: Awaited<ReturnType<CoreClient['app']['listWorkspaceVaultInjectionReceipts']>>
+): VaultInjectionReceiptRow[] {
+  return receipts.items.map((receipt) => ({
+    receiptId: projectSafeValue(receipt.receiptId) as string,
+    backendSummary: projectSafeValue(receipt.backendSummary) as string,
+    revocationStatus: projectSafeValue(receipt.revocationStatus) as string,
+  }));
+}
+
+/**
+ * Projects Workspace evidence bundles to product-safe summaries.
+ *
+ * @param bundles Workspace evidence-bundle response.
+ * @returns Summary rows with no locators, session ids, or secret-named fields.
+ */
+export function projectEvidenceBundles(
+  bundles: Awaited<ReturnType<CoreClient['app']['listWorkspaceEvidenceBundles']>>
+): EvidenceBundleRow[] {
+  return bundles.evidenceBundles.map((bundle) => ({
+    id: projectSafeValue(bundle.id) as string,
+    summary: projectSafeValue(bundle.summary) as string,
+  }));
+}
+
+/**
+ * Projects Workspace runtime evidence to product-safe summaries.
+ *
+ * @param evidence Workspace runtime-evidence response.
+ * @returns Summary rows with no stdout, locators, or session ids.
+ */
+export function projectRuntimeEvidence(
+  evidence: Awaited<ReturnType<CoreClient['app']['listWorkspaceRuntimeEvidence']>>
+): RuntimeEvidenceRow[] {
+  return evidence.runtimeEvidence.map((record) => ({
+    id: projectSafeValue(record.id) as string,
+    summary: projectSafeValue(record.summary) as string,
+  }));
+}
+
+/**
+ * Projects Agent Environment Package snapshot list identities.
+ *
+ * @param snapshots Workspace AEP snapshot list response.
+ * @returns Snapshot ids only; detail bodies stay unloaded.
+ */
+export function projectAepSnapshots(
+  snapshots: Awaited<ReturnType<CoreClient['app']['listAgentEnvironmentPackageSnapshots']>>
+): AepSnapshotListRow[] {
+  return snapshots.items.map((item) => ({
+    snapshotId: projectSafeValue(item.snapshotId) as string,
+  }));
+}
+
+/**
+ * Projects one Agent Environment Package snapshot detail from an explicit secret-safe
+ * whitelist of schema fields. The nested snapshot blob is never copied into the projection.
+ *
+ * @param record Exact AEP snapshot read response.
+ * @returns Snapshot id, package id, and runtime kind only.
+ */
+export function projectAepSnapshotDetail(
+  record: Awaited<ReturnType<CoreClient['app']['getAgentEnvironmentPackageSnapshot']>>
+): AepSnapshotDetailRow {
+  return {
+    snapshotId: projectSafeValue(record.snapshotId) as string,
+    packageId: projectSafeValue(record.packageId) as string,
+    runtimeKind: projectSafeValue(record.runtimeKind) as string,
   };
 }
 
@@ -368,6 +510,114 @@ export function useVault(workspaceId: string | null) {
       return projectVault(references, grants, uses);
     },
     enabled: Boolean(workspaceId),
+  });
+}
+
+/**
+ * Loads selected-Workspace Vault injection plans independently of other Vault families.
+ *
+ * @param workspaceId Active Workspace identity, or null before selection resolves.
+ * @returns TanStack query for the injection-plan projection.
+ */
+export function useVaultInjectionPlans(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: settingsKeys.vaultInjectionPlans(workspaceId ?? ''),
+    queryFn: async () =>
+      projectVaultInjectionPlans(
+        await client.app.listWorkspaceVaultInjectionPlans(workspaceId as string)
+      ),
+    enabled: Boolean(workspaceId),
+  });
+}
+
+/**
+ * Loads selected-Workspace Vault injection receipts independently of other Vault families.
+ *
+ * @param workspaceId Active Workspace identity, or null before selection resolves.
+ * @returns TanStack query for the injection-receipt projection.
+ */
+export function useVaultInjectionReceipts(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: settingsKeys.vaultInjectionReceipts(workspaceId ?? ''),
+    queryFn: async () =>
+      projectVaultInjectionReceipts(
+        await client.app.listWorkspaceVaultInjectionReceipts(workspaceId as string)
+      ),
+    enabled: Boolean(workspaceId),
+  });
+}
+
+/**
+ * Loads selected-Workspace evidence-bundle summaries for Debug.
+ *
+ * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
+ * @returns TanStack query for product-safe evidence summaries.
+ */
+export function useEvidenceBundles(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: settingsKeys.evidenceBundles(workspaceId ?? ''),
+    queryFn: async () =>
+      projectEvidenceBundles(await client.app.listWorkspaceEvidenceBundles(workspaceId as string)),
+    enabled: Boolean(workspaceId),
+  });
+}
+
+/**
+ * Loads selected-Workspace runtime-evidence summaries for Debug.
+ *
+ * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
+ * @returns TanStack query for product-safe runtime summaries.
+ */
+export function useRuntimeEvidence(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: settingsKeys.runtimeEvidence(workspaceId ?? ''),
+    queryFn: async () =>
+      projectRuntimeEvidence(await client.app.listWorkspaceRuntimeEvidence(workspaceId as string)),
+    enabled: Boolean(workspaceId),
+  });
+}
+
+/**
+ * Loads selected-Workspace Agent Environment Package snapshot identities for Debug.
+ *
+ * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
+ * @returns TanStack query for snapshot ids only.
+ */
+export function useAepSnapshots(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: settingsKeys.aepSnapshots(workspaceId ?? ''),
+    queryFn: async () =>
+      projectAepSnapshots(
+        await client.app.listAgentEnvironmentPackageSnapshots(workspaceId as string)
+      ),
+    enabled: Boolean(workspaceId),
+  });
+}
+
+/**
+ * Loads one exact Agent Environment Package snapshot after the operator selects it.
+ *
+ * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
+ * @param snapshotId Selected snapshot identity, or null before selection.
+ * @returns TanStack query for the product-safe snapshot summary.
+ */
+export function useAepSnapshotDetail(workspaceId: string | null, snapshotId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: settingsKeys.aepSnapshot(workspaceId ?? '', snapshotId ?? ''),
+    queryFn: async () =>
+      projectAepSnapshotDetail(
+        await client.app.getAgentEnvironmentPackageSnapshot(
+          workspaceId as string,
+          snapshotId as string
+        )
+      ),
+    enabled: Boolean(workspaceId && snapshotId),
   });
 }
 

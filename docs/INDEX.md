@@ -53,7 +53,7 @@ and are not listed here.
 - `docs/specs/20260531-worker_turn_reliability_envelope.md` — Accepted, Partial — This spec owns the implementation-facing reliability envelope for the direct Quick Chat provider call and worker-turn execution, including stop reasons, termin…
 - `docs/specs/20260616-agent_environment_package.md` — Accepted, Partial — This specification owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's resolved worker-execution authority an…
 - `docs/specs/20260628-nanocore_config_identity_contract.md` — Accepted, Partial — The current NanoCore local-mode and server-mode identity contract.
-- `docs/specs/20260628-web_product_surface_projection.md` — Accepted, Partial — The Web UI posture as a product surface over NanoCore and App API contracts.
+- `docs/specs/20260628-web_product_surface_projection.md` — Accepted, Implemented — The Web UI posture as a product surface over NanoCore and App API contracts.
 - `docs/specs/20260629-openkit_policy_model.md` — Accepted, Implemented — The `@openkit/policy-kernel` package concept and scope.
 - `docs/specs/20260629-worker_runtime_communication_model.md` — Accepted, Partial — The high-level worker runtime communication model for governed container workers.
 - `docs/specs/20260702-knowledge_store_governance_rules.md` — Accepted, Partial — OKF-compatible Markdown as the portable knowledge envelope.

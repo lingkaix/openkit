@@ -13,7 +13,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Minimal L4 smoke: rebuilt shell loads against a live NanoCore and reaches Settings → General.
+ * Minimal L4 smoke: rebuilt shell loads against a live NanoCore and reaches Settings → Debug.
  */
 test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   const runtimeErrors: string[] = [];
@@ -39,8 +39,10 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   await expect(settings).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: /^Diagnostics$/ })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Settings sections' })).toBeVisible();
+  await page.getByRole('button', { name: /^Debug$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Evidence bundles' })).toBeVisible();
 
   const viewport = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,

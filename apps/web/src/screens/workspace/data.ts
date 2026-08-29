@@ -1,5 +1,10 @@
-import type { CoreClient, KnowledgeEntry, WorkspaceRecord } from '@openkit/core-client';
-import { createRequestId } from '@openkit/core-client';
+import {
+  ApiCallError,
+  type CoreClient,
+  createRequestId,
+  type KnowledgeEntry,
+  type WorkspaceRecord,
+} from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
@@ -13,7 +18,11 @@ export const workspaceKeys = {
   attention: (workspaceId: string) => ['attention', workspaceId] as const,
   agents: ['agents'] as const,
   knowledge: (workspaceId: string) => ['knowledge', workspaceId] as const,
-  knowledgeStore: (workspaceId: string) => ['knowledge-store', workspaceId] as const,
+  knowledgeSources: (workspaceId: string) => ['knowledge-sources', workspaceId] as const,
+  knowledgeObservations: (workspaceId: string) => ['knowledge-observations', workspaceId] as const,
+  knowledgeClaims: (workspaceId: string) => ['knowledge-claims', workspaceId] as const,
+  knowledgeConflicts: (workspaceId: string) => ['knowledge-conflicts', workspaceId] as const,
+  knowledgeIndexes: (workspaceId: string) => ['knowledge-indexes', workspaceId] as const,
   dashboard: (workspaceId: string) => ['dashboard', workspaceId] as const,
   repositories: (workspaceId: string) => ['repositories', workspaceId] as const,
 };
@@ -43,6 +52,79 @@ export type KnowledgeProposalDecision = Parameters<
 export type KnowledgeProposalDecisionInput = {
   source: Extract<AttentionRow['source'], { type: 'knowledge' }>;
   decision: KnowledgeProposalDecision;
+};
+/** Exact replayable Knowledge entry create bound to one Workspace. */
+export type CreateKnowledgeCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['core']['createKnowledge']>[1];
+};
+/** Exact replayable Knowledge entry update bound to one Workspace. */
+export type UpdateKnowledgeCommand = {
+  workspaceId: string;
+  knowledgeEntryId: string;
+  input: Parameters<CoreClient['core']['updateKnowledge']>[2];
+};
+/** Exact replayable Knowledge entry delete bound to one Workspace. */
+export type DeleteKnowledgeCommand = {
+  workspaceId: string;
+  knowledgeEntryId: string;
+  input: Parameters<CoreClient['core']['deleteKnowledge']>[2];
+};
+/** Exact replayable Knowledge Source registration bound to one Workspace. */
+export type RegisterKnowledgeSourceCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['registerKnowledgeSource']>[1];
+};
+/** Exact Knowledge Source read bound to one Workspace identity. */
+export type ReadKnowledgeSourceCommand = {
+  workspaceId: string;
+  sourceId: string;
+};
+/** Exact replayable Knowledge Observation append bound to one Workspace. */
+export type RecordKnowledgeObservationCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['recordKnowledgeObservation']>[1];
+};
+/** Exact replayable Knowledge Claim append bound to one Workspace. */
+export type RecordKnowledgeClaimCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['recordKnowledgeClaim']>[1];
+};
+/** Exact replayable Knowledge Conflict append bound to one Workspace. */
+export type RecordKnowledgeConflictCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['recordKnowledgeConflict']>[1];
+};
+/** Exact replayable Knowledge Conflict resolution bound to one Workspace. */
+export type ResolveKnowledgeConflictCommand = {
+  workspaceId: string;
+  conflictId: string;
+  input: Parameters<CoreClient['app']['resolveKnowledgeConflict']>[2];
+};
+/** Workspace-bound Knowledge retrieval request. */
+export type RetrieveKnowledgeCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['retrieveKnowledge']>[1];
+};
+/** Workspace-bound Knowledge context preparation request. */
+export type PrepareKnowledgeContextCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['prepareKnowledgeContext']>[1];
+};
+/** Workspace-bound Knowledge Manager answer request. */
+export type AnswerKnowledgeManagerCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['answerKnowledgeManager']>[1];
+};
+/** Workspace-bound Knowledge repair suggestion request. */
+export type SuggestKnowledgeRepairsCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['suggestKnowledgeRepairs']>[1];
+};
+/** Workspace-bound Knowledge health-check request. */
+export type CheckKnowledgeHealthCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['app']['checkKnowledgeHealth']>[1];
 };
 /** Selected-Workspace repository resources, diagnostics, and durable push records. */
 export type RepositoryProjection = {
@@ -102,6 +184,44 @@ export function useAgents() {
   });
 }
 
+/**
+ * Read one agent catalog entry once View details is open.
+ *
+ * @param agentId Exact catalog id from the current list row.
+ * @param enabled Whether the details disclosure is open.
+ * @returns Lazy TanStack query for `client.agents.get`.
+ */
+export function useAgent(agentId: string, enabled: boolean) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: [...workspaceKeys.agents, agentId],
+    queryFn: () => client.agents.get(agentId),
+    enabled,
+    retry: false,
+  });
+}
+
+/** @returns Mutation that refreshes agent health for one selected Workspace. */
+export function useRefreshAgentHealth() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (workspaceId: string) => client.agents.refreshHealth(workspaceId),
+    retry: false,
+    onSuccess: async (response) => {
+      await queryClient.invalidateQueries({ queryKey: workspaceKeys.agents, exact: true });
+      await Promise.all(
+        response.items.map((item) =>
+          queryClient.invalidateQueries({
+            queryKey: [...workspaceKeys.agents, item.agentId],
+            exact: true,
+          })
+        )
+      );
+    },
+  });
+}
+
 /** List workspace knowledge entries. */
 export function useKnowledge(workspaceId: string | null) {
   const client = useCoreClient();
@@ -112,24 +232,186 @@ export function useKnowledge(workspaceId: string | null) {
   });
 }
 
-/** Read the bounded Source, Observation, and Claim projection as one query. */
-export function useKnowledgeStore(workspaceId: string | null) {
+/**
+ * Maps a Knowledge API failure to public copy with no private server text.
+ *
+ * @param error Unknown query or mutation failure.
+ * @param fallback Product copy for ordinary failures.
+ * @returns Access-denied or the supplied fallback copy.
+ */
+export function knowledgeActionErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiCallError && error.code === 'workspace_access_denied'
+    ? 'Access denied.'
+    : fallback;
+}
+
+const knowledgeListQuery = {
+  retry: false,
+  refetchOnMount: 'always' as const,
+} as const;
+
+/** List workspace Knowledge Source identities. */
+export function useKnowledgeSources(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
-    queryKey: workspaceKeys.knowledgeStore(workspaceId ?? ''),
-    queryFn: async (): Promise<KnowledgeStoreProjection> => {
-      const [sources, observations, claims] = await Promise.all([
-        client.app.listKnowledgeSources(workspaceId as string),
-        client.app.listKnowledgeObservations(workspaceId as string),
-        client.app.listKnowledgeClaims(workspaceId as string),
-      ]);
-      return {
-        sources: sources.items,
-        observations: observations.items,
-        claims: claims.items,
-      };
-    },
+    queryKey: workspaceKeys.knowledgeSources(workspaceId ?? ''),
+    queryFn: async () => (await client.app.listKnowledgeSources(workspaceId as string)).items,
     enabled: Boolean(workspaceId),
+    ...knowledgeListQuery,
+  });
+}
+
+/** List workspace Knowledge Store observations. */
+export function useKnowledgeObservations(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: workspaceKeys.knowledgeObservations(workspaceId ?? ''),
+    queryFn: async () => (await client.app.listKnowledgeObservations(workspaceId as string)).items,
+    enabled: Boolean(workspaceId),
+    ...knowledgeListQuery,
+  });
+}
+
+/** List workspace Knowledge Store claims. */
+export function useKnowledgeClaims(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: workspaceKeys.knowledgeClaims(workspaceId ?? ''),
+    queryFn: async () => (await client.app.listKnowledgeClaims(workspaceId as string)).items,
+    enabled: Boolean(workspaceId),
+    ...knowledgeListQuery,
+  });
+}
+
+/** List workspace Knowledge Store conflicts. */
+export function useKnowledgeConflicts(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: workspaceKeys.knowledgeConflicts(workspaceId ?? ''),
+    queryFn: async () => (await client.app.listKnowledgeConflicts(workspaceId as string)).items,
+    enabled: Boolean(workspaceId),
+    ...knowledgeListQuery,
+  });
+}
+
+/** Read fresh derived Knowledge Store indexes. */
+export function useKnowledgeIndexes(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: workspaceKeys.knowledgeIndexes(workspaceId ?? ''),
+    queryFn: () => client.app.readKnowledgeIndexes(workspaceId as string),
+    enabled: Boolean(workspaceId),
+    ...knowledgeListQuery,
+  });
+}
+
+/** @returns Mutation that registers one Knowledge Source without claiming list settlement. */
+export function useRegisterKnowledgeSource() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: RegisterKnowledgeSourceCommand) =>
+      client.app.registerKnowledgeSource(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that reads one Knowledge Source identity. */
+export function useReadKnowledgeSource() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: ReadKnowledgeSourceCommand) =>
+      client.app.readKnowledgeSource(command.workspaceId, command.sourceId),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that appends one Knowledge Observation without claiming list settlement. */
+export function useRecordKnowledgeObservation() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: RecordKnowledgeObservationCommand) =>
+      client.app.recordKnowledgeObservation(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that appends one Knowledge Claim without claiming list settlement. */
+export function useRecordKnowledgeClaim() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: RecordKnowledgeClaimCommand) =>
+      client.app.recordKnowledgeClaim(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that appends one Knowledge Conflict without claiming list settlement. */
+export function useRecordKnowledgeConflict() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: RecordKnowledgeConflictCommand) =>
+      client.app.recordKnowledgeConflict(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that resolves one Knowledge Conflict without claiming list settlement. */
+export function useResolveKnowledgeConflict() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: ResolveKnowledgeConflictCommand) =>
+      client.app.resolveKnowledgeConflict(command.workspaceId, command.conflictId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that retrieves ranked Knowledge Store candidates. */
+export function useRetrieveKnowledge() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: RetrieveKnowledgeCommand) =>
+      client.app.retrieveKnowledge(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that prepares source-traceable context material. */
+export function usePrepareKnowledgeContext() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: PrepareKnowledgeContextCommand) =>
+      client.app.prepareKnowledgeContext(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that answers one Knowledge Manager question. */
+export function useAnswerKnowledgeManager() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: AnswerKnowledgeManagerCommand) =>
+      client.app.answerKnowledgeManager(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that suggests review-required knowledge repairs. */
+export function useSuggestKnowledgeRepairs() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: SuggestKnowledgeRepairsCommand) =>
+      client.app.suggestKnowledgeRepairs(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
+/** @returns Mutation that inspects Knowledge Store health. */
+export function useCheckKnowledgeHealth() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: CheckKnowledgeHealthCommand) =>
+      client.app.checkKnowledgeHealth(command.workspaceId, command.input),
+    retry: false,
   });
 }
 
@@ -185,6 +467,18 @@ export function useExecuteGitPush() {
   });
 }
 
+/** @returns Mutation that sets the selected Workspace default repository. */
+export function useSetDefaultRepository() {
+  const client = useCoreClient();
+  return useMutation({
+    mutationFn: (command: {
+      workspaceId: string;
+      input: Parameters<CoreClient['repositories']['setDefault']>[1];
+    }) => client.repositories.setDefault(command.workspaceId, command.input),
+    retry: false,
+  });
+}
+
 /** Submit one Knowledge Proposal decision without claiming read-model settlement. */
 export function useSubmitKnowledgeProposalDecision() {
   const client = useCoreClient();
@@ -199,47 +493,39 @@ export function useSubmitKnowledgeProposalDecision() {
   });
 }
 
-/** Create a knowledge entry in the active workspace. */
-export function useCreateKnowledge(workspaceId: string | null) {
+/** @returns Mutation that creates one Knowledge entry from a Workspace-bound command. */
+export function useCreateKnowledge() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { title: string; content: string; kind?: KnowledgeEntry['kind'] }) =>
-      client.core.createKnowledge(workspaceId as string, {
-        kind: input.kind ?? 'preference',
-        title: input.title,
-        content: input.content,
-        requestId: createRequestId(),
-      }),
-    onSuccess: () => {
-      if (workspaceId) {
-        void queryClient.invalidateQueries({ queryKey: workspaceKeys.knowledge(workspaceId) });
-      }
+    mutationFn: (command: CreateKnowledgeCommand) =>
+      client.core.createKnowledge(command.workspaceId, command.input),
+    retry: false,
+    onSuccess: (_data, command) => {
+      void queryClient.invalidateQueries({
+        queryKey: workspaceKeys.knowledge(command.workspaceId),
+      });
     },
   });
 }
 
-/** Update one knowledge entry without claiming authoritative read-model settlement. */
-export function useUpdateKnowledge(workspaceId: string | null) {
+/** @returns Mutation that updates one Knowledge entry from a Workspace-bound command. */
+export function useUpdateKnowledge() {
   const client = useCoreClient();
   return useMutation({
-    mutationFn: (input: { knowledgeEntryId: string; title?: string; content?: string }) =>
-      client.core.updateKnowledge(workspaceId as string, input.knowledgeEntryId, {
-        ...(input.title === undefined ? {} : { title: input.title }),
-        ...(input.content === undefined ? {} : { content: input.content }),
-        requestId: createRequestId(),
-      }),
+    mutationFn: (command: UpdateKnowledgeCommand) =>
+      client.core.updateKnowledge(command.workspaceId, command.knowledgeEntryId, command.input),
+    retry: false,
   });
 }
 
-/** Delete one knowledge entry without claiming authoritative read-model settlement. */
-export function useDeleteKnowledge(workspaceId: string | null) {
+/** @returns Mutation that deletes one Knowledge entry from a Workspace-bound command. */
+export function useDeleteKnowledge() {
   const client = useCoreClient();
   return useMutation({
-    mutationFn: (knowledgeEntryId: string) =>
-      client.core.deleteKnowledge(workspaceId as string, knowledgeEntryId, {
-        requestId: createRequestId(),
-      }),
+    mutationFn: (command: DeleteKnowledgeCommand) =>
+      client.core.deleteKnowledge(command.workspaceId, command.knowledgeEntryId, command.input),
+    retry: false,
   });
 }
 

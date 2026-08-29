@@ -13,8 +13,12 @@ import {
 import {
   useCurrentWorkspaceId,
   useVault,
+  useVaultInjectionPlans,
+  useVaultInjectionReceipts,
   useWorkspaces,
   type VaultGrantRow,
+  type VaultInjectionPlanRow,
+  type VaultInjectionReceiptRow,
   type VaultReferenceRow,
   type VaultUseRow,
 } from './data';
@@ -40,6 +44,8 @@ function vaultStatus(value: string): { label: string; tone: StatusTone } {
       return { label: 'Rejected', tone: 'negative' };
     case 'failed':
       return { label: 'Failed', tone: 'negative' };
+    case 'stale-session':
+      return { label: 'Stale session', tone: 'notice' };
   }
   return { label: 'Failed', tone: 'negative' };
 }
@@ -49,6 +55,8 @@ export function VaultScreen() {
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId();
   const vault = useVault(workspaceId);
+  const plans = useVaultInjectionPlans(workspaceId);
+  const receipts = useVaultInjectionReceipts(workspaceId);
   const { failed: disconnected } = useConnection();
 
   if (workspaces.isLoading || vault.isLoading) {
@@ -139,6 +147,36 @@ export function VaultScreen() {
           </VaultList>
         </>
       ) : null}
+
+      <VaultList
+        id="vault-injection-plans"
+        title="Injection plans"
+        emptyTitle="No injection plans"
+        emptyHint="Workspace injection plans will appear here when granted."
+        isLoading={plans.isLoading}
+        isError={plans.isError}
+        errorMessage="Couldn't load injection plans."
+        onRetry={() => void plans.refetch()}
+      >
+        {(plans.data ?? []).map((plan) => (
+          <PlanRow key={plan.planId} plan={plan} />
+        ))}
+      </VaultList>
+
+      <VaultList
+        id="vault-injection-receipts"
+        title="Injection receipts"
+        emptyTitle="No injection receipts"
+        emptyHint="Workspace injection receipts will appear here after attach."
+        isLoading={receipts.isLoading}
+        isError={receipts.isError}
+        errorMessage="Couldn't load injection receipts."
+        onRetry={() => void receipts.refetch()}
+      >
+        {(receipts.data ?? []).map((receipt) => (
+          <ReceiptRow key={receipt.receiptId} receipt={receipt} />
+        ))}
+      </VaultList>
     </Page>
   );
 }
@@ -167,12 +205,20 @@ function VaultList({
   title,
   emptyTitle,
   emptyHint,
+  isLoading = false,
+  isError = false,
+  errorMessage,
+  onRetry,
   children,
 }: {
   id: string;
   title: string;
   emptyTitle: string;
   emptyHint: string;
+  isLoading?: boolean;
+  isError?: boolean;
+  errorMessage?: string;
+  onRetry?: () => void;
   children: React.ReactNode;
 }) {
   const empty = !Array.isArray(children) || children.length === 0;
@@ -181,7 +227,11 @@ function VaultList({
       <h2 id={id} className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
         {title}
       </h2>
-      {empty ? (
+      {isLoading ? (
+        <Skeleton lines={3} />
+      ) : isError ? (
+        <ErrorBanner message={errorMessage ?? "Couldn't load Vault records."} onRetry={onRetry} />
+      ) : empty ? (
         <EmptyState icon="key" title={emptyTitle} hint={emptyHint} />
       ) : (
         <Card className="py-0">{children}</Card>
@@ -243,6 +293,41 @@ function UseRow({ use }: { use: VaultUseRow }) {
         </p>
       </div>
       <VaultStatusChip value={use.outcome} />
+    </ListRow>
+  );
+}
+
+/**
+ * Renders one whitelisted Vault injection-plan row.
+ *
+ * @param props Safe injection-plan metadata.
+ */
+function PlanRow({ plan }: { plan: VaultInjectionPlanRow }) {
+  return (
+    <ListRow>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-bold text-fg-strong">{plan.planId}</p>
+        <p className="text-xs text-fg-muted">{plan.injectionVisibility}</p>
+        <p className="text-xs text-fg-muted">{plan.expirationBehavior}</p>
+      </div>
+      <VaultStatusChip value={plan.status} />
+    </ListRow>
+  );
+}
+
+/**
+ * Renders one whitelisted Vault injection-receipt row.
+ *
+ * @param props Safe injection-receipt metadata.
+ */
+function ReceiptRow({ receipt }: { receipt: VaultInjectionReceiptRow }) {
+  return (
+    <ListRow>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-bold text-fg-strong">{receipt.receiptId}</p>
+        <p className="text-xs text-fg-muted">{receipt.backendSummary}</p>
+      </div>
+      <VaultStatusChip value={receipt.revocationStatus} />
     </ListRow>
   );
 }

@@ -1,6 +1,6 @@
-import type { CoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -334,6 +334,61 @@ const VAULT_USE_RECORDS = {
   ],
 };
 
+const VAULT_INJECTION_PLANS = {
+  workspaceId: WORKSPACE.id,
+  token: 'plan-field-poison-should-never-render',
+  items: [
+    {
+      planId: 'plan_release_worker',
+      grantId: 'grant_release_worker',
+      packageSnapshotId: 'aepsnap_1',
+      capabilityId: null,
+      injectionVisibility: 'gateway-only',
+      targetPath: null,
+      targetEnvVarName: null,
+      expirationBehavior: `Expires with turn grant ${POISON_SECRET}`,
+      revocationBehavior: 'Detach provider.',
+      redactionRule: 'Do not expose token.',
+      backendCapabilityRequirement: 'OpenShell provider attachment.',
+      status: 'active',
+      createdAt: TIMESTAMP,
+      clientSecret: 'plan-row-poison-should-never-render',
+    },
+  ],
+};
+
+const VAULT_INJECTION_RECEIPTS = {
+  workspaceId: WORKSPACE.id,
+  password: 'receipt-field-poison-should-never-render',
+  items: [
+    {
+      receiptId: 'receipt_release_worker',
+      planId: 'plan_release_worker',
+      grantId: 'grant_release_worker',
+      agentSessionId: 'as_debug_1',
+      capabilityCallId: null,
+      backendSummary: `OpenShell attach ${POISON_SECRET}`,
+      injectedAt: TIMESTAMP,
+      expiresAt: null,
+      revocationStatus: 'active',
+      auditEventId: null,
+      accessToken: 'receipt-row-poison-should-never-render',
+    },
+    {
+      receiptId: 'receipt_stale_worker',
+      planId: 'plan_release_worker',
+      grantId: 'grant_release_worker',
+      agentSessionId: 'as_debug_1',
+      capabilityCallId: null,
+      backendSummary: 'OpenShell attach remains reachable after revoke.',
+      injectedAt: TIMESTAMP,
+      expiresAt: null,
+      revocationStatus: 'stale-session',
+      auditEventId: null,
+    },
+  ],
+};
+
 const VAULT_FIELD_POISONS = [
   'status-field-poison-should-never-render',
   'reference-field-poison-should-never-render',
@@ -342,6 +397,10 @@ const VAULT_FIELD_POISONS = [
   'grant-row-poison-should-never-render',
   'use-field-poison-should-never-render',
   'use-row-poison-should-never-render',
+  'plan-field-poison-should-never-render',
+  'plan-row-poison-should-never-render',
+  'receipt-field-poison-should-never-render',
+  'receipt-row-poison-should-never-render',
 ] as const;
 
 const CAPABILITY_USAGE = {
@@ -495,6 +554,129 @@ const USAGE_NON_DISPLAY_FIELDS = [
   'llm.gateway.policy',
 ] as const;
 
+const EVIDENCE_BUNDLES = {
+  workspaceId: WORKSPACE.id,
+  apiKey: 'evidence-response-poison-should-never-render',
+  evidenceBundles: [
+    {
+      id: 'evb_debug_1',
+      workspaceId: WORKSPACE.id,
+      threadId: 'thread_debug',
+      goalId: null,
+      turnId: 'turn_debug',
+      agentSessionId: 'as_debug_1',
+      backendType: null,
+      sourceKind: 'manual',
+      summary: `Goal evidence is ready with ${POISON_SECRET}.`,
+      rawEvidenceRefs: [{ kind: 'backend-log', ref: 'raw-evidence-locator-should-never-render' }],
+      redactedEvidenceRefs: [{ kind: 'artifact', ref: 'artifact_debug' }],
+      contentDigests: ['sha256:evidence'],
+      retentionClass: 'turn-evidence',
+      sensitivityClass: 'product-safe',
+      importStatus: 'collected',
+      requiredFeatures: [],
+      createdAt: TIMESTAMP,
+      accessToken: 'evidence-row-poison-should-never-render',
+    },
+  ],
+};
+
+const RUNTIME_EVIDENCE = {
+  workspaceId: WORKSPACE.id,
+  token: 'runtime-response-poison-should-never-render',
+  runtimeEvidence: [
+    {
+      id: 'rte_debug_1',
+      workspaceId: WORKSPACE.id,
+      threadId: 'thread_debug',
+      turnId: 'turn_debug',
+      goalId: null,
+      taskId: null,
+      agentSessionId: 'as_debug_1',
+      backendType: 'openshell',
+      backendVersion: null,
+      placement: 'local',
+      phase: 'teardown',
+      summary: 'Worker checkpoint terminal: completed.',
+      policyDigest: null,
+      workerImage: null,
+      sandboxSummary: null,
+      capabilitySummary: 'worker turn checkpoint',
+      uploadManifest: [],
+      downloadManifest: [],
+      transcriptSummary: null,
+      workspaceChangeSummary: null,
+      controlSummary: null,
+      outcome: 'succeeded',
+      exitCode: 0,
+      signal: null,
+      stopReason: 'completed',
+      errorCode: null,
+      errorMessage: null,
+      redactedStdoutSummary: `stdout ${POISON_SECRET}`,
+      redactedStderrSummary: null,
+      evidenceBundleIds: ['evb_debug_1'],
+      contentDigests: ['sha256:runtime'],
+      requiredFeatures: [],
+      createdAt: TIMESTAMP,
+      startedAt: null,
+      completedAt: TIMESTAMP,
+      collectedAt: TIMESTAMP,
+      authorization: 'runtime-row-poison-should-never-render',
+    },
+  ],
+};
+
+const AEP_SNAPSHOT_LIST_ITEM = {
+  snapshotId: 'aepsnap_1',
+  workspaceId: WORKSPACE.id,
+  turnId: 'turn_debug',
+  threadId: 'thread_debug',
+  agentSessionId: 'as_debug_1',
+  agentId: 'agent_1',
+  packageId: 'aepkg_1',
+  runtimeKind: 'coder',
+  backendKind: 'openshell',
+  contentDigest: '0123456789abcdef',
+  snapshot: { snapshotId: 'aepsnap_1' },
+  createdAt: TIMESTAMP,
+};
+
+const AEP_SNAPSHOTS = {
+  items: [AEP_SNAPSHOT_LIST_ITEM],
+};
+
+const AEP_SNAPSHOT_DETAIL = {
+  ...AEP_SNAPSHOT_LIST_ITEM,
+  snapshot: {
+    snapshotId: 'aepsnap_1',
+    packageId: 'aepkg_1',
+    scope: {
+      workspaceId: WORKSPACE.id,
+      threadId: 'thread_debug',
+      turnId: 'turn_debug',
+      agentSessionId: 'as_debug_1',
+    },
+    agent: {
+      agentId: 'agent_1',
+      runtimeKind: 'coder',
+    },
+    backend: {
+      preferred: 'openshell',
+    },
+    apiKey: POISON_SECRET,
+  },
+};
+
+const DEBUG_FIELD_POISONS = [
+  'evidence-response-poison-should-never-render',
+  'evidence-row-poison-should-never-render',
+  'raw-evidence-locator-should-never-render',
+  'runtime-response-poison-should-never-render',
+  'runtime-row-poison-should-never-render',
+  'as_debug_1',
+] as const;
+
 type MethodOverrides = Partial<Record<string, unknown>>;
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
@@ -536,8 +718,8 @@ function makeClient(
       listWorkspaceVaultReferences: vi.fn().mockResolvedValue(VAULT_REFERENCES),
       listWorkspaceVaultGrants: vi.fn().mockResolvedValue(VAULT_GRANTS),
       listWorkspaceVaultUseRecords: vi.fn().mockResolvedValue(VAULT_USE_RECORDS),
-      listWorkspaceVaultInjectionPlans: vi.fn(),
-      listWorkspaceVaultInjectionReceipts: vi.fn(),
+      listWorkspaceVaultInjectionPlans: vi.fn().mockResolvedValue(VAULT_INJECTION_PLANS),
+      listWorkspaceVaultInjectionReceipts: vi.fn().mockResolvedValue(VAULT_INJECTION_RECEIPTS),
       listServerVaultUseRecords: vi.fn(),
       unlockVaultAdminBackend: vi.fn(),
       lockVaultAdminBackend: vi.fn(),
@@ -548,6 +730,10 @@ function makeClient(
       listServerAuditEvents: vi.fn().mockResolvedValue(SERVER_AUDIT_EVENTS),
       listWorkspacePermissionDecisions: vi.fn().mockResolvedValue(WORKSPACE_PERMISSION_DECISIONS),
       listServerPermissionDecisions: vi.fn(),
+      listWorkspaceEvidenceBundles: vi.fn().mockResolvedValue(EVIDENCE_BUNDLES),
+      listWorkspaceRuntimeEvidence: vi.fn().mockResolvedValue(RUNTIME_EVIDENCE),
+      listAgentEnvironmentPackageSnapshots: vi.fn().mockResolvedValue(AEP_SNAPSHOTS),
+      getAgentEnvironmentPackageSnapshot: vi.fn().mockResolvedValue(AEP_SNAPSHOT_DETAIL),
       ...overrides.app,
     },
     runtimeConfig: {
@@ -700,8 +886,21 @@ describe('Vault settings (board 15)', () => {
     const references = await screen.findByRole('region', { name: 'References' });
     const grants = screen.getByRole('region', { name: 'Grants' });
     const uses = screen.getByRole('region', { name: 'Recent use' });
+    const plans = screen.getByRole('region', { name: 'Injection plans' });
+    const receipts = screen.getByRole('region', { name: 'Injection receipts' });
     expect(
       within(references).getByText('vault_ref_repository', { exact: true })
+    ).toBeInTheDocument();
+    expect(within(plans).getByText('plan_release_worker', { exact: true })).toBeInTheDocument();
+    expect(within(plans).getByText('gateway-only', { exact: true })).toBeInTheDocument();
+    expect(
+      within(plans).getByText('Expires with turn grant [redacted]', { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      within(receipts).getByText('receipt_release_worker', { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      within(receipts).getByText('OpenShell attach [redacted]', { exact: true })
     ).toBeInTheDocument();
 
     const renderedText = document.body.textContent ?? '';
@@ -742,15 +941,32 @@ describe('Vault settings (board 15)', () => {
         within(uses).getByText('vault_ref_transport').parentElement!.parentElement!.lastElementChild
           ?.textContent,
       ],
+      plans: [
+        within(plans).getByText('plan_release_worker').parentElement!.parentElement!
+          .lastElementChild?.textContent,
+      ],
+      receipts: [
+        within(receipts).getByText('receipt_release_worker').parentElement!.parentElement!
+          .lastElementChild?.textContent,
+      ],
     }).toEqual({
       references: ['Ready', 'Cancelled', 'Blocked'],
       grants: ['Ready', 'Cancelled', 'Cancelled'],
       uses: ['Done', 'Rejected', 'Failed'],
+      plans: ['Ready'],
+      receipts: ['Ready'],
     });
+    const staleReceiptChip =
+      within(receipts).getByText('receipt_stale_worker').parentElement!.parentElement!
+        .lastElementChild?.textContent;
+    expect(staleReceiptChip).toMatch(/review|stale|warning|attention/i);
+    expect(staleReceiptChip).not.toMatch(/^(Failed|Ready|Cancelled|Done|Blocked|Rejected)$/);
     for (const [region, rawStatuses] of [
       [references, ['active', 'revoked', 'unbound']],
       [grants, ['active', 'revoked', 'expired']],
       [uses, ['succeeded', 'denied', 'failed']],
+      [plans, ['active']],
+      [receipts, ['active', 'stale-session']],
     ] as const) {
       for (const rawStatus of rawStatuses) {
         expect(within(region).queryByText(rawStatus, { exact: true })).not.toBeInTheDocument();
@@ -764,12 +980,17 @@ describe('Vault settings (board 15)', () => {
 
     for (const excludedRead of [
       client.app.getVaultAdminStatus,
-      client.app.listWorkspaceVaultInjectionPlans,
-      client.app.listWorkspaceVaultInjectionReceipts,
       client.app.listServerVaultUseRecords,
     ]) {
       expect(excludedRead).not.toHaveBeenCalled();
     }
+    expect({
+      plans: vi.mocked(client.app.listWorkspaceVaultInjectionPlans).mock.calls,
+      receipts: vi.mocked(client.app.listWorkspaceVaultInjectionReceipts).mock.calls,
+    }).toEqual({
+      plans: [[WORKSPACE.id]],
+      receipts: [[WORKSPACE.id]],
+    });
     for (const mutation of [
       client.app.unlockVaultAdminBackend,
       client.app.lockVaultAdminBackend,
@@ -883,6 +1104,37 @@ describe('Vault settings (board 15)', () => {
     ).toBeInTheDocument();
   });
 
+  it('shows an explicit retry when injection-plan reads fail without dropping other Vault families after recovery', async () => {
+    const user = userEvent.setup();
+    const listWorkspaceVaultInjectionPlans = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ApiCallError(403, 'injection-plan-private failure', {
+          code: 'workspace_access_denied',
+        })
+      )
+      .mockResolvedValue(VAULT_INJECTION_PLANS);
+    renderApp('/settings/vault', makeClient({ app: { listWorkspaceVaultInjectionPlans } }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't load/i);
+    expect(alert).not.toHaveTextContent('injection-plan-private failure');
+    expect(alert).not.toHaveTextContent('workspace_access_denied');
+    expect(screen.queryByText('plan_release_worker', { exact: true })).not.toBeInTheDocument();
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(listWorkspaceVaultInjectionPlans).toHaveBeenCalledTimes(2));
+    expect(listWorkspaceVaultInjectionPlans).toHaveBeenCalledWith(WORKSPACE.id);
+    const plans = await screen.findByRole('region', { name: 'Injection plans' });
+    expect(within(plans).getByText('plan_release_worker', { exact: true })).toBeInTheDocument();
+    const references = screen.getByRole('region', { name: 'References' });
+    expect(
+      within(references).getByText('vault_ref_repository', { exact: true })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Grants' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Recent use' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Injection receipts' })).toBeInTheDocument();
+  });
+
   it('marks Workspace Vault metadata as stale while Core is disconnected', async () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
@@ -894,6 +1146,166 @@ describe('Vault settings (board 15)', () => {
       within(references).getByText('vault_ref_repository', { exact: true })
     ).toBeInTheDocument();
     expect(await screen.findByText('Status may be stale', { exact: true })).toBeInTheDocument();
+  });
+});
+
+describe('Debug settings (board 11)', () => {
+  it('reads selected-Workspace evidence and AEP snapshots, then lazily loads one snapshot detail', async () => {
+    const user = userEvent.setup();
+    const client = makeClient();
+    renderApp('/settings/debug', client);
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Debug' })).toBeInTheDocument();
+    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(
+      await screen.findByText('Goal evidence is ready with [redacted].', { exact: true })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Worker checkpoint terminal: completed.', { exact: true })
+    ).toBeInTheDocument();
+    expect(screen.getByText('aepsnap_1', { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText('coder', { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText('aepkg_1', { exact: true })).not.toBeInTheDocument();
+    expect(client.app.getAgentEnvironmentPackageSnapshot).not.toHaveBeenCalled();
+
+    const snapshotButton = screen.getByRole('button', { name: 'aepsnap_1' });
+    expect(snapshotButton).not.toHaveAttribute('aria-pressed', 'true');
+    await user.click(snapshotButton);
+    await waitFor(() =>
+      expect(client.app.getAgentEnvironmentPackageSnapshot).toHaveBeenCalledWith(
+        WORKSPACE.id,
+        'aepsnap_1'
+      )
+    );
+    expect(await screen.findByText('coder', { exact: true })).toBeInTheDocument();
+    expect(screen.getByText('aepkg_1', { exact: true })).toBeInTheDocument();
+    expect(snapshotButton).toHaveAttribute('aria-pressed', 'true');
+    expect(client.app.getAgentEnvironmentPackageSnapshot).toHaveBeenCalledTimes(1);
+
+    const serializedDom = document.documentElement.outerHTML;
+    expect(serializedDom).not.toContain(POISON_SECRET);
+    for (const poison of DEBUG_FIELD_POISONS) expect(serializedDom).not.toContain(poison);
+    expect({
+      bundles: vi.mocked(client.app.listWorkspaceEvidenceBundles).mock.calls,
+      runtime: vi.mocked(client.app.listWorkspaceRuntimeEvidence).mock.calls,
+      snapshots: vi.mocked(client.app.listAgentEnvironmentPackageSnapshots).mock.calls,
+      diagnostics: vi.mocked(client.app.getDiagnostics).mock.calls,
+      serverAudit: vi.mocked(client.app.listServerAuditEvents).mock.calls,
+      vaultAdmin: vi.mocked(client.app.getVaultAdminStatus).mock.calls,
+    }).toEqual({
+      bundles: [[WORKSPACE.id]],
+      runtime: [[WORKSPACE.id]],
+      snapshots: [[WORKSPACE.id]],
+      diagnostics: [],
+      serverAudit: [],
+      vaultAdmin: [],
+    });
+  });
+
+  it('keeps other Debug sections visible and retries a typed evidence denial', async () => {
+    const user = userEvent.setup();
+    const listWorkspaceEvidenceBundles = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ApiCallError(403, 'evidence-bundle-private failure', {
+          code: 'workspace_access_denied',
+        })
+      )
+      .mockResolvedValue(EVIDENCE_BUNDLES);
+    const client = makeClient({ app: { listWorkspaceEvidenceBundles } });
+    renderApp('/settings/debug', client);
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Debug' })).toBeInTheDocument();
+    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(
+      await screen.findByText('Worker checkpoint terminal: completed.', { exact: true })
+    ).toBeInTheDocument();
+    expect(screen.getByText('aepsnap_1', { exact: true })).toBeInTheDocument();
+    expect(
+      screen.queryByText('Goal evidence is ready with [redacted].', { exact: true })
+    ).not.toBeInTheDocument();
+
+    const evidenceAlert = screen
+      .getAllByRole('alert')
+      .find((node) => /couldn't load/i.test(node.textContent ?? ''));
+    expect(evidenceAlert).toBeTruthy();
+    expect(evidenceAlert).not.toHaveTextContent('evidence-bundle-private failure');
+    expect(evidenceAlert).not.toHaveTextContent('workspace_access_denied');
+    await user.click(
+      within(evidenceAlert as HTMLElement).getByRole('button', { name: 'Try again' })
+    );
+    await waitFor(() => expect(listWorkspaceEvidenceBundles).toHaveBeenCalledTimes(2));
+    expect(listWorkspaceEvidenceBundles).toHaveBeenCalledWith(WORKSPACE.id);
+    expect(
+      await screen.findByText('Goal evidence is ready with [redacted].', { exact: true })
+    ).toBeInTheDocument();
+    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(
+      screen.getByText('Worker checkpoint terminal: completed.', { exact: true })
+    ).toBeInTheDocument();
+    expect(screen.getByText('aepsnap_1', { exact: true })).toBeInTheDocument();
+  });
+
+  it('shows content-shaped loading skeletons while Workspace discovery is pending', async () => {
+    renderApp(
+      '/settings/debug',
+      makeClient({
+        core: { listWorkspaces: vi.fn().mockReturnValue(new Promise(() => {})) },
+      })
+    );
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Debug' })).toBeInTheDocument();
+    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Evidence bundles' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(1));
+  });
+
+  it('shows an empty state when no Workspace is selected', async () => {
+    renderApp(
+      '/settings/debug',
+      makeClient({
+        core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [] }) },
+      })
+    );
+
+    expect(await screen.findByText('No workspace selected', { exact: true })).toBeInTheDocument();
+    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(
+      screen.queryByText('Goal evidence is ready with [redacted].', { exact: true })
+    ).not.toBeInTheDocument();
+  });
+
+  it('clears the selected AEP snapshot when the Workspace switches and does not reread the old id', async () => {
+    const user = userEvent.setup();
+    const workspaceB = { ...WORKSPACE, id: 'ws2', name: 'Second workspace' };
+    const listAgentEnvironmentPackageSnapshots = vi.fn().mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        items: workspaceId === WORKSPACE.id ? [AEP_SNAPSHOT_LIST_ITEM] : [],
+      })
+    );
+    const getAgentEnvironmentPackageSnapshot = vi.fn().mockResolvedValue(AEP_SNAPSHOT_DETAIL);
+    const client = makeClient({
+      core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE, workspaceB] }) },
+      app: { listAgentEnvironmentPackageSnapshots, getAgentEnvironmentPackageSnapshot },
+    });
+    renderApp('/settings/debug', client);
+
+    const snapshotButton = await screen.findByRole('button', { name: 'aepsnap_1' });
+    await user.click(snapshotButton);
+    await waitFor(() =>
+      expect(getAgentEnvironmentPackageSnapshot).toHaveBeenCalledWith(WORKSPACE.id, 'aepsnap_1')
+    );
+
+    act(() => useWorkspaceStore.setState({ currentWorkspaceId: workspaceB.id }));
+
+    await waitFor(() =>
+      expect(listAgentEnvironmentPackageSnapshots).toHaveBeenCalledWith(workspaceB.id)
+    );
+    expect(getAgentEnvironmentPackageSnapshot).not.toHaveBeenCalledWith(workspaceB.id, 'aepsnap_1');
+    expect(getAgentEnvironmentPackageSnapshot.mock.calls).toEqual([[WORKSPACE.id, 'aepsnap_1']]);
+    expect(screen.queryByRole('button', { name: 'aepsnap_1' })).not.toBeInTheDocument();
+    expect(screen.queryByText('coder', { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText('aepkg_1', { exact: true })).not.toBeInTheDocument();
   });
 });
 

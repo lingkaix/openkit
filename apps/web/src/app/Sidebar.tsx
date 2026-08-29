@@ -31,13 +31,15 @@ function NavSection({
   heading,
   pathname,
   go,
+  workspaceKind,
 }: {
   group: NavGroup;
   heading?: string;
   pathname: string;
   go: (path: string) => void;
+  workspaceKind?: string;
 }) {
-  const items = surfacesInGroup(group);
+  const items = surfacesInGroup(group, workspaceKind);
   if (items.length === 0) return null;
   return (
     <div className="flex flex-col gap-0.5">
@@ -100,7 +102,13 @@ export function Sidebar() {
             onPress={() => go('/workspaces/new')}
           />
           {workspace ? (
-            <NavSection group="workspace" heading={workspace.name} pathname={pathname} go={go} />
+            <NavSection
+              group="workspace"
+              heading={workspace.name}
+              pathname={pathname}
+              go={go}
+              workspaceKind={workspace.kind}
+            />
           ) : null}
           <div className="mt-auto border-t border-separator pt-2">
             <NavRow icon="settings" label="Settings" onPress={() => go('/settings')} />

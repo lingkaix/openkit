@@ -36,6 +36,8 @@ export interface Surface {
   board: string;
   /** Work package that builds the real screen. */
   wp: string;
+  /** Workspace kinds that must not see this destination; omitted means every kind. */
+  excludeWorkspaceKinds?: readonly string[];
 }
 
 export const SURFACES: Surface[] = [
@@ -71,6 +73,16 @@ export const SURFACES: Surface[] = [
     wp: 'WP-6',
   },
   {
+    id: 'artifacts',
+    title: 'Artifacts',
+    path: '/artifacts',
+    tier: 'A',
+    nav: 'primary',
+    icon: 'file',
+    board: '12',
+    wp: 'WP-5',
+  },
+  {
     id: 'agents',
     title: 'Agents',
     path: '/agents',
@@ -88,6 +100,37 @@ export const SURFACES: Surface[] = [
     nav: 'workspace',
     icon: 'repository',
     board: '19',
+    wp: 'WP-7',
+  },
+  {
+    id: 'workspace-changes',
+    title: 'Workspace changes',
+    path: '/workspace-changes',
+    tier: 'A',
+    nav: 'workspace',
+    icon: 'file',
+    board: '07',
+    wp: 'WP-7',
+    excludeWorkspaceKinds: ['quick-chat'],
+  },
+  {
+    id: 'portability',
+    title: 'Portability',
+    path: '/portability',
+    tier: 'A',
+    nav: 'primary',
+    icon: 'folder',
+    board: '07',
+    wp: 'WP-7',
+  },
+  {
+    id: 'recovery',
+    title: 'Recovery',
+    path: '/recovery',
+    tier: 'A',
+    nav: 'workspace',
+    icon: 'retry',
+    board: '07',
     wp: 'WP-7',
   },
   // Tier A — reached in-context (route-only)
@@ -269,6 +312,16 @@ export function surfaceById(id: string): Surface | undefined {
 }
 
 /** Surfaces in a given sidebar group, in declaration order. */
-export function surfacesInGroup(group: NavGroup): Surface[] {
-  return SURFACES.filter((s) => s.nav === group);
+export function surfacesInGroup(group: NavGroup, workspaceKind?: string): Surface[] {
+  return SURFACES.filter((s) => {
+    if (s.nav !== group) return false;
+    if (
+      workspaceKind &&
+      s.excludeWorkspaceKinds &&
+      s.excludeWorkspaceKinds.includes(workspaceKind)
+    ) {
+      return false;
+    }
+    return true;
+  });
 }

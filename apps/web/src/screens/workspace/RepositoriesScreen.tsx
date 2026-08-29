@@ -23,6 +23,7 @@ import {
   useExecuteGitPush,
   useRepositoryProjection,
   useRequestGitPushApproval,
+  useSetDefaultRepository,
   useWorkspaces,
 } from './data';
 
@@ -62,6 +63,7 @@ export function RepositoriesScreen() {
   const repositories = useRepositoryProjection(currentWorkspaceId);
   const request = useRequestGitPushApproval();
   const execute = useExecuteGitPush();
+  const setDefault = useSetDefaultRepository();
   const { checking, failed: disconnected } = useConnection();
   const [resourceSelection, setResourceSelection] = useState<string | null>(null);
   const [threadId, setThreadId] = useState('');
@@ -69,6 +71,8 @@ export function RepositoriesScreen() {
   const [sourceRef, setSourceRef] = useState('');
   const [targetBranch, setTargetBranch] = useState('');
   const [commitIds, setCommitIds] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [localPath, setLocalPath] = useState('');
   const [approvalCommand, setApprovalCommand] = useState<GitPushApprovalCommand | null>(null);
   const approval = request.data ?? null;
   const authoritativeRecord = execute.data ?? null;
@@ -190,6 +194,31 @@ export function RepositoriesScreen() {
               ? 'Recovery required'
               : null;
   const writeBlocked = checking || disconnected || repositories.isFetching;
+  const defaultReady = Boolean(displayName.trim() && localPath.trim());
+  const failedDefaultCommand = setDefault.isError ? setDefault.variables : undefined;
+  const canSetDefaultRepository = workspace.kind !== 'quick-chat';
+
+  /** Sets the default repository from one frozen command, or the current bounded fields. */
+  async function setDefaultRepository(command?: {
+    workspaceId: string;
+    input: { displayName: string; localPath: string };
+  }) {
+    const next =
+      command ??
+      (defaultReady
+        ? {
+            workspaceId,
+            input: { displayName: displayName.trim(), localPath: localPath.trim() },
+          }
+        : undefined);
+    if (!next || writeBlocked || setDefault.isPending) return;
+    try {
+      await setDefault.mutateAsync(next);
+      await repositories.refetch();
+    } catch {
+      // TanStack Query retains the typed error for an explicit retry.
+    }
+  }
 
   /** Starts one fresh approval request from the exact visible target fields. */
   async function requestApproval() {
@@ -264,6 +293,47 @@ export function RepositoriesScreen() {
   return (
     <Page>
       <RepositoriesHeader workspaceName={workspace.name} stale={disconnected} />
+
+      {canSetDefaultRepository ? (
+        <section className="flex flex-col gap-3" aria-labelledby="default-repository">
+          <Eyebrow>
+            <span id="default-repository">Default repository</span>
+          </Eyebrow>
+          <Card className="flex flex-col gap-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TextField
+                label="Display name"
+                value={displayName}
+                isDisabled={writeBlocked || setDefault.isPending}
+                onChange={setDisplayName}
+              />
+              <TextField
+                label="Local path"
+                value={localPath}
+                isDisabled={writeBlocked || setDefault.isPending}
+                onChange={setLocalPath}
+              />
+            </div>
+            {failedDefaultCommand && failedDefaultCommand.workspaceId === workspaceId ? (
+              <fieldset disabled={writeBlocked || setDefault.isPending} className="contents">
+                <ErrorBanner
+                  message="Couldn't set the default repository."
+                  onRetry={() => void setDefaultRepository(failedDefaultCommand)}
+                />
+              </fieldset>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                isDisabled={writeBlocked || setDefault.isPending || !defaultReady}
+                onPress={() => void setDefaultRepository()}
+              >
+                Set default
+              </Button>
+            </div>
+          </Card>
+        </section>
+      ) : null}
 
       <section className="flex flex-col gap-3" aria-labelledby="linked-repositories">
         <Eyebrow>

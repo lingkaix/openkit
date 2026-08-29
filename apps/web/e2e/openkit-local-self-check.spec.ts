@@ -13,7 +13,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Verifies the fixed local Workspace, Thread, and secret-safe diagnostics browser path.
+ * Verifies the fixed local Workspace, Thread, and secret-safe Debug inspection path.
  *
  * Contract: docs/specs/20260529-test_strategy.md
  */
@@ -40,7 +40,9 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
   await expect(page.getByLabel('Display name')).toHaveValue('Story Workspace');
-  await expect(page.getByRole('heading', { name: /^Diagnostics$/ })).toBeVisible();
+  await page.getByRole('button', { name: /^Debug$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Runtime evidence' })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('sk-openkit');
 });
 

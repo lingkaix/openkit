@@ -75,7 +75,12 @@ export async function startIsolatedWebStack(
         join(dataRoot, 'config', 'server.jsonc'),
         JSON.stringify({
           schemaVersion: 1,
-          server: { cors: { origins: [webUrl] }, publicBaseUrl: coreUrl },
+          mode: 'server',
+          server: {
+            bind: { host: '127.0.0.1', port: corePort },
+            cors: { origins: [webUrl] },
+            publicBaseUrl: coreUrl,
+          },
         })
       );
     }

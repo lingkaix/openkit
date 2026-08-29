@@ -1,14 +1,18 @@
 import type { ReactNode } from 'react';
 import { Route, Routes } from 'react-router-dom';
-import { EmptyState, Gallery, Page, PageHeader } from '../primitives';
+import { EmptyState, Page, PageHeader } from '../primitives';
 import { AccountBoundary, AccountScreen } from '../screens/account';
+import { ArtifactsScreen } from '../screens/artifacts';
 import { ChatStarter, ThreadScreen } from '../screens/chat';
 import { AutomationsScreen, ChannelsScreen } from '../screens/demos';
 import { GenerativeScreen } from '../screens/generative';
 import { ArtifactReviewScreen, GoalScreen } from '../screens/goal';
 import { MaterialScreen } from '../screens/material';
+import { RecoveryScreen } from '../screens/operations';
+import { PortabilityScreen } from '../screens/portability';
 import {
   AiInterfaceScreen,
+  DebugScreen,
   GeneralSettingsScreen,
   UsageScreen,
   VaultScreen,
@@ -21,24 +25,11 @@ import {
   OverviewScreen,
   RepositoriesScreen,
 } from '../screens/workspace';
+import { WorkspaceChangesScreen } from '../screens/workspace-sync';
 import { AppShell } from './AppShell';
 import { isSurfaceLive } from './flags';
 import { SURFACES, type Surface } from './surfaces';
 import { ThemePicker } from './ThemePicker';
-
-/** Settings home for developer-facing component and inspection tools. */
-function DebugScreen() {
-  return (
-    <Page>
-      <PageHeader
-        eyebrow="Developer tools"
-        title="Debug"
-        subtitle="Component catalog and inspection tools."
-      />
-      <Gallery />
-    </Page>
-  );
-}
 
 function NotFound() {
   return (
@@ -73,10 +64,14 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   overview: <OverviewScreen />,
   agents: <AgentsScreen />,
   knowledge: <KnowledgeScreen />,
+  artifacts: <ArtifactsScreen />,
   'first-run': <FirstRunScreen />,
   'new-workspace': <NewWorkspaceScreen />,
   automations: <AutomationsScreen />,
   repositories: <RepositoriesScreen />,
+  'workspace-changes': <WorkspaceChangesScreen />,
+  portability: <PortabilityScreen />,
+  recovery: <RecoveryScreen />,
   channels: <ChannelsScreen />,
   vault: <VaultScreen />,
   usage: <UsageScreen />,
