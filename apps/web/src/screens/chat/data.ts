@@ -33,6 +33,17 @@ export const chatKeys = {
   interruptMutation: ['thread-lifecycle', 'interrupt'] as const,
 };
 
+/**
+ * Builds a Chat deep link that retains the Thread's owning Workspace.
+ *
+ * @param workspaceId Workspace that owns the Thread.
+ * @param threadId Thread to open.
+ * @returns Chat route carrying the complete owner tuple.
+ */
+export function chatThreadPath(workspaceId: string, threadId: string): string {
+  return `/chat/${encodeURIComponent(threadId)}?workspaceId=${encodeURIComponent(workspaceId)}`;
+}
+
 /** List the workspaces the user can act in. */
 export function useWorkspaces() {
   const client = useCoreClient();
@@ -43,14 +54,18 @@ export function useWorkspaces() {
 }
 
 /**
- * Returns the current Workspace selection when authorized, otherwise Quick Chat,
- * the first authorized Workspace, or null when discovery is unresolved or empty.
+ * Returns the route Workspace when authorized, otherwise the current selection,
+ * Quick Chat, the first authorized Workspace, or null when discovery is unresolved or empty.
+ *
+ * @param preferredWorkspaceId Workspace identity carried by the current route, when present.
+ * @returns Authorized Workspace identity, or null before discovery resolves or when none exists.
  */
-export function useCurrentWorkspaceId(): string | null {
+export function useCurrentWorkspaceId(preferredWorkspaceId?: string | null): string | null {
   const selected = useWorkspaceStore((s) => s.currentWorkspaceId);
   const workspaces = useWorkspaces();
   if (!workspaces.isSuccess) return null;
   return (
+    workspaces.data.find((workspace) => workspace.id === preferredWorkspaceId)?.id ??
     workspaces.data.find((workspace) => workspace.id === selected)?.id ??
     workspaces.data.find((workspace) => workspace.kind === 'quick-chat')?.id ??
     workspaces.data[0]?.id ??

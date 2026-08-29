@@ -253,6 +253,16 @@ export const SURFACES: Surface[] = [
     wp: 'WP-3',
   },
   {
+    id: 'configuration',
+    title: 'Configuration',
+    path: '/settings/configuration',
+    tier: 'A',
+    nav: 'settings',
+    icon: 'file',
+    board: '10',
+    wp: 'WP-7',
+  },
+  {
     id: 'ai-interface',
     title: 'AI interface',
     path: '/settings/ai-interface',

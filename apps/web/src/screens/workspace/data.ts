@@ -7,7 +7,7 @@ import {
 } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
-import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
+import { chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 
 /**
  * Workspace / Overview data hooks (WP-6). Action Center, Agents, Knowledge, and
@@ -28,7 +28,7 @@ export const workspaceKeys = {
 };
 
 /** Re-export workspace selection for Overview / Agents / Knowledge / First-run. */
-export { useCurrentWorkspaceId, useWorkspaces };
+export { chatThreadPath, useCurrentWorkspaceId, useWorkspaces };
 
 /** Human attention row from `actionCenter.listHumanAttention`. */
 export type AttentionRow = Awaited<
@@ -629,10 +629,10 @@ export function openHrefForRow(row: AttentionRow): string | null {
     return threadId ? `/goals/${threadId}` : null;
   }
   if (row.threadId) {
-    return `/chat/${row.threadId}`;
+    return chatThreadPath(row.workspaceId, row.threadId);
   }
   if ('threadId' in row.source && typeof row.source.threadId === 'string') {
-    return `/chat/${row.source.threadId}`;
+    return chatThreadPath(row.workspaceId, row.source.threadId);
   }
   return null;
 }

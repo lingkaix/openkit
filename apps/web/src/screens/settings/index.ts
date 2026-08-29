@@ -3,6 +3,7 @@
  * Appearance remains the ThemePicker mounted at `/settings/appearance`.
  */
 export { AiInterfaceScreen } from './AiInterfaceScreen';
+export { ConfigurationScreen } from './ConfigurationScreen';
 export { DebugScreen } from './DebugScreen';
 export {
   projectAepSnapshotDetail,

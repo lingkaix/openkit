@@ -19,6 +19,7 @@
     "@openkit/core-client": "workspace:*",
     "@openkit/protocol": "workspace:*",
     "@tanstack/react-query": "^5.101.3",
+    "jsonc-parser": "^3.3.1",
     "react": "^19.2.7",
     "react-aria-components": "^1.19.0",
     "react-dom": "^19.2.7",

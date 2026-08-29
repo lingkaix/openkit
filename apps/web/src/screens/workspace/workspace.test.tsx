@@ -1243,7 +1243,10 @@ describe('Overview / Action Center (board 07)', () => {
     });
     renderApp('/', client);
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open thread' })).toHaveAttribute('href', '/chat/th2');
+    expect(screen.getByRole('link', { name: 'Open thread' })).toHaveAttribute(
+      'href',
+      '/chat/th2?workspaceId=ws1'
+    );
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 

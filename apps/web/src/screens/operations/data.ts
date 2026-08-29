@@ -1,7 +1,7 @@
 import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
-import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
+import { chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import { projectSafeValue } from '../settings/secret-safe';
 
 /** Stable TanStack Query keys for recovery reads and shell search. */
@@ -143,7 +143,7 @@ export function authorizedWorkspaceId(
 export function pathForSearchHit(hit: AppSearchHit): string {
   switch (hit.kind) {
     case 'thread':
-      return `/chat/${hit.id}`;
+      return hit.workspaceId ? chatThreadPath(hit.workspaceId, hit.id) : `/chat/${hit.id}`;
     case 'workspace':
       return '/';
     case 'knowledge':
@@ -151,7 +151,11 @@ export function pathForSearchHit(hit: AppSearchHit): string {
     case 'artifact':
       return '/artifacts';
     case 'item':
-      return hit.threadId ? `/chat/${hit.threadId}` : '/chat';
+      return hit.threadId && hit.workspaceId
+        ? chatThreadPath(hit.workspaceId, hit.threadId)
+        : hit.threadId
+          ? `/chat/${hit.threadId}`
+          : '/chat';
   }
 }
 

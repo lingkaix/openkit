@@ -12,6 +12,7 @@ import { RecoveryScreen } from '../screens/operations';
 import { PortabilityScreen } from '../screens/portability';
 import {
   AiInterfaceScreen,
+  ConfigurationScreen,
   DebugScreen,
   GeneralSettingsScreen,
   UsageScreen,
@@ -53,6 +54,7 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   debug: <DebugScreen />,
   account: <AccountScreen />,
   appearance: <ThemePicker />,
+  configuration: <ConfigurationScreen />,
   settings: <GeneralSettingsScreen />,
   'ai-interface': <AiInterfaceScreen />,
   chat: <ChatStarter />,

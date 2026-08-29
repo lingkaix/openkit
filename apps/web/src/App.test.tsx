@@ -1,4 +1,4 @@
-import type { CoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -33,6 +33,13 @@ function makeClient(
     core: {
       meta: metaOk ? vi.fn().mockResolvedValue({}) : vi.fn().mockRejectedValue(new Error('down')),
       listWorkspaces: vi.fn().mockResolvedValue({ items: workspaces }),
+    },
+    runtimeConfig: {
+      listFiles: vi.fn().mockRejectedValue(
+        new ApiCallError(403, 'deployment admin required', {
+          code: 'runtime_config_admin_forbidden',
+        })
+      ),
     },
   } as unknown as CoreClient;
 }
@@ -130,6 +137,14 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Debug' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Debug' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Approve plan' })).toBeInTheDocument();
+  });
+
+  it('mounts the deployment configuration editor under Settings with an admin gate', async () => {
+    await renderAt('/settings/configuration');
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Configuration' })).toBeInTheDocument();
+    expect(await screen.findByLabelText('Server admin token')).toBeInTheDocument();
   });
 
   it('does not retain the old /components route', async () => {

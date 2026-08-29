@@ -10,7 +10,7 @@ import {
   Skeleton,
   StatusChip,
 } from '../../primitives';
-import { useCreateThread, useCurrentWorkspaceId, useThreads } from './data';
+import { chatThreadPath, useCreateThread, useCurrentWorkspaceId, useThreads } from './data';
 import { WorkspaceSelect } from './WorkspaceSelect';
 
 /**
@@ -31,7 +31,8 @@ export function ChatStarter() {
   const createOwner = create.variables?.workspaceId === workspaceId;
 
   useEffect(() => {
-    if (createOwner && create.data) navigate(`/chat/${create.data.id}`);
+    if (createOwner && create.data)
+      navigate(chatThreadPath(create.data.workspaceId, create.data.id));
   }, [create.data, createOwner, navigate]);
 
   /**
@@ -89,7 +90,7 @@ export function ChatStarter() {
             <ListRow key={thread.id}>
               <button
                 type="button"
-                onClick={() => navigate(`/chat/${thread.id}`)}
+                onClick={() => navigate(chatThreadPath(thread.workspaceId, thread.id))}
                 className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
               >
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">

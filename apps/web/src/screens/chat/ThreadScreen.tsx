@@ -1,6 +1,6 @@
 import { useMutationState } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   ArtifactRow,
@@ -76,8 +76,9 @@ export interface ThreadScreenProps {
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
   const { threadId = '' } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const workspaceId = useCurrentWorkspaceId();
+  const workspaceId = useCurrentWorkspaceId(searchParams.get('workspaceId'));
   const thread = useThread(workspaceId, threadId);
   const items = useThreadItems(workspaceId, threadId);
   const dashboard = useThreadDashboard(workspaceId, threadId);

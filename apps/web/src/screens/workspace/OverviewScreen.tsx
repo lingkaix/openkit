@@ -16,6 +16,7 @@ import {
 import {
   type AttentionRow,
   canDecideInline,
+  chatThreadPath,
   openHrefForRow,
   useCurrentWorkspaceId,
   useDecideAttention,
@@ -104,7 +105,7 @@ export function OverviewScreen() {
                 <p className="mt-2 text-sm font-bold text-fg-strong">{work.title}</p>
                 {work.summary ? <p className="mt-1 text-xs text-fg-muted">{work.summary}</p> : null}
                 <Link
-                  to={`/chat/${work.threadId}`}
+                  to={workspaceId ? chatThreadPath(workspaceId, work.threadId) : '/chat'}
                   className="mt-3 inline-flex text-xs font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
                 >
                   Open

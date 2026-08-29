@@ -21,6 +21,7 @@ The superseded Web UI slice specs are retained as historical reference only. The
 - The requirement that a callable included operation whose owning capability is not release-ready stays unpublished and names an existing Roadmap owner.
 - The release-coupled Web account gate over the existing protected authorized-Workspace read, and the account-level **My invitations** projection over the existing sharing client.
 - The release-coupled selected-Workspace **Repositories** projection, including its approval-response state boundary, consumed-record suppression, authoritative post-execution settlement, and Workspace navigation placement.
+- The bounded deployment-admin **Configuration** projection over the existing runtime-config file, validation, revision, and reload contracts.
 - The current implementation projection of the Web app.
 - The status of older Web UI slice specs as historical reference.
 
@@ -34,7 +35,7 @@ The superseded Web UI slice specs are retained as historical reference only. The
 - Detailed Web UI interaction design, component architecture, copy, route structure, or visual design beyond the bounded Repositories placement defined below.
 - Authentication, session, user, Workspace membership, invitation, authorization, or App API lifecycle and error semantics. Those remain owned by the identity, NanoCore config and identity, multi-user Workspace, permission, and Core Client contracts.
 - Release readiness gates.
-- The separate deployment-admin Web surface owned by roadmap R048.
+- The broader deployment-admin Web surface for health, Telemetry, server Audit, Policy decisions, secrets, providers, backup, and recovery owned by roadmap R048.
 
 ## Core References
 
@@ -56,6 +57,7 @@ The superseded Web UI slice specs are retained as historical reference only. The
 - Preserve useful historical UI details without keeping old slice specs active.
 - Keep Web features traceable to App API, protocol, core docs, or active specs.
 - Avoid UI-only concepts that bypass item-backed work history, Action Center, review, audit, or evidence records.
+- Give deployment administrators direct visibility and a controlled manual escape hatch over authored runtime configuration while future Agent management uses the same NanoCore contract.
 
 ## Non-goals
 
@@ -66,6 +68,7 @@ The superseded Web UI slice specs are retained as historical reference only. The
 - Do not add a generic API console, operation-id catalog, or one published route per operation.
 - Do not present a callable-but-not-release-ready capability as a working product feature.
 - Do not fold deployment-admin, bootstrap, Gateway-actor, or Worker-private operations into the ordinary-user Web surface.
+- Do not persist a server-admin bearer credential in browser storage or treat a valid Better Auth session as deployment-admin authority.
 
 ## Background
 
@@ -77,7 +80,7 @@ Web is the product projection for every currently supported canonical-user or Wo
 
 One product workflow MAY project several operations. Web MUST consume existing Core and App API contracts through `@openkit/core-client` and MUST NOT invent runtime, Policy, Knowledge, Workspace Sync, portability, scheduling, or recovery semantics.
 
-The four `listAutomations`, `createAutomation`, `updateAutomation`, and `deleteAutomation` operations remain unpublished. The current in-memory definition store is not a truthful recurring-workflow product, and roadmap R092 owns the real capability. `draftKnowledgeProposal` and `reverseKnowledgeProposal` also remain unpublished under R070 and R072 because ordinary-user reads cannot recover their exact candidate, accepted-review, and applied-page lineage after refresh or restart. Roadmap R048 continues to own a separate deployment-admin Web surface.
+The four `listAutomations`, `createAutomation`, `updateAutomation`, and `deleteAutomation` operations remain unpublished. The current in-memory definition store is not a truthful recurring-workflow product, and roadmap R092 owns the real capability. `draftKnowledgeProposal` and `reverseKnowledgeProposal` also remain unpublished under R070 and R072 because ordinary-user reads cannot recover their exact candidate, accepted-review, and applied-page lineage after refresh or restart. The bounded Configuration editor implements only the runtime-config slice of R048; that roadmap item continues to own the broader deployment-admin Web surface.
 
 ## Contract / Expected Behavior
 
@@ -127,7 +130,15 @@ A `roadmap` disposition MUST name an existing item in `docs/roadmap.md`. Web MUS
 
 A callable included operation whose owning capability is not release-ready MUST NOT be presented as a working feature. Its exact gap remains unpublished. Automations stay unpublished while they only persist in-memory definitions and do not operate recurring work; R092 remains the owner. Knowledge proposal drafting and reversal stay unpublished until ordinary-user reads can recover the exact candidate and accepted application lineage after restart; R070 and R072 remain their owners. Channels and Generative UI remain unpublished internal review shells because they have no included catalog operations to project.
 
-No published ordinary-user route MAY call a server-scoped API or require a deployment-admin token. General Settings MUST NOT call deployment diagnostics or runtime-config routes. Provider-subscription administration remains off the ordinary-user surface under R048.
+No published ordinary-user route MAY call a server-scoped API or require a deployment-admin token. General Settings MUST NOT call deployment diagnostics or runtime-config routes. The distinct `/settings/configuration` deployment-admin route MAY call only `client.runtimeConfig` and MUST first use the current client so local mode remains credential-free; after a typed `401` or `403`, it MAY accept one explicit `server-admin` bearer token for the lifetime of the mounted page. That token MUST remain only in the Core Client transport held in React component memory and MUST NOT enter TanStack Query keys or data, Zustand, browser storage, routes, logs, rendered values, diagnostics, or error copy. Provider-subscription administration remains off the ordinary-user surface under R048.
+
+### Deployment Configuration Projection
+
+The published Tier-A **Configuration** screen is a separately authorized deployment-admin workflow inside the Settings shell. It lists the existing runtime-config documents as one relative-path tree, reads one exact JSONC source at a time, preserves comments and formatting while editing, validates the complete draft through `client.runtimeConfig.validate`, and writes the complete source through `client.runtimeConfig.updateFile` with the exact last-read revision. A conflict keeps the local draft and requires an explicit reload; Web MUST NOT overwrite, merge, or claim success.
+
+Saving changes only the authored file. Applying saved configuration is a separate explicit `client.runtimeConfig.reload({ mode: "safe" })` action, and Web projects the returned applied, deferred, restart-required, rejected, warning, and runtime-version truth without inventing hot-reload success. The screen does not expose arbitrary filesystem paths, create unsupported file kinds, or bypass the NanoCore file allowlist and schema boundary.
+
+The tree contains exactly the existing files NanoCore returns: server, Provider, Agent, Workspace, and data-source documents. Policy-bearing settings remain visible in their current owning documents. Web MUST NOT fabricate a standalone Policy file until an accepted Policy owner gives that file a current runtime consumer, schema, lifecycle, and enforcement semantics. Future Agent-authored configuration uses the same runtime-config routes rather than a hidden parallel management path.
 
 ### Observable acceptance
 
@@ -135,7 +146,7 @@ Acceptance of this completeness contract requires all of the following:
 
 - A committed coverage check accounts for every included catalog operation and fails when an operation is added, removed, or reclassified without exactly one valid Web disposition, or when a `live` or `workflow` disposition names a surface that is not currently Tier A.
 - Every `live` or `workflow` operation has a reachable, accessible published projection with truthful loading, empty, denied, failure, stale, success, and retry behavior where that operation can produce those states. Focused UI tests plus independent review of the actual diff decide that reachable truthful behavior. The guard is necessary inventory and admission evidence and is not that behavior verdict.
-- No published ordinary-user route calls a server-scoped API or requires a deployment-admin token.
+- No published ordinary-user route calls a server-scoped API or requires a deployment-admin token; the separately gated Configuration route is excluded from the ordinary-user operation inventory and calls only the accepted runtime-config admin client.
 - Every `roadmap` disposition names an existing Roadmap item. Automations name R092, Knowledge proposal drafting names R070, and Knowledge proposal reversal names R072. Server-scoped operations are excluded rather than given ordinary-user dispositions, and R048 remains their Web owner.
 - Current Implementation Projection MUST NOT claim a missing UI is implemented.
 
@@ -193,6 +204,7 @@ The current Web implementation is a React and Vite SPA whose route catalog, app 
 - The live Tier-A board-19 **Repositories** screen currently projects selected-Workspace repository resources, diagnostics, default-repository setup, durable push records, and the existing approval-gated Git push workflow through `client.repositories`. Its consumed-record tuple and authoritative settlement behavior are implemented; navigation places it exactly once under the validated Workspace's authoritative name, and TanStack mutation data is the sole server-state owner for the current approval response.
 - The live Tier-A board-17 **Usage & audit** screen currently projects selected-Workspace `client.app.getCapabilityUsage()`, `client.app.listWorkspaceAuditEvents()`, and `client.app.listWorkspacePermissionDecisions()`. Settings Debug projects Workspace evidence-bundle and runtime-evidence reads plus Agent Environment Package snapshots. Neither surface calls or projects `client.app.listServerAuditEvents()`; deployment-admin server audit remains excluded under R048.
 - The current ordinary Workspace Vault screen reads references, grants, injection plans, injection receipts, and use records for the selected Workspace. Project-Workspace rebind is projected by Portability with ephemeral credential handling and independent confirmation. Neither surface requests or projects deployment-admin backend status.
+- The live Tier-A Configuration screen projects the existing runtime-config file tree, exact JSONC read and edit, server validation diagnostics, optimistic revision save, and explicit safe reload. Local mode uses its implicit authority; server mode accepts a `server-admin` token only after the current Better Auth session is denied and keeps that credential only in mounted component memory.
 - The disposition guard accounts for all 139 included operations. The four Automation CRUD operations remain unpublished under R092 because the current backend does not execute recurring work. `draftKnowledgeProposal` and `reverseKnowledgeProposal` remain unpublished under R070 and R072 because the ordinary-user API cannot reread the exact candidate or reversal authority after restart. No other included operation remains roadmap-only.
 - Action Center currently lists unified attention rows and inline-decides only approval grant or deny and Artifact Review accept or request-refinement. Other row kinds that the read model already returns are not claimed as fully executable from Overview.
 - Focused Vitest coverage and the L4 Playwright entrypoint exercise the Web package. Real-worker and restart proofs remain at their owning process boundaries and do not imply browser coverage.
@@ -201,7 +213,7 @@ The current Web implementation is a React and Vite SPA whose route catalog, app 
 
 ## Alternatives Considered
 
-A raw API console or operation-id catalog was rejected because it would make Web a second route browser rather than a product projection. One published page per operation was rejected for the same reason. Leaving the previous "exactly these reads" ceilings as accepted scope was rejected because those ceilings contradicted ordinary-user completeness. Publishing Automations from the current in-memory definition store was rejected as a false recurring-workflow product; R092 remains the owner. Folding deployment-admin APIs into ordinary settings was rejected; R048 remains the owner.
+A raw API console or operation-id catalog was rejected because it would make Web a second route browser rather than a product projection. One published page per operation was rejected for the same reason. Leaving the previous "exactly these reads" ceilings as accepted scope was rejected because those ceilings contradicted ordinary-user completeness. Publishing Automations from the current in-memory definition store was rejected as a false recurring-workflow product; R092 remains the owner. Treating an ordinary Better Auth session as deployment-admin authority was rejected; the bounded Configuration screen remains an explicitly credentialed admin workflow, and R048 retains the broader administration outcome.
 
 ## Consequences
 
@@ -212,7 +224,7 @@ The coverage check, not this document's prose, is the per-operation inventory an
 - The committed disposition guard MUST enumerate the included 139-operation set from `PUBLIC_OPERATION_ACCESS` after excluding server scope and Gateway-actor keys, and MUST fail on a missing disposition, a duplicate disposition, a disposition outside the closed `live` / `workflow` / `roadmap` shape, or a `live` or `workflow` disposition whose named surface is not currently Tier A.
 - Adding a new in-scope catalog operation without a Web disposition MUST fail that guard before the corresponding UI slice is accepted.
 - Focused Web tests plus independent review of the actual diff MUST decide whether each `live` or `workflow` claim is reachable and truthful, including loading, empty, denied, failure, stale, success, and retry states that the workflow can actually produce, using Core Client calls rather than invented oracles. The guard MUST NOT be treated as that behavior verdict.
-- Package checks MUST show that no published ordinary-user route calls a server-scoped API or requires a deployment-admin token.
+- Package checks MUST show that no published ordinary-user route calls a server-scoped API or requires a deployment-admin token, and focused Configuration checks MUST prove its distinct denied credential gate, in-memory-only token handling, file-tree read, validation, revision-protected save, and explicit safe reload.
 - Automations MUST remain unpublished in routing and navigation while R092 owns the real capability.
 - This specification's Current Implementation Projection MUST remain reconcilable with the actual Web diff, including the six deliberately unpublished roadmap operations.
 
@@ -226,14 +238,14 @@ The coverage check, not this document's prose, is the per-operation inventory an
 - Web and ordinary App API MUST NOT expose AgentSession identity, history, selection, creation, or restart; conversation behavior is continue Thread or create Thread.
 - New user-facing Web behavior that requires kernel semantics must first update the relevant protocol, NanoCore, core doc, or spec contract.
 - Automations stay unpublished under R092 until a truthful recurring-workflow product exists.
-- Deployment-admin Web remains a separate surface under R048.
+- Deployment-admin Web remains separately authorized; the Configuration slice is live and R048 retains the broader administration surface.
 
 ## Deferred / Future Work
 
 - Publish a roadmap disposition only after its owning capability becomes release-ready and the same guard, focused-test, and independent-review requirements are satisfied.
 - Refine navigation, including the collapsible Workspace and Thread tree owned as a workbench outcome by R044, without making route shape canonical.
 - Keep Automations unpublished until R092's recurring-workflow product exists.
-- Keep the R048 deployment-admin surface separate when that admin work is accepted.
+- Complete the remaining R048 deployment-admin workflows without widening the bounded Configuration route into an ordinary-user API console.
 - Mine superseded Web specs for useful interaction details during bounded design work for genuinely missing Web surfaces.
 - Work Resource Class 2 and Class 3, grounded annotation, and locator controls remain with `docs/specs/20260713-work_resource_interaction_model.md`.
 

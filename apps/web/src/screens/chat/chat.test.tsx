@@ -404,6 +404,9 @@ describe('chat starter (board 01)', () => {
     // Navigated into the thread screen (its index toggle is present).
     expect(await screen.findByRole('button', { name: /index/i })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith('ws1', 'th-new');
+    getThread.mockClear();
+    await act(async () => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    expect(getThread).not.toHaveBeenCalled();
   });
 
   it('opens a fresh Chat when the Workspace changes from a thread', async () => {
