@@ -17,7 +17,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 ## Boundaries
 
 - `fs-layout.ts` owns safe paths and accepted directory placement.
-- `db.ts` and `migrate.ts` own database opening, integrity validation, and committed migrations.
+- `db.ts` and `migrate.ts` own database opening, integrity validation, and the committed fresh-database setup.
 - Authoritative SQLite integrity failure stops boot and leaves the original database file unchanged; only derived indexes may rebuild automatically.
 - `workspace-file-records.ts` owns canonical workspace record serialization and boot loading.
 - `command-request-records.ts` owns scope-homed SQLite command idempotency; process-local duplicate collapse remains in `../runtime/idempotent-command.ts`.

@@ -53,7 +53,7 @@ describe('createDiagnosticsSnapshot', () => {
     expect(snapshot).toMatchObject({
       auth: { mode: 'local' },
       dataRoot: 'configured',
-      migrations: { applied: expect.arrayContaining(['core_0000_baseline']) },
+      migrations: { applied: ['core_0000_setup'] },
       mode: 'local',
       providers: [{ baseUrl: 'https://example.com/v1', id: 'provider' }],
       agents: [{ id: 'agent_self_check', readiness: 'ready', reasons: [] }],

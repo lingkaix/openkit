@@ -4,207 +4,69 @@ import { fileURLToPath } from 'node:url';
 import { BootConfigError } from '../config/mode.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 
-/**
- * One committed SQL migration file.
- */
-interface MigrationFile {
-  /** Stable migration id stored after success. */
-  id: string;
-  /** SQL file name under the drizzle directory. */
-  fileName: string;
-}
+const SETUP_FILE = '0000_setup.sql';
+const SETUP_ID = '0000_setup';
+const SETUP_SCOPE_MARKER = '-- openkit:scope ';
 
-const migrations: MigrationFile[] = [
-  { id: 'core_0000_baseline', fileName: '0000_core_baseline.sql' },
-  { id: 'core_0001_workspace_sharing', fileName: '0001_core_workspace_sharing.sql' },
-  { id: 'core_0002_scheduler_trigger_actor', fileName: '0002_core_scheduler_trigger_actor.sql' },
-  { id: 'core_0003_lifecycle_authority', fileName: '0003_core_lifecycle_authority.sql' },
-  {
-    id: 'core_0004_nanohost_transport_tokens',
-    fileName: '0004_core_nanohost_transport_tokens.sql',
-  },
-  {
-    id: 'core_0005_nanohost_runtime_target',
-    fileName: '0005_core_nanohost_runtime_target.sql',
-  },
-  {
-    id: 'core_0006_nanohost_harness_runtime',
-    fileName: '0006_core_nanohost_harness_runtime.sql',
-  },
-  {
-    id: 'core_0007_nanohost_capacity_authority',
-    fileName: '0007_core_nanohost_capacity_authority.sql',
-  },
-  {
-    id: 'core_0008_drop_session_snapshots',
-    fileName: '0008_core_drop_session_snapshots.sql',
-  },
-  {
-    id: 'core_0009_retire_workspace_readwrite',
-    fileName: '0009_core_retire_workspace_readwrite.sql',
-  },
-  {
-    id: 'core_0010_nanohost_last_fresh_ready',
-    fileName: '0010_core_nanohost_last_fresh_ready.sql',
-  },
-  {
-    id: 'core_0011_nanohost_sandbox_pinned_goal',
-    fileName: '0011_core_nanohost_sandbox_pinned_goal.sql',
-  },
-];
-
-const workspaceMigrations: MigrationFile[] = [
-  { id: '0000_baseline', fileName: '0000_workspace_baseline.sql' },
-  {
-    id: '0001_goal_review_resolution_snapshot',
-    fileName: '0001_workspace_goal_review_resolution_snapshot.sql',
-  },
-  {
-    id: '0002_idempotency_requests',
-    fileName: '0001_user_0002_workspace_idempotency_requests.sql',
-  },
-  {
-    id: '0003_drop_sync_evidence_bundles',
-    fileName: '0003_workspace_drop_sync_evidence_bundles.sql',
-  },
-  {
-    id: '0004_capability_runtime_correlation',
-    fileName: '0004_workspace_capability_runtime_correlation.sql',
-  },
-  {
-    id: '0005_material_authority',
-    fileName: '0005_workspace_material_authority.sql',
-  },
-  {
-    id: '0006_goal_steering_authority',
-    fileName: '0006_workspace_goal_steering_authority.sql',
-  },
-  {
-    id: '0007_artifact_review_authority',
-    fileName: '0007_workspace_artifact_review_authority.sql',
-  },
-  {
-    id: '0008_shared_attribution',
-    fileName: '0008_workspace_shared_attribution.sql',
-  },
-  {
-    id: '0009_usage_responsible_user',
-    fileName: '0009_workspace_usage_responsible_user.sql',
-  },
-];
-
-const userMigrations: MigrationFile[] = [
-  { id: '0000_baseline', fileName: '0000_user_baseline.sql' },
-  {
-    id: '0001_idempotency_requests',
-    fileName: '0001_user_0002_workspace_idempotency_requests.sql',
-  },
-];
+type SetupDb = CoreDb | UserDb | WorkspaceDb;
 
 /**
- * Database handle that can read migration metadata.
- */
-interface MigrationReadableDb {
-  /** Raw SQLite connection. */
-  sqlite: CoreDb['sqlite'];
-}
-
-type ScopedDb = UserDb | WorkspaceDb;
-
-/**
- * Applies every pending committed migration to a Core database.
+ * Applies the current database setup to a Core database.
  *
  * @param coreDb Open Core database handles.
- * @throws BootConfigError when a migration file is missing or fails to apply.
+ * @throws BootConfigError when the setup file is missing or fails to apply.
  */
 export function applyMigrations(coreDb: CoreDb): void {
-  const tableLookup = coreDb.sqlite.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
-  );
-  const legacyVaultTables = ['injection_plans', 'injection_receipts'].filter((tableName) =>
-    tableLookup.get(tableName)
-  );
-
-  if (legacyVaultTables.length > 0) {
-    throw new BootConfigError(
-      'migration_failed',
-      `Unsupported legacy Vault tables in data root: ${legacyVaultTables.join(', ')}.`
-    );
-  }
-
-  const appliedIds = readAppliedMigrationIds(coreDb);
-
-  for (const migration of migrations) {
-    if (appliedIds.has(migration.id)) {
-      continue;
-    }
-
-    try {
-      coreDb.sqlite.transaction(() => {
-        coreDb.sqlite.exec(readMigrationSql(migration));
-        coreDb.sqlite
-          .prepare('INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)')
-          .run(migration.id, new Date().toISOString());
-      })();
-      appliedIds.add(migration.id);
-    } catch (error) {
-      throw new BootConfigError(
-        'migration_failed',
-        `Failed to apply migration ${migration.id}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
+  applyDatabaseSetup(coreDb);
 }
 
 /**
- * Applies pending migrations for one non-server scoped database.
+ * Applies the current database setup to one User or Workspace database.
  *
- * @param scopedDb Open user- or workspace-scope database handle.
- * @throws BootConfigError when a scoped migration file is missing or fails to apply.
+ * @param scopedDb Open User or Workspace database.
+ * @throws BootConfigError when the setup file is missing or fails to apply.
  */
-export function applyScopedMigrations(scopedDb: ScopedDb): void {
-  const appliedIds = readAppliedMigrationIds(scopedDb);
-
-  for (const migration of scopedMigrationsFor(scopedDb)) {
-    const migrationId = `${scopedDb.scope}_${migration.id}`;
-
-    if (appliedIds.has(migrationId)) {
-      continue;
-    }
-
-    try {
-      scopedDb.sqlite.exec(readMigrationSql(migration));
-      scopedDb.sqlite
-        .prepare('INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)')
-        .run(migrationId, new Date().toISOString());
-      appliedIds.add(migrationId);
-    } catch (error) {
-      throw new BootConfigError(
-        'migration_failed',
-        `Failed to apply migration ${migrationId}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
+export function applyScopedMigrations(scopedDb: UserDb | WorkspaceDb): void {
+  applyDatabaseSetup(scopedDb);
 }
 
 /**
- * Lists applied migration ids in stable order.
+ * Lists applied setup ids in stable order.
  *
  * @param coreDb Open Core database handles.
- * @returns Applied migration ids.
+ * @returns Applied setup ids.
  */
 export function listAppliedMigrationIds(coreDb: CoreDb): string[] {
-  return [...readAppliedMigrationIds(coreDb)].sort();
+  return [...readAppliedSetupIds(coreDb)].sort();
 }
 
-/**
- * Reads the set of migration ids already applied to the database.
- *
- * @param coreDb Open Core database handles.
- * @returns Applied migration ids.
- */
-function readAppliedMigrationIds(coreDb: MigrationReadableDb): Set<string> {
-  const table = coreDb.sqlite
+/** Applies the scope-specific section from the single committed setup file. */
+function applyDatabaseSetup(database: SetupDb): void {
+  const setupId = `${database.scope}_${SETUP_ID}`;
+  if (readAppliedSetupIds(database).has(setupId)) {
+    return;
+  }
+
+  const sql = readSetupSql(database.scope);
+
+  try {
+    database.sqlite.transaction(() => {
+      database.sqlite.exec(sql);
+      database.sqlite
+        .prepare('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)')
+        .run(setupId, new Date().toISOString());
+    })();
+  } catch (error) {
+    throw new BootConfigError(
+      'migration_failed',
+      `Failed to apply database setup ${setupId}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/** Reads applied setup ids from one database when its ledger exists. */
+function readAppliedSetupIds(database: SetupDb): Set<string> {
+  const table = database.sqlite
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('schema_migrations');
 
@@ -212,53 +74,42 @@ function readAppliedMigrationIds(coreDb: MigrationReadableDb): Set<string> {
     return new Set();
   }
 
-  const rows = coreDb.sqlite.prepare('SELECT id FROM schema_migrations').all() as Array<{
+  const rows = database.sqlite.prepare('SELECT id FROM schema_migrations').all() as Array<{
     id: string;
   }>;
 
   return new Set(rows.map((row) => row.id));
 }
 
-/**
- * Returns the ordered migration list for one scoped database.
- *
- * @param scopedDb Open scoped database handle.
- * @returns Scope-specific migrations.
- */
-function scopedMigrationsFor(scopedDb: ScopedDb): readonly MigrationFile[] {
-  return scopedDb.scope === 'workspace' ? workspaceMigrations : userMigrations;
-}
-
-/**
- * Reads one committed migration SQL file.
- *
- * @param migration Migration metadata.
- * @returns SQL text with Drizzle breakpoints removed.
- * @throws BootConfigError when the migration file cannot be found.
- */
-function readMigrationSql(migration: MigrationFile): string {
-  const path = findMigrationPath(migration.fileName);
+/** Reads one scope section from the single committed setup file. */
+function readSetupSql(scope: SetupDb['scope']): string {
+  const path = findSetupPath();
 
   if (!path) {
-    throw new BootConfigError('migration_missing', `Missing migration file ${migration.fileName}.`);
+    throw new BootConfigError('migration_missing', `Missing database setup file ${SETUP_FILE}.`);
   }
 
-  return readFileSync(path, 'utf8').replaceAll('--> statement-breakpoint', '');
+  const setup = readFileSync(path, 'utf8');
+  const marker = `${SETUP_SCOPE_MARKER}${scope}`;
+  const markerIndex = setup.indexOf(marker);
+
+  if (markerIndex < 0) {
+    throw new BootConfigError('migration_missing', `Missing ${scope} section in ${SETUP_FILE}.`);
+  }
+
+  const sectionStart = markerIndex + marker.length;
+  const nextSection = setup.indexOf(`\n${SETUP_SCOPE_MARKER}`, sectionStart);
+  return setup.slice(sectionStart, nextSection < 0 ? undefined : nextSection).trim();
 }
 
-/**
- * Finds a migration file from source, app, or built runtime paths.
- *
- * @param fileName Migration file name.
- * @returns Absolute path when found, otherwise undefined.
- */
-function findMigrationPath(fileName: string): string | undefined {
+/** Finds the database setup file from source, app, or built runtime paths. */
+function findSetupPath(): string | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    join(process.cwd(), 'apps', 'nanocore', 'drizzle', fileName),
-    join(process.cwd(), 'drizzle', fileName),
-    join(here, '..', '..', 'drizzle', fileName),
-    join(here, '..', 'drizzle', fileName),
+    join(process.cwd(), 'apps', 'nanocore', 'drizzle', SETUP_FILE),
+    join(process.cwd(), 'drizzle', SETUP_FILE),
+    join(here, '..', '..', 'drizzle', SETUP_FILE),
+    join(here, '..', 'drizzle', SETUP_FILE),
   ];
 
   return candidates.find((path) => existsSync(path));

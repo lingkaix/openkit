@@ -19,10 +19,11 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { verifyDataRootBackupManifest } from './data-root-backup.js';
 import { type CoreDb, openWorkspaceDbAtRoot } from './db.js';
 import { resolveDataRootPath } from './fs-layout.js';
-import { applyScopedMigrations } from './migrate.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import * as schema from './schema/index.js';
 import {
   migrateWorkspaceStorage,
@@ -121,20 +122,12 @@ function addRegisteredWorkspace(
 ): string {
   const workspaceRoot = createOwnerNestedWorkspaceRoot(fixture.dataRoot, ownerUserId, workspaceId);
 
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO workspace_registry (
-        workspace_id, owner_user_id, status, created_at, updated_at
-      ) VALUES (?, ?, 'active', ?, ?)`
-    )
-    .run(workspaceId, ownerUserId, timestamp, timestamp);
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO workspace_members (
-        workspace_id, user_id, status, created_at, updated_at
-      ) VALUES (?, ?, 'active', ?, ?)`
-    )
-    .run(workspaceId, ownerUserId, timestamp, timestamp);
+  recordWorkspaceOwnerMembership({
+    coreDb: fixture.coreDb,
+    now: new Date(timestamp),
+    ownerUserId,
+    workspaceId,
+  });
 
   return workspaceRoot;
 }
@@ -167,15 +160,13 @@ function createMigrationFixture(): MigrationFixture {
   );
 
   const sqlite = new Database(join(dataRoot, 'server', 'db', 'core.sqlite'));
-  sqlite.exec(readFileSync(join(process.cwd(), 'drizzle', '0000_core_baseline.sql'), 'utf8'));
-  sqlite
-    .prepare('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)')
-    .run('core_0000_baseline', timestamp);
   const coreDb: CoreDb = {
+    scope: 'core',
     sqlite,
     db: drizzle(sqlite, { schema }),
     dataRoot,
   };
+  applyMigrations(coreDb);
 
   coreDb.sqlite
     .prepare(
@@ -344,14 +335,21 @@ const INVALID_PREFLIGHT_CASES = [
     code: 'workspace_owner_mismatch',
     mutate(fixture: ReturnType<typeof createMigrationFixture>) {
       fixture.coreDb.sqlite
+        .prepare(
+          `INSERT INTO workspace_members (
+             workspace_id, user_id, status, access_level, invitation_id, joined_at,
+             removed_at, revision, created_at, updated_at
+           ) VALUES (?, 'user_other', 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
+        )
+        .run(
+          fixture.workspaceId,
+          new Date().toISOString(),
+          new Date().toISOString(),
+          new Date().toISOString()
+        );
+      fixture.coreDb.sqlite
         .prepare('UPDATE workspace_registry SET owner_user_id = ? WHERE workspace_id = ?')
         .run('user_other', fixture.workspaceId);
-      fixture.coreDb.sqlite
-        .prepare(
-          `INSERT INTO workspace_members (workspace_id, user_id, status, created_at, updated_at)
-           VALUES (?, 'user_other', 'active', ?, ?)`
-        )
-        .run(fixture.workspaceId, new Date().toISOString(), new Date().toISOString());
     },
     name: 'registry and physical owner mismatch',
   },
@@ -375,6 +373,7 @@ const INVALID_PREFLIGHT_CASES = [
   {
     code: 'owner_membership_missing',
     mutate(fixture: ReturnType<typeof createMigrationFixture>) {
+      fixture.coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_delete_guard');
       fixture.coreDb.sqlite
         .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
         .run(fixture.workspaceId, fixture.ownerUserId);
@@ -420,10 +419,12 @@ const INVALID_PREFLIGHT_CASES = [
         .run(fixture.ownerUserId, now, now);
       fixture.coreDb.sqlite
         .prepare(
-          `INSERT INTO workspace_members (workspace_id, user_id, status, created_at, updated_at)
-           VALUES ('../unsafe', ?, 'active', ?, ?)`
+          `INSERT INTO workspace_members (
+             workspace_id, user_id, status, access_level, invitation_id, joined_at,
+             removed_at, revision, created_at, updated_at
+           ) VALUES ('../unsafe', ?, 'active', 'editor', NULL, ?, NULL, 1, ?, ?)`
         )
-        .run(fixture.ownerUserId, now, now);
+        .run(fixture.ownerUserId, now, now, now);
     },
     name: 'unsafe registry workspace id',
   },

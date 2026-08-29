@@ -1,7 +1,6 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ListOpenKitAccessTokensResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
 import { listServerAuditEvents } from './audit-events.js';
@@ -188,64 +187,6 @@ describe('server-mode access-token auth', () => {
       expect(listedBody.items[0]?.lastUsedChannel).toBe('mcp');
       expect(listedBody.items[0]?.lastUsedSource).toBe('desktop-agent');
       expect(await denied.text()).not.toContain(issued.secret);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('lists only current-scope tokens after core_0009 retires revoked workspace-readwrite history', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-retired-scope-app-'));
-    const coreDb = openCoreDb(dataRoot);
-    const retiredTokenId = '019f2000-0000-7000-8000-00000000r001';
-
-    try {
-      applyMigrations(coreDb);
-      insertTokenOwnerUser(coreDb);
-      const issued = createOpenKitAccessTokenRecord(coreDb, {
-        expiresAt: '2999-01-01T00:00:00.000Z',
-        ownerUserId: 'user_owner',
-        scope: 'server-admin',
-        workspaceIds: [],
-      });
-      const app = createApp({
-        auth: ownerSessionAuth(),
-        coreDb,
-        dataRoot,
-        mode: 'server',
-      });
-      coreDb.sqlite
-        .prepare('DELETE FROM schema_migrations WHERE id = ?')
-        .run('core_0009_retire_workspace_readwrite');
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO openkit_access_tokens (
-            token_id, token_hash, owner_user_id, scope, workspace_ids_json, status,
-            issued_at, expires_at, revoked_at, predecessor_token_id, rotated_grace_expires_at,
-            last_used_at, last_used_channel, last_used_source
-          ) VALUES (?, ?, 'user_owner', 'workspace-readwrite', '["ws_demo"]', 'revoked',
-            ?, ?, ?, NULL, NULL, NULL, NULL, NULL)`
-        )
-        .run(
-          retiredTokenId,
-          `sha256:${'c'.repeat(64)}`,
-          '2026-07-01T00:00:00.000Z',
-          '2026-09-01T00:00:00.000Z',
-          '2026-07-15T00:00:00.000Z'
-        );
-      applyMigrations(coreDb);
-
-      const listed = await app.request('/api/app/auth/tokens', {
-        headers: { authorization: `Bearer ${issued.secret}` },
-      });
-      expect(listed.status).toBe(200);
-      const listedBody = ListOpenKitAccessTokensResponseSchema.parse(await listed.json());
-      expect(listedBody.items.map((item) => item.tokenId)).not.toContain(retiredTokenId);
-      expect(listedBody.items.map((item) => item.scope)).not.toContain('workspace-readwrite');
-      expect(
-        listedBody.items.every((item) =>
-          ['server-admin', 'workspace', 'workspace-readonly'].includes(item.scope)
-        )
-      ).toBe(true);
     } finally {
       coreDb.sqlite.close();
     }

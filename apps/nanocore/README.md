@@ -200,7 +200,7 @@ For user-facing `DATA_ROOT/config` documentation, see [NanoCore DATA_ROOT Config
 
 Workspace config is loaded from `DATA_ROOT/workspaces/<workspaceId>/config/workspace.jsonc`. V1 configured roots remain workspace-relative `host-dir` roots under the Workspace directory. A selected Agent may additionally bind one read-write input to a credential-free HTTPS Git source in the Workspace data-source catalog; Turn admission captures its exact commit without a NanoCore host path, and the Worker Shim materializes it at `/workspace/openkit/worktrees/main` before native start. The declared `access` field is enforced by the selected worker runtime. `workspace.assistant.repositoryInspection.enabled` can disable Chat Mode repository inspection for that workspace, and `excludedPaths` hides exact repository-relative path prefixes from Chat Mode reads.
 
-NanoCore also creates and migrates `data/server/db/core.sqlite` on boot. The baseline SQLite schema is managed by Drizzle definitions under `src/storage/schema` and committed SQL migrations under `drizzle/`.
+NanoCore creates `data/server/db/core.sqlite` on boot. The current SQLite schemas are managed by Drizzle definitions under `src/storage/schema` and the single scope-sectioned SQL setup at `drizzle/0000_setup.sql`.
 
 Migrate one stopped predecessor data root from owner-nested Workspace storage to the canonical top-level layout with:
 

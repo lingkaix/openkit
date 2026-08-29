@@ -3589,7 +3589,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           triggerActor: turn.triggerActor,
           workspaceRoots: [],
         })
-      ).rejects.toThrow('Failed to apply migration workspace_0000_baseline');
+      ).rejects.toThrow('Failed to apply database setup workspace_0000_setup');
 
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
       expect(

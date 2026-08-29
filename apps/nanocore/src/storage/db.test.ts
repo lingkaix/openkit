@@ -45,10 +45,7 @@ describe('scoped storage databases', () => {
 
       expect(statSync(userDbPath(dataRoot, 'user_1')).isFile()).toBe(true);
       expect(tables).toEqual(['idempotency_requests', 'schema_migrations']);
-      expect(listMigrationIds(userDb.sqlite)).toEqual([
-        'user_0000_baseline',
-        'user_0001_idempotency_requests',
-      ]);
+      expect(listMigrationIds(userDb.sqlite)).toEqual(['user_0000_setup']);
     } finally {
       userDb.sqlite.close();
     }
@@ -111,18 +108,7 @@ describe('scoped storage databases', () => {
         'workspace_reconciliation_records',
         'workspace_repository_resources',
       ]);
-      expect(listMigrationIds(workspaceDb.sqlite)).toEqual([
-        'workspace_0000_baseline',
-        'workspace_0001_goal_review_resolution_snapshot',
-        'workspace_0002_idempotency_requests',
-        'workspace_0003_drop_sync_evidence_bundles',
-        'workspace_0004_capability_runtime_correlation',
-        'workspace_0005_material_authority',
-        'workspace_0006_goal_steering_authority',
-        'workspace_0007_artifact_review_authority',
-        'workspace_0008_shared_attribution',
-        'workspace_0009_usage_responsible_user',
-      ]);
+      expect(listMigrationIds(workspaceDb.sqlite)).toEqual(['workspace_0000_setup']);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -375,7 +361,7 @@ describe('scoped storage databases', () => {
     const originalAppliedAt = initialized.sqlite
       .prepare('SELECT applied_at FROM schema_migrations WHERE id = ?')
       .pluck()
-      .get('core_0000_baseline');
+      .get('core_0000_setup');
     initialized.sqlite.close();
     const crashed = spawnSync(
       process.execPath,
@@ -387,7 +373,7 @@ const sqlite = new Database(process.argv[1]);
 sqlite.exec('BEGIN IMMEDIATE');
 sqlite.prepare('UPDATE schema_migrations SET applied_at = ? WHERE id = ?').run(
   'uncommitted-crash-write',
-  'core_0000_baseline'
+  'core_0000_setup'
 );
 process.kill(process.pid, 'SIGKILL');`,
         dbPath,
@@ -404,7 +390,7 @@ process.kill(process.pid, 'SIGKILL');`,
         coreDb.sqlite
           .prepare('SELECT applied_at FROM schema_migrations WHERE id = ?')
           .pluck()
-          .get('core_0000_baseline')
+          .get('core_0000_setup')
       ).toBe(originalAppliedAt);
     } finally {
       coreDb.sqlite.close();
@@ -422,11 +408,8 @@ process.kill(process.pid, 'SIGKILL');`,
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
 
     try {
-      expect(listMigrationIds(userDb.sqlite)).toEqual([
-        'user_0000_baseline',
-        'user_0001_idempotency_requests',
-      ]);
-      expect(listMigrationIds(workspaceDb.sqlite)).toContain('workspace_0000_baseline');
+      expect(listMigrationIds(userDb.sqlite)).toEqual(['user_0000_setup']);
+      expect(listMigrationIds(workspaceDb.sqlite)).toEqual(['workspace_0000_setup']);
     } finally {
       userDb.sqlite.close();
       workspaceDb.sqlite.close();

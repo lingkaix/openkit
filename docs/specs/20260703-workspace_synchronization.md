@@ -227,13 +227,7 @@ Observable acceptance requires two resident AgentSessions to carry distinct snap
 The current implementation realizes the accepted base V1 synchronization behavior below. The active restart slice adds bounded awaiting-reconnect preservation, read-only existing-handle restoration, and direct terminal handoff through these owners.
 
 - `packages/app-api-schemas/src/workspace-sync.ts` defines schemas for input snapshots, materialization records, backend workspace handles, worker output manifests, change sets, staged reviews, review patch payloads, and apply results.
-- `apps/nanocore/drizzle/0010_workspace_sync_records.sql` persists input snapshots, materialization records, change sets, and staged reviews.
-- `apps/nanocore/drizzle/0009_workspace_apply_results.sql` persists review-gated apply results.
-- `apps/nanocore/drizzle/0011_workspace_filesystem_staging.sql` persists internal filesystem staging roots for accepted filesystem reviews.
-- `apps/nanocore/drizzle/0045_workspace_backend_handles.sql` persists redacted backend workspace handles derived from materialization records.
-- `apps/nanocore/drizzle/0046_worker_output_manifests.sql` persists worker-declared output manifests before reviewed change-set readback.
-- `apps/nanocore/drizzle/0047_workspace_apply_plans.sql` persists accepted workspace apply plans before Git patch or filesystem staging mutation.
-- `apps/nanocore/drizzle/0048_workspace_reconciliation_records.sql` persists restart recovery reconciliation records.
+- The Workspace section of `apps/nanocore/drizzle/0000_setup.sql` persists input snapshots, materialization records, change sets, staged reviews, review-gated apply results, internal filesystem staging roots, redacted backend workspace handles, worker output manifests, accepted workspace apply plans, and restart recovery reconciliation records.
 - `apps/nanocore/src/runtime/workspace-sync-records.ts` records and lists durable workspace synchronization review lineage, redacted backend workspace handles, and worker output manifests.
 - `apps/nanocore/src/runtime/workspace-apply-plans.ts` records and lists durable workspace apply plans.
 - `apps/nanocore/src/runtime/workspace-reconciliation-records.ts` records and lists durable workspace reconciliation records.

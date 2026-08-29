@@ -823,7 +823,7 @@ function storageLayoutReport() {
     serverDb: {
       path: 'server/db/core.sqlite',
       exists: true,
-      appliedMigrations: ['core_0000_baseline'],
+      appliedMigrations: ['core_0000_setup'],
     },
     users: [],
     workspaces: [],

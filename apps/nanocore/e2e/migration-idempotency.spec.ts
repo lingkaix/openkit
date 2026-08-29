@@ -40,13 +40,7 @@ describe('nanocore e2e migration idempotency', () => {
       .get() as { count: number };
     sqlite.close();
 
-    expect(migrations).toEqual(
-      expect.arrayContaining([
-        { id: 'core_0000_baseline', count: 1 },
-        { id: 'core_0001_workspace_sharing', count: 1 },
-        { id: 'core_0002_scheduler_trigger_actor', count: 1 },
-      ])
-    );
+    expect(migrations).toEqual([{ id: 'core_0000_setup', count: 1 }]);
     expect(localUsers.count).toBe(1);
   });
 });
