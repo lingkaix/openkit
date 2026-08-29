@@ -1880,7 +1880,7 @@ describe('Recovery and search', () => {
       WORKSPACE_B.id,
     ]);
     await submitSearch(user);
-    expect(await screen.findByText(SEARCH_WORKSPACE.title)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: SEARCH_WORKSPACE.title })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: SEARCH_WORKSPACE.title }));
     await waitFor(() => expect(pathname).toBe('/'));
@@ -3108,14 +3108,10 @@ describe('Recovery and search', () => {
         discovery.resolve({ items: scenario.admitted });
         await discovery.promise;
       });
-      await waitFor(() =>
-        expect(screen.getByText(WORKSPACE.name, { exact: true })).toBeInTheDocument()
-      );
     }
 
     await submitSearch(user);
-    expect(await screen.findByText(scenario.hit.title)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: scenario.hit.title })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: scenario.hit.title })).toBeDisabled();
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE.id);
     poisonDom();
   });

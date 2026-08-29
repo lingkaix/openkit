@@ -43,8 +43,8 @@ export function useWorkspaces() {
 }
 
 /**
- * Returns the persisted Workspace selection when authorized, otherwise the first
- * authorized Workspace after discovery succeeds, or null when unresolved or empty.
+ * Returns the current Workspace selection when authorized, otherwise Quick Chat,
+ * the first authorized Workspace, or null when discovery is unresolved or empty.
  */
 export function useCurrentWorkspaceId(): string | null {
   const selected = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -52,6 +52,7 @@ export function useCurrentWorkspaceId(): string | null {
   if (!workspaces.isSuccess) return null;
   return (
     workspaces.data.find((workspace) => workspace.id === selected)?.id ??
+    workspaces.data.find((workspace) => workspace.kind === 'quick-chat')?.id ??
     workspaces.data[0]?.id ??
     null
   );

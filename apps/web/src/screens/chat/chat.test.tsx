@@ -1,7 +1,7 @@
 import type { CoreClient } from '@openkit/core-client';
 import { ItemSchema, TurnSchema, WorkspaceRecordSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -288,16 +288,43 @@ function renderApp(
   return queryClient;
 }
 
+/** Returns the shared Workspace listbox trigger without matching sidebar actions. */
+function workspaceSelectTrigger(): HTMLElement {
+  const trigger = screen
+    .getAllByRole('button', { name: /Workspace/ })
+    .find((button) => button.getAttribute('aria-haspopup') === 'listbox');
+  expect(trigger).toBeTruthy();
+  return trigger as HTMLElement;
+}
+
 beforeEach(() => {
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
 
 describe('chat starter (board 01)', () => {
-  it('falls back from an unavailable persisted Workspace before loading threads', async () => {
+  it('uses Quick Chat when no Workspace is selected', async () => {
+    const listThreads = vi.fn().mockResolvedValue({ items: [] });
+    const client = makeClient({
+      listWorkspaces: vi.fn().mockResolvedValue({
+        items: [
+          { id: 'ws_project', name: 'Project Workspace', kind: 'general' },
+          { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' },
+        ],
+      }),
+      listThreads,
+    });
+
+    renderApp('/chat', client);
+
+    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws_quick_chat'));
+    expect(listThreads).not.toHaveBeenCalledWith('ws_project');
+  });
+
+  it('falls back from an unavailable selected Workspace before loading threads', async () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws_unavailable' });
     const workspaces = createDeferred<{
-      items: { id: string; name: string }[];
+      items: { id: string; name: string; kind: 'general' | 'quick-chat' }[];
     }>();
     const listThreads = vi.fn().mockResolvedValue({ items: [] });
     const client = makeClient({
@@ -311,20 +338,38 @@ describe('chat starter (board 01)', () => {
     await act(async () => {
       workspaces.resolve({
         items: [
-          { id: 'ws_authorized', name: 'Authorized Workspace' },
-          { id: 'ws_other', name: 'Other Workspace' },
+          { id: 'ws_authorized', name: 'Authorized Workspace', kind: 'general' },
+          { id: 'ws_quick_chat', name: 'Quick Chat', kind: 'quick-chat' },
         ],
       });
       await workspaces.promise;
     });
-    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws_authorized'));
+    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws_quick_chat'));
     expect(listThreads).toHaveBeenCalledTimes(1);
     expect(listThreads).not.toHaveBeenCalledWith('ws_unavailable');
+    expect(listThreads).not.toHaveBeenCalledWith('ws_authorized');
   });
 
   it('shows the empty state when there are no recent chats', async () => {
     renderApp('/chat', makeClient());
     expect(await screen.findByText('Start a chat')).toBeInTheDocument();
+  });
+
+  it('switches the active Workspace from Chat', async () => {
+    const user = userEvent.setup();
+    const listThreads = vi.fn().mockResolvedValue({ items: [] });
+    renderApp('/chat', makeClient({ listThreads }));
+
+    await screen.findByRole('heading', { name: 'What can we get done?' });
+    await user.click(workspaceSelectTrigger());
+    await user.click(
+      within(await screen.findByRole('listbox')).getByRole('option', {
+        name: 'Second workspace',
+      })
+    );
+
+    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws2'));
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2');
   });
 
   it('lists recent chats when present', async () => {
@@ -359,6 +404,25 @@ describe('chat starter (board 01)', () => {
     // Navigated into the thread screen (its index toggle is present).
     expect(await screen.findByRole('button', { name: /index/i })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith('ws1', 'th-new');
+  });
+
+  it('opens a fresh Chat when the Workspace changes from a thread', async () => {
+    const user = userEvent.setup();
+    const listThreads = vi.fn().mockResolvedValue({ items: [] });
+    renderApp('/chat/th1', makeClient({ listThreads }));
+
+    await screen.findByRole('heading', { name: 'Competitive teardown' });
+    await user.click(workspaceSelectTrigger());
+    await user.click(
+      within(await screen.findByRole('listbox')).getByRole('option', {
+        name: 'Second workspace',
+      })
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: 'What can we get done?' })
+    ).toBeInTheDocument();
+    await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws2'));
   });
 
   it('opens the new thread even when the first turn cannot start', async () => {

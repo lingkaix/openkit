@@ -147,9 +147,11 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
     const workspaceLabel = await screen.findByText('Authoritative Workspace');
     const repositories = screen.getByRole('button', { name: 'Repositories' });
+    const newConversation = screen.getByRole('button', { name: 'New conversation' });
     const workspaceSettings = screen.getByRole('button', { name: 'Workspace settings' });
     const overview = screen.getByRole('button', { name: 'Overview' });
     expect(workspaceLabel.parentElement).toContainElement(repositories);
+    expect(workspaceLabel.parentElement).toContainElement(newConversation);
     expect(workspaceLabel.parentElement).toContainElement(workspaceSettings);
     expect(workspaceLabel.parentElement).not.toContainElement(overview);
     expect(overview.parentElement).not.toContainElement(repositories);

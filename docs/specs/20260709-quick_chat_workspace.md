@@ -56,7 +56,7 @@ implementation: Partial
 - Reject repository resource binding, workspace data-source catalog use, direct Task Mode, direct Goal Mode, direct worker turn startup, and Git push flows in Quick Chat itself.
 - Ensure a work request made in Quick Chat either reaches an accepted Task or Goal in a separate eligible Workspace through one confirmation or leaves a durable refusal naming the exact missing authorization.
 - Keep project work in ordinary workspaces such as `code` or `general`.
-- Keep Web initial workspace selection simple by selecting the first available workspace, which is Quick Chat for fresh servers.
+- Keep Web initial Workspace selection simple by honoring an authorized current selection, otherwise selecting Quick Chat by kind, then falling back to the first authorized Workspace.
 
 ### Non-goals
 
@@ -163,9 +163,9 @@ Process restart recovers from the originating Thread, Chat command record, deter
 
 ### Web Behavior
 
-The Web app should not need a custom default-workspace preference for this slice.
+The Web app does not need a custom default-workspace preference for this slice.
 
-When NanoCore returns Quick Chat first, the existing route/local-storage/first-workspace selection behavior selects Quick Chat on fresh boot.
+An authorized current Workspace selection remains authoritative. Without one, Web selects the actor's Quick Chat Workspace by kind before falling back to the first authorized Workspace, so list ordering cannot route an unscoped lightweight conversation into a project Workspace.
 
 The Web app should not show project-only affordances as usable actions in Quick Chat.
 
@@ -237,7 +237,7 @@ The implementation adds a domain-specific special case, but it is centralized as
 - Chat Mode tests prove one confirmation resolves or creates a separate executing Workspace and creates exactly one Task or Goal handoff, while missing Workspace authority produces one exact durable refusal and no downstream owner.
 - Multi-user route tests prove every invitation, membership, and owner-transfer operation rejects Quick Chat before mutation.
 - Existing Chat Mode and knowledge tests continue to pass for ordinary workspace-scoped behavior.
-- Existing first-workspace selection keeps opening the first returned workspace, which is Quick Chat for fresh NanoCore stores.
+- Focused Web tests prove an authorized current selection remains authoritative and an absent or stale selection prefers Quick Chat even when a project Workspace is returned first.
 - Focused package tests and typecheck pass for touched packages.
 
 ## Risks & Mitigations

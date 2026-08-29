@@ -58,7 +58,10 @@ function NavSection({
         />
       ))}
       {group === 'workspace' ? (
-        <NavRow icon="settings" label="Workspace settings" onPress={() => go('/settings')} />
+        <>
+          <NavRow icon="add" label="New conversation" onPress={() => go('/chat')} />
+          <NavRow icon="settings" label="Workspace settings" onPress={() => go('/settings')} />
+        </>
       ) : null}
     </div>
   );

@@ -1,6 +1,6 @@
 import { useMutationState } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   ArtifactRow,
@@ -26,6 +26,7 @@ import {
   useTurnFeedback,
 } from './data';
 import { ThreadStream } from './ThreadStream';
+import { WorkspaceSelect } from './WorkspaceSelect';
 
 /** Right index rail (board 03) — mirrors the thread's artifacts (§3.3, D-006). */
 function IndexRail({ workspaceId, threadId }: { workspaceId: string | null; threadId: string }) {
@@ -75,6 +76,7 @@ export interface ThreadScreenProps {
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
   const { threadId = '' } = useParams();
+  const navigate = useNavigate();
   const workspaceId = useCurrentWorkspaceId();
   const thread = useThread(workspaceId, threadId);
   const items = useThreadItems(workspaceId, threadId);
@@ -158,6 +160,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     <div className="flex h-full">
       <div className="flex h-full min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
+          {mode === 'chat' ? <WorkspaceSelect onWorkspaceChange={() => navigate('/chat')} /> : null}
           <div className="flex items-center gap-2">
             {mode === 'task' ? <StatusChip tone="informative">Task</StatusChip> : null}
             <h1 className="text-sm font-bold text-fg-strong">{title}</h1>

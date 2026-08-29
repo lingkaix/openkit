@@ -12,6 +12,8 @@ import { projectSafeValue } from './secret-safe';
  */
 export const settingsKeys = {
   workspace: (workspaceId: string) => ['settings', 'workspace', workspaceId] as const,
+  workspaceResources: (workspaceId: string) =>
+    ['settings', 'workspace-resources', workspaceId] as const,
   vault: (workspaceId: string) => ['settings', 'vault', workspaceId] as const,
   vaultInjectionPlans: (workspaceId: string) =>
     ['settings', 'vault-injection-plans', workspaceId] as const,
@@ -455,6 +457,16 @@ export function useSettingsWorkspace(workspaceId: string | null) {
   });
 }
 
+/** Load the selectable models, agents, and skills for General settings. */
+export function useSettingsWorkspaceResources(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: settingsKeys.workspaceResources(workspaceId ?? ''),
+    queryFn: () => client.core.getWorkspaceResources(workspaceId as string),
+    enabled: Boolean(workspaceId),
+  });
+}
+
 /** Load meta for control-channel / capability status. */
 export function useMetaStatus() {
   const client = useCoreClient();
@@ -659,6 +671,25 @@ export function useUpdateWorkspaceName(workspaceId: string | null) {
       }
       void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
       return projectWorkspace(workspace);
+    },
+  });
+}
+
+/** Update the active Workspace execution defaults from General settings. */
+export function useUpdateWorkspaceDefaults(workspaceId: string | null) {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (defaults: NonNullable<WorkspaceRecord['defaults']>): Promise<WorkspaceRecord> =>
+      client.core.updateWorkspace(workspaceId as string, {
+        defaults,
+        requestId: createRequestId(),
+      }),
+    onSuccess: () => {
+      if (workspaceId) {
+        void queryClient.invalidateQueries({ queryKey: settingsKeys.workspace(workspaceId) });
+      }
+      void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
     },
   });
 }

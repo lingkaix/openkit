@@ -11,6 +11,7 @@ import {
   StatusChip,
 } from '../../primitives';
 import { useCreateThread, useCurrentWorkspaceId, useThreads } from './data';
+import { WorkspaceSelect } from './WorkspaceSelect';
 
 /**
  * Chat starter (WP-4, board 01) — the usable workbench first screen.
@@ -44,11 +45,14 @@ export function ChatStarter() {
 
   return (
     <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 px-6 py-10">
-      <div>
-        <h1 className="text-title font-extrabold text-fg-strong">What can we get done?</h1>
-        <p className="mt-1 text-fg-muted">
-          Describe what you need — from a quick question to a whole project.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-title font-extrabold text-fg-strong">What can we get done?</h1>
+          <p className="mt-1 text-fg-muted">
+            Describe what you need — from a quick question to a whole project.
+          </p>
+        </div>
+        <WorkspaceSelect />
       </div>
 
       {createOwner && create.isError ? (
