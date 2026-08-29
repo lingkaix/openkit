@@ -1907,6 +1907,22 @@ export const operationCatalog = [
   },
   {
     ...SECRET_INPUT,
+    ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'vault.provider-api-key-set',
+    source: 'app-api',
+    appOperationId: 'setProviderApiKey',
+    clientMethod: 'app.setProviderApiKey',
+    group: 'vault',
+    summary: 'Store or replace one provider profile API key in the unlocked vault.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.SetProviderApiKeyRequestSchema, {
+      providerId: appSchemas.ProviderApiKeyProfileIdSchema,
+    }),
+    handler: ({ client }, input) =>
+      client.app.setProviderApiKey(input.providerId, bodyWithout(input, 'providerId')),
+  },
+  {
+    ...SECRET_INPUT,
     id: 'vault.reference-rebind',
     source: 'app-api',
     appOperationId: 'rebindWorkspaceVaultReference',

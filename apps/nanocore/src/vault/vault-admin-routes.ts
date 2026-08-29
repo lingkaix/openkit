@@ -3,6 +3,9 @@ import { Buffer } from 'node:buffer';
 import {
   ListServerVaultUseRecordsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
+  ProviderApiKeyProfileIdSchema,
+  SetProviderApiKeyRequestSchema,
+  SetProviderApiKeyResponseSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminBootstrapCodexAuthJsonResponseSchema,
   VaultAdminListWorkspaceReferencesResponseSchema,
@@ -19,12 +22,16 @@ import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
+import { loadProviderProfiles } from '../config/providers-loader.js';
 import { registerAppApiRoute } from '../openapi.js';
+import { readVaultReferenceId } from '../providers/vault-credential-resolver.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
 import { createVaultGrant } from './vault-grants.js';
 import {
+  advanceActiveVaultReferenceVersion,
   createVaultReference,
+  createVaultReferenceWithInsertEvidence,
   getVaultReference,
   listWorkspaceVaultReferences,
   rebindWorkspaceVaultReference,
@@ -40,6 +47,7 @@ const VAULT_UNLOCK_FAILURE_WINDOW_MS = 60_000;
 const CODEX_AUTH_JSON_VAULT_GRANT_ID = 'grant_codex_auth_json';
 const CODEX_AUTH_JSON_VAULT_REFERENCE_ID = 'vault_codex_auth_json';
 const CODEX_AUTH_JSON_TARGET_PATH = '/sandbox/.codex/auth.json';
+const SAFE_PROVIDER_API_KEY_REFERENCE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
  * Registers the complete Vault administration App API feature path.
@@ -49,15 +57,18 @@ const CODEX_AUTH_JSON_TARGET_PATH = '/sandbox/.codex/auth.json';
 export function registerVaultAdminRoutes({
   app,
   coreDb,
+  dataRoot,
   repositoryWorkspaceDb,
   vaultUnlockState,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
+  readonly dataRoot: string | null;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly vaultUnlockState: VaultUnlockState | null;
 }): void {
   const vaultUnlockFailuresByActor = new Map<string, number[]>();
+  const providerApiKeyWrites = new Set<string>();
 
   /**
    * Returns the redacted vault admin status payload.
@@ -160,6 +171,7 @@ export function registerVaultAdminRoutes({
         | 'vault.unlock'
         | 'vault.lock'
         | 'vault.bootstrap_codex_auth_json'
+        | 'vault.set_provider_api_key'
         | 'vault.rebind_workspace_reference';
       readonly outcome: 'succeeded' | 'failed' | 'denied';
       readonly summary: string;
@@ -181,6 +193,26 @@ export function registerVaultAdminRoutes({
     });
   }
 
+  /** Returns one redacted provider API-key error after recording the failed mutation. */
+  function providerApiKeyError(
+    c: Context<{ Variables: AuthVariables }>,
+    message: string,
+    errorCode: string,
+    status: 400 | 404 | 409 | 423,
+    outcome: 'failed' | 'denied' = 'failed'
+  ): Response {
+    recordVaultAdminAudit(c, {
+      action: 'vault.set_provider_api_key',
+      errorCode,
+      outcome,
+      summary:
+        outcome === 'denied'
+          ? 'Provider API-key configuration denied.'
+          : 'Provider API-key configuration failed.',
+    });
+    return asApiError(message, errorCode, status);
+  }
+
   /**
    * Requires deployment-admin authority for a server-wide Vault operation.
    *
@@ -199,6 +231,233 @@ export function registerVaultAdminRoutes({
     const adminError = requireVaultAdminActor(c);
 
     return adminError ?? c.json(vaultAdminStatus());
+  });
+
+  registerAppApiRoute(app, 'setProviderApiKey', async (c) => {
+    const adminError = requireVaultAdminActor(c);
+    if (adminError) {
+      return adminError;
+    }
+    if (!vaultUnlockState || !coreDb || !dataRoot) {
+      return asApiError('Vault storage is not configured.', 'vault_storage_unavailable', 503);
+    }
+
+    const parsed = SetProviderApiKeyRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+
+    if (!parsed.success) {
+      return asInvalidRequestError(parsed.error);
+    }
+
+    const providerId = c.req.param('providerId');
+    const safeProviderId = ProviderApiKeyProfileIdSchema.safeParse(providerId);
+
+    if (!safeProviderId.success) {
+      return providerApiKeyError(
+        c,
+        'Provider id is not supported for API-key configuration.',
+        'provider_api_key_not_supported',
+        400
+      );
+    }
+    const response = SetProviderApiKeyResponseSchema.parse({ configured: true, providerId });
+    let loaded: ReturnType<typeof loadProviderProfiles>;
+
+    try {
+      loaded = loadProviderProfiles(dataRoot);
+    } catch {
+      return providerApiKeyError(
+        c,
+        'Provider profile configuration is invalid.',
+        'provider_configuration_invalid',
+        409
+      );
+    }
+    const matchingProfiles = loaded.profiles.filter((candidate) => candidate.id === providerId);
+    const hasProfileDiagnostic = loaded.diagnostics.some(
+      (diagnostic) => diagnostic.profileId === providerId
+    );
+
+    if (matchingProfiles.length === 0 && !hasProfileDiagnostic) {
+      return providerApiKeyError(c, 'Provider profile not found.', 'provider_not_found', 404);
+    }
+    if (matchingProfiles.length !== 1 || hasProfileDiagnostic) {
+      return providerApiKeyError(
+        c,
+        'Provider profile configuration is invalid.',
+        'provider_configuration_invalid',
+        409
+      );
+    }
+
+    const profile = matchingProfiles[0]!;
+    const referenceId = profile.secretRef ? readVaultReferenceId(profile.secretRef) : null;
+
+    if (!referenceId || !SAFE_PROVIDER_API_KEY_REFERENCE_ID.test(referenceId)) {
+      return providerApiKeyError(
+        c,
+        'Provider profile does not use a supported Vault API-key reference.',
+        'provider_api_key_not_supported',
+        400
+      );
+    }
+    if (providerApiKeyWrites.has(referenceId)) {
+      return providerApiKeyError(
+        c,
+        'Provider API-key update is already in progress.',
+        'provider_api_key_update_active',
+        409,
+        'denied'
+      );
+    }
+
+    providerApiKeyWrites.add(referenceId);
+    let storedNewMaterial = false;
+
+    try {
+      const backend = vaultUnlockState.backend();
+
+      if (backend.health().state !== 'available') {
+        return providerApiKeyError(
+          c,
+          'Vault backend is not available.',
+          'vault_backend_not_available',
+          423
+        );
+      }
+
+      let reference = getVaultReference(coreDb, referenceId);
+      const inventory = backend
+        .listReferences({ ownerScope: 'server' })
+        .find((candidate) => candidate.referenceId === referenceId);
+
+      if (Boolean(reference) !== Boolean(inventory)) {
+        return providerApiKeyError(
+          c,
+          'Provider API-key storage requires recovery.',
+          'provider_api_key_recovery_required',
+          409
+        );
+      }
+
+      if (!reference && !inventory) {
+        const stored = backend.store({
+          material: parsed.data.apiKey,
+          metadata: { ownerScope: 'server' },
+          referenceId,
+        });
+        storedNewMaterial = true;
+
+        if (stored.currentVersion !== 1 || stored.revoked) {
+          throw new Error('Provider API-key Vault store returned an invalid initial version.');
+        }
+
+        const created = createVaultReferenceWithInsertEvidence(coreDb, {
+          backendKind: backend.kind,
+          backendLocator: `${backend.kind}://server/vault/${referenceId}`,
+          displayName: 'Provider API key',
+          ownerScope: 'server',
+          referenceId,
+          secretKind: 'provider-api-key',
+        });
+
+        if (!created.inserted) {
+          throw new Error('Provider API-key Vault reference already exists.');
+        }
+        reference = created.reference;
+        storedNewMaterial = false;
+      } else if (reference && inventory) {
+        const exactReference =
+          reference.ownerScope === 'server' &&
+          reference.workspaceId === null &&
+          reference.userId === null &&
+          reference.displayName === 'Provider API key' &&
+          reference.secretKind === 'provider-api-key' &&
+          reference.backendKind === backend.kind &&
+          reference.backendLocator === `${backend.kind}://server/vault/${referenceId}` &&
+          reference.status === 'active';
+        const exactInventory =
+          inventory.ownerScope === 'server' &&
+          inventory.backendKind === backend.kind &&
+          !inventory.revoked &&
+          inventory.workspaceId === undefined &&
+          inventory.userId === undefined &&
+          inventory.providerSubscriptionAccount === undefined;
+
+        if (!exactReference || !exactInventory) {
+          return providerApiKeyError(
+            c,
+            'Provider API-key storage requires recovery.',
+            'provider_api_key_recovery_required',
+            409
+          );
+        }
+        if (inventory.currentVersion === reference.currentVersion + 1) {
+          reference = advanceActiveVaultReferenceVersion(coreDb, {
+            currentVersion: inventory.currentVersion,
+            referenceId,
+          });
+        } else if (inventory.currentVersion !== reference.currentVersion) {
+          return providerApiKeyError(
+            c,
+            'Provider API-key storage requires recovery.',
+            'provider_api_key_recovery_required',
+            409
+          );
+        }
+
+        const rotated = backend.rotate({ material: parsed.data.apiKey, referenceId });
+        reference = advanceActiveVaultReferenceVersion(coreDb, {
+          currentVersion: rotated.currentVersion,
+          referenceId,
+        });
+      }
+
+      if (!reference) {
+        throw new Error('Provider API-key Vault reference was not stored.');
+      }
+
+      recordVaultAdminAudit(c, {
+        action: 'vault.set_provider_api_key',
+        outcome: 'succeeded',
+        summary: 'Provider API-key configuration succeeded.',
+      });
+
+      return c.json(response);
+    } catch {
+      let recoveryRequired = false;
+
+      if (storedNewMaterial) {
+        recoveryRequired = true;
+        try {
+          vaultUnlockState.backend().revoke({ referenceId });
+        } catch {
+          // The failed write remains recovery-required whether cleanup settles or not.
+        }
+      }
+
+      recordVaultAdminAudit(c, {
+        action: 'vault.set_provider_api_key',
+        errorCode: recoveryRequired
+          ? 'provider_api_key_recovery_required'
+          : 'provider_api_key_persistence_failed',
+        outcome: 'failed',
+        summary: 'Provider API-key configuration failed.',
+      });
+
+      return recoveryRequired
+        ? asApiError(
+            'Provider API-key storage requires recovery.',
+            'provider_api_key_recovery_required',
+            409
+          )
+        : asApiError(
+            'Provider API-key configuration failed.',
+            'provider_api_key_persistence_failed',
+            500
+          );
+    } finally {
+      providerApiKeyWrites.delete(referenceId);
+    }
   });
 
   registerAppApiRoute(app, 'listServerVaultUseRecords', (c) => {

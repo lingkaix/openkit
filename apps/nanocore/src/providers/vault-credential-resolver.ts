@@ -78,7 +78,7 @@ export function createVaultProviderCredentialResolver(
  * @param secretRef Provider credential reference.
  * @returns Vault reference id when the reference uses vault://, otherwise null.
  */
-function readVaultReferenceId(secretRef: string): string | null {
+export function readVaultReferenceId(secretRef: string): string | null {
   const prefix = 'vault://';
 
   if (!secretRef.startsWith(prefix)) {

@@ -157,6 +157,7 @@ registerOperations(
     'unlockVaultAdminBackend',
     'lockVaultAdminBackend',
     'bootstrapCodexAuthJsonVaultReference',
+    'setProviderApiKey',
     'enrollNanoHost',
     'issueNanoHostTransportToken',
     'revokeNanoHostTransportToken',

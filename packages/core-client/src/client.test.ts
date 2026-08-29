@@ -3758,6 +3758,9 @@ describe('createCoreClient', () => {
           targetPath: '/sandbox/.codex/auth.json',
         },
       },
+      'PUT /api/app/providers/xai-api/api-key': {
+        body: { configured: true, providerId: 'xai-api' },
+      },
     });
 
     await expect(client.app.getVaultAdminStatus()).resolves.toMatchObject({
@@ -3776,15 +3779,20 @@ describe('createCoreClient', () => {
       grantId: 'grant_codex_auth_json',
       referenceId: 'vault_codex_auth_json',
     });
+    await expect(
+      client.app.setProviderApiKey('xai-api', { apiKey: 'xai-secret' })
+    ).resolves.toEqual({ configured: true, providerId: 'xai-api' });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
       'GET /api/app/vault/status',
       'POST /api/app/vault/unlock',
       'POST /api/app/vault/lock',
       'POST /api/app/vault/bootstrap/codex-auth-json',
+      'PUT /api/app/providers/xai-api/api-key',
     ]);
     expect(requests[1]?.body).toEqual({ masterKeyBase64 });
     expect(requests[3]?.body).toEqual({ authJsonBase64 });
+    expect(requests[4]?.body).toEqual({ apiKey: 'xai-secret' });
   });
 
   it('rejects an obsolete os-keychain vault response as a protocol violation', async () => {

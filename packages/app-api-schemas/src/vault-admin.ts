@@ -50,6 +50,34 @@ export const VaultAdminBootstrapCodexAuthJsonResponseSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
+/** Deployment-admin provider API-key input. */
+export const SetProviderApiKeyRequestSchema = z
+  .object({
+    apiKey: z.string().min(1).max(65_536),
+  })
+  .strict();
+
+/** Provider profile id that is safe for file, Vault-reference, and redacted response use. */
+export const ProviderApiKeyProfileIdSchema = z
+  .string()
+  .min(1)
+  .max(119)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/)
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+  });
+
+/** Redacted provider API-key configuration result. */
+export const SetProviderApiKeyResponseSchema = z
+  .object({
+    configured: z.literal(true),
+    providerId: ProviderApiKeyProfileIdSchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+  });
+
 /** Vault admin workspace reference rebind request payload. */
 export const VaultAdminRebindWorkspaceReferenceRequestSchema = z
   .object({
@@ -122,6 +150,10 @@ export type VaultAdminBootstrapCodexAuthJsonRequest = z.infer<
 export type VaultAdminBootstrapCodexAuthJsonResponse = z.infer<
   typeof VaultAdminBootstrapCodexAuthJsonResponseSchema
 >;
+/** Deployment-admin provider API-key input. */
+export type SetProviderApiKeyRequest = z.infer<typeof SetProviderApiKeyRequestSchema>;
+/** Redacted provider API-key configuration result. */
+export type SetProviderApiKeyResponse = z.infer<typeof SetProviderApiKeyResponseSchema>;
 /** Vault admin workspace reference rebind request. */
 export type VaultAdminRebindWorkspaceReferenceRequest = z.infer<
   typeof VaultAdminRebindWorkspaceReferenceRequestSchema

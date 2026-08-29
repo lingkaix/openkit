@@ -1,4 +1,12 @@
-import { existsSync, globSync, lstatSync, mkdtempSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  globSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -39,6 +47,7 @@ function createVaultAdminApp() {
   return {
     app: createApp({ coreDb, dataRoot, vaultUnlockState }),
     coreDb,
+    dataRoot,
     masterKey,
     vaultUnlockState,
   };
@@ -76,6 +85,230 @@ function createSignedInAuthStub(): BetterAuthServer {
 }
 
 describe('vault admin app API', () => {
+  it('stores and rotates an authored provider API key without echoing secret material', async () => {
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const providersRoot = join(dataRoot, 'config', 'providers');
+    const firstApiKey = 'xai-test-api-key-first';
+    const replacementApiKey = 'xai-test-api-key-replacement';
+
+    mkdirSync(providersRoot, { recursive: true });
+    writeFileSync(
+      join(providersRoot, 'xai-api.provider.jsonc'),
+      `${JSON.stringify(
+        {
+          baseUrl: 'https://api.x.ai/v1',
+          defaultModel: 'grok-4',
+          displayName: 'xAI API',
+          id: 'xai-api',
+          kind: 'direct',
+          models: ['grok-4'],
+          secretRef: 'vault://provider_xai_api',
+          vendor: 'xai',
+        },
+        null,
+        2
+      )}\n`
+    );
+    vaultUnlockState.unlock({ masterKey });
+
+    try {
+      const first = await app.request('/api/app/providers/xai-api/api-key', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: firstApiKey }),
+      });
+
+      expect(first.status).toBe(200);
+      const firstBody = await first.json();
+      expect(firstBody).toEqual({ configured: true, providerId: 'xai-api' });
+      expect(JSON.stringify(firstBody)).not.toContain(firstApiKey);
+      expect(
+        vaultUnlockState.backend().resolve({ referenceId: 'provider_xai_api' }).toString('utf8')
+      ).toBe(firstApiKey);
+      expect(getVaultReference(coreDb, 'provider_xai_api')).toMatchObject({
+        currentVersion: 1,
+        displayName: 'Provider API key',
+        ownerScope: 'server',
+        secretKind: 'provider-api-key',
+        status: 'active',
+      });
+
+      const replacement = await app.request('/api/app/providers/xai-api/api-key', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: replacementApiKey }),
+      });
+
+      expect(replacement.status).toBe(200);
+      const replacementBody = await replacement.json();
+      expect(replacementBody).toEqual({ configured: true, providerId: 'xai-api' });
+      expect(JSON.stringify(replacementBody)).not.toContain(replacementApiKey);
+      expect(
+        vaultUnlockState.backend().resolve({ referenceId: 'provider_xai_api' }).toString('utf8')
+      ).toBe(replacementApiKey);
+      expect(getVaultReference(coreDb, 'provider_xai_api')).toMatchObject({
+        currentVersion: 2,
+        status: 'active',
+      });
+      const row = latestVaultAdminAuditEvent(coreDb);
+      const audit = serverAuditEvent(coreDb, row.audit_event_id as string);
+      expect(row).toMatchObject({
+        action: 'vault.set_provider_api_key',
+        error_code: null,
+        outcome: 'succeeded',
+      });
+      expect(audit).toMatchObject({
+        action: 'vault.set_provider_api_key',
+        outcome: 'succeeded',
+        resource: 'vault:encrypted-file',
+      });
+      expect(JSON.stringify({ row, audit })).not.toContain(replacementApiKey);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a response-unsafe provider id before any Vault or Core effect', async () => {
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const providersRoot = join(dataRoot, 'config', 'providers');
+
+    mkdirSync(providersRoot, { recursive: true });
+    writeFileSync(
+      join(providersRoot, 'unsafe.provider.jsonc'),
+      `${JSON.stringify({
+        defaultModel: 'model-demo',
+        displayName: 'Unsafe response id',
+        id: 'okt_demo',
+        kind: 'custom',
+        models: ['model-demo'],
+        secretRef: 'vault://provider_okt_demo',
+      })}\n`
+    );
+    vaultUnlockState.unlock({ masterKey });
+
+    try {
+      const response = await app.request('/api/app/providers/okt_demo/api-key', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: 'response-safety-test-key' }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'provider_api_key_not_supported',
+      });
+      expect(getVaultReference(coreDb, 'provider_okt_demo')).toBeNull();
+      expect(vaultUnlockState.backend().listReferences({ ownerScope: 'server' })).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('returns an audited typed failure when any authored provider file is malformed', async () => {
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const providersRoot = join(dataRoot, 'config', 'providers');
+
+    mkdirSync(providersRoot, { recursive: true });
+    writeFileSync(join(providersRoot, 'broken.provider.jsonc'), '{');
+    writeFileSync(
+      join(providersRoot, 'provider-demo.provider.jsonc'),
+      `${JSON.stringify({
+        defaultModel: 'model-demo',
+        displayName: 'Provider demo',
+        id: 'provider-demo',
+        kind: 'custom',
+        models: ['model-demo'],
+        secretRef: 'vault://provider_demo',
+      })}\n`
+    );
+    vaultUnlockState.unlock({ masterKey });
+
+    try {
+      const response = await app.request('/api/app/providers/provider-demo/api-key', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: 'malformed-config-test-key' }),
+      });
+      const row = latestVaultAdminAuditEvent(coreDb);
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'provider_configuration_invalid',
+      });
+      expect(getVaultReference(coreDb, 'provider_demo')).toBeNull();
+      expect(vaultUnlockState.backend().listReferences({ ownerScope: 'server' })).toEqual([]);
+      expect(row).toMatchObject({
+        action: 'vault.set_provider_api_key',
+        error_code: 'provider_configuration_invalid',
+        outcome: 'failed',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('records recovery-required evidence when backend store succeeds before Core insert fails', async () => {
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const providersRoot = join(dataRoot, 'config', 'providers');
+    const apiKey = 'partial-effect-test-key';
+
+    mkdirSync(providersRoot, { recursive: true });
+    writeFileSync(
+      join(providersRoot, 'failure.provider.jsonc'),
+      `${JSON.stringify({
+        defaultModel: 'model-demo',
+        displayName: 'Failure provider',
+        id: 'provider-failure',
+        kind: 'custom',
+        models: ['model-demo'],
+        secretRef: 'vault://provider_failure',
+      })}\n`
+    );
+    coreDb.sqlite.exec(`
+      CREATE TRIGGER fail_provider_reference_insert
+      BEFORE INSERT ON vault_references
+      WHEN NEW.reference_id = 'provider_failure'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced provider reference failure');
+      END;
+    `);
+    vaultUnlockState.unlock({ masterKey });
+
+    try {
+      const response = await app.request('/api/app/providers/provider-failure/api-key', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey }),
+      });
+      const row = latestVaultAdminAuditEvent(coreDb);
+      const audit = serverAuditEvent(coreDb, row.audit_event_id as string);
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'provider_api_key_recovery_required',
+      });
+      expect(getVaultReference(coreDb, 'provider_failure')).toBeNull();
+      expect(() =>
+        vaultUnlockState.backend().resolve({ referenceId: 'provider_failure' })
+      ).toThrow();
+      expect(row).toMatchObject({
+        action: 'vault.set_provider_api_key',
+        error_code: 'provider_api_key_recovery_required',
+        outcome: 'failed',
+      });
+      expect(audit).toMatchObject({
+        action: 'vault.set_provider_api_key',
+        error_code: 'provider_api_key_recovery_required',
+        outcome: 'failed',
+        resource: 'vault:encrypted-file',
+      });
+      expect(JSON.stringify({ row, audit })).not.toContain(apiKey);
+      expect(JSON.stringify({ row, audit })).not.toContain('provider_failure');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('defaults local and server modes to locked encrypted-file state', async () => {
     const localDataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-local-default-'));
     const serverDataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-server-default-'));
@@ -507,6 +740,7 @@ describe('vault admin app API', () => {
         app.request('/api/app/vault/unlock', { method: 'POST' }),
         app.request('/api/app/vault/lock', { method: 'POST' }),
         app.request('/api/app/vault/bootstrap/codex-auth-json', { method: 'POST' }),
+        app.request('/api/app/providers/provider-demo/api-key', { method: 'PUT' }),
       ]);
 
       for (const response of responses) {
@@ -535,18 +769,41 @@ describe('vault admin app API', () => {
       scope: 'workspace',
       workspaceIds: ['ws_demo'],
     });
+    const masterKey = Buffer.alloc(32, 8);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
+    writeFileSync(
+      join(dataRoot, 'config', 'providers', 'provider-demo.provider.jsonc'),
+      `${JSON.stringify({
+        defaultModel: 'model-demo',
+        displayName: 'Provider demo',
+        id: 'provider-demo',
+        kind: 'custom',
+        models: ['model-demo'],
+        secretRef: 'vault://provider_demo',
+      })}\n`
+    );
+    vaultUnlockState.unlock({ masterKey });
     const app = createApp({
       auth: createSignedOutAuthStub(),
       coreDb,
       dataRoot,
       mode: 'server',
-      vaultUnlockState: createVaultUnlockState({
-        backendKind: 'encrypted-file',
-        storeDir: join(dataRoot, 'server', 'vault'),
-      }),
+      vaultUnlockState,
     });
 
     try {
+      const apiKeyResponse = await app.request('/api/app/providers/provider-demo/api-key', {
+        method: 'PUT',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ apiKey: 'server-admin-provider-key' }),
+      });
       const response = await app.request('/api/app/vault/lock', {
         method: 'POST',
         headers: { authorization: `Bearer ${admin.secret}` },
@@ -561,8 +818,20 @@ describe('vault admin app API', () => {
         app.request('/api/app/vault/use-records', {
           headers: { authorization: `Bearer ${workspaceToken.secret}` },
         }),
+        app.request('/api/app/providers/provider-demo/api-key', {
+          method: 'PUT',
+          headers: {
+            authorization: `Bearer ${workspaceToken.secret}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ apiKey: 'workspace-token-provider-key' }),
+        }),
       ]);
 
+      expect(apiKeyResponse.status).toBe(200);
+      expect(JSON.stringify(await apiKeyResponse.json())).not.toContain(
+        'server-admin-provider-key'
+      );
       expect(response.status).toBe(200);
       expect(JSON.stringify(await response.json())).not.toContain(admin.secret);
       expect(useRecords.status).toBe(200);

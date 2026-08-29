@@ -95,6 +95,7 @@ const DEPLOYMENT_ADMIN_ROUTES = new Set([
   'POST /api/app/vault/unlock',
   'POST /api/app/vault/lock',
   'POST /api/app/vault/bootstrap/codex-auth-json',
+  'PUT /api/app/providers/{providerId}/api-key',
   'GET /api/app/vault/use-records',
   'GET /api/app/workspaces/{workspaceId}/access-recovery',
   'POST /api/app/workspaces/{workspaceId}/access-recovery',
@@ -2222,6 +2223,27 @@ describe('app api openapi projection', () => {
         },
       },
     });
+    expect(document.paths['/api/app/providers/{providerId}/api-key']?.put).toMatchObject({
+      operationId: 'setProviderApiKey',
+      tags: ['providers', 'vault'],
+      parameters: [expect.objectContaining({ name: 'providerId', in: 'path', required: true })],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/SetProviderApiKeyRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SetProviderApiKeyResponse' },
+            },
+          },
+        },
+      },
+    });
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/vault/references/{referenceId}/rebind']
         ?.post
@@ -3417,6 +3439,7 @@ describe('app api openapi projection', () => {
       'abortNanoHostTransportTokenRotation',
       'decommissionNanoHost',
       'getVaultAdminStatus',
+      'setProviderApiKey',
       'listServerVaultUseRecords',
       'unlockVaultAdminBackend',
       'bootstrapCodexAuthJsonVaultReference',

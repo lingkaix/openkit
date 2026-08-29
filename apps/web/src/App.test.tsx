@@ -41,6 +41,13 @@ function makeClient(
         })
       ),
     },
+    providerSubscriptions: {
+      listProviders: vi.fn().mockRejectedValue(
+        new ApiCallError(403, 'Deployment-admin authority is required.', {
+          code: 'forbidden',
+        })
+      ),
+    },
   } as unknown as CoreClient;
 }
 
@@ -128,7 +135,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     await renderAt('/settings');
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Channels' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'AI interface' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
   });
 
   it('mounts the component sheet under Settings → Debug', async () => {
@@ -145,6 +152,16 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Configuration' })).toBeInTheDocument();
     expect(await screen.findByLabelText('Server admin token')).toBeInTheDocument();
+  });
+
+  it('mounts the published AI interface under Settings with an admin gate', async () => {
+    await renderAt('/settings/ai-interface');
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'AI interface' })).toBeInTheDocument();
+    expect(await screen.findByLabelText('Server admin token')).toBeInTheDocument();
+    expect(screen.queryByText(/status only/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
   });
 
   it('does not retain the old /components route', async () => {

@@ -10,7 +10,6 @@ import { isSurfaceLive } from '../../app/flags';
 import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
-import { AiInterfaceScreen } from './AiInterfaceScreen';
 import { projectConnectedApps } from './data';
 import { projectSafeValue, redactSecretShapedText, stripSecretFields } from './secret-safe';
 
@@ -164,7 +163,28 @@ const DIAGNOSTICS = {
     },
   },
   gateway: { status: 'ok', endpoints: ['/v1/chat/completions'] },
-  providers: { diagnostics: [], registry: [] },
+  providers: {
+    diagnostics: [
+      {
+        code: 'ready',
+        message: 'Provider is ready.',
+        profileId: 'provider_demo',
+        source: 'registry',
+        status: 'ready',
+      },
+    ],
+    registry: [
+      {
+        id: 'provider_demo',
+        displayName: 'Demo provider',
+        kind: 'custom',
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'unsupported' },
+        models: ['gpt-demo', 'gpt-strong'],
+        defaultModel: 'gpt-demo',
+        readiness: { status: 'ready', message: null, checkedAt: TIMESTAMP },
+      },
+    ],
+  },
   defaultProviders: {
     core: {
       configured: true,
@@ -726,6 +746,9 @@ function makeClient(
           ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
         >),
       getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS),
+      setProviderApiKey: vi
+        .fn()
+        .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
       getWorkspaceDashboard: vi.fn().mockResolvedValue({
         workspace: WORKSPACE,
         counts: WORKSPACE.counts,
@@ -790,6 +813,10 @@ function makeClient(
         },
         content: JSON.stringify({ apiKey: POISON_SECRET }),
       }),
+      createFile: vi.fn(),
+      validate: vi.fn(),
+      updateFile: vi.fn(),
+      reload: vi.fn(),
       ...overrides.runtimeConfig,
     },
     providerSubscriptions: {
@@ -1621,6 +1648,28 @@ describe('General settings (board 10)', () => {
 });
 
 describe('AI interface (board 20)', () => {
+  it('is a published Tier-A Settings destination', async () => {
+    const surface = surfaceById('ai-interface');
+    expect(surface).toMatchObject({
+      tier: 'A',
+      nav: 'settings',
+      path: '/settings/ai-interface',
+    });
+    expect(isSurfaceLive(surface!)).toBe(true);
+
+    const client = makeClient();
+    renderApp('/settings/ai-interface', client);
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'AI interface' })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.queryByText(/status only/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
+    expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
+  });
+
   it('renders the fixed provider inventory, provider-scoped slots, and quota posture', async () => {
     const listProviders = vi.fn().mockResolvedValue(PROVIDERS);
     const listAccounts = vi.fn().mockImplementation((providerId: string) =>
@@ -1637,13 +1686,7 @@ describe('AI interface (board 20)', () => {
       providerSubscriptions: { listProviders, listAccounts, getAccountQuota },
     });
 
-    renderApp(
-      '/settings/ai-interface',
-      client,
-      <main>
-        <AiInterfaceScreen />
-      </main>
-    );
+    renderApp('/settings/ai-interface', client);
 
     const codexProvider = await screen.findByText('OpenAI Codex');
     const xaiProvider = screen.getByText('xAI');
@@ -1654,6 +1697,8 @@ describe('AI interface (board 20)', () => {
     expect(screen.getByText('xAI primary')).toBeInTheDocument();
     expect(screen.getByText('60% remaining')).toBeInTheDocument();
     expect(screen.getByText('Quota unsupported')).toBeInTheDocument();
+    expect((await screen.findAllByText('Demo provider')).length).toBeGreaterThan(0);
+    expect(client.app.getDiagnostics).toHaveBeenCalled();
 
     expect(listProviders).toHaveBeenCalledTimes(1);
     expect(listAccounts).toHaveBeenCalledTimes(2);
@@ -1662,25 +1707,9 @@ describe('AI interface (board 20)', () => {
     expect(getAccountQuota).toHaveBeenCalledTimes(2);
     expect(getAccountQuota).toHaveBeenCalledWith('openai-codex', 'primary');
     expect(getAccountQuota).toHaveBeenCalledWith('xai', 'primary');
-    for (const mutation of [
-      client.providerSubscriptions.createAccount,
-      client.providerSubscriptions.updateAccount,
-      client.providerSubscriptions.deleteAccount,
-      client.providerSubscriptions.startAccountLogin,
-      client.providerSubscriptions.cancelAccountLogin,
-      client.providerSubscriptions.logoutAccount,
-    ]) {
-      expect(mutation).not.toHaveBeenCalled();
-    }
-    expect(
-      within(screen.getByRole('main'))
-        .getAllByRole('button')
-        .map((button) => button.textContent)
-    ).toEqual(['Refresh status']);
-    expect(within(screen.getByRole('main')).queryByRole('link')).not.toBeInTheDocument();
   });
 
-  it('renders all five provider-neutral account lifecycle states', async () => {
+  it('renders all five provider-neutral account lifecycle states and pending device-code details', async () => {
     const listAccounts = vi
       .fn()
       .mockImplementation((providerId: string) =>
@@ -1691,12 +1720,16 @@ describe('AI interface (board 20)', () => {
       .mockImplementation((_providerId: string, accountSlotId: string) =>
         Promise.resolve({ ...CODEX_QUOTA, accountSlotId })
       );
+    const getAccountStatus = vi
+      .fn()
+      .mockImplementation((_providerId: string, accountSlotId: string) =>
+        Promise.resolve(
+          LIFECYCLE_ACCOUNTS.find((account) => account.accountSlotId === accountSlotId)
+        )
+      );
     renderApp(
       '/settings/ai-interface',
-      makeClient({ providerSubscriptions: { listAccounts, getAccountQuota } }),
-      <main>
-        <AiInterfaceScreen />
-      </main>
+      makeClient({ providerSubscriptions: { listAccounts, getAccountQuota, getAccountStatus } })
     );
 
     expect(await screen.findByText('Logged out account')).toBeInTheDocument();
@@ -1709,6 +1742,11 @@ describe('AI interface (board 20)', () => {
     ]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+    expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'https://example.com/device' })).toHaveAttribute(
+      'href',
+      'https://example.com/device'
+    );
   });
 
   it('renders Codex quota as temporarily unavailable without changing account status', async () => {
@@ -1724,31 +1762,9 @@ describe('AI interface (board 20)', () => {
           : XAI_QUOTA
       )
     );
-    renderApp(
-      '/settings/ai-interface',
-      makeClient({ providerSubscriptions: { getAccountQuota } }),
-      <main>
-        <AiInterfaceScreen />
-      </main>
-    );
+    renderApp('/settings/ai-interface', makeClient({ providerSubscriptions: { getAccountQuota } }));
     expect(await screen.findByText('Quota temporarily unavailable')).toBeInTheDocument();
     expect(screen.getAllByText('Connected')).toHaveLength(2);
-  });
-
-  it('shows control-channel and Skills status sections', async () => {
-    renderApp(
-      '/settings/ai-interface',
-      makeClient(),
-      <main>
-        <AiInterfaceScreen />
-      </main>
-    );
-    expect(
-      await screen.findByRole('heading', { name: /Control channel/i, level: 2 })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Skills', level: 2 })).toBeInTheDocument();
-    expect(screen.getByText(/0\.4\.0/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Healthy|Reachable/i).length).toBeGreaterThan(0);
   });
 
   it('never renders credential or provider-private values from poisoned payloads', async () => {
@@ -1781,13 +1797,7 @@ describe('AI interface (board 20)', () => {
         ),
       },
     });
-    renderApp(
-      '/settings/ai-interface',
-      client,
-      <main>
-        <AiInterfaceScreen />
-      </main>
-    );
+    renderApp('/settings/ai-interface', client);
     expect(await screen.findByText('Poisoned app')).toBeInTheDocument();
     const rendered = document.body.textContent ?? '';
     expect(rendered).not.toContain(POISON_SECRET);
@@ -1803,13 +1813,7 @@ describe('AI interface (board 20)', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue(PROVIDERS);
     const client = makeClient({ providerSubscriptions: { listProviders } });
-    renderApp(
-      '/settings/ai-interface',
-      client,
-      <main>
-        <AiInterfaceScreen />
-      </main>
-    );
+    renderApp('/settings/ai-interface', client);
     expect(await screen.findByText(/Couldn't load AI interface/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listProviders).toHaveBeenCalledTimes(2));
@@ -1825,13 +1829,7 @@ describe('AI interface (board 20)', () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
-    renderApp(
-      '/settings/ai-interface',
-      client,
-      <main>
-        <AiInterfaceScreen />
-      </main>
-    );
+    renderApp('/settings/ai-interface', client);
     expect(await screen.findByRole('heading', { name: 'AI interface' })).toBeInTheDocument();
     await waitFor(
       () => {
@@ -1842,13 +1840,7 @@ describe('AI interface (board 20)', () => {
   });
 
   it('exposes landmarks and headings for a11y', async () => {
-    renderApp(
-      '/settings/ai-interface',
-      makeClient(),
-      <main>
-        <AiInterfaceScreen />
-      </main>
-    );
+    renderApp('/settings/ai-interface', makeClient());
     expect(
       await screen.findByRole('heading', { level: 1, name: 'AI interface' })
     ).toBeInTheDocument();

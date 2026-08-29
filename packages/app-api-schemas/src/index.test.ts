@@ -113,6 +113,7 @@ import {
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
   PendingGoalSteeringHumanAttentionSourceSchema,
+  ProviderApiKeyProfileIdSchema,
   ProviderRegistryEntrySchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
@@ -159,6 +160,8 @@ import {
   RuntimeEvidenceRecordSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  SetProviderApiKeyRequestSchema,
+  SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
   SetWorkspaceRepositoryResponseSchema,
   StagedWorkspaceReviewSchema,
@@ -1949,6 +1952,16 @@ describe('app api schemas', () => {
         expiresAt: null,
       }).targetPath
     ).toBe('/sandbox/.codex/auth.json');
+    expect(SetProviderApiKeyRequestSchema.parse({ apiKey: 'provider-secret' }).apiKey).toBe(
+      'provider-secret'
+    );
+    expect(
+      SetProviderApiKeyResponseSchema.parse({ configured: true, providerId: 'xai-api' })
+    ).toEqual({ configured: true, providerId: 'xai-api' });
+    expect(ProviderApiKeyProfileIdSchema.safeParse('openrouter').success).toBe(true);
+    for (const providerId of ['openrouter.ai', 'provider/path', 'foo-sk-demo', 'foo-okt_demo']) {
+      expect(ProviderApiKeyProfileIdSchema.safeParse(providerId).success).toBe(false);
+    }
     expect(
       VaultAdminRebindWorkspaceReferenceRequestSchema.parse({
         materialBase64: Buffer.from('workspace-secret').toString('base64'),
@@ -2024,6 +2037,12 @@ describe('app api schemas', () => {
           secretKind: secret,
           status: 'active',
           workspaceId: 'ws_demo',
+        }).success
+      ).toBe(false);
+      expect(
+        SetProviderApiKeyResponseSchema.safeParse({
+          configured: true,
+          providerId: secret,
         }).success
       ).toBe(false);
     }

@@ -1120,6 +1120,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerVaultAdminRoutes({
     app,
     coreDb: options.coreDb,
+    dataRoot,
     repositoryWorkspaceDb,
     vaultUnlockState,
   });

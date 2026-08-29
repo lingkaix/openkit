@@ -17,6 +17,7 @@ export interface RecordVaultAdminAuditEventInput {
     | 'vault.unlock'
     | 'vault.lock'
     | 'vault.bootstrap_codex_auth_json'
+    | 'vault.set_provider_api_key'
     | 'vault.rebind_workspace_reference';
   /** Event outcome. */
   readonly outcome: 'succeeded' | 'failed' | 'denied';

@@ -359,6 +359,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'user.disable',
       'vault.bootstrap-codex-auth',
       'vault.lock',
+      'vault.provider-api-key-set',
       'vault.server-use-list',
       'vault.status',
       'vault.unlock',
@@ -419,6 +420,15 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
   assert.equal(
     operationCatalog.find((entry) => entry.id === 'workspace.invitation-create')?.inputSensitivity,
     'secret stdin'
+  );
+  assert.equal(
+    operationCatalog.find((entry) => entry.id === 'vault.provider-api-key-set')?.inputSensitivity,
+    'secret stdin'
+  );
+  assert.strictEqual(
+    operationCatalog.find((entry) => entry.id === 'vault.provider-api-key-set')?.inputSchema.shape
+      .providerId,
+    appSchemas.ProviderApiKeyProfileIdSchema
   );
   assert.deepEqual(
     operationExclusions

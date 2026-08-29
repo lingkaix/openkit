@@ -8039,6 +8039,66 @@
         }
       }
     },
+    "/api/app/providers/{providerId}/api-key": {
+      "put": {
+        "operationId": "setProviderApiKey",
+        "tags": [
+          "providers",
+          "vault"
+        ],
+        "summary": "Store or replace the API key for an authored provider profile.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "providerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 119,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetProviderApiKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Redacted provider API key configuration status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetProviderApiKeyResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/workspaces/{workspaceId}/vault/references/{referenceId}/rebind": {
       "post": {
         "operationId": "rebindWorkspaceVaultReference",
@@ -35823,6 +35883,42 @@
         },
         "required": [
           "repository"
+        ],
+        "additionalProperties": false
+      },
+      "SetProviderApiKeyRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "apiKey"
+        ],
+        "additionalProperties": false
+      },
+      "SetProviderApiKeyResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "const": true
+          },
+          "providerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 119,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          }
+        },
+        "required": [
+          "configured",
+          "providerId"
         ],
         "additionalProperties": false
       },
@@ -84398,5 +84494,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:de2b6a2517f6245fa441458ef30111360cb1422c6ecba7d6a89e35fd1f611a62"
+  "x-openkit-source-digest": "sha256:84c892baed7020799b67ec387c524a5ee2a42acc37782f42327a0490aae15dca"
 }

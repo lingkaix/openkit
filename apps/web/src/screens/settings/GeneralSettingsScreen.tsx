@@ -27,7 +27,7 @@ const SYSTEM_DEFAULT = 'system-default';
  * General settings (WP-7, board 10).
  *
  * The shell sidebar owns category navigation; this page contains only Workspace-authorized settings.
- * Appearance lives at `/settings/appearance` (ThemePicker), and deployment administration remains unpublished until Web has an accepted server-admin credential path.
+ * Appearance lives at `/settings/appearance` (ThemePicker). Deployment administration for Configuration and AI interface is a separately gated Settings workflow.
  * Honors §9.13: skeleton form, inline save error, and Save disabled when disconnected.
  */
 export function GeneralSettingsScreen() {

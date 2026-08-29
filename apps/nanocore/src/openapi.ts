@@ -169,6 +169,8 @@ import {
   RuntimeConfigValidationResponseSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  SetProviderApiKeyRequestSchema,
+  SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
   SetWorkspaceRepositoryRequestSchema,
   SetWorkspaceRepositoryResponseSchema,
@@ -4433,6 +4435,53 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/providers/{providerId}/api-key': {
+        put: {
+          operationId: 'setProviderApiKey',
+          tags: ['providers', 'vault'],
+          summary: 'Store or replace the API key for an authored provider profile.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            {
+              name: 'providerId',
+              in: 'path',
+              required: true,
+              schema: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 119,
+                pattern: '^[A-Za-z0-9][A-Za-z0-9_-]*$',
+              },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/SetProviderApiKeyRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Redacted provider API key configuration status.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/SetProviderApiKeyResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/app/workspaces/{workspaceId}/vault/references/{referenceId}/rebind': {
         post: {
           operationId: 'rebindWorkspaceVaultReference',
@@ -5181,6 +5230,8 @@ export function createAppOpenApiDocument() {
         RunThreadGoalStepResponse: toJsonSchema(RunThreadGoalStepResponseSchema),
         SetWorkspaceRepositoryRequest: toJsonSchema(SetWorkspaceRepositoryRequestSchema),
         SetWorkspaceRepositoryResponse: toJsonSchema(SetWorkspaceRepositoryResponseSchema),
+        SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
+        SetProviderApiKeyResponse: toJsonSchema(SetProviderApiKeyResponseSchema),
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),
         StartChatModeRequest: toJsonSchema(StartChatModeRequestSchema),
         StartChatModeResponse: toJsonSchema(StartChatModeResponseSchema),

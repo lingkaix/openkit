@@ -26,7 +26,7 @@ export const settingsKeys = {
     ['settings', 'aep-snapshot', workspaceId, snapshotId] as const,
   usage: (workspaceId: string) => ['settings', 'usage', workspaceId] as const,
   meta: ['core', 'meta'] as const,
-  providerSubscriptions: ['settings', 'provider-subscriptions'] as const,
+  aiInterface: (generation: number) => ['settings', 'ai-interface', generation] as const,
 };
 
 /** Re-export workspace selection for General settings. */
@@ -57,6 +57,11 @@ export interface ConnectedAppRow {
   boundProviderCount: number;
   quotaAvailability: ProviderSubscriptionQuotaPayload['availability'];
   quotaRemainingPercents: number[];
+  verificationUrl: string | null;
+  userCode: string | null;
+  interactionId: string | null;
+  message: string | null;
+  updatedAt: string;
 }
 
 /** Safe provider section for the AI interface surface. */
@@ -381,7 +386,7 @@ export function projectWorkspace(workspace: WorkspaceRecord): WorkspaceRecord {
  * @param provider Fixed provider inventory descriptor.
  * @param payload Provider-scoped account list.
  * @param quotas Quota result for each account at the matching array index.
- * @returns Provider section with status-only account rows.
+ * @returns Provider section with account rows, including pending device-code fields.
  */
 export function projectConnectedApps(
   provider: ProviderSubscriptionDescriptor,
@@ -406,6 +411,12 @@ export function projectConnectedApps(
       ) {
         throw new Error('Provider subscription projection failed.');
       }
+      const raw = payload.accounts[index];
+      const interaction = raw?.status === 'pending' ? raw.interaction : undefined;
+      const message =
+        account.status === 'unavailable' || account.status === 'error'
+          ? account.message
+          : undefined;
       return {
         identity: `${account.subscriptionProviderId}:${account.accountSlotId}`,
         accountSlotId: account.accountSlotId,
@@ -421,6 +432,13 @@ export function projectConnectedApps(
                 window.remainingPercent === undefined ? [] : [window.remainingPercent]
               )
             : [],
+        verificationUrl: interaction?.verificationUrl
+          ? (projectSafeValue(interaction.verificationUrl) as string)
+          : null,
+        userCode: interaction?.userCode ? (projectSafeValue(interaction.userCode) as string) : null,
+        interactionId: interaction?.interactionId ?? null,
+        message: message === undefined ? null : (projectSafeValue(message) as string),
+        updatedAt: account.updatedAt,
       };
     }),
   };
@@ -473,33 +491,6 @@ export function useMetaStatus() {
   return useQuery({
     queryKey: settingsKeys.meta,
     queryFn: async () => projectSafeValue(await client.core.meta()) as MetaResponse,
-  });
-}
-
-/** List provider-neutral subscription account and quota status. */
-export function useConnectedApps() {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: settingsKeys.providerSubscriptions,
-    queryFn: async () => {
-      const inventory = await client.providerSubscriptions.listProviders();
-      return Promise.all(
-        inventory.providers.map(async (provider) => {
-          const accounts = await client.providerSubscriptions.listAccounts(
-            provider.subscriptionProviderId
-          );
-          const quotas = await Promise.all(
-            accounts.accounts.map((account) =>
-              client.providerSubscriptions.getAccountQuota(
-                provider.subscriptionProviderId,
-                account.accountSlotId
-              )
-            )
-          );
-          return projectConnectedApps(provider, accounts, quotas);
-        })
-      );
-    },
   });
 }
 

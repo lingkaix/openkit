@@ -277,6 +277,10 @@ import {
   SaveWorkspaceMaterialRevisionRequestSchema,
   type SaveWorkspaceMaterialRevisionResponse,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  type SetProviderApiKeyRequest,
+  SetProviderApiKeyRequestSchema,
+  type SetProviderApiKeyResponse,
+  SetProviderApiKeyResponseSchema,
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
   type StartChatModeRequest,
@@ -899,6 +903,11 @@ export interface AppApiClient {
   ): Promise<GetAgentEnvironmentPackageSnapshotResponse>;
   /** Reads Settings diagnostics. */
   getDiagnostics(): Promise<AppDiagnosticsResponse>;
+  /** Stores or replaces one authored provider profile's Vault-backed API key. */
+  setProviderApiKey(
+    providerId: string,
+    input: SetProviderApiKeyRequest
+  ): Promise<SetProviderApiKeyResponse>;
   /** Reads setup diagnostics. */
   getSetupDiagnostics(): Promise<SetupDiagnosticsResponse>;
   /** Reads the NanoCore storage layout report. */
@@ -1591,6 +1600,12 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         GetAgentEnvironmentPackageSnapshotResponseSchema
       ),
     getDiagnostics: () => transport.getJson('/api/app/diagnostics', AppDiagnosticsResponseSchema),
+    setProviderApiKey: (providerId, input) =>
+      transport.putJson(
+        `/api/app/providers/${encodeURIComponent(providerId)}/api-key`,
+        SetProviderApiKeyRequestSchema.parse(input),
+        SetProviderApiKeyResponseSchema
+      ),
     getSetupDiagnostics: () =>
       transport.getJson('/api/setup/diagnostics', SetupDiagnosticsResponseSchema),
     getStorageLayoutReport: () =>
