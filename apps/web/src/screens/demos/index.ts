@@ -1,8 +1,7 @@
 /**
- * Tier-B concept-demo screens (WP-8).
+ * Unpublished Tier-B review screens (WP-8).
  *
- * Automations and Channels — full UI built
- * from sample fixtures, shipped flag-disabled behind ConceptDemo (DESIGN.md §11).
+ * Automations and Channels are full review UIs built from sample fixtures and omitted from published navigation and routing (DESIGN.md §11).
  */
 export { AutomationsScreen } from './AutomationsScreen';
 export { ChannelsScreen } from './ChannelsScreen';

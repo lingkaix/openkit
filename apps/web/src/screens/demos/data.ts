@@ -3,7 +3,7 @@ import { surfaceById } from '../../app/surfaces';
 import type { StatusTone } from '../../primitives';
 
 /**
- * Tier-B demo data seam (WP-8).
+ * Tier-B review-data seam (WP-8).
  *
  * Screens read through these hooks. While a surface is not live (`isSurfaceLive`
  * false), hooks return sample / last-known fixtures so §9.13 states render without
@@ -21,7 +21,7 @@ export type TierBSurfaceId = (typeof TIER_B_SURFACE_IDS)[number];
 export interface DemoQueryResult<T> {
   /** Projected rows or payload for the screen. */
   data: T;
-  /** True while the surface ships as a concept demo (flag off). */
+  /** True while the surface remains unpublished. */
   isDemo: boolean;
 }
 

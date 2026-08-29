@@ -24,8 +24,9 @@ The live Tier-A board-17 **Usage & audit** screen is implemented as a read-only 
 
 The live Tier-A board-19 **Repositories** screen projects selected-Workspace repository resources, diagnostics, durable push records, and the existing approval-gated Git push workflow through `client.repositories`. It requests approval for one exact target, executes only a matching granted approval, and re-reads the authoritative push record without adding an API or external-effect owner. Its approval response remains TanStack mutation data, and its route appears once beneath the successfully discovered, authorized Workspace name instead of in global primary navigation. Worker-proposed-file Workspace Sync review-to-apply UX and the complete collapsible Workspace/thread tree remain unimplemented and outside this surface. Focused tests cover this Web projection; no browser proof or real external push is claimed here.
 
-Surfaces that run ahead of a stable kernel contract are built but shipped behind
-a disable flag as concept demos (DESIGN.md §11); they are never wired as if live.
+Surfaces that run ahead of a stable kernel contract may retain internal review implementations, but published navigation and routing omit them until they become live (DESIGN.md §11).
+
+The Settings **Debug** surface contains the component catalog and is the single Web placement for future developer-facing inspection panels after their contracts and authorization are accepted.
 
 ## Stack
 
@@ -40,7 +41,7 @@ Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/202607
 - **Zustand** — UI-only state. **TanStack Query** — server state over `core-client`.
   The two never overlap.
 - **React Router** — routing.
-- **A2UI-like local renderer** — Tier-C declarative render shell (whitelisted primitives only; flag-disabled). The official A2UI React renderer is not yet installed.
+- **A2UI-like local renderer** — unpublished Tier-C declarative render shell (whitelisted primitives only). The official A2UI React renderer is not yet installed.
 - **Iconify + Remix Icon** — icons for the primitive and screen tiers.
 - **Biome** — lint/format (repo-wide config). **Vitest** + Testing Library — unit.
   **Playwright** — e2e.
@@ -96,8 +97,8 @@ src/
     material/         Tier-A live Plane 1 Material, Thread binding, delivery, and proposal-comparison surfaces
     workspace/        Tier-A Overview, Agents, Knowledge, First-run, Repositories
     settings/         Tier-A General + AI interface + read-only Workspace Vault and Usage & audit
-    demos/            Tier-B concept demos — Automations and Channels
-    generative/       Tier-C A2UI render shell + three-state fallback
+    demos/            Unpublished Tier-B review screens — Automations and Channels
+    generative/       Unpublished Tier-C A2UI render shell + three-state fallback
   primitives/         React Aria + Spectrum-tokened primitive tier
   styles/
     tokens.css        token bridge — Spectrum-derived semantic tokens × 3 themes
@@ -111,17 +112,7 @@ playwright.config.ts
 
 ## Status
 
-The current React baseline includes the app shell, three-theme token bridge,
-primitive gallery, live Chat, Task, Goal, Overview, Agents, Knowledge, core
-Settings surfaces including read-only Workspace Vault and Usage & audit, and the bounded live Plane 1 Material surface, plus
-flag-disabled concept demos and the generative render shell. The Material
-surface includes identity, editing, immutable-revision history and comparison;
-one singular Thread binding with inclusion and queue state; active-turn
-exact-revision delivery and terminal outcomes; and version-keyed Artifact
-Review proposal, base, and current comparison with conflict-safe decisions and
-historical decision evidence. The Claude Design board inventory is a
-non-exhaustive visual reference, not evidence that every product surface is
-implemented.
+The current React baseline includes the app shell, three-theme token bridge, the Settings Debug component gallery, live Chat, Task, Goal, Overview, Agents, Knowledge, core Settings surfaces including read-only Workspace Vault and Usage & audit, the bounded live Plane 1 Material surface, and internal unpublished Automations, Channels, and Generative UI review implementations. The Material surface includes identity, editing, immutable-revision history and comparison; one singular Thread binding with inclusion and queue state; active-turn exact-revision delivery and terminal outcomes; and version-keyed Artifact Review proposal, base, and current comparison with conflict-safe decisions and historical decision evidence. The Claude Design board inventory is a non-exhaustive visual reference, not evidence that every product surface is implemented.
 
 Chat and Task Thread streams render every non-secret user-input Gate as accessible inline text or option controls and submit one complete answer map through the existing Core Client Turn command. Pending submission is disabled, a failed command retains its exact map for retry, and secret-bearing, connection-checking, or disconnected Gates remain visible without a submit action. The isolated Playwright stack can restart only NanoCore on its existing port and data root while keeping the Web process live, and its final stop still owns complete process and temporary-root cleanup.
 

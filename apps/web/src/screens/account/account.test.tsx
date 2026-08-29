@@ -829,14 +829,14 @@ describe('protected-read account gate', () => {
     const { client, forbidden, listAuthorizedWorkspaces } = makeClient({
       listAuthorizedWorkspaces: vi.fn().mockReturnValue(pending.promise),
     });
-    const { queryClient } = renderApp('/components', client);
+    const { queryClient } = renderApp('/', client);
 
     await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(1));
     expectFetchingAccountQuery(queryClient);
     expect(screen.getByRole('status')).toHaveTextContent(/checking.*account|checking.*access/i);
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
     expect(screen.queryByRole('main', { name: 'Workspace' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Components' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Overview' })).not.toBeInTheDocument();
     expect(forbidden.meta).not.toHaveBeenCalled();
     expectNoDeploymentAdmissionProbes(forbidden);
   });
@@ -849,7 +849,7 @@ describe('protected-read account gate', () => {
     const { client, forbidden, listAuthorizedWorkspaces } = makeClient({
       listAuthorizedWorkspaces: vi.fn().mockReturnValue(pending.promise),
     });
-    const { queryClient } = renderApp('/components', client);
+    const { queryClient } = renderApp('/', client);
 
     await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(1));
     expectFetchingAccountQuery(queryClient);
@@ -928,7 +928,7 @@ describe('protected-read account gate', () => {
       listAuthorizedWorkspaces: vi.fn().mockRejectedValue(AUTH_REQUIRED()),
       signIn,
     });
-    const { queryClient } = renderApp('/components', client);
+    const { queryClient } = renderApp('/', client);
 
     await screen.findByRole('form', { name: /account access/i });
     const user = userEvent.setup();
@@ -983,7 +983,7 @@ describe('protected-read account gate', () => {
       .mockRejectedValueOnce(failure)
       .mockReturnValueOnce(successfulRetry.promise);
     const { client, forbidden } = makeClient({ listAuthorizedWorkspaces });
-    const { queryClient } = renderApp('/components', client);
+    const { queryClient } = renderApp('/', client);
 
     const retry = await screen.findByRole('button', { name: /try again|retry/i });
     expectSettledAccountQuery(queryClient, 'error', failure);
@@ -1045,10 +1045,7 @@ describe('email/password session operations', () => {
       listAuthorizedWorkspaces,
       [operation]: auth,
     });
-    const { queryClient } = renderApp(
-      operation === 'signOut' ? '/settings/account' : '/components',
-      client
-    );
+    const { queryClient } = renderApp(operation === 'signOut' ? '/settings/account' : '/', client);
 
     if (operation === 'signOut') {
       const signOut = await screen.findByRole('button', { name: /sign out/i });
@@ -1156,7 +1153,7 @@ describe('email/password session operations', () => {
       listAuthorizedWorkspaces: vi.fn().mockRejectedValue(initialFailure),
       [mode]: auth,
     });
-    const { queryClient } = renderApp('/components', client);
+    const { queryClient } = renderApp('/', client);
     await screen.findByRole('form', { name: /account access/i });
     expectSettledAccountQuery(queryClient, 'error', initialFailure);
     expect(forbidden.meta).not.toHaveBeenCalled();
@@ -1214,7 +1211,7 @@ describe('email/password session operations', () => {
       listAuthorizedWorkspaces,
       [mode]: auth,
     });
-    const { queryClient } = renderApp('/components', client);
+    const { queryClient } = renderApp('/', client);
 
     await screen.findByRole('form', { name: /account access/i });
     expectSettledAccountQuery(queryClient, 'error', initialFailure);

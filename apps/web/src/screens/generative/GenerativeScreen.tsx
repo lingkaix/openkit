@@ -1,9 +1,9 @@
 /**
  * Generative UI / A2UI demo surface (WP-9, board 13).
  *
- * Tier C render shell only: shows the three-state fallback (streaming skeleton →
- * rendered whitelist → plain-content fallback) with fixture declarations. Ships
- * flag-disabled behind ConceptDemo. No live agent data path.
+ * Tier C render shell only: shows the three-state fallback (streaming skeleton → rendered whitelist → plain-content fallback) with fixture declarations.
+ * It is omitted from published navigation and routing.
+ * No live agent data path exists.
  */
 
 import type { ReactNode } from 'react';
@@ -40,16 +40,13 @@ function GeneratedSurface({ tag, children }: { tag: string; children: ReactNode 
   );
 }
 
-/**
- * Board 13 concept demo — three-state A2UI shell with sample declarations.
- */
+/** Board 13 internal review screen for the three-state A2UI shell. */
 export function GenerativeScreen() {
   return (
     <Page>
       <PageHeader
-        eyebrow="Board 13 · Tier C"
         title="Generative UI"
-        subtitle="A2UI in-thread render shell — whitelisted OpenKit primitives only. Flag-disabled until the generative-kernel data plane lands."
+        subtitle="A2UI in-thread render shell — whitelisted OpenKit primitives only."
       />
 
       <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6">

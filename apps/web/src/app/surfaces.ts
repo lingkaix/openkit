@@ -5,7 +5,7 @@ import type { IconName } from '../primitives';
  * navigation, and feature-flag gating (DESIGN.md §3, §11). Each entry traces to a
  * Claude Design board frame. Tier is the §11 build tier:
  *   A — live (kernel-backed today)
- *   B — built, shipped disabled (contract not yet stable)
+ *   B — built, unpublished (contract not yet stable)
  *   C — deferred render-shell only
  */
 export type Tier = 'A' | 'B' | 'C';
@@ -26,7 +26,7 @@ export interface Surface {
   title: string;
   /** React Router path. */
   path: string;
-  /** Build tier; anything but `A` ships as an inert concept demo. */
+  /** Build tier; only `A` may be published in navigation and routing. */
   tier: Tier;
   /** Sidebar placement. */
   nav: NavGroup;
@@ -90,17 +90,6 @@ export const SURFACES: Surface[] = [
     board: '19',
     wp: 'WP-7',
   },
-  {
-    id: 'components',
-    title: 'Components',
-    path: '/components',
-    tier: 'A',
-    nav: 'primary',
-    icon: 'file',
-    board: '11',
-    wp: 'WP-2',
-  },
-
   // Tier A — reached in-context (route-only)
   {
     id: 'chat-thread',
@@ -166,7 +155,7 @@ export const SURFACES: Surface[] = [
     wp: 'WP-6',
   },
 
-  // Tier B — built, shipped disabled (concept demos)
+  // Tier B — built, unpublished
   {
     id: 'automations',
     title: 'Automations',
@@ -250,8 +239,18 @@ export const SURFACES: Surface[] = [
     board: '17',
     wp: 'WP-7',
   },
+  {
+    id: 'debug',
+    title: 'Debug',
+    path: '/settings/debug',
+    tier: 'A',
+    nav: 'settings',
+    icon: 'file',
+    board: '11',
+    wp: 'WP-2',
+  },
 
-  // Settings (Tier B concept demos)
+  // Settings (Tier B, unpublished)
   {
     id: 'channels',
     title: 'Channels',

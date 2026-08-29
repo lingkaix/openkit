@@ -6,8 +6,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { isSurfaceLive } from '../../app/flags';
-import { AppRoutes } from '../../app/routes';
 import { SURFACES, surfaceById, surfacesInGroup } from '../../app/surfaces';
+import { AutomationsScreen } from './AutomationsScreen';
+import { ChannelsScreen } from './ChannelsScreen';
 import { TIER_B_SURFACE_IDS } from './data';
 
 const EXPECTED_TIER_B_SURFACE_IDS = ['automations', 'channels'] as const;
@@ -33,14 +34,10 @@ function Providers({ children, path }: { children?: ReactNode; path: string }) {
   return (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={makeClient()}>
-        <MemoryRouter initialEntries={[path]}>{children ?? <AppRoutes />}</MemoryRouter>
+        <MemoryRouter initialEntries={[path]}>{children}</MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
-}
-
-function renderRoute(path: string) {
-  return render(<Providers path={path} />);
 }
 
 describe('WP-8 Tier-B surface catalog', () => {
@@ -75,25 +72,13 @@ describe('WP-8 Tier-B surface catalog', () => {
   });
 });
 
-describe('WP-8 Tier-B routes — concept demo + inert', () => {
-  const cases = [
-    { path: '/automations', title: 'Automations' },
-    { path: '/settings/channels', title: 'Channels' },
-  ] as const;
-
-  it.each(cases)('wraps $title in ConceptDemo with inert content', async ({ path, title }) => {
-    const { container } = renderRoute(path);
-    expect(await screen.findByText(/not yet backed by the kernel/i)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 1, name: title })).toBeInTheDocument();
-    const inert = container.querySelector('[inert]');
-    expect(inert).not.toBeNull();
-    expect(inert?.textContent).toContain(title);
-  });
-});
-
 describe('WP-8 Tier-B screens — frame headings', () => {
   it('Automations renders list and create panel', async () => {
-    renderRoute('/automations');
+    render(
+      <Providers path="/automations">
+        <AutomationsScreen />
+      </Providers>
+    );
     expect(await screen.findByRole('heading', { name: 'Automations' })).toBeInTheDocument();
     expect(screen.getByText('Monday interview digest')).toBeInTheDocument();
     expect(screen.getByText('New automation')).toBeInTheDocument();
@@ -101,7 +86,11 @@ describe('WP-8 Tier-B screens — frame headings', () => {
   });
 
   it('Channels renders connected channels and interrupt preview', async () => {
-    renderRoute('/settings/channels');
+    render(
+      <Providers path="/settings/channels">
+        <ChannelsScreen />
+      </Providers>
+    );
     expect(await screen.findByRole('heading', { name: 'Channels' })).toBeInTheDocument();
     expect(screen.getByText('Connected channels')).toBeInTheDocument();
     expect(screen.getByText('What travels out')).toBeInTheDocument();

@@ -152,10 +152,7 @@ These are the yardsticks. Every new surface is measured against them.
 7. **Auditable by construction.** Every artifact and action answers "why" —
    traceable to a plan step, an initiator, and a time (D-010 #5).
 
-8. **Small, durable, honest.** Don't ship inactive/decorative controls (no dead
-   search box). Don't invent surfaces the kernel can't back — and where a
-   designed surface runs ahead of its kernel contract, ship it **disabled behind
-   a feature flag** as a concept demo, never as if it were live (see §11).
+8. **Small, durable, honest.** Don't ship inactive/decorative controls (no dead search box). Don't invent surfaces the kernel can't back — where a designed surface runs ahead of its kernel contract, keep it out of published navigation and routing until the contract is stable (see §11).
 
 ---
 
@@ -509,9 +506,7 @@ from semantic tokens only (never raw palette).
   banner/affordance), while per-surface content degrades to its `ok-error` or
   last-known read model rather than blanking out. Reconnect is retryable and does
   not lose the user's place.
-- **Disabled.** Controls and whole surfaces can be disabled (§11): disabled
-  controls use the disabled bg/content/border tokens; a **feature-flag-disabled
-  surface** is reachable as a labeled concept demo but its actions are inert.
+- **Disabled.** Individual controls can use disabled bg/content/border tokens; a whole surface without a stable backing contract is unpublished rather than exposed as inactive product UI (§11).
 
 ### 9.13 Per-surface state matrix
 
@@ -576,13 +571,7 @@ Ordered by how the D-010 roadmap prioritizes them.
    message carries an **initiator** now ("Approved by SW"); presence, @mentions,
    roles, and conflict resolution are deferred. The Thread view *is* the
    multiplayer surface; single-player is its degenerate case.
-8. **Generative UI = A2UI in-thread** (D-011). Agent sends declarative JSON; the
-   client renders whitelisted OpenKit primitives — no iframes, no arbitrary code.
-   Surfaces are **thread items**; actions flow back as attributed items; three
-   states, no dead ends: **streaming skeleton → rendered → plain-content fallback**
-   (an unknown component degrades to content, never an error card or embedded
-   frame). *This surface ships behind a disable flag until its kernel/policy
-   contract lands (§11).*
+8. **Generative UI = A2UI in-thread** (D-011). Agent sends declarative JSON; the client renders whitelisted OpenKit primitives — no iframes, no arbitrary code. Surfaces are **thread items**; actions flow back as attributed items; three states, no dead ends: **streaming skeleton → rendered → plain-content fallback** (an unknown component degrades to content, never an error card or embedded frame). *The internal review surface remains unpublished until its kernel/policy contract lands (§11).*
 9. **Reach while away** (D-010 #6, future mechanic): interrupts travel out
    (notifications / email digest) and are actionable in place.
 
@@ -590,7 +579,7 @@ Ordered by how the D-010 roadmap prioritizes them.
 
 ## 11. Build scope — project accepted contracts, gate what the kernel can't back yet
 
-Product-surface admission comes from accepted owning specifications, not from the presence or absence of a Claude Design board. The board inventory below is a bounded audit of the visual references and concept demos present when this guide was reconciled; it is intentionally non-exhaustive and is not a functional-completeness checklist. The UI must stay **honest** (Principle 8): a surface whose kernel/protocol contract is not yet stable ships **disabled behind a feature flag** — reachable as a labeled concept demo, hidden from primary navigation or rendered non-operational — never wired as if it were live. As each contract stabilizes, the flag flips on. Traceability of each surface to its contract is owned by [`docs/specs/20260628-web_product_surface_projection.md`](docs/specs/20260628-web_product_surface_projection.md); deferral rationale is in [`docs/roadmap.md`](docs/roadmap.md).
+Product-surface admission comes from accepted owning specifications, not from the presence or absence of a Claude Design board. The board inventory below is a bounded audit of the visual references and internal review surfaces present when this guide was reconciled; it is intentionally non-exhaustive and is not a functional-completeness checklist. The UI must stay **honest** (Principle 8): a surface whose kernel/protocol contract is not yet stable remains available only as an internal review implementation and is absent from published navigation and routing, never presented as inactive product UI or wired as if it were live. When its contract stabilizes, the surface moves to Tier A and receives its intended navigation placement as one coherent change. Traceability of each surface to its contract is owned by [`docs/specs/20260628-web_product_surface_projection.md`](docs/specs/20260628-web_product_surface_projection.md); deferral rationale is in [`docs/roadmap.md`](docs/roadmap.md).
 
 The current 24 reference boards (01–22, with 05b/05c) and their audited build tier:
 
@@ -601,17 +590,14 @@ The current 24 reference boards (01–22, with 05b/05c) and their audited build 
   attribution + turn separators) · 06 board (kanban lens) · 12 artifact review ·
   21 goal completed.
 - **Workspace:** 07 Overview / Action Center · 08 Agents · 14 Knowledge (minimal slice) · 18 First run · 19 Repositories (live selected-Workspace repository resources, diagnostics, durable push records, and the existing approval-gated push workflow). Worker-proposed-file Workspace Sync review→apply UX remains deferred and is not part of board 19's Tier-A scope; this tier classification does not claim browser proof or a real external push.
-- **Settings:** 10 Settings core · 15 Vault (read-only Workspace Vault references, grants, and use evidence) · 17 Usage & audit (read-only selected-Workspace capability usage, Workspace audit events, and Workspace permission decisions) · 20 AI interface (NanoCore-first: the end-user `openkit` Skill and bundled CLI are the primary agent path).
-- **11 Components** — the component sheet / A2UI catalog seed (developer surface).
+- **Settings:** 10 Settings core · 15 Vault (read-only Workspace Vault references, grants, and use evidence) · 17 Usage & audit (read-only selected-Workspace capability usage, Workspace audit events, and Workspace permission decisions) · 20 AI interface (NanoCore-first: the end-user `openkit` Skill and bundled CLI are the primary agent path) · 11 Debug (developer component catalog and the home for future contract-backed inspection panels).
 - **Reference-backed completion surfaces:** server-mode sign-up, sign-in, and sign-out (18/10/11/22), Workspace members and invitations (10/11/22), and the Thread Plane 1 Material workbench (05c/12/11/22). Their accepted specifications admit behavior; §9.14 owns only their deterministic visual composition.
 
-**Tier B — built, shipped disabled (contract not yet stable):**
-- 09 Automations (the automation facade is non-executing) and 16 Channels. Build the full UI; gate behind the disable flag as concept demos until their contracts stabilize.
+**Tier B — built, unpublished (contract not yet stable):**
+- 09 Automations (the automation facade is non-executing) and 16 Channels. Retain their internal review implementations, but omit them from published navigation and routing until their contracts stabilize.
 
 **Tier C — deferred (needs prerequisite design first):**
-- 13 Generative UI / A2UI (post-v1: needs the render/safety + Generative-Kernel
-  data-plane design). Build the in-thread render *shell* and the three-state
-  fallback, but keep it flag-disabled.
+- 13 Generative UI / A2UI (post-v1: needs the render/safety + Generative-Kernel data-plane design). Retain the in-thread render *shell* and three-state fallback as an internal review implementation, but omit the surface from published navigation and routing.
 - A cross-goal board (D-001): deferred — its job overlaps Overview.
 
 ---
@@ -676,7 +662,7 @@ desktop workbench** that surfaces the most information at once. It is
 - Define loading / empty / error / disconnected for every data-backed surface (§9.12–9.13).
 - Keep the phase stepper for lifecycle, chips for point-in-time state.
 - Let cards open back into the conversation; keep the rail as a mirror.
-- Reference semantic bridge tokens only; ship not-yet-backed surfaces flag-disabled.
+- Reference semantic bridge tokens only; keep not-yet-backed surfaces unpublished.
 
 **Don't**
 - Add a landing page, hero, or marketing empty shell.
@@ -738,13 +724,7 @@ code layer.
 
 **D-012 · Audit the bounded vision surfaces.** Added artifact review, generative UI, knowledge, vault, channels, usage/audit, and first run; paid the phase-stepper, catch-up-card, inline-decidable-interrupt, and attribution debts on the boards in that audit. *Why:* make the then-current product direction visually inspectable; this bounded audit did not make the board set an admission catalog or require one dedicated board for every future contract-backed surface (D-014).
 
-**D-011 · Generative UI = A2UI.** The agent sends declarative JSON; the client
-renders only whitelisted OpenKit primitives — no iframes, no arbitrary code.
-Surfaces are thread items; actions flow back as attributed items; three states,
-no dead ends (streaming skeleton → rendered → plain-content fallback). *Why:*
-matches Core security boundaries, keeps the frontend small, and pairs with the
-NanoCore-first posture. Ships flag-disabled until its kernel/policy contract lands
-(§10.8, §11 Tier C).
+**D-011 · Generative UI = A2UI.** The agent sends declarative JSON; the client renders only whitelisted OpenKit primitives — no iframes, no arbitrary code. Surfaces are thread items; actions flow back as attributed items; three states, no dead ends (streaming skeleton → rendered → plain-content fallback). *Why:* matches Core security boundaries, keeps the frontend small, and pairs with the NanoCore-first posture. The review shell remains unpublished until its kernel/policy contract lands (§10.8, §11 Tier C).
 
 **D-010 · The weak-interaction roadmap.** Six improvements, priority order:
 Overview as the 1:N supervision home; interrupts decidable without opening the

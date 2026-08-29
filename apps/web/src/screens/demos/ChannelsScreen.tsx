@@ -14,8 +14,7 @@ import { type ChannelRow, type ChannelTravelSetting, useChannels } from './data'
  * Channels settings (WP-8, board 16).
  *
  * Connected channels, outbound travel preferences, and an interrupt preview.
- * Data from `useChannels()` sample fixtures while flag-off; actions inert under
- * ConceptDemo until the channels contract stabilizes.
+ * Data comes from `useChannels()` sample fixtures while unpublished; the app route is omitted until the channels contract stabilizes.
  */
 export function ChannelsScreen() {
   const { data } = useChannels();

@@ -62,10 +62,10 @@ function NavSection({
 /**
  * Left sidebar — navigation and persistent context (DESIGN.md §3.1).
  *
- * Two modes that never mix: App mode (brand, primary destinations, concept
- * demos) and Settings mode (Back to app, Settings categories). The same quiet row
- * grammar throughout. Theme selection is NOT here — it lives in Settings →
- * Appearance (§4.5). Identity lives inside Settings, not a stacked user row (D-002).
+ * Two modes that never mix: App mode (brand and primary destinations) and Settings mode (Back to app and Settings categories).
+ * The same quiet row grammar applies throughout.
+ * Theme selection is NOT here — it lives in Settings → Appearance (§4.5).
+ * Identity lives inside Settings, not a stacked user row (D-002).
  */
 export function Sidebar() {
   const { pathname } = useLocation();
@@ -85,7 +85,6 @@ export function Sidebar() {
         <>
           <NavRow icon="chevron-right" label="Back to app" onPress={() => go('/')} />
           <NavSection group="settings" heading="Settings" pathname={pathname} go={go} />
-          <NavSection group="settings-demos" heading="Concept demos" pathname={pathname} go={go} />
         </>
       ) : (
         <>
@@ -100,7 +99,6 @@ export function Sidebar() {
           {workspace ? (
             <NavSection group="workspace" heading={workspace.name} pathname={pathname} go={go} />
           ) : null}
-          <NavSection group="demos" heading="Concept demos" pathname={pathname} go={go} />
           <div className="mt-auto border-t border-separator pt-2">
             <NavRow icon="settings" label="Settings" onPress={() => go('/settings')} />
           </div>

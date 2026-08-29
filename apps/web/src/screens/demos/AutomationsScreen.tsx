@@ -16,9 +16,9 @@ import { type AutomationRow, useAutomations } from './data';
 /**
  * Automations surface (WP-8, board 09).
  *
- * Non-executing facade: scheduled work list beside a create panel. Data comes
- * from `useAutomations()` (sample fixtures while flag-off). Actions are inert
- * under ConceptDemo until the automation contract stabilizes.
+ * Non-executing facade: scheduled work list beside a create panel.
+ * Data comes from `useAutomations()` sample fixtures while unpublished.
+ * The app route is omitted until the automation contract stabilizes.
  */
 export function AutomationsScreen() {
   const { data: automations } = useAutomations();

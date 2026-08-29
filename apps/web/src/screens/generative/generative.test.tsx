@@ -6,7 +6,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { isSurfaceLive } from '../../app/flags';
-import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { A2UI_CATALOG, isWhitelisted } from './catalog';
 import catalogSource from './catalog.tsx?raw';
@@ -34,12 +33,12 @@ function makeClient(): CoreClient {
   } as unknown as CoreClient;
 }
 
-function Providers({ children, path }: { children?: ReactNode; path: string }) {
+function Providers({ children, path }: { children: ReactNode; path: string }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={makeClient()}>
-        <MemoryRouter initialEntries={[path]}>{children ?? <AppRoutes />}</MemoryRouter>
+        <MemoryRouter initialEntries={[path]}>{children}</MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );
@@ -48,7 +47,7 @@ function Providers({ children, path }: { children?: ReactNode; path: string }) {
 /** Concatenated generative-shell module sources for safety scanning. */
 const SHELL_SOURCES = [catalogSource, renderSource, screenSource, statesSource].join('\n');
 
-describe('WP-9 generative surface — flag-disabled concept demo', () => {
+describe('WP-9 generative surface — unpublished render shell', () => {
   it('keeps generative Tier C and not live', () => {
     const surface = surfaceById('generative');
     expect(surface).toBeDefined();
@@ -56,19 +55,6 @@ describe('WP-9 generative surface — flag-disabled concept demo', () => {
     expect(surface?.board).toBe('13');
     expect(surface?.wp).toBe('WP-9');
     expect(isSurfaceLive(surface!)).toBe(false);
-  });
-
-  it('wraps Generative UI in ConceptDemo with inert content', async () => {
-    const { container } = render(
-      <Providers path="/generative">
-        <AppRoutes />
-      </Providers>
-    );
-    expect(await screen.findByText(/not yet backed by the kernel/i)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 1, name: 'Generative UI' })).toBeInTheDocument();
-    const inert = container.querySelector('[inert]');
-    expect(inert).not.toBeNull();
-    expect(inert?.textContent).toContain('Generative UI');
   });
 });
 

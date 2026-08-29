@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from './app/core-client';
+import { isSurfaceLive } from './app/flags';
 import { AppRoutes, SURFACE_ELEMENTS } from './app/routes';
 import { SURFACES } from './app/surfaces';
 import { useThemeStore } from './app/theme-store';
@@ -69,7 +70,10 @@ beforeEach(() => {
 });
 
 describe('app shell — routing', () => {
-  const concretePaths = SURFACES.map((s) => ({ id: s.id, path: s.path.replace(/:\w+/g, 'x') }));
+  const concretePaths = SURFACES.filter(isSurfaceLive).map((surface) => ({
+    id: surface.id,
+    path: surface.path.replace(/:\w+/g, 'x'),
+  }));
 
   it('registers a concrete screen for every catalog surface (no placeholders)', () => {
     for (const surface of SURFACES) {
@@ -91,28 +95,49 @@ describe('app shell — routing', () => {
 });
 
 describe('app shell — build-tier gating (DESIGN.md §11)', () => {
-  it('renders a Tier-B surface inside the inert concept-demo wrapper', async () => {
-    await renderAt('/automations');
-    expect(screen.getByText(/not yet backed by the kernel/i)).toBeInTheDocument();
+  const unpublishedPaths = SURFACES.filter((surface) => !isSurfaceLive(surface)).map((surface) => ({
+    path: surface.path,
+    title: surface.title,
+  }));
+
+  it.each(unpublishedPaths)('does not publish $title at $path', async ({ path, title }) => {
+    await renderAt(path);
+    expect(screen.getByText(/doesn't exist/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: title })).not.toBeInTheDocument();
   });
 
-  it('keeps Tier-B/C surfaces out of primary navigation', async () => {
+  it('keeps unpublished app surfaces out of navigation', async () => {
     await renderAt('/');
-    // Primary destinations are present…
     for (const label of ['Overview', 'Chat', 'Knowledge', 'Agents']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     }
-    // …and disabled surfaces sit under a labeled Concept demos group, not primary.
-    expect(screen.getByText('Concept demos')).toBeInTheDocument();
+    expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Automations' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Generative UI' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Components' })).not.toBeInTheDocument();
   });
 
-  it('mounts the real component sheet at /components (built in WP-2)', async () => {
-    await renderAt('/components');
+  it('keeps unpublished settings surfaces out of navigation', async () => {
+    await renderAt('/settings');
+    expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Channels' })).not.toBeInTheDocument();
+  });
+
+  it('mounts the component sheet under Settings → Debug', async () => {
+    await renderAt('/settings/debug');
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByRole('button', { name: 'Debug' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Debug' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Approve plan' })).toBeInTheDocument();
   });
 
+  it('does not retain the old /components route', async () => {
+    await renderAt('/components');
+    expect(screen.getByText(/doesn't exist/i)).toBeInTheDocument();
+  });
+
   it('shows Repositories once under the authoritative selected Workspace', async () => {
-    await renderAt('/components', {
+    await renderAt('/', {
       workspaces: [
         { id: 'ws_authorized', name: 'Authoritative Workspace' },
         { id: 'ws_other', name: 'Other Workspace' },

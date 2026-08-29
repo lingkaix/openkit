@@ -18,5 +18,4 @@ are not already covered by the root `AGENTS.md` or the README.
   via Zustand. Never duplicate server state into Zustand.
 - **Test-first** for behavior changes (root `AGENTS.md` clauses [TEST-002] and [TEST-009]); prefer the lowest layer that
   proves the invariant. Keep the token-bridge parity test green.
-- **Surfaces ahead of their kernel contract ship disabled behind a flag**
-  (DESIGN.md §11) — build the UI, do not wire inert actions as if live.
+- **Surfaces ahead of their kernel contract remain unpublished** (DESIGN.md §11) — keep internal review implementations out of public navigation and routing, and do not wire their actions as if live.

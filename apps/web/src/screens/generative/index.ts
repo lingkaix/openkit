@@ -1,8 +1,8 @@
 /**
  * Tier-C generative UI / A2UI render shell (WP-9, board 13).
  *
- * In-thread whitelist renderer with three-state fallback. Flag-disabled; no live
- * agent-declared data path and no arbitrary-code execution.
+ * In-thread whitelist renderer with three-state fallback.
+ * The surface is unpublished and has no live agent-declared data path or arbitrary-code execution.
  */
 export { A2UI_CATALOG, type A2UIDocument, type A2UINode, isWhitelisted } from './catalog';
 export {

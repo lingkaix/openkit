@@ -22,19 +22,18 @@ import {
   RepositoriesScreen,
 } from '../screens/workspace';
 import { AppShell } from './AppShell';
-import { ConceptDemo } from './ConceptDemo';
 import { isSurfaceLive } from './flags';
 import { SURFACES, type Surface } from './surfaces';
 import { ThemePicker } from './ThemePicker';
 
-/** The board 11 component sheet, mounted at a developer route (built in WP-2). */
-function ComponentsScreen() {
+/** Settings home for developer-facing component and inspection tools. */
+function DebugScreen() {
   return (
     <Page>
       <PageHeader
-        eyebrow="Board 11"
-        title="Components"
-        subtitle="The OpenKit primitive tier and A2UI catalog seed."
+        eyebrow="Developer tools"
+        title="Debug"
+        subtitle="Component catalog and inspection tools."
       />
       <Gallery />
     </Page>
@@ -60,7 +59,7 @@ function NotFound() {
  * placeholder (WP-10 dead-asset sweep). Exported for the catalog-coverage test.
  */
 export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
-  components: <ComponentsScreen />,
+  debug: <DebugScreen />,
   account: <AccountScreen />,
   appearance: <ThemePicker />,
   settings: <GeneralSettingsScreen />,
@@ -85,16 +84,14 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
 };
 
 /**
- * The concrete element for a surface. Tier-B/C surfaces always render inside the
- * inert concept-demo wrapper (DESIGN.md §11).
+ * The concrete element for a cataloged surface.
  */
 function elementFor(surface: Surface) {
   const content = SURFACE_ELEMENTS[surface.id];
   if (!content) {
     throw new Error(`No screen registered for surface "${surface.id}" (board ${surface.board}).`);
   }
-  if (isSurfaceLive(surface)) return content;
-  return <ConceptDemo surface={surface}>{content}</ConceptDemo>;
+  return content;
 }
 
 /**
@@ -107,7 +104,7 @@ export function AppRoutes() {
     <AccountBoundary>
       <Routes>
         <Route element={<AppShell />}>
-          {SURFACES.map((surface) => (
+          {SURFACES.filter(isSurfaceLive).map((surface) => (
             <Route key={surface.id} path={surface.path} element={elementFor(surface)} />
           ))}
           <Route path="*" element={<NotFound />} />

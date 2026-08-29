@@ -132,24 +132,25 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 - [ ] R088 — Discord supports starting work, answering gates, receiving progress, and viewing terminal results.
 - [ ] R089 — Slack supports the same governed work and attention experience without owning separate workflow state.
 - [ ] R090 — Signal supports the same governed work and attention experience without owning separate workflow state.
-- [ ] R091 — A user can create and operate a recurring workflow through the existing scheduler with current authority checked before every run.
-- [ ] R092 — An external event can trigger one governed workflow without creating a parallel event, retry, or recovery engine.
-- [ ] R093 — Built-in agents can run periodic health checks and propose Workspace, Worker, Skill, Policy, image, and Sandbox maintenance through the same automation boundary.
-- [ ] R094 — Demonstrated workflow needs can use dependencies, branches, joins, and reusable recipes without replacing the existing Goal, Task, Thread, Turn, Item, and scheduler model.
+- [ ] R091 — Email supports configurable digests and required-attention notifications that return users to the authoritative OpenKit work and decision surface.
+- [ ] R092 — A user can create and operate a recurring workflow through the existing scheduler with current authority checked before every run.
+- [ ] R093 — An external event can trigger one governed workflow without creating a parallel event, retry, or recovery engine.
+- [ ] R094 — Built-in agents can run periodic health checks and propose Workspace, Worker, Skill, Policy, image, and Sandbox maintenance through the same automation boundary.
+- [ ] R095 — Demonstrated workflow needs can use dependencies, branches, joins, and reusable recipes without replacing the existing Goal, Task, Thread, Turn, Item, and scheduler model.
 
 ## Phase 9 — Complete the Generative Kernel, Desktop client, and measured runtime scale
 
-- [ ] R095 — The Generative Kernel provides one governed structured-data module with validation, versioning, Policy, secrets, Audit, backup, and clear external-system boundaries.
-- [ ] R096 — Users and Agents can operate Generative Kernel data through Web, the Agent Skill, CLI, and Worker capabilities with the same authorization and Audit model.
-- [ ] R097 — Generative UI safely renders and edits Kernel-backed data with bounded components, capability limits, fallback, confirmation, and accessible interaction.
-- [ ] R098 — One user-built internal coordination tool works end to end without turning OpenKit into its own CRM, CMS, BI, or analytics platform.
-- [ ] R099 — OpenKit ships as a signed Tauri desktop application that can use a local NanoCore or connect securely to a remote Core.
-- [ ] R100 — Desktop updates, credential storage, failure handling, and portable Workspace continuation work through supported release and recovery paths.
-- [ ] R101 — The runtime supports multiple concurrent active Turns with independent identity, authority, cancellation, evidence, and capacity accounting.
-- [ ] R102 — The scheduler can choose among multiple healthy runtime targets with clear capability, placement, failure, and teardown behavior.
-- [ ] R103 — Compatible runtimes can be reused and refreshed between bounded steps without carrying stale context, credentials, Policy, or execution state.
-- [ ] R104 — Multiple NanoHosts support the documented small-team workload with explicit placement and fairness, without introducing multi-tenant or federation assumptions.
-- [ ] R105 — One reproducible release-gating journey completes on a real deployment from low-configuration Workspace setup through Assistant-to-Goal handoff, BWM-informed Agent work against an external system, a human decision through one supported channel, reviewed output, and retained Telemetry and canonical evidence.
+- [ ] R096 — The Generative Kernel provides one governed structured-data module with validation, versioning, Policy, secrets, Audit, backup, and clear external-system boundaries.
+- [ ] R097 — Users and Agents can operate Generative Kernel data through Web, the Agent Skill, CLI, and Worker capabilities with the same authorization and Audit model.
+- [ ] R098 — Generative UI safely renders and edits Kernel-backed data with bounded components, capability limits, fallback, confirmation, and accessible interaction.
+- [ ] R099 — One user-built internal coordination tool works end to end without turning OpenKit into its own CRM, CMS, BI, or analytics platform.
+- [ ] R100 — OpenKit ships as a signed Tauri desktop application that can use a local NanoCore or connect securely to a remote Core.
+- [ ] R101 — Desktop updates, credential storage, failure handling, and portable Workspace continuation work through supported release and recovery paths.
+- [ ] R102 — The runtime supports multiple concurrent active Turns with independent identity, authority, cancellation, evidence, and capacity accounting.
+- [ ] R103 — The scheduler can choose among multiple healthy runtime targets with clear capability, placement, failure, and teardown behavior.
+- [ ] R104 — Compatible runtimes can be reused and refreshed between bounded steps without carrying stale context, credentials, Policy, or execution state.
+- [ ] R105 — Multiple NanoHosts support the documented small-team workload with explicit placement and fairness, without introducing multi-tenant or federation assumptions.
+- [ ] R106 — One reproducible release-gating journey completes on a real deployment from low-configuration Workspace setup through Assistant-to-Goal handoff, BWM-informed Agent work against an external system, a human decision through one supported channel, reviewed output, and retained Telemetry and canonical evidence.
 
 ## Links
 
