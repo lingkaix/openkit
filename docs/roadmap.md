@@ -98,7 +98,7 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 - [ ] R060 — Sandbox time, memory, storage, network volume, external usage, and cost are measured with durable attribution and useful cost projection.
 - [ ] R061 — A Worker can use one authenticated third-party API without seeing the credential or bypassing approval, Policy, rate, Usage, and Audit controls.
 - [ ] R062 — Worker network access uses one governed egress path with target restrictions, approvals, budgets, evidence, and truthful uncertain outcomes.
-- [ ] R063 — LLM routing supports the selected provider families, subscription accounts, credential lifecycle, fallback, load balancing, and real-use verification.
+- [ ] R063 — LLM routing supports the selected provider families, subscription accounts, credential lifecycle, fallback, load balancing, and real-use verification, including xAI subscription accounts through slot creation, provider-profile binding, login and cancellation, automatic refresh, sanitized status, Grok inference, quota visibility, logout, slot deletion, and truthful failure behavior.
 - [ ] R064 — Image generation and cross-provider conversation handoff work through the same governed provider, Artifact, context, Usage, and Policy boundaries.
 - [ ] R065 — One concrete object or provider-file data source supports immutable source identity, freshness, access Policy, derived representations, and bounded delivery to work.
 - [ ] R066 — One concrete external business system is integrated as a Work Resource while that system retains authoritative data and domain behavior.
