@@ -185,15 +185,11 @@ Two modes; never mix them.
 - **Scrollable middle:** workspace rows, each collapsible to reveal nested thread
   rows; a workspace with pending work shows a per-workspace count badge.
   **Repositories** is a pinned sub-item of a workspace (a workspace *owns* repos),
-  sitting above its threads.
+  and **Workspace settings** links directly to the selected Workspace's General settings.
 - **Footer:** a single full-width **Settings** command. No stacked user-identity
   row — identity lives inside Settings (D-002).
 
-**Settings mode:** the same sidebar swaps to a **Back to app** action + Settings
-categories: Account (including My invitations and Sign out), General, Appearance, Configuration, Knowledge/Memory, Diagnostics,
-**Channels, Vault, Usage & audit, AI interface** (D-012, D-013). Settings
-categories are interactive nav with an accessible current-page state — never a
-second Settings sidebar inside the main panel.
+**Settings mode:** the same sidebar swaps to a **Back to app** action + published Settings categories: Account (including My invitations and Sign out), General, Appearance, Vault, Usage & audit, and Debug (D-012, D-013). Deployment Configuration and Diagnostics remain absent until the separate server-admin Web surface has an accepted credential path; Channels and AI interface remain unpublished. Settings categories are interactive nav with an accessible current-page state — never a second Settings sidebar inside the main panel.
 
 Naming: the home surface is **Overview** (formerly "Mission control") — plainer,
 Spectrum-calm, better for non-technical users (D-003).
@@ -590,11 +586,11 @@ The current 24 reference boards (01–22, with 05b/05c) and their audited build 
   attribution + turn separators) · 06 board (kanban lens) · 12 artifact review ·
   21 goal completed.
 - **Workspace:** 07 Overview / Action Center · 08 Agents · 14 Knowledge (minimal slice) · 18 First run · 19 Repositories (live selected-Workspace repository resources, diagnostics, durable push records, and the existing approval-gated push workflow). Worker-proposed-file Workspace Sync review→apply UX remains deferred and is not part of board 19's Tier-A scope; this tier classification does not claim browser proof or a real external push.
-- **Settings:** 10 Settings core · 15 Vault (read-only Workspace Vault references, grants, and use evidence) · 17 Usage & audit (read-only selected-Workspace capability usage, Workspace audit events, and Workspace permission decisions) · 20 AI interface (NanoCore-first: the end-user `openkit` Skill and bundled CLI are the primary agent path) · 11 Debug (developer component catalog and the home for future contract-backed inspection panels).
+- **Settings:** 10 Settings core · 15 Vault (read-only Workspace Vault references, grants, and use evidence) · 17 Usage & audit (read-only selected-Workspace capability usage, Workspace audit events, and Workspace permission decisions) · 11 Debug (developer component catalog and the home for future contract-backed inspection panels).
 - **Reference-backed completion surfaces:** server-mode sign-up, sign-in, and sign-out (18/10/11/22), Workspace members and invitations (10/11/22), and the Thread Plane 1 Material workbench (05c/12/11/22). Their accepted specifications admit behavior; §9.14 owns only their deterministic visual composition.
 
 **Tier B — built, unpublished (contract not yet stable):**
-- 09 Automations (the automation facade is non-executing) and 16 Channels. Retain their internal review implementations, but omit them from published navigation and routing until their contracts stabilize.
+- 09 Automations (the automation facade is non-executing), 16 Channels, and 20 AI interface (provider-subscription status requires a separate server-admin Web authorization path). Retain their internal review implementations, but omit them from published navigation and routing until their contracts stabilize.
 
 **Tier C — deferred (needs prerequisite design first):**
 - 13 Generative UI / A2UI (post-v1: needs the render/safety + Generative-Kernel data-plane design). Retain the in-thread render *shell* and three-state fallback as an internal review implementation, but omit the surface from published navigation and routing.

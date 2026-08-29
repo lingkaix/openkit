@@ -14,8 +14,6 @@ export const settingsKeys = {
   workspace: (workspaceId: string) => ['settings', 'workspace', workspaceId] as const,
   vault: (workspaceId: string) => ['settings', 'vault', workspaceId] as const,
   usage: (workspaceId: string) => ['settings', 'usage', workspaceId] as const,
-  configFiles: ['settings', 'runtime-config-files'] as const,
-  diagnostics: ['settings', 'diagnostics'] as const,
   meta: ['core', 'meta'] as const,
   providerSubscriptions: ['settings', 'provider-subscriptions'] as const,
 };
@@ -23,8 +21,6 @@ export const settingsKeys = {
 /** Re-export workspace selection for General settings. */
 export { useCurrentWorkspaceId, useWorkspaces };
 
-/** Diagnostics payload from `app.getDiagnostics`. */
-export type SettingsDiagnostics = Awaited<ReturnType<CoreClient['app']['getDiagnostics']>>;
 /** Fixed provider-subscription inventory from `providerSubscriptions.listProviders`. */
 export type ProviderSubscriptionsPayload = Awaited<
   ReturnType<CoreClient['providerSubscriptions']['listProviders']>
@@ -39,17 +35,6 @@ export type ProviderSubscriptionAccountsPayload = Awaited<
 export type ProviderSubscriptionQuotaPayload = Awaited<
   ReturnType<CoreClient['providerSubscriptions']['getAccountQuota']>
 >;
-/** Runtime-config file list from `runtimeConfig.listFiles`. */
-export type ConfigFileList = Awaited<ReturnType<CoreClient['runtimeConfig']['listFiles']>>;
-
-/** Safe runtime-config file summary for Configuration section rows. */
-export interface ConfigFileRow {
-  id: string;
-  kind: string;
-  exists: boolean;
-  updatedAt: string | null;
-}
-
 /** Safe connected-app row for the AI interface surface. */
 export interface ConnectedAppRow {
   identity: string;
@@ -247,32 +232,6 @@ export function projectWorkspace(workspace: WorkspaceRecord): WorkspaceRecord {
 }
 
 /**
- * Projects runtime-config file list summaries (never file content).
- *
- * @param response `runtimeConfig.listFiles` payload.
- * @returns Safe rows for Configuration.
- */
-export function projectConfigFiles(response: ConfigFileList): ConfigFileRow[] {
-  const safe = projectSafeValue(response) as ConfigFileList;
-  return safe.files.map((file) => ({
-    id: file.id,
-    kind: file.kind,
-    exists: file.exists,
-    updatedAt: file.updatedAt ?? null,
-  }));
-}
-
-/**
- * Projects app diagnostics into a secret-safe object for Diagnostics chips.
- *
- * @param diagnostics `app.getDiagnostics` payload.
- * @returns Redacted diagnostics projection.
- */
-export function projectDiagnostics(diagnostics: SettingsDiagnostics): SettingsDiagnostics {
-  return projectSafeValue(diagnostics) as SettingsDiagnostics;
-}
-
-/**
  * Projects one provider-scoped account list and its quotas into safe status rows.
  *
  * @param provider Fixed provider inventory descriptor.
@@ -351,24 +310,6 @@ export function useSettingsWorkspace(workspaceId: string | null) {
     queryKey: settingsKeys.workspace(workspaceId ?? ''),
     queryFn: async () => projectWorkspace(await client.core.getWorkspace(workspaceId as string)),
     enabled: Boolean(workspaceId),
-  });
-}
-
-/** List runtime-config file summaries (never fetches raw content). */
-export function useRuntimeConfigFiles() {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: settingsKeys.configFiles,
-    queryFn: async () => projectConfigFiles(await client.runtimeConfig.listFiles()),
-  });
-}
-
-/** Load app diagnostics for Diagnostics section chips. */
-export function useAppDiagnostics() {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: settingsKeys.diagnostics,
-    queryFn: async () => projectDiagnostics(await client.app.getDiagnostics()),
   });
 }
 

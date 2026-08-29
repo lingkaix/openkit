@@ -1,21 +1,17 @@
 /**
- * Settings screens (WP-7) — General, AI interface, Vault, and Usage & audit.
+ * Settings screens (WP-7) — General, Vault, Usage & audit, and the unpublished AI interface review screen.
  * Appearance remains the ThemePicker mounted at `/settings/appearance`.
  */
 export { AiInterfaceScreen } from './AiInterfaceScreen';
 export {
-  projectConfigFiles,
   projectConnectedApps,
   projectControlChannel,
-  projectDiagnostics,
   projectUsageAndAudit,
   projectVault,
   projectWorkspace,
   settingsKeys,
-  useAppDiagnostics,
   useConnectedApps,
   useMetaStatus,
-  useRuntimeConfigFiles,
   useSettingsWorkspace,
   useUpdateWorkspaceName,
   useUsageAndAudit,

@@ -121,6 +121,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     await renderAt('/settings');
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Channels' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'AI interface' })).not.toBeInTheDocument();
   });
 
   it('mounts the component sheet under Settings → Debug', async () => {
@@ -136,7 +137,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByText(/doesn't exist/i)).toBeInTheDocument();
   });
 
-  it('shows Repositories once under the authoritative selected Workspace', async () => {
+  it('shows Repositories and Workspace settings under the authoritative selected Workspace', async () => {
     await renderAt('/', {
       workspaces: [
         { id: 'ws_authorized', name: 'Authoritative Workspace' },
@@ -146,8 +147,10 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
     const workspaceLabel = await screen.findByText('Authoritative Workspace');
     const repositories = screen.getByRole('button', { name: 'Repositories' });
+    const workspaceSettings = screen.getByRole('button', { name: 'Workspace settings' });
     const overview = screen.getByRole('button', { name: 'Overview' });
     expect(workspaceLabel.parentElement).toContainElement(repositories);
+    expect(workspaceLabel.parentElement).toContainElement(workspaceSettings);
     expect(workspaceLabel.parentElement).not.toContainElement(overview);
     expect(overview.parentElement).not.toContainElement(repositories);
     expect(screen.getAllByRole('button', { name: 'Repositories' })).toHaveLength(1);

@@ -10,6 +10,7 @@ import { isSurfaceLive } from '../../app/flags';
 import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
+import { AiInterfaceScreen } from './AiInterfaceScreen';
 import { projectConnectedApps } from './data';
 import { projectSafeValue, redactSecretShapedText, stripSecretFields } from './secret-safe';
 
@@ -621,7 +622,7 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
-function renderApp(path: string, client: CoreClient) {
+function renderApp(path: string, client: CoreClient, content: ReactNode = <AppRoutes />) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
@@ -630,7 +631,7 @@ function renderApp(path: string, client: CoreClient) {
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  render(wrapper(<AppRoutes />));
+  render(wrapper(content));
   return client;
 }
 
@@ -1063,13 +1064,20 @@ describe('Usage and audit settings (board 17)', () => {
 });
 
 describe('General settings (board 10)', () => {
-  it('loads General, Configuration, Knowledge, and Diagnostics sections', async () => {
-    renderApp('/settings', makeClient());
+  it('loads only Workspace-authorized settings and never requests deployment-admin data', async () => {
+    const client = makeClient();
+    renderApp('/settings', client);
     expect(await screen.findByRole('heading', { level: 1, name: 'General' })).toBeInTheDocument();
     expect(await screen.findByLabelText(/Display name/i)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Configuration', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Knowledge/i, level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Diagnostics', level: 2 })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Configuration', level: 2 })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Diagnostics', level: 2 })
+    ).not.toBeInTheDocument();
+    expect(client.runtimeConfig.listFiles).not.toHaveBeenCalled();
+    expect(client.app.getDiagnostics).not.toHaveBeenCalled();
     expect(screen.getByRole('link', { name: /Appearance/i })).toHaveAttribute(
       'href',
       '/settings/appearance'
@@ -1132,17 +1140,6 @@ describe('General settings (board 10)', () => {
     );
   });
 
-  it('shows configuration file summaries without fetching raw file content', async () => {
-    const client = makeClient();
-    renderApp('/settings', client);
-    expect(
-      await screen.findByRole('heading', { name: 'Configuration', level: 2 })
-    ).toBeInTheDocument();
-    expect(screen.getByText('provider_demo')).toBeInTheDocument();
-    expect(screen.getAllByText('server').length).toBeGreaterThan(0);
-    expect(client.runtimeConfig.getFile).not.toHaveBeenCalled();
-  });
-
   it('exposes page landmarks and section headings for a11y', async () => {
     renderApp('/settings', makeClient());
     expect(await screen.findByRole('heading', { level: 1, name: 'General' })).toBeInTheDocument();
@@ -1168,7 +1165,13 @@ describe('AI interface (board 20)', () => {
       providerSubscriptions: { listProviders, listAccounts, getAccountQuota },
     });
 
-    renderApp('/settings/ai-interface', client);
+    renderApp(
+      '/settings/ai-interface',
+      client,
+      <main>
+        <AiInterfaceScreen />
+      </main>
+    );
 
     const codexProvider = await screen.findByText('OpenAI Codex');
     const xaiProvider = screen.getByText('xAI');
@@ -1218,7 +1221,10 @@ describe('AI interface (board 20)', () => {
       );
     renderApp(
       '/settings/ai-interface',
-      makeClient({ providerSubscriptions: { listAccounts, getAccountQuota } })
+      makeClient({ providerSubscriptions: { listAccounts, getAccountQuota } }),
+      <main>
+        <AiInterfaceScreen />
+      </main>
     );
 
     expect(await screen.findByText('Logged out account')).toBeInTheDocument();
@@ -1246,13 +1252,25 @@ describe('AI interface (board 20)', () => {
           : XAI_QUOTA
       )
     );
-    renderApp('/settings/ai-interface', makeClient({ providerSubscriptions: { getAccountQuota } }));
+    renderApp(
+      '/settings/ai-interface',
+      makeClient({ providerSubscriptions: { getAccountQuota } }),
+      <main>
+        <AiInterfaceScreen />
+      </main>
+    );
     expect(await screen.findByText('Quota temporarily unavailable')).toBeInTheDocument();
     expect(screen.getAllByText('Connected')).toHaveLength(2);
   });
 
   it('shows control-channel and Skills status sections', async () => {
-    renderApp('/settings/ai-interface', makeClient());
+    renderApp(
+      '/settings/ai-interface',
+      makeClient(),
+      <main>
+        <AiInterfaceScreen />
+      </main>
+    );
     expect(
       await screen.findByRole('heading', { name: /Control channel/i, level: 2 })
     ).toBeInTheDocument();
@@ -1291,7 +1309,13 @@ describe('AI interface (board 20)', () => {
         ),
       },
     });
-    renderApp('/settings/ai-interface', client);
+    renderApp(
+      '/settings/ai-interface',
+      client,
+      <main>
+        <AiInterfaceScreen />
+      </main>
+    );
     expect(await screen.findByText('Poisoned app')).toBeInTheDocument();
     const rendered = document.body.textContent ?? '';
     expect(rendered).not.toContain(POISON_SECRET);
@@ -1307,7 +1331,13 @@ describe('AI interface (board 20)', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue(PROVIDERS);
     const client = makeClient({ providerSubscriptions: { listProviders } });
-    renderApp('/settings/ai-interface', client);
+    renderApp(
+      '/settings/ai-interface',
+      client,
+      <main>
+        <AiInterfaceScreen />
+      </main>
+    );
     expect(await screen.findByText(/Couldn't load AI interface/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listProviders).toHaveBeenCalledTimes(2));
@@ -1323,7 +1353,13 @@ describe('AI interface (board 20)', () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
-    renderApp('/settings/ai-interface', client);
+    renderApp(
+      '/settings/ai-interface',
+      client,
+      <main>
+        <AiInterfaceScreen />
+      </main>
+    );
     expect(await screen.findByRole('heading', { name: 'AI interface' })).toBeInTheDocument();
     await waitFor(
       () => {
@@ -1334,7 +1370,13 @@ describe('AI interface (board 20)', () => {
   });
 
   it('exposes landmarks and headings for a11y', async () => {
-    renderApp('/settings/ai-interface', makeClient());
+    renderApp(
+      '/settings/ai-interface',
+      makeClient(),
+      <main>
+        <AiInterfaceScreen />
+      </main>
+    );
     expect(
       await screen.findByRole('heading', { level: 1, name: 'AI interface' })
     ).toBeInTheDocument();

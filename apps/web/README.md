@@ -13,16 +13,13 @@ sub-clients. Design intent — information architecture, the three themes, the
 component grammar, and the weak-interaction interaction model — is owned by the
 canonical [`DESIGN.md`](../../DESIGN.md) at the repo root.
 
-The AI interface screen reads the fixed OpenAI Codex and xAI subscription
-provider inventory, provider-scoped account status, and quota posture through
-`client.providerSubscriptions`. This projection is status-only and exposes no
-account mutation controls.
+The AI interface remains an internal unpublished review screen because its provider-subscription reads require server-admin credentials and Web has no accepted server-admin credential path. General Settings reads only the selected Workspace and never requests deployment diagnostics or runtime config.
 
 The accepted ordinary Workspace Vault placement is read-only and uses exactly `client.app.listWorkspaceVaultReferences`, `client.app.listWorkspaceVaultGrants`, and `client.app.listWorkspaceVaultUseRecords` for the selected Workspace. It does not request or project deployment-admin backend status; that status is deferred to a separately accepted future server-admin Web surface. The permission and multi-user Workspace specifications own that authority separation.
 
 The live Tier-A board-17 **Usage & audit** screen is implemented as a read-only projection scoped to the selected Workspace. It uses exactly `client.app.getCapabilityUsage`, `client.app.listWorkspaceAuditEvents`, and `client.app.listWorkspacePermissionDecisions` with that validated Workspace, and it never calls or projects `client.app.listServerAuditEvents`. Deployment-admin server audit is deferred to a separately accepted future admin surface.
 
-The live Tier-A board-19 **Repositories** screen projects selected-Workspace repository resources, diagnostics, durable push records, and the existing approval-gated Git push workflow through `client.repositories`. It requests approval for one exact target, executes only a matching granted approval, and re-reads the authoritative push record without adding an API or external-effect owner. Its approval response remains TanStack mutation data, and its route appears once beneath the successfully discovered, authorized Workspace name instead of in global primary navigation. Worker-proposed-file Workspace Sync review-to-apply UX and the complete collapsible Workspace/thread tree remain unimplemented and outside this surface. Focused tests cover this Web projection; no browser proof or real external push is claimed here.
+The live Tier-A board-19 **Repositories** screen projects selected-Workspace repository resources, diagnostics, durable push records, and the existing approval-gated Git push workflow through `client.repositories`. It requests approval for one exact target, executes only a matching granted approval, and re-reads the authoritative push record without adding an API or external-effect owner. Its approval response remains TanStack mutation data, and its route appears once beneath the successfully discovered, authorized Workspace name beside a direct Workspace settings entry instead of in global primary navigation. Worker-proposed-file Workspace Sync review-to-apply UX and the complete collapsible Workspace/thread tree remain unimplemented and outside this surface. Focused tests cover this Web projection; no browser proof or real external push is claimed here.
 
 Surfaces that run ahead of a stable kernel contract may retain internal review implementations, but published navigation and routing omit them until they become live (DESIGN.md §11).
 
@@ -96,7 +93,7 @@ src/
     goal/             Tier-A goal lenses + artifact review
     material/         Tier-A live Plane 1 Material, Thread binding, delivery, and proposal-comparison surfaces
     workspace/        Tier-A Overview, Agents, Knowledge, First-run, Repositories
-    settings/         Tier-A General + AI interface + read-only Workspace Vault and Usage & audit
+    settings/         Tier-A General + read-only Workspace Vault and Usage & audit; unpublished AI interface review screen
     demos/            Unpublished Tier-B review screens — Automations and Channels
     generative/       Unpublished Tier-C A2UI render shell + three-state fallback
   primitives/         React Aria + Spectrum-tokened primitive tier
@@ -112,7 +109,7 @@ playwright.config.ts
 
 ## Status
 
-The current React baseline includes the app shell, three-theme token bridge, the Settings Debug component gallery, live Chat, Task, Goal, Overview, Agents, Knowledge, core Settings surfaces including read-only Workspace Vault and Usage & audit, the bounded live Plane 1 Material surface, and internal unpublished Automations, Channels, and Generative UI review implementations. The Material surface includes identity, editing, immutable-revision history and comparison; one singular Thread binding with inclusion and queue state; active-turn exact-revision delivery and terminal outcomes; and version-keyed Artifact Review proposal, base, and current comparison with conflict-safe decisions and historical decision evidence. The Claude Design board inventory is a non-exhaustive visual reference, not evidence that every product surface is implemented.
+The current React baseline includes the app shell, three-theme token bridge, the Settings Debug component gallery, live Chat, Task, Goal, Overview, Agents, Knowledge, core Settings surfaces including read-only Workspace Vault and Usage & audit, the bounded live Plane 1 Material surface, and internal unpublished Automations, Channels, AI interface, and Generative UI review implementations. The Material surface includes identity, editing, immutable-revision history and comparison; one singular Thread binding with inclusion and queue state; active-turn exact-revision delivery and terminal outcomes; and version-keyed Artifact Review proposal, base, and current comparison with conflict-safe decisions and historical decision evidence. The Claude Design board inventory is a non-exhaustive visual reference, not evidence that every product surface is implemented.
 
 Chat and Task Thread streams render every non-secret user-input Gate as accessible inline text or option controls and submit one complete answer map through the existing Core Client Turn command. Pending submission is disabled, a failed command retains its exact map for retry, and secret-bearing, connection-checking, or disconnected Gates remain visible without a submit action. The isolated Playwright stack can restart only NanoCore on its existing port and data root while keeping the Web process live, and its final stop still owns complete process and temporary-root cleanup.
 

@@ -55,6 +55,9 @@ function NavSection({
           onPress={() => go(surface.path)}
         />
       ))}
+      {group === 'workspace' ? (
+        <NavRow icon="settings" label="Workspace settings" onPress={() => go('/settings')} />
+      ) : null}
     </div>
   );
 }
