@@ -252,7 +252,7 @@ xAI example:
   "displayName": "xAI Work",
   "kind": "oauth",
   "vendor": "xai",
-  "models": ["xai/grok-4"],
+  "models": ["xai/grok-4.6"],
   "extensions": {
     "openkit": {
       "subscriptionAccount": {
