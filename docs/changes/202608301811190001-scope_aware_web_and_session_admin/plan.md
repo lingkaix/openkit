@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 started: 2026-08-30
 branch: main
 ---
@@ -67,12 +67,12 @@ branch: main
 - **API result:** Administrators can issue a Token for another exact active canonical `ownerUserId`, with target-owner membership validation for Workspace scopes; session-only self-service routes expose redacted owned admin Token metadata and accept one usable default selection through schemas, Core Client, OpenAPI, and Web.
 - **Scope result:** The operation catalog, deterministic generated OpenKit CLI bundle, and root operation-surface contract tests are in-scope repository projections required by the accepted API additions; they add no separate product behavior or external effect.
 - **Method result:** Cursor CLI with Grok 4.6 High produced and tested the bounded implementation, while root reviewed the actual diff and integrated the accepted result. Earlier Claude sessions supplied supplementary independent review evidence but were dispatched too deeply into implementation detail; the final durable-commitment gate is therefore being rerun as the repository-defined fresh-context verifier direction check.
-- **Frontier:** The role-correct fresh-context verifier found the commit direction sound and all evidence fresh, returning `Continue` only for the now-corrected repository effect-scope record. No unowned decision, engineer trade-off, or governance blocker remains.
-- **Next Action:** Commit the complete implementation and change record, then record that commit in the closeout and set the lifecycle status accurately.
+- **Frontier:** Implementation commit `9cbf3046` records the complete accepted product and projection scope. The role-correct verifier's sole governance correction is present in that commit, and no unresolved finding, unowned decision, engineer trade-off, or external effect remains.
+- **Next Action:** None. The change is closed.
 
 ## Closeout Summary
 
-The Web shell now presents one persistent Workspace context, scope-separated navigation, archived Thread recovery, canonical owner-complete Thread URLs, compact Thread controls, and session-backed administration without a browser-entered server-admin credential. NanoCore reuses existing Token records as the sole deployment-admin authority, adds only a non-secret per-User default pointer, and keeps Workspace membership and policy authorization unchanged.
+Implementation commit `9cbf3046` records the accepted change. The Web shell now presents one persistent Workspace context, scope-separated navigation, archived Thread recovery, canonical owner-complete Thread URLs, compact Thread controls, and session-backed administration without a browser-entered server-admin credential. NanoCore reuses existing Token records as the sole deployment-admin authority, adds only a non-secret per-User default pointer, and keeps Workspace membership and policy authorization unchanged.
 
 ## Verification Evidence
 
