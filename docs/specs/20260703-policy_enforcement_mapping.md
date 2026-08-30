@@ -290,7 +290,7 @@ NanoCore compiles derived backend policy from:
 - sandbox requirements
 - runtime placement
 
-For OpenShell, derived policy may become OpenShell policy YAML, provider attachments, network rules, and file rules.
+For OpenShell, derived policy may become OpenShell policy YAML, credential injections, network rules, and file rules.
 
 Derived backend policy is evidence and enforcement material. It is not canonical OpenKit policy.
 

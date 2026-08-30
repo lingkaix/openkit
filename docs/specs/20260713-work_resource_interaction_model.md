@@ -400,6 +400,8 @@ The material surface MUST support Markdown or text viewing and editing, stable s
 
 The conversation surface MUST show item-backed explanations of material inclusion, active-turn delivery, worker results, conflicts, and review outcomes.
 
+The unified Composer may reference an exact existing Artifact version and may present local file selection as an import convenience. For a supported UTF-8 Markdown, text, or JSON file, Web computes the exact digest, calls the existing `artifact.import` command, and places the returned Artifact version into the pending conversation submission. The imported Artifact remains an ordinary Workspace Artifact even when the later conversation submission fails or is cancelled; Web shows that fact and may remove only the draft reference, not delete the Artifact. Binary and unsupported media remain outside Phase 1 and fail before import with a visible reason.
+
 The Action Center MAY project only the exact Artifact Review owner described above and the exact unresolved Goal steering `PendingUserTurnRecord` defined by this specification. An Artifact Review row and source MUST contain at least `reviewId`, `artifactId`, and `artifactVersion`, and its row identity derives from that version-owned Review; an Artifact-id-only source is invalid. Any executable Artifact Review decision action MUST address the versioned decision endpoint and MUST NOT use a generic review fallback. The steering row exposes its original Goal lineage and only exposes follow-up and cancellation after that Goal is terminal; the projection is not command authority. A rejected Material expected-base command creates no durable conflict owner or Action Center row, and projection MUST NOT create a Material writeback, delivery, or conflict lifecycle.
 
 ## Deferred Work Resource Class Boundaries
@@ -554,6 +556,8 @@ Canonical input hashing uses the verified digest rather than duplicating submitt
 Caller `requestId` values for every Material and Artifact Review command MUST NOT begin with the reserved `import-lineage:` prefix; such input is `400 invalid_request` before owner or receipt lookup. Only S51 import may write those historical lineage tokens, and no public response exposes them.
 
 Artifact import and Material save use strict JSON requests with one UTF-8 `content` string; Phase 1 adds no upload service, multipart body, blob protocol, transient upload handle, or caller-selected Material media type. Artifact import accepts exactly `text/markdown`, `text/plain`, or `application/json`; `application/json` content MUST be syntactically valid JSON but remains stored as the exact submitted string, and invalid syntax is `400 invalid_request` with no writes. Material save derives `text/markdown` or `text/plain` from the immutable Material kind. The digest is computed over the exact UTF-8 bytes of `content`, without newline, Unicode, or JSON normalization. The command ledger stores the verified digest rather than the content bytes.
+
+An imported or existing Artifact enters a conversation only as the exact `{ artifactId, artifactVersion }` reference owned by `docs/specs/20260831-unified_conversation_composer.md`. Conversation submission neither mutates nor implicitly introduces a different Artifact version, and replay never repeats the prior import.
 
 Typed reads cover Artifact and Material lookup, exact revision list and content retrieval, client-side comparison of immutable revisions, Thread material projection, active delivery status, and Artifact Review projection. Reads do not mutate authority or enter the command ledger.
 

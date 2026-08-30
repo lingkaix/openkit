@@ -46,6 +46,8 @@ Concrete endpoints, screens, records, tables, files, caches, adapter methods, la
 
 It owns server-level operational state such as configuration, registries, built-ins, background jobs, migrations, and diagnostics. Server indexes and registries may point to workspace records, but they must not silently replace workspace-owned durable truth.
 
+CoreServer is the shared resource and baseline-configuration provider for the deployment. It supplies Provider profiles, logical model routes, built-in and installed Agent supply, internal-role execution profiles, runtime and Sandbox supply, shared catalogs, deployment capabilities, and final fallback defaults. Supplying a resource or default does not make Server configuration the generic maximum-capability envelope for Workspace or User composition.
+
 ## Workspace
 
 `Workspace` is the top-level durable work scope inside a Core server.
@@ -57,6 +59,12 @@ Workspace is the default scope for threads, artifacts, knowledge, agent supply, 
 Workspace ownership and membership are logical identity and authority relationships. Workspace storage must not depend on a user's physical namespace. Identity, Permissions, and Storage own the concrete membership, role, transfer, and storage-independence contracts.
 
 Cross-workspace execution, knowledge sharing, vault sharing, and artifact movement require explicit design and authority. An adapter, runtime session, manifest, or fallback must not cause them implicitly.
+
+Workspace is the durable shared configuration and authored-composition scope for its members. It may consume Server resources, add Workspace-owned resources, bind Workspace Secrets, select shared defaults, and compose Server-supplied Agent or internal-role configuration into the behavior shared by that Workspace. Composition remains subject to the owning resource's runtime support, ordinary authorization, compatibility, and capacity semantics; those constraints do not turn Server defaults into a general product-level ceiling.
+
+User-specific persistent preference is the lightest configuration scope and belongs to the User identity owner. For an applicable setting, ordinary persistent preference resolves User first, then Workspace, then Server. An explicit request or current orchestration choice may be more specific when its owning command permits it. A User preference selects or customizes behavior for that User without mutating Workspace-shared or Server configuration.
+
+The operation attached to each field follows its natural owner: a scalar preference replaces a less-specific default, an identified collection may add, replace, disable, or remove entries through stable IDs, and a resource quantity remains governed by its resource owner. No generic merge rule may invent authority, materialize an unsupported resource, or replace the unique owner of authorization, containment, credentials, scheduling, or external effects.
 
 ## Work Backbone
 
@@ -157,6 +165,9 @@ The owning protocol schema and accepted design define concrete ID fields, encodi
 
 - The default durable work backbone MUST remain `Workspace -> Thread -> Turn -> Item[]` unless an accepted Core revision replaces it.
 - Every durable work record MUST belong to one workspace; any other scope MUST be explicit in its owning aspect.
+- CoreServer MUST supply shared resources and fallback defaults without treating those defaults as a generic ceiling on Workspace-authored composition or User preference.
+- Ordinary persistent preference MUST resolve User before Workspace before Server, while any more-specific request or orchestration choice MUST remain owned by its command contract.
+- Workspace composition and User preference MUST preserve the unique owner, ordinary authorization, compatibility, runtime support, and capacity semantics of every referenced resource.
 - Runtime MUST preserve the exact assignment relationship of an executing Turn.
 - A Thread MUST have at most one Turn in flight; parallel work MUST use distinct Threads.
 - A Thread MUST have at most one current AgentSession; historical predecessors MUST remain terminal and non-reusable.

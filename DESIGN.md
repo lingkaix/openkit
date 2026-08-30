@@ -409,9 +409,13 @@ All class names are prefixed `ok-`.
   (informative/notice/positive/neutral) badges its kind. Never louder than needed.
 
 ### 9.2 Composer (`ok-composer`)
-The friendly rounded input (16px radius, card surface, faint shadow). Holds
-context **chips** (workspace, mode, model) and a circular accent **send** button.
-Larger on the chat starter; docked at the bottom elsewhere.
+This section is the visual projection of the observable Composer contract owned by `docs/specs/20260831-unified_conversation_composer.md`; that specification decides behavior when the two differ.
+
+The Composer is one friendly rounded container with 16px radius, card surface, faint shadow, a visually spacious upper text-entry region, and one lower action row. The larger chat starter and bottom-docked Thread form use the same component; exact sizing, growth, scrolling, and keyboard behavior are defined only by `docs/specs/20260831-unified_conversation_composer.md`.
+
+The lower action row follows one fixed visual order: attachment `+`, conversation-target selector, flexible spacer, logical-model selector, and circular accent send button. `+` opens the existing Artifact reference and attachment upload chooser. The target selector may show built-in Assistant, a running Goal Orchestrator, the Workspace Knowledge Manager, pinned warm workers, running worker Threads, and `New Shard + Worker`; that last label creates a new Task execution Thread and does not create a durable Shard entity. The model selector shows only logical model IDs and product-safe labels admitted for the selected target; it never exposes a Provider profile, Provider-native model, account slot, private route, Sandbox, Harness, process, or AgentSession identity.
+
+Selected Artifacts and attachments appear as removable context chips between the text region and lower action row without changing their canonical owners. Enabled state, accessibility, failure retention, and keyboard behavior follow the owning Composer specification rather than being duplicated here.
 
 ### 9.3 Buttons, chips, controls
 - **Buttons** are Spectrum pills, 32px: `accent` (primary), `outline`

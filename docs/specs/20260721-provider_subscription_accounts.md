@@ -10,7 +10,7 @@ This spec owns deployment-admin management of server-owned LLM subscription acco
 
 ## Does Not Own
 
-This spec does not own LLM request, response, streaming, cache, usage, or error mapping, which belongs to `docs/specs/20260708-pi_ai_unified_llm_backend.md`; the public `/v1/*` Gateway contract, which belongs to `docs/specs/20260526-llm_gateway_responses_api.md`; pi-ai version pinning and external-boundary review, which belongs to `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; the Vault backend implementation; provider subscription purchase, cancellation, billing management or mutation, or remote credential revocation; user-owned subscription accounts; or a general OAuth framework.
+This spec does not own LLM request, response, streaming, cache, usage, or error mapping, which belongs to `docs/specs/20260708-pi_ai_unified_llm_backend.md`; logical-model route ordering, pre-output fallback, load balancing, or account-route selection, which belongs to `docs/specs/20260526-llm_gateway_responses_api.md`; pi-ai version pinning and external-boundary review, which belongs to `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`; the Vault backend implementation; Provider subscription purchase, cancellation, billing management or mutation, or remote credential revocation; user-owned subscription accounts; or a general OAuth framework.
 
 It also does not own how a fixed real-provider test is executed: run counts, ordering, local credential-source paths, token-claim derivation, temporary environments, evidence packaging, and adjudication are L3 opt-in test concerns under `docs/specs/20260529-test_strategy.md`. A release's execution history belongs to its change record. This spec states product behavior and the distinct evidence a real-provider run must produce, not the procedure that produces it.
 
@@ -59,7 +59,7 @@ NanoCore does not depend on Codex app-server, `CODEX_HOME`, Codex-managed `auth.
 
 ### Non-goals
 
-- Do not build user-owned account slots, organization account sharing, automatic account rotation, load balancing, quota-aware failover, or cross-account fallback.
+- Do not build user-owned account slots, organization account sharing, an account-manager load balancer, or background quota scheduler. Gateway may independently advance across ordered logical-model route members that reference distinct Provider profiles and slots under its own pre-output failure contract.
 - Do not purchase, cancel, or modify a vendor subscription.
 - Do not claim that local logout revokes a token remotely; it only removes OpenKit's local authority to use that credential.
 - Do not scrape provider web pages, call a private provider interface that is not traced to reviewed vendor-maintained client source, or mutate provider billing, top-up, or subscription state.
@@ -78,6 +78,8 @@ A provider profile family is resolved deterministically by normalizing `vendor` 
 A supported-family `kind: oauth` profile is subscription-backed, must declare the strict extension `{ accountSlotId }`, and must omit `secretRef` and `baseUrl`. Its resolved family determines `subscriptionProviderId`; the extension does not duplicate that value. `subscriptionAccount` is forbidden for unsupported families and non-OAuth profiles. A supported-family OAuth profile without the extension is invalid. In particular, xAI `direct`, `gateway`, or `custom` profiles without the extension remain ordinary API-key or provider configurations and never appear in subscription inventory, account lifecycle, status, or quota operations.
 
 Every subscription-backed profile binds explicitly to one existing `(subscriptionProviderId, accountSlotId)` pair, and NanoCore must not guess a default slot. Several provider profiles may bind the same slot, but one profile may bind only one slot. The `extensions.openkit` object is strict at cutover: `codexOAuth` and every other unknown OpenKit-owned field are rejected, while non-OpenKit vendor extension namespaces remain governed by their existing open-extension rule.
+
+A Gateway logical-model route member references exactly one Provider profile and therefore at most one account slot. Rotation across subscription accounts is expressed by multiple ordered route members that reference distinct profiles, never by placing several slots in one profile or asking this account manager to choose a slot. An admitted request binds one route member and slot for one Provider attempt; Gateway may advance to a later compatible member only under its bounded pre-output failure rules, including eligible authentication, rate-limit, or quota-exhaustion failures. Weighted, random, health-scored, and proactive quota-aware selection remain deferred Gateway strategies rather than account fields.
 
 The public subscription-provider inventory reports each supported provider's id, display name, login modes, and quota capability. The accepted initial capability projection is:
 
@@ -374,7 +376,7 @@ After successful identity discovery, the reader issues exactly one bodyless `GET
 
 The available xAI projection emits `planType` only when discovery supplied `subscriptionTier` and emits exactly one window with fixed id `included`, `usedPercent: creditUsagePercent` clamped to `0..100`, `remainingPercent: 100 - usedPercent`, and `resetsAt` only when a valid `currentPeriod.end` exists. This clamp preserves an available exhausted-quota result when the provider reports overage above 100 rather than converting it into dependency failure. The projection does not include current-period type or start, prepaid balance, on-demand state or amounts, auto-top-up rules, history, product breakdown, provider bodies, user ids, headers, credentials, or raw errors. Discovery or billing network, timeout, non-2xx HTTP, body-limit, UTF-8, JSON, or consumed-schema failure returns only `temporarily_unavailable`; there is no retry, third provider request, durable quota state, or stale-value fallback.
 
-Quota reads do not create a background scheduler, durable quota ledger, automatic account switch, or readiness gate. A short in-process cache may coalesce concurrent identical reads, but a cached observation must preserve its original `observedAt` and must never be presented as current after its bounded lifetime.
+Quota reads do not create a background scheduler, durable quota ledger, automatic account switch, or readiness gate. A short in-process cache may coalesce concurrent identical reads, but a cached observation must preserve its original `observedAt` and must never be presented as current after its bounded lifetime. Gateway route fallback reacts only to the exact admitted Provider attempt failure classification unless a later accepted Gateway strategy explicitly consumes bounded quota observations.
 
 For an ordinarily valid existing slot, either provider returns `available` after a valid adapter response or `temporarily_unavailable` after a bounded quota dependency failure. Both are successful `200` results, not `ApiError` responses.
 
@@ -435,7 +437,7 @@ Codex quota now uses the strict direct reader, while the current xAI route and s
 
 ## Accepted Design
 
-The clean target is one cohesive NanoCore provider-subscription account manager with provider-specific capability adapters only where the provider contract genuinely differs. The manager owns slots, authorization, metadata, Vault references, per-slot locking, and public projection. Stock pi-ai owns login and refresh through one `Models` plus one constrained `CredentialStore` view per slot. Codex and xAI each use one small release-coupled quota reader behind the existing route and public quota projection; no provider-specific account manager, public route, DTO family, credential format, or billing subsystem is introduced.
+The clean target is one cohesive NanoCore Provider-subscription account manager with Provider-specific capability adapters only where the Provider contract genuinely differs. The manager owns slots, authorization, metadata, Vault references, per-slot locking, and public projection. Stock pi-ai owns login and refresh through one `Models` plus one constrained `CredentialStore` view per slot. Codex and xAI each use one small release-coupled quota reader behind the existing route and public quota projection; no Provider-specific account manager, public route, DTO family, credential format, billing subsystem, or account selector is introduced. Gateway composes multi-account behavior solely from ordinary one-slot Provider profiles and logical-model route members.
 
 No general extension framework, plugin registry, global credential switcher, duplicate OAuth implementation, or second account state machine is introduced. New subscription providers require an accepted spec revision that defines entitlement, pi-ai support, login modes, quota posture, and failure behavior.
 

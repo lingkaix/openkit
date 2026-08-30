@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-10
+updated: 2026-08-31
 ---
 # Agent Environment Package And Worker Governance Backends
 
@@ -9,7 +9,7 @@ updated: 2026-08-10
 
 This specification owns the implementation-facing `AgentEnvironmentPackage` contract and the boundary between NanoCore's resolved worker-execution authority and a worker governance backend's materialization.
 
-It owns the strict version 3 envelope, the exact canonical worker-consumed byte projection and package-config identity, the resolution and immutability invariants, the no-widen and no-secret boundaries, the redacted snapshot requirement, and the package evidence needed for launch, restart, and recovery decisions.
+It owns the strict version 4 envelope, the exact canonical worker-consumed byte projection and package-config identity, the resolution and immutability invariants, the no-widen and no-secret boundaries, the redacted snapshot requirement, and the package evidence needed for launch, restart, and recovery decisions.
 
 It owns the two forms a resolved runtime image may take inside the package — a digest-pinned published image reference or a bounded build definition — and the immutability, no-secret, no-widen, and resolution rules that apply to the build definition as package content. It does not own how a build definition is executed, stored, or imported.
 
@@ -59,7 +59,7 @@ Those contracts remain with their narrow Core and specification owners. An AEP c
 
 ## Definition And Exclusions
 
-An `AgentEnvironmentPackage` is one strict, resolved, immutable NanoCore record that binds an exact worker launch to its OpenKit lineage, runtime, workspace inputs, supplied resources, sandbox-local Integration bindings, governed access, inference route, resource intent, observability requirements, and backend requirements.
+An `AgentEnvironmentPackage` is one strict, resolved, immutable NanoCore record that binds an exact worker launch to its OpenKit lineage, runtime, workspace inputs, supplied resources, sandbox-local Integration bindings, governed access, allowed logical-model contract, resource intent, observability requirements, and backend requirements.
 
 The AEP is the canonical input to worker governance materialization. NanoCore remains authoritative for product identity, policy and permission decisions, provider and Vault references, canonical Turn and Item state, usage, audit, and review. A backend may materialize and enforce the package and return evidence, but it must not create or replace those authorities.
 
@@ -81,24 +81,25 @@ Backend-native identities and sensitive material remain in their backend, runtim
 The only accepted authority chain is:
 
 ```text
-one validated AgentManifest
+one Server AgentManifest plus optional Workspace binding, selected profile, and User preference
+  -> one composed authored setup
   -> one ResolvedAgentSetup
   -> one strict immutable AgentEnvironmentPackage
   -> one validated backend materialization
   -> one bounded worker launch
 ```
 
-Core Agent Supply owns the authored `AgentManifest` concept. `docs/specs/20260703-agent_manifest_aep_resolution.md` owns its concrete schema, validation, and resolution into `ResolvedAgentSetup`. Policy, catalogs, workspace roots, request context, grants, and backend facts may resolve references or restrict that declaration, but they must not supply a missing image, adapter, runtime binary, network grant, credential declaration, or backend requirement.
+Core Agent Supply owns the authored `AgentManifest` concept. `docs/specs/20260703-agent_manifest_aep_resolution.md` owns its concrete schema, the identified Workspace extension and User-preference composition that occurs before resolution, validation, and resolution into `ResolvedAgentSetup`. Catalogs, workspace roots, request context, grants, runtime proof, placement, and backend facts may resolve references or establish availability, compatibility, authorization, and capacity, but they must not silently author a missing image, adapter, runtime binary, network grant, credential declaration, or backend requirement.
 
-The current `ResolvedAgentSetup` contains the complete selected manifest and either one resolved provider summary or `null`. The provider summary contains a provider id, selected model or `null`, the server-provider origin, and a secret reference or `null`; it never contains the secret value.
+The target `ResolvedAgentSetup` contains the complete composed manifest, selected profile, one preferred logical model, and an exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`. It contains no LLM Provider profile, Provider-native model, account slot, private route member, or secret value. The current concrete Provider summary is an implementation divergence recorded below.
 
 NanoCore resolves the setup together with the exact Turn, AgentSession, `ActorRef`, workspace roots, request context, provider and Vault authority, policy, and selected backend target. The result must pass the strict AEP schema and all cross-field checks before it can cross into backend materialization.
 
 The backend validates the package against its real capabilities and readiness before launch. Materialization may translate the accepted AEP into backend-private artifacts, but neither materialization nor launch may add authority absent from the parsed package.
 
-## Strict V2 Envelope
+## Strict Envelope
 
-The parsed package has `schemaVersion: 3` and exactly these top-level fields:
+The parsed package has `schemaVersion: 4` and exactly these top-level fields:
 
 ```text
 schemaVersion
@@ -112,7 +113,6 @@ workspace
 supply
 control
 capabilities
-providers
 credentials
 vault
 policy
@@ -131,7 +131,7 @@ The schema supplies only these top-level defaults during parsing:
 - `credentials` defaults to no declarations;
 - `extensions` defaults to an empty object.
 
-All other top-level fields are required. `schemaVersion` is the literal number `3`, `createdAt` is an ISO date-time, and `packageId` plus `snapshotId` are non-empty immutable identities.
+All other top-level fields are required. `schemaVersion` is the literal number `4`, `createdAt` is an ISO date-time, and `packageId` plus `snapshotId` are non-empty immutable identities.
 
 The top-level sections have these responsibilities:
 
@@ -144,11 +144,10 @@ The top-level sections have these responsibilities:
 | `supply` | Carries resolved static Skill and MCP catalog material without granting a callable route. |
 | `control` | Carries the sandbox-local `/worker-control/*` Integration binding, transcript, non-secret worker-control token reference, and the opaque runtime-adapter selector. |
 | `capabilities` | Carries the sandbox-local `/capabilities/*` Integration binding and separately governed worker-capability projection; the current implementation projection is disabled with no routes. |
-| `providers` | Carries non-secret provider profiles, instances, and attachments resolved for this launch. |
 | `credentials` | Carries declarations and references only, never credential values. |
 | `vault` | Carries non-secret Vault references and grants owned by the Vault contracts. |
 | `policy` | Carries the exact filesystem, process, network, and secret policy intent to materialize. |
-| `llm` | Carries exactly one resolved sandbox-local `/inference/*` semantic binding, inference route, token reference, and authority mode; trusted relay packages omit `workerBaseUrl` and every native URL. |
+| `llm` | Carries one resolved sandbox-local `/inference/*` semantic binding, distinct token reference and authority mode, one preferred logical model ID, and the exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no concrete Provider or route identity, and trusted relay packages omit `workerBaseUrl` and every native URL. |
 | `resources` | Carries worker resource intent without creating a second scheduler. |
 | `observability` | Carries required audit and evidence expectations. |
 | `backend` | Carries the preferred backend, allowed kinds, and required capability set. |
@@ -172,7 +171,7 @@ The package preserves distinct non-secret worker-control and inference token ref
 
 `runtime` resolves to exactly one of two image forms, never both and never neither. `runtime.image.ref` therefore stops being unconditional and becomes one arm of a discriminated selection, which changes the meaning of an existing field.
 
-That change is why this specification moves to `schemaVersion: 3` rather than gating the new form behind a required feature. `docs/specs/20260703-schema_evolution_record_envelope.md` permits either, and a required feature is the right instrument only when old and new readers must coexist. Under this repository's internal-development rule they never do: NanoCore, Sandbox Integration, and the execution runtime are released together, restart recovery reads a snapshot written by the same version, and an incompatible historical data root is replaced rather than migrated. Buying a feature registry, a second gate, and an unsupported-feature branch to protect a coexistence that does not occur would be strictly more machinery for strictly less clarity. One version, one shape, and a version 2 package is simply invalid.
+The image-form change originally moved the package to version 3. Replacing the concrete Provider route with the logical-model contract and removing the `providers` section now moves the package directly to `schemaVersion: 4`. `docs/specs/20260703-schema_evolution_record_envelope.md` permits a version change, and a required feature is appropriate only when old and new readers must coexist. Under this repository's internal-development rule they do not: NanoCore, Sandbox Integration, and the execution runtime are released together, restart recovery reads a snapshot written by the same version, and an incompatible historical data root is replaced rather than migrated. There is one accepted shape, and version 2 or version 3 packages are invalid.
 
 **Image reference.** A published image reference with its pull policy, exactly as authored and resolved today. Which reference forms an author may use, and how a tag is treated, remain owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260708-container_image_packaging.md`, and `docs/specs/20260721-worker_execution_environment_images.md`. This specification adds no new restriction on that form; resolving a reference to the exact content digest a sandbox consumes happens at the execution runtime's acquisition boundary and is owned there.
 
@@ -203,7 +202,7 @@ Resolution and materialization obey these invariants:
 - The launch command is the generic `openkit-worker-shim --package /openkit/config/package.json`; runtime-native argv remains with the selected adapter.
 - NanoHost realizes that command only through the runtime-owned fixed `ExecSandboxInteractive` Start with `/workspace`, no TTY, timeout zero, and the existing six non-secret lineage environment entries; no AEP field selects or widens those backend-private Start fields.
 - `control.adapter.targetRuntime` is the sole adapter selector; `agent.runtimeKind`, image names, environment variables, and backend defaults do not select or infer an adapter.
-- The package carries one resolved LLM route; zero routes, multiple routes, mixed relay and direct authority, or an unsupported runtime-route pairing fails before child launch.
+- The package carries one preferred logical model and an exact non-empty allowed logical-model set; a missing member, an incompatible derived capability or model-family value, direct Provider authority, or a runtime that cannot consume the sandbox-local Gateway relay fails before child launch.
 - The sandbox-local worker-control, inference, and capability bindings remain distinct and non-secret in the package. They share no token reference or authority, and raw authentication material is resolved through runtime-private channels.
 - The package MUST NOT contain a NanoHost identity or credential, Runtime Epoch identity, Cell identity, remote NanoCore or Gateway URL, SSH target, Gateway forward, container-runtime endpoint, direct sandbox-to-NanoCore endpoint, OpenShell authentication material, or raw route token.
 - Workspace paths and roots must pass the containment, immutable-base, materialization, and publication rules of their owners before launch.
@@ -211,9 +210,9 @@ Resolution and materialization obey these invariants:
 - The prepared Context Package's exact sorted regular-file inventory and package-root digest must match the generated `context` input before its per-file imports can run, while output declarations remain path-only and cannot pre-authorize produced bytes.
 - Required backend capabilities must be present and backend readiness must succeed before materialization can become launchable.
 - Optional capability absence remains unadvertised; it does not authorize a fallback or silent degradation.
-- A backend may implement only the declared image, command, files, mounts, provider attachments, credentials, policy, routes, resources, and evidence sinks.
+- A backend may implement only the declared image, command, files, mounts, credentials, policy, sandbox-local Integration bindings, resources, and evidence sinks.
 
-The AEP is immutable. Any change to launch identity, image, command, adapter, binaries, workspace layout or content, context, provider or credential attachment, Vault grant, policy, inference route, resource intent, output declaration, observability requirement, or backend requirement creates a new AEP and a new bounded launch.
+The AEP is immutable. Any change to launch identity, image, command, adapter, binaries, workspace layout or content, context, credential attachment, Vault grant, policy, preferred or allowed logical-model contract, resource intent, output declaration, observability requirement, or backend requirement creates a new AEP and a new bounded launch. A change to a Gateway-private concrete route within the same pinned logical-model contract does not change the AEP because that route is neither package content nor worker-visible authority.
 
 This specification defines no backend update operation, mutation of a pending or active package, environment rewrite, session-reuse inference, compatibility reader, or automatic retry. Retry is a new owning request that must resolve and validate current authority again.
 
@@ -223,9 +222,9 @@ Termination, evidence collection, workspace handoff, teardown, and retry outcome
 
 An AEP and every persisted or public snapshot must contain no raw secret value, authorization header, unrestricted host path, backend-private handle, raw provider payload, NanoHost credential, raw route token, remote Gateway locator, or transport credential.
 
-Provider, worker-control, inference, capability, and credential access is expressed through non-secret provider ids, declarations, route bindings, token references, secret references, Vault references, and grants. Exact credential values may exist only in the Vault or backend-private launch path authorized by those references, and they must not be copied into the AEP, its digest input, its durable snapshot, product records, ordinary logs, or public diagnostics. A token reference for one Integration route family MUST NOT be accepted as a reference for another family.
+Worker-control, inference, capability, and credential access is expressed through non-secret declarations, logical-model IDs, Integration bindings, token references, secret references, Vault references, and grants. Exact credential values may exist only in the Vault or backend-private launch path authorized by those references, and they must not be copied into the AEP, its digest input, its durable snapshot, product records, ordinary logs, or public diagnostics. A token reference for one Integration route family MUST NOT be accepted as a reference for another family. LLM Provider profile IDs, Provider-native models, account slots, route-member IDs, fallback order, and Provider credentials are Gateway-private and MUST NOT appear in an AEP.
 
-The package schema recursively rejects raw secret-shaped fields. Snapshot persistence redacts backend-private identifiers and local runtime references and then parses the redacted value through the same strict version 3 schema before writing it.
+The package schema recursively rejects raw secret-shaped fields. Snapshot persistence redacts backend-private identifiers and local runtime references and then parses the redacted value through the same strict version 4 schema before writing it.
 
 The initiating `scope.triggerActor` is immutable launch lineage. Its responsible user is accountability and authorization context only and never selects a Workspace database, directory, store, or backend placement.
 
@@ -243,7 +242,7 @@ The snapshot record binds `snapshotId`, `packageId`, Workspace, Thread, Turn, Ag
 
 Snapshot list and read operations expose only the redacted record through App API, Core Client, OpenAPI, and the unified Skill/CLI. The durable snapshot remains evidence and diagnostics; it is not a replay instruction or current access grant.
 
-Normal resolution, snapshot reads, restart, export, and import accept version 3 only. No runtime alias, compatibility union, or fallback form is authorized, and no reader accepts a version 2 package.
+Normal resolution, snapshot reads, restart, export, and import accept version 4 only. No runtime alias, compatibility union, or fallback form is authorized, and no reader accepts a version 2 or version 3 package.
 
 Current restart recovery parses the stored package and verifies its snapshot and scope against the durable lease, session, and admission lineage required by the scheduler and worker-runtime owners before using it as recovery evidence. It does not currently compare `backend.preferred` or `runtime.image.ref` with the durable backend session. A missing, malformed, secret-bearing, or lineage-conflicting snapshot fails closed.
 
@@ -261,6 +260,8 @@ The current production worker lifecycle selects only a `nanohost` RuntimeTarget.
 
 The current package projects the fixed generic worker shim, one adapter selected from the static Codex, OpenCode, and Pi registry by `control.adapter.targetRuntime`, transcript evidence, one supported inference route, workspace roots and context, static Skill and MCP supply, provider and Vault declarations, policy, resources, observability, backend requirements, and the three sandbox-local Integration bindings for capability, worker-control, and inference with distinct Token references. It projects no direct NanoCore endpoint or raw Token. The exact generated Context Package inventory maps to fixed imports after package-config, path-only outputs map to NanoHost-produced and NanoCore-verified exports, the fixed unary two-token NanoHost bootstrap retains its response monitor, and lease-owned distinct hash-only worker-control and inference bindings restore on restart. Adapter-specific native commands, output parsing, provider-route compatibility, image contents, and enabled capability behavior remain with their narrow specifications.
 
+The current version 3 package and setup resolver therefore diverge from the version 4 target: they retain a concrete Provider summary and one concrete inference route, do not carry the composed preferred and allowed logical-model contract, and cannot prove that Provider identity stays Gateway-private. The implementation must replace version 3 directly rather than add a compatibility reader.
+
 Current packages project worker capabilities as disabled with no routes. Static Skill or MCP supply does not grant a worker capability, direct MCP connection, or alternate control plane.
 
 Current snapshot persistence redacts and reparses the package, records its digest and lineage, and supports redacted list/read diagnostics. Scheduler restart recovery verifies snapshot, scope, lease, session, admission, backend kind, and exact reference or build-input lineage before using the package for cleanup, reconnect, or closeout evidence.
@@ -274,9 +275,9 @@ Every validation, resolution, materialization, snapshot, and recovery failure is
 Current observable failure categories are:
 
 - authored manifest loading failure, reported as an invalid-manifest diagnostic;
-- setup resolution failure for an invalid default profile, missing provider, or unsupported required feature;
+- setup resolution failure for an invalid default profile, missing provider under the current version 3 implementation, or unsupported required feature;
 - strict AEP schema or cross-field rejection;
-- missing or contradictory Turn, AgentSession, actor, provider/model, workspace, policy, credential, Vault, route, image, adapter, binary, or backend input;
+- missing or contradictory Turn, AgentSession, actor, logical-model contract, workspace, policy, credential, Vault, Integration binding, image, adapter, binary, or backend input;
 - unsupported backend selection, required backend capability, backend readiness, or runtime-route pairing;
 - an image selection that is absent, ambiguous, or supplies both forms, or a build definition that is secret-bearing, sandbox-authority-widening, omits or changes `build-context://empty/v1` or `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, supplies an empty, non-UTF-8, over-268,435,456-byte, or digest-mismatched inline Dockerfile, mixes that independent Dockerfile into the context digest, lacks an explicit exact `{host, port}` build egress grant, infers a port or registry bootstrap authority, or declares `timeLimitSeconds` outside 1 through 1800, `outputLimitBytes` outside 1 through 21474836480, or `layerLimit` outside 1 through 128;
 - redaction, snapshot parsing, digest, path, or lineage mismatch;
@@ -293,9 +294,9 @@ Failure before launch produces no worker launch. Failure after a physical effect
 
 The contract is satisfied only when all of the following are observable:
 
-- A parsed package has literal `schemaVersion: 3`, contains the complete strict top-level envelope, applies only the three documented defaults, and rejects unknown top-level fields.
-- One validated `AgentManifest` resolves through one `ResolvedAgentSetup` into one immutable AEP, with no parallel setup document or authority path.
-- Missing authored image, adapter, binary, network, credential, provider, workspace, policy, route, or backend authority is rejected rather than inferred.
+- A parsed package has literal `schemaVersion: 4`, contains the complete strict top-level envelope without a `providers` section, applies only the three documented defaults, and rejects unknown top-level fields.
+- One Server `AgentManifest`, optional Workspace binding, selected profile, applicable User preference, and request selection compose before one `ResolvedAgentSetup` produces one immutable AEP, with no parallel setup document or authority path.
+- Missing authored image, adapter, binary, network, credential requirement, Workspace, policy, logical-model contract, Integration binding, or backend authority is rejected rather than inferred.
 - `runtime` resolves to exactly one image form: an image reference with its pull policy, or a bounded build definition. Both forms and neither form are rejected.
 - A build definition preserves exactly `build-context://empty/v1` with digest `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, whose zero-entry canonical byte sequence is empty bytes, and preserves 1 through 268,435,456 exact UTF-8 Dockerfile bytes inline as independently digested package content excluded from that context digest. It also preserves explicit exact `{host, port}` ordinary build grants with no inferred port or registry bootstrap authority, `timeLimitSeconds` from 1 through 1800, `outputLimitBytes` from 1 through 21474836480, and `layerLimit` from 1 through 128; it has no secret value, capability, host path, build root, socket, Dockerfile locator, context transfer, or future context variant and grants the resulting sandbox no authority beyond the package's own grants.
 - The image digest produced from a build definition is recorded as launch evidence, never written back into the immutable package, and used with the build-definition lineage wherever `runtime.image.ref` would otherwise anchor package-to-session consistency.
@@ -305,10 +306,11 @@ The contract is satisfied only when all of the following are observable:
 - The worker-consumed AEP is reparsed immediately before import and serialized as compact UTF-8 JSON with recursively UTF-16-code-unit-sorted object keys, preserved array order, JSON-stringified keys and strings, no BOM, and no trailing newline; non-JSON values fail before effects, and its exact lowercase SHA-256 plus byte length bind the import identity.
 - The first successful import after `sandbox.create` is exactly `package-config/package.json` at fixed `/openkit/config/package.json`; it precedes every generated Context Package import and `bridge.open`, admits no adjacent path, export, selector, schema field, or new transfer surface, and any absent, changed, failed, or uncertain package import prevents worker launch under the existing delete-to-epoch-fence truth.
 - The package carries only distinct non-secret sandbox-local Integration bindings and token references for worker control, inference, and capability; it carries no raw route token, NanoHost credential, remote Gateway or NanoCore endpoint, SSH target, Gateway forward, container-runtime endpoint, Cell identity, or Runtime Epoch identity.
+- The package carries one preferred logical model and an exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no LLM Provider profile, Provider-native model, account slot, private route member, fallback order, or Provider credential.
 - NanoHost bootstrap uses only the fixed package command and six existing non-secret lineage environment entries; its two independent raw tokens cross only the runtime-private stdin-slot boundary, with worker control restricted to descriptor 3 and inference restricted to the authorized sanitized native binding.
 - Raw secrets, authorization material, backend-private handles, and unrestricted host references are absent from the AEP, durable snapshot, public diagnostics, and product records.
 - Any material launch-input change produces a new package and bounded launch rather than mutating an existing package or session.
-- The persisted snapshot is redacted, reparsed as version 3, digest-bound, Workspace-owned, and linked to the exact package, Turn, AgentSession, Agent, runtime, and backend.
+- The persisted snapshot is redacted, reparsed as version 4, digest-bound, Workspace-owned, and linked to the exact package, Turn, AgentSession, Agent, runtime, and backend.
 - Complete restart evidence rejects a missing or mismatched package snapshot and requires `backend.preferred` and `runtime.image.ref` to match the durable backend session before claiming package-to-session consistency; the current path remains partial for those two comparisons.
 - Current diagnostics distinguish the implemented setup failures and truthful broader failure categories without claiming a unified typed resolver taxonomy.
 - Deleting backend-private material or one concrete adapter does not change the AEP's NanoCore-owned authority, strict envelope, or product lineage.

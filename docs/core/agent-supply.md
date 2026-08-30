@@ -25,6 +25,8 @@ Agent supply is declared before it is materialized.
 
 Resolution, governance materialization, and runtime adaptation are one-way projections of the authored setup. None of them is a second authored supply authority.
 
+Authored composition precedes resolution. One Server-supplied Agent Manifest may be composed with one Workspace-owned binding, the selected nested profile, and applicable User preference into one composed authored setup. That composition may add Workspace-owned resources and requirements under their existing owners; after composition, Core resolves exactly one authored setup through the ordinary catalogs, grants, policy, compatibility, and materialization boundaries.
+
 Agent catalogs are workspace-visible selection surfaces, not runtime launch manifests.
 
 Agent Manifests should describe required supply without embedding secret values, absolute local paths, provider-native payloads, or adapter-private launch details.
@@ -158,7 +160,7 @@ Examples:
 - handoff target
 - tool-oriented agent
 
-Profiles can declare or reference behavior-oriented settings such as instructions, model preference, skill list, capability subset, or routing hints.
+Profiles can declare or reference behavior-oriented settings such as instructions, model preference, Skill and MCP lists, capability requirements, or routing hints. A profile may extend only stable-ID behavior lists that its manifest explicitly marks composable and only with resources from the composed catalogs; it cannot add runtime, network, credential, policy, or backend authority.
 
 Profiles are not standalone agents, top-level core objects, or protocol-level agent registries.
 
@@ -219,14 +221,15 @@ Examples:
 
 ## Resolution
 
-Core selects exactly one current `AgentManifest` and one nested profile before starting an AgentSession. Catalogs, grants, policy, and request context resolve references or restrict that setup; they never supply missing launch authority.
+Core selects exactly one current `AgentManifest`, one Workspace binding when present, one nested profile, and applicable User preference before starting an AgentSession. Those authored inputs form one composed authored setup. Catalogs, grants, policy, request context, runtime proof, and materialization then resolve references, validate, or restrict that setup; they never supply a missing authored requirement or create another setup authority.
 
 Conceptual layers:
 
 ```text
-one selected AgentManifest plus nested profile
+one selected AgentManifest plus Workspace binding, nested profile, and User preference
+  -> one composed authored setup
   -> catalog reference resolution
-  -> server and workspace policy restriction
+  -> policy, grant, compatibility, and runtime validation
   -> allowed request selection and restriction
   -> late-bound grants and context
   -> immutable launch package
@@ -258,6 +261,7 @@ The current manifest schema is validated strictly. Unknown or unsupported author
 - Agent profiles MUST remain setup-local behavior profiles unless a future core design promotes a standalone concept.
 - Generated native config files MUST remain materialization outputs, not the canonical agent setup source.
 - Each launch MUST derive from exactly one `AgentManifest` and one selected setup-local profile; resolution, governance materialization, and runtime adaptation MUST NOT become additional authored supply authorities.
+- Workspace bindings and User preferences MAY participate in authored composition, but they MUST yield one composed authored setup before resolution and MUST NOT turn catalogs, grants, policy, runtime proof, or materialization into authored supply.
 - Launch-time capability availability MUST be the intersection of authored requirements and selected runtime adapter and image proof; missing required proof MUST block readiness, and optional unproven capability MUST remain unavailable.
 - Agent supply MUST NOT create a direct or runtime-native MCP execution route; worker MCP access belongs to the governed capability plane owned by `agent-capability.md`.
 

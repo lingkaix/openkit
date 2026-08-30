@@ -10,12 +10,13 @@ implementation: Partial
 - The **token-bridge contract** that makes an Adobe Spectrum design in Claude Design map to Tailwind-implemented code at high visual fidelity.
 - The reconciliation deltas that `DESIGN.md` must absorb because of this stack change.
 - The current implementation projection of the rebuilt `apps/web`.
+- The component and state-placement boundary for the shared unified conversation Composer.
 
 ## Does Not Own
 
 - Kernel, protocol, App API, workflow, storage, permission, capability, or knowledge semantics. Those stay owned by `docs/core/*` and their protocol/runtime specs.
 - The Web UI product-surface posture and the minimum contract-backed product areas, which are owned by [`20260628-web_product_surface_projection.md`](./20260628-web_product_surface_projection.md).
-- Information architecture, layout, sidebar model, and interaction rules, which remain owned by `DESIGN.md`. This spec only records the deltas that `DESIGN.md` must absorb; it does not redefine the IA.
+- Information architecture, layout, sidebar model, and ordinary interaction rules remain owned by `DESIGN.md`. The unified Composer is the explicit exception: `docs/specs/20260831-unified_conversation_composer.md` owns its observable interaction contract, while `DESIGN.md` supplies only the visual projection and tokens.
 - The design→code collaboration workflow, which is owned by the cookbook [`docs/cookbooks/claude-design-web-ui-loop.md`](../cookbooks/claude-design-web-ui-loop.md).
 
 ## Core References
@@ -92,6 +93,15 @@ The rebuilt `apps/web` MUST use the following stack.
 - Server state lives in TanStack Query; UI state lives in Zustand; the two MUST NOT overlap for the same datum.
 - OpenKit component primitives MUST derive interaction and accessibility behavior from React Aria Components rather than reimplementing focus, keyboard, and ARIA semantics by hand.
 - Generative surfaces MUST render through the A2UI renderer + OpenKit component mapping; they MUST NOT execute arbitrary agent-provided code.
+- The shared Composer keeps only its editable draft, selected target reference, selected logical model, selected Artifact references, pending local file import, and retry request identity in component or UI state. Target catalogs and accepted submissions are server state owned by TanStack Query and `@openkit/core-client`; neither is copied into Zustand.
+
+### Unified Composer component boundary
+
+The existing `Composer` primitive remains the sole starter and active-Thread input component. It expands its current textarea and submit callback rather than adding a second Composer implementation. Native textarea measurement and CSS provide bounded auto-growth; React Aria controls provide the Artifact, target, logical-model, and Send interactions. No new UI dependency, form framework, upload framework, editor, or browser persistence owner is added.
+
+The primitive renders the observable two-region contract owned by `docs/specs/20260831-unified_conversation_composer.md`, applies the visual tokens projected by `DESIGN.md`, and emits one structured value containing text, target reference, logical-model preference, and ordered Artifact references. Screen adapters own target-catalog queries, supported local-file import through the existing Core Client, starter Thread creation, structured submission, navigation to the receiving Workspace and Thread, and exact cache invalidation. The primitive never calls NanoCore, resolves defaults, joins runtime state, or interprets target references.
+
+Draft state survives a failed mutation and clears only on accepted submission. It does not survive a page reload because no accepted requirement justifies browser persistence. A catalog refresh may update labels and availability while preserving the exact selected reference; a missing or incompatible selection remains visibly invalid until the User chooses again.
 
 ## Proposed Design
 
@@ -115,6 +125,7 @@ These deltas remain recorded here as the stack-owned source for the reconciled `
 ## Current Implementation Projection
 
 - Current: `apps/web` is rebuilt in place with React, Zustand, React Router, TanStack Query, Tailwind CSS v4, React Aria Components, and the existing Iconify/Remix pattern.
+- Current Composer divergence: `apps/web/src/primitives/Composer.tsx` is text-only, uses fixed textarea rows, places Send beside the textarea, and exposes neither the accepted lower action row nor structured draft output.
 - Partial stack conformance: `apps/web/src/screens/generative/` contains a custom local A2UI-like declarative renderer and whitelist catalog rather than the official A2UI React renderer, and `apps/web/src/styles/tokens.css` is a hand-maintained Spectrum-derived semantic bridge rather than a projection sourced from Adobe's token package.
 - Missing direct dependencies: `apps/web/package.json` and the lockfile contain neither the official A2UI React renderer nor the Adobe Spectrum token package.
 - Unaffected: `packages/core-client` and `packages/protocol` are framework-agnostic and require no change for the view-layer rebuild.
@@ -150,6 +161,7 @@ Internal development: no backward-compatibility layers are preserved; the clean 
 - **Token parity test:** computed theme token values match the Spectrum token source; no hard-coded palette/radius/spacing literals in component markup (lint or test enforced).
 - **Fidelity gate:** every implemented screen receives final human fidelity review. A frame-backed surface is compared against its finalized Claude Design frame, including visual-regression evidence when the harness is available. A reference-backed surface is reviewed against `DESIGN.md`, its owning specifications, the recorded reference-board composition, shared tokens and themes, applicable primitives, layout and density rules, required states, and accessibility; it makes no 1:1 frame claim.
 - Accessibility: React Aria-backed primitives pass automated a11y checks (e.g., axe) and keyboard/focus assertions.
+- Composer checks cover one shared primitive on starter and active-Thread surfaces, bounded textarea growth with a fixed action row, Enter and Shift+Enter behavior, accessible icon and selector names, pending-import state, exact failure retention, and no duplicate submit.
 - No `solid-js`, `vite-plugin-solid`, `@solidjs/*`, or `daisyui` remain in `apps/web` dependencies after step 5.
 
 ## Risks & Mitigations

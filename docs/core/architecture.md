@@ -68,7 +68,7 @@ The Generative Kernel is a reserved future workspace-service boundary for govern
 
 ## Internal Core Roles
 
-Core may use lightweight internal roles for coordination. These roles remain inside Core, are not Agent Runtime entries, are not worker-agent supply, and are not user-selectable execution tools.
+Core may use lightweight internal roles for coordination. These roles remain inside Core, are not Agent Runtime entries, are not worker-agent supply, and are not user-selectable worker execution tools. A role whose owning contract admits direct conversation MAY appear as a product conversation target, but the selection addresses the Core role and never exposes or creates a worker Agent, AgentSession, Harness, Sandbox, or native process.
 
 | Role | Stable responsibility | Prohibited ownership |
 | --- | --- | --- |
@@ -78,6 +78,8 @@ Core may use lightweight internal roles for coordination. These roles remain ins
 | Task Evaluator | Reserved direction for governed evaluation of outcomes, verification, and improvement proposals. | Current worker execution or an unpromoted concrete evaluation architecture. |
 
 Internal roles may produce decisions or proposals only through normal Core services and records. They must not create private workflow, knowledge, evaluation, or product-state authorities.
+
+Product target selection and runtime placement are independent. A product surface may select an internal role, Agent supply and profile, logical model preference, and Thread or explicit new-work action. Core alone resolves that intent to Core-local execution or worker placement; product surfaces do not select Provider routes, AgentSessions, Harnesses, Sandboxes, RuntimeTargets, or native processes.
 
 ## Boundaries And Non-Goals
 
@@ -97,6 +99,7 @@ Internal roles may produce decisions or proposals only through normal Core servi
 - Core MUST NOT claim atomic completion across its durable store and an external runtime effect without an owning contract that supplies real proof. An unprovable outcome MUST remain explicit rather than being repaired by inference.
 - Adding an agent runtime MUST NOT add runtime-specific product, workflow, policy, governance, or canonical-schema branches to Core.
 - Internal Core roles MUST remain inside the coordination plane and MUST NOT maintain private product or workflow state.
+- Directly addressing an admitted internal role MUST remain a Core-local conversation projection and MUST NOT convert that role into worker Agent supply or runtime placement.
 - Role, Agent, AgentSession, Harness, and Sandbox MUST remain independent axes; co-location or a shared physical binding transfers no identity or authority among them.
 - The NanoCore-user, NanoCore-NanoHost, and NanoCore-Worker-Agent interaction boundaries MUST remain stable while the internal Agent loop, internal-role assembly, Goal scheduling, Goal worker pinning, and placement remain private changeable NanoCore strategies; those strategies MUST NOT leak role or Goal semantics or runtime identities across those edges.
 - Workspace services MUST expose governed Core contracts and MUST NOT expose raw storage, credentials, provider clients, sandbox control, or adapter internals.

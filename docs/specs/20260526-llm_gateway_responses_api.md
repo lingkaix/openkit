@@ -6,7 +6,7 @@ implementation: Partial
 
 ## Owns
 
-This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, model discovery, public endpoint-capability vocabulary, provider-profile selection, optional public cache-scope input, and public Gateway error behavior. It also owns the public routing rule that a subscription-backed provider profile binds one explicit provider-subscription account slot.
+This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the `gateway.jsonc` logical-model catalog, model discovery, derived logical-model capabilities and model family, ordered private route selection, bounded pre-output fallback, optional public cache-scope input, and public Gateway error behavior. It also owns the routing rule that one route member references one Provider profile and that a subscription-backed Provider profile binds one explicit provider-subscription account slot.
 
 ## Does Not Own
 
@@ -33,7 +33,7 @@ Related specs:
 
 ## Summary
 
-NanoCore exposes the fixed agent-facing Gateway surface at `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`, plus `/health`. Route handling authenticates and authorizes the caller, resolves one configured provider profile and model, derives a bounded cache scope, and delegates the provider effect to the unified pi-ai dispatcher.
+NanoCore exposes the fixed agent-facing Gateway surface at `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`, plus `/health`. Route handling authenticates and authorizes the caller, resolves one logical model, selects one eligible private route member, derives a bounded cache scope, and delegates the Provider effect to the unified pi-ai dispatcher. The caller sees only the logical model ID and declared contract; Provider profile, provider-native model, account slot, and fallback lineage remain private except in authorized redacted audit and usage evidence.
 
 Codex and xAI subscription providers are not special Gateway backends. Their profiles use the same public routes and explicitly bind a server-owned account slot through provider-neutral OpenKit configuration. The unified backend resolves that slot before invoking pi-ai. The Gateway has no Codex app-server, `CODEX_HOME`, `auth.json`, or dedicated Codex client dependency in the clean target.
 
@@ -43,6 +43,8 @@ Codex and xAI subscription providers are not special Gateway backends. Their pro
 
 - Preserve one OpenAI-compatible Gateway surface for API-key, subscription-backed, gateway, local, and custom providers.
 - Keep provider and model authority in authored OpenKit profiles rather than adapter discovery.
+- Present stable logical model IDs whose concrete Provider profile, provider-native model, and account may vary without changing the caller-visible contract.
+- Support deterministic ordered route members and bounded pre-output failover for the concrete quota and availability cases accepted below.
 - Support native endpoint families and bounded bridges without hiding semantic loss.
 - Require explicit account-slot binding for every subscription-backed provider profile.
 - Preserve cache-scope input and provider-reported cache evidence without exposing raw ownership identifiers.
@@ -57,7 +59,7 @@ Codex and xAI subscription providers are not special Gateway backends. Their pro
 - Do not accept pasted subscription tokens through Gateway routes or provider profiles.
 - Do not expose or implement `POST /v1/completions`.
 - Do not reintroduce the superseded `/internal/v1/chat/completions` facade.
-- Do not perform provider or account fallback.
+- Do not implement weighted or randomized balancing, active health scoring, generic strategy plugins, fallback after response output begins, or a guarantee that any fallback succeeds.
 
 ## Public HTTP Contract
 
@@ -75,7 +77,9 @@ The route accepts OpenAI-compatible Responses requests with `model`, `input`, op
 
 ### `GET /v1/models`
 
-The route returns only models explicitly listed by Gateway-allowlisted provider profiles while the Gateway is enabled. For every non-subscription profile, eligibility remains exactly the pre-cutover Gateway allowlist and readiness behavior: readiness omitted, `ready`, or `degraded` permits its authored models, while `blocked`, `disabled`, and `unknown` excludes them. This cutover adds no classification, slot-metadata, local Vault, secret-resolution, credential-resolvability, or other local-usability filter to a direct, API-key, gateway, local, custom, or other non-subscription profile. A subscription-backed profile is the only profile kind subject to the additional checks: it contributes models only when its classification is valid, its exact `(subscriptionProviderId, accountSlotId)` metadata record exists, the Vault is locally available, and that slot's credential is locally resolvable. These subscription-only checks are network-free and do not promise provider entitlement. Pi-ai and provider-native catalogs never add undeclared models to the response.
+The route returns only configured logical models from `gateway.jsonc` that have at least one currently eligible route member. Each result uses the logical model ID as `id`, exposes only its product-safe name and derived capabilities, and uses the stable product owner `openkit`; it never publishes a Provider profile ID, provider-native model, account slot, route-member ID, model-family classification, or Provider catalog ownership value.
+
+A route member is eligible only when its referenced Provider profile is dispatchable, the provider-native model appears in that profile's explicit model list, its endpoint capability can preserve the requested Gateway surface, and any subscription binding passes the network-free slot, Vault, and credential checks below. Pi-ai and Provider-native catalogs never add an undeclared logical model or route member. Model discovery and inference dispatch call the same logical-model resolver, so a model advertised under the current snapshot is accepted for dispatch unless eligibility changes before the later request, in which case dispatch returns the stable current failure rather than choosing a different logical model.
 
 Server-mode authentication is required because model supply and sibling inference routes are deployment-owned capabilities. When Gateway policy disables inference, model supply is hidden as well.
 
@@ -91,9 +95,41 @@ Public `metadata` and `metadata.openkit` are optional. A caller-supplied `metada
 
 A request without Workspace scope may still dispatch and produce process-local diagnostics. A supplied but unauthorized Workspace fails before provider dispatch. Public metadata never selects a credential, account slot, provider endpoint, or unlisted model.
 
+## Logical Model Catalog And Ordered Routing
+
+`DATA_ROOT/config/gateway.jsonc` is the sole authored Gateway configuration file. It is a strict versioned record with Gateway enablement, optional `defaultLogicalModelId`, and a non-empty identified logical-model catalog when enabled. The removed `server.jsonc.gateway`, `gatewayProviderId`, and `gatewayModel` fields are invalid and have no compatibility reader.
+
+Each logical model contains:
+
+```ts
+interface LogicalModelConfig {
+  id: string;
+  displayName: string;
+  routes: Array<{
+    id: string;
+    providerProfileId: string;
+    providerModel: string;
+  }>;
+}
+```
+
+IDs are stable and unique within their owning collection. Capability and family values are not free-form Gateway configuration. When the snapshot loads, NanoCore joins each route member to the pinned `@openkit/models-dev-catalog` snapshot and the Provider endpoint-capability matrix, derives one closed capability set and `modelFamilyId` per member, requires every member of a logical model to have the same derived `modelFamilyId`, and publishes the intersection of their capabilities as the logical model's effective capability set. A missing catalog match, mismatched family, or unrepresentable endpoint rejects the snapshot rather than accepting an authored assertion or silently weakening a later call.
+
+The `@openkit/models-dev-catalog` snapshot version is pinned by that package and changes only with an explicit repository dependency snapshot update, not through runtime-config reload. Startup and test validation recompute every derived logical-model contract against that pinned version. A refreshed catalog that changes a logical model's effective capabilities or `modelFamilyId` changes the composed setup and enters only a later immutable AEP or internal-role run; it never mutates an admitted Turn or silently crosses the previously accepted logical contract.
+
+The request `model` is always a logical model ID. An explicit admitted request value wins; otherwise the applicable User, Workspace, Agent or internal-role preference resolves before `gateway.jsonc.defaultLogicalModelId` supplies the final Gateway fallback. Absence or ineligibility of the resolved logical model returns a typed error and never falls back to a different logical model.
+
+For each Provider call, Gateway considers route members in authored order. It begins with the first eligible member and may advance only when no response bytes or stream events were delivered and the attempt ended as one of: Provider unavailable, Provider authentication unavailable, subscription quota exhausted, rate limited, or Provider start failed. Invalid input, unsupported request shape, policy denial, caller cancellation, context overflow, output validation failure, or any post-output failure does not advance. The same member is attempted at most once per Provider call.
+
+A new internal-role model turn or worker inference request may begin with a different eligible member. The logical model ID, derived effective capabilities, and derived `modelFamilyId` remain pinned for the owning internal-role run or worker Turn, so concrete route replacement is not a caller-visible model substitution. One subscription-backed Provider profile binds at most one account slot; account rotation therefore uses distinct ordered route members that reference distinct Provider profiles.
+
+Every attempt records one private route lineage entry containing the logical model ID, route-member ID, Provider profile and native model, account slot where safe, selection reason, attempt order, stable failure class, usage when known, whether any output began, and terminal result. Public errors and model discovery redact those identities. If every eligible member is exhausted, Gateway returns the stable logical-model failure corresponding to the terminal classification and does not claim transparent success.
+
+Current schema evolution uses the shared `schemaVersion`, `requiredFeatures`, and namespaced descriptive `extensions` mechanisms. Weighted routes, randomized selection, active health state, generalized strategies, and algorithm plugins have no current fields or behavior.
+
 ## Provider Profiles And Account Binding
 
-Gateway provider resolution uses the runtime registry loaded from `DATA_ROOT/config/server.jsonc` and `DATA_ROOT/config/providers/*.provider.jsonc`. The selected profile's readiness and exact `models` list are dispatch authority; model or provider discovery inside pi-ai is never authority.
+Gateway Provider resolution uses logical route members from `DATA_ROOT/config/gateway.jsonc` and Provider profiles from `DATA_ROOT/config/providers/*.provider.jsonc`. The selected member, profile readiness, endpoint capability, and exact Provider-native `models` list are dispatch authority; model or Provider discovery inside pi-ai is never authority.
 
 Provider profiles use OpenKit vocabulary only. A subscription-backed profile declares:
 
@@ -168,7 +204,7 @@ The bridge rejects:
 
 1. explicit top-level `prompt_cache_key`
 2. authorized `metadata.openkit.promptCacheKey`
-3. an available server-owned scope derived from configured provider id, model, the `(subscriptionProviderId, accountSlotId)` pair when subscription-backed, authorized Workspace, server-resolved thread, AgentSession, or session
+3. an available server-owned scope derived from logical model ID, selected private route member, Provider profile and native model, the `(subscriptionProviderId, accountSlotId)` pair when subscription-backed, authorized Workspace, server-resolved thread, AgentSession, or session
 4. a request-scoped generated fallback
 
 Every resolved scope is normalized and hashed by the S42-owned resolver before provider-facing use. Raw Workspace, thread, subscription-provider, account-slot, session, prompt, credential, or user identifiers are not exposed. Both `subscriptionProviderId` and `accountSlotId` participate in the hash so equal slot ids under different providers or accounts cannot share provider cache or Codex turn-state continuity accidentally.
@@ -177,7 +213,7 @@ The route supplies resolved cache input to the unified backend; it does not deci
 
 ## Error Contract
 
-Gateway policy failures, missing defaults, disallowed or unavailable providers, invalid account bindings, authentication failures, rate limits, context overflow, unsupported features, provider failures, and cancellation use OpenAI-compatible error envelopes with stable OpenKit codes and fixed generic messages.
+Gateway policy failures, missing logical defaults, unknown or unavailable logical models, exhausted route members, invalid account bindings, authentication failures, rate limits, quota exhaustion, context overflow, unsupported features, Provider failures, and cancellation use OpenAI-compatible error envelopes with stable OpenKit codes and fixed generic messages.
 
 Upstream message text, provider-native codes and types, response bodies, pi-ai vocabulary, credential data, account identifiers, and stack traces never cross public JSON or SSE. Provider classification may inspect internal details only to select the stable public class.
 
@@ -205,36 +241,37 @@ The legacy `oauth.openaiCodexAccounts` diagnostics field is removed rather than 
 
 ## Current Implementation Projection
 
-NanoCore currently implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` with server authentication, Gateway policy, explicit profile/model authority, optional public metadata, durable attribution, prompt-cache resolution, stable errors, streaming, usage projection, and no retired internal facade.
+NanoCore currently implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` with server authentication, Gateway policy, one default Provider profile plus Provider-native model authority, optional public metadata, durable attribution, prompt-cache resolution, stable errors, streaming, usage projection, and no retired internal facade. It does not yet load `gateway.jsonc` or resolve logical models.
 
 Provider resolution now accepts only the provider-neutral `extensions.openkit.subscriptionAccount` binding for recognized subscription profiles, validates the exact slot and local credential before dispatch, and sends both Codex and xAI subscription requests through the unified pi-ai dispatcher. Codex Responses is native through stock pi-ai, xAI uses its reviewed model capability, subscription-provider and account-slot identity participate in the hashed cache scope, and stable pre-dispatch and post-start errors expose no provider-private data.
 
-The prior Codex-specific config, route, diagnostics, dispatch vocabulary, and residual dedicated source files have been physically removed. This spec remains `Partial` until the owner-governed Codex real-use runs complete the accepted Gateway evidence; quota and Web account presentation remain outside this spec.
+The current `/v1/models` implementation can advertise a model from one allowed Provider profile while inference validates only the default profile, and it exposes the concrete profile through `owned_by`. The target logical resolver must remove both divergences. This spec remains `Partial` until logical discovery and dispatch share one resolver, private routes remain hidden, ordered fallback is implemented and attributed, and the owner-governed real-use evidence passes.
 
 ## Accepted Design
 
-The Hono route layer remains thin: authenticate, authorize, validate, select a profile and model, derive cache scope, start durable attribution when applicable, call one unified provider dispatcher, and normalize the public response. Subscription account selection is a provider-resolution input, not a backend branch. All provider-native behavior remains behind the S42 pi-ai adapter boundary.
+The Hono route layer remains thin: authenticate, authorize, validate, resolve one logical model, ask the Gateway resolver for one ordered private member at a time, derive cache scope, start durable attribution when applicable, call one unified Provider dispatcher, and normalize the public response. Subscription account selection is a Provider-resolution input, not a backend branch. All Provider-native behavior remains behind the S42 pi-ai adapter boundary.
 
 ## Rollout / Migration Plan
 
-Remaining rollout is owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md` and `docs/specs/20260708-pi_ai_unified_llm_backend.md`. After the storage and Vault foundation exists without activating the new authored extension or routes, one atomic same-release kernel cutover replaces profile classification, App API schemas and handlers, the operation catalog, generated OpenAPI, Core Client, Codex and xAI authentication, and all subscription inference routing together. The cutover deletes Codex-specific routes, config, diagnostics, client vocabulary, and active Gateway/account dependencies without compatibility aliases, stubs, dual readers, dual clients, dual credential paths, or an intermediate account-to-inference bridge. Quota behavior follows the typed bounded results and strict provider-specific readers in the provider-subscription specification without changing the public route.
+Remaining rollout is owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md` and `docs/specs/20260708-pi_ai_unified_llm_backend.md`. One clean cutover adds `gateway.jsonc`, replaces request and discovery model meaning with logical IDs, deletes Server Gateway Provider/model defaults and the public Provider-profile ownership leak, routes worker and internal-role inference through the same resolver, and adds ordered pre-output member fallback with complete attempt attribution. It retains no compatibility aliases, dual model meaning, direct worker Provider route, default-Provider dispatch branch, or intermediate account selector.
 
 The removed Gateway and account dependencies do not remove or rename `/api/app/vault/bootstrap/codex-auth-json` and do not alter worker-runtime Codex app-server ownership; those boundaries remain with their existing specifications.
 
 ## Testing Strategy / Acceptance Criteria
 
-- L1 route and provider-resolution tests prove authentication order, explicit model authority, provider-neutral slot binding, no default-slot guess, subscription-only network-free slot, Vault, and credential model eligibility, exact preservation of pre-cutover eligibility for every non-subscription profile, exact subscription pre-dispatch errors, stable cache priority, and absence of a Codex backend branch.
+- L1 route and resolution tests prove authentication order, logical-model validation, catalog-derived capability intersection and family equality, ordered member eligibility, provider-neutral slot binding, no default-slot guess, bounded pre-output failover, no post-output retry, exact subscription pre-dispatch errors, stable cache priority, and absence of a Provider-specific backend branch.
 - L1 bridge tests prove the accepted mappings and fail every unrepresentable shape before provider effects.
-- L2 contract tests prove public Chat Completions, Responses, models, SSE, error, usage, and redaction behavior across API-key and subscription-backed profiles, including non-`2xx` JSON rather than SSE for every pre-start subscription failure.
-- L3 black-box tests prove OpenAI-compatible, Codex subscription, and xAI subscription profiles share the same `/v1/*` routes and unified dispatcher; overlapping account slots remain isolated.
+- L2 contract tests prove public Chat Completions, Responses, logical models, SSE, error, usage, route-attempt attribution, and redaction behavior across API-key and subscription-backed profiles, including non-`2xx` JSON rather than SSE for every pre-start terminal failure.
+- L3 black-box tests prove two logical models can dispatch through different Provider profiles on the same `/v1/*` routes, one logical model can advance across two subscription-account profiles on an admitted pre-output failure, discovery advertises only dispatchable logical IDs, and overlapping account slots remain isolated.
 - L3 opt-in real-provider evidence proves one authenticated public Codex Gateway request per run, accepted streaming behavior, stable public envelopes, and redaction.
 - L5 smoke proves NanoCore serves the Gateway without Codex app-server, `CODEX_HOME`, `auth.json`, or ambient credentials.
 
-Acceptance requires the fixed route surface, exact configured model authority, stable public envelopes, explicit generic account binding, native Codex Responses through pi-ai, xAI subscription inference through pi-ai, hashed account-aware cache scope, provider-reported cache evidence, no credential or upstream-detail leakage, and no Codex-specific backend or app-server dependency.
+Acceptance requires the fixed route surface, exact logical-model authority, catalog-derived capability and model-family preservation, stable public envelopes, explicit generic account binding, bounded ordered pre-output failover, native Codex Responses through pi-ai, xAI subscription inference through pi-ai, hashed route-aware cache scope, Provider-reported cache evidence, no concrete Provider or account leakage, and no Provider-specific backend branch.
 
 ## Risks & Mitigations
 
 - A generic account field could hide provider mismatch; provider-family derivation and slot-pair validation fail closed.
+- Ordered fallback could double billing or output; it advances only before any response output, records each attempt and usage, and never attempts one member twice.
 - Native and bridged endpoint behavior could diverge; explicit capability values and focused contract tests preserve observable semantics.
 - Cache hints could be mistaken for authority; authorization precedes scope derivation and the resolver hashes only accepted inputs.
 - Provider failures could leak subscription details; fixed schemas and redaction tests keep public errors generic.

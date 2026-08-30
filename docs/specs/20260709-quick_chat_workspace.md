@@ -179,7 +179,7 @@ Seed only Quick Chat when a user has no Workspace state. Under the owner-indepen
 
 Keep `createDemoWorkspaceForUser(userId)` as a test and development helper that returns an importable Demo Workspace fixture without mutating the default new-user seed state.
 
-Give Quick Chat empty runnable worker defaults by setting `defaults.defaultAgentId` and `defaults.defaultModelId` to `null`.
+Give Quick Chat no Workspace-specific Worker default by omitting `workspace.jsonc.defaultAgentId`. The project-only guard rejects Worker selection before default-Agent resolution, so Quick Chat never consults the Server Agent fallback. Quick Chat model choice follows the Assistant internal-role and Gateway logical-model preference chain and has no Workspace record default.
 
 Add a small NanoCore helper that reads the workspace and rejects project-only operations for `quick-chat`.
 

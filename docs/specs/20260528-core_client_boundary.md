@@ -28,6 +28,7 @@ Related specs:
 
 - `docs/specs/20260721-provider_subscription_accounts.md`
 - `docs/specs/20260704-app_api_openapi_projection.md`
+- `docs/specs/20260831-unified_conversation_composer.md`
 
 ## Summary
 
@@ -79,7 +80,7 @@ There is no `getMeta`, `createMemoryEntry`, `updateMemoryEntry`, `respondToAppro
 
 ## App API Schema Package
 
-`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal Mode read models and decisions, Agent Catalog, and Action Center.
+`@openkit/app-api-schemas` exports schema families for dashboards, diagnostics, setup diagnostics, runtime config, provider-subscription accounts, auth responses, automations, quick chat, search, turn feedback, repository resources, workspace synchronization, Goal Mode read models and decisions, Agent Catalog, Action Center, and the unified conversation target catalog and submission.
 
 The package depends only on `@openkit/protocol` and `zod`.
 
@@ -123,6 +124,17 @@ The client exposes `client.agents.list()`, `client.agents.get(agentId)`, and `cl
 Stable agent catalog records continue to come from `@openkit/protocol`.
 
 App API wrappers add only NanoCore-local read-model behavior.
+
+## Unified Conversation Slice
+
+NanoCore exposes:
+
+- `GET /api/app/workspaces/:workspaceId/conversation-targets`
+- `POST /api/app/workspaces/:workspaceId/threads/:threadId/conversation-turns`
+
+`@openkit/app-api-schemas` owns the strict target catalog, structured request, and accepted response schemas defined by `docs/specs/20260831-unified_conversation_composer.md`. The client exposes `client.app.listConversationTargets(workspaceId)` and `client.app.submitConversationTurn(workspaceId, threadId, input)`, inserts a request identity when omitted, and returns only schema-validated product fields.
+
+The internal-development cutover removes `StartChatModeRequestSchema`, `StartChatModeResponseSchema`, `client.app.startChatMode`, the old thread `/chat` route, and the `chat.start` operation rather than retaining aliases. Direct Task, Goal, Knowledge Manager, and Core operations remain because they serve callers outside the Composer.
 
 ## Action Center Slice
 
@@ -193,7 +205,7 @@ Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema
 
 ## Current Implementation Projection
 
-The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package now include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains.
+The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package now include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is not implemented: the current client still exposes `client.app.startChatMode` over the text-only `/chat` route and has no target-catalog method or structured submission.
 
 NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract.
 

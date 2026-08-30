@@ -6,7 +6,7 @@ implementation: Partial
 
 ## Owns
 
-- The generic worker credential declaration contract that replaces hard-coded worker credential use cases with list-driven launch-time resolution.
+- The generic resolved worker credential declaration contract that replaces hard-coded worker credential use cases with list-driven launch-time resolution.
 - The launch-time flow from credential declaration to `VaultGrant` validation, `VaultInjectionPlan`, `VaultInjectionReceipt`, `VaultUse`, and backend-private materialization context.
 - The first three generic worker credential visibility classes: sandbox-provider, runtime file, and runtime environment variable.
 - The rule that sandbox-provider is the default shape for HTTP API credentials when the worker can present a placeholder in a header, query parameter, or path.
@@ -18,6 +18,7 @@ implementation: Partial
 - Concrete vault backend storage, which belongs to `docs/specs/20260704-vault_backend_implementation.md`.
 - OpenShell mechanism ownership, drift control, provider schema snapshots, and provider evidence import, which belong to `docs/specs/20260703-openshell_mechanism_internalization.md`.
 - The full `AgentEnvironmentPackage` contract, which belongs to `docs/specs/20260616-agent_environment_package.md`.
+- The authored Agent Manifest credential-requirement form and the `workspace.jsonc` requirement-binding form, which belong to `docs/specs/20260703-agent_manifest_aep_resolution.md`.
 - NanoCore gateway-mediated upstream calls for worker capabilities.
 - Future OpenKit-owned credential proxy design.
 
@@ -42,7 +43,7 @@ This spec generalizes the worker launch-time credential path without adding a ne
 
 The target is one credential declaration list consumed during Agent Environment Package resolution.
 
-Each declaration points at an existing `VaultGrant`, chooses one supported visibility class, and supplies only non-secret materialization metadata such as provider ids, credential key names, target paths, or environment variable names.
+Each resolved declaration points at an existing `VaultGrant`, chooses one supported visibility class, and supplies only non-secret materialization metadata such as Provider ids, credential key names, target paths, or environment variable names. A reusable Agent Manifest declares a stable credential requirement instead of a concrete Workspace grant, and `workspace.jsonc` binds that requirement to the Workspace's own grant before resolution.
 
 NanoCore resolves the grant before worker launch, writes the existing injection and vault-use records, and passes secret material only through backend-private materialization context.
 
@@ -104,7 +105,7 @@ The first supported declaration visibilities are:
 
 `runtime-env` is the last fallback for tools that require the actual secret value in a process environment variable.
 
-Every declaration MUST reference a `VaultGrant`, not a raw `VaultReference`.
+Every resolved declaration MUST reference a `VaultGrant`, not a raw `VaultReference`. The authored reusable-requirement and Server-only direct-grant forms are owned by `docs/specs/20260703-agent_manifest_aep_resolution.md` and are not redefined here.
 
 The grant owns authorization and lifetime, while the reference owns the stable secret identity and backend material.
 
@@ -114,15 +115,16 @@ Workers MUST NOT call NanoCore or the vault backend at runtime to fetch arbitrar
 
 ## Contract / Expected Behavior
 
-### Declaration Shape
+### Resolved Declaration Shape
 
-The first contract should be represented as an AEP-adjacent resolved worker credential declaration list.
+The Agent Manifest owner defines the two authored requirement forms and the exact Workspace binding. This specification begins after that composition and owns the AEP's resolved worker credential declaration list. Every resolved entry carries both the authored declaration `id` and its stable `requirementId` when one exists, plus the exact resolved `vaultGrantId`:
 
 The implementation may place this under an AEP `credentials` section or under an OpenKit extension namespace, but the contract must preserve these fields:
 
 ```json
 {
   "id": "foo_api",
+  "requirementId": "github-token",
   "vaultGrantId": "grant_foo_api",
   "visibility": "sandbox-provider",
   "provider": {
@@ -139,6 +141,7 @@ Runtime-file declarations use `targetPath` instead of `provider`.
 ```json
 {
   "id": "bar_config",
+  "requirementId": "bar-config",
   "vaultGrantId": "grant_bar_config",
   "visibility": "runtime-file",
   "targetPath": "/sandbox/.config/bar/credentials.json"
@@ -150,19 +153,20 @@ Runtime-env declarations use `targetEnvVarName`.
 ```json
 {
   "id": "legacy_cli_key",
+  "requirementId": "legacy-cli-key",
   "vaultGrantId": "grant_legacy_cli_key",
   "visibility": "runtime-env",
   "targetEnvVarName": "LEGACY_API_KEY"
 }
 ```
 
-All declaration ids, provider instance ids, profile ids, target paths, and environment variable names are non-secret.
+All declaration ids, requirement ids, Provider instance ids, profile ids, target paths, and environment variable names are non-secret.
 
 The declaration MUST NOT include `apiKey`, `token`, `password`, `clientSecret`, `secret`, authorization headers, raw credential file contents, or inline secret values.
 
 ### Shared Resolution Rules
 
-NanoCore MUST validate each declaration before worker package materialization.
+NanoCore MUST compose each Workspace binding before validating the resolved declaration and before worker package materialization. A missing, duplicate, wrong-Agent, wrong-Workspace, wrong-scope, inactive, expired, revoked, or target-incompatible required binding fails readiness before a Vault resolution or backend effect. An optional unbound requirement remains absent and is recorded as unavailable without inventing a grant.
 
 Validation MUST require an active `VaultGrant`, an active target `VaultReference`, matching owner scope and reference identity, exact current-package matches for every non-null grant `userId`, `workspaceId`, `targetAgentId`, and `targetAgentSessionId`, unexpired grant lifetime, and an allowed injection path that matches the requested declaration visibility.
 
@@ -170,7 +174,7 @@ A nullable grant identity or target field means that the grant adds no constrain
 
 Validation MUST fail closed when the selected backend cannot enforce the requested visibility.
 
-Validation MUST reject duplicate declaration ids, duplicate target environment variables, duplicate target paths, and conflicting provider instance ids within one package.
+Validation MUST reject duplicate declaration or requirement ids, duplicate Workspace bindings, duplicate target environment variables, duplicate target paths, and conflicting Provider instance ids within one package.
 
 NanoCore MUST create one `VaultInjectionPlan` before resolution, one `VaultUse` record for the resolution outcome, and one `VaultInjectionReceipt` only after backend-private materialization completes successfully.
 
@@ -189,6 +193,8 @@ The selected sandbox backend MUST receive provider credential material only thro
 The backend MUST create or update the provider instance before sandbox creation or before dynamic provider attach.
 
 The backend MUST attach the provider instance to the sandbox.
+
+Replacing the value behind an already attached OpenShell sandbox-provider credential uses the backend's proved dynamic replacement path and becomes effective without restarting the Sandbox or native Agent process. Adding a new provider declaration that the running Integration did not materialize follows ordinary post-Turn process staleness and resume unless the backend proves an in-place attach for that exact declaration.
 
 The worker process should receive only the sandbox-provider placeholder value for the declared credential key.
 
@@ -222,6 +228,8 @@ Runtime-file materialization MUST override any legacy host-file credential uploa
 
 Revocation of an already-running runtime-file credential MUST mark affected receipts and sessions stale when the backend cannot remove or mutate the running process-visible file safely.
 
+Adding or changing a runtime-file value never rewrites the active process file view unless the selected runtime and backend prove safe in-place replacement. The value enters a later AEP; the current per-Turn Codex path reads it when the next child starts and resumes the same AgentSession and native conversation through its existing private handle. An adapter that retains a native process between Turns must refuse reuse until its accepted replacement behavior completes; no replacement Thread or product-visible restart action is created.
+
 ### Runtime Environment Visibility
 
 `runtime-env` declarations map to the existing vault spec visibility class `runtime-env`.
@@ -235,6 +243,8 @@ Runtime-env declarations MUST be treated as higher risk than sandbox-provider an
 Runtime-env values MUST NOT appear in AEP snapshots, sandbox summaries, product logs, command summaries, transcripts, or diagnostics.
 
 Revocation of an already-running runtime-env credential MUST mark affected receipts and sessions stale because process environments cannot be safely mutated in place.
+
+Adding or changing a runtime-env value never rewrites a running process environment. It enters a later AEP and therefore the next per-Turn Codex child; any adapter that retains a native process between Turns must refuse reuse until its accepted post-Turn replacement behavior completes.
 
 ### Worker Consumption Model
 
@@ -330,13 +340,15 @@ The current implementation is partial.
 
 `apps/nanocore/src/runtime/agent-environment.ts` generates and resolves `sandbox-provider` declarations for provider-backed credentials.
 
+The current manifest and resolver require concrete `vaultGrantId` values and do not compose reusable `requirementId` declarations with Workspace bindings. That is an implementation divergence from the reusable cross-Workspace contract above.
+
 The shared declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material. Current packages emit a disabled capability plane, so a non-null grant `targetCapabilityId` is intentionally fail-closed on this path.
 
 The shared resolver currently persists a receipt before audited resolution and backend-private sink completion. That order is non-conforming: failed resolution or a rejected provider sink can retain a row that is not a successful completion fact.
 
 The durable GitHub MCP and Codex auth JSON materialization paths have already moved to the shared declaration resolver.
 
-`apps/nanocore/src/runtime/worker-governance-backend.ts` supports backend-private runtime-file uploads and runtime-env materialization. It rejects backend-private provider credentials before any OpenShell provider or sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference provider remains.
+`apps/nanocore/src/runtime/worker-governance-backend.ts` defines backend-private runtime-file uploads and runtime-env materialization, but the production worker-turn materialization path currently drops the resolved credential arrays before the NanoHost or OpenShell effect. It rejects backend-private Provider credentials before any OpenShell Provider or Sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference Provider remains. A resolved receipt therefore does not yet prove that a worker received the credential.
 
 `apps/nanocore/src/vault/vault-use-audited-backend.ts` already records vault resolve success and typed failure without storing secret material.
 
@@ -396,6 +408,9 @@ The next step should be one shared declaration resolver.
 7. Add generic sandbox-provider tests using a built-in or generic OpenShell provider fixture.
 8. Update App API, Core Client, end-user operation-catalog, and readback surfaces only where existing redacted AEP or vault read models need to display generic declaration metadata.
 9. Remove replaced hard-coded helper paths in the same change.
+10. Add reusable requirement declarations, Workspace grant bindings, strict scope validation, and focused two-Workspace fixtures using one manifest with different grants.
+11. Carry the resolved backend-private credential arrays through the production NanoHost materialization seam and prove real sink effects before writing a success receipt.
+12. Implement and prove dynamic existing-provider replacement, next-Turn activation of newly added or process-static credentials on the current per-Turn runtime, and refusal or accepted post-Turn replacement for any implemented adapter that retains a native process between Turns.
 
 ## Testing Strategy / Acceptance Criteria
 
@@ -406,9 +421,11 @@ The next step should be one shared declaration resolver.
 - L1 OpenShell backend tests prove provider credentials are upserted before sandbox creation, runtime files are uploaded through backend-private temporary files, runtime env values are merged only into sandbox env, and none of those values appear in returned materialization summaries.
 - L2 contract tests prove the generated schemas, OpenAPI, and end-user CLI projections expose only non-secret metadata when those surfaces are updated.
 - L3 NanoCore black-box tests prove a worker package can launch with one generic sandbox-provider credential and one generic runtime-file credential through a deterministic OpenShell stub.
+- L3 composition tests prove the same reusable Agent Manifest requirement resolves to different Workspace-scope grants in two Workspaces, fails before effects when one required binding is absent, and exposes the same non-secret worker target in both cases.
+- L3 lifecycle tests prove an existing OpenShell Provider value can be replaced in place when the backend supports it, while a newly added runtime-file or runtime-env credential waits for the active Turn barrier, replaces only the native process, and resumes the same Thread and AgentSession.
 - L6 story acceptance can later prove a real OpenShell sandbox uses a provider placeholder to call an external HTTP API while NanoCore records the plan, receipt, vault-use, and redacted evidence chain.
 
-Acceptance requires that GitHub MCP and Codex auth JSON no longer need bespoke credential material resolver branches and that all current secret-leak redaction tests continue to pass.
+Acceptance requires that GitHub MCP and Codex auth JSON no longer need bespoke credential material resolver branches, reusable requirements bind independently per Workspace, successful receipts follow actual backend sink completion, documented replacement behavior is observed, and all current secret-leak redaction tests continue to pass.
 
 ## Risks & Mitigations
 

@@ -135,7 +135,7 @@ Secret values must only pass through backend-private materialization paths and m
 
 ## Capability Presets
 
-Capability presets are named templates over sandbox access, provider attachment, gateway routing, approval defaults, and worker instructions.
+Capability presets are named templates over Sandbox access, credential injection, Gateway routing, approval defaults, and worker instructions.
 
 Examples include `github-read`, `github-gh-rest`, `npm-install`, `python-package-install`, `docs-fetch`, and `browser-test`.
 

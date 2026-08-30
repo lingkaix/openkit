@@ -6,7 +6,7 @@ implementation: Partial
 
 ## Summary
 
-This spec consolidates the current NanoCore identity, auth, runtime config, server config, and data-layout guidance.
+This spec consolidates the current NanoCore identity, auth, Server, Workspace, User, Gateway, internal-role, and runtime-config guidance.
 
 OpenKit treats NanoCore as the kernel source of truth. Local mode remains a single-user development path. Server mode uses Better Auth-backed session behavior for protected product APIs and is the authenticated path for the accepted single-deployment multi-user Workspace model.
 
@@ -18,6 +18,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 - The relationship between Better Auth implementation details and OpenKit identity concepts.
 - Runtime config loading, validation, reload posture, and public config-editing boundaries.
 - Server config and data-root behavior at the implementation-contract level.
+- The concrete configuration-scope relationship and file ownership for Server resources, Workspace shared composition, User preference, Gateway logical models, and internal-role execution profiles.
 - Public channel server-mode credential boundaries consumed by the Agent Skill Interface.
 - The deployment configuration, validation, reload posture, and redacted diagnostics for exactly one configured NanoHost identity, NanoCore rendezvous endpoint, and non-secret NanoHost credential reference.
 - The replacement path for historical identity, auth, config, and data-layout specs.
@@ -31,6 +32,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 - Workspace membership, invitation, role, owner-transfer, or user-lifecycle behavior.
 - App API route design, Web UI editing UX, or Agent Skill Interface operation design.
 - Agent setup, AEP resolution, worker scheduling, runtime placement, or workspace synchronization.
+- Logical-model route eligibility, fallback behavior, Agent Manifest composition fields, or internal-role runtime semantics beyond locating their owning configuration files.
 - Runtime Epoch lifecycle, OpenShell effects, transport replacement, route-family credentials, or sandbox-local Integration bindings.
 
 ## Core References
@@ -55,7 +57,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 - Do not preserve historical internal config paths or old environment names as supported behavior.
 - Do not treat historical local identity shortcuts as production security.
 - Do not expose secrets, cookies, auth files, provider tokens, raw config files, or private data-root paths through CLI result envelopes or public product records.
-- Do not accept a Cell owner, Cell epoch, Cell helper, SSH lifecycle target, Gateway URL or forward, container-runtime endpoint, sandbox-direct NanoCore endpoint, or route token as target deployment configuration.
+- Do not accept a Cell owner, Cell epoch, Cell helper, SSH lifecycle target, Gateway URL or forward, container-runtime endpoint, sandbox-direct NanoCore endpoint, route token, or worker-visible Provider route as target deployment configuration.
 
 ## Current Contract
 
@@ -85,7 +87,53 @@ The configured NanoHost identity, listener bind, rendezvous endpoint, and creden
 
 The target schema and environment boundary contain no Cell, SSH lifecycle, Gateway-forward, direct Gateway, container-runtime, placement, or sandbox-direct endpoint field. NanoCore reads no process environment variable for those concerns, and an unrelated unknown process environment value conveys no runtime authority. SSH may remain operator installation, verification, or break-glass tooling, but it is not NanoCore runtime configuration.
 
-The authored schema accepts only fields with a current runtime owner. Startup networking owns `server.bind`, `server.publicBaseUrl`, and `server.cors.origins`; Better Auth owns `auth.signup.enabled`; central defaults own the Core and Gateway provider/model selections; Gateway policy owns its enabled flag and provider allowlist. Environment variables may explicitly override deployment values only within the constraints owned by this contract, including the desktop-embedded loopback boundary. Unsupported proxy trust, configurable route/auth markers, duplicate Gateway defaults, unused workspace/agent defaults, data-root metadata, diagnostic toggles, the old duplicate feature-flag block, and a consumer-free server extension bag are rejected rather than silently accepted.
+The authored schema accepts only fields with a current runtime owner. Startup networking owns `server.bind`, `server.publicBaseUrl`, and `server.cors.origins`; Better Auth owns `auth.signup.enabled`; `server.defaults.defaultAgentId` owns only the final Server Agent fallback; the dedicated Gateway file owns Gateway enablement, logical models, routes, and its final logical-model fallback. Environment variables may explicitly override deployment values only within the constraints owned by this contract, including the desktop-embedded loopback boundary. Unsupported proxy trust, configurable route/auth markers, duplicate Gateway defaults, removed Core or Gateway Provider/model defaults, Workspace-record execution defaults, data-root metadata, diagnostic toggles, the old duplicate feature-flag block, and a consumer-free server extension bag are rejected rather than silently accepted.
+
+## Configuration Scope And Files
+
+Server is the shared resource and baseline-configuration provider, Workspace is the durable shared authored-composition scope, and User is the personal preference subject defined by Core Concepts and Identity. Ordinary persistent preference resolves User first, then Workspace, then Server. A request or current Orchestrator choice is more specific only when the owning command admits it.
+
+The clean target uses these canonical authored files:
+
+```text
+DATA_ROOT/config/server.jsonc
+DATA_ROOT/config/gateway.jsonc
+DATA_ROOT/config/internal-role-profiles.jsonc
+DATA_ROOT/config/providers/<providerId>.provider.jsonc
+DATA_ROOT/config/agents/<agentId>.agent.jsonc
+DATA_ROOT/users/<userId>/config/user.jsonc
+DATA_ROOT/workspaces/<workspaceId>/config/workspace.jsonc
+```
+
+`server.jsonc` owns deployment, auth, listener, NanoHost, and final `defaults.defaultAgentId` values. It contains no `coreProviderId`, `coreModel`, `gatewayProviderId`, or `gatewayModel`, and it does not duplicate the Gateway logical-model catalog.
+
+`gateway.jsonc` owns `schemaVersion`, enablement, one optional `defaultLogicalModelId`, and the logical-model catalog. The Gateway owner defines logical-model and route fields and behavior; this contract owns only that the file is Server-scoped, strictly validated, revision-editable, and reloadable.
+
+`internal-role-profiles.jsonc` is the sole Server file that projects the already accepted Internal Role Execution Profile. This contract owns only its path, Server scope, strict validation, revision editing, and reload participation; `docs/specs/20260813-internal_agent_runtime.md` owns its fields, defaults, and role-resolution semantics. It contains no worker Agent Manifest, AEP, Sandbox, Harness, or AgentSession configuration.
+
+`workspace.jsonc` owns the editable Workspace `name`, Workspace-shared `defaultAgentId`, Agent Manifest bindings, internal-role bindings, logical-model visibility or preference, Skill and MCP composition, credential-requirement bindings, Workspace roots, and other Workspace-owned resources accepted by their owners. `workspace-record.json` retains only system-owned identity, ownership, lifecycle, revision, and timestamp facts. A binding may add Workspace-owned resources and override or extend the referenced Server supply using stable field identities; it does not create another resolver or an unrelated full Workspace-local Agent Manifest.
+
+`user.jsonc` owns personal per-Workspace Agent, profile, logical-model, and applicable internal-role preferences. It stores no Server default, Workspace-shared behavior, Provider credential, Gateway route, Sandbox placement, AgentSession identity, or native runtime state.
+
+All authored files use strict schemas, explicit `schemaVersion`, the shared required-feature registry when behavior needs a feature gate, and namespaced descriptive extensions. Unknown authority-bearing behavior remains invalid. This change adds no compatibility alias, generic unknown-field activation, routing plugin registry, or parallel configuration transaction protocol.
+
+## Selection, Composition, And Resolution
+
+Worker Agent selection resolves explicit request or Orchestrator `agentId`, User preference for the Workspace, `workspace.jsonc.defaultAgentId`, then `server.jsonc.defaults.defaultAgentId`. Missing or unavailable final fallback returns a typed configuration or readiness error; file order never selects an Agent.
+
+Profile and logical-model preference resolve independently from Agent identity. The request may select `profileId` and logical `modelId`; otherwise User preference, Workspace Agent or role binding, the selected profile or Server execution profile, and the Gateway final logical default apply in that order where each field exists. A model value never derives or changes `agentId`.
+
+One Server Agent Manifest, one Workspace binding when present, one selected nested profile, and applicable User preference are authored inputs to one composition step. Composition produces one setup with source provenance before the Agent Manifest resolver validates catalogs, grants, policy, runtime proof, compatibility, and materialization. Resolution and materialization remain one-way non-authoring projections.
+
+## Reload And Failure Contract
+
+A successful reload publishes one new immutable runtime-config snapshot for later reads and resolutions. An admitted internal-role provider call remains pinned to its accepted logical-model contract, and an admitted worker Turn remains pinned to its immutable AEP snapshot and compatibility key; ordinary reload never mutates either in place or interrupts the active Turn.
+
+Changes to private route members of an existing logical model apply to the next Provider call admitted after reload without restarting a worker because the concrete route is not worker state. Adding or removing a logical model does not mutate an admitted AEP, including one produced from manifest `models: all`; the changed catalog enters only a later composed setup and AEP. Workspace and User preference changes apply to the next command or resolution. Agent, profile, internal-role, Skill, credential-requirement, and process-static model-catalog changes also apply through the next composed setup and AEP. The current Codex adapter starts one native child per Turn, so the next Turn reads the later AEP and resumes the exact native conversation from the AgentSession-private state root without a separate replacement action. An implemented adapter that retains a native process between Turns must either prove that it can apply the changed setup in place or refuse another Turn on that process after the active Turn; its accepted runtime owner must define any replacement and resume behavior before such an adapter is dispatchable.
+
+An additive Skill may be materialized immediately and is observed according to the native runtime's own reload behavior. Externally enforced policy and an existing OpenShell credential replacement take effect through their existing owner. A new runtime-environment or runtime-file credential never mutates the active process environment or file view; it enters a later AEP and therefore the next per-Turn Codex child, while a future resident-process adapter must use its accepted post-Turn refusal or replacement behavior. This contract adds no reload-plan record, durable transaction, user-facing restart action, or product recovery lifecycle.
+
+Invalid syntax, schema failure, missing required references, incompatible composition, unavailable logical model, unsupported runtime route, or missing credential binding rejects the new snapshot or the exact later resolution before effects. The last known good snapshot remains authoritative when reload rejects a file. Restart reads only the clean current file names and schemas; removed fields or files are errors rather than compatibility inputs.
 
 The bundled CLI server-mode contract uses the `OPENKIT_NANOCORE_TOKEN` explicit ephemeral override and persistent credential-storage rules owned by `docs/specs/20260704-remote_auth_credential_bootstrap.md`. Historical raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough remain removed and are not compatibility inputs. Token values are credential material and must not be printed, logged, persisted in change records, or exposed in artifacts.
 
@@ -102,11 +150,11 @@ The NanoCore config, authentication, bundled CLI credential substrate, and V1 sh
 - The bundled CLI reads `OPENKIT_NANOCORE_TOKEN` as the explicit ephemeral override or resolves an endpoint-scoped stored credential, sends fixed `openkit-cli` / `agent-skill` channel metadata, and ignores the removed raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables.
 - `apps/nanocore/src/config/bind-host.ts` resolves the App HTTP/1.1 listener host and port from explicit environment overrides, then the startup server config, then mode defaults. It currently accepts an explicit non-loopback `OPENKIT_BIND_HOST` or `server.bind.host` value in local mode instead of rejecting it, so the desktop-embedded loopback-only contract is not yet fully implemented. The NanoHost native HTTP/2 listener instead uses the explicit restart-required `nanohost.bind` and never consumes those App-listener overrides.
 - Server mode constructs Better Auth explicitly from the startup config, requires a deployment-specific secret of at least 32 characters, applies `server.publicBaseUrl`, shares `server.cors.origins` with browser CORS, and enforces `auth.signup.enabled` through Better Auth's sign-up policy.
-- `apps/nanocore/src/config/runtime-config.ts` loads provider registry, agent configs, agent manifests, workspace configs, gateway defaults, and runtime config status from the data root or supplied in-memory inputs.
+- `apps/nanocore/src/config/runtime-config.ts` currently loads provider registry, agent configs, agent manifests, workspace configs, Gateway defaults from `server.jsonc`, and runtime config status from the data root or supplied in-memory inputs. It does not yet load `gateway.jsonc`, `internal-role-profiles.jsonc`, or `user.jsonc`, so the implementation is divergent from the target contract above.
 - Server browser CORS admits only exact configured origins and returns `403 Forbidden` before route work for every rejected origin; local mode additionally permits exact loopback browser origins.
-- Runtime config reload planning distinguishes hot-swappable, session-scoped, restart-required, and rejected changes.
+- Runtime config reload planning distinguishes hot-swappable, session-scoped, restart-required, and rejected changes. It does not emit `staleWhenPackageChanges`; the similarly named AEP field is a separate unused package value.
 - Provider registries and authored agent configuration are restart-required because production scheduler services capture those dependencies at startup; reload never claims that a newer snapshot has changed an already constructed dispatcher.
-- Runtime config reload marks the affected current AgentSession stale for later-Turn reuse. The next authorized Turn either reuses an exact compatible current AgentSession or internally retires and replaces it under the continuity owner. Ordinary App API, Core Client, bundled CLI, and Web surfaces expose no AgentSession restart action, identifier, or history; authorized operator diagnostics may report only a redacted stale-runtime boundary and product-safe availability.
+- The current AEP schema carries `session.staleWhenPackageChanges`, and the AEP builder writes it as `true`, but no production reader consumes it. The current Codex adapter already launches one child per Turn, reads the exact retained native handle from the AgentSession-private state root, invokes `codex exec resume`, and persists the handle after the Turn. Stage E removes the unused AEP field instead of inventing a consumer and proves that a later composed setup enters the next per-Turn launch without mutating the active Turn. Ordinary App API, Core Client, bundled CLI, and Web surfaces expose no AgentSession restart action, identifier, or history.
 - `apps/nanocore/src/config/runtime-config-files.ts` owns safe runtime config file reads, writes, validation, schema lookup, optimistic revision checks, and path containment.
 - `apps/web/src/screens/settings/ConfigurationScreen.tsx` projects those existing routes as a server-admin-gated file tree and JSONC source editor without direct filesystem access or a second configuration contract.
 - Provider and agent config loaders reject unknown or unsafe fields, inline raw secret shapes, unsafe workspace paths, and unsupported runtime setup shapes.
@@ -134,6 +182,9 @@ The following items remain outside this config and identity contract:
 - Server-mode authentication is not workspace authorization; membership facts and permission decisions remain separate required checks.
 - Better Auth is an implementation provider for auth sessions; it does not rename the OpenKit conceptual `AuthSession`.
 - Runtime config editing must go through NanoCore-owned routes and schemas, not raw file browsing through the bundled CLI.
+- Server supplies resources and fallback defaults, Workspace composes shared behavior, and User supplies the most specific persistent preference without any of those defaults becoming a generic resource ceiling.
+- `gateway.jsonc`, `internal-role-profiles.jsonc`, `user.jsonc`, and `workspace.jsonc` are distinct authored owners; `server.jsonc` contains only its own deployment fields and final Agent fallback.
+- User → Workspace → Server is the ordinary persistent-preference order, explicit request or Orchestrator selection is more specific when admitted, and model preference never selects an Agent.
 - NanoCore bearer tokens used by the bundled CLI are credential material and must not be printed, logged, persisted in documentation, or exposed in artifacts.
 - Historical identity, auth, config, and data-layout specs are supporting detail, not active guidance.
 - One configured NanoHost uses an `IntegrationIdentity` and a distinct scoped `Token`; configuration stores only the identity, NanoCore rendezvous endpoint, and non-secret credential reference, never raw route or OpenShell credentials.

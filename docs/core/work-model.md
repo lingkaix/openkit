@@ -87,6 +87,10 @@ Concrete gate fields, Item types, delivery policies, row kinds, actions, and API
 
 Conversation is the narrative and coordination layer. When a product surface knows the exact resource, revision or freshness point, location, candidate, or bounded value under discussion, it should preserve that grounding instead of forcing the user or agent to reconstruct it from prose.
 
+A conversation composer may let the user choose an applicable internal Core role, Agent supply and profile, logical model preference, and referenced Artifact or uploaded resource before submission. Those are product selections over their existing owners: the composer is not a provider router, runtime scheduler, attachment store, AgentSession picker, or workflow authority.
+
+Choosing an existing worker continues only the Thread that owns that worker's current AgentSession. Choosing new bounded worker work enters Task Mode and creates a linked Task execution Thread under the existing handoff rules. A product may label that action `New Shard + Worker`, but `Shard` is not a Core concept, durable object, identifier, or lifecycle.
+
 Grounded interaction must flow through ordinary input, Steering Input, Review And Acceptance, Elicitation Gate, or Approval Gate. It must not create a global strong-interaction mode, universal Resource entity, universal Artifact model, or hidden feedback log.
 
 Product terms such as compare, select, annotate, adjust, patch, accept, reject, and redo describe intent. Exact Work Resource Classes, payload envelopes, locators, revision handling, delivery receipts, conflict checks, and editor controls belong to implementation-facing contracts.
@@ -139,6 +143,8 @@ When exact continuation cannot be proved, preserving an interrupted attempt and 
 - Task Mode MUST remain bounded delegated work, while Goal Mode MUST remain durable governed objective work.
 - Parallel worker activity MUST appear as linked execution narratives rather than several agents writing inside one Thread.
 - Product surfaces MUST express conversation continuity as continuing a Thread or creating a new Thread and MUST NOT expose AgentSession as a user-selectable conversation concept.
+- Conversation target and logical-model controls MUST remain independent product selections and MUST NOT expose or derive Provider routes, account slots, AgentSessions, Harnesses, Sandboxes, RuntimeTargets, or native processes.
+- A `New Shard + Worker` product action MUST project creation of a Task execution Thread and MUST NOT create a Shard record or parallel task lifecycle.
 - Once a workflow accepts an immutable execution request, that accepted record MUST own every task-specific worker-request fact. A coordinator, channel, caller payload, default, or mutable projection MUST NOT replace or reconstruct those accepted facts.
 - Human attention MUST use the four composable product modes without turning Action Center into a new authority.
 - Grounded collaboration MUST preserve exact subject and version context through owning records without creating a hidden feedback log.

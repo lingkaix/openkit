@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 date: 2026-07-15
 ---
 # Single-Deployment Multi-User Workspace System
@@ -371,9 +371,9 @@ DATA_ROOT/
       logs/
   workspaces/
     <workspaceId>/
-      workspace.json
+      workspace-record.json
       db/workspace.sqlite
-      config/
+      config/workspace.jsonc
       threads/
       artifacts/
       knowledge/
@@ -389,7 +389,7 @@ DATA_ROOT/
 
 `users/<userId>` owns personal preferences, user-local files, user-specific Workspace ordering, recent selection, notification state, and other state that must not become shared merely because a Workspace is shared.
 
-`workspaces/<workspaceId>` owns all canonical Workspace data. Owner transfer, access-level change, membership removal, and invitation acceptance update Core records only and never copy, rename, link, or move the Workspace tree.
+`workspaces/<workspaceId>` owns all canonical Workspace data. `workspace-record.json` contains only system-owned identity, ownership relationship, lifecycle, revision, and timestamp facts; `config/workspace.jsonc` contains the shared editable Workspace name, `defaultAgentId`, and other accepted Workspace composition. Owner transfer, access-level change, membership removal, and invitation acceptance update Core records only and never copy, rename, link, or move the Workspace tree.
 
 The user-visible Workspace list is a query over identity and policy relationships. It is not a directory listing and does not require a per-user reference file.
 
@@ -637,7 +637,7 @@ The following foundation is already implemented:
 
 The rebuilt multi-user Web projection is intentionally deferred to S10. Shared schema and App API changes receive the minimum existing-Web compilation and runtime alignment required for same-release correctness, but this specification's implemented kernel, public contract, Core Client, CLI, and Skill scope adds no temporary multi-user UX or browser acceptance obligation.
 
-`Implementation: Implemented` means every non-Web responsibility owned by this specification is present: owner-independent storage and migration, centralized request-time authorization, sharing and user lifecycle, bounded attribution and first-writer closure, governed-effect reauthorization, authorized read projections, Vault and portability boundaries, and the exact-release Core Client plus bearer-reachable CLI/Skill projection. The four named session-only CLI/Skill omissions are an accepted bounded projection compromise, and the rebuilt Web remains separately owned by S10 rather than an incomplete S63 implementation.
+The existing non-Web multi-user responsibility is implemented: owner-independent storage and migration, centralized request-time authorization, sharing and user lifecycle, bounded attribution and first-writer closure, governed-effect reauthorization, authorized read projections, Vault and portability boundaries, and the exact-release Core Client plus bearer-reachable CLI/Skill projection. This specification is `Partial` only because the accepted `workspace-record.json` plus `config/workspace.jsonc` split and its joined public projection are not yet implemented. The four named session-only CLI/Skill omissions remain an accepted bounded projection compromise, and the rebuilt Web remains separately owned by S10.
 
 ## Impacted Implementation Surfaces
 

@@ -34,7 +34,7 @@ Unless a rule explicitly names conversation-context or Workspace-write isolation
 The stable ownership rule is:
 
 - NanoCore owns product state, user-visible workflow, review gates, artifacts, audit lineage, workspace change records, and public API semantics.
-- Backend adapters own runtime effects such as sandbox lifecycle, process launch, filesystem enforcement, network enforcement, provider attachment, credential projection, file transfer, and teardown.
+- Backend adapters own runtime effects such as Sandbox lifecycle, process launch, filesystem enforcement, network enforcement, credential injection and projection, file transfer, and teardown.
 - Backend-native records are evidence and diagnostics, not canonical product records unless NanoCore explicitly normalizes them into OpenKit records.
 
 This lets OpenKit depend on concrete runtime backends without turning backend-native policy files, gateway state, sandbox ids, provider payloads, supervisor logs, or file-transfer primitives into product contracts.
@@ -76,9 +76,9 @@ A sandbox may be scoped to:
 - one remote provider session
 - one reusable runtime pool
 
-The default scope when security and adjudication isolation is required remains one AgentSession per Sandbox. A shared Sandbox is an explicitly admitted alternative in which multiple AgentSessions from distinct Threads occupy one Sandbox and compatible Harness while retaining independent Core identity, authority, Turn lineage, mutable Workspace slots, output staging, sequence, interruption, evidence, and terminal outcome. Historical AgentSessions for one Thread MUST NOT retain a resident binding after a successor becomes current.
+The default scope when security and adjudication isolation is required remains one AgentSession per Sandbox. A shared Sandbox is an explicitly admitted alternative in which multiple compatibility-keyed Harnesses and AgentSessions from distinct Threads occupy one Sandbox while retaining independent Core identity, authority, Turn lineage, mutable Workspace slots, output staging, sequence, interruption, evidence, and terminal outcome. Historical AgentSessions for one Thread MUST NOT retain a resident binding after a successor becomes current.
 
-Shared-Sandbox admission MUST use one static compatibility envelope that covers Workspace, responsible-user trust class, runtime image and declared Harness set, OS identity and process visibility, filesystem and mount posture, network policy, provider attachment visibility, Vault injection visibility class, static credential exposure class, resource class, sensitivity class, and containment policy. The first shared-runtime slice admits only AgentSessions for distinct Threads in one Workspace and one responsible user. A later broader trust class requires an accepted contract proving identical visibility and the required security and adjudication isolation level; it is not implied by spare capacity.
+Shared-Sandbox admission MUST use one static compatibility envelope that covers Workspace, responsible-user trust class, runtime image and declared Harness set, OS identity and process visibility, filesystem and mount posture, network policy, Provider attachment visibility, Vault injection visibility class, static credential exposure class, aggregate resource class, sensitivity class, and containment policy. Co-resident Harnesses and AgentSessions belong to distinct Threads in one Workspace and one responsible-user trust class. A broader trust class requires an accepted contract proving identical visibility and the required security and adjudication isolation level; it is not implied by spare capacity.
 
 Turn payloads, Thread history, native conversation handles, raw secrets, temporary upload handles, output contents, worker-private caches, and short-lived effect authority MUST NOT enter the static compatibility envelope. They remain independently admitted and bound to the exact AgentSession and Turn.
 
@@ -102,7 +102,7 @@ Independent adjudication, adversarial work, incompatible credential visibility, 
 
 ## Shared-Sandbox Lifecycle And Failure
 
-Shared-Sandbox creation admits the static compatibility envelope before any AgentSession opens. AgentSession admission rechecks the current envelope, open-session capacity, one-current-per-Thread rule, required isolation level, and active NanoCore-private scheduling reservation or Goal pin compatibility; a missing or conflicting static-envelope input blocks admission rather than selecting an approximately compatible Sandbox. A Goal excluded by an active private scheduling reservation uses another compatible ordinary Sandbox; if no remaining compatible ordinary Sandbox exists, its existing scheduler admission stays queued for normal dispatch retry and the Goal remains non-terminal. This creates no new denial, queue, or attention state.
+Shared-Sandbox creation admits the static compatibility envelope and bounded declared Harness set before any AgentSession opens. AgentSession admission rechecks the current Sandbox envelope, exact Harness compatibility key and capacity, one-current-per-Thread rule, required isolation level, and active NanoCore-private scheduling reservation or Goal pin compatibility; a missing or conflicting input blocks admission rather than selecting an approximately compatible Sandbox or Harness. A Goal excluded by an active private scheduling reservation uses another compatible ordinary Sandbox; if no remaining compatible ordinary Sandbox exists, its existing scheduler admission stays queued for normal dispatch retry and the Goal remains non-terminal. This creates no new denial, queue, or attention state.
 
 An update that changes a static compatibility input makes the resident Sandbox stale for new AgentSessions and requires an ordinary drain and replacement. Existing non-security-sensitive Turns MAY finish under their pinned authority; credential compromise, permission revocation, containment uncertainty, or another security-sensitive change follows immediate interruption and the owning cleanup boundary.
 
@@ -110,7 +110,7 @@ A normal AgentSession close releases only that AgentSession's open-session capac
 
 Harness or Sandbox failure preserves an independent `interrupted`, `failed`, or `unknown` outcome for every affected Turn from its own evidence. Failure or cleanup uncertainty MUST NOT infer a common result, substitute one AgentSession for another, or return affected capacity before the wider proved boundary is fenced. Restart may adopt only exact surviving bindings under the runtime owner's proof contract; otherwise later work uses fresh admission and no automatic replay.
 
-Observable conformance requires compatible AgentSessions for two distinct Threads to coexist in one Sandbox with separate conversation-context and Workspace-write isolation, requires an exact local close to leave its sibling usable, and requires an unprovable local close to fence the wider boundary. A claim of security and adjudication isolation requires separate proof of the stronger OS or Sandbox boundary; path names alone fail this predicate.
+Observable conformance requires at least two compatibility-distinct Harnesses and AgentSessions for two distinct Threads to coexist in one Sandbox with separate conversation-context and Workspace-write isolation, requires bounded concurrent Turns to retain independent authority and outcomes, requires an exact local close or Harness drain to leave compatible siblings usable, and requires an unprovable local close to fence the wider boundary. A claim of security and adjudication isolation requires separate proof of the stronger OS or Sandbox boundary; path names alone fail this predicate.
 
 ## Off-Peak Freshness Rebuild
 

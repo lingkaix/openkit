@@ -9,7 +9,7 @@ updated: 2026-08-22
 
 - The contract that separates AgentSession-static sandbox layout from per-turn dynamic workspace materialization.
 - The `SessionWorkspaceLayout`, `WorkspaceSlot`, `TurnWorkspaceMaterialization`, and `SessionCompatibilityKey` concepts used by AEP resolution and workspace synchronization.
-- Reuse rules for long-lived local-container, remote-container, OpenShell, Docker, VM, Kubernetes, and managed-sandbox worker sessions when filesystem mounts, provider attachments, working directories, and process environments may be static after sandbox start.
+- Reuse rules for long-lived local-container, remote-container, OpenShell, Docker, VM, Kubernetes, and managed-sandbox worker sessions when filesystem mounts, credential visibility, working directories, and process environments may be static after Sandbox start.
 - The OpenShell-inspired implementation posture for fixed directory skeletons plus dynamic file population through upload, checkout, rsync, object-store sync, provider file APIs, gateway reads, and output collection.
 - The default mapping from authored workspace input kinds such as file, directory, local file, Git repository, S3, R2, GCS, Azure Blob, Box, S3 file manifests, generated files, artifacts, and outputs into stable workspace slots.
 - Per-AgentSession namespaces in a shared Sandbox, Turn-slot hygiene, and the bounded non-canonical shared working area.
@@ -42,7 +42,7 @@ OpenKit should optimize for long-lived reusable AgentSessions without pretending
 
 The accepted model is: AgentSession layout is static, slot contents are Turn-dynamic, and every mutable or conversation-bearing slot is separately addressable by AgentSession inside a shared Sandbox.
 
-NanoCore resolves an agent setup into a session-static descriptor before launch, and the NanoHost materializes that descriptor into the sandbox through Sandbox Integration. The substrate defines the worker-visible directory skeleton, writable and read-only path envelope, provider attachment envelope, network envelope, distinct worker-control, inference, and capability bindings, transcript sinks, output roots, and working-directory posture. Each turn then materializes files, repositories, object-store prefixes, generated context, Artifacts, and outputs into predeclared slots inside that substrate through an existing native or bounded data path.
+NanoCore resolves an agent setup into a session-static descriptor before launch, and the NanoHost materializes that descriptor into the Sandbox through Sandbox Integration. The substrate defines the worker-visible directory skeleton, writable and read-only path envelope, logical-model and credential-visibility envelope, network envelope, distinct worker-control, inference, and capability bindings, transcript sinks, output roots, and working-directory posture. Each Turn then materializes files, repositories, object-store prefixes, generated context, Artifacts, and outputs into predeclared slots inside that substrate through an existing native or bounded data path.
 
 This improves reuse for OpenShell-backed sessions because the sandbox starts with a broad but policy-approved workspace structure, while each turn can still receive fresh task data and produce reviewable change sets without requiring a new sandbox for every input change.
 
@@ -57,7 +57,7 @@ This improves reuse for OpenShell-backed sessions because the sandbox starts wit
 - Keep worker writes review-gated by default through `WorkspaceChangeSet` and staged apply.
 - Make session reuse explainable through a deterministic `SessionCompatibilityKey`.
 - Preserve conversation-context and Workspace-write isolation through per-AgentSession namespaces without claiming security and adjudication isolation.
-- Record OpenShell Providers v2 limitations honestly: provider attachment can change future effective policy and future process environments, but it does not mutate already-running process environments.
+- Record OpenShell Providers v2 limitations honestly: backend-private credential materialization can change future effective policy and future process environments, but it does not mutate already-running process environments.
 
 ### Non-goals
 
@@ -88,7 +88,7 @@ Use a two-level workspace model for worker sessions.
 
 `WorkspaceSlot` is the bridge. A slot is a predeclared path inside the worker environment with access, retention, allowed source kinds, allowed sync modes, lineage rules, and review behavior. Inputs do not create arbitrary new roots at turn time; they bind to slots selected by the materializer.
 
-`SessionCompatibilityKey` decides reuse. A session may be reused for a turn only when the session's static layout, provider envelope, policy envelope, runtime image, working-directory posture, control endpoints, and backend capabilities cover the turn's resolved needs and have not been revoked, drifted, or marked stale.
+`SessionCompatibilityKey` decides reuse. A session may be reused for a Turn only when the session's static layout, logical-model and credential envelope, policy envelope, runtime image, working-directory posture, control endpoints, and backend capabilities cover the Turn's resolved needs and have not been revoked, drifted, or marked stale.
 
 ## Contract / Expected Behavior
 
@@ -98,7 +98,7 @@ AgentSession-static fields include:
 
 - runtime image, image digest, command shape, user, group, umask, base working directory, worker-shim identity, and direct control endpoint shape
 - workspace root path, slot path set, slot access envelope, static filesystem policy, mount declarations, and output root declarations
-- provider attachment envelope, provider environment placeholder envelope, network policy envelope, vault injection path class, and sandbox policy artifact shape
+- logical-model admission envelope, credential visibility and placeholder envelope, network policy envelope, Vault injection path class, and Sandbox policy artifact shape
 - transcript root, audit sink setup, backend service readiness checks, and backend capability summary
 
 Turn-dynamic fields include:
@@ -108,7 +108,7 @@ Turn-dynamic fields include:
 - workspace file and directory snapshots copied, bound, uploaded, downloaded, or rsynced into declared slots
 - S3, R2, GCS, Azure Blob, Box, S3 file-manifest, HTTP archive, and artifact inputs synced into declared data or input slots
 - output files, artifact candidates, worker transcripts, logs, evidence bundles, `WorkerOutputManifest`, and `WorkspaceChangeSet`
-- refreshed credentials and provider attachment changes only to the extent the selected backend can make them visible to future process launches or gateway-mediated traffic without mutating already-running process environments
+- refreshed credentials and backend-private credential-materialization changes only to the extent the selected backend can make them visible to future process launches or Gateway-mediated traffic without mutating already-running process environments
 
 ### Git Source Materialization Boundary
 
@@ -369,7 +369,7 @@ The key should cover:
 
 - agent id, profile id, runtime family, runtime image digest, command shape, process user and group, base working directory, worker-shim shape, and route-binding envelope
 - workspace root, slot ids, slot paths, slot kinds, slot access envelope, allowed materialization modes, output roots, transcript roots, and static filesystem policy digest
-- provider attachment envelope, vault injection visibility classes, provider profile mapping version, and provider credential placeholder names when process-visible
+- logical-model admission envelope, vault injection visibility classes, Gateway mapping version, and credential placeholder names when process-visible
 - network policy envelope, permission policy digest, sandbox policy digest, resource class, and backend capability summary
 - AEP schema version, required features, mapping versions, and backend family
 
@@ -389,7 +389,7 @@ If reuse fails because the session is incompatible, NanoCore SHOULD create a rep
 
 Each AgentSession supports exactly one active Turn. Turn-scoped slots (`input`, `output`, and any slot with `retention: turn`) are single-occupant by design, and the durable scheduler's session lease model assumes one lease per AgentSession. Concurrent Turns in one AgentSession are not authorized.
 
-Separately, the accepted first shared-runtime profile permits multiple open AgentSessions in one declared Harness and fixes `maxActiveTurns = 1` across that Harness. Runtime-native child agents remain inside one outer AgentSession and do not create additional slots or Core AgentSession identities. Later concurrent active Turns across AgentSessions and multiple Harness Instances remain outside this specification's current authorization.
+Separately, one Harness may hold multiple open AgentSessions for distinct Threads and may execute one Turn in each such AgentSession concurrently up to its declared capacity. Runtime-native child agents remain inside one outer AgentSession and do not create additional slots or Core AgentSession identities. Several compatibility-keyed Harness Instances may share one Sandbox under the runtime and Sandbox owners; this specification neither selects a Harness nor grants capacity beyond those owners.
 
 At collection time the materializer MUST clear all `retention: turn` slot contents after outputs, transcripts, and evidence are collected. If clearing fails, the AgentSession MUST be marked stale for reuse so prior-Turn contents cannot leak into the next Turn; a stale-for-hygiene AgentSession is replaced, not silently reused. `retention: session` contents persist across Turns within that AgentSession; `retention: policy` contents follow Workspace policy.
 
@@ -463,7 +463,7 @@ The planner should be backend-portable.
 Backend adapters should implement only transport and enforcement effects:
 
 - local container adapter: bind, copy, local checkout, local staging, and direct output collection
-- OpenShell adapter: sandbox create, provider attachment, policy materialization, upload, download, exec, log collection, and evidence import
+- OpenShell adapter: Sandbox create, credential injection, policy materialization, upload, download, exec, log collection, and evidence import
 - remote container adapter: tar, rsync, remote checkout, object-store staging, backend upload, output download, and recovery handle persistence
 - managed sandbox adapter: provider file APIs and provider workspace manifest APIs when supported
 

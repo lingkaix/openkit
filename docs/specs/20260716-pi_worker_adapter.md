@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 updated: 2026-08-21
 ---
 # Pi Worker Adapter
@@ -24,7 +24,7 @@ This adapter remains in the shared registry's `bounded-turn` mode and is already
 ## Does Not Own
 
 - child process supervision, worker control, canonical transcripts, or workspace publication
-- AEP resolution, provider selection, credential grants, network policy, or backend lifecycle
+- AEP resolution, logical-model selection, Gateway routing, credential grants, network policy, or backend lifecycle
 - product state, scheduling, review, apply, Action Center, or public API behavior
 - a generic RPC client or interactive terminal UI
 - a translation of every Pi extension or UI event into OpenKit product events
@@ -60,7 +60,7 @@ The shared harness supplies the adapter with:
 - turn input
 - worker working directory
 - session directory
-- the provider, model, endpoint, and credential bindings from the AEP's one already resolved LLM route
+- the preferred and allowed logical-model contract plus the sandbox-local `inference.local` binding when a future accepted Pi adapter can consume it
 - a safe child environment without the worker-control or capability token; any target inference binding uses its own distinct inference credential
 
 The adapter does not choose provider credentials, trust arbitrary project resources, enable network sources, or override AEP policy.
@@ -106,7 +106,7 @@ Pi does not need native MCP support to satisfy the OpenKit boundary. The OpenKit
 
 The accepted NanoHost runtime exposes the logical worker-local `inference.local` binding at fixed `http://127.0.0.1:17892/inference/v1`, projected by Sandbox Integration through `/inference/*` with an inference credential distinct from `/worker-control/*` and `/capabilities/*`. Pi must not receive a direct NanoCore endpoint, the worker-control token, an SSH or Gateway-forward route, or a second control path. The pinned Pi runtime still cannot consume that fixed target under this adapter contract, so the target remains unsupported for Pi.
 
-The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. Pi `0.80.7` cannot consume the accepted `inference.local` target under the no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-provider path requires `models.json`. The target binding is therefore unsupported. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, or silently replace worker-local inference with a direct route.
+The authored Agent Manifest owns logical-model preferences, credential requirements, backend-capability requirements, and network needs; the resolved AEP owns the exact allowed logical-model contract, credential bindings, and effective launch policy while the Gateway privately owns Provider routes. Pi `0.80.7` cannot consume the accepted `inference.local` target under the no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-Provider path requires `models.json`. The target binding is therefore unsupported. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, expose a concrete Provider route, or silently replace worker-local inference with a direct route.
 
 The historical Pi adapter accepted only the pinned `anthropic` / `claude-sonnet-4-5` direct pair with the manifest-declared `ANTHROPIC_API_KEY` credential binding, which the image smoke proved existed exactly in Pi's catalog. It passed that exact pair through `--provider` and `--model`, rejected zero or multiple routes, and failed before spawn when the pair or credential binding differed. Pi's fuzzy and synthetic model fallback was never accepted as route resolution. This direct credential path is historical evidence, not current NanoHost guidance.
 
@@ -114,7 +114,7 @@ The historical Pi adapter accepted only the pinned `anthropic` / `claude-sonnet-
 
 The repository-owned Pi AgentManifest selects adapter id `pi`, the Pi worker image, native executable paths used by network policy, the exact `anthropic` / `claude-sonnet-4-5` pair and `ANTHROPIC_API_KEY` binding, resource-discovery isolation flags, and only capabilities proven by this specification.
 
-The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.80.7`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its smoke check verifies the exact native version, JSON mode, generic shim dry run, the fixed fail-closed flags and environment, every provider/model pair advertised by the Pi manifest as an exact pinned-catalog pair, non-root identity, and expected worker filesystem layout.
+The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.80.7`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its current smoke check verifies the exact native version, JSON mode, generic shim dry run, the fixed fail-closed flags and environment, the historical direct Provider/model pair, non-root identity, and expected worker filesystem layout. That catalog proof does not make Pi dispatch-ready under the logical-model target.
 
 Pi-specific install commands, binary paths, resource flags, event fixtures, and version pins live only in the Pi AgentManifest, adapter, image, specification, and tests.
 

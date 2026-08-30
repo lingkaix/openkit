@@ -41,7 +41,11 @@ interface InternalAgentLoopInput {
   systemPrompt: string;
   messages: readonly AgentMessage[];
   tools: readonly AgentTool[];
-  model: unknown;
+  model: {
+    logicalModelId: string;
+    capabilities: readonly string[];
+    modelFamilyId: string;
+  };
   limits: {
     maxModelTurns: number;
     maxToolCalls: number;
@@ -52,11 +56,11 @@ interface InternalAgentLoopInput {
 }
 ```
 
-`systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the resolved provider-and-model identity already selected by that caller; this runtime does not own provider configuration or model catalogs. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
+`systemPrompt`, `messages`, `tools`, `model`, `limits`, and `signal` MUST be fully assembled by trusted callers before the loop begins. `messages` is the ordered list of assembled `AgentMessage` values supplied by that caller; `AgentMessage` is defined with the Tool contract below and is not a separately owned product entity. `model` is the caller-visible logical-model contract already selected by the trusted caller; this runtime does not own the Gateway catalog, Provider configuration, concrete Provider model, account slot, or private route. The optional text-increment observer is a transport projection defined below and is not loop state or product input.
 
 `maxModelTurns` and `maxToolCalls` MUST be positive integers; `maxModelTurns` counts provider round trips and `maxToolCalls` counts environment touches through supplied Tool closures. `deadlineMs` MUST be a positive integer millisecond duration that bounds wall-clock duration. These three values are the complete in-loop fuse vector.
 
-The loop owns only its transient prompt, transcript, provider responses, Tool calls and observations, counters, abort observation, and terminal runtime outcome. Creation begins when the caller invokes the loop with an accepted input; updates are append-only within that in-memory run; termination returns exactly one typed exit; retry and recovery always occur outside the loop as a new run reconstructed by the caller.
+The loop owns only its transient prompt, transcript, Gateway-mediated model responses, Tool calls and observations, counters, abort observation, and terminal runtime outcome. Creation begins when the caller invokes the loop with an accepted input; updates are append-only within that in-memory run; termination returns exactly one typed exit; retry and recovery always occur outside the loop as a new run reconstructed by the caller.
 
 Missing or invalid required input fails before the first provider call. Stale product facts, conflicting authority, unavailable dependencies, and authorization changes are not resolved by the loop; trusted assembly or the bound Tool owner rejects them, and the loop returns or relays the resulting bounded failure without inventing replacement state.
 
@@ -109,7 +113,7 @@ Acceptance requires all termination paths to produce one of these four outcomes 
 The loop MUST perform these steps in order:
 
 1. Initialize an in-memory transcript from the accepted messages and check abort, deadlineMs, and positive fuse capacity.
-2. Call the selected model with the assembled system prompt, transcript, and provider-visible Tool definitions, then append the complete assistant response.
+2. Call the selected logical model through the Gateway with the assembled system prompt, transcript, and model-visible Tool definitions, then append the complete assistant response.
 3. If the provider response failed or cancellation occurred, terminate with the exact typed outcome.
 4. If a truncated provider response contains any Tool call, execute none of its Tool calls; when another model round trip remains admissible, append bounded safe error results for correction, and otherwise terminate with the applicable fuse or failure.
 5. For each complete Tool call in provider order, resolve the exact supplied Tool, validate its arguments against the input schema, invoke its server-bound closure, sanitize its result or error, and append the model-visible feedback.
@@ -235,17 +239,19 @@ Acceptance requires restart reconstruction without a durable loop or toolset rec
 
 ## Internal Role Execution Profile
 
-Before provider dispatch, the caller resolves one configuration-owned profile containing the internal role, risk or independence requirement, provider and model, required provider capabilities, security and policy compatibility, prompt version or digest, exact Tool schema versions or digests, context cap and reserved headroom, the three fuses, conversational objectives, and an ordered compatible fallback set when fallback is permitted.
+Before model dispatch, the caller resolves one configuration-owned profile containing the internal role, risk or model-family independence requirement, preferred logical model and compatible logical-model candidates, required logical-model capabilities, security and policy compatibility, prompt version or digest, exact Tool schema versions or digests, context cap and reserved headroom, the three fuses, conversational objectives, and an ordered compatible pre-run fallback set when fallback is permitted.
 
-One product execution is pinned to its resolved provider, model, prompt, Tool definitions, context policy, and limits. No model, Tool schema, role instruction, or safety limit changes after dispatch begins.
+One product execution is pinned to its resolved logical-model ID, Gateway-derived effective capabilities and `modelFamilyId`, prompt, Tool definitions, context policy, and limits. No logical model, Tool schema, role instruction, or safety limit changes after dispatch begins. Each Gateway call may select a different private route member within that same logical contract, including bounded pre-output failover, without changing the internal-role execution profile or exposing Provider identity.
 
-Fallback is permitted only before dispatch and only to an already-approved candidate satisfying every capability, security, data-location, budget, context, role, and independence constraint. Failure after dispatch terminates with its exact typed outcome; retry or fallback is a newly admitted execution reconstructed from current durable truth.
+Fallback to another logical model is permitted only before the run's first dispatch and only to an already-approved candidate satisfying every capability, security, data-location, budget, context, role, and independence constraint. A started run never substitutes another logical model. Gateway-private fallback among route members of the pinned logical model follows the Gateway owner and may occur independently for each call only before that call emits output. Failure after output begins terminates with its exact typed outcome; retry is a newly admitted execution reconstructed from current durable truth.
+
+`DATA_ROOT/config/internal-role-profiles.jsonc` is the sole Server projection of these profiles and contains one Server default logical-model preference for roles that do not select one. `workspace.jsonc` may bind a role to Workspace context, prompt, Tool, limit, capability, or logical-model preferences accepted by the role owner, and `user.jsonc` may carry a lighter per-Workspace role preference where the owning role permits personal selection. Persistent resolution uses User, then Workspace, then Server, while an explicit admitted request is more specific than those defaults. This composition creates no second role catalog and no worker Agent Manifest.
 
 Every material role prompt, Tool schema, model policy, or default-model change MUST pass a fixed role-relevant evaluation set before becoming the default. The set covers normal behavior, denied authority, malformed Tool input, prompt injection, result redaction, budget and context boundaries, provider failure, restart reconstruction, and duplicate-effect prevention, plus role-specific success and false-completion cases.
 
 Release begins with the current configured default and the smallest bounded canary or internal validation population able to expose regressions. Promotion changes the configuration selection only for new executions; rollback restores the prior accepted selection for new executions and does not rewrite completed durable history.
 
-If no compatible fallback exists, the caller exposes an honest unavailable or failed result. Independence requirements MUST NOT degrade to a disallowed provider or model family, and an incompatible warm provider context MUST be discarded.
+If no compatible logical-model candidate exists before the run, the caller exposes an honest unavailable result. Independence requirements MUST compare the Gateway-derived `modelFamilyId` values and MUST NOT degrade to the same family when another family is required; an incompatible warm Gateway or Provider context MUST be discarded.
 
 Acceptance requires recorded profile identity sufficient for explanation, no mid-dispatch substitution, evaluation evidence before a default change, bounded rollout, and configuration-only rollback.
 
@@ -281,7 +287,7 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 - Streaming observation changes no final messages, exit, persistence, recovery, or product behavior.
 - Prompt assembly follows the four-part contract, deterministic owner order, refresh and pinning rules, and default exclusions.
 - Restart reconstructs a new run from current trusted owners without durable loop or toolset state and without duplicate accepted effects.
-- One execution remains pinned to its resolved profile, uses fallback only before dispatch, and changes defaults only after evaluation through bounded rollout and configuration rollback.
+- One execution remains pinned to its resolved profile and logical-model contract, uses logical-model fallback only before its first dispatch, permits only Gateway-private pre-output route replacement within that contract, and changes defaults only after evaluation through bounded rollout and configuration rollback.
 
 ## Related Docs
 

@@ -39,6 +39,8 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 `User` is Core's canonical human-subject record family. Account-backed humans and the implicit local human use the same family; `kind = local` is an implementation projection for the implicit local human, not a distinct identity type.
 
+User is also the subject of personal persistent preferences. A personal Agent, profile, logical-model, or applicable internal-role preference is scoped to that User and the addressed Workspace, wins over the Workspace and Server defaults for that User, and never rewrites either shared scope. Core Concepts owns the cross-scope precedence and composition relationship; Identity owns the User subject and attribution of the preference.
+
 `WorkspaceMember` is a user's membership in one workspace.
 
 `Role` is a named membership or policy grouping. Role semantics belong to permission policy.
@@ -157,6 +159,7 @@ The canonical owner must also have active membership. Ownership is stored once a
 - OpenKit-authored records MUST use `AuthSession`, `AgentSession`, `ChannelSession`, or another prefixed term instead of the bare `Session`.
 - Raw token secret material MUST NOT be exposed after issuance through identity records, item payloads, audit records, or protocol summaries.
 - Automation and integration identities MUST remain distinguishable from trigger sources.
+- A User preference MUST remain attributable to one User and, when Workspace-dependent, one Workspace; it MUST NOT mutate or impersonate Workspace-shared or Server configuration.
 
 ## Related Docs
 

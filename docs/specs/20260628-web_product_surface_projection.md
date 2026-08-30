@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 ---
 # Web Product Surface Projection
 
@@ -22,6 +22,7 @@ The superseded Web UI slice specs are retained as historical reference only. The
 - The release-coupled Web account gate over the existing protected authorized-Workspace read, and the account-level **My invitations** projection over the existing sharing client.
 - The release-coupled selected-Workspace **Repositories** projection, including its approval-response state boundary, consumed-record suppression, authoritative post-execution settlement, and Workspace navigation placement.
 - The bounded deployment-admin **Configuration** projection over the existing runtime-config file, validation, revision, and reload contracts.
+- The ordinary-user unified conversation Composer projection over the accepted target catalog and structured submission contract.
 - The current implementation projection of the Web app.
 - The status of older Web UI slice specs as historical reference.
 
@@ -33,6 +34,7 @@ The superseded Web UI slice specs are retained as historical reference only. The
 - Whether a Core capability is release-ready. That remains with the owning Core document or specification and `docs/roadmap.md`.
 - The per-operation disposition table bytes. The committed coverage check is the executable inventory; this specification owns the inclusion and disposition rules that check must project.
 - Detailed Web UI interaction design, component architecture, copy, route structure, or visual design beyond the bounded Repositories placement defined below.
+- Conversation-target resolution, logical-model admission, Artifact import, role execution, worker continuity, Task handoff, or command replay semantics, which remain with their accepted owners.
 - Authentication, session, user, Workspace membership, invitation, authorization, or App API lifecycle and error semantics. Those remain owned by the identity, NanoCore config and identity, multi-user Workspace, permission, and Core Client contracts.
 - Release readiness gates.
 - The broader deployment-admin Web surface for health, Telemetry, server Audit, Policy decisions, secrets, providers, backup, and recovery owned by roadmap R048.
@@ -156,6 +158,12 @@ The published Tier-A **AI interface** screen is the bounded provider slice of R0
 
 The screen does not clear or revoke generic provider API keys, invent provider or model records outside runtime configuration, persist an access Token or API key, or infer deployment-admin authority in the browser. A typed denial remains a visible denial with explicit retry; other failures remain visible failures with explicit retry.
 
+### Unified Conversation Composer Projection
+
+Every published conversation entry and active-Thread surface projects the same Composer contract from `docs/specs/20260831-unified_conversation_composer.md`. Web consumes the NanoCore target catalog and its target-specific logical-model lists instead of joining Agents, Goals, Threads, runtime diagnostics, or Gateway internals in the browser, and it exposes no AgentSession, Harness, Sandbox, process, concrete Provider, account, or private route identity.
+
+Web reuses the existing Artifact import command for supported local text files and the existing Thread-create command on the starter surface. Component and client-state placement follow `docs/specs/20260710-web_ui_rebuild_stack.md`; this specification adds no second interaction contract, upload owner, target resolver, or command replay rule.
+
 ### Observable acceptance
 
 Acceptance of this completeness contract requires all of the following:
@@ -165,6 +173,7 @@ Acceptance of this completeness contract requires all of the following:
 - No published ordinary-user route calls a server-scoped API or requires a deployment-admin token; the separately gated Configuration and AI interface routes are excluded from the ordinary-user operation inventory and call only their accepted deployment-admin clients.
 - Every `roadmap` disposition names an existing Roadmap item. Automations name R092, Knowledge proposal drafting names R070, and Knowledge proposal reversal names R072. Server-scoped operations are excluded rather than given ordinary-user dispositions, and R048 remains their Web owner.
 - Current Implementation Projection MUST NOT claim a missing UI is implemented.
+- Starter and active-Thread surfaces use the same Composer and prove target, logical-model, Artifact, supported upload, failure retention, and accessible keyboard behavior without exposing private placement or routing identities.
 
 The disposition guard is necessary inventory and admission evidence and is not sufficient for acceptance. A green guard without focused UI tests and actual-diff independent review for each `live` and `workflow` claim is not acceptance.
 
@@ -211,7 +220,7 @@ My invitations preserves the sharing owner's typed outcomes. `invitation_not_pen
 
 ## Current Implementation Projection
 
-The current Web implementation is a React and Vite SPA whose route catalog, app shell, and sidebar project NanoCore state through `@openkit/core-client`. TanStack Query owns server-state access, while Zustand remains limited to UI-only state. Implementation is `Implemented` against this completeness contract: all 141 included operations have valid dispositions, every release-ready operation has a reachable product projection, and only the six explicitly not-release-ready operations remain unpublished under their accepted Roadmap owners.
+The current Web implementation is a React and Vite SPA whose route catalog, app shell, and sidebar project NanoCore state through `@openkit/core-client`. TanStack Query owns server-state access, while Zustand remains limited to UI-only state. The existing 141-operation disposition contract remains implemented, but this specification is `Partial` because the accepted unified Composer projection is not implemented.
 
 - Live surfaces currently cover Workspace overview and Action Center rows, Chat and Task Threads, Goal planning and steering, Artifact Review, Artifact inventory/import/introduction, Knowledge page CRUD and the release-ready Knowledge Manager workflows, Agent catalog/detail/health, recovery and scheduler admission, Workspace Sync review-to-apply and recovery evidence, user-scoped import plus project-Workspace portability, first-run and Workspace creation, appearance and Workspace-authorized general settings, the Settings Debug component catalog and inspection reads, and selected-Workspace Usage and audit reads.
 - Goal plan approval and revision, steering input, Artifact Review decisions, Knowledge creation, Workspace creation, and Workspace rename use current Core Client operations. The selected Workspace navigation exposes a direct Workspace settings entry, and failed mutations preserve the last authoritative server projection rather than creating browser-owned workflow truth.
@@ -226,6 +235,7 @@ The current Web implementation is a React and Vite SPA whose route catalog, app 
 - Focused Vitest coverage and the L4 Playwright entrypoint exercise the Web package. Real-worker and restart proofs remain at their owning process boundaries and do not imply browser coverage.
 - The bounded live Work Resource Class 1 route implements Material identity, creation, authoring, immutable revisions, client-side comparison, Thread binding, inclusion and queue state, active-turn delivery, and worker proposal review. Selected-Workspace owner member administration, owner-issued invitation administration, the membership-independent account-level My invitations direct read with pending accept and decline decisions plus terminal rows, and selected active non-owner self-leave are focused-test-backed implementations through the existing Account route and the isolated server-mode browser journey; real-use and program-exit proof remain pending.
 - Work Resource Class 2 and Work Resource Class 3 resources, grounded annotation, text-range patching, and generalized locator controls remain deferred under their owning specification and are not implied by the 141-operation catalog. The React app remains a projection and is not the canonical source of Core semantics.
+- The current shared `Composer` owns only text, optional chips, a disabled reason, and a text-only callback. It has no bounded auto-growth, Artifact or upload action, target catalog, Agent selector, logical-model selector, structured submission, or complete failure-preserving draft; starter submission creates a Thread and calls the current `chat.start` path.
 
 ## Alternatives Considered
 

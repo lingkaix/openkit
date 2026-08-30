@@ -95,13 +95,13 @@ OpenKit's policy model and OpenShell's sandbox policy model operate at different
 
 `@openkit/policy-kernel` is the canonical low-level evaluator for OpenKit authorization facts after product adapters map them into standard-aligned NGAC facts. It answers graph-level questions such as whether a user, through a process when process context is relevant, holds the required access rights for a protected policy element in a workspace or policy domain.
 
-OpenShell policy is a backend enforcement artifact. It constrains filesystem access, process identity, binary execution, network endpoints, provider attachment, credential projection, `inference.local` routing, and related sandbox behavior for one concrete worker runtime.
+OpenShell policy is a backend enforcement artifact. It constrains filesystem access, process identity, binary execution, network endpoints, credential projection, `inference.local` routing, and related sandbox behavior for one concrete worker runtime.
 
 The intended flow is:
 
 1. `policy-kernel` evaluates OpenKit policy facts and returns an allow or deny decision with a structural trace.
 2. NanoCore or a future OpenKit policy adapter maps the kernel decision, policy requirements, and request context into product workflow outcomes such as allow, deny, require human approval, create Action Center row, attach vault grant, or refuse runtime launch.
-3. The Agent Environment Package and runtime materializer compile approved runtime intent into backend-native artifacts such as OpenShell `filesystem_policy`, `landlock`, `process`, `network_policies`, provider attachments, and inference routing settings.
+3. The Agent Environment Package and runtime materializer compile approved runtime intent into backend-native artifacts such as OpenShell `filesystem_policy`, `landlock`, `process`, `network_policies`, credential injections, and inference routing settings.
 4. OpenShell enforces those artifacts inside the selected sandbox and returns backend evidence such as policy apply status, network deny events, supervisor logs, OCSF records, transcript files, artifacts, and collected workspace changes.
 5. NanoCore normalizes backend evidence back into OpenKit audit, usage, review, artifact, and worker session records.
 
@@ -117,7 +117,7 @@ The unacceptable dependency is durable OpenKit product state or public protocol 
 
 NanoCore owns policy decisions, audit linkage, product lineage, approval workflow, and redacted user-facing explanations.
 
-OpenShell owns sandbox-local runtime enforcement only for OpenShell-backed worker sessions. That enforcement includes backend isolation, file transport, filesystem policy, process policy, network policy, provider attachment, credential projection, and inference routing. The NanoHost is the sole OpenShell lifecycle authority; its Sandbox Integration projects worker-local APIs onto the distinct `/worker-control/*`, `/inference/*`, and `/capabilities/*` route families without merging their credentials or semantics. Runtime cleanup and uncertain-operation invalidation remain exclusively owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+OpenShell owns sandbox-local runtime enforcement only for OpenShell-backed worker sessions. That enforcement includes backend isolation, file transport, filesystem policy, process policy, network policy, credential projection, and inference routing. The NanoHost is the sole OpenShell lifecycle authority; its Sandbox Integration projects worker-local APIs onto the distinct `/worker-control/*`, `/inference/*`, and `/capabilities/*` route families without merging their credentials or semantics. Runtime cleanup and uncertain-operation invalidation remain exclusively owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 A publicly or remotely exposed Gateway, insecure Gateway mode, custom OpenShell binary, fork, patch, replacement artifact, custom multiplexer, or historical compatibility path is outside the runtime-policy contract.
 
@@ -127,7 +127,7 @@ Backend portability is capability-based. A backend that cannot enforce a require
 
 ### Decision And Enforcement Examples
 
-If `policy-kernel` denies `vault.use` for an agent process, NanoCore must not materialize the corresponding OpenShell provider attachment.
+If `policy-kernel` denies `vault.use` for an agent process, NanoCore must not materialize the corresponding OpenShell credential injection.
 
 If `policy-kernel` allows `network.egress` to a specific provider endpoint, an OpenShell materializer may compile that into a `network_policies` endpoint entry scoped to selected binaries.
 
@@ -351,7 +351,7 @@ After the package is standard-aligned, the next work should add an OpenKit adapt
 
 The integration should not begin by migrating every permission check. It should prove that the policy kernel reduces duplicated authorization logic and produces clearer deny reasons before broader adoption.
 
-The first runtime-policy integration should map one OpenKit policy decision into one OpenShell materialization artifact without making OpenShell canonical. Good candidates are `network.egress` for additional OpenShell endpoint policy entries, `runtime.launch` for selecting a container placement or backend, or `vault.use` for deciding whether a provider attachment may be included in the Agent Environment Package.
+The first runtime-policy integration should map one OpenKit policy decision into one OpenShell materialization artifact without making OpenShell canonical. Good candidates are `network.egress` for additional OpenShell endpoint policy entries, `runtime.launch` for selecting a container placement or backend, or `vault.use` for deciding whether a credential injection may be included in the Agent Environment Package.
 
 ## Current Implementation Projection
 

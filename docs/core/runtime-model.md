@@ -129,7 +129,7 @@ Runtime placement decomposes into four distinct private projections:
 - an AgentSession runtime binding maps one Core AgentSession to one exact Harness and restricted native conversation handle;
 - an execution lease binds one active Turn, its fresh authority and inputs, and one active-Turn capacity unit to that AgentSession, Harness, and Sandbox.
 
-These projections MUST NOT be collapsed into one backend record. A shared Sandbox or Harness MAY host multiple AgentSessions only for distinct Threads, but sharing placement MUST NOT merge Core identity, Thread affinity, native conversation context, authorization, sequence, interruption, output, evidence, or terminal outcome. A Harness is not an Agent, Thread, workflow owner, scheduling authority, or product conversation.
+These projections MUST NOT be collapsed into one backend record. A Sandbox MAY host multiple compatibility-keyed Harnesses, and a Harness MAY host multiple AgentSessions only for distinct Threads, but sharing placement MUST NOT merge Core identity, Thread affinity, native conversation context, authorization, sequence, interruption, output, evidence, or terminal outcome. Bounded active Turns may execute concurrently only across distinct AgentSessions and Threads under Harness and Sandbox capacity; a Harness is not an Agent, Thread, workflow owner, scheduling authority, or product conversation.
 
 Creation proceeds from Sandbox and Harness readiness, through exact AgentSession binding, to a separately admitted Turn lease. An idle AgentSession may retain continuity and open-session capacity without retaining an execution lease or authority to start work. Each new Turn receives current admission independently of any warm placement.
 
@@ -137,7 +137,7 @@ Normal Turn termination releases its active-Turn capacity only after the Turn's 
 
 A missing, stale, conflicting, or unprovable binding blocks admission or reuse. Restart may adopt only the exact surviving Sandbox, Harness, AgentSession, native conversation, Turn, lease, authority snapshot, and sequence under an accepted proof contract; otherwise cleanup and a fresh authorized request replace continuity without rewriting the prior attempt. Failure to prove local cleanup widens the fence to the Harness, Sandbox, or execution-substrate epoch boundary that can be proved complete.
 
-Observable conformance requires one runtime inventory to distinguish all four projections, an idle AgentSession to hold no active-Turn lease, exact local close to preserve a compatible sibling, and every active Turn to retain its own current authority and terminal outcome.
+Observable conformance requires one runtime inventory to distinguish all four projections, one Sandbox to distinguish compatibility-different Harnesses, an idle AgentSession to hold no active-Turn lease, exact local close to preserve compatible siblings, and every concurrently active Turn to retain its own Thread, AgentSession, lease, authority, and terminal outcome.
 
 ## Turn
 

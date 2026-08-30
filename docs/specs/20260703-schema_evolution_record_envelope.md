@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 ---
 # Schema Evolution And Record Envelope
 
@@ -209,7 +209,7 @@ Rules:
 - `requiredFeatures` values are lowercase dot-separated identifiers of the form `<domain>.<area>.<feature>`, for example `workspace.mount.fuse`, `workspace.writeback.external`, `session.concurrent-turns`, `vault.injection.query-param`, and `audit.retention.legal-hold`.
 - All feature identifiers MUST be defined in one shared registry exported from a single implementation package and mirrored as a table in this spec's registry section once implementation begins. Writers MUST NOT invent unregistered identifiers.
 - Readers advertise the feature set they support from the same registry; rejection diagnostics MUST name the unsupported identifier.
-- Feature identifiers are never removed; a withdrawn feature is marked withdrawn in the registry so old records still produce a meaningful diagnostic.
+- Feature identifiers are never removed after an externally supported release; a withdrawn feature is marked withdrawn so old records still produce a meaningful diagnostic.
 
 `requiredFeatures` is the preferred gate. `minCoreVersion` is a discouraged escape hatch: version coupling reintroduces the drift this spec exists to prevent, so writers SHOULD express requirements as features and MAY use `minCoreVersion` only when a requirement genuinely cannot be named as a feature. Readers MUST still enforce `minCoreVersion` when present.
 
@@ -224,6 +224,8 @@ The implementation includes package tests for unknown optional field tolerance, 
 | `vault.injection.query-param` | active | Vault injection may place secret references into query parameters. |
 | `workspace.mount.fuse` | active | Workspace input requires a FUSE-style mount implementation. |
 | `workspace.writeback.external` | active | Workspace writes are committed through an external writeback mechanism. |
+
+The current registry description for `session.concurrent-turns` is semantically overbroad. The accepted runtime target permits concurrent Turns only across distinct AgentSessions and Threads and keeps each AgentSession and Thread single-flight. Stage E updates the shared registry description and this mirrored table together while retaining the identifier; until then this specification is `Partial` and no reader may interpret the current sentence as authority to run concurrent Turns in one AgentSession.
 
 ## Extension Namespaces
 
@@ -262,7 +264,7 @@ Older readers may ignore fields they do not understand, but they must reject a m
 
 New fields under `workspace`, `vault`, `policy`, `sandbox`, `providers`, `mcp`, `tools`, `resources`, `scale`, `observability`, or `lifecycle` are authority-bearing unless the owning manifest spec explicitly marks them as descriptive metadata.
 
-Manifest writers should prefer explicit required features for new mount kinds, source kinds, credential injection modes, provider attachment modes, runtime placement modes, and worker-visible capability families.
+Manifest writers should prefer explicit required features for new mount kinds, source kinds, credential injection modes, runtime placement modes, and worker-visible capability families.
 
 ## Audit And Evidence Evolution
 
