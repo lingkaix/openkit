@@ -5,6 +5,7 @@
  * New workspace create form, and live repository governance.
  */
 export { AgentsScreen } from './AgentsScreen';
+export { ArchivedThreadsScreen } from './ArchivedThreadsScreen';
 export { FirstRunScreen } from './FirstRunScreen';
 export { KnowledgeScreen } from './KnowledgeScreen';
 export { NewWorkspaceScreen } from './NewWorkspaceScreen';

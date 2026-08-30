@@ -8,10 +8,8 @@ import {
   ErrorBanner,
   ListRow,
   Skeleton,
-  StatusChip,
 } from '../../primitives';
 import { chatThreadPath, useCreateThread, useCurrentWorkspaceId, useThreads } from './data';
-import { WorkspaceSelect } from './WorkspaceSelect';
 
 /**
  * Chat starter (WP-4, board 01) — the usable workbench first screen.
@@ -29,6 +27,7 @@ export function ChatStarter() {
   const create = useCreateThread();
   const { failed: disconnected } = useConnection();
   const createOwner = create.variables?.workspaceId === workspaceId;
+  const activeThreads = (threads.data ?? []).filter((thread) => thread.status === 'active');
 
   useEffect(() => {
     if (createOwner && create.data)
@@ -46,14 +45,11 @@ export function ChatStarter() {
 
   return (
     <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 px-6 py-10">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-title font-extrabold text-fg-strong">What can we get done?</h1>
-          <p className="mt-1 text-fg-muted">
-            Describe what you need — from a quick question to a whole project.
-          </p>
-        </div>
-        <WorkspaceSelect />
+      <div>
+        <h1 className="text-title font-extrabold text-fg-strong">What can we get done?</h1>
+        <p className="mt-1 text-fg-muted">
+          Describe what you need — from a quick question to a whole project.
+        </p>
       </div>
 
       {createOwner && create.isError ? (
@@ -79,14 +75,14 @@ export function ChatStarter() {
             message="Couldn't load recent chats."
             onRetry={() => void threads.refetch()}
           />
-        ) : (threads.data?.length ?? 0) === 0 ? (
+        ) : activeThreads.length === 0 ? (
           <EmptyState
             icon="chat"
             title="Start a chat"
             hint="Your recent chats will show up here."
           />
         ) : (
-          threads.data?.map((thread) => (
+          activeThreads.map((thread) => (
             <ListRow key={thread.id}>
               <button
                 type="button"
@@ -96,9 +92,6 @@ export function ChatStarter() {
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
                   {thread.name ?? thread.preview}
                 </span>
-                {thread.status === 'archived' ? (
-                  <StatusChip tone="neutral">Archived</StatusChip>
-                ) : null}
               </button>
             </ListRow>
           ))

@@ -1,8 +1,8 @@
 import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
-import { ApiCallError, type CoreClient, createCoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { applyEdits, modify, parse } from 'jsonc-parser';
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -25,7 +25,6 @@ import {
 } from './data';
 import { projectSafeValue, providerSubscriptionAccountStatusLabel } from './secret-safe';
 
-type AdminClientFactory = (token: string) => CoreClient;
 type SubscriptionProviderId = ConnectedAppProviderRow['subscriptionProviderId'];
 type ProviderSubscriptionAccount = Awaited<
   ReturnType<CoreClient['providerSubscriptions']['getAccountStatus']>
@@ -53,15 +52,7 @@ const OAUTH_VENDORS: Record<SubscriptionProviderId, string> = {
 const PROVIDER_KINDS = ['direct', 'gateway', 'local', 'oauth', 'custom'] as const;
 const STATUS_POLL_MS = 2_000;
 
-/** Creates a same-origin Core Client whose bearer credential stays only in browser memory. */
-function createDeploymentAdminClient(token: string): CoreClient {
-  return createCoreClient({
-    baseUrl: import.meta.env.VITE_CORE_BASE_URL ?? '',
-    headers: { authorization: `Bearer ${token}` },
-  });
-}
-
-/** Checks whether a failed list read needs an explicit deployment-admin credential. */
+/** Checks whether a failed list read is a typed access denial. */
 function isAdminDenied(error: unknown): boolean {
   return error instanceof ApiCallError && (error.status === 401 || error.status === 403);
 }
@@ -93,37 +84,29 @@ function readServerDefaults(content: string): ServerDefaults {
 /**
  * AI interface settings — published deployment-admin provider, account, and default workflow.
  *
- * Session credentials are tried first. A `server-admin` token is requested only after a typed
- * 401/403 and is kept in mounted React memory. Honors §9.13.
+ * Uses the signed-in session client. Derived server-admin authority is required.
+ * Web never asks for a bearer token. Honors §9.13.
  */
-export function AiInterfaceScreen({
-  createAdminClient = createDeploymentAdminClient,
-}: {
-  createAdminClient?: AdminClientFactory;
-}) {
-  const sessionClient = useCoreClient();
+export function AiInterfaceScreen() {
+  const client = useCoreClient();
   const queryClient = useQueryClient();
   const { failed: disconnected } = useConnection();
-  const [adminClient, setAdminClient] = useState<CoreClient | null>(null);
-  const [clientGeneration, setClientGeneration] = useState(0);
-  const [token, setToken] = useState('');
-  const activeClient = adminClient ?? sessionClient;
-  const accountsKey = [...settingsKeys.aiInterface(clientGeneration), 'accounts'] as const;
-  const diagnosticsKey = [...settingsKeys.aiInterface(clientGeneration), 'diagnostics'] as const;
-  const serverKey = [...settingsKeys.aiInterface(clientGeneration), 'server'] as const;
+  const accountsKey = [...settingsKeys.aiInterface, 'accounts'] as const;
+  const diagnosticsKey = [...settingsKeys.aiInterface, 'diagnostics'] as const;
+  const serverKey = [...settingsKeys.aiInterface, 'server'] as const;
 
   const accounts = useQuery({
     queryKey: accountsKey,
     queryFn: async () => {
-      const inventory = await activeClient.providerSubscriptions.listProviders();
+      const inventory = await client.providerSubscriptions.listProviders();
       return Promise.all(
         inventory.providers.map(async (provider) => {
-          const listed = await activeClient.providerSubscriptions.listAccounts(
+          const listed = await client.providerSubscriptions.listAccounts(
             provider.subscriptionProviderId
           );
           const quotas = await Promise.all(
             listed.accounts.map((account) =>
-              activeClient.providerSubscriptions.getAccountQuota(
+              client.providerSubscriptions.getAccountQuota(
                 provider.subscriptionProviderId,
                 account.accountSlotId
               )
@@ -140,7 +123,7 @@ export function AiInterfaceScreen({
   const diagnostics = useQuery({
     queryKey: diagnosticsKey,
     queryFn: async () =>
-      projectSafeValue(await activeClient.app.getDiagnostics()) as Awaited<
+      projectSafeValue(await client.app.getDiagnostics()) as Awaited<
         ReturnType<CoreClient['app']['getDiagnostics']>
       >,
     enabled: accounts.isSuccess,
@@ -150,30 +133,15 @@ export function AiInterfaceScreen({
 
   const serverFile = useQuery({
     queryKey: serverKey,
-    queryFn: () => activeClient.runtimeConfig.getFile('server.jsonc'),
+    queryFn: () => client.runtimeConfig.getFile('server.jsonc'),
     enabled: accounts.isSuccess,
     gcTime: 0,
     retry: false,
   });
 
-  function forgetAdminToken() {
-    setAdminClient(null);
-    setClientGeneration((current) => current + 1);
-    queryClient.removeQueries({ queryKey: ['settings', 'ai-interface'] });
-  }
-
-  function unlock(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const value = token.trim();
-    if (!value) return;
-    setAdminClient(createAdminClient(value));
-    setToken('');
-    setClientGeneration((current) => current + 1);
-  }
-
   function retry() {
     queryClient.removeQueries({
-      queryKey: [...settingsKeys.aiInterface(clientGeneration), 'status'],
+      queryKey: [...settingsKeys.aiInterface, 'status'],
     });
     void accounts.refetch();
     void diagnostics.refetch();
@@ -183,23 +151,23 @@ export function AiInterfaceScreen({
   const adminDenied = isAdminDenied(accounts.error);
   const onAccountsChanged = useCallback(() => {
     queryClient.removeQueries({
-      queryKey: [...settingsKeys.aiInterface(clientGeneration), 'status'],
+      queryKey: [...settingsKeys.aiInterface, 'status'],
     });
     void queryClient.invalidateQueries({
-      queryKey: [...settingsKeys.aiInterface(clientGeneration), 'accounts'],
+      queryKey: [...settingsKeys.aiInterface, 'accounts'],
     });
-  }, [clientGeneration, queryClient]);
+  }, [queryClient]);
   const onProfilesChanged = useCallback(() => {
     void queryClient.invalidateQueries({
-      queryKey: [...settingsKeys.aiInterface(clientGeneration), 'accounts'],
+      queryKey: [...settingsKeys.aiInterface, 'accounts'],
     });
     void queryClient.invalidateQueries({
-      queryKey: [...settingsKeys.aiInterface(clientGeneration), 'diagnostics'],
+      queryKey: [...settingsKeys.aiInterface, 'diagnostics'],
     });
     void queryClient.invalidateQueries({
-      queryKey: [...settingsKeys.aiInterface(clientGeneration), 'server'],
+      queryKey: [...settingsKeys.aiInterface, 'server'],
     });
-  }, [clientGeneration, queryClient]);
+  }, [queryClient]);
 
   return (
     <Page>
@@ -208,28 +176,30 @@ export function AiInterfaceScreen({
         title="AI interface"
         subtitle="Manage subscription accounts, provider profiles, API keys, and the core and gateway default models for this deployment."
         actions={
-          <div className="flex gap-2">
-            {adminClient && accounts.isSuccess ? (
-              <Button variant="quiet" size="sm" onPress={forgetAdminToken}>
-                Forget admin token
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant="outline"
-              isDisabled={disconnected || accounts.isFetching || adminDenied}
-              onPress={retry}
-            >
-              Refresh status
-            </Button>
-          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            isDisabled={disconnected || accounts.isFetching || adminDenied}
+            onPress={retry}
+          >
+            Refresh status
+          </Button>
         }
       />
 
       {accounts.isLoading ? (
         <Skeleton lines={6} />
       ) : accounts.isError && adminDenied ? (
-        <AdminCredentialGate token={token} onTokenChange={setToken} onSubmit={unlock} />
+        <EmptyState
+          icon="key"
+          title="Access denied"
+          hint="AI interface requires derived server-admin authority on the signed-in session."
+          action={
+            <Button variant="outline" onPress={() => void accounts.refetch()}>
+              Retry
+            </Button>
+          }
+        />
       ) : accounts.isError ? (
         <ErrorBanner
           message="Couldn't load AI interface."
@@ -238,8 +208,7 @@ export function AiInterfaceScreen({
       ) : (
         <>
           <SubscriptionAccounts
-            client={activeClient}
-            clientGeneration={clientGeneration}
+            client={client}
             disconnected={disconnected}
             providers={accounts.data ?? []}
             onAccountsChanged={onAccountsChanged}
@@ -253,7 +222,7 @@ export function AiInterfaceScreen({
             <Skeleton lines={4} />
           ) : (
             <ProviderProfiles
-              client={activeClient}
+              client={client}
               disconnected={disconnected}
               profiles={diagnostics.data?.providers.registry ?? []}
               diagnostics={diagnostics.data?.providers.diagnostics ?? []}
@@ -278,53 +247,14 @@ export function AiInterfaceScreen({
   );
 }
 
-/** Requests an explicit server-admin bearer credential without persisting it. */
-function AdminCredentialGate({
-  token,
-  onTokenChange,
-  onSubmit,
-}: {
-  token: string;
-  onTokenChange: (value: string) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-}) {
-  return (
-    <Card className="mx-auto w-full max-w-lg">
-      <form className="flex flex-col gap-4" onSubmit={onSubmit}>
-        <div>
-          <h2 className="text-sm font-bold text-fg-strong">Server-admin access required</h2>
-          <p className="mt-1 text-sm text-fg-muted">
-            AI provider settings are deployment-wide. The token is used for this open page only and
-            is never written to browser storage.
-          </p>
-        </div>
-        <TextField
-          label="Server admin token"
-          type="password"
-          value={token}
-          onChange={onTokenChange}
-          autoComplete="off"
-        />
-        <div className="flex justify-end">
-          <Button type="submit" isDisabled={!token.trim()}>
-            Open AI interface
-          </Button>
-        </div>
-      </form>
-    </Card>
-  );
-}
-
 /** Subscription-account lifecycle for the fixed Codex and xAI providers. */
 function SubscriptionAccounts({
   client,
-  clientGeneration,
   disconnected,
   providers,
   onAccountsChanged,
 }: {
   client: CoreClient;
-  clientGeneration: number;
   disconnected: boolean;
   providers: ConnectedAppProviderRow[];
   onAccountsChanged: () => void;
@@ -352,7 +282,6 @@ function SubscriptionAccounts({
             <ProviderAccounts
               key={provider.subscriptionProviderId}
               client={client}
-              clientGeneration={clientGeneration}
               disconnected={disconnected}
               provider={provider}
               onAccountsChanged={onAccountsChanged}
@@ -367,13 +296,11 @@ function SubscriptionAccounts({
 /** Account list and slot controls for one subscription provider. */
 function ProviderAccounts({
   client,
-  clientGeneration,
   disconnected,
   provider,
   onAccountsChanged,
 }: {
   client: CoreClient;
-  clientGeneration: number;
   disconnected: boolean;
   provider: ConnectedAppProviderRow;
   onAccountsChanged: () => void;
@@ -419,7 +346,6 @@ function ProviderAccounts({
               key={account.identity}
               account={account}
               client={client}
-              clientGeneration={clientGeneration}
               disconnected={disconnected}
               providerId={provider.subscriptionProviderId}
               onAccountsChanged={onAccountsChanged}
@@ -464,14 +390,12 @@ function ProviderAccounts({
 function AccountControls({
   account,
   client,
-  clientGeneration,
   disconnected,
   providerId,
   onAccountsChanged,
 }: {
   account: ConnectedAppRow;
   client: CoreClient;
-  clientGeneration: number;
   disconnected: boolean;
   providerId: SubscriptionProviderId;
   onAccountsChanged: () => void;
@@ -480,7 +404,7 @@ function AccountControls({
   const [displayName, setDisplayName] = useState(account.displayName);
   const [snapshot, setSnapshot] = useState<ProviderSubscriptionAccount | undefined>(undefined);
   const statusKey = [
-    ...settingsKeys.aiInterface(clientGeneration),
+    ...settingsKeys.aiInterface,
     'status',
     providerId,
     account.accountSlotId,

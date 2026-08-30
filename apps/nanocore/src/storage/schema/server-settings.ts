@@ -1,7 +1,7 @@
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /**
- * Stores singleton server-level settings as JSON payloads.
+ * Stores server-owned JSON settings keyed by name, including singleton values and per-user keys.
  */
 export const serverSettings = sqliteTable('server_settings', {
   /** Setting key. */

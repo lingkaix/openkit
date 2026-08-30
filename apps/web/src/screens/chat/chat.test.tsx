@@ -288,13 +288,25 @@ function renderApp(
   return queryClient;
 }
 
-/** Returns the shared Workspace listbox trigger without matching sidebar actions. */
-function workspaceSelectTrigger(): HTMLElement {
-  const trigger = screen
-    .getAllByRole('button', { name: /Workspace/ })
-    .find((button) => button.getAttribute('aria-haspopup') === 'listbox');
-  expect(trigger).toBeTruthy();
-  return trigger as HTMLElement;
+/** Returns the persistent selected-Workspace switcher after discovery settles. */
+function workspaceSelectTrigger(name = 'Market research'): Promise<HTMLElement> {
+  return screen.findByRole('button', { name });
+}
+
+/** Switches the persistent Workspace context and opens one Thread from the starter list. */
+async function switchToThread(
+  user: ReturnType<typeof userEvent.setup>,
+  currentWorkspaceName: string,
+  nextWorkspaceName: string,
+  threadName: string
+) {
+  await user.click(await workspaceSelectTrigger(currentWorkspaceName));
+  await user.click(await screen.findByRole('menuitem', { name: nextWorkspaceName }));
+  await user.click(
+    await within(screen.getByRole('main', { name: 'Workspace' })).findByRole('button', {
+      name: threadName,
+    })
+  );
 }
 
 beforeEach(() => {
@@ -345,7 +357,7 @@ describe('chat starter (board 01)', () => {
       await workspaces.promise;
     });
     await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws_quick_chat'));
-    expect(listThreads).toHaveBeenCalledTimes(1);
+    expect(listThreads.mock.calls.every(([id]) => id === 'ws_quick_chat')).toBe(true);
     expect(listThreads).not.toHaveBeenCalledWith('ws_unavailable');
     expect(listThreads).not.toHaveBeenCalledWith('ws_authorized');
   });
@@ -361,21 +373,22 @@ describe('chat starter (board 01)', () => {
     renderApp('/chat', makeClient({ listThreads }));
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
-    await user.click(workspaceSelectTrigger());
-    await user.click(
-      within(await screen.findByRole('listbox')).getByRole('option', {
-        name: 'Second workspace',
-      })
-    );
+    await user.click(await workspaceSelectTrigger());
+    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
 
     await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws2'));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2');
   });
 
   it('lists recent chats when present', async () => {
-    const client = makeClient({ listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }) });
+    const client = makeClient({
+      listThreads: vi.fn().mockResolvedValue({
+        items: [THREAD, { ...THREAD, id: 'th_archived', name: 'Old chat', status: 'archived' }],
+      }),
+    });
     renderApp('/chat', client);
     expect(await screen.findByText('Competitive teardown')).toBeInTheDocument();
+    expect(screen.queryByText('Old chat')).not.toBeInTheDocument();
   });
 
   it('creates a thread and opens it from the composer', async () => {
@@ -402,7 +415,7 @@ describe('chat starter (board 01)', () => {
     expect(startTurn).not.toHaveBeenCalled();
     expect(quickChat).not.toHaveBeenCalled();
     // Navigated into the thread screen (its index toggle is present).
-    expect(await screen.findByRole('button', { name: /index/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Side panel/i })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith('ws1', 'th-new');
     getThread.mockClear();
     await act(async () => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
@@ -412,20 +425,67 @@ describe('chat starter (board 01)', () => {
   it('opens a fresh Chat when the Workspace changes from a thread', async () => {
     const user = userEvent.setup();
     const listThreads = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/chat/th1', makeClient({ listThreads }));
+    renderApp('/chat/ws1/th1', makeClient({ listThreads }));
 
     await screen.findByRole('heading', { name: 'Competitive teardown' });
-    await user.click(workspaceSelectTrigger());
-    await user.click(
-      within(await screen.findByRole('listbox')).getByRole('option', {
-        name: 'Second workspace',
-      })
-    );
+    await user.click(await workspaceSelectTrigger());
+    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
 
     expect(
       await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
     await waitFor(() => expect(listThreads).toHaveBeenCalledWith('ws2'));
+  });
+
+  it('fails closed when a canonical Thread route names an unavailable Workspace', async () => {
+    const getThread = vi.fn();
+    renderApp('/chat/ws_unavailable/th1', makeClient({ getThread }));
+
+    expect(await screen.findByText('Workspace unavailable')).toBeInTheDocument();
+    expect(getThread).not.toHaveBeenCalled();
+  });
+
+  it('syncs the primary switcher to the canonical Thread route Workspace', async () => {
+    const workspaceBThread = {
+      ...THREAD,
+      workspaceId: 'ws2',
+      name: 'Workspace B thread',
+      preview: 'Workspace B thread',
+    };
+    renderApp(
+      '/chat/ws2/th1',
+      makeClient({
+        getThread: vi.fn().mockResolvedValue(workspaceBThread),
+        listThreads: vi
+          .fn()
+          .mockImplementation((workspaceId: string) =>
+            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
+          ),
+      })
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Workspace B thread' })).toBeInTheDocument();
+    await waitFor(() => expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2'));
+    expect(screen.getByRole('button', { name: 'Second workspace' })).toBeInTheDocument();
+  });
+
+  it('keeps Chat starter on the persistent sidebar switcher', async () => {
+    renderApp('/chat', makeClient());
+    expect(await workspaceSelectTrigger()).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Market research' })).toHaveLength(1);
+  });
+
+  it('keeps Thread on the persistent sidebar switcher', async () => {
+    renderApp('/chat/ws1/th1', makeClient());
+    expect(
+      await screen.findByRole('heading', { name: 'Competitive teardown' })
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Market research' })).toHaveLength(1);
+  });
+
+  it('does not preserve a compatibility Chat Thread route without a Workspace segment', async () => {
+    renderApp('/chat/th1', makeClient());
+    expect(await screen.findByText(/doesn't exist/i)).toBeInTheDocument();
   });
 
   it('opens the new thread even when the first turn cannot start', async () => {
@@ -495,7 +555,7 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient({
       listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     expect(
       await screen.findByRole('heading', { name: 'Competitive teardown' })
     ).toBeInTheDocument();
@@ -512,7 +572,7 @@ describe('chat thread (boards 02/03)', () => {
       listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
       respondApproval,
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await user.click(await screen.findByRole('button', { name: 'Approve' }));
     expect(respondApproval).toHaveBeenCalledWith('ap1', {
       workspaceId: 'ws1',
@@ -529,7 +589,7 @@ describe('chat thread (boards 02/03)', () => {
       listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
       startTurn,
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     await user.type(await screen.findByRole('textbox', { name: 'Audience' }), 'Operators');
     await user.click(screen.getByRole('radio', { name: 'Concise' }));
@@ -567,7 +627,7 @@ describe('chat thread (boards 02/03)', () => {
       listThreadItems: vi.fn().mockResolvedValue({ items: otherItems, nextCursor: null }),
       startTurn,
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByRole('radio', { name: 'Concise' })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'Detailed' })).toBeInTheDocument();
@@ -595,7 +655,7 @@ describe('chat thread (boards 02/03)', () => {
       listThreadItems: vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
       startTurn,
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     await user.type(await screen.findByRole('textbox', { name: 'Audience' }), 'Operators');
     await user.click(screen.getByRole('radio', { name: 'Concise' }));
@@ -635,7 +695,7 @@ describe('chat thread (boards 02/03)', () => {
         nextCursor: null,
       }),
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText('You answered')).toBeInTheDocument();
     expect(screen.getByText(/user_responder/)).toBeInTheDocument();
@@ -667,7 +727,7 @@ describe('chat thread (boards 02/03)', () => {
       listThreadItems: vi.fn().mockResolvedValue({ items: secretItems, nextCursor: null }),
       startTurn,
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText('Who should receive the release?')).toBeInTheDocument();
     expect(screen.getByText('Which tone should the release use?')).toBeInTheDocument();
@@ -687,7 +747,7 @@ describe('chat thread (boards 02/03)', () => {
       },
       { quickChat, startChatMode }
     );
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Add a pricing table');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -702,13 +762,13 @@ describe('chat thread (boards 02/03)', () => {
 
   it('shows a skeleton while the stream loads', async () => {
     const client = makeClient({ listThreadItems: vi.fn().mockReturnValue(new Promise(() => {})) });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
   });
 
   it('shows an inline error when the stream fails', async () => {
     const client = makeClient({ listThreadItems: vi.fn().mockRejectedValue(new Error('boom')) });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     expect(await screen.findByText(/Couldn't load this thread\./i)).toBeInTheDocument();
   });
 
@@ -717,7 +777,7 @@ describe('chat thread (boards 02/03)', () => {
       meta: vi.fn().mockRejectedValue(new Error('down')),
       listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     });
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await screen.findByText('Approve $5 spend');
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled(), {
       timeout: 3000,
@@ -736,7 +796,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       .mockResolvedValueOnce({ ...THREAD, name: 'Market map' });
     const client = makeClient({ updateThread });
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
     const name = screen.getByRole('textbox', { name: 'Thread name' });
@@ -768,7 +828,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     const archiveThread = vi.fn().mockReturnValue(archiveResult.promise);
     const client = makeClient({ archiveThread });
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     await user.click(await screen.findByRole('button', { name: 'Archive thread' }));
     expect(archiveThread).toHaveBeenCalledWith({ workspaceId: 'ws1', threadId: 'th1' });
@@ -796,7 +856,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
     expect(interruptTurn).toHaveBeenCalledWith({
@@ -857,6 +917,11 @@ describe('thread lifecycle and attribution (S7)', () => {
           .mockImplementation((workspaceId: string) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
+        listThreads: vi
+          .fn()
+          .mockImplementation((workspaceId: string) =>
+            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
+          ),
         listThreadItems: vi.fn().mockImplementation((workspaceId: string) =>
           Promise.resolve({
             items: workspaceId === 'ws2' ? [] : ITEMS,
@@ -873,7 +938,7 @@ describe('thread lifecycle and attribution (S7)', () => {
         ),
       }
     );
-    const queryClient = renderApp('/chat/th1', client);
+    const queryClient = renderApp('/chat/ws1/th1', client);
 
     if (command === 'rename') {
       await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
@@ -897,7 +962,7 @@ describe('thread lifecycle and attribution (S7)', () => {
           : { workspaceId: 'ws1', threadId: 'th1', turnId: 't1' };
     await waitFor(() => expect(mutation).toHaveBeenCalledWith(expectedArgs));
 
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
     expect(
       await screen.findByRole('heading', { name: 'Workspace B teardown' })
     ).toBeInTheDocument();
@@ -1003,6 +1068,11 @@ describe('thread lifecycle and attribution (S7)', () => {
           .mockImplementation((workspaceId: string) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
+        listThreads: vi
+          .fn()
+          .mockImplementation((workspaceId: string) =>
+            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
+          ),
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         subscribeTurnEvents,
       },
@@ -1015,7 +1085,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     if (command === 'rename') {
       await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
@@ -1039,7 +1109,7 @@ describe('thread lifecycle and attribution (S7)', () => {
           : { workspaceId: 'ws1', threadId: 'th1', turnId: 't1' };
     await waitFor(() => expect(mutation).toHaveBeenCalledWith(workspaceAArgs));
 
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
     expect(
       await screen.findByRole('heading', { name: 'Workspace B teardown' })
     ).toBeInTheDocument();
@@ -1083,7 +1153,7 @@ describe('thread lifecycle and attribution (S7)', () => {
         expect(await screen.findByText('Interrupted')).toBeInTheDocument();
       }
     }
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' }));
+    await switchToThread(user, 'Second workspace', 'Market research', 'Competitive teardown');
     expect(
       await screen.findByRole('heading', { name: 'Competitive teardown' })
     ).toBeInTheDocument();
@@ -1112,14 +1182,9 @@ describe('thread lifecycle and attribution (S7)', () => {
     }
 
     if (workspaceBSettlement === 'after') {
-      act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+      await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-      if (command === 'rename') {
-        expect(await screen.findByRole('textbox', { name: 'Thread name' })).toHaveValue(
-          'Workspace B renamed'
-        );
-        expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
-      } else {
+      if (command !== 'rename') {
         expect(
           await screen.findByRole('button', {
             name: command === 'archive' ? 'Archive thread' : 'Stop turn',
@@ -1162,7 +1227,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       { interruptTurn, subscribeTurnEvents },
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
-    const queryClient = renderApp('/chat/th1', client);
+    const queryClient = renderApp('/chat/ws1/th1', client);
 
     await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't stop this turn.");
@@ -1206,15 +1271,16 @@ describe('thread lifecycle and attribution (S7)', () => {
         ),
     });
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
     const name = screen.getByRole('textbox', { name: 'Thread name' });
     await user.clear(name);
     await user.type(name, 'Workspace A draft');
 
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await user.click(await workspaceSelectTrigger('Market research'));
+    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
     expect(
-      await screen.findByRole('heading', { name: 'Workspace B teardown' })
+      await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
 
     const save = screen.queryByRole('button', { name: 'Save' });
@@ -1224,6 +1290,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       threadId: 'th1',
       name: 'Workspace A draft',
     });
+    expect(updateThread).not.toHaveBeenCalled();
   });
 
   it('keeps the active thread visible and retries the exact rejected archive command', async () => {
@@ -1234,7 +1301,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       .mockResolvedValueOnce({ ...THREAD, status: 'archived' });
     const client = makeClient({ archiveThread });
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await user.click(await screen.findByRole('button', { name: 'Archive thread' }));
 
     const alert = await screen.findByRole('alert');
@@ -1271,7 +1338,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
 
     const alert = await screen.findByRole('alert');
@@ -1302,7 +1369,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       { getSetupDiagnostics }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText(new RegExp(actorId))).toBeInTheDocument();
     expect(getSetupDiagnostics).not.toHaveBeenCalled();
@@ -1345,7 +1412,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       }),
     });
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText(/user_approver/)).toBeInTheDocument();
     expect(screen.getByText(/user_responder/)).toBeInTheDocument();
@@ -1380,7 +1447,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText(/automation_release/)).toBeInTheDocument();
     expect(getSetupDiagnostics).not.toHaveBeenCalled();
@@ -1391,7 +1458,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       listThreadItems: vi.fn().mockResolvedValue({ items: [ITEMS[1]], nextCursor: null }),
     });
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
     expect(screen.queryByText(/^by\s/)).not.toBeInTheDocument();
@@ -1427,7 +1494,7 @@ describe('live turn subscription (S6)', () => {
       { getThreadDashboard, startChatMode }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(1));
 
     if (command === 'send') {
@@ -1500,7 +1567,7 @@ describe('live turn subscription (S6)', () => {
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     await waitFor(() =>
       expect(subscribeTurnEvents).toHaveBeenCalledWith(
@@ -1540,7 +1607,7 @@ describe('live turn subscription (S6)', () => {
       },
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
-    const queryClient = renderApp('/chat/th1', client);
+    const queryClient = renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
@@ -1589,7 +1656,7 @@ describe('live turn subscription (S6)', () => {
     );
     const itemsKey = chatKeys.items('ws1', 'th1');
     const dashboardKey = chatKeys.dashboard('ws1', 'th1');
-    const queryClient = renderApp('/chat/th1', client, (cache) => {
+    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
       cache.setQueryDefaults(itemsKey, { staleTime: Number.POSITIVE_INFINITY });
       cache.setQueryData(itemsKey, ITEMS, { updatedAt: 1 });
     });
@@ -1650,7 +1717,7 @@ describe('live turn subscription (S6)', () => {
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
 
-    renderApp('/chat/th1', client, (queryClient) => {
+    renderApp('/chat/ws1/th1', client, (queryClient) => {
       queryClient.setQueryDefaults(chatKeys.items('ws1', 'th1'), { staleTime: 5_000 });
       queryClient.setQueryData(chatKeys.items('ws1', 'th1'), [ITEMS[0]]);
     });
@@ -1718,7 +1785,7 @@ describe('live turn subscription (S6)', () => {
         startChatMode,
       }
     );
-    const queryClient = renderApp('/chat/th1', client, (cache) => {
+    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
       cache.setQueryDefaults(chatKeys.items('ws1', 'th1'), { staleTime: 5_000 });
       cache.setQueryData(chatKeys.items('ws1', 'th1'), ITEMS);
     });
@@ -1802,7 +1869,7 @@ describe('live turn subscription (S6)', () => {
       { getThreadDashboard, startChatMode: vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE) }
     );
 
-    const queryClient = renderApp('/chat/th1', client);
+    const queryClient = renderApp('/chat/ws1/th1', client);
     await screen.findByText('Draft a competitive teardown.');
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start interleaved work');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -1881,7 +1948,7 @@ describe('live turn subscription (S6)', () => {
       { listThreadItems, subscribeTurnEvents },
       { getThreadDashboard: vi.fn().mockReturnValue(dashboard) }
     );
-    const queryClient = renderApp('/chat/th1', client, (cache) => {
+    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
       cache.setQueryData(chatKeys.items('ws1', 'th1'), [ITEMS[0]]);
     });
 
@@ -1948,7 +2015,7 @@ describe('live turn subscription (S6)', () => {
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
@@ -1992,7 +2059,7 @@ describe('live turn subscription (S6)', () => {
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
@@ -2036,7 +2103,7 @@ describe('live turn subscription (S6)', () => {
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }) }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText('Already authoritative')).toBeInTheDocument();
     releaseReplay();
@@ -2050,7 +2117,7 @@ describe('task thread (board 04)', () => {
     const client = makeClient({
       listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     });
-    renderApp('/tasks/th1', client);
+    renderApp('/tasks/ws1/th1', client);
     expect(await screen.findByText('Task')).toBeInTheDocument();
     expect(screen.getByText('Approve $5 spend')).toBeInTheDocument();
   });
@@ -2069,7 +2136,7 @@ describe('task thread (board 04)', () => {
       { quickChat, startChatMode, startTaskMode }
     );
 
-    renderApp('/tasks/th1', client);
+    renderApp('/tasks/ws1/th1', client);
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Ship the fix');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
@@ -2099,7 +2166,7 @@ describe('mode entry and feedback (S8)', () => {
       { quickChat, startChatMode, startTaskMode }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws_quick_chat/th1', client);
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Answer directly');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
@@ -2137,6 +2204,11 @@ describe('mode entry and feedback (S8)', () => {
           .mockImplementation((workspaceId: string) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
+        listThreads: vi
+          .fn()
+          .mockImplementation((workspaceId: string) =>
+            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
+          ),
         listThreadItems: vi.fn().mockImplementation((workspaceId: string) =>
           Promise.resolve({
             items: workspaceId === 'ws2' ? [workspaceBItem] : ITEMS,
@@ -2146,7 +2218,7 @@ describe('mode entry and feedback (S8)', () => {
       },
       { startChatMode }
     );
-    const queryClient = renderApp('/chat/th1', client);
+    const queryClient = renderApp('/chat/ws1/th1', client);
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
 
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Continue A');
@@ -2155,7 +2227,7 @@ describe('mode entry and feedback (S8)', () => {
       expect(startChatMode).toHaveBeenCalledWith('ws1', 'th1', { input: 'Continue A' })
     );
 
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
     expect(await screen.findByText('Workspace B stays authoritative.')).toBeInTheDocument();
     await act(async () => {
       started.resolve(CHAT_MODE_RESPONSE);
@@ -2186,7 +2258,7 @@ describe('mode entry and feedback (S8)', () => {
       { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_TURN] }) }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText('Draft a competitive teardown.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /good/i })).not.toBeInTheDocument();
@@ -2238,6 +2310,11 @@ describe('mode entry and feedback (S8)', () => {
           .mockImplementation((workspaceId: string) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
+        listThreads: vi
+          .fn()
+          .mockImplementation((workspaceId: string) =>
+            Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
+          ),
         listThreadItems: vi.fn().mockImplementation((workspaceId: string) =>
           Promise.resolve({
             items: workspaceId === 'ws2' ? [workspaceBAssistant] : [ITEMS[1]],
@@ -2254,7 +2331,7 @@ describe('mode entry and feedback (S8)', () => {
         submitTurnFeedback,
       }
     );
-    const queryClient = renderApp('/chat/th1', client, (cache) => {
+    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
       cache.setQueryData(chatKeys.feedback('ws1', 'th1', 't1'), priorFeedback);
     });
 
@@ -2263,7 +2340,7 @@ describe('mode entry and feedback (S8)', () => {
       expect(submitTurnFeedback).toHaveBeenCalledWith('t1', { rating: 'bad', note: null })
     );
 
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
+    await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
     expect(await screen.findByText('Workspace B answer.')).toBeInTheDocument();
     await act(async () => {
       if (settlement === 'success') submitted.resolve(settledFeedback);
@@ -2316,7 +2393,7 @@ describe('mode entry and feedback (S8)', () => {
       }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     await screen.findByText('Here is the completed pricing comparison.');
     const goodButtons = screen.getAllByRole('button', { name: /good/i });
     const badButtons = screen.getAllByRole('button', { name: /bad/i });
@@ -2381,7 +2458,7 @@ describe('mode entry and feedback (S8)', () => {
       }
     );
 
-    renderApp('/chat/th1', client);
+    renderApp('/chat/ws1/th1', client);
     const goodButton = await screen.findByRole('button', { name: /good/i });
     const badButton = screen.getByRole('button', { name: /bad/i });
     await user.click(goodButton);
@@ -2436,7 +2513,7 @@ describe('mode entry and feedback (S8)', () => {
         submitTurnFeedback,
       }
     );
-    const queryClient = renderApp('/chat/th1', client, (cache) => {
+    const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
       cache.setQueryData(chatKeys.feedback('ws1', 'th1', 't1'), priorFeedback);
     });
 

@@ -471,6 +471,7 @@ function makeClient(overrides: ClientOverrides = {}) {
       listWorkspaces: vi.fn().mockResolvedValue({
         items: overrides.coreWorkspaces ?? [{ id: 'ws1', name: 'Authorized Workspace' }],
       }),
+      listThreads: vi.fn().mockResolvedValue({ items: [] }),
       meta: forbidden.meta,
     },
     runtimeConfig: {
@@ -1973,7 +1974,7 @@ describe('selected-Workspace owner management', () => {
       ['ws1'],
       /current.*role.*viewer|viewer.*current.*role/i,
     ],
-    ['no selected Workspace', { items: [] }, [], /no.*workspace selected|select.*workspace/i],
+    ['no selected Workspace', { items: [] }, [], /No Workspace selected/],
   ] as const)('does not expose owner authority or issue owner reads for %s', async (_case, authorizedWorkspaces, workspaceIds, evidence) => {
     const coreWorkspaces = workspaceIds.map((id) => ({ id, name: 'Authorized Workspace' }));
     const { client, methods } = makeSharingClient({ authorizedWorkspaces, coreWorkspaces });
@@ -2333,9 +2334,9 @@ describe('selected-Workspace owner management', () => {
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
     expectNoRetainedInviteEmail(queryClient, guards);
 
-    const generalNavigation = screen.getByRole('button', { name: 'General' });
-    await user.click(generalNavigation);
-    await waitFor(() => expect(generalNavigation).toHaveAttribute('aria-current', 'page'));
+    const appearanceNavigation = screen.getByRole('button', { name: 'Appearance' });
+    await user.click(appearanceNavigation);
+    await waitFor(() => expect(appearanceNavigation).toHaveAttribute('aria-current', 'page'));
     await user.click(screen.getByRole('button', { name: 'Account' }));
 
     await screen.findByRole('heading', { name: 'Account' });

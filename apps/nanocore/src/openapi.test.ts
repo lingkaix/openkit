@@ -54,53 +54,6 @@ const CANONICAL_PATH_PARAMETER_REFS: Record<string, string> = {
   turnId: '#/components/schemas/TurnId',
   workspaceId: '#/components/schemas/WorkspaceId',
 };
-const DEPLOYMENT_ADMIN_ROUTES = new Set([
-  'GET /api/app/storage/layout-report',
-  'GET /api/app/diagnostics',
-  'GET /api/setup/diagnostics',
-  'GET /api/app/auth/tokens',
-  'POST /api/app/auth/tokens',
-  'POST /api/app/auth/tokens/{tokenId}/revoke',
-  'POST /api/app/auth/tokens/{tokenId}/rotate',
-  'POST /api/app/nanohost/enroll',
-  'GET /api/app/nanohost/runtime-target',
-  'GET /api/app/nanohost/tokens',
-  'POST /api/app/nanohost/tokens',
-  'POST /api/app/nanohost/tokens/{tokenId}/revoke',
-  'POST /api/app/nanohost/tokens/{tokenId}/rotate',
-  'POST /api/app/nanohost/tokens/{tokenId}/rotation/abort',
-  'POST /api/app/nanohost/decommission',
-  'POST /api/admin/config/reload',
-  'GET /api/admin/config/files',
-  'GET /api/admin/config/file',
-  'POST /api/admin/config/file',
-  'PUT /api/admin/config/file',
-  'GET /api/admin/config/schemas',
-  'POST /api/admin/config/validate',
-  'GET /api/app/provider-subscriptions',
-  'GET /api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
-  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
-  'PATCH /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
-  'DELETE /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
-  'GET /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/status',
-  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login',
-  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login/cancel',
-  'POST /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/logout',
-  'GET /api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/quota',
-  'GET /api/app/audit/events',
-  'GET /api/app/permission-decisions',
-  'POST /api/app/data-root/backups',
-  'POST /api/app/data-root/backups/{backupId}/verify',
-  'GET /api/app/vault/status',
-  'POST /api/app/vault/unlock',
-  'POST /api/app/vault/lock',
-  'POST /api/app/vault/bootstrap/codex-auth-json',
-  'PUT /api/app/providers/{providerId}/api-key',
-  'GET /api/app/vault/use-records',
-  'GET /api/app/workspaces/{workspaceId}/access-recovery',
-  'POST /api/app/workspaces/{workspaceId}/access-recovery',
-  'POST /api/app/users/{userId}/disable',
-]);
 const PRIVATE_NANOHOST_EFFECT_ROUTES = [
   'sandbox.create',
   'sandbox.delete',
@@ -119,6 +72,8 @@ const SESSION_COOKIE_ONLY_ROUTES = new Set([
   'POST /api/app/workspace-invitations/{invitationId}/accept',
   'POST /api/app/workspace-invitations/{invitationId}/decline',
   'POST /api/app/workspaces/{workspaceId}/leave',
+  'GET /api/app/auth/my-admin-tokens',
+  'PUT /api/app/auth/my-admin-tokens/default',
 ]);
 const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../apps/web/src/',
@@ -398,7 +353,7 @@ describe('app api openapi projection', () => {
     expect(document.paths['/api/app/storage/layout-report']?.get).toMatchObject({
       operationId: 'getStorageLayoutReport',
       tags: ['storage'],
-      security: [{ bearerAuth: [] }],
+      security: [{ bearerAuth: [] }, { sessionCookie: [] }],
       responses: {
         '200': {
           content: {
@@ -414,7 +369,7 @@ describe('app api openapi projection', () => {
     expect(document.paths['/api/app/diagnostics']?.get).toMatchObject({
       operationId: 'getAppDiagnostics',
       tags: ['diagnostics'],
-      security: [{ bearerAuth: [] }],
+      security: [{ bearerAuth: [] }, { sessionCookie: [] }],
       responses: {
         '200': {
           content: {
@@ -430,7 +385,7 @@ describe('app api openapi projection', () => {
     expect(document.paths['/api/setup/diagnostics']?.get).toMatchObject({
       operationId: 'getSetupDiagnostics',
       tags: ['diagnostics'],
-      security: [{ bearerAuth: [] }],
+      security: [{ bearerAuth: [] }, { sessionCookie: [] }],
       responses: {
         '200': {
           content: {
@@ -2968,9 +2923,9 @@ describe('app api openapi projection', () => {
       acceptWorkspaceInvitation: [{ sessionCookie: [] }],
       declineWorkspaceInvitation: [{ sessionCookie: [] }],
       leaveWorkspace: [{ sessionCookie: [] }],
-      getWorkspaceAccessRecoveryState: [{ bearerAuth: [] }],
-      recoverWorkspaceAccess: [{ bearerAuth: [] }],
-      disableUser: [{ bearerAuth: [] }],
+      getWorkspaceAccessRecoveryState: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      recoverWorkspaceAccess: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      disableUser: [{ bearerAuth: [] }, { sessionCookie: [] }],
       listAuthorizedWorkspaces: [{ bearerAuth: [] }, { sessionCookie: [] }],
     });
   });
@@ -3206,6 +3161,18 @@ describe('app api openapi projection', () => {
       policyOperation: 'api.call',
       scope: 'server',
     });
+    expect(PUBLIC_OPERATION_ACCESS.listMyAdminAccessTokens).toMatchObject({
+      authentication: 'canonical-user',
+      mutating: false,
+      policyOperation: 'api.call',
+      scope: 'user',
+    });
+    expect(PUBLIC_OPERATION_ACCESS.setMyAdminAccessTokenDefault).toMatchObject({
+      authentication: 'canonical-user',
+      mutating: true,
+      policyOperation: 'api.call',
+      scope: 'user',
+    });
 
     expect(PUBLIC_OPERATION_ACCESS.retrieveKnowledge?.mutating).toBe(true);
     expect(PUBLIC_OPERATION_ACCESS.prepareKnowledgeContext).toMatchObject({
@@ -3277,11 +3244,9 @@ describe('app api openapi projection', () => {
         const expected =
           route === 'POST /api/app/auth/bootstrap/consume'
             ? []
-            : DEPLOYMENT_ADMIN_ROUTES.has(route)
-              ? [{ bearerAuth: [] }]
-              : SESSION_COOKIE_ONLY_ROUTES.has(route)
-                ? [{ sessionCookie: [] }]
-                : [{ bearerAuth: [] }, { sessionCookie: [] }];
+            : SESSION_COOKIE_ONLY_ROUTES.has(route)
+              ? [{ sessionCookie: [] }]
+              : [{ bearerAuth: [] }, { sessionCookie: [] }];
         return JSON.stringify(operation.security) !== JSON.stringify(expected);
       })
       .map(({ route }) => route);
@@ -3430,6 +3395,8 @@ describe('app api openapi projection', () => {
       'createOpenKitAccessToken',
       'revokeOpenKitAccessToken',
       'rotateOpenKitAccessToken',
+      'listMyAdminAccessTokens',
+      'setMyAdminAccessTokenDefault',
       'enrollNanoHost',
       'getNanoHostRuntimeTargetStatus',
       'listNanoHostTransportTokens',

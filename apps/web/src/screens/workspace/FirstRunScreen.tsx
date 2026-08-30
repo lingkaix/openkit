@@ -113,7 +113,7 @@ export function FirstRunScreen() {
           help="A workspace holds the threads, files, and knowledge for one area of work."
           trailing={
             <Link
-              to="/workspaces/new"
+              to="/settings/workspaces/new"
               className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
             >
               Create workspace

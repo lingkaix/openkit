@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import { EmptyState, Page, PageHeader } from '../primitives';
 import { AccountBoundary, AccountScreen } from '../screens/account';
 import { ArtifactsScreen } from '../screens/artifacts';
@@ -11,15 +11,18 @@ import { MaterialScreen } from '../screens/material';
 import { RecoveryScreen } from '../screens/operations';
 import { PortabilityScreen } from '../screens/portability';
 import {
+  AccessTokensScreen,
   AiInterfaceScreen,
   ConfigurationScreen,
   DebugScreen,
   GeneralSettingsScreen,
+  MyAdminAccessScreen,
   UsageScreen,
   VaultScreen,
 } from '../screens/settings';
 import {
   AgentsScreen,
+  ArchivedThreadsScreen,
   FirstRunScreen,
   KnowledgeScreen,
   NewWorkspaceScreen,
@@ -57,6 +60,8 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   configuration: <ConfigurationScreen />,
   settings: <GeneralSettingsScreen />,
   'ai-interface': <AiInterfaceScreen />,
+  'my-admin-access': <MyAdminAccessScreen />,
+  'access-tokens': <AccessTokensScreen />,
   chat: <ChatStarter />,
   'chat-thread': <ThreadScreen mode="chat" />,
   'task-thread': <ThreadScreen mode="task" />,
@@ -69,6 +74,7 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   artifacts: <ArtifactsScreen />,
   'first-run': <FirstRunScreen />,
   'new-workspace': <NewWorkspaceScreen />,
+  'archived-threads': <ArchivedThreadsScreen />,
   automations: <AutomationsScreen />,
   repositories: <RepositoriesScreen />,
   'workspace-changes': <WorkspaceChangesScreen />,
@@ -104,6 +110,7 @@ export function AppRoutes() {
           {SURFACES.filter(isSurfaceLive).map((surface) => (
             <Route key={surface.id} path={surface.path} element={elementFor(surface)} />
           ))}
+          <Route path="/settings" element={<Navigate to="/settings/account" replace />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

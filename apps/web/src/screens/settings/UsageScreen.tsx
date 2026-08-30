@@ -199,7 +199,7 @@ export function UsageScreen() {
 function UsageHeader({ actions }: { actions?: React.ReactNode }) {
   return (
     <PageHeader
-      eyebrow="Settings"
+      eyebrow="Workspace"
       title="Usage & audit"
       subtitle="Read-only capability usage, audit events, and permission decisions for the selected Workspace."
       actions={actions}

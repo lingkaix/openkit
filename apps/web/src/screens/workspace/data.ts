@@ -16,7 +16,7 @@ import { chatThreadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/da
  */
 export const workspaceKeys = {
   attention: (workspaceId: string) => ['attention', workspaceId] as const,
-  agents: ['agents'] as const,
+  agents: (workspaceId: string) => ['agents', workspaceId] as const,
   knowledge: (workspaceId: string) => ['knowledge', workspaceId] as const,
   knowledgeSources: (workspaceId: string) => ['knowledge-sources', workspaceId] as const,
   knowledgeObservations: (workspaceId: string) => ['knowledge-observations', workspaceId] as const,
@@ -34,8 +34,10 @@ export { chatThreadPath, useCurrentWorkspaceId, useWorkspaces };
 export type AttentionRow = Awaited<
   ReturnType<CoreClient['actionCenter']['listHumanAttention']>
 >['items'][number];
-/** Agent catalog entry from `agents.list`. */
-export type AgentEntry = Awaited<ReturnType<CoreClient['agents']['list']>>['items'][number];
+/** Agent catalog entry from selected-Workspace resources. */
+export type AgentEntry = Awaited<
+  ReturnType<CoreClient['core']['getWorkspaceResources']>
+>['agents'][number];
 /** Knowledge entry from `core.listKnowledge`. */
 export type KnowledgeItem = KnowledgeEntry;
 /** Bounded Knowledge Store projection returned by the three live list reads. */
@@ -175,28 +177,30 @@ export function useWorkspaceDashboard(workspaceId: string | null) {
   });
 }
 
-/** List product-visible agents. */
-export function useAgents() {
+/** List product-visible agents for one selected Workspace. */
+export function useAgents(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
-    queryKey: workspaceKeys.agents,
-    queryFn: async () => (await client.agents.list()).items,
+    queryKey: workspaceKeys.agents(workspaceId ?? ''),
+    queryFn: async () => (await client.core.getWorkspaceResources(workspaceId as string)).agents,
+    enabled: Boolean(workspaceId),
   });
 }
 
 /**
  * Read one agent catalog entry once View details is open.
  *
+ * @param workspaceId Selected Workspace that owns the agent row.
  * @param agentId Exact catalog id from the current list row.
  * @param enabled Whether the details disclosure is open.
  * @returns Lazy TanStack query for `client.agents.get`.
  */
-export function useAgent(agentId: string, enabled: boolean) {
+export function useAgent(workspaceId: string | null, agentId: string, enabled: boolean) {
   const client = useCoreClient();
   return useQuery({
-    queryKey: [...workspaceKeys.agents, agentId],
+    queryKey: [...workspaceKeys.agents(workspaceId ?? ''), agentId],
     queryFn: () => client.agents.get(agentId),
-    enabled,
+    enabled: Boolean(workspaceId) && enabled,
     retry: false,
   });
 }
@@ -208,12 +212,15 @@ export function useRefreshAgentHealth() {
   return useMutation({
     mutationFn: (workspaceId: string) => client.agents.refreshHealth(workspaceId),
     retry: false,
-    onSuccess: async (response) => {
-      await queryClient.invalidateQueries({ queryKey: workspaceKeys.agents, exact: true });
+    onSuccess: async (response, workspaceId) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.agents(workspaceId),
+        exact: true,
+      });
       await Promise.all(
         response.items.map((item) =>
           queryClient.invalidateQueries({
-            queryKey: [...workspaceKeys.agents, item.agentId],
+            queryKey: [...workspaceKeys.agents(workspaceId), item.agentId],
             exact: true,
           })
         )

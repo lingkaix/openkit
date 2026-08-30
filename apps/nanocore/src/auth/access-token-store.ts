@@ -12,6 +12,9 @@ import {
 } from './access-token.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
+/** Stable server_settings key prefix for one user's default server-admin token id. */
+const DEFAULT_SERVER_ADMIN_TOKEN_SETTING_KEY_PREFIX = 'auth.default_server_admin_token.';
+
 /** Input for creating one durable OpenKit access-token record. */
 export interface CreateOpenKitAccessTokenRecordInput {
   /** User id that owns the token. */
@@ -325,6 +328,169 @@ function getOpenKitAccessTokenRecord(
     .get(tokenId) as OpenKitAccessTokenRow | undefined;
 
   return row ? readOpenKitAccessTokenRecord(row) : null;
+}
+
+/**
+ * Builds the server_settings key that stores one user's default server-admin token id.
+ *
+ * @param ownerUserId Canonical user id.
+ * @returns Stable per-user setting key.
+ */
+function defaultServerAdminTokenSettingKey(ownerUserId: string): string {
+  return `${DEFAULT_SERVER_ADMIN_TOKEN_SETTING_KEY_PREFIX}${ownerUserId}`;
+}
+
+/**
+ * Resolves the non-secret server-admin token id that currently grants a session derived deployment-admin authority.
+ *
+ * The stored default is used only when it is owned, server-admin, and currently usable. Otherwise the first usable owned server-admin token in issued-at then token-id descending order is selected, so a sole token is automatically effective.
+ *
+ * @param coreDb Open Core database handles.
+ * @param ownerUserId Canonical user id.
+ * @param now Current time.
+ * @returns Selected token id, or null when the user is inactive or has no usable server-admin token.
+ */
+export function resolveSessionDeploymentAdminTokenId(
+  coreDb: CoreDb,
+  ownerUserId: string,
+  now = new Date()
+): string | null {
+  if (!isCanonicalUserActive(coreDb, ownerUserId)) {
+    return null;
+  }
+
+  const usable = listOwnedUsableServerAdminTokens(coreDb, ownerUserId, now);
+  if (usable.length === 0) {
+    return null;
+  }
+
+  const stored = readDefaultServerAdminTokenId(coreDb, ownerUserId);
+  if (stored && usable.some((token) => token.tokenId === stored)) {
+    return stored;
+  }
+
+  return usable[0]?.tokenId ?? null;
+}
+
+/**
+ * Persists one owned usable server-admin token as the user's explicit default.
+ *
+ * @param coreDb Open Core database handles.
+ * @param ownerUserId Canonical user id.
+ * @param tokenId Candidate default token id.
+ * @param now Current time.
+ * @returns True when the default was stored.
+ */
+export function setDefaultServerAdminTokenId(
+  coreDb: CoreDb,
+  ownerUserId: string,
+  tokenId: string,
+  now = new Date()
+): boolean {
+  const token = getOpenKitAccessTokenRecord(coreDb, tokenId);
+  if (
+    !token ||
+    token.ownerUserId !== ownerUserId ||
+    token.scope !== 'server-admin' ||
+    !evaluateOpenKitAccessTokenUsability(token, now).usable
+  ) {
+    return false;
+  }
+
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO server_settings (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    )
+    .run(
+      defaultServerAdminTokenSettingKey(ownerUserId),
+      JSON.stringify({ tokenId }),
+      now.toISOString()
+    );
+  return true;
+}
+
+/**
+ * Lists the signed-in user's redacted server-admin tokens plus the effective default token id.
+ *
+ * @param coreDb Open Core database handles.
+ * @param ownerUserId Canonical user id.
+ * @param now Current time.
+ * @returns Redacted owned server-admin tokens and the resolved default.
+ */
+export function listOwnedServerAdminAccessTokens(
+  coreDb: CoreDb,
+  ownerUserId: string,
+  now = new Date()
+): { defaultTokenId: string | null; items: OpenKitAccessTokenRecord[] } {
+  return {
+    defaultTokenId: resolveSessionDeploymentAdminTokenId(coreDb, ownerUserId, now),
+    items: listOwnedServerAdminTokenRecords(coreDb, ownerUserId),
+  };
+}
+
+/**
+ * Lists currently usable server-admin tokens owned by one user, newest first.
+ *
+ * @param coreDb Open Core database handles.
+ * @param ownerUserId Canonical user id.
+ * @param now Current time.
+ * @returns Usable owned server-admin records in deterministic order.
+ */
+function listOwnedUsableServerAdminTokens(
+  coreDb: CoreDb,
+  ownerUserId: string,
+  now: Date
+): OpenKitAccessTokenRecord[] {
+  return listOwnedServerAdminTokenRecords(coreDb, ownerUserId).filter(
+    (token) => evaluateOpenKitAccessTokenUsability(token, now).usable
+  );
+}
+
+/**
+ * Lists server-admin tokens owned by one user, newest first.
+ *
+ * @param coreDb Open Core database handles.
+ * @param ownerUserId Canonical user id.
+ * @returns Owned server-admin records in issued-at then token-id descending order.
+ */
+function listOwnedServerAdminTokenRecords(
+  coreDb: CoreDb,
+  ownerUserId: string
+): OpenKitAccessTokenRecord[] {
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT * FROM openkit_access_tokens
+       WHERE owner_user_id = ? AND scope = 'server-admin'
+       ORDER BY issued_at DESC, token_id DESC`
+    )
+    .all(ownerUserId) as OpenKitAccessTokenRow[];
+
+  return rows.map(readOpenKitAccessTokenRecord);
+}
+
+/**
+ * Reads the stored per-user default server-admin token id when present.
+ *
+ * @param coreDb Open Core database handles.
+ * @param ownerUserId Canonical user id.
+ * @returns Stored token id, or null when missing or malformed.
+ */
+function readDefaultServerAdminTokenId(coreDb: CoreDb, ownerUserId: string): string | null {
+  const row = coreDb.sqlite
+    .prepare('SELECT value FROM server_settings WHERE key = ?')
+    .get(defaultServerAdminTokenSettingKey(ownerUserId)) as { value: string } | undefined;
+  if (!row) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(row.value) as { tokenId?: unknown };
+    return typeof parsed.tokenId === 'string' && parsed.tokenId.length > 0 ? parsed.tokenId : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

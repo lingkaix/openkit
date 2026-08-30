@@ -71,7 +71,7 @@ export function VaultScreen() {
     return (
       <Page>
         <PageHeader
-          eyebrow="Settings"
+          eyebrow="Workspace"
           title="Vault"
           subtitle="Credential references, grants, and use evidence — never secret values."
         />
@@ -87,7 +87,7 @@ export function VaultScreen() {
     return (
       <Page>
         <PageHeader
-          eyebrow="Settings"
+          eyebrow="Workspace"
           title="Vault"
           subtitle="Credential references, grants, and use evidence — never secret values."
         />
@@ -103,7 +103,7 @@ export function VaultScreen() {
   return (
     <Page>
       <PageHeader
-        eyebrow="Settings"
+        eyebrow="Workspace"
         title="Vault"
         subtitle="Credential references, grants, and use evidence — never secret values."
         actions={disconnected ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}

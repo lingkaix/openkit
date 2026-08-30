@@ -117,9 +117,11 @@ test('one catalog covers the checked App API and public Core projection', async 
     'app-api:getThreadDashboard',
     'app-api:getWorkspaceDashboard',
     'app-api:leaveWorkspace',
+    'app-api:listMyAdminAccessTokens',
     'app-api:listMyWorkspaceInvitations',
     'app-api:rotateOpenKitAccessToken',
     'app-api:searchApp',
+    'app-api:setMyAdminAccessTokenDefault',
     'core-projection:listWorkspaces',
     'core-projection:subscribeTurnEvents',
   ]);

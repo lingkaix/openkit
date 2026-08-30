@@ -348,6 +348,8 @@ The effective authority of a Workspace token is the intersection of:
 
 `server-admin` is deployment administration authority. It may manage users, tokens, configuration, migrations, and explicit Workspace recovery operations, but it does not silently bypass Workspace membership for ordinary content reads or writes. An administrator may use an audited recovery operation to transfer ownership or add themselves as a member, after which normal Workspace authorization applies.
 
+Token administration may issue a Token to another exact active canonical `ownerUserId`. Any Workspace-bound Token issuance validates the target owner's active Workspace membership, while a session whose User owns usable `server-admin` Token authority remains an ordinary session for Workspace authorization and receives no implicit membership or content access.
+
 A request presented with a `server-admin` credential is rejected for ordinary Workspace operations even when the token owner also has a Workspace membership. The user must present a normal session or a Workspace-bound token so the credential's authority is unambiguous.
 
 An optional break-glass content-access design is deferred. If added later, it requires an explicit reason, bounded authority, visible audit, and a separate accepted security design.

@@ -849,7 +849,7 @@ function requireActor(context: Context<{ Variables: AuthVariables }>): Actor {
   return actor;
 }
 
-/** Requires explicit local or server-admin deployment authority. */
+/** Requires the local actor, a presented server-admin bearer, or a derived-admin session. */
 function requireDeploymentAdministrator(context: Context<{ Variables: AuthVariables }>): Actor {
   const actor = requireActor(context);
   if (!isDeploymentAdminActor(actor)) {

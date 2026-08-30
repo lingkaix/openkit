@@ -1,6 +1,5 @@
 import { Outlet } from 'react-router-dom';
 import { ToastProvider } from '../primitives';
-import { AppSearch } from '../screens/operations';
 import { DisconnectedBanner } from './DisconnectedBanner';
 import { Sidebar } from './Sidebar';
 import { THEME_CLASS, useThemeStore } from './theme-store';
@@ -16,7 +15,7 @@ import { THEME_CLASS, useThemeStore } from './theme-store';
  * at once (§4.6). The shell holds its structure down to the 800×600 workbench
  * floor (§3.4, §12) with no horizontal body overflow — wide content scrolls
  * inside its own region. The global disconnected banner sits above the work area
- * (§9.12).
+ * (§9.12). Search lives on the sidebar brand row, not as a pinned main-view strip.
  */
 export function AppShell() {
   const theme = useThemeStore((s) => s.theme);
@@ -27,7 +26,6 @@ export function AppShell() {
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <DisconnectedBanner />
-        <AppSearch />
         <main aria-label="Workspace" className="min-h-0 flex-1 overflow-y-auto">
           <Outlet />
         </main>

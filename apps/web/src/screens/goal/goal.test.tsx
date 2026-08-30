@@ -341,6 +341,7 @@ function makeClient(
       listWorkspaces: vi
         .fn()
         .mockResolvedValue({ items: [{ id: 'ws1', name: 'Market research' }] }),
+      listThreads: vi.fn().mockResolvedValue({ items: [] }),
       listThreadItems: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       getArtifact: vi.fn().mockResolvedValue(ARTIFACT),
       listArtifacts: vi.fn().mockResolvedValue({ items: [ARTIFACT] }),

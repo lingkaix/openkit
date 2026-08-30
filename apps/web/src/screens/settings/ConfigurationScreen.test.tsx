@@ -71,16 +71,16 @@ function makeClient(listFiles: CoreClient['runtimeConfig']['listFiles']): CoreCl
   } as unknown as CoreClient;
 }
 
-function renderScreen(client: CoreClient, createAdminClient = vi.fn()) {
+function renderScreen(client: CoreClient) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <ConfigurationScreen createAdminClient={createAdminClient} />
+        <ConfigurationScreen />
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  return { ...rendered, createAdminClient, queryClient };
+  return { ...rendered, queryClient };
 }
 
 beforeEach(() => {
@@ -127,34 +127,20 @@ describe('Configuration settings', () => {
     expect(await screen.findByText('Configuration applied')).toBeInTheDocument();
   });
 
-  it('accepts a server-admin token only after the browser session is denied and does not persist it', async () => {
+  it('shows access denied with retry and never asks for a server-admin token', async () => {
     const user = userEvent.setup();
-    const sessionClient = makeClient(
-      vi.fn().mockRejectedValue(
-        new ApiCallError(403, 'Server-admin authority is required.', {
-          code: 'runtime_config_admin_forbidden',
-        })
-      )
+    const listFiles = vi.fn().mockRejectedValue(
+      new ApiCallError(403, 'Server-admin authority is required.', {
+        code: 'runtime_config_admin_forbidden',
+      })
     );
-    const adminClient = makeClient(vi.fn().mockResolvedValue(FILES));
-    const createAdminClient = vi.fn(() => adminClient);
-    const { queryClient, unmount } = renderScreen(sessionClient, createAdminClient);
+    const client = makeClient(listFiles);
+    renderScreen(client);
 
-    const tokenInput = await screen.findByLabelText('Server admin token');
-    await user.type(tokenInput, 'okt_browser_admin_test');
-    await user.click(screen.getByRole('button', { name: 'Open configuration' }));
-
-    expect(await screen.findByRole('tree', { name: 'Configuration files' })).toBeInTheDocument();
-    expect(createAdminClient).toHaveBeenCalledWith('okt_browser_admin_test');
-    expect(screen.queryByDisplayValue('okt_browser_admin_test')).not.toBeInTheDocument();
-    expect(JSON.stringify(localStorage)).not.toContain('okt_browser_admin_test');
-
-    unmount();
-    await waitFor(() =>
-      expect(
-        queryClient.getQueryCache().findAll({ queryKey: ['settings', 'configuration'] })
-      ).toHaveLength(0)
-    );
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2));
   });
 
   it('keeps a conflicting draft until the user explicitly reloads the file', async () => {

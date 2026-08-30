@@ -209,6 +209,18 @@ registerOperations(catalog, ['listMyWorkspaceInvitations'], {
   policyOperation: 'invitation.respond',
   scope: 'user',
 });
+registerOperations(catalog, ['listMyAdminAccessTokens'], {
+  authentication: 'canonical-user',
+  mutating: false,
+  policyOperation: 'api.call',
+  scope: 'user',
+});
+registerOperations(catalog, ['setMyAdminAccessTokenDefault'], {
+  authentication: 'canonical-user',
+  mutating: true,
+  policyOperation: 'api.call',
+  scope: 'user',
+});
 registerOperations(catalog, ['acceptWorkspaceInvitation', 'declineWorkspaceInvitation'], {
   authentication: 'canonical-user',
   mutating: true,

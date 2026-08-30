@@ -774,7 +774,10 @@ describe('Artifacts', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
     expect(introduceWorkspaceArtifact).not.toHaveBeenCalled();
-    expect(vi.mocked(client.core.listThreads).mock.calls).toEqual([[WORKSPACE.id]]);
+    expect(vi.mocked(client.core.listThreads)).toHaveBeenCalledWith(WORKSPACE.id);
+    expect(
+      vi.mocked(client.core.listThreads).mock.calls.every((call) => call[0] === WORKSPACE.id)
+    ).toBe(true);
 
     await selectListedOption(user, 'Thread', THREAD_NAME);
     await user.click(screen.getByRole('button', { name: /introduce into thread/i }));
@@ -869,15 +872,20 @@ describe('Artifacts', () => {
     await openArtifact(user, IMPORTED_ARTIFACT.title);
     expect(await screen.findByText(/no threads/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
-    expect(listThreads.mock.calls).toEqual([[WORKSPACE.id]]);
+    expect(listThreads).toHaveBeenCalledWith(WORKSPACE.id);
+    expect(listThreads.mock.calls.every((call) => call[0] === WORKSPACE.id)).toBe(true);
   });
 
   it('recovers a Thread-list failure without leaking private text', async () => {
     const user = userEvent.setup();
+    let failThreads = true;
     const listThreads = vi
       .fn()
-      .mockRejectedValueOnce(new Error('thread-list-private failure'))
-      .mockResolvedValue(ListThreadsResponseSchema.parse({ items: [THREAD] }));
+      .mockImplementation(() =>
+        failThreads
+          ? Promise.reject(new Error('thread-list-private failure'))
+          : Promise.resolve(ListThreadsResponseSchema.parse({ items: [THREAD] }))
+      );
     renderApp(
       '/artifacts',
       makeClient({
@@ -897,10 +905,11 @@ describe('Artifacts', () => {
     expect(alert).not.toHaveTextContent('thread-list-private failure');
     expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeDisabled();
 
+    failThreads = false;
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await selectListedOption(user, 'Thread', THREAD_NAME);
     expect(screen.getByRole('button', { name: /introduce into thread/i })).toBeEnabled();
-    expect(listThreads.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]]);
+    expect(listThreads).toHaveBeenCalledWith(WORKSPACE.id);
   });
 
   it.each([
@@ -949,7 +958,13 @@ describe('Artifacts', () => {
       expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(IMPORT_TITLE);
       expect(screen.getByRole('textbox', { name: 'Content' })).toHaveValue(IMPORT_CONTENT);
     }
-    const alert = await screen.findByRole('alert');
+    const alert = await waitFor(() => {
+      const match = screen
+        .getAllByRole('alert')
+        .find((node) => message.test(node.textContent ?? ''));
+      expect(match).toBeTruthy();
+      return match as HTMLElement;
+    });
     expect(alert).toHaveTextContent(message);
     expect(alert).not.toHaveTextContent(/private failure/i);
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
@@ -963,9 +978,15 @@ describe('Artifacts', () => {
     expect(retried).toEqual(first);
 
     await disconnectWrites(queryClient, meta);
-    await waitFor(() =>
-      expect(within(alert).getByRole('button', { name: 'Try again' })).toBeDisabled()
-    );
+    await waitFor(() => {
+      const current = screen
+        .getAllByRole('alert')
+        .find((node) => message.test(node.textContent ?? ''));
+      expect(current).toBeTruthy();
+      expect(
+        within(current as HTMLElement).getByRole('button', { name: 'Try again' })
+      ).toBeDisabled();
+    });
     expect(mutation).toHaveBeenCalledTimes(2);
   });
 

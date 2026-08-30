@@ -358,7 +358,7 @@ function ImportReviewSummary({ review }: { review: PortabilityImportReview }) {
 function PortabilityHeader({ stale = false }: { stale?: boolean }) {
   return (
     <PageHeader
-      eyebrow="Workspace"
+      eyebrow="User"
       title="Portability"
       subtitle="Export this Workspace, review an import before applying it, and rebind imported Vault references."
       actions={stale ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}

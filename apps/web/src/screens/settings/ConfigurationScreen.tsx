@@ -1,7 +1,7 @@
-import { ApiCallError, type CoreClient, createCoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createScanner } from 'jsonc-parser';
-import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -13,14 +13,12 @@ import {
   PageHeader,
   Skeleton,
   StatusChip,
-  TextField,
 } from '../../primitives';
 
 type RuntimeConfigFileList = Awaited<ReturnType<CoreClient['runtimeConfig']['listFiles']>>;
 type RuntimeConfigFileSummary = RuntimeConfigFileList['files'][number];
 type RuntimeConfigValidation = Awaited<ReturnType<CoreClient['runtimeConfig']['validate']>>;
 type RuntimeConfigReload = Awaited<ReturnType<CoreClient['runtimeConfig']['reload']>>;
-type AdminClientFactory = (token: string) => CoreClient;
 
 interface ConfigTreeNode {
   name: string;
@@ -34,36 +32,20 @@ interface MutableConfigTreeNode {
   file: RuntimeConfigFileSummary | null;
 }
 
-/** Creates a same-origin Core Client whose bearer credential stays only in browser memory. */
-function createDeploymentAdminClient(token: string): CoreClient {
-  return createCoreClient({
-    baseUrl: import.meta.env.VITE_CORE_BASE_URL ?? '',
-    headers: { authorization: `Bearer ${token}` },
-  });
-}
-
 /** Deployment-admin source editor over the existing unified runtime-config API. */
-export function ConfigurationScreen({
-  createAdminClient = createDeploymentAdminClient,
-}: {
-  createAdminClient?: AdminClientFactory;
-}) {
-  const sessionClient = useCoreClient();
+export function ConfigurationScreen() {
+  const client = useCoreClient();
   const queryClient = useQueryClient();
-  const [adminClient, setAdminClient] = useState<CoreClient | null>(null);
-  const [clientGeneration, setClientGeneration] = useState(0);
-  const [token, setToken] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [savedContent, setSavedContent] = useState('');
   const [revision, setRevision] = useState<string | null>(null);
   const [validation, setValidation] = useState<RuntimeConfigValidation | null>(null);
   const [reload, setReload] = useState<RuntimeConfigReload | null>(null);
-  const activeClient = adminClient ?? sessionClient;
 
   const files = useQuery({
-    queryKey: ['settings', 'configuration', 'files', clientGeneration],
-    queryFn: () => activeClient.runtimeConfig.listFiles(),
+    queryKey: ['settings', 'configuration', 'files'],
+    queryFn: () => client.runtimeConfig.listFiles(),
     gcTime: 0,
     retry: false,
   });
@@ -77,8 +59,8 @@ export function ConfigurationScreen({
 
   const selectedFile = files.data?.files.find((file) => file.id === selectedId) ?? null;
   const file = useQuery({
-    queryKey: ['settings', 'configuration', 'file', clientGeneration, selectedId],
-    queryFn: () => activeClient.runtimeConfig.getFile(selectedId as string),
+    queryKey: ['settings', 'configuration', 'file', selectedId],
+    queryFn: () => client.runtimeConfig.getFile(selectedId as string),
     enabled: Boolean(selectedId && files.isSuccess),
     gcTime: 0,
     retry: false,
@@ -96,7 +78,7 @@ export function ConfigurationScreen({
   const dirty = draft !== savedContent;
   const validateDraft = useMutation({
     mutationFn: () =>
-      activeClient.runtimeConfig.validate({
+      client.runtimeConfig.validate({
         files: [{ id: selectedId as string, content: draft }],
         mode: 'safe',
       }),
@@ -105,12 +87,12 @@ export function ConfigurationScreen({
   const saveFile = useMutation({
     mutationFn: async () => {
       const content = draft;
-      const checked = await activeClient.runtimeConfig.validate({
+      const checked = await client.runtimeConfig.validate({
         files: [{ id: selectedId as string, content }],
         mode: 'safe',
       });
       if (!checked.valid) return { checked, content, written: null };
-      const written = await activeClient.runtimeConfig.updateFile({
+      const written = await client.runtimeConfig.updateFile({
         id: selectedId as string,
         kind: selectedFile?.kind as RuntimeConfigFileSummary['kind'],
         content,
@@ -123,38 +105,20 @@ export function ConfigurationScreen({
       if (!result.written) return;
       setSavedContent(result.content);
       setRevision(result.written.file.revision);
-      queryClient.setQueryData(
-        ['settings', 'configuration', 'file', clientGeneration, selectedId],
-        { file: result.written.file, content: result.content }
-      );
+      queryClient.setQueryData(['settings', 'configuration', 'file', selectedId], {
+        file: result.written.file,
+        content: result.content,
+      });
       void queryClient.invalidateQueries({
-        queryKey: ['settings', 'configuration', 'files', clientGeneration],
+        queryKey: ['settings', 'configuration', 'files'],
       });
     },
   });
   const applyConfiguration = useMutation({
-    mutationFn: () => activeClient.runtimeConfig.reload({ dryRun: false, mode: 'safe' }),
+    mutationFn: () => client.runtimeConfig.reload({ dryRun: false, mode: 'safe' }),
     onSuccess: setReload,
   });
   const tree = useMemo(() => buildConfigTree(files.data?.files ?? []), [files.data?.files]);
-
-  function unlock(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const value = token.trim();
-    if (!value) return;
-    setAdminClient(createAdminClient(value));
-    setToken('');
-    setSelectedId(null);
-    setClientGeneration((current) => current + 1);
-  }
-
-  function forgetAdminToken() {
-    if (dirty && !window.confirm('Discard the unsaved configuration draft?')) return;
-    setAdminClient(null);
-    setSelectedId(null);
-    setClientGeneration((current) => current + 1);
-    queryClient.removeQueries({ queryKey: ['settings', 'configuration'] });
-  }
 
   function selectFile(id: string) {
     if (id === selectedId) return;
@@ -175,19 +139,21 @@ export function ConfigurationScreen({
         eyebrow="Deployment administration"
         title="Configuration"
         subtitle="Inspect and edit the JSONC documents that currently configure this OpenKit deployment."
-        actions={
-          adminClient && files.isSuccess ? (
-            <Button variant="quiet" size="sm" onPress={forgetAdminToken}>
-              Forget admin token
-            </Button>
-          ) : null
-        }
       />
 
       {files.isLoading ? (
         <Skeleton lines={6} />
       ) : files.isError && adminDenied ? (
-        <AdminCredentialGate token={token} onTokenChange={setToken} onSubmit={unlock} />
+        <EmptyState
+          icon="key"
+          title="Access denied"
+          hint="Deployment configuration requires derived server-admin authority on the signed-in session."
+          action={
+            <Button variant="outline" onPress={() => void files.refetch()}>
+              Retry
+            </Button>
+          }
+        />
       ) : files.isError ? (
         <ErrorBanner
           message="Couldn't load deployment configuration."
@@ -309,43 +275,6 @@ export function ConfigurationScreen({
         runtime owner.
       </p>
     </Page>
-  );
-}
-
-/** Requests an explicit server-admin bearer credential without persisting it. */
-function AdminCredentialGate({
-  token,
-  onTokenChange,
-  onSubmit,
-}: {
-  token: string;
-  onTokenChange: (value: string) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-}) {
-  return (
-    <Card className="mx-auto w-full max-w-lg">
-      <form className="flex flex-col gap-4" onSubmit={onSubmit}>
-        <div>
-          <h2 className="text-sm font-bold text-fg-strong">Server-admin access required</h2>
-          <p className="mt-1 text-sm text-fg-muted">
-            Configuration files are deployment-wide. The token is used for this open page only and
-            is never written to browser storage.
-          </p>
-        </div>
-        <TextField
-          label="Server admin token"
-          type="password"
-          value={token}
-          onChange={onTokenChange}
-          autoComplete="off"
-        />
-        <div className="flex justify-end">
-          <Button type="submit" isDisabled={!token.trim()}>
-            Open configuration
-          </Button>
-        </div>
-      </form>
-    </Card>
   );
 }
 

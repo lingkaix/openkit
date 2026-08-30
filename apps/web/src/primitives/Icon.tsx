@@ -1,12 +1,14 @@
 import type { ComponentType, SVGProps } from 'react';
 import RiAddLine from '~icons/ri/add-line';
 import RiAlertLine from '~icons/ri/alert-line';
+import RiArchiveLine from '~icons/ri/archive-line';
 import RiArrowDownSLine from '~icons/ri/arrow-down-s-line';
 import RiArrowRightSLine from '~icons/ri/arrow-right-s-line';
 import RiBook2Line from '~icons/ri/book-2-line';
 import RiChat3Line from '~icons/ri/chat-3-line';
 import RiCheckLine from '~icons/ri/check-line';
 import RiCloseLine from '~icons/ri/close-line';
+import RiEditLine from '~icons/ri/edit-line';
 import RiErrorWarningLine from '~icons/ri/error-warning-line';
 import RiEyeLine from '~icons/ri/eye-line';
 import RiFile3Line from '~icons/ri/file-3-line';
@@ -40,6 +42,7 @@ import RiWifiOffLine from '~icons/ri/wifi-off-line';
 export type IconName =
   | 'add'
   | 'alert'
+  | 'archive'
   | 'book'
   | 'chat'
   | 'check'
@@ -48,6 +51,7 @@ export type IconName =
   | 'close'
   | 'connect'
   | 'disconnected'
+  | 'edit'
   | 'error'
   | 'file'
   | 'folder'
@@ -70,6 +74,7 @@ export type IconName =
 const REGISTRY: Record<IconName, ComponentType<SVGProps<SVGSVGElement>>> = {
   add: RiAddLine,
   alert: RiAlertLine,
+  archive: RiArchiveLine,
   book: RiBook2Line,
   chat: RiChat3Line,
   check: RiCheckLine,
@@ -78,6 +83,7 @@ const REGISTRY: Record<IconName, ComponentType<SVGProps<SVGSVGElement>>> = {
   close: RiCloseLine,
   connect: RiPlugLine,
   disconnected: RiWifiOffLine,
+  edit: RiEditLine,
   error: RiErrorWarningLine,
   file: RiFile3Line,
   folder: RiFolder3Line,

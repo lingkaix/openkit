@@ -113,9 +113,9 @@ export function GeneralSettingsScreen() {
   return (
     <Page>
       <PageHeader
-        eyebrow="Settings"
+        eyebrow="Workspace"
         title="General"
-        subtitle="Workspace defaults, appearance, and knowledge."
+        subtitle="Workspace identity, execution defaults, and knowledge."
         actions={
           disconnected ? <StatusChip tone="notice">Save disabled — disconnected</StatusChip> : null
         }

@@ -7,7 +7,6 @@ import { CoreClientProvider } from '../../app/core-client';
 import { AiInterfaceScreen } from './AiInterfaceScreen';
 
 const TIMESTAMP = '2026-08-30T00:00:00.000Z';
-const ADMIN_TOKEN = 'okt_browser_admin_test';
 const API_KEY = 'sk-live-provider-key-never-store';
 const SERVER_JSONC = `{
   "schemaVersion": 1,
@@ -247,16 +246,16 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
-function renderScreen(client: CoreClient, createAdminClient = vi.fn()) {
+function renderScreen(client: CoreClient) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <AiInterfaceScreen createAdminClient={createAdminClient} />
+        <AiInterfaceScreen />
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  return { ...rendered, createAdminClient, queryClient };
+  return { ...rendered, queryClient };
 }
 
 beforeEach(() => {
@@ -264,42 +263,20 @@ beforeEach(() => {
 });
 
 describe('AI interface deployment-admin workflow', () => {
-  it('accepts a server-admin token only after the session is denied and does not persist it', async () => {
+  it('shows access denied with retry and never asks for a server-admin token', async () => {
     const user = userEvent.setup();
-    const sessionClient = makeClient({
-      listProviders: vi.fn().mockRejectedValue(
-        new ApiCallError(403, 'Deployment-admin authority is required.', {
-          code: 'forbidden',
-        })
-      ),
-    });
-    const adminClient = makeClient();
-    const createAdminClient = vi.fn(() => adminClient);
-    const { queryClient, unmount } = renderScreen(sessionClient, createAdminClient);
-
-    const tokenInput = await screen.findByLabelText('Server admin token');
-    await user.type(tokenInput, ADMIN_TOKEN);
-    await user.click(screen.getByRole('button', { name: 'Open AI interface' }));
-
-    expect(await screen.findByText('OpenAI Codex')).toBeInTheDocument();
-    expect(createAdminClient).toHaveBeenCalledWith(ADMIN_TOKEN);
-    expect(screen.queryByDisplayValue(ADMIN_TOKEN)).not.toBeInTheDocument();
-    expect(JSON.stringify(localStorage)).not.toContain(ADMIN_TOKEN);
-    expect(
-      JSON.stringify(
-        queryClient
-          .getQueryCache()
-          .findAll()
-          .map((query) => query.queryKey)
-      )
-    ).not.toContain(ADMIN_TOKEN);
-
-    unmount();
-    await waitFor(() =>
-      expect(
-        queryClient.getQueryCache().findAll({ queryKey: ['settings', 'ai-interface'] })
-      ).toHaveLength(0)
+    const listProviders = vi.fn().mockRejectedValue(
+      new ApiCallError(403, 'Deployment-admin authority is required.', {
+        code: 'forbidden',
+      })
     );
+    const client = makeClient({ listProviders });
+    renderScreen(client);
+
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(listProviders).toHaveBeenCalledTimes(2));
   });
 
   it('creates, renames, and deletes a provider-subscription slot', async () => {

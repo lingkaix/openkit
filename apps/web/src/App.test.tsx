@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,13 @@ function makeClient(
     core: {
       meta: metaOk ? vi.fn().mockResolvedValue({}) : vi.fn().mockRejectedValue(new Error('down')),
       listWorkspaces: vi.fn().mockResolvedValue({ items: workspaces }),
+      listThreads: vi.fn().mockResolvedValue({ items: [] }),
+      getWorkspaceResources: vi.fn().mockResolvedValue({
+        knowledge: [],
+        skills: [],
+        agents: [],
+        models: [],
+      }),
     },
     runtimeConfig: {
       listFiles: vi.fn().mockRejectedValue(
@@ -122,9 +129,10 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
   it('keeps unpublished app surfaces out of navigation', async () => {
     await renderAt('/');
-    for (const label of ['Overview', 'Chat', 'Knowledge', 'Agents']) {
+    for (const label of ['Overview', 'Knowledge', 'Artifacts', 'Agents']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('button', { name: 'Chat' })).not.toBeInTheDocument();
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Automations' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Generative UI' })).not.toBeInTheDocument();
@@ -146,20 +154,23 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Approve plan' })).toBeInTheDocument();
   });
 
-  it('mounts the deployment configuration editor under Settings with an admin gate', async () => {
+  it('mounts the deployment configuration editor under Settings without a credential prompt', async () => {
     await renderAt('/settings/configuration');
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
     expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Configuration' })).toBeInTheDocument();
-    expect(await screen.findByLabelText('Server admin token')).toBeInTheDocument();
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
-  it('mounts the published AI interface under Settings with an admin gate', async () => {
+  it('mounts the published AI interface under Settings without a credential prompt', async () => {
     await renderAt('/settings/ai-interface');
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
     expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'AI interface' })).toBeInTheDocument();
-    expect(await screen.findByLabelText('Server admin token')).toBeInTheDocument();
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
     expect(screen.queryByText(/status only/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
   });
@@ -169,7 +180,24 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByText(/doesn't exist/i)).toBeInTheDocument();
   });
 
-  it('shows Repositories and Workspace settings under the authoritative selected Workspace', async () => {
+  it('groups Settings into User, Server, and Administration', async () => {
+    await renderAt('/settings/account');
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByText('User')).toBeInTheDocument();
+    expect(screen.getByText('Server')).toBeInTheDocument();
+    expect(screen.getByText('Administration')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Appearance' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'My admin access' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New workspace' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Portability' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Access tokens' })).toBeInTheDocument();
+  });
+
+  it('shows current-workspace destinations once and switches authorized workspaces from the brand row', async () => {
+    const user = userEvent.setup();
     await renderAt('/', {
       workspaces: [
         { id: 'ws_authorized', name: 'Authoritative Workspace' },
@@ -177,17 +205,50 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
       ],
     });
 
-    const workspaceLabel = await screen.findByText('Authoritative Workspace');
-    const repositories = screen.getByRole('button', { name: 'Repositories' });
-    const newConversation = screen.getByRole('button', { name: 'New conversation' });
-    const workspaceSettings = screen.getByRole('button', { name: 'Workspace settings' });
-    const overview = screen.getByRole('button', { name: 'Overview' });
-    expect(workspaceLabel.parentElement).toContainElement(repositories);
-    expect(workspaceLabel.parentElement).toContainElement(newConversation);
-    expect(workspaceLabel.parentElement).toContainElement(workspaceSettings);
-    expect(workspaceLabel.parentElement).not.toContainElement(overview);
-    expect(overview.parentElement).not.toContainElement(repositories);
+    expect(
+      await screen.findByRole('button', { name: 'Authoritative Workspace' })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Knowledge' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+    expect(screen.getByText('Conversations')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument();
+    const destinations = screen.getByRole('group', { name: 'Workspace destinations' });
+    expect(destinations).toHaveClass('justify-between', 'p-0', 'gap-0');
+    expect(within(destinations).getByRole('button', { name: 'General' })).toBeInTheDocument();
+    expect(within(destinations).getByRole('button', { name: 'Repositories' })).toBeInTheDocument();
+    expect(
+      within(destinations).getByRole('button', { name: 'Workspace changes' })
+    ).toBeInTheDocument();
+    expect(within(destinations).getByRole('button', { name: 'Recovery' })).toBeInTheDocument();
+    expect(
+      within(destinations).getByRole('button', { name: 'Archived threads' })
+    ).toBeInTheDocument();
+    expect(within(destinations).getByRole('button', { name: 'Vault' })).toBeInTheDocument();
+    expect(within(destinations).getByRole('button', { name: 'Usage & audit' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Repositories' })).toHaveLength(1);
+
+    await user.click(screen.getByRole('button', { name: 'Authoritative Workspace' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Other Workspace' }));
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws_other');
+    expect(await screen.findByRole('button', { name: 'Other Workspace' })).toBeInTheDocument();
+  });
+
+  it('opens existing Search from the brand-row icon instead of a pinned main strip', async () => {
+    const user = userEvent.setup();
+    await renderAt('/');
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByRole('searchbox', { name: /search/i })).toBeInTheDocument();
+  });
+
+  it('hides the workspace destination icon row without a selected workspace', async () => {
+    await renderAt('/', { workspaces: [] });
+    expect(screen.queryByRole('group', { name: 'Workspace destinations' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Repositories' })).not.toBeInTheDocument();
   });
 
   it('hides Workspace Repositories without authorization while keeping its live route', async () => {

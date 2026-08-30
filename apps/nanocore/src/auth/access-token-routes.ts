@@ -3,10 +3,13 @@ import {
   ConsumeOpenKitBootstrapTokenResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
+  ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
+  SetMyAdminAccessTokenDefaultRequestSchema,
+  SetMyAdminAccessTokenDefaultResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
@@ -18,12 +21,38 @@ import type { CoreDb } from '../storage/db.js';
 import {
   createOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
+  listOwnedServerAdminAccessTokens,
   type OpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
   rotateOpenKitAccessTokenRecord,
+  setDefaultServerAdminTokenId,
 } from './access-token-store.js';
 import { consumeServerBootstrapToken } from './bootstrap-token.js';
+import { type Actor, isDeploymentAdminActor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
+import { isCanonicalUserActive } from './user-lifecycle.js';
+
+/**
+ * Builds the redacted requester suffix for one access-token lifecycle audit event.
+ *
+ * @param actor Authenticated request actor when present.
+ * @returns Summary suffix naming the user and non-secret derived or presented admin token id.
+ */
+function accessTokenLifecycleActorSuffix(actor: Actor | undefined): string {
+  if (!actor?.userId) {
+    return '';
+  }
+
+  if (actor.kind === 'session' && actor.adminTokenId) {
+    return ` Requested by ${actor.userId} using derived admin ${actor.adminTokenId}.`;
+  }
+
+  if (actor.kind === 'token' && actor.tokenId) {
+    return ` Requested by ${actor.userId} using presented admin ${actor.tokenId}.`;
+  }
+
+  return ` Requested by ${actor.userId}.`;
+}
 
 /**
  * Registers server bootstrap and OpenKit access-token lifecycle routes.
@@ -65,8 +94,8 @@ export function registerAccessTokenRoutes({
     }
 
     const actor = c.get('actor');
-    if (actor?.kind !== 'token' || actor.tokenScope !== 'server-admin') {
-      return asApiError('Server-admin token required.', 'access_token_admin_forbidden', 403);
+    if (!isDeploymentAdminActor(actor)) {
+      return asApiError('Server-admin authority required.', 'access_token_admin_forbidden', 403);
     }
 
     return null;
@@ -78,7 +107,7 @@ export function registerAccessTokenRoutes({
    * @param coreDb Server database that owns the event.
    * @param action Stable access-token lifecycle action.
    * @param record Redacted access-token record affected by the operation.
-   * @param actorUserId User id that requested the operation when authenticated.
+   * @param actor Request actor used for user and non-secret admin-token attribution.
    */
   function recordAccessTokenLifecycleAuditEvent(
     coreDb: CoreDb,
@@ -88,9 +117,9 @@ export function registerAccessTokenRoutes({
       | 'auth.token.revoke'
       | 'auth.token.rotate',
     record: OpenKitAccessTokenRecord,
-    actorUserId: string | null
+    actor: Actor | undefined
   ): void {
-    const actorSuffix = actorUserId ? ` Requested by ${actorUserId}.` : '';
+    const actorSuffix = accessTokenLifecycleActorSuffix(actor);
     let summary: string;
     switch (action) {
       case 'auth.bootstrap.consume':
@@ -147,7 +176,12 @@ export function registerAccessTokenRoutes({
         : asApiError('Invalid bootstrap token.', 'bootstrap_invalid', 401);
     }
 
-    recordAccessTokenLifecycleAuditEvent(coreDb, 'auth.bootstrap.consume', consumed.record, null);
+    recordAccessTokenLifecycleAuditEvent(
+      coreDb,
+      'auth.bootstrap.consume',
+      consumed.record,
+      undefined
+    );
 
     return c.json(
       ConsumeOpenKitBootstrapTokenResponseSchema.parse({
@@ -185,7 +219,15 @@ export function registerAccessTokenRoutes({
     }
 
     try {
-      const ownerUserId = c.get('actor')?.userId ?? 'user_local';
+      const actor = c.get('actor');
+      const ownerUserId = parsed.data.ownerUserId ?? actor?.userId ?? 'user_local';
+      if (!isCanonicalUserActive(coreDb!, ownerUserId)) {
+        return asApiError(
+          'Access token owner must be an exact active canonical user.',
+          'access_token_owner_invalid',
+          400
+        );
+      }
       if (
         parsed.data.scope !== 'server-admin' &&
         parsed.data.workspaceIds.some(
@@ -209,7 +251,7 @@ export function registerAccessTokenRoutes({
         coreDb!,
         'auth.token.issue',
         issued.record,
-        c.get('actor')?.userId ?? null
+        c.get('actor')
       );
 
       return c.json(
@@ -235,12 +277,7 @@ export function registerAccessTokenRoutes({
       return asApiError('Access token not found.', 'access_token_not_found', 404);
     }
 
-    recordAccessTokenLifecycleAuditEvent(
-      coreDb!,
-      'auth.token.revoke',
-      record,
-      c.get('actor')?.userId ?? null
-    );
+    recordAccessTokenLifecycleAuditEvent(coreDb!, 'auth.token.revoke', record, c.get('actor'));
 
     return c.json(RevokeOpenKitAccessTokenResponseSchema.parse({ record }));
   });
@@ -269,7 +306,7 @@ export function registerAccessTokenRoutes({
       coreDb!,
       'auth.token.rotate',
       rotated.record,
-      c.get('actor')?.userId ?? null
+      c.get('actor')
     );
 
     return c.json(
@@ -278,6 +315,79 @@ export function registerAccessTokenRoutes({
         rotatedRecord: rotated.rotatedRecord,
         token: rotated.secret,
       })
+    );
+  });
+
+  registerAppApiRoute(app, 'listMyAdminAccessTokens', (c) => {
+    if (mode !== 'server') {
+      return asApiError(
+        'Access-token administration is only available in server mode.',
+        'access_token_admin_server_mode_required',
+        404
+      );
+    }
+
+    if (!coreDb) {
+      return asApiError(
+        'Access-token storage is unavailable.',
+        'access_token_storage_unavailable',
+        503
+      );
+    }
+
+    const actor = c.get('actor');
+    if (actor?.kind !== 'session') {
+      return asApiError('Canonical session required.', 'access_token_session_required', 403);
+    }
+
+    return c.json(
+      ListMyAdminAccessTokensResponseSchema.parse(
+        listOwnedServerAdminAccessTokens(coreDb, actor.userId)
+      )
+    );
+  });
+
+  registerAppApiRoute(app, 'setMyAdminAccessTokenDefault', async (c) => {
+    if (mode !== 'server') {
+      return asApiError(
+        'Access-token administration is only available in server mode.',
+        'access_token_admin_server_mode_required',
+        404
+      );
+    }
+
+    if (!coreDb) {
+      return asApiError(
+        'Access-token storage is unavailable.',
+        'access_token_storage_unavailable',
+        503
+      );
+    }
+
+    const actor = c.get('actor');
+    if (actor?.kind !== 'session') {
+      return asApiError('Canonical session required.', 'access_token_session_required', 403);
+    }
+
+    const parsed = SetMyAdminAccessTokenDefaultRequestSchema.safeParse(
+      await c.req.json().catch(() => ({}))
+    );
+    if (!parsed.success) {
+      return asApiError('Invalid default token request.', 'invalid_request', 400);
+    }
+
+    if (!setDefaultServerAdminTokenId(coreDb, actor.userId, parsed.data.tokenId)) {
+      return asApiError(
+        'Default token must be an owned usable server-admin token.',
+        'access_token_default_invalid',
+        400
+      );
+    }
+
+    return c.json(
+      SetMyAdminAccessTokenDefaultResponseSchema.parse(
+        listOwnedServerAdminAccessTokens(coreDb, actor.userId)
+      )
     );
   });
 }

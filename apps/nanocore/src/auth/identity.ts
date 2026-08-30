@@ -18,18 +18,30 @@ export interface Actor {
   tokenScope?: OpenKitAccessTokenScope;
   /** Workspace ids bound to the authenticating token. */
   tokenWorkspaceIds?: string[];
+  /** Non-secret selected or default server-admin token id for derived session administration. */
+  adminTokenId?: string;
 }
 
 /**
  * Checks whether one actor may administer deployment-wide state.
  *
  * @param actor Authenticated or implicit request actor.
- * @returns True for the local actor or a server-admin bearer token.
+ * @returns True for the local actor, a server-admin bearer token, or a session that currently carries a resolved admin token id.
  */
 export function isDeploymentAdminActor(actor: Actor | undefined): boolean {
-  return (
-    actor?.kind === 'local' || (actor?.kind === 'token' && actor.tokenScope === 'server-admin')
-  );
+  if (!actor) {
+    return false;
+  }
+
+  if (actor.kind === 'local') {
+    return true;
+  }
+
+  if (actor.kind === 'token' && actor.tokenScope === 'server-admin') {
+    return true;
+  }
+
+  return actor.kind === 'session' && Boolean(actor.adminTokenId);
 }
 
 /**

@@ -13,10 +13,10 @@ import {
 } from './data';
 
 /**
- * Shell-global app search. Lives in the app shell so one searchbox and its
- * results remain reachable beyond Recovery, including across live route changes.
+ * Application search field and results. Opened from the sidebar brand row;
+ * not a pinned strip above routed main content.
  */
-export function AppSearch() {
+export function AppSearch({ onClose }: { onClose?: () => void }) {
   const navigate = useNavigate();
   const { failed: disconnected } = useConnection();
   const workspaces = useWorkspaces();
@@ -43,12 +43,13 @@ export function AppSearch() {
     if (!workspaceId) return;
     useWorkspaceStore.getState().setCurrentWorkspaceId(workspaceId);
     navigate(pathForSearchHit(hit));
+    onClose?.();
   }
 
   return (
-    <div className="border-b border-separator px-6 py-3">
+    <div>
       <SearchField
-        className="flex max-w-md flex-col gap-1"
+        className="flex flex-col gap-1"
         value={draft}
         onChange={setDraft}
         onSubmit={submit}
@@ -62,7 +63,7 @@ export function AppSearch() {
       </SearchField>
 
       {submitted ? (
-        <div className="mt-3 max-w-md">
+        <div className="mt-3">
           {search.isError ? (
             <ErrorBanner message="Couldn't search." onRetry={() => void search.refetch()} />
           ) : null}

@@ -3701,6 +3701,22 @@ describe('createCoreClient', () => {
           }),
         },
       },
+      'GET /api/app/auth/my-admin-tokens': {
+        body: {
+          defaultTokenId: 'tok_admin',
+          items: [
+            accessTokenRecord({ tokenId: 'tok_admin', scope: 'server-admin', workspaceIds: [] }),
+          ],
+        },
+      },
+      'PUT /api/app/auth/my-admin-tokens/default': {
+        body: {
+          defaultTokenId: 'tok_admin',
+          items: [
+            accessTokenRecord({ tokenId: 'tok_admin', scope: 'server-admin', workspaceIds: [] }),
+          ],
+        },
+      },
     });
 
     await expect(client.app.listOpenKitAccessTokens()).resolves.toMatchObject({
@@ -3725,12 +3741,23 @@ describe('createCoreClient', () => {
       token: 'okt_rotated_secret',
       rotatedRecord: { predecessorTokenId: 'tok_workspace' },
     });
+    await expect(client.app.listMyAdminAccessTokens()).resolves.toMatchObject({
+      defaultTokenId: 'tok_admin',
+      items: [{ tokenId: 'tok_admin', scope: 'server-admin' }],
+    });
+    await expect(
+      client.app.setMyAdminAccessTokenDefault({ tokenId: 'tok_admin' })
+    ).resolves.toMatchObject({
+      defaultTokenId: 'tok_admin',
+    });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
       'GET /api/app/auth/tokens',
       'POST /api/app/auth/tokens',
       'POST /api/app/auth/tokens/tok_workspace/revoke',
       'POST /api/app/auth/tokens/tok_workspace/rotate',
+      'GET /api/app/auth/my-admin-tokens',
+      'PUT /api/app/auth/my-admin-tokens/default',
     ]);
     expect(requests[1]?.body).toEqual({
       expiresAt: timestamp,

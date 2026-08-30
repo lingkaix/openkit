@@ -87,6 +87,7 @@ import {
   ListKnowledgeConflictsResponseSchema,
   ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
+  ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
@@ -160,6 +161,7 @@ import {
   RuntimeEvidenceRecordSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  SetMyAdminAccessTokenDefaultRequestSchema,
   SetProviderApiKeyRequestSchema,
   SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
@@ -4473,6 +4475,14 @@ describe('app api schemas', () => {
       }).scope
     ).toBe('workspace');
     expect(
+      CreateOpenKitAccessTokenRequestSchema.parse({
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: timestamp,
+        ownerUserId: 'user_member',
+      }).ownerUserId
+    ).toBe('user_member');
+    expect(
       CreateOpenKitAccessTokenResponseSchema.parse({
         token: 'okt_openkit_secret',
         record: {
@@ -4587,6 +4597,53 @@ describe('app api schemas', () => {
             lastUsedSource: 'okt_openkit_secret',
           },
         ],
+      }).success
+    ).toBe(false);
+    expect(
+      ListMyAdminAccessTokensResponseSchema.parse({
+        items: [
+          {
+            tokenId: 'tok_1',
+            ownerUserId: 'user_owner',
+            scope: 'server-admin',
+            workspaceIds: [],
+            status: 'active',
+            issuedAt: timestamp,
+            expiresAt: timestamp,
+            revokedAt: null,
+            predecessorTokenId: null,
+            rotatedGraceExpiresAt: null,
+            lastUsedAt: null,
+            lastUsedChannel: null,
+            lastUsedSource: null,
+          },
+        ],
+        defaultTokenId: 'tok_1',
+      }).defaultTokenId
+    ).toBe('tok_1');
+    expect(SetMyAdminAccessTokenDefaultRequestSchema.parse({ tokenId: 'tok_1' }).tokenId).toBe(
+      'tok_1'
+    );
+    expect(
+      ListMyAdminAccessTokensResponseSchema.safeParse({
+        items: [
+          {
+            tokenId: 'tok_1',
+            ownerUserId: 'user_owner',
+            scope: 'server-admin',
+            workspaceIds: [],
+            status: 'active',
+            issuedAt: timestamp,
+            expiresAt: timestamp,
+            revokedAt: null,
+            predecessorTokenId: null,
+            rotatedGraceExpiresAt: null,
+            lastUsedAt: null,
+            lastUsedChannel: null,
+            lastUsedSource: 'okt_openkit_secret',
+          },
+        ],
+        defaultTokenId: 'tok_1',
       }).success
     ).toBe(false);
     expect(

@@ -2749,6 +2749,20 @@ export const operationExclusions = [
   },
   {
     source: 'app-api',
+    name: 'listMyAdminAccessTokens',
+    reason:
+      'The server-mode CLI has no Better Auth session-cookie credential, and this user-scoped collection rejects OpenKit bearer tokens.',
+    owner: 'docs/specs/20260704-remote_auth_credential_bootstrap.md',
+  },
+  {
+    source: 'app-api',
+    name: 'setMyAdminAccessTokenDefault',
+    reason:
+      'The server-mode CLI has no Better Auth session-cookie credential, and default selection rejects OpenKit bearer tokens.',
+    owner: 'docs/specs/20260704-remote_auth_credential_bootstrap.md',
+  },
+  {
+    source: 'app-api',
     name: 'createOpenKitAccessToken',
     reason:
       'No safe named credential destination exists; issuing would risk replacing the endpoint administration credential.',

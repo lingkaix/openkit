@@ -567,6 +567,31 @@ describe('primitive tier — behavior', () => {
     expect(onPress).toHaveBeenCalledTimes(2);
   });
 
+  it('Button shows the title hint on pointer hover and keyboard focus', async () => {
+    const user = userEvent.setup();
+    render(
+      <Button aria-label="Search" title="Search">
+        Go
+      </Button>
+    );
+    const button = screen.getByRole('button', { name: 'Search' });
+    expect(button).toHaveAccessibleName('Search');
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    await user.hover(document.body);
+    await user.hover(button);
+    expect(await screen.findByRole('tooltip', { name: 'Search' })).toBeVisible();
+    expect(button).toHaveAccessibleName('Search');
+
+    await user.unhover(button);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+
+    await user.tab();
+    expect(button).toHaveFocus();
+    expect(await screen.findByRole('tooltip', { name: 'Search' })).toBeVisible();
+    expect(button).toHaveAccessibleName('Search');
+  });
+
   it('Switch toggles with the keyboard', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

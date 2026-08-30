@@ -143,7 +143,7 @@ export function authorizedWorkspaceId(
 export function pathForSearchHit(hit: AppSearchHit): string {
   switch (hit.kind) {
     case 'thread':
-      return hit.workspaceId ? chatThreadPath(hit.workspaceId, hit.id) : `/chat/${hit.id}`;
+      return hit.workspaceId ? chatThreadPath(hit.workspaceId, hit.id) : '/';
     case 'workspace':
       return '/';
     case 'knowledge':
@@ -153,9 +153,7 @@ export function pathForSearchHit(hit: AppSearchHit): string {
     case 'item':
       return hit.threadId && hit.workspaceId
         ? chatThreadPath(hit.workspaceId, hit.threadId)
-        : hit.threadId
-          ? `/chat/${hit.threadId}`
-          : '/chat';
+        : '/chat';
   }
 }
 

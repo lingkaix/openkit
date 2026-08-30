@@ -24,7 +24,10 @@ import { registerApprovalRoutes } from './approval-routes.js';
 import { registerArtifactRoutes } from './artifact-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { registerAccessTokenRoutes } from './auth/access-token-routes.js';
-import { verifyOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  resolveSessionDeploymentAdminTokenId,
+  verifyOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
 import { ensureLocalUser, isDeploymentAdminActor } from './auth/identity.js';
 import {
   type AuthVariables,
@@ -583,7 +586,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const authMiddlewareOptions = {
     ...(accessTokenVerifier ? { accessTokenVerifier } : {}),
     ...(options.coreDb
-      ? { canonicalUserActive: (userId: string) => isCanonicalUserActive(options.coreDb!, userId) }
+      ? {
+          canonicalUserActive: (userId: string) => isCanonicalUserActive(options.coreDb!, userId),
+          sessionDeploymentAdmin: (userId: string) =>
+            resolveSessionDeploymentAdminTokenId(options.coreDb!, userId),
+        }
       : {}),
   };
 

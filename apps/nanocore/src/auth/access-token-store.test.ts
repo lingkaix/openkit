@@ -6,16 +6,28 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createOpenKitAccessTokenRecord,
+  listOwnedServerAdminAccessTokens,
+  resolveSessionDeploymentAdminTokenId,
+  revokeOpenKitAccessTokenRecord,
   rotateOpenKitAccessTokenRecord,
+  setDefaultServerAdminTokenId,
   verifyOpenKitAccessTokenRecord,
 } from './access-token-store.js';
 
 /**
- * Inserts the canonical owner user used by direct access-token store tests.
+ * Inserts one canonical human user used by direct access-token store tests.
  *
  * @param coreDb Open Core database handles.
+ * @param userId Canonical user id.
+ * @param displayName Display name.
+ * @param email Email address.
  */
-function insertTokenOwnerUser(coreDb: ReturnType<typeof openCoreDb>): void {
+function insertCanonicalUser(
+  coreDb: ReturnType<typeof openCoreDb>,
+  userId: string,
+  displayName: string,
+  email: string
+): void {
   const now = Date.now();
   coreDb.sqlite
     .prepare(
@@ -30,9 +42,18 @@ function insertTokenOwnerUser(coreDb: ReturnType<typeof openCoreDb>): void {
         kind,
         last_seen_at
       )
-       VALUES ('user_owner', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
+       VALUES (?, ?, ?, false, NULL, ?, ?, 'human', NULL)`
     )
-    .run(now, now);
+    .run(userId, displayName, email, now, now);
+}
+
+/**
+ * Inserts the canonical owner user used by direct access-token store tests.
+ *
+ * @param coreDb Open Core database handles.
+ */
+function insertTokenOwnerUser(coreDb: ReturnType<typeof openCoreDb>): void {
+  insertCanonicalUser(coreDb, 'user_owner', 'Owner', 'owner@example.com');
 }
 
 describe('OpenKit access token store', () => {
@@ -218,6 +239,210 @@ describe('OpenKit access token store', () => {
           )
           .get(issued.tokenId)
       ).toEqual({ lastUsedAt: null });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('selects a sole usable server-admin token and falls back when the default is revoked', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-default-fallback-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const first = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        now: new Date('2026-07-19T00:00:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_first',
+        workspaceIds: [],
+      });
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T01:00:00.000Z')
+        )
+      ).toBe(first.tokenId);
+
+      const second = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        now: new Date('2026-07-19T00:01:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_second',
+        workspaceIds: [],
+      });
+      expect(
+        setDefaultServerAdminTokenId(
+          coreDb,
+          'user_owner',
+          first.tokenId,
+          new Date('2026-07-19T01:00:00.000Z')
+        )
+      ).toBe(true);
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T01:00:00.000Z')
+        )
+      ).toBe(first.tokenId);
+
+      revokeOpenKitAccessTokenRecord(coreDb, first.tokenId, new Date('2026-07-19T02:00:00.000Z'));
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T02:00:00.000Z')
+        )
+      ).toBe(second.tokenId);
+
+      coreDb.sqlite
+        .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+        .run('2026-07-19T03:00:00.000Z', 'user_owner');
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T03:00:00.000Z')
+        )
+      ).toBeNull();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('ignores other owners and non-admin scopes when resolving derived administration', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-scoped-resolve-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      insertCanonicalUser(coreDb, 'user_other', 'Other', 'other@example.com');
+      const owned = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        now: new Date('2026-07-19T00:00:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_owned_admin',
+        workspaceIds: [],
+      });
+      createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        now: new Date('2026-07-19T00:02:00.000Z'),
+        ownerUserId: 'user_other',
+        scope: 'server-admin',
+        tokenId: 'tok_other_admin',
+        workspaceIds: [],
+      });
+      createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        now: new Date('2026-07-19T00:03:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'workspace',
+        tokenId: 'tok_owned_workspace',
+        workspaceIds: ['ws_demo'],
+      });
+
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T01:00:00.000Z')
+        )
+      ).toBe(owned.tokenId);
+      expect(
+        listOwnedServerAdminAccessTokens(coreDb, 'user_owner', new Date('2026-07-19T01:00:00.000Z'))
+      ).toMatchObject({
+        defaultTokenId: owned.tokenId,
+        items: [{ tokenId: owned.tokenId, ownerUserId: 'user_owner', scope: 'server-admin' }],
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a rotated default usable during grace then falls back after grace expires', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-rotation-grace-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const predecessor = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-20T00:00:00.000Z',
+        now: new Date('2026-07-19T00:00:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_rotated_default',
+        workspaceIds: [],
+      });
+      expect(
+        setDefaultServerAdminTokenId(
+          coreDb,
+          'user_owner',
+          predecessor.tokenId,
+          new Date('2026-07-19T00:30:00.000Z')
+        )
+      ).toBe(true);
+      const rotated = rotateOpenKitAccessTokenRecord(coreDb, predecessor.tokenId, {
+        graceSeconds: 60,
+        now: new Date('2026-07-19T01:00:00.000Z'),
+      });
+
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T01:00:30.000Z')
+        )
+      ).toBe(predecessor.tokenId);
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T01:01:01.000Z')
+        )
+      ).toBe(rotated?.tokenId);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not grant derived administration from an expired default token', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-expired-default-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const expired = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2026-07-19T02:00:00.000Z',
+        now: new Date('2026-07-19T00:00:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_expired_default',
+        workspaceIds: [],
+      });
+      expect(
+        setDefaultServerAdminTokenId(
+          coreDb,
+          'user_owner',
+          expired.tokenId,
+          new Date('2026-07-19T01:00:00.000Z')
+        )
+      ).toBe(true);
+      expect(
+        resolveSessionDeploymentAdminTokenId(
+          coreDb,
+          'user_owner',
+          new Date('2026-07-19T03:00:00.000Z')
+        )
+      ).toBeNull();
     } finally {
       coreDb.sqlite.close();
     }

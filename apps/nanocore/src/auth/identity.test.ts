@@ -17,13 +17,20 @@ describe('actorFromRequest', () => {
 });
 
 describe('isDeploymentAdminActor', () => {
-  it('allows only the local actor and server-admin bearer tokens', () => {
+  it('allows the local actor, server-admin bearer tokens, and sessions with a resolved admin token id', () => {
     expect(isDeploymentAdminActor({ userId: 'user_local', kind: 'local' })).toBe(true);
     expect(
       isDeploymentAdminActor({
         userId: 'user_owner',
         kind: 'token',
         tokenScope: 'server-admin',
+      })
+    ).toBe(true);
+    expect(
+      isDeploymentAdminActor({
+        userId: 'user_owner',
+        kind: 'session',
+        adminTokenId: 'tok_admin',
       })
     ).toBe(true);
     expect(isDeploymentAdminActor({ userId: 'user_member', kind: 'session' })).toBe(false);

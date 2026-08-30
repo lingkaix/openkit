@@ -57,6 +57,9 @@ type AccessTokenVerifier = (
 /** Checks whether one canonical user may authenticate. */
 type CanonicalUserActiveVerifier = (userId: string) => boolean | Promise<boolean>;
 
+/** Resolves the non-secret server-admin token id that currently grants a session derived deployment-admin authority. */
+type SessionDeploymentAdminResolver = (userId: string) => string | null | Promise<string | null>;
+
 /**
  * Optional auth middleware dependencies.
  */
@@ -65,6 +68,8 @@ interface AuthMiddlewareOptions {
   accessTokenVerifier?: AccessTokenVerifier;
   /** Verifier for the canonical lifecycle status of local and session users. */
   canonicalUserActive?: CanonicalUserActiveVerifier;
+  /** Optional resolver for derived session deployment-admin authority. Missing fails closed. */
+  sessionDeploymentAdmin?: SessionDeploymentAdminResolver;
 }
 
 /**
@@ -140,7 +145,11 @@ export function createAuthMiddleware(
       return unauthorized(c);
     }
 
-    c.set('actor', actorFromSession(session));
+    const actor = actorFromSession(session);
+    const adminTokenId = options.sessionDeploymentAdmin
+      ? await options.sessionDeploymentAdmin(session.user.id)
+      : null;
+    c.set('actor', adminTokenId ? { ...actor, adminTokenId } : actor);
     await next();
   };
 }

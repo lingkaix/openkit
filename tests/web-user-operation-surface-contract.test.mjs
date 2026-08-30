@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 186;
-const EXPECTED_SERVER_SIZE = 45;
+const EXPECTED_CATALOG_SIZE = 189;
+const EXPECTED_SERVER_SIZE = 46;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 139;
+const EXPECTED_INCLUDED_SIZE = 141;
 
 /** Included operations whose current backend reads cannot support a truthful restart-safe Web workflow. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -164,6 +164,10 @@ const WEB_OPERATION_GROUPS = {
     removeWorkspaceMember: { disposition: 'live', surface: 'Account' },
     revokeWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
     transferWorkspaceOwnership: { disposition: 'live', surface: 'Account' },
+  },
+  'My admin access': {
+    listMyAdminAccessTokens: { disposition: 'live', surface: 'My admin access' },
+    setMyAdminAccessTokenDefault: { disposition: 'live', surface: 'My admin access' },
   },
   'Workspace Sync and recovery': {
     getWorkspaceApplyResult: { disposition: 'live', surface: 'Workspace changes' },

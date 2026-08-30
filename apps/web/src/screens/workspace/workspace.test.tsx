@@ -682,6 +682,7 @@ function makeClient(
     core: {
       meta: vi.fn().mockResolvedValue({}),
       listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A] }),
+      listThreads: vi.fn().mockResolvedValue({ items: [] }),
       listKnowledge: vi.fn().mockResolvedValue({ items: [] }),
       createKnowledge: vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
       updateKnowledge: vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
@@ -695,6 +696,16 @@ function makeClient(
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: TIMESTAMP_NEW,
         updatedAt: TIMESTAMP_NEW,
+      }),
+      getWorkspaceResources: vi.fn().mockImplementation(async () => {
+        const listAgents = overrides.agents?.list as CoreClient['agents']['list'] | undefined;
+        const listed = overrides.agents?.list ? await listAgents?.() : { items: [] };
+        return {
+          knowledge: [],
+          skills: [],
+          agents: listed && typeof listed === 'object' && 'items' in listed ? listed.items : [],
+          models: [],
+        };
       }),
       respondApproval: vi.fn().mockResolvedValue({}),
       ...overrides.core,
@@ -1245,7 +1256,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open thread' })).toHaveAttribute(
       'href',
-      '/chat/th2?workspaceId=ws1'
+      '/chat/ws1/th2'
     );
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
@@ -1317,6 +1328,41 @@ describe('Agents (board 08)', () => {
   it('shows the empty state when no agents are configured', async () => {
     renderApp('/agents', makeClient());
     expect(await screen.findByText(/No agents yet/i)).toBeInTheDocument();
+  });
+
+  it('queries only the selected Workspace resources and does not project another Workspace roster', async () => {
+    const user = userEvent.setup();
+    const getWorkspaceResources = vi.fn().mockImplementation((workspaceId: string) =>
+      Promise.resolve({
+        knowledge: [],
+        skills: [],
+        agents: workspaceId === WORKSPACE_A.id ? [AGENT_READY] : [AGENT_WORKING],
+        models: [],
+      })
+    );
+    const list = vi.fn().mockResolvedValue({ items: [AGENT_READY, AGENT_WORKING] });
+    const client = makeClient({
+      core: {
+        listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
+        getWorkspaceResources,
+      },
+      agents: { list },
+    });
+    renderApp('/agents', client);
+
+    expect(await screen.findByText('Ledger')).toBeInTheDocument();
+    expect(screen.queryByText('Scout')).not.toBeInTheDocument();
+    await waitFor(() => expect(getWorkspaceResources).toHaveBeenCalledWith(WORKSPACE_A.id));
+    expect(getWorkspaceResources.mock.calls.every(([id]) => id === WORKSPACE_A.id)).toBe(true);
+    expect(list).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: WORKSPACE_A.name }));
+    await user.click(await screen.findByRole('menuitem', { name: WORKSPACE_B.name }));
+
+    expect(await screen.findByText('Scout')).toBeInTheDocument();
+    expect(screen.queryByText('Ledger')).not.toBeInTheDocument();
+    expect(getWorkspaceResources).toHaveBeenCalledWith(WORKSPACE_B.id);
+    expect(list).not.toHaveBeenCalled();
   });
 
   it('marks readiness stale when disconnected', async () => {
@@ -4763,7 +4809,7 @@ describe('First run (board 18)', () => {
     expect(await screen.findByText(/Your agent team/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Create workspace/i })).toHaveAttribute(
       'href',
-      '/workspaces/new'
+      '/settings/workspaces/new'
     );
   });
 
@@ -4771,6 +4817,56 @@ describe('First run (board 18)', () => {
     renderApp('/first-run', makeClient());
     expect(await screen.findByText(/You're set/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Overview/i })).toHaveAttribute('href', '/');
+  });
+});
+
+describe('Archived threads', () => {
+  it('lists selected-Workspace archived Threads and restores through updateThread', async () => {
+    const user = userEvent.setup();
+    const archivedThread = {
+      id: 'th_archived_first',
+      workspaceId: WORKSPACE_A.id,
+      name: 'Past conversation',
+      preview: 'Archived conversation',
+      status: 'archived' as const,
+      createdAt: TIMESTAMP_OLD,
+      updatedAt: TIMESTAMP_OLD,
+    };
+    const previewOnlyThread = {
+      id: 'th_archived_second',
+      workspaceId: WORKSPACE_A.id,
+      name: null,
+      preview: 'Preview-only conversation',
+      status: 'archived' as const,
+      createdAt: TIMESTAMP_OLD,
+      updatedAt: TIMESTAMP_OLD,
+    };
+    const updateThread = vi.fn().mockResolvedValue({ ...archivedThread, status: 'active' });
+    const client = makeClient({
+      core: {
+        listThreads: vi.fn().mockResolvedValue({ items: [archivedThread, previewOnlyThread] }),
+        updateThread,
+      },
+    });
+    renderApp('/workspace/archived', client);
+
+    expect(await screen.findByRole('heading', { name: 'Archived threads' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Past conversation' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview-only conversation' })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('main', { name: 'Workspace' })).queryByRole('button', {
+        name: 'New conversation',
+      })
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole('button', { name: 'Restore' })[0]!);
+    await waitFor(() =>
+      expect(updateThread).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_A.id,
+        threadId: archivedThread.id,
+        status: 'active',
+      })
+    );
   });
 });
 
@@ -4788,7 +4884,7 @@ describe('New workspace (board 07)', () => {
       updatedAt: TIMESTAMP_NEW,
     });
     const client = makeClient({ core: { createWorkspace } });
-    renderApp('/workspaces/new', client);
+    renderApp('/settings/workspaces/new', client);
     await user.type(await screen.findByRole('textbox', { name: 'Name' }), 'Launch prep');
     await user.click(screen.getByRole('button', { name: /Create workspace/i }));
     await waitFor(() =>

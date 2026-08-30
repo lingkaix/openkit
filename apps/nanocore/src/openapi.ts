@@ -83,6 +83,7 @@ import {
   ListKnowledgeConflictsResponseSchema,
   ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
+  ListMyAdminAccessTokensResponseSchema,
   ListNanoHostTransportTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
@@ -169,6 +170,8 @@ import {
   RuntimeConfigValidationResponseSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  SetMyAdminAccessTokenDefaultRequestSchema,
+  SetMyAdminAccessTokenDefaultResponseSchema,
   SetProviderApiKeyRequestSchema,
   SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
@@ -265,7 +268,8 @@ interface AppOpenApiDocument {
 
 const JSON_CONTENT_TYPE = 'application/json';
 const APP_API_VERSION = '0.1.0';
-const DEPLOYMENT_ADMIN_SECURITY = [{ bearerAuth: [] }];
+/** Deployment-admin operations accept a presented server-admin bearer or a derived-admin session cookie. */
+const DEPLOYMENT_ADMIN_SECURITY = [{ bearerAuth: [] }, { sessionCookie: [] }];
 const SESSION_COOKIE_SECURITY = [{ sessionCookie: [] }];
 const THREAD_ID_PARAMETER = {
   name: 'threadId',
@@ -962,6 +966,27 @@ export function createAppOpenApiDocument() {
             },
           },
         },
+      },
+      '/api/app/auth/my-admin-tokens': {
+        get: appJsonOperation({
+          operationId: 'listMyAdminAccessTokens',
+          tag: 'auth',
+          summary: "List the signed-in user's redacted server-admin tokens and effective default.",
+          responseStatus: '200',
+          responseSchema: 'ListMyAdminAccessTokensResponse',
+          security: SESSION_COOKIE_SECURITY,
+        }),
+      },
+      '/api/app/auth/my-admin-tokens/default': {
+        put: appJsonOperation({
+          operationId: 'setMyAdminAccessTokenDefault',
+          tag: 'auth',
+          summary: 'Select one owned usable server-admin token as the signed-in user default.',
+          responseStatus: '200',
+          responseSchema: 'SetMyAdminAccessTokenDefaultResponse',
+          requestSchema: 'SetMyAdminAccessTokenDefaultRequest',
+          security: SESSION_COOKIE_SECURITY,
+        }),
       },
       '/api/app/nanohost/enroll': {
         post: {
@@ -5115,6 +5140,7 @@ export function createAppOpenApiDocument() {
           NanoHostRuntimeTargetStatusResponseSchema
         ),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
+        ListMyAdminAccessTokensResponse: toJsonSchema(ListMyAdminAccessTokensResponseSchema),
         ListSchedulerAdmissionsResponse: toJsonSchema(ListSchedulerAdmissionsResponseSchema),
         ListServerAuditEventsResponse: toJsonSchema(ListServerAuditEventsResponseSchema),
         ListServerPermissionDecisionsResponse: toJsonSchema(
@@ -5230,6 +5256,12 @@ export function createAppOpenApiDocument() {
         RunThreadGoalStepResponse: toJsonSchema(RunThreadGoalStepResponseSchema),
         SetWorkspaceRepositoryRequest: toJsonSchema(SetWorkspaceRepositoryRequestSchema),
         SetWorkspaceRepositoryResponse: toJsonSchema(SetWorkspaceRepositoryResponseSchema),
+        SetMyAdminAccessTokenDefaultRequest: toJsonSchema(
+          SetMyAdminAccessTokenDefaultRequestSchema
+        ),
+        SetMyAdminAccessTokenDefaultResponse: toJsonSchema(
+          SetMyAdminAccessTokenDefaultResponseSchema
+        ),
         SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
         SetProviderApiKeyResponse: toJsonSchema(SetProviderApiKeyResponseSchema),
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),

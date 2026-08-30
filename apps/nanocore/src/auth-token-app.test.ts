@@ -11,18 +11,27 @@ import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 
 const OWNER_SESSION_HEADER = 'x-openkit-test-owner-session';
+const MEMBER_SESSION_HEADER = 'x-openkit-test-member-session';
 
-/** Creates a narrow Better Auth test double that recognizes only the explicit owner header. */
+/** Creates a narrow Better Auth test double that recognizes explicit owner or member session headers. */
 function ownerSessionAuth(): BetterAuthServer {
   return {
     api: {
-      getSession: async ({ headers }) =>
-        headers.get(OWNER_SESSION_HEADER) === '1'
-          ? {
-              session: { id: 'session_owner' },
-              user: { id: 'user_owner' },
-            }
-          : null,
+      getSession: async ({ headers }) => {
+        if (headers.get(OWNER_SESSION_HEADER) === '1') {
+          return {
+            session: { id: 'session_owner' },
+            user: { id: 'user_owner' },
+          };
+        }
+        if (headers.get(MEMBER_SESSION_HEADER) === '1') {
+          return {
+            session: { id: 'session_member' },
+            user: { id: 'user_member' },
+          };
+        }
+        return null;
+      },
     },
     handler: async () => new Response(null, { status: 404 }),
   };
@@ -34,6 +43,23 @@ function ownerSessionAuth(): BetterAuthServer {
  * @param coreDb Core database handles.
  */
 function insertTokenOwnerUser(coreDb: CoreDb): void {
+  insertCanonicalUser(coreDb, 'user_owner', 'Owner', 'owner@example.com');
+}
+
+/**
+ * Inserts one canonical human user used by access-token fixtures.
+ *
+ * @param coreDb Core database handles.
+ * @param userId Canonical user id.
+ * @param displayName Display name.
+ * @param email Unique email.
+ */
+function insertCanonicalUser(
+  coreDb: CoreDb,
+  userId: string,
+  displayName: string,
+  email: string
+): void {
   const now = Date.now();
   coreDb.sqlite
     .prepare(
@@ -48,9 +74,9 @@ function insertTokenOwnerUser(coreDb: CoreDb): void {
         kind,
         last_seen_at
       )
-       VALUES ('user_owner', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
+       VALUES (?, ?, ?, false, NULL, ?, ?, 'human', NULL)`
     )
-    .run(now, now);
+    .run(userId, displayName, email, now, now);
 }
 
 describe('server-mode access-token auth', () => {
@@ -341,9 +367,13 @@ describe('server-mode access-token auth', () => {
         record: { status: 'revoked', tokenId: createdBody.record.tokenId },
       });
       const auditEvents = listServerAuditEvents(coreDb);
+      const issueEvent = auditEvents.find((event) => event.action === 'auth.token.issue');
+      const revokeEvent = auditEvents.find((event) => event.action === 'auth.token.revoke');
       expect(auditEvents.map((event) => event.action)).toEqual(
         expect.arrayContaining(['auth.token.issue', 'auth.token.revoke'])
       );
+      expect(issueEvent?.summary).toContain(`using presented admin ${admin.tokenId}`);
+      expect(revokeEvent?.summary).toContain(`using presented admin ${admin.tokenId}`);
       expect(JSON.stringify(auditEvents)).not.toContain(admin.secret);
       expect(JSON.stringify(auditEvents)).not.toContain(createdBody.token);
     } finally {
@@ -479,7 +509,9 @@ describe('server-mode access-token auth', () => {
       expect(newWorks.status).toBe(200);
       expect(JSON.stringify(rotatedBody)).not.toContain(workspaceToken.secret);
       const auditEvents = listServerAuditEvents(coreDb);
+      const rotateEvent = auditEvents.find((event) => event.action === 'auth.token.rotate');
       expect(auditEvents.map((event) => event.action)).toContain('auth.token.rotate');
+      expect(rotateEvent?.summary).toContain(`using presented admin ${admin.tokenId}`);
       expect(JSON.stringify(auditEvents)).not.toContain(admin.secret);
       expect(JSON.stringify(auditEvents)).not.toContain(workspaceToken.secret);
       expect(JSON.stringify(auditEvents)).not.toContain(rotatedBody.token);
@@ -625,6 +657,252 @@ describe('server-mode access-token auth', () => {
       expect(JSON.stringify(listedBody)).not.toContain(deniedWorkspace.id);
       expect(listedAfterMembershipRemoval.status).toBe(200);
       expect(listedAfterMembershipRemovalBody.items).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('issues workspace tokens only when the target owner is an active member of every requested workspace', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-target-owner-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      insertCanonicalUser(coreDb, 'user_member', 'Member', 'member@example.com');
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: ownerSessionAuth(),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+      const ownerWorkspace = await app.request('/api/workspaces', {
+        method: 'POST',
+        headers: {
+          [OWNER_SESSION_HEADER]: '1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'Owner workspace',
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        }),
+      });
+      const memberWorkspace = await app.request('/api/workspaces', {
+        method: 'POST',
+        headers: {
+          [MEMBER_SESSION_HEADER]: '1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'Member workspace',
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        }),
+      });
+      const memberWorkspaceBody = (await memberWorkspace.json()) as { id: string };
+      const issuedToMember = await app.request('/api/app/auth/tokens', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          expiresAt: '2999-01-01T00:00:00.000Z',
+          ownerUserId: 'user_member',
+          scope: 'workspace',
+          workspaceIds: [memberWorkspaceBody.id],
+        }),
+      });
+      const issuedToMemberBody = (await issuedToMember.json()) as {
+        record: { ownerUserId: string; scope: string };
+        token: string;
+      };
+      const issuedToCaller = await app.request('/api/app/auth/tokens', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          expiresAt: '2999-01-01T00:00:00.000Z',
+          ownerUserId: 'user_owner',
+          scope: 'workspace',
+          workspaceIds: [memberWorkspaceBody.id],
+        }),
+      });
+      const missingOwner = await app.request('/api/app/auth/tokens', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          expiresAt: '2999-01-01T00:00:00.000Z',
+          ownerUserId: 'user_missing',
+          scope: 'server-admin',
+          workspaceIds: [],
+        }),
+      });
+
+      expect(ownerWorkspace.status).toBe(201);
+      expect(memberWorkspace.status).toBe(201);
+      expect(issuedToMember.status).toBe(201);
+      expect(issuedToMemberBody.record).toMatchObject({
+        ownerUserId: 'user_member',
+        scope: 'workspace',
+      });
+      expect(issuedToCaller.status).toBe(403);
+      expect(missingOwner.status).toBe(400);
+      expect(JSON.stringify(issuedToMemberBody)).not.toContain(admin.secret);
+      expect(issuedToMemberBody.token).toMatch(/^okt_/);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('derives session deployment-admin from a usable owned server-admin token and drops it on revocation', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-derived-session-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      insertCanonicalUser(coreDb, 'user_member', 'Member', 'member@example.com');
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_owner_admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: ownerSessionAuth(),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+      const deniedMember = await app.request('/api/app/auth/tokens', {
+        headers: { [MEMBER_SESSION_HEADER]: '1' },
+      });
+      const allowedOwner = await app.request('/api/app/auth/tokens', {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+      const mine = await app.request('/api/app/auth/my-admin-tokens', {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+      const mineBody = (await mine.json()) as {
+        defaultTokenId: string | null;
+        items: Array<{ ownerUserId: string; scope: string; tokenId: string }>;
+      };
+      const bearerMine = await app.request('/api/app/auth/my-admin-tokens', {
+        headers: { authorization: `Bearer ${admin.secret}` },
+      });
+      const otherWorkspace = await app.request('/api/workspaces', {
+        method: 'POST',
+        headers: {
+          [MEMBER_SESSION_HEADER]: '1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'Member only',
+          requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        }),
+      });
+      const otherWorkspaceBody = (await otherWorkspace.json()) as { id: string };
+      const bypassDenied = await app.request(`/api/workspaces/${otherWorkspaceBody.id}`, {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+      const revoked = await app.request(`/api/app/auth/tokens/${admin.tokenId}/revoke`, {
+        method: 'POST',
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+      const afterRevoke = await app.request('/api/app/auth/tokens', {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+
+      expect(deniedMember.status).toBe(403);
+      expect(allowedOwner.status).toBe(200);
+      expect(mine.status).toBe(200);
+      expect(mineBody).toMatchObject({
+        defaultTokenId: admin.tokenId,
+        items: [{ tokenId: admin.tokenId, ownerUserId: 'user_owner', scope: 'server-admin' }],
+      });
+      expect(bearerMine.status).toBe(403);
+      expect(otherWorkspace.status).toBe(201);
+      expect(bypassDenied.status).toBe(403);
+      expect(revoked.status).toBe(200);
+      expect(afterRevoke.status).toBe(403);
+      expect(JSON.stringify(mineBody)).not.toContain(admin.secret);
+      const revokeEvent = listServerAuditEvents(coreDb).find(
+        (event) => event.action === 'auth.token.revoke'
+      );
+      expect(revokeEvent?.summary).toContain(`using derived admin ${admin.tokenId}`);
+      expect(JSON.stringify(revokeEvent)).not.toContain(admin.secret);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('selects an owned usable default and falls back after that default is revoked', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-session-default-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const first = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        now: new Date('2026-08-30T00:00:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_default_first',
+        workspaceIds: [],
+      });
+      const second = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        now: new Date('2026-08-30T00:01:00.000Z'),
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        tokenId: 'tok_default_second',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: ownerSessionAuth(),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+      const selected = await app.request('/api/app/auth/my-admin-tokens/default', {
+        method: 'PUT',
+        headers: {
+          [OWNER_SESSION_HEADER]: '1',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ tokenId: first.tokenId }),
+      });
+      const listed = await app.request('/api/app/auth/tokens', {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+      await app.request(`/api/app/auth/tokens/${first.tokenId}/revoke`, {
+        method: 'POST',
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+      const afterRevoke = await app.request('/api/app/auth/my-admin-tokens', {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+
+      expect(selected.status).toBe(200);
+      await expect(selected.json()).resolves.toMatchObject({ defaultTokenId: first.tokenId });
+      expect(listed.status).toBe(200);
+      expect(afterRevoke.status).toBe(200);
+      await expect(afterRevoke.json()).resolves.toMatchObject({
+        defaultTokenId: second.tokenId,
+      });
     } finally {
       coreDb.sqlite.close();
     }

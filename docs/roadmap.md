@@ -80,7 +80,7 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 - [ ] R045 — The conversation-first Web entry can start or continue Chat, Task, and Goal work and move to the corresponding Knowledge, repository, provider, and Workspace records without hidden route-specific state.
 - [ ] R046 — Action Center can execute every approval, question, review, permission, escalation, budget, secret, Policy, recovery, and completion decision supported at this baseline.
 - [ ] R047 — Users can inspect, compare, approve, reject, and apply Worker-proposed file and Git changes in the browser with clear conflict and uncertainty handling.
-- [ ] R048 — Deployment administrators have a separate Web surface for server health, Telemetry, Audit, Policy, secrets, providers, backup, and recovery.
+- [ ] R048 — Deployment administrators have a separate Web surface for server health, Telemetry, Audit, Policy, secrets, providers, backup, and recovery; the scoped Settings navigation, Token-derived session authorization, Configuration, AI interface, and access-token management slice is implemented while the remaining server surfaces stay open.
 - [ ] R049 — The rebuilt multi-user Web projection passes real-browser and real-authentication acceptance for Workspace membership, invitations, ownership, access, attribution, and concurrent work.
 - [ ] R050 — Artifacts appear as versioned, previewable, reviewable, reusable, and exportable work products rather than chat-only text.
 - [ ] R051 — Workspace-native Materials complete their full browser and real-use lifecycle before richer interaction builds on them.

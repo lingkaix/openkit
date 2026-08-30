@@ -29,15 +29,16 @@ import {
  *
  * Plain-language readiness first (Ready / Working / Needs attention). Technical
  * diagnostics sit behind a "View details" disclosure (DESIGN.md §13) and are
- * replaced only after `client.agents.get` succeeds for that exact id. Health
+ * replaced only after `client.agents.get` succeeds for that exact id. The roster
+ * lists only `getWorkspaceResources` for the selected Workspace. Health
  * refresh uses one Workspace identity, consumes the `{items}` response, then
- * invalidates the catalog list and each exact returned agent detail.
+ * invalidates that Workspace list and each exact returned agent detail.
  * Empty when no agents are configured; readiness is marked stale when disconnected.
  */
 export function AgentsScreen() {
   const workspaceId = useCurrentWorkspaceId();
   const workspaces = useWorkspaces();
-  const agents = useAgents();
+  const agents = useAgents(workspaceId);
   const refresh = useRefreshAgentHealth();
   const { checking, failed: disconnected } = useConnection();
   const refreshBlocked =
@@ -93,7 +94,7 @@ export function AgentsScreen() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {agents.data?.map((agent, index) => (
-            <AgentCard key={agent.id} agent={agent} hueIndex={index} />
+            <AgentCard key={agent.id} agent={agent} hueIndex={index} workspaceId={workspaceId} />
           ))}
         </div>
       )}
@@ -101,9 +102,17 @@ export function AgentsScreen() {
   );
 }
 
-function AgentCard({ agent, hueIndex }: { agent: AgentEntry; hueIndex: number }) {
+function AgentCard({
+  agent,
+  hueIndex,
+  workspaceId,
+}: {
+  agent: AgentEntry;
+  hueIndex: number;
+  workspaceId: string | null;
+}) {
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const detail = useAgent(agent.id, detailsOpen);
+  const detail = useAgent(workspaceId, agent.id, detailsOpen);
   const shown = detail.isSuccess ? detail.data : agent;
   const readiness = readinessLabel(agent);
   return (

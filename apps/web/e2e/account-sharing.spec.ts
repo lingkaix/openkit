@@ -91,7 +91,7 @@ async function signOut(page: Page, webUrl: string): Promise<void> {
 
 /** Creates one selected Workspace through the live product surface. */
 async function createWorkspace(page: Page, webUrl: string): Promise<string> {
-  await page.goto(`${webUrl}/workspaces/new`);
+  await page.goto(`${webUrl}/settings/workspaces/new`);
   await page.getByRole('textbox', { name: 'Name' }).fill(workspaceName);
   const response = page.waitForResponse(
     (candidate) =>

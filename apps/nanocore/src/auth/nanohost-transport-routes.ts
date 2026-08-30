@@ -21,6 +21,7 @@ import { registerAppApiRoute } from '../openapi.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import { generateUuidV7 } from '../runtime/session-id.js';
 import type { CoreDb } from '../storage/db.js';
+import { isDeploymentAdminActor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import {
   abortNanoHostTransportRotation,
@@ -93,9 +94,12 @@ export function registerNanoHostTransportRoutes({
       );
     }
 
-    const actor = c.get('actor');
-    if (actor?.kind !== 'token' || actor.tokenScope !== 'server-admin') {
-      return asApiError('Server-admin token required.', 'nanohost_transport_admin_forbidden', 403);
+    if (!isDeploymentAdminActor(c.get('actor'))) {
+      return asApiError(
+        'Server-admin authority required.',
+        'nanohost_transport_admin_forbidden',
+        403
+      );
     }
 
     return null;

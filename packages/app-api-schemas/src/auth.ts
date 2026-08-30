@@ -39,6 +39,7 @@ export const CreateOpenKitAccessTokenRequestSchema = z
     scope: OpenKitAccessTokenScopeSchema,
     workspaceIds: z.array(z.string().min(1)).default([]),
     expiresAt: z.string().datetime(),
+    ownerUserId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -89,6 +90,27 @@ export const RotateOpenKitAccessTokenResponseSchema = z
     addRawSecretIssues(value.record, ctx, ['record']);
     addRawSecretIssues(value.rotatedRecord, ctx, ['rotatedRecord']);
   });
+
+/** Signed-in user's redacted server-admin tokens plus the effective default. */
+export const ListMyAdminAccessTokensResponseSchema = z
+  .object({
+    items: z.array(OpenKitAccessTokenRecordSchema),
+    defaultTokenId: z.string().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+  });
+
+/** Request to select one owned usable server-admin token as the effective default. */
+export const SetMyAdminAccessTokenDefaultRequestSchema = z
+  .object({
+    tokenId: z.string().min(1),
+  })
+  .strict();
+
+/** Response after selecting the signed-in user's effective default server-admin token. */
+export const SetMyAdminAccessTokenDefaultResponseSchema = ListMyAdminAccessTokensResponseSchema;
 
 /** OpenKit server bootstrap token consumption request. */
 export const ConsumeOpenKitBootstrapTokenRequestSchema = z
@@ -179,6 +201,16 @@ export type RotateOpenKitAccessTokenRequest = z.infer<typeof RotateOpenKitAccess
 /** OpenKit access-token rotation response. */
 export type RotateOpenKitAccessTokenResponse = z.infer<
   typeof RotateOpenKitAccessTokenResponseSchema
+>;
+/** Signed-in user's redacted server-admin token list. */
+export type ListMyAdminAccessTokensResponse = z.infer<typeof ListMyAdminAccessTokensResponseSchema>;
+/** Request to select the signed-in user's default server-admin token. */
+export type SetMyAdminAccessTokenDefaultRequest = z.infer<
+  typeof SetMyAdminAccessTokenDefaultRequestSchema
+>;
+/** Response after selecting the signed-in user's default server-admin token. */
+export type SetMyAdminAccessTokenDefaultResponse = z.infer<
+  typeof SetMyAdminAccessTokenDefaultResponseSchema
 >;
 /** OpenKit server bootstrap token consumption request. */
 export type ConsumeOpenKitBootstrapTokenRequest = z.infer<

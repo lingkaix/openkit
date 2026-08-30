@@ -455,6 +455,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
     core: {
       meta: vi.fn().mockResolvedValue({}),
       listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE] }),
+      listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...core,
     },
     app: {
@@ -629,7 +630,7 @@ describe('Workspace changes', () => {
       title: 'Workspace changes',
       path: '/workspace-changes',
       tier: 'A',
-      nav: 'workspace',
+      nav: 'workspace-compact',
     });
     expect(isSurfaceLive(surface!)).toBe(true);
 
@@ -642,9 +643,9 @@ describe('Workspace changes', () => {
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/doesn't exist/i)).not.toBeInTheDocument();
 
-    const workspaceLabel = screen.getByText(WORKSPACE.name, { exact: true });
+    const destinations = await screen.findByRole('group', { name: 'Workspace destinations' });
     const navButton = screen.getByRole('button', { name: 'Workspace changes' });
-    expect(workspaceLabel.parentElement).toContainElement(navButton);
+    expect(destinations).toContainElement(navButton);
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
     expect(within(reviews).getByText(PENDING_STAGED_REVIEW.id)).toBeInTheDocument();
@@ -854,7 +855,7 @@ describe('Workspace changes', () => {
       title: 'Workspace changes',
       path: '/workspace-changes',
       tier: 'A',
-      nav: 'workspace',
+      nav: 'workspace-compact',
     });
 
     const client = makeClient(

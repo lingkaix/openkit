@@ -94,6 +94,32 @@ function configuredNanoHost(slotRoot: string) {
 }
 
 describe('NanoHost transport App API safe-sink routes', () => {
+  it('denies NanoHost transport administration to a canonical session with no owned usable server-admin token', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-session-no-admin-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const app = createApp({
+        auth: ownerSessionAuth(),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+      });
+      const response = await app.request('/api/app/nanohost/runtime-target', {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'nanohost_transport_admin_forbidden',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('observes only the configured RuntimeTarget and preserves fail-closed boundaries', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-runtime-target-'));
     const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-runtime-target-slots-'));
@@ -148,11 +174,11 @@ describe('NanoHost transport App API safe-sink routes', () => {
           status: 503,
         },
         {
-          name: 'wrong-actor',
+          name: 'derived-session-absent-target',
           response: await configuredApp.request('/api/app/nanohost/runtime-target', {
             headers: { [OWNER_SESSION_HEADER]: '1' },
           }),
-          status: 403,
+          status: 404,
         },
         {
           name: 'absent-target',
@@ -185,9 +211,13 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const response = await configuredApp.request('/api/app/nanohost/runtime-target', {
         headers: adminHeaders,
       });
+      const sessionResponse = await configuredApp.request('/api/app/nanohost/runtime-target', {
+        headers: { [OWNER_SESSION_HEADER]: '1' },
+      });
       const body = (await response.json()) as Record<string, unknown>;
 
       expect(response.status).toBe(200);
+      expect(sessionResponse.status).toBe(200);
       expect(body).toEqual({
         identityId: config.identityId,
         deploymentId: config.deploymentId,

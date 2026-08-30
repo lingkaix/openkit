@@ -401,6 +401,7 @@ function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides }
     core: {
       meta: vi.fn().mockResolvedValue({}),
       listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE] }),
+      listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
     app: {
@@ -740,9 +741,9 @@ describe('Portability', () => {
     const surface = surfaceById('portability');
     expect(surface).toMatchObject({
       title: 'Portability',
-      path: '/portability',
+      path: '/settings/portability',
       tier: 'A',
-      nav: 'primary',
+      nav: 'settings-user',
     });
     expect(isSurfaceLive(surface!)).toBe(true);
 
@@ -752,7 +753,7 @@ describe('Portability', () => {
       .mockRejectedValueOnce(new Error('workspace-private failure'))
       .mockResolvedValue({ items: [WORKSPACE] });
     const client = makeClient({ core: { listWorkspaces } });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findByRole('region', { name: 'Import' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toBeEnabled();
@@ -771,10 +772,9 @@ describe('Portability', () => {
 
     expect(screen.getByText(WORKSPACE.name, { exact: true })).toBeInTheDocument();
     expect(
-      within(screen.getByRole('navigation', { name: 'Primary workspace navigation' })).getByRole(
-        'button',
-        { name: 'Portability' }
-      )
+      within(screen.getByRole('navigation', { name: 'Settings sections' })).getByRole('button', {
+        name: 'Portability',
+      })
     ).toBeInTheDocument();
 
     expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
@@ -822,7 +822,7 @@ describe('Portability', () => {
       core: { listWorkspaces },
       app: { listWorkspaceVaultReferences },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -897,7 +897,7 @@ describe('Portability', () => {
         listWorkspaceVaultReferences: vi.fn().mockResolvedValue(EMPTY_VAULT_B),
       },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -941,7 +941,7 @@ describe('Portability', () => {
       .mockResolvedValueOnce(DRY_RUN)
       .mockResolvedValue(nextReview);
     const client = makeClient({ app: { dryRunWorkspaceImport } });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expectReviewIdentities(nextReview, nextRequest);
     expect(
@@ -980,7 +980,7 @@ describe('Portability', () => {
     const listWorkspaces = vi.fn().mockResolvedValue({ items: [WORKSPACE] });
     const exportWorkspace = vi.fn().mockRejectedValue(new Error('export-private failure'));
     const client = makeClient({ core: { listWorkspaces }, app: { exportWorkspace } });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1019,7 +1019,7 @@ describe('Portability', () => {
       .fn()
       .mockRejectedValue(privateFailure(400, 'workspace_import_dry_run_failed'));
     const client = makeClient({ app: { dryRunWorkspaceImport } });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1059,7 +1059,7 @@ describe('Portability', () => {
       .fn()
       .mockRejectedValue(privateFailure(400, 'workspace_import_failed'));
     const client = makeClient({ app: { importWorkspace } });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1102,7 +1102,7 @@ describe('Portability', () => {
     const client = makeClient({
       app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1156,7 +1156,7 @@ describe('Portability', () => {
     const client = makeClient({
       app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1201,7 +1201,7 @@ describe('Portability', () => {
     const client = makeClient({
       app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1262,7 +1262,7 @@ describe('Portability', () => {
       core: { listWorkspaces },
       app: { importWorkspace, listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1359,7 +1359,7 @@ describe('Portability', () => {
       core: { listWorkspaces },
       app: { listWorkspaceVaultReferences },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findByText('Unbound', { exact: true })).toBeInTheDocument();
     await user.type(vaultMaterialInput(), VAULT_MATERIAL);
@@ -1388,7 +1388,7 @@ describe('Portability', () => {
       core: { listWorkspaces },
       app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findByText(QUICK_CHAT_WORKSPACE.name, { exact: true })).toBeInTheDocument();
     expect(
@@ -1408,7 +1408,7 @@ describe('Portability', () => {
       core: { listWorkspaces },
       app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1429,7 +1429,7 @@ describe('Portability', () => {
       .mockResolvedValueOnce({ items: [WORKSPACE] })
       .mockRejectedValueOnce(new Error('workspace-private failure'));
     const client = makeClient({ core: { listWorkspaces } });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1459,7 +1459,7 @@ describe('Portability', () => {
     const client = makeClient({
       app: { listWorkspaceVaultReferences: vi.fn().mockResolvedValue(TWO_UNBOUND_VAULT) },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findAllByText('Unbound', { exact: true })).toHaveLength(2);
     expect(UNBOUND_REFERENCE.secretKind).toBe(UNBOUND_SAME_KIND.secretKind);
@@ -1578,7 +1578,7 @@ describe('Portability', () => {
         rebindWorkspaceVaultReference,
       },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -1624,7 +1624,7 @@ describe('Portability', () => {
   it.each([
     ['zero workspaces', [] as const],
     ['only Quick Chat', [QUICK_CHAT_WORKSPACE]],
-  ] as const)('reaches user-scoped Portability from primary navigation with %s', async (_label, items) => {
+  ] as const)('reaches user-scoped Portability from Settings with %s', async (_label, items) => {
     const user = userEvent.setup();
     const listWorkspaces = vi.fn().mockResolvedValue({ items: [...items] });
     const client = makeClient({
@@ -1633,7 +1633,10 @@ describe('Portability', () => {
     });
     const { queryClient } = renderApp('/', client);
 
-    const nav = await screen.findByRole('navigation', { name: 'Primary workspace navigation' });
+    const appNav = await screen.findByRole('navigation', { name: 'Primary workspace navigation' });
+    expect(within(appNav).queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
+    await user.click(within(appNav).getByRole('button', { name: 'Settings' }));
+    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
     await user.click(await within(nav).findByRole('button', { name: 'Portability' }));
 
     expect(
@@ -1656,7 +1659,7 @@ describe('Portability', () => {
     const client = makeClient({
       app: { listWorkspaceVaultReferences, importWorkspace },
     });
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     await waitFor(() =>
       expect(vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls).toEqual([
@@ -1707,7 +1710,7 @@ describe('Portability', () => {
   it('requires a separate explicit Vault rebind confirmation whose Cancel makes zero API calls and Confirm makes one', async () => {
     const user = userEvent.setup();
     const client = makeClient();
-    const { queryClient } = renderApp('/portability', client);
+    const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findByText('Unbound', { exact: true })).toBeInTheDocument();
     await waitFor(() => expect(client.app.listWorkspaceVaultReferences).toHaveBeenCalledTimes(1));

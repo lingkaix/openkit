@@ -37,7 +37,7 @@ export function RadioGroup({ items, className, ...props }: RadioGroupProps) {
           key={item.id}
           value={item.id}
           aria-label={item.label}
-          className="flex cursor-pointer flex-col gap-2 rounded-ok-lg border border-border bg-card p-3 outline-none transition-colors hover:border-border-hover data-[selected]:border-accent data-[selected]:ring-2 data-[selected]:ring-focus focus-visible:ring-2 focus-visible:ring-focus"
+          className="flex cursor-pointer flex-col gap-2 rounded-ok-lg border border-border bg-card p-3 outline-none transition-colors hover:border-border-hover data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50 data-[selected]:border-accent data-[selected]:ring-2 data-[selected]:ring-focus focus-visible:ring-2 focus-visible:ring-focus"
         >
           {item.content ?? item.label}
         </AriaRadio>

@@ -178,18 +178,14 @@ Two persistent regions, plus one optional auxiliary:
 Two modes; never mix them.
 
 **App mode (default):**
-- **Brand mark** (4-tile quad: blue / seafoam / indigo / orange) + wordmark, top.
-- **Pinned destinations:** Overview, Chat, Automations, New workspace. Overview
-  carries a global **needs-you count badge** (`ok-nav-count`).
-- **Knowledge** (D-012).
-- **Scrollable middle:** workspace rows, each collapsible to reveal nested thread
-  rows; a workspace with pending work shows a per-workspace count badge.
-  **Repositories** is a pinned sub-item of a workspace (a workspace *owns* repos),
-  and **Workspace settings** links directly to the selected Workspace's General settings.
-- **Footer:** a single full-width **Settings** command. No stacked user-identity
-  row — identity lives inside Settings (D-002).
+- **Brand row:** the 4-tile quad brand mark and wordmark stay on the left, while an accessible icon-only Search command is right-aligned in the same row and opens the existing global application search. The shell renders no persistent Search strip above routed main content.
+- **Workspace context:** an always-visible Workspace switcher sits directly below the brand row and above Overview. It shows the validated selected Workspace's authoritative name, opens an ergonomic authorized Workspace list, changes the shell-wide selected Workspace, and returns lineage-specific Thread, Task, Goal, or Material routes to Chat before another Workspace is addressed.
+- **Prominent destinations:** Overview, Agents, Knowledge, and Artifacts remain above the current-Workspace conversation area. Overview carries a global **needs-you count badge** (`ok-nav-count`).
+- **Scrollable work list:** a visible divider ends the common destinations. Below it, direct **New conversation** access precedes one current-Workspace **Conversations** list of active Threads. Chat and Task are actions within a Thread, not durable Thread kinds, so the shell must not infer or display a false partition. This release does not add the complete collapsible multi-Workspace and Thread tree.
+- **Workspace access row:** a compact horizontal icon row directly above Settings links to the validated current Workspace's General, Repositories, Workspace changes, Recovery, Archived threads, Vault, and Usage & audit surfaces. It is absent without a validated Workspace, every icon has an accessible name and current-page state, and no destination is duplicated elsewhere in the sidebar.
+- **Footer:** a single full-width **Settings** command. No stacked user-identity row appears because identity lives inside Settings (D-002).
 
-**Settings mode:** the same sidebar swaps to a **Back to app** action + published Settings categories: Account (including My invitations and Sign out), General, Appearance, Vault, Usage & audit, and Debug (D-012, D-013). Deployment Configuration and Diagnostics remain absent until the separate server-admin Web surface has an accepted credential path; Channels and AI interface remain unpublished. Settings categories are interactive nav with an accessible current-page state — never a second Settings sidebar inside the main panel.
+**Settings mode:** the brand row, Search, and the sole selected-Workspace switcher remain fixed while the navigation body swaps to a **Back to app** action and three explicit scope groups. **User** contains Account, Appearance, My admin access, New workspace, and Portability; **Server** contains Configuration, AI interface, and Debug; **Administration** contains Access tokens. Workspace General, Vault, Usage & audit, Repositories, Workspace changes, and Recovery remain outside Settings because they project the selected Workspace rather than the User or deployment. Settings categories are interactive navigation with an accessible current-page state and never create a second Settings sidebar inside the main panel.
 
 Naming: the home surface is **Overview** (formerly "Mission control") — plainer,
 Spectrum-calm, better for non-technical users (D-003).
@@ -200,16 +196,14 @@ Spectrum-calm, better for non-technical users (D-003).
   inside the main panel unless a workflow *genuinely* needs comparison.
 - **Compact stacked header** (~52px): breadcrumbs → current context, the goal
   **phase stepper** (§9.5) where relevant, and right-aligned actions.
+- **Thread title bars are scarce space.** Preserve the longest practical Thread name before secondary state. Compact icon-only actions are preferred when the symbol is established and every control supplies an accessible name plus a hover and keyboard-focus hint. Rename and Archive sit immediately beside the Thread name because they act on it; the optional Side panel toggle occupies the far-right edge, leaving the center available for future Worker counts, Goal status, and other Thread state.
 - **Conversation column** caps at ~760px, centered, `20px` gap between items.
 - **Composer docked at the bottom** of every active work surface — the rule is:
   *on every surface, the bottom bar is where you talk to the AI* (D-007).
 
-### 3.3 Right auxiliary rail — optional index, never required
+### 3.3 Right Side panel — optional auxiliary index, never required
 
-The rail only **mirrors and indexes** (artifacts, approvals, activity log). D-006:
-turning it off must never block a core action. Its Approvals tab reads "Approve in
-conversation" and points back to the thread; it carries "you *can* look," never
-"you *must* do." It collapses to a 48px icon strip.
+The **Side panel** only mirrors and indexes Thread auxiliary information. Its current Chat projection is the Thread's Artifact and file-change index, not the global Artifact inventory; future accepted projections may add approvals, activity, Worker, or Goal context without making the panel canonical. D-006: turning it off must never block a core action. Its Approvals tab reads "Approve in conversation" and points back to the Thread; it carries "you *can* look," never "you *must* do." It collapses to a 48px icon strip.
 
 Because the rail is optional, **required actions surface through three non-rail
 channels** (D-006), by urgency: **(1) in-thread inline** (primary) — approval /

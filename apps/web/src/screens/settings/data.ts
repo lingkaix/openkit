@@ -26,7 +26,7 @@ export const settingsKeys = {
     ['settings', 'aep-snapshot', workspaceId, snapshotId] as const,
   usage: (workspaceId: string) => ['settings', 'usage', workspaceId] as const,
   meta: ['core', 'meta'] as const,
-  aiInterface: (generation: number) => ['settings', 'ai-interface', generation] as const,
+  aiInterface: ['settings', 'ai-interface'] as const,
 };
 
 /** Re-export workspace selection for General settings. */

@@ -141,6 +141,8 @@ import {
   ListKnowledgeObservationsResponseSchema,
   type ListKnowledgeSourcesResponse,
   ListKnowledgeSourcesResponseSchema,
+  type ListMyAdminAccessTokensResponse,
+  ListMyAdminAccessTokensResponseSchema,
   type ListNanoHostTransportTokensResponse,
   ListNanoHostTransportTokensResponseSchema,
   type ListOpenKitAccessTokensResponse,
@@ -277,6 +279,10 @@ import {
   SaveWorkspaceMaterialRevisionRequestSchema,
   type SaveWorkspaceMaterialRevisionResponse,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  type SetMyAdminAccessTokenDefaultRequest,
+  SetMyAdminAccessTokenDefaultRequestSchema,
+  type SetMyAdminAccessTokenDefaultResponse,
+  SetMyAdminAccessTokenDefaultResponseSchema,
   type SetProviderApiKeyRequest,
   SetProviderApiKeyRequestSchema,
   type SetProviderApiKeyResponse,
@@ -487,6 +493,8 @@ export type SubmitWorkspaceRecoveryDecisionInput = SubmitWorkspaceRecoveryDecisi
 export type ConsumeOpenKitBootstrapTokenInput = ConsumeOpenKitBootstrapTokenRequest;
 /** OpenKit access-token issue input. */
 export type CreateOpenKitAccessTokenInput = CreateOpenKitAccessTokenRequest;
+/** Signed-in user's default server-admin token selection input. */
+export type SetMyAdminAccessTokenDefaultInput = SetMyAdminAccessTokenDefaultRequest;
 /** OpenKit access-token rotation input. */
 export interface RotateOpenKitAccessTokenInput {
   /** Optional grace period before the rotated token fully expires. */
@@ -931,6 +939,12 @@ export interface AppApiClient {
     tokenId: string,
     input?: RotateOpenKitAccessTokenInput
   ): Promise<RotateOpenKitAccessTokenResponse>;
+  /** Lists the signed-in user's redacted server-admin tokens and effective default. */
+  listMyAdminAccessTokens(): Promise<ListMyAdminAccessTokensResponse>;
+  /** Selects one owned usable server-admin token as the signed-in user default. */
+  setMyAdminAccessTokenDefault(
+    input: SetMyAdminAccessTokenDefaultInput
+  ): Promise<SetMyAdminAccessTokenDefaultResponse>;
   /** Enrolls one NanoHost identity and first transport token. */
   enrollNanoHost(input: EnrollNanoHostInput): Promise<EnrollNanoHostResponse>;
   /** Lists redacted NanoHost transport token records. */
@@ -1637,6 +1651,14 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/auth/tokens/${tokenId}/rotate`,
         RotateOpenKitAccessTokenRequestSchema.parse(input),
         RotateOpenKitAccessTokenResponseSchema
+      ),
+    listMyAdminAccessTokens: () =>
+      transport.getJson('/api/app/auth/my-admin-tokens', ListMyAdminAccessTokensResponseSchema),
+    setMyAdminAccessTokenDefault: (input) =>
+      transport.putJson(
+        '/api/app/auth/my-admin-tokens/default',
+        SetMyAdminAccessTokenDefaultRequestSchema.parse(input),
+        SetMyAdminAccessTokenDefaultResponseSchema
       ),
     enrollNanoHost: (input) =>
       transport.postJson(

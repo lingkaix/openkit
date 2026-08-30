@@ -41,7 +41,7 @@ export const chatKeys = {
  * @returns Chat route carrying the complete owner tuple.
  */
 export function chatThreadPath(workspaceId: string, threadId: string): string {
-  return `/chat/${encodeURIComponent(threadId)}?workspaceId=${encodeURIComponent(workspaceId)}`;
+  return `/chat/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
 }
 
 /** List the workspaces the user can act in. */
@@ -54,18 +54,35 @@ export function useWorkspaces() {
 }
 
 /**
- * Returns the route Workspace when authorized, otherwise the current selection,
- * Quick Chat, the first authorized Workspace, or null when discovery is unresolved or empty.
+ * Returns the exact route Workspace when one is supplied and authorized. Without
+ * route lineage, returns the current selection, Quick Chat, the first authorized
+ * Workspace, or null when discovery is unresolved or empty.
  *
  * @param preferredWorkspaceId Workspace identity carried by the current route, when present.
  * @returns Authorized Workspace identity, or null before discovery resolves or when none exists.
  */
 export function useCurrentWorkspaceId(preferredWorkspaceId?: string | null): string | null {
   const selected = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const setSelected = useWorkspaceStore((s) => s.setCurrentWorkspaceId);
   const workspaces = useWorkspaces();
+  const preferred = preferredWorkspaceId
+    ? (workspaces.data?.find((workspace) => workspace.id === preferredWorkspaceId)?.id ?? null)
+    : null;
+
+  // Push route Workspace into the switcher when lineage appears. Do not
+  // re-run when `selected` changes, or a switcher change from a Thread page
+  // would snap back to the old route before navigation unmounts that Thread.
+  useEffect(() => {
+    if (preferred && useWorkspaceStore.getState().currentWorkspaceId !== preferred) {
+      setSelected(preferred);
+    }
+  }, [preferred, setSelected]);
+
   if (!workspaces.isSuccess) return null;
+  if (preferredWorkspaceId) {
+    return preferred;
+  }
   return (
-    workspaces.data.find((workspace) => workspace.id === preferredWorkspaceId)?.id ??
     workspaces.data.find((workspace) => workspace.id === selected)?.id ??
     workspaces.data.find((workspace) => workspace.kind === 'quick-chat')?.id ??
     workspaces.data[0]?.id ??
@@ -384,6 +401,26 @@ export function useArchiveThread() {
     mutationKey: chatKeys.archiveMutation,
     mutationFn: (input: { workspaceId: string; threadId: string }) =>
       client.core.archiveThread(input),
+    onSuccess: (thread) => {
+      queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
+      queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
+        threads?.map((candidate) => (candidate.id === thread.id ? thread : candidate))
+      );
+    },
+  });
+}
+
+/**
+ * Restore an archived thread to active through the existing Thread update.
+ *
+ * @returns A mutation whose variable identifies the Thread to restore.
+ */
+export function useRestoreThread() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { workspaceId: string; threadId: string }) =>
+      client.core.updateThread({ ...input, status: 'active' }),
     onSuccess: (thread) => {
       queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
       queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>

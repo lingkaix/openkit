@@ -47,6 +47,8 @@ App API may expose sign-in, invitation, and profile endpoints, but those endpoin
 
 `Token` is a credential used by a client, integration, automation, agent, or bridge to authenticate to Core or another OpenKit service.
 
+An `AuthSession` may carry a non-secret derived-authority Token reference when an owning authentication specification authorizes it, but the session remains the authenticating credential and the referenced Token's presentation evidence must not be updated.
+
 `Invitation` is a pending request to join a workspace.
 
 `AutomationIdentity` is a non-human actor that can trigger work under a declared owner or policy context. The concept alone does not define a token-issuance or Workspace-membership contract; any such contract requires a separate owning specification.
@@ -91,7 +93,7 @@ expired
 revoked
 ```
 
-`Token` record areas include token ID, owner identity, scope, token type, issued time, expiration time, revocation time, rotation metadata, and status. Token records must not expose raw token secret material after issuance.
+`Token` record areas include token ID, owner identity, scope, token type, issued time, expiration time, revocation time, rotation metadata, status, and optional non-secret selection metadata owned outside the credential secret. Token records must not expose raw token secret material after issuance.
 
 Token status values may include:
 

@@ -1,14 +1,17 @@
 import { useMutationState } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   ArtifactRow,
   Button,
   Composer,
   ContextChip,
+  EmptyState,
   ErrorBanner,
   Eyebrow,
+  Icon,
+  Skeleton,
   StatusChip,
   TextField,
 } from '../../primitives';
@@ -24,22 +27,23 @@ import {
   useThreadDashboard,
   useThreadItems,
   useTurnFeedback,
+  useWorkspaces,
 } from './data';
 import { ThreadStream } from './ThreadStream';
-import { WorkspaceSelect } from './WorkspaceSelect';
 
-/** Right index rail (board 03) — mirrors the thread's artifacts (§3.3, D-006). */
-function IndexRail({ workspaceId, threadId }: { workspaceId: string | null; threadId: string }) {
+/** Right Side panel — Thread Artifact and file-change index (DESIGN.md §3.3, D-006). */
+function SidePanel({ workspaceId, threadId }: { workspaceId: string | null; threadId: string }) {
   const items = useThreadItems(workspaceId, threadId);
   const artifacts = (items.data ?? []).filter(
     (item) => item.type === 'artifact-reference' || item.type === 'file-change'
   );
   return (
     <aside
-      aria-label="Artifacts index"
+      aria-label="Side panel"
       className="w-60 shrink-0 border-l border-separator bg-layer-1 p-3"
     >
-      <Eyebrow>Artifacts</Eyebrow>
+      <Eyebrow>Side panel</Eyebrow>
+      <p className="mt-1 text-xs text-fg-muted">Artifact and file-change index for this Thread.</p>
       <div className="mt-2 flex flex-col gap-1">
         {artifacts.length === 0 ? (
           <p className="text-xs text-fg-muted">No artifacts yet.</p>
@@ -66,8 +70,9 @@ export interface ThreadScreenProps {
  * Thread screen (WP-4) — boards 02/03 (chat) and 04 (task).
  *
  * A centered conversation column with the composer docked at the bottom (D-007),
- * an optional artifacts index rail (board 03, §3.3), and the inline approval-card
- * pattern (board 04) handled per-item. Honors the §9.13 states: skeleton stream,
+ * an optional Side panel that indexes this Thread's Artifacts and file changes
+ * (board 03, DESIGN.md §3.3; not the global Artifact inventory), and the inline
+ * approval-card pattern (board 04) handled per-item. Honors the §9.13 states: skeleton stream,
  * inline send-failure banner, and — when the runtime is unreachable — a disabled
  * composer with a stated reason and read-only approvals (the global banner lives
  * in the shell). Rename, archive, and interruption controls project only the
@@ -75,10 +80,9 @@ export interface ThreadScreenProps {
  * trigger actor without deployment or identity inference.
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
-  const { threadId = '' } = useParams();
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const workspaceId = useCurrentWorkspaceId(searchParams.get('workspaceId'));
+  const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
+  const workspaces = useWorkspaces();
+  const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const thread = useThread(workspaceId, threadId);
   const items = useThreadItems(workspaceId, threadId);
   const dashboard = useThreadDashboard(workspaceId, threadId);
@@ -136,7 +140,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const { failed: disconnected } = useConnection();
   const [showRail, setShowRail] = useState(mode === 'chat');
 
-  const title = thread.data?.name ?? (mode === 'task' ? 'Task' : 'Chat');
+  const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');
   const [renameDrafts, setRenameDrafts] = useState<
     {
       workspaceId: string;
@@ -157,28 +161,44 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     send.variables.threadId === threadId &&
     send.variables.mode === mode;
 
+  if (workspaces.isLoading) {
+    return <Skeleton lines={5} className="m-6" />;
+  }
+
+  if (workspaces.isError) {
+    return (
+      <div className="m-6">
+        <ErrorBanner
+          message="Couldn't verify this Workspace."
+          onRetry={() => void workspaces.refetch()}
+        />
+      </div>
+    );
+  }
+
+  if (!workspaceId) {
+    return (
+      <EmptyState
+        icon="error"
+        title="Workspace unavailable"
+        hint="This Thread does not belong to an available Workspace."
+      />
+    );
+  }
+
   return (
     <div className="flex h-full">
       <div className="flex h-full min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
-          {mode === 'chat' ? <WorkspaceSelect onWorkspaceChange={() => navigate('/chat')} /> : null}
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             {mode === 'task' ? <StatusChip tone="informative">Task</StatusChip> : null}
-            <h1 className="text-sm font-bold text-fg-strong">{title}</h1>
-            {thread.data?.status === 'archived' ? (
-              <StatusChip tone="neutral">Archived</StatusChip>
-            ) : null}
-            {latestTurn?.status === 'interrupted' ? (
-              <StatusChip tone="neutral">Interrupted</StatusChip>
-            ) : null}
-          </div>
-          {activeTurn ? (
-            <p className="text-xs text-fg-muted">Triggered by {activeTurn.triggerActor.id}</p>
-          ) : null}
-          <div className="ml-auto flex items-center gap-2">
+            <h1 className="min-w-0 truncate text-sm font-bold text-fg-strong">{title}</h1>
             <Button
               size="sm"
               variant="quiet"
+              aria-label="Rename thread"
+              title="Rename thread"
+              className="h-8 w-8 shrink-0 px-0"
               isDisabled={!workspaceId}
               onPress={() => {
                 rename.reset();
@@ -192,11 +212,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 }
               }}
             >
-              Rename thread
+              <Icon name="edit" />
             </Button>
             <Button
               size="sm"
               variant="quiet"
+              aria-label="Archive thread"
+              title="Archive thread"
+              className="h-8 w-8 shrink-0 px-0"
               isDisabled={
                 !workspaceId ||
                 archiveState?.status === 'pending' ||
@@ -204,8 +227,19 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               }
               onPress={() => archive.mutate({ workspaceId: workspaceId ?? '', threadId })}
             >
-              Archive thread
+              <Icon name="archive" />
             </Button>
+            {thread.data?.status === 'archived' ? (
+              <StatusChip tone="neutral">Archived</StatusChip>
+            ) : null}
+            {latestTurn?.status === 'interrupted' ? (
+              <StatusChip tone="neutral">Interrupted</StatusChip>
+            ) : null}
+          </div>
+          {activeTurn ? (
+            <p className="text-xs text-fg-muted">Triggered by {activeTurn.triggerActor.id}</p>
+          ) : null}
+          <div className="ml-auto flex items-center gap-2">
             {activeTurn ? (
               <Button
                 size="sm"
@@ -222,8 +256,15 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 Stop turn
               </Button>
             ) : null}
-            <Button size="sm" variant="quiet" onPress={() => setShowRail((v) => !v)}>
-              {showRail ? 'Hide index' : 'Show index'}
+            <Button
+              size="sm"
+              variant="quiet"
+              aria-label={showRail ? 'Hide Side panel' : 'Show Side panel'}
+              title={showRail ? 'Hide Side panel' : 'Show Side panel'}
+              className="h-8 w-8 px-0"
+              onPress={() => setShowRail((v) => !v)}
+            >
+              <Icon name="view" />
             </Button>
           </div>
         </header>
@@ -272,6 +313,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 />
               ) : null}
             </div>
+          </div>
+        ) : null}
+        {!renameDraft && renameState?.status === 'error' && renameState.variables ? (
+          <div className="border-b border-separator px-6 py-3">
+            <ErrorBanner
+              message="Couldn't rename this thread."
+              onRetry={() => rename.mutate(renameState.variables!)}
+            />
           </div>
         ) : null}
         {archiveState?.status === 'error' && archiveState.variables ? (
@@ -351,7 +400,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           </div>
         </div>
       </div>
-      {showRail ? <IndexRail workspaceId={workspaceId} threadId={threadId} /> : null}
+      {showRail ? <SidePanel workspaceId={workspaceId} threadId={threadId} /> : null}
     </div>
   );
 }

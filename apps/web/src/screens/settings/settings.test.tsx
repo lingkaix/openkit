@@ -733,6 +733,7 @@ function makeClient(
     core: {
       meta: vi.fn().mockResolvedValue(META),
       listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE] }),
+      listThreads: vi.fn().mockResolvedValue({ items: [] }),
       getWorkspace: vi.fn().mockResolvedValue(WORKSPACE),
       getWorkspaceResources: vi.fn().mockResolvedValue(WORKSPACE_RESOURCES),
       updateWorkspace: vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Renamed workspace' }),
@@ -925,10 +926,10 @@ describe('Vault settings (board 15)', () => {
   it('is live in normal Settings navigation and renders only bounded secret-safe live metadata', async () => {
     const client = makeClient();
     const surface = surfaceById('vault');
-    expect(surface).toMatchObject({ tier: 'A', nav: 'settings' });
+    expect(surface).toMatchObject({ tier: 'A', nav: 'workspace-compact' });
     expect(isSurfaceLive(surface!)).toBe(true);
 
-    renderApp('/settings/vault', client);
+    renderApp('/workspace/vault', client);
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Vault' })).toBeInTheDocument();
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
@@ -1058,7 +1059,7 @@ describe('Vault settings (board 15)', () => {
       .mockRejectedValueOnce(new Error('workspace-store-private failure'))
       .mockResolvedValue({ items: [WORKSPACE] });
     const client = makeClient({ core: { listWorkspaces } });
-    renderApp('/settings/vault', client);
+    renderApp('/workspace/vault', client);
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load workspaces/i);
@@ -1099,7 +1100,7 @@ describe('Vault settings (board 15)', () => {
   it('shows content-shaped loading skeletons while the live reads are pending', async () => {
     const pending = new Promise(() => {});
     renderApp(
-      '/settings/vault',
+      '/workspace/vault',
       makeClient({
         app: {
           listWorkspaceVaultReferences: vi.fn().mockReturnValue(pending),
@@ -1126,7 +1127,7 @@ describe('Vault settings (board 15)', () => {
           .mockResolvedValue({ workspaceId: WORKSPACE.id, vaultUseRecords: [] }),
       },
     });
-    renderApp('/settings/vault', client);
+    renderApp('/workspace/vault', client);
 
     expect(
       await screen.findByText('No credential references', { exact: true })
@@ -1141,7 +1142,7 @@ describe('Vault settings (board 15)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('workspace-vault-private failure'))
       .mockResolvedValue(VAULT_REFERENCES);
-    renderApp('/settings/vault', makeClient({ app: { listWorkspaceVaultReferences } }));
+    renderApp('/workspace/vault', makeClient({ app: { listWorkspaceVaultReferences } }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).not.toHaveTextContent('workspace-vault-private failure');
@@ -1163,7 +1164,7 @@ describe('Vault settings (board 15)', () => {
         })
       )
       .mockResolvedValue(VAULT_INJECTION_PLANS);
-    renderApp('/settings/vault', makeClient({ app: { listWorkspaceVaultInjectionPlans } }));
+    renderApp('/workspace/vault', makeClient({ app: { listWorkspaceVaultInjectionPlans } }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load/i);
@@ -1188,7 +1189,7 @@ describe('Vault settings (board 15)', () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
-    renderApp('/settings/vault', client);
+    renderApp('/workspace/vault', client);
 
     const references = await screen.findByRole('region', { name: 'References' });
     expect(
@@ -1362,10 +1363,10 @@ describe('Usage and audit settings (board 17)', () => {
   it('is a selected-Workspace read-only surface with exact live reads and a bounded DOM', async () => {
     const client = makeClient();
     const surface = surfaceById('usage');
-    expect(surface).toMatchObject({ tier: 'A', nav: 'settings' });
+    expect(surface).toMatchObject({ tier: 'A', nav: 'workspace-compact' });
     expect(isSurfaceLive(surface!)).toBe(true);
 
-    renderApp('/settings/usage', client);
+    renderApp('/workspace/usage', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Usage & audit' })
@@ -1421,7 +1422,7 @@ describe('Usage and audit settings (board 17)', () => {
       .mockRejectedValueOnce(new Error('workspace-discovery-private failure'))
       .mockResolvedValue({ items: [WORKSPACE] });
     const client = makeClient({ core: { listWorkspaces } });
-    renderApp('/settings/usage', client);
+    renderApp('/workspace/usage', client);
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load workspaces/i);
@@ -1459,7 +1460,7 @@ describe('Usage and audit settings (board 17)', () => {
   it('shows content-shaped loading skeletons while the three live reads are pending', async () => {
     const pending = new Promise(() => {});
     renderApp(
-      '/settings/usage',
+      '/workspace/usage',
       makeClient({
         app: {
           getCapabilityUsage: vi.fn().mockReturnValue(pending),
@@ -1474,7 +1475,7 @@ describe('Usage and audit settings (board 17)', () => {
 
   it('shows a distinct empty state for usage, audit events, and permission decisions', async () => {
     renderApp(
-      '/settings/usage',
+      '/workspace/usage',
       makeClient({
         app: {
           getCapabilityUsage: vi.fn().mockResolvedValue({
@@ -1504,7 +1505,7 @@ describe('Usage and audit settings (board 17)', () => {
       .mockRejectedValueOnce(new Error('workspace-audit-private failure'))
       .mockResolvedValue(WORKSPACE_AUDIT_EVENTS);
     const client = makeClient({ app: { listWorkspaceAuditEvents } });
-    renderApp('/settings/usage', client);
+    renderApp('/workspace/usage', client);
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load usage and audit/i);
@@ -1517,7 +1518,7 @@ describe('Usage and audit settings (board 17)', () => {
 
   it('keeps the selected-Workspace projection visible but marks it stale when disconnected', async () => {
     const client = makeClient({ core: { meta: vi.fn().mockRejectedValue(new Error('down')) } });
-    renderApp('/settings/usage', client);
+    renderApp('/workspace/usage', client);
 
     expect(await screen.findByText('chat_completions', { exact: true })).toBeInTheDocument();
     expect(await screen.findByText('Status may be stale', { exact: true })).toBeInTheDocument();
@@ -1527,7 +1528,7 @@ describe('Usage and audit settings (board 17)', () => {
 describe('General settings (board 10)', () => {
   it('loads only Workspace-authorized settings and never requests deployment-admin data', async () => {
     const client = makeClient();
-    renderApp('/settings', client);
+    renderApp('/workspace', client);
     expect(await screen.findByRole('heading', { level: 1, name: 'General' })).toBeInTheDocument();
     expect(await screen.findByLabelText(/Display name/i)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Knowledge/i, level: 2 })).toBeInTheDocument();
@@ -1549,7 +1550,7 @@ describe('General settings (board 10)', () => {
     const client = makeClient({
       core: { getWorkspace: vi.fn().mockReturnValue(new Promise(() => {})) },
     });
-    renderApp('/settings', client);
+    renderApp('/workspace', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
   });
 
@@ -1560,7 +1561,7 @@ describe('General settings (board 10)', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue(WORKSPACE);
     const client = makeClient({ core: { getWorkspace } });
-    renderApp('/settings', client);
+    renderApp('/workspace', client);
     expect(await screen.findByText(/Couldn't load settings/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(getWorkspace).toHaveBeenCalledTimes(2));
@@ -1570,7 +1571,7 @@ describe('General settings (board 10)', () => {
     const user = userEvent.setup();
     const updateWorkspace = vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Team workspace' });
     const client = makeClient({ core: { updateWorkspace } });
-    renderApp('/settings', client);
+    renderApp('/workspace', client);
 
     const nameField = await screen.findByLabelText(/Display name/i);
     await user.clear(nameField);
@@ -1595,7 +1596,7 @@ describe('General settings (board 10)', () => {
       },
     });
     const client = makeClient({ core: { updateWorkspace } });
-    renderApp('/settings', client);
+    renderApp('/workspace', client);
 
     await user.click(await screen.findByRole('button', { name: /Default model/ }));
     await user.click(
@@ -1629,7 +1630,7 @@ describe('General settings (board 10)', () => {
         getWorkspace: vi.fn().mockResolvedValue(WORKSPACE),
       },
     });
-    renderApp('/settings', client);
+    renderApp('/workspace', client);
     expect(await screen.findByLabelText(/Display name/i)).toBeInTheDocument();
     await waitFor(
       () => {
@@ -1640,7 +1641,7 @@ describe('General settings (board 10)', () => {
   });
 
   it('exposes page landmarks and section headings for a11y', async () => {
-    renderApp('/settings', makeClient());
+    renderApp('/workspace', makeClient());
     expect(await screen.findByRole('heading', { level: 1, name: 'General' })).toBeInTheDocument();
     expect(await screen.findByLabelText(/Display name/i)).toBeInTheDocument();
     expect(screen.getByRole('main')).toBeInTheDocument();
@@ -1652,7 +1653,7 @@ describe('AI interface (board 20)', () => {
     const surface = surfaceById('ai-interface');
     expect(surface).toMatchObject({
       tier: 'A',
-      nav: 'settings',
+      nav: 'settings-server',
       path: '/settings/ai-interface',
     });
     expect(isSurfaceLive(surface!)).toBe(true);
