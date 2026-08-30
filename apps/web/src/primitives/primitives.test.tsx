@@ -635,6 +635,7 @@ describe('primitive tier — behavior', () => {
     const { container } = render(
       <Select
         label="Model"
+        defaultSelectedKey="sonnet"
         items={[
           { id: 'opus', label: 'Claude Opus 4.8' },
           { id: 'sonnet', label: 'Claude Sonnet 5' },
@@ -646,6 +647,7 @@ describe('primitive tier — behavior', () => {
     // exist; RAC's virtual-focus listbox is flaky in jsdom.
     const trigger = screen.getByRole('button', { name: /Model/ });
     expect(trigger).toHaveAttribute('aria-haspopup', 'listbox');
+    expect(trigger).toHaveTextContent('Claude Sonnet 5');
     // Items are wired into the control (RAC mirrors them into a hidden native select).
     expect(container.querySelectorAll('select option').length).toBeGreaterThanOrEqual(2);
   });

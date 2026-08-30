@@ -38,13 +38,12 @@ export function Select({
   return (
     <AriaSelect
       {...props}
+      placeholder={placeholder}
       className={`flex flex-col gap-1 ${typeof className === 'string' ? className : ''}`}
     >
       <Label className="text-xs font-bold text-fg">{label}</Label>
       <Button className="flex h-8 items-center justify-between gap-2 rounded-ok border border-border bg-card px-3 text-sm text-fg outline-none transition-colors hover:border-border-hover focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus data-[disabled]:bg-disabled-bg data-[disabled]:text-disabled-fg">
-        <SelectValue className="truncate data-[placeholder]:text-fg-muted">
-          {placeholder}
-        </SelectValue>
+        <SelectValue className="truncate data-[placeholder]:text-fg-muted" />
         <Icon name="chevron-down" size="sm" />
       </Button>
       <Popover className="w-[var(--trigger-width)] overflow-auto rounded-ok border border-border bg-elevated py-1 shadow-ok-menu">
