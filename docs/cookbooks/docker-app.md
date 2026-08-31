@@ -28,7 +28,7 @@ For the standard local dogfooding setup, use the repo-level helper:
 pnpm run app:run
 ```
 
-The helper creates `~/nano-data` when it does not exist, loads `~/nano-data/secrets/openkit.env` when that file exists, seeds `config/server.jsonc` with `secretRef: "env:OPENROUTER_API_KEY"` for the OpenRouter core and agent providers, mounts that data root into the app container, and serves the web UI at `http://127.0.0.1:7080`.
+The helper creates `~/nano-data` when it does not exist, loads `~/nano-data/secrets/openkit.env` when that file exists, seeds deployment defaults in `config/server.jsonc`, an OpenRouter profile in `config/providers/openrouter.provider.jsonc`, a logical route in `config/gateway.jsonc`, and `config/internal-role-profiles.jsonc`, mounts that data root into the app container, and serves the web UI at `http://127.0.0.1:7080`.
 
 Rebuild the app image before starting it with:
 
@@ -38,7 +38,7 @@ pnpm run app:run --rebuild
 
 Before using real provider-backed turns, put `OPENROUTER_API_KEY='...'` in `~/nano-data/secrets/openkit.env`, or export it in the host shell that runs `pnpm run app:run`.
 
-If you split the core and agent providers onto different credentials, edit each provider `secretRef` to point at the desired `env:NAME`, then put those variable assignments in `~/nano-data/secrets/openkit.env` or export them before starting app.
+If you use several Provider accounts, give each Provider file its own `secretRef`, add the desired private Provider routes to `gateway.jsonc`, and put referenced `env:NAME` assignments in `~/nano-data/secrets/openkit.env` or export them before starting the app.
 
 Existing app provider entries that still contain inline credential fields such as `apiKey` fail clearly and must be changed to `secretRef`.
 

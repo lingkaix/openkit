@@ -31,16 +31,19 @@ describe('selectAgent', () => {
     ).toEqual(expect.objectContaining({ id: 'agent_override' }));
   });
 
-  it('selects the workspace default and then the first manifest', () => {
+  it('selects the resolved scope default without using manifest order as a fallback', () => {
     expect(
       selectAgent({ defaultAgentId: 'agent_default' }, {}, [
         manifest('agent_first'),
         manifest('agent_default'),
       ])
     ).toEqual(expect.objectContaining({ id: 'agent_default' }));
-    expect(selectAgent({}, {}, [manifest('agent_first')])).toEqual(
-      expect.objectContaining({ id: 'agent_first' })
-    );
+    expect(selectAgent({}, {}, [manifest('agent_first')])).toEqual({
+      error: {
+        code: 'agent_not_configured',
+        message: 'No Agent is selected by request, User, Workspace, or Server configuration.',
+      },
+    });
   });
 
   it('returns an error for missing selected manifests', () => {

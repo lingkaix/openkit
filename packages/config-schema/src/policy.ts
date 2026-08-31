@@ -3,6 +3,8 @@
  */
 export type ConfigCatalogKind =
   | 'server'
+  | 'gateway'
+  | 'internal-role'
   | 'provider'
   | 'agent'
   | 'workspace'
@@ -51,18 +53,6 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
   },
   {
     kind: 'server',
-    path: '$.providers',
-    owner: 'server',
-    merge: 'replace',
-    workspaceOverride: 'forbidden',
-    userOverride: 'forbidden',
-    requestOverride: 'forbidden',
-    reloadClass: 'restart-required',
-    secretPolicy: 'secret-ref-only',
-    summary: 'Embedded provider supply is server-owned and takes effect after restart.',
-  },
-  {
-    kind: 'server',
     path: '$.nanohost',
     owner: 'server',
     merge: 'replace',
@@ -88,6 +78,32 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
     summary: 'Provider profile changes take effect after restart.',
   },
   {
+    kind: 'gateway',
+    path: '$',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'allowed',
+    userOverride: 'allowed',
+    requestOverride: 'allowed',
+    reloadClass: 'hot-swappable',
+    secretPolicy: 'no-secret',
+    summary:
+      'Gateway logical models and private ordered routes are Server resources selected by higher scopes.',
+  },
+  {
+    kind: 'internal-role',
+    path: '$',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'allowed',
+    userOverride: 'allowed',
+    requestOverride: 'allowed',
+    reloadClass: 'session-scoped',
+    secretPolicy: 'no-secret',
+    summary:
+      'Internal-role profiles are Server supply with Workspace and User preference composition.',
+  },
+  {
     kind: 'agent',
     path: '$',
     owner: 'server',
@@ -110,6 +126,18 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
     reloadClass: 'session-scoped',
     secretPolicy: 'no-secret',
     summary: 'Workspace roots define host-local directories for new worker sessions.',
+  },
+  {
+    kind: 'user',
+    path: '$.workspaces',
+    owner: 'user',
+    merge: 'replace',
+    workspaceOverride: 'forbidden',
+    userOverride: 'allowed',
+    requestOverride: 'allowed',
+    reloadClass: 'hot-swappable',
+    secretPolicy: 'no-secret',
+    summary: 'Personal per-Workspace Agent, profile, logical-model, and internal-role preferences.',
   },
   {
     kind: 'data-source',

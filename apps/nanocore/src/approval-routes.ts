@@ -26,6 +26,7 @@ import {
 } from './runtime/goal-store.js';
 import {
   commandInputHash,
+  findExactConversationWorkerOwnerReceipt,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -701,12 +702,16 @@ function closeWorkerApprovalGate(
   } catch {
     throw taskGateRecoveryError('The worker approval has no exact human command identity.');
   }
-  const ownerReceipt = store.getCommandRequest(
-    goalTaskCheckpoint ? 'goal.step' : 'task.start',
-    checkpoint.requestId,
-    ownerScope,
-    goalTaskCheckpoint ? workspaceDb : undefined
-  );
+  const ownerReceipt = goalTaskCheckpoint
+    ? store.getCommandRequest('goal.step', checkpoint.requestId, ownerScope, workspaceDb)
+    : (findExactConversationWorkerOwnerReceipt(store, {
+        actorId: ownerScope.actorId,
+        workspaceId: ownerScope.workspaceId,
+        receivingThreadId: ownerScope.threadId,
+        requestId: checkpoint.requestId,
+        requestInputHash: checkpoint.requestInputHash,
+        turnId: input.turnId,
+      }) ?? store.getCommandRequest('task.start', checkpoint.requestId, ownerScope));
   if (
     !evidence ||
     !ownerReceipt ||

@@ -55,7 +55,6 @@ const WORKSPACE_EXPORT_FILE_BYTES = serializeExportJson({
   name: WORKSPACE.name,
   kind: WORKSPACE.kind,
   status: 'active',
-  defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
   counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
   createdAt: TIMESTAMP,
   updatedAt: TIMESTAMP,
@@ -63,7 +62,7 @@ const WORKSPACE_EXPORT_FILE_BYTES = serializeExportJson({
 const FILE_DIGEST = 'sha256:0f141fbf15bd9400f2152ee0738383b2d713f6502cd98f8ee72951843f632197';
 const FILE_BYTES = new TextEncoder().encode(WORKSPACE_EXPORT_FILE_BYTES).byteLength;
 const CONTENT_INVENTORY = [
-  { path: 'records/workspace.json', digest: FILE_DIGEST, bytes: FILE_BYTES },
+  { path: 'records/workspace-record.json', digest: FILE_DIGEST, bytes: FILE_BYTES },
 ];
 const CONTENT_DIGEST = 'sha256:0cd2fa898af279bb1179b690909444b73031fa36d246fa4037346c598ca2c9f5';
 const DRY_RUN_REQUEST = WorkspaceImportDryRunRequestSchema.parse({
@@ -131,7 +130,7 @@ const CHANGED_EXPORT_MANIFEST = {
 const VERIFICATION = {
   fileCount: 1,
   totalBytes: FILE_BYTES,
-  checkedFiles: ['records/workspace.json'],
+  checkedFiles: ['records/workspace-record.json'],
 };
 
 const COLLISION = {
@@ -155,7 +154,6 @@ const IMPORTED_WORKSPACE = {
   name: 'Imported research',
   kind: 'general' as const,
   status: 'active' as const,
-  defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
   counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
   createdAt: TIMESTAMP,
   updatedAt: TIMESTAMP,
@@ -167,7 +165,7 @@ const EXPORT_RESULT = WorkspaceExportResponseSchema.parse({
   manifest: MANIFEST,
   fileCount: 1,
   totalBytes: FILE_BYTES,
-  checkedFiles: ['records/workspace.json'],
+  checkedFiles: ['records/workspace-record.json'],
 });
 
 const DRY_RUN = WorkspaceImportDryRunResponseSchema.parse({

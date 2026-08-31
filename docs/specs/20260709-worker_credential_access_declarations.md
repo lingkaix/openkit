@@ -298,7 +298,7 @@ Add one shared NanoCore resolver that accepts declarations, package lineage, Age
 
 The resolver should replace the fixed GitHub MCP provider resolver and the fixed Codex auth runtime-file resolver.
 
-The resolver must use the accepted sequence: plan, audited vault resolution with `VaultUse`, successful backend-private materialization sink, then receipt. The current pre-resolution receipt order is implementation residue, not a sequence to preserve.
+The resolver uses the accepted sequence: plan, audited vault resolution with `VaultUse`, successful backend-private materialization sink, then receipt.
 
 The resolver should use the same `VaultUseAuditedBackend` wrapper as existing V1 flows.
 
@@ -340,15 +340,15 @@ The current implementation is partial.
 
 `apps/nanocore/src/runtime/agent-environment.ts` generates and resolves `sandbox-provider` declarations for provider-backed credentials.
 
-The current manifest and resolver require concrete `vaultGrantId` values and do not compose reusable `requirementId` declarations with Workspace bindings. That is an implementation divergence from the reusable cross-Workspace contract above.
+The manifest and resolver accept reusable `requirementId` declarations and compose them with per-Workspace `credentialBindings`. Required missing bindings fail setup, optional missing bindings are omitted, and the same manifest can resolve to different Workspace-scoped VaultGrants without exposing the choice to the worker.
 
 The shared declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material. Current packages emit a disabled capability plane, so a non-null grant `targetCapabilityId` is intentionally fail-closed on this path.
 
-The shared resolver currently persists a receipt before audited resolution and backend-private sink completion. That order is non-conforming: failed resolution or a rejected provider sink can retain a row that is not a successful completion fact.
+The shared worker resolver creates the plan, performs audited Vault resolution, completes the backend-private sink, and only then persists the receipt. Backend resolution failure or sink failure may leave redacted plan and `VaultUse` evidence but creates no receipt.
 
 The durable GitHub MCP and Codex auth JSON materialization paths have already moved to the shared declaration resolver.
 
-`apps/nanocore/src/runtime/worker-governance-backend.ts` defines backend-private runtime-file uploads and runtime-env materialization, but the production worker-turn materialization path currently drops the resolved credential arrays before the NanoHost or OpenShell effect. It rejects backend-private Provider credentials before any OpenShell Provider or Sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference Provider remains. A resolved receipt therefore does not yet prove that a worker received the credential.
+`apps/nanocore/src/runtime/worker-governance-backend.ts` defines backend-private runtime-file uploads and runtime-env materialization, and the production worker-turn path carries those resolved arrays through NanoHost to the exact OpenShell effect. It still rejects backend-private Provider credentials before any OpenShell Provider or Sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference Provider remains. Runtime-file and runtime-env receipts therefore prove sink completion, while sandbox-provider receipt support remains unavailable rather than overstated.
 
 `apps/nanocore/src/vault/vault-use-audited-backend.ts` already records vault resolve success and typed failure without storing secret material.
 

@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 189;
+const EXPECTED_CATALOG_SIZE = 190;
 const EXPECTED_SERVER_SIZE = 46;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 141;
+const EXPECTED_INCLUDED_SIZE = 142;
 
 /** Included operations whose current backend reads cannot support a truthful restart-safe Web workflow. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -63,6 +63,7 @@ const WEB_OPERATION_GROUPS = {
     updateAutomation: { disposition: 'roadmap', roadmap: 'R092' },
   },
   Dashboards: {
+    getConversationTargets: { disposition: 'live', surface: 'Chat' },
     getThreadDashboard: { disposition: 'live', surface: 'Chat' },
     getWorkspaceDashboard: { disposition: 'live', surface: 'Overview' },
     listHumanAttention: { disposition: 'live', surface: 'Overview' },
@@ -117,7 +118,7 @@ const WEB_OPERATION_GROUPS = {
     resumeThreadGoal: { disposition: 'live', surface: 'Goal' },
     reviseThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
     runThreadGoalStep: { disposition: 'live', surface: 'Goal' },
-    startChatMode: { disposition: 'live', surface: 'Chat' },
+    submitConversation: { disposition: 'live', surface: 'Chat' },
     startTaskMode: { disposition: 'live', surface: 'Task' },
     startThreadGoal: { disposition: 'live', surface: 'Goal' },
     submitThreadGoalSteering: { disposition: 'live', surface: 'Goal' },

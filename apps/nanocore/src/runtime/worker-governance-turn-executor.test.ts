@@ -60,7 +60,10 @@ import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -322,7 +325,7 @@ function bindInterruptAttempt(
  * @returns Deterministic Task worker Turn identity.
  */
 function expectedTaskModeTurnId(
-  command: 'chat.start.task' | 'task.start',
+  command: 'conversation.submit.task' | 'task.start',
   actorId: string,
   workspaceId: string,
   threadId: string,
@@ -1558,8 +1561,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       profileId: 'default',
       profileKind: null,
       runtimeKind: 'codex',
+      runtimeVersion: 'test',
     });
-    expect(backend.lastPackage?.llm.routes[0]?.model).toBe('gpt-5-codex');
+    expect(backend.lastPackage?.llm.routes[0]?.model).toBe('openai/gpt-5.2');
     expect(backend.lastPackage?.runtime.command.workingDirectory).toBe('/workspace/openkit');
     expect(backend.lastContext?.workspaceRoots).toEqual([
       expect.objectContaining({
@@ -2150,6 +2154,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     } as unknown as LLMGatewayProviderDispatcher;
     const app = createApp({
       coreDb,
+      gatewayConfig: createTestGatewayConfig(),
       llmGatewayDispatcher,
       mode: 'local',
       providerRegistry: new ProviderRegistry([
@@ -2546,12 +2551,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await executor.startTurn(store, turn.id, 'Run trusted worker inference', {
       agentSetup: createTestAgentSetup({
-        provider: {
-          model: 'openai/gpt-5.2',
-          origin: 'server-providers',
-          providerId: 'agent-openrouter',
-          secretRef: null,
-        },
         requiredCapabilities: ['trusted-worker-inference-relay'],
       }),
       requestId: '00000000-0000-4000-8000-000000000214',
@@ -2563,16 +2562,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(backend.lastPackage?.llm.routes).toEqual([
       expect.objectContaining({
         model: 'openai/gpt-5.2',
-        providerInstanceId: 'agent-openrouter',
+        providerInstanceId: 'openkit-gateway',
       }),
     ]);
-    expect(backend.lastPackage?.providers.providerInstances).toEqual([
-      expect.objectContaining({
-        id: 'agent-openrouter',
-        kind: 'gateway',
-        models: ['openai/gpt-5.2'],
-      }),
-    ]);
+    expect(backend.lastPackage).not.toHaveProperty('providers');
   });
 
   it('stages linked review branches while ingesting production worker changes', async () => {
@@ -4643,7 +4636,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     {
       name: 'actor-mismatch',
       turnId: expectedTaskModeTurnId(
-        'chat.start.task',
+        'conversation.submit.task',
         'user_forged',
         'ws_demo',
         'th_demo',
@@ -4653,7 +4646,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     {
       name: 'workspace-mismatch',
       turnId: expectedTaskModeTurnId(
-        'chat.start.task',
+        'conversation.submit.task',
         LOCAL_USER_ID,
         'ws_other',
         'th_demo',
@@ -4663,7 +4656,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     {
       name: 'thread-mismatch',
       turnId: expectedTaskModeTurnId(
-        'chat.start.task',
+        'conversation.submit.task',
         LOCAL_USER_ID,
         'ws_demo',
         'th_other',
@@ -4673,7 +4666,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     {
       name: 'request-mismatch',
       turnId: expectedTaskModeTurnId(
-        'chat.start.task',
+        'conversation.submit.task',
         LOCAL_USER_ID,
         'ws_demo',
         'th_demo',
@@ -4690,7 +4683,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const prepared = prepareNullKnowledgeTaskContext(
       'chat-identity-exact',
       expectedTaskModeTurnId(
-        'chat.start.task',
+        'conversation.submit.task',
         LOCAL_USER_ID,
         'ws_demo',
         'th_demo',
@@ -5332,6 +5325,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
           grantId: 'grant_codex_auth_json',
           outcome: 'succeeded',
           resolvingPath: 'grant',
+        }),
+      ]);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([
+        expect.objectContaining({
+          agentSessionId: 'as_governance_runtime_file_1',
+          grantId: 'grant_codex_auth_json',
         }),
       ]);
       expect(JSON.stringify(backend.lastPackage)).not.toContain('codex_executor_secret');

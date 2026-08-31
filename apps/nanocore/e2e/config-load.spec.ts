@@ -42,6 +42,10 @@ describe('nanocore e2e config loading', () => {
         schemaVersion: 1,
         id: 'agent_e2e',
         displayName: 'E2E Agent',
+        models: {
+          preferredLogicalModelId: 'reasoning',
+          allowedLogicalModelIds: ['reasoning'],
+        },
         runtime: {
           kind: 'custom',
           adapter: 'custom-http',

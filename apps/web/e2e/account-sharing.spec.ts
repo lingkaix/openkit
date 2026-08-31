@@ -32,7 +32,7 @@ function watchRuntimeErrors(page: Page) {
   });
   page.on('pageerror', (error) => observation.pageErrors.push(error.message));
   page.on('response', (response) => {
-    if (new URL(response.url()).pathname === '/api/app/workspaces' && response.status() === 401) {
+    if (new URL(response.url()).pathname.startsWith('/api/') && response.status() === 401) {
       observation.admission401Count += 1;
     }
   });
@@ -81,6 +81,16 @@ async function signIn(page: Page, account: { email: string }): Promise<void> {
   await expect(page.locator('body')).not.toContainText(password);
 }
 
+/** Selects one authorized Workspace through the sidebar menu. */
+async function selectWorkspace(page: Page, name: string): Promise<void> {
+  const navigation = page.getByRole('navigation', {
+    name: /Primary workspace navigation|Settings sections/,
+  });
+  await navigation.getByRole('button', { name: 'Quick Chat', exact: true }).click();
+  await page.getByRole('menuitem', { name, exact: true }).click();
+  await expect(navigation.getByRole('button', { name, exact: true })).toBeVisible();
+}
+
 /** Leaves the authenticated product and waits for the protected read to reopen the gate. */
 async function signOut(page: Page, webUrl: string): Promise<void> {
   await page.goto(`${webUrl}/settings/account`);
@@ -108,9 +118,27 @@ async function createWorkspace(page: Page, webUrl: string): Promise<string> {
 async function invite(page: Page, email: string): Promise<void> {
   const invitations = page.getByRole('region', { name: 'Workspace invitations' });
   await invitations.getByRole('textbox', { name: 'Invitee email' }).fill(email);
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname.endsWith('/invitations')
+  );
   await invitations.getByRole('button', { name: 'Create invitation' }).click();
+  const response = await responsePromise;
+  expect(response.ok(), `Invitation response ${response.status()}: ${await response.text()}`).toBe(
+    true
+  );
   await expect(invitations.getByRole('textbox', { name: 'Invitee email' })).toHaveValue('');
   await expect(page.locator('body')).not.toContainText(email);
+}
+
+/** Opens Account through the live shell without discarding the in-memory Workspace selection. */
+async function openSelectedWorkspaceAccount(page: Page): Promise<void> {
+  const heading = page.getByRole('heading', { name: 'Account' });
+  if (!(await heading.isVisible())) {
+    await page.getByRole('button', { name: /^Settings$/ }).click();
+  }
+  await expect(heading).toBeVisible();
 }
 
 /** Settles one current-user invitation from the account-level collection. */
@@ -156,7 +184,8 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await signOut(page, stack.webUrl);
 
   await signIn(page, owner);
-  await page.goto(`${stack.webUrl}/settings/account`);
+  await selectWorkspace(page, workspaceName);
+  await openSelectedWorkspaceAccount(page);
   await expect(page.getByRole('region', { name: 'Workspace members' })).toBeVisible();
   await invite(page, accepting.email);
   await invite(page, declining.email);
@@ -174,7 +203,8 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await signOut(page, stack.webUrl);
 
   await signIn(page, owner);
-  await page.goto(`${stack.webUrl}/settings/account`);
+  await selectWorkspace(page, workspaceName);
+  await openSelectedWorkspaceAccount(page);
   const members = page.getByRole('region', { name: 'Workspace members' });
   const acceptingRow = members.getByRole('row', { name: new RegExp(acceptingId) });
   await acceptingRow.getByLabel('Access level').click();
@@ -189,7 +219,8 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   try {
     await staleOwnerPage.goto(stack.webUrl);
     await signIn(staleOwnerPage, owner);
-    await staleOwnerPage.goto(`${stack.webUrl}/settings/account`);
+    await selectWorkspace(staleOwnerPage, workspaceName);
+    await openSelectedWorkspaceAccount(staleOwnerPage);
     const staleMembers = staleOwnerPage.getByRole('region', { name: 'Workspace members' });
     await expect(staleMembers).toBeVisible();
 
@@ -244,7 +275,8 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
 
   await signOut(page, stack.webUrl);
   await signIn(page, accepting);
-  await page.goto(`${stack.webUrl}/settings/account`);
+  await selectWorkspace(page, workspaceName);
+  await openSelectedWorkspaceAccount(page);
   const newOwnerMembers = page.getByRole('region', { name: 'Workspace members' });
   const formerOwnerRow = newOwnerMembers.getByRole('row', { name: new RegExp(ownerId) });
   await formerOwnerRow.getByRole('button', { name: 'Remove member' }).click();
@@ -257,7 +289,8 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await signOut(page, stack.webUrl);
 
   await signIn(page, leaving);
-  await page.goto(`${stack.webUrl}/settings/account`);
+  await selectWorkspace(page, workspaceName);
+  await openSelectedWorkspaceAccount(page);
   const membership = page.getByRole('region', { name: 'Workspace membership' });
   await membership.getByRole('button', { name: 'Leave Workspace' }).click();
   await page

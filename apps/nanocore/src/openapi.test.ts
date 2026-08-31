@@ -176,7 +176,7 @@ describe('app api openapi projection', () => {
     expect(JSON.stringify(document.components.schemas.ThreadDashboardResponse)).not.toContain(
       'agentSessionId'
     );
-    expect(JSON.stringify(document.components.schemas.StartChatModeResponse)).not.toContain(
+    expect(JSON.stringify(document.components.schemas.SubmitConversationResponse)).not.toContain(
       'agentSessionId'
     );
     expect(JSON.stringify(document.components.schemas.StartTaskModeResponse)).not.toContain(
@@ -218,7 +218,7 @@ describe('app api openapi projection', () => {
   it('does not publish caller provider or model authority for Internal Core Role requests', () => {
     const schemas = createAppOpenApiDocument().components.schemas;
 
-    for (const name of ['QuickChatRequest', 'StartChatModeRequest'] as const) {
+    for (const name of ['QuickChatRequest', 'SubmitConversationRequest'] as const) {
       expect(schemas[name]).toMatchObject({ additionalProperties: false });
       expect(schemas[name]).not.toHaveProperty('properties.providerId');
       expect(schemas[name]).not.toHaveProperty('properties.model');
@@ -955,9 +955,10 @@ describe('app api openapi projection', () => {
       },
     });
     expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/chat']?.post
+      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/conversation-turns']
+        ?.post
     ).toMatchObject({
-      operationId: 'startChatMode',
+      operationId: 'submitConversation',
       tags: ['modes'],
       parameters: [
         expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
@@ -967,7 +968,7 @@ describe('app api openapi projection', () => {
         content: {
           'application/json': {
             schema: {
-              $ref: '#/components/schemas/StartChatModeRequest',
+              $ref: '#/components/schemas/SubmitConversationRequest',
             },
           },
         },
@@ -977,7 +978,7 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/StartChatModeResponse',
+                $ref: '#/components/schemas/SubmitConversationResponse',
               },
             },
           },
@@ -3259,7 +3260,9 @@ describe('app api openapi projection', () => {
         const expectedRef = CANONICAL_PATH_PARAMETER_REFS[name];
         const schema = jsonObject(parameter?.schema);
 
-        return expectedRef && schema?.$ref !== expectedRef ? [`${route} ${name}`] : [];
+        return parameter?.in === 'path' && expectedRef && schema?.$ref !== expectedRef
+          ? [`${route} ${name}`]
+          : [];
       });
     });
     const schemaNames = new Set(Object.keys(document.components.schemas));
@@ -3439,8 +3442,9 @@ describe('app api openapi projection', () => {
       'updateRuntimeConfigFile',
       'getRuntimeConfigSchemas',
       'validateRuntimeConfig',
+      'getConversationTargets',
       'quickChat',
-      'startChatMode',
+      'submitConversation',
       'listThreadItems',
       'listWorkspaceMaterials',
       'createWorkspaceMaterial',

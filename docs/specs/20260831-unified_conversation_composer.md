@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Implemented
 date: 2026-08-31
 ---
 # Unified Conversation Composer
@@ -66,7 +66,7 @@ interface ConversationTarget {
     label: string;
     capabilities: readonly string[];
   }[];
-  defaultLogicalModelId: string;
+  defaultLogicalModelId: string | null;
 }
 ```
 
@@ -128,9 +128,11 @@ The client retains exact text, target, model, Artifact references, and request i
 
 ## Current Implementation Projection
 
-The current Web Composer submits only text. It creates a Thread and calls `client.app.startChatMode`, whose strict request contains only `input` and `requestId`; NanoCore's `chat.start` route owns Assistant routing and may hand off to Task or Goal Mode. There is no conversation-target catalog, structured target or logical-model input, Artifact-reference input, unified command, or target-aware retry state. Existing Artifact import supports bounded UTF-8 text formats and is sufficient for the first upload projection once the Composer connects it to submission.
+NanoCore implements `GET /api/app/workspaces/:workspaceId/conversation-targets` and `POST /api/app/workspaces/:workspaceId/threads/:threadId/conversation-turns` with strict target, logical-model, Artifact-reference, command-receipt, replay, and recovery behavior. The catalog includes Assistant, Knowledge Manager, active Goal Orchestrator, warm Worker, running Worker, and new Task Worker choices when their owning resources are available. Submission reuses existing Assistant, Knowledge, Goal, Worker, Task, Thread, Turn, Item, Artifact, and scheduler owners and adds no Shard record or second workflow engine.
 
-This implementation must replace `chat.start`, `StartChatModeRequestSchema`, `StartChatModeResponseSchema`, and `client.app.startChatMode` with the unified operation in one internal-development cutover. No route, schema, method, command alias, or compatibility reader remains. Existing unexpired `chat.start` command receipts are unsupported legacy data: no new route reads or converts them, and an operator must use a fresh internal-development data root or let ordinary expiry remove them before any diagnostic that requires parsing the retired command family. Direct `task.start`, Goal commands, Knowledge Manager commands, and their existing specialized clients remain available to non-Composer callers.
+`@openkit/core-client` exposes `client.app.getConversationTargets` and `client.app.submitConversation`; `StartChatMode*`, `client.app.startChatMode`, the Chat-specific App route, and `chat.start` are absent. Direct Task, Goal, and Knowledge operations remain available to non-Composer callers.
+
+The Web Composer implements the accepted two-region design with bounded auto-growth, Artifact selection and bounded text upload, context-filtered Agent targets, logical model selection, send action, accessible keyboard behavior, and exact draft plus request-identity preservation after failure. Product surfaces display only logical model and product target identities.
 
 ## Testing Strategy / Acceptance Criteria
 

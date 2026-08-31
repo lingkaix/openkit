@@ -85,7 +85,7 @@ function dispatchLease(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: 
     turnId: `turn_${suffix}`,
     turnInput: `Run ${suffix}`,
     requestedAgentId: 'agent_codex_host',
-    profileRef: 'profile_worker',
+    profileRef: null,
     priorityClass: 'interactive',
     requiredPoolConstraints: ['openshell.local'],
     now: () => '2026-07-05T00:00:01.000Z',

@@ -28,8 +28,8 @@ import {
  * responses never advance local state, and disconnected writes remain visible but disabled.
  */
 export function ArtifactReviewScreen() {
-  const { threadId = '', artifactId = '' } = useParams();
-  const workspaceId = useCurrentWorkspaceId();
+  const { workspaceId: routeWorkspaceId = '', threadId = '', artifactId = '' } = useParams();
+  const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const artifact = useArtifact(workspaceId, artifactId);
   const reviews = useArtifactReviews(workspaceId, artifactId);
   const { checking, failed: disconnected } = useConnection();
@@ -155,7 +155,7 @@ export function ArtifactReviewScreen() {
       <div className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto mb-4 max-w-[760px]">
           <Link
-            to={`/goals/${threadId}?lens=plan`}
+            to={`/goals/${routeWorkspaceId}/${threadId}?lens=plan`}
             className="text-xs font-medium text-accent hover:underline"
           >
             ← Back to goal

@@ -486,6 +486,35 @@ impl std::fmt::Display for NanoHostRunFailure {
     }
 }
 
+/// Parses the bounded secret-bearing environment used only by one Sandbox creation effect.
+fn parse_sandbox_environment(
+    value: Option<&serde_json::Value>,
+) -> Result<HashMap<String, String>, &'static str> {
+    let Some(value) = value else {
+        return Ok(HashMap::new());
+    };
+    let object = value
+        .as_object()
+        .filter(|entries| entries.len() <= 128)
+        .ok_or("sandbox environment invalid")?;
+    let mut environment = HashMap::with_capacity(object.len());
+    for (name, value) in object {
+        let mut bytes = name.bytes();
+        let first = bytes.next().ok_or("sandbox environment invalid")?;
+        if !(first.is_ascii_alphabetic() || first == b'_')
+            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err("sandbox environment invalid");
+        }
+        let value = value
+            .as_str()
+            .filter(|value| value.len() <= 65_536 && !value.contains('\0'))
+            .ok_or("sandbox environment invalid")?;
+        environment.insert(name.clone(), value.to_string());
+    }
+    Ok(environment)
+}
+
 /// Calls the one existing local owner selected by a fixed effect path.
 ///
 /// # Errors
@@ -526,7 +555,7 @@ fn execute_effect_command(
                     name: Some(sandbox_id.to_string()),
                     image: Some(string("imageDigest")?.to_string()),
                     labels: HashMap::new(),
-                    environment: HashMap::new(),
+                    environment: parse_sandbox_environment(command.input.get("environment"))?,
                     providers: Vec::new(),
                     gpu: false,
                 })
@@ -552,28 +581,29 @@ fn execute_effect_command(
             })))
         }
         RuntimeEffectKind::OpenBridge => {
-            let harness_binding_ref = string("harnessBindingRef")?.to_string();
+            let sandbox_integration_binding_ref =
+                string("sandboxIntegrationBindingRef")?.to_string();
             let sandbox_id = coordinator
                 .current_sandbox_name()
                 .map_err(|_| "bridge.open has no current Sandbox")?
                 .to_string();
             let request = LifecycleEffectRequest::new(
                 &command.request_id,
-                &harness_binding_ref,
+                &sandbox_integration_binding_ref,
                 &sandbox_id,
                 LifecycleEffectKind::OpenBridge,
             );
             let bootstrap = WorkerBootstrapRequest {
                 sandbox_id: sandbox_id.clone(),
                 request_id: command.request_id.clone(),
-                harness_binding_ref,
+                sandbox_integration_binding_ref,
             };
             let state = coordinator
                 .execute_lifecycle_effect(&request, None, None, Some(bootstrap))
                 .map_err(|_| "bridge.open failed or unknown")?;
             Ok(ExecutedEffectResult::Json(serde_json::json!({
                 "accepted": true,
-                "harnessReady": true,
+                "integrationReady": true,
                 "state": state,
             })))
         }
@@ -1182,7 +1212,7 @@ mod tests {
     use super::{
         OUTER_SESSION_RECONNECT_BOUND, OUTER_SESSION_RECONNECT_DELAY,
         parse_nanohost_session_inputs, parse_required_deployment_image_digests,
-        successor_connect_remaining,
+        parse_sandbox_environment, successor_connect_remaining,
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
@@ -1220,6 +1250,29 @@ mod tests {
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect()
+    }
+
+    #[test]
+    fn sandbox_environment_accepts_only_bounded_string_entries() {
+        let accepted = serde_json::json!({
+            "GITHUB_TOKEN": "secret-value",
+            "_SECOND": "line one\nline two"
+        });
+        assert_eq!(
+            parse_sandbox_environment(Some(&accepted))
+                .expect("valid sandbox environment")
+                .get("GITHUB_TOKEN")
+                .map(String::as_str),
+            Some("secret-value")
+        );
+        for rejected in [
+            serde_json::json!([]),
+            serde_json::json!({"bad-name": "secret"}),
+            serde_json::json!({"VALID": 1}),
+            serde_json::json!({"VALID": "contains\0nul"}),
+        ] {
+            assert!(parse_sandbox_environment(Some(&rejected)).is_err());
+        }
     }
 
     #[test]
@@ -1431,9 +1484,9 @@ mod tests {
             .split_once("RuntimeEffectKind::CloseBridge =>")
             .expect("end of static Harness bridge owner")
             .0;
-        assert!(bridge_owner.contains("string(\"harnessBindingRef\")"));
+        assert!(bridge_owner.contains("string(\"sandboxIntegrationBindingRef\")"));
         assert!(bridge_owner.contains("WorkerBootstrapRequest"));
-        assert!(bridge_owner.contains("harness_binding_ref"));
+        assert!(bridge_owner.contains("sandbox_integration_binding_ref"));
         assert!(!session_call.contains("workerControlToken"));
         assert!(!session_call.contains("workerInferenceToken"));
         assert!(!run.contains("spawn_blocking(move ||"));

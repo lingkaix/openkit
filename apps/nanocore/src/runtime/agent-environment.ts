@@ -28,7 +28,7 @@ import { getVaultGrant, type VaultGrantRecord } from '../vault/vault-grants.js';
 import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
-import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
+import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
 import { TurnStartValidationError } from './orchestrator.js';
 
 type Turn = z.infer<typeof TurnSchema>;
@@ -237,11 +237,14 @@ export interface ResolveAgentEnvironmentPackageInput {
   runtimeFileCredentialSink?: (credential: ResolvedAgentEnvironmentRuntimeFileCredential) => void;
   /** Optional sink for backend-private runtime environment credential material. */
   runtimeEnvCredentialSink?: (credential: ResolvedAgentEnvironmentRuntimeEnvCredential) => void;
+  /** Optional sink for receipt metadata persisted only after physical materialization succeeds. */
+  credentialReceiptSink?: (receipt: CreateVaultInjectionReceiptInput) => void;
 }
 
 /** Secret-free input used to compute one future Turn's exact AgentSession compatibility key. */
 export type ResolveAgentSessionCompatibilityKeyInput = Omit<
   ResolveAgentEnvironmentPackageInput,
+  | 'credentialReceiptSink'
   | 'preparedContextPackage'
   | 'providerCredentialSink'
   | 'runtimeEnvCredentialSink'
@@ -351,7 +354,7 @@ function resolveOpenShellAgentEnvironmentPackage(
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
   const manifest = input.agentSetup.manifest;
   const agent = projectAgentEnvironmentIdentity(input.agentSetup);
-  const provider = input.agentSetup.provider;
+  const logicalModels = input.agentSetup.logicalModels;
   const sandboxAccess = manifest.sandbox ?? {
     credentialDeclarations: [],
     filesystem: [],
@@ -365,7 +368,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
   const createdAt = input.createdAt ?? new Date().toISOString();
   const workerPackagePath = '/openkit/config/package.json';
-  const trustedInferenceRequired = requiredCapabilities.includes('trusted-worker-inference-relay');
+  const trustedInferenceRequired = true;
   const runtimeProvenanceRequired = requiredCapabilities.includes(
     WORKER_RUNTIME_PROVENANCE_FEATURE
   );
@@ -373,37 +376,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   if (runtimeProvenanceRequired && !trustedInferenceRequired) {
     throw new Error('Runtime provenance requires the trusted worker inference relay.');
   }
-  if (!provider?.model) {
-    throw new Error('Agent Environment Package resolution requires one provider and model.');
-  }
-  if (trustedInferenceRequired && sandboxAccess.credentialDeclarations.length > 0) {
-    throw new Error('Trusted worker inference does not allow direct credentials.');
-  }
-
-  const directCredentialDeclarations = sandboxAccess.credentialDeclarations.filter(
-    (declaration) => declaration.visibility === 'runtime-env'
-  );
-  const llmMode = trustedInferenceRequired
-    ? ('gateway' as const)
-    : directCredentialDeclarations.length > 0
-      ? ('direct-external' as const)
-      : ('backend-local' as const);
-
-  if (llmMode === 'direct-external' && directCredentialDeclarations.length !== 1) {
-    throw new Error('Direct worker inference requires exactly one runtime environment credential.');
-  }
-  if (
-    llmMode === 'direct-external' &&
-    (sandboxAccess.network.length === 0 ||
-      sandboxAccess.credentialDeclarations.length !== directCredentialDeclarations.length)
-  ) {
-    throw new Error(
-      'Direct worker inference requires exact manifest network and runtime environment credentials.'
-    );
-  }
-  if (llmMode === 'backend-local' && !requiredCapabilities.includes('backend-local-inference')) {
-    throw new Error('Backend-local inference requires explicit manifest capability.');
-  }
+  const llmMode = 'gateway' as const;
 
   const turnInput = input.turnInput?.trim() || 'Continue the assigned OpenKit turn.';
   const backendAllowedKinds = backendRequirements?.allowedKinds ?? ['openshell'];
@@ -505,35 +478,13 @@ function resolveOpenShellAgentEnvironmentPackage(
     ...(input.runtimeFileCredentialSink
       ? { runtimeFileCredentialSink: input.runtimeFileCredentialSink }
       : {}),
+    ...(input.credentialReceiptSink ? { credentialReceiptSink: input.credentialReceiptSink } : {}),
     ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
   });
-
-  const workerProviderId = provider.providerId;
-  const workerModel = provider.model;
-  const providerKind =
-    llmMode === 'gateway'
-      ? ('gateway' as const)
-      : llmMode === 'direct-external'
-        ? ('direct' as const)
-        : ('local' as const);
-  const primaryProviderProfile = {
-    category: 'model',
-    displayName: workerProviderId,
-    id: workerProviderId,
-    kind: providerKind,
-    models: [workerModel],
-  };
-  const primaryProviderInstance = {
-    displayName: workerProviderId,
-    id: workerProviderId,
-    kind: providerKind,
-    models: [workerModel],
-    profileId: workerProviderId,
-    vendor: workerProviderId,
-  };
+  const workerProviderId = 'openkit-gateway';
 
   const environmentPackage = AgentEnvironmentPackageSchema.parse({
-    schemaVersion: 3,
+    schemaVersion: 4,
     packageId,
     snapshotId,
     createdAt,
@@ -550,6 +501,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       profileId: agent.profileId,
       displayName: agent.displayName,
       runtimeKind: manifest.runtime.kind,
+      runtimeVersion: manifest.runtime.version ?? 'unversioned',
       profileKind: null,
       instructions: [],
       capabilityRequests: [],
@@ -568,7 +520,6 @@ function resolveOpenShellAgentEnvironmentPackage(
       session: {
         reuse: 'same-agent-session',
         resumeHandleRef: null,
-        staleWhenPackageChanges: true,
       },
     },
     workspace: {
@@ -659,11 +610,6 @@ function resolveOpenShellAgentEnvironmentPackage(
       mode: 'disabled',
       routes: [],
     },
-    providers: {
-      providerProfiles: [primaryProviderProfile, ...credentialArtifacts.providerProfiles],
-      providerInstances: [primaryProviderInstance, ...credentialArtifacts.providerInstances],
-      attachments: [...credentialArtifacts.attachments],
-    },
     credentials: {
       declarations: [...credentialArtifacts.declarations],
     },
@@ -743,36 +689,20 @@ function resolveOpenShellAgentEnvironmentPackage(
     },
     llm: {
       mode: llmMode,
-      routes: [
-        {
-          credentialVisibility:
-            llmMode === 'gateway'
-              ? 'placeholder'
-              : llmMode === 'direct-external'
-                ? 'environment'
-                : 'none',
-          endpoint: {
-            kind:
-              llmMode === 'gateway'
-                ? 'openai-compatible'
-                : llmMode === 'direct-external'
-                  ? 'provider-compatible'
-                  : 'backend-local',
-            upstream: {
-              baseUrlRef: workerProviderId,
-              kind:
-                llmMode === 'gateway'
-                  ? 'nanocore-gateway'
-                  : llmMode === 'direct-external'
-                    ? 'direct-provider'
-                    : 'backend-local',
-            },
+      preferredLogicalModelId: logicalModels.preferredLogicalModelId,
+      routes: logicalModels.allowed.map((logicalModel) => ({
+        credentialVisibility: 'placeholder' as const,
+        endpoint: {
+          kind: 'openai-compatible' as const,
+          upstream: {
+            baseUrlRef: workerProviderId,
+            kind: 'nanocore-gateway' as const,
           },
-          id: 'default',
-          model: workerModel,
-          providerInstanceId: workerProviderId,
         },
-      ],
+        id: logicalModel.id,
+        model: logicalModel.id,
+        providerInstanceId: workerProviderId,
+      })),
     },
     resources: {},
     observability: {
@@ -792,6 +722,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       allowedKinds: backendAllowedKinds,
       requiredCapabilities: uniqueStrings([
         ...openShellRequiredCapabilities(),
+        'trusted-worker-inference-relay',
         ...requiredCapabilities,
       ]),
       degrade: {
@@ -1123,14 +1054,8 @@ function resolveWorkerMcpServerSupply(mcpServerIds: string[], adapter: string) {
 
 /** Redacted records produced by worker credential declarations. */
 interface ResolvedWorkerCredentialDeclarationArtifacts {
-  /** Provider attachments created from sandbox-provider declarations. */
-  readonly attachments: AgentEnvironmentPackage['providers']['attachments'];
   /** Sanitized declarations retained in the Agent Environment Package. */
   readonly declarations: AgentEnvironmentCredentialDeclaration[];
-  /** Provider instances created from sandbox-provider declarations. */
-  readonly providerInstances: AgentEnvironmentPackage['providers']['providerInstances'];
-  /** Provider profiles created from sandbox-provider declarations. */
-  readonly providerProfiles: AgentEnvironmentPackage['providers']['providerProfiles'];
   /** Redacted vault grants projected into the package. */
   readonly vaultGrants: AgentEnvironmentPackage['vault']['grants'];
   /** Redacted vault references projected into the package. */
@@ -1165,6 +1090,8 @@ interface ResolveWorkerCredentialDeclarationsInput {
   readonly runtimeFileCredentialSink?: (
     credential: ResolvedAgentEnvironmentRuntimeFileCredential
   ) => void;
+  /** Sink for redacted receipt metadata completed by the physical materializer. */
+  readonly credentialReceiptSink?: (receipt: CreateVaultInjectionReceiptInput) => void;
   /** Vault backend used to resolve secret material after metadata validation. */
   readonly vaultBackend?: () => VaultBackend;
   /** Responsible user derived from the exact trigger actor for user-scoped Vault authority. */
@@ -1185,10 +1112,7 @@ function resolveWorkerCredentialDeclarations(
   input: ResolveWorkerCredentialDeclarationsInput
 ): ResolvedWorkerCredentialDeclarationArtifacts {
   const artifacts: ResolvedWorkerCredentialDeclarationArtifacts = {
-    attachments: [],
     declarations: [],
-    providerInstances: [],
-    providerProfiles: [],
     vaultGrants: [],
     vaultReferences: [],
   };
@@ -1254,27 +1178,17 @@ function resolveWorkerCredentialDeclarations(
       ...(injection.targetPath ? { targetPath: injection.targetPath } : {}),
       now: input.now,
     });
-    createVaultInjectionReceipt(coreDb, {
-      agentSessionId: input.agentSessionId,
-      backendSummary: injection.backendSummary,
-      expiresAt: grant.expiresAt,
-      grantId: grant.grantId,
-      injectedAt: input.now(),
-      planId,
-      receiptId,
-      revocationStatus: 'active',
-    });
-
+    const ownerScope = vaultUseOwnerScope(grant);
     const material = createVaultUseAuditedBackend({
       agentSessionId: input.agentSessionId,
       backend: vaultBackend,
       db: coreDb,
       grantId: grant.grantId,
-      ownerScope: vaultUseOwnerScope(grant),
+      ownerScope,
       planId,
-      receiptId,
       resolvingPath: 'grant',
       now: input.now,
+      ...(ownerScope === 'workspace' ? { workspaceId: input.workspaceId } : {}),
     }).resolve({ referenceId: reference.referenceId });
 
     appendCredentialDeclarationArtifacts({
@@ -1284,6 +1198,16 @@ function resolveWorkerCredentialDeclarations(
       input,
       material: vaultSecretMaterialToString(material),
       reference,
+    });
+    input.credentialReceiptSink?.({
+      agentSessionId: input.agentSessionId,
+      backendSummary: injection.backendSummary,
+      expiresAt: grant.expiresAt,
+      grantId: grant.grantId,
+      injectedAt: input.now(),
+      planId,
+      receiptId,
+      revocationStatus: 'active',
     });
   }
 
@@ -1357,6 +1281,17 @@ function assertCredentialGrantMatchesDeclaration(
   }
   if (grant.ownerScope !== reference.ownerScope) {
     throw new Error(`Vault grant owner scope does not match reference: ${declaration.id}`);
+  }
+  if (
+    declaration.requirementId !== undefined &&
+    (grant.ownerScope !== 'workspace' || grant.workspaceId !== input.workspaceId)
+  ) {
+    throw new Error(`Credential requirement binding must use a Workspace grant: ${declaration.id}`);
+  }
+  if (declaration.requirementId === undefined && grant.ownerScope !== 'server') {
+    throw new Error(
+      `Direct Server credential declaration requires a Server grant: ${declaration.id}`
+    );
   }
   if (grant.workspaceId !== reference.workspaceId || grant.userId !== reference.userId) {
     throw new Error(`Vault grant owner identity does not match reference: ${declaration.id}`);
@@ -1514,34 +1449,9 @@ function appendCredentialDeclarationArtifacts(
   });
 
   if (declaration.visibility === 'sandbox-provider') {
-    artifacts.providerProfiles.push({
-      category: 'agent',
-      displayName: credentialProviderProfileDisplayName(declaration),
-      id: declaration.provider.profileId,
-      kind: 'custom' as const,
-      models: [declaration.provider.type],
-    });
-    artifacts.providerInstances.push({
-      displayName: credentialProviderInstanceDisplayName(declaration),
-      id: declaration.provider.instanceId,
-      kind: 'custom' as const,
-      models: [declaration.provider.type],
-      profileId: declaration.provider.profileId,
-      secretRef: `vault://${reference.referenceId}`,
-      vaultRefIds: [reference.referenceId],
-      vendor: declaration.provider.type,
-    });
-    artifacts.attachments.push({
-      binaryIds: [],
-      id: `attach_${declaration.id}`,
-      policyContributionIds: [],
-      providerInstanceId: declaration.provider.instanceId,
-      vaultGrantIds: [grant.grantId],
-    });
     artifacts.vaultReferences.push({
       id: reference.referenceId,
       kind: 'secret-ref' as const,
-      providerInstanceId: declaration.provider.instanceId,
       secretRef: `vault://${reference.referenceId}`,
     });
     if (input.material === null) {
@@ -1613,30 +1523,6 @@ function aepVaultGrantScope(grant: VaultGrantRecord): 'agent-session' | 'turn' |
   }
 
   throw new Error(`Worker credential grant lifetime is not supported: ${grant.grantId}`);
-}
-
-/**
- * Returns the product-safe provider profile display name for a credential declaration.
- *
- * @param declaration Provider credential declaration.
- * @returns Display name for AEP provider profile metadata.
- */
-function credentialProviderProfileDisplayName(
-  declaration: AgentEnvironmentCredentialDeclaration
-): string {
-  return declaration.id;
-}
-
-/**
- * Returns the product-safe provider instance display name for a credential declaration.
- *
- * @param declaration Provider credential declaration.
- * @returns Display name for AEP provider instance metadata.
- */
-function credentialProviderInstanceDisplayName(
-  declaration: AgentEnvironmentCredentialDeclaration
-): string {
-  return declaration.id;
 }
 
 /**

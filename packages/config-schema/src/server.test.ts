@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { getConfigPolicyCatalog, getConfigSchemaCatalog, OpenKitConfigSchema } from './index.js';
 
 describe('server config schema', () => {
+  it('accepts the final Server Agent fallback', () => {
+    expect(
+      OpenKitConfigSchema.parse({ defaults: { defaultAgentId: 'agent_codex_host' } }).defaults
+    ).toEqual({ defaultAgentId: 'agent_codex_host' });
+  });
+
   it.each([
     { auth: { enabled: true } },
     { auth: { localModeUserId: 'user_local' } },
@@ -18,6 +24,7 @@ describe('server config schema', () => {
     { gateway: { openaiCompatible: { defaultProviderId: 'openai' } } },
     { gateway: { openaiCompatible: { route: '/v1' } } },
     { internal: { openaiCompatFacade: { enabled: true } } },
+    { providers: [] },
     { server: { cors: { origins: ['ftp://console.openkit.example'] } } },
     { server: { publicBaseUrl: 'https://core.openkit.example/path' } },
     { server: { trustedProxies: ['127.0.0.1'] } },
@@ -47,14 +54,9 @@ describe('server config schema', () => {
     );
   });
 
-  it('marks every provider and agent config surface as restart-required', () => {
+  it('marks provider profile and agent config surfaces as restart-required', () => {
     expect(getConfigPolicyCatalog()).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'server',
-          path: '$.providers',
-          reloadClass: 'restart-required',
-        }),
         expect.objectContaining({
           kind: 'provider',
           path: '$',

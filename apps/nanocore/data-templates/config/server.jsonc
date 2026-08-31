@@ -2,16 +2,6 @@
   "schemaVersion": 1,
   "mode": "local",
   "defaults": {
-    // If unset, NanoCore has no default provider; this is not an error.
-    // Core and gateway defaults may intentionally point to different provider instances.
-    // "coreProviderId": "openrouter",
-    // "coreModel": "openai/gpt-5.1",
-    // "gatewayProviderId": "openrouter",
-    // "gatewayModel": "openai/gpt-5.1"
-  },
-  "gateway": {
-    "openaiCompatible": {
-      "enabled": true
-    }
+    "defaultAgentId": "agent_codex_host"
   }
 }

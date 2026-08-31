@@ -21,7 +21,6 @@ const WORKSPACE = {
   name: 'Market research',
   kind: 'general',
   status: 'active',
-  defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
   counts: { threadCount: 2, artifactCount: 0, knowledgeEntryCount: 3 },
   createdAt: TIMESTAMP,
   updatedAt: TIMESTAMP,
@@ -162,7 +161,12 @@ const DIAGNOSTICS = {
       knowledgeIndex: { state: 'ready', reasons: [] },
     },
   },
-  gateway: { status: 'ok', endpoints: ['/v1/chat/completions'] },
+  gateway: {
+    status: 'ok',
+    endpoints: ['/v1/chat/completions'],
+    defaultModelId: 'default',
+    models: [{ id: 'default', displayName: 'Default', capabilities: ['chat'] }],
+  },
   providers: {
     diagnostics: [
       {
@@ -184,19 +188,6 @@ const DIAGNOSTICS = {
         readiness: { status: 'ready', message: null, checkedAt: TIMESTAMP },
       },
     ],
-  },
-  defaultProviders: {
-    core: {
-      configured: true,
-      model: 'gpt-demo',
-      origin: 'canonical',
-      providerId: 'provider_demo',
-    },
-    gateway: { configured: false, origin: 'unset', reason: 'unset' },
-  },
-  defaults: {
-    quickChat: { providerId: 'provider_demo', model: 'gpt-demo' },
-    gateway: { providerId: null, model: null },
   },
   capabilities: META.capabilities,
   runtimeConfig: {
@@ -753,7 +744,7 @@ function makeClient(
       getWorkspaceDashboard: vi.fn().mockResolvedValue({
         workspace: WORKSPACE,
         counts: WORKSPACE.counts,
-        defaultContext: { modelId: null, agentId: null, skillIds: [] },
+        defaultContext: { agentId: null },
         agentHealth: [],
         recentThreads: [],
         activeWork: [],
@@ -1581,44 +1572,6 @@ describe('General settings (board 10)', () => {
       expect(updateWorkspace).toHaveBeenCalledWith(
         'ws1',
         expect.objectContaining({ name: 'Team workspace' })
-      )
-    );
-  });
-
-  it('saves Workspace execution defaults through the ordinary Workspace API', async () => {
-    const user = userEvent.setup();
-    const updateWorkspace = vi.fn().mockResolvedValue({
-      ...WORKSPACE,
-      defaults: {
-        defaultModelId: 'model_fast',
-        defaultAgentId: 'agent_coder',
-        defaultSkillIds: ['skill_search'],
-      },
-    });
-    const client = makeClient({ core: { updateWorkspace } });
-    renderApp('/workspace', client);
-
-    await user.click(await screen.findByRole('button', { name: /Default model/ }));
-    await user.click(
-      within(await screen.findByRole('listbox')).getByRole('option', { name: 'Fast model' })
-    );
-    await user.click(screen.getByRole('button', { name: /Default agent/ }));
-    await user.click(
-      within(await screen.findByRole('listbox')).getByRole('option', { name: 'Coder' })
-    );
-    await user.click(screen.getByRole('switch', { name: 'Web search' }));
-    await user.click(screen.getByRole('button', { name: 'Save execution defaults' }));
-
-    await waitFor(() =>
-      expect(updateWorkspace).toHaveBeenCalledWith(
-        'ws1',
-        expect.objectContaining({
-          defaults: {
-            defaultModelId: 'model_fast',
-            defaultAgentId: 'agent_coder',
-            defaultSkillIds: ['skill_search'],
-          },
-        })
       )
     );
   });

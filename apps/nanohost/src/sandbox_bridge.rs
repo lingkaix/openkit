@@ -313,7 +313,7 @@ pub struct OpenSandboxBridge {
 
 /// Static Harness binding and readiness state retained beside one `ForwardTcp` pair.
 struct WorkerBootstrapBinding {
-    harness_binding_ref: String,
+    sandbox_integration_binding_ref: String,
     harness_ready: bool,
     exec_monitor_live: bool,
 }
@@ -323,14 +323,14 @@ impl OpenSandboxBridge {
     pub(crate) fn new(
         route_server: JoinHandle<()>,
         authorization_token: String,
-        harness_binding_ref: String,
+        sandbox_integration_binding_ref: String,
         harness_ready: bool,
     ) -> Self {
         Self {
             route_server,
             authorization_token,
             bootstrap: WorkerBootstrapBinding {
-                harness_binding_ref,
+                sandbox_integration_binding_ref,
                 harness_ready,
                 exec_monitor_live: true,
             },
@@ -340,7 +340,7 @@ impl OpenSandboxBridge {
     /// Returns whether the fixed bootstrap remains live at the starting latch.
     pub fn harness_ready(&self) -> bool {
         self.bootstrap.harness_ready
-            && !self.bootstrap.harness_binding_ref.is_empty()
+            && !self.bootstrap.sandbox_integration_binding_ref.is_empty()
             && self.bootstrap.exec_monitor_live
             && !self.route_server.is_finished()
     }
@@ -348,7 +348,7 @@ impl OpenSandboxBridge {
     /// Splits the bridge for explicit close and authorization revocation.
     pub(crate) fn into_close_parts(mut self) -> String {
         self.route_server.abort();
-        self.bootstrap.harness_binding_ref.clear();
+        self.bootstrap.sandbox_integration_binding_ref.clear();
         std::mem::take(&mut self.authorization_token)
     }
 }
@@ -357,7 +357,7 @@ impl Drop for OpenSandboxBridge {
     /// Cancels only route carriage and clears retained binding material on drop.
     fn drop(&mut self) {
         self.route_server.abort();
-        self.bootstrap.harness_binding_ref.clear();
+        self.bootstrap.sandbox_integration_binding_ref.clear();
         self.authorization_token.clear();
     }
 }
@@ -1339,7 +1339,7 @@ mod tests {
                 < export.find("rename").expect("atomic export placement")
         );
         for bootstrap_rule in [
-            "harness_binding_ref",
+            "sandbox_integration_binding_ref",
             "harness_ready",
             "exec_monitor",
             "ForwardTcp",

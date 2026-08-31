@@ -1,13 +1,14 @@
 import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 
 import type {
-  ChatCommandReceiptMetadata,
   CommandRequestName,
   CommandRequestRecord,
   CommandRequestResponse,
   CommandRequestResponseKind,
   CommandRequestScope,
+  ConversationCommandReceiptMetadata,
 } from '../lib/store.js';
 import {
   type CoreDb,
@@ -44,8 +45,12 @@ type CommandRequestOwner =
   | { readonly scope: 'workspace'; readonly workspaceId: string };
 
 /** Closed schema for the sole extra metadata allowed on a command receipt. */
-const ChatCommandReceiptMetadataSchema: z.ZodType<ChatCommandReceiptMetadata> = z
+const ConversationCommandReceiptMetadataSchema: z.ZodType<ConversationCommandReceiptMetadata> = z
   .object({
+    targetRef: z.string().min(1),
+    logicalModelId: z.string().min(1).nullable(),
+    receivingWorkspaceId: z.string().min(1),
+    receivingThreadId: z.string().min(1),
     downstream: z
       .discriminatedUnion('kind', [
         z.object({ kind: z.literal('task'), turnId: z.string().min(1) }).strict(),
@@ -65,6 +70,8 @@ const ChatCommandReceiptMetadataSchema: z.ZodType<ChatCommandReceiptMetadata> = 
       'clarification',
       'task-handoff',
       'goal-handoff',
+      'worker-turn',
+      'goal-steering',
       'refused',
     ]),
     status: z.union([z.literal(200), z.literal(202)]),
@@ -96,20 +103,20 @@ export function normalizeCommandRequestResponse(
   command: CommandRequestName,
   response: CommandRequestResponse
 ): CommandRequestResponse {
-  if (Object.keys(response).some((key) => !['kind', 'id', 'chatMetadata'].includes(key))) {
+  if (Object.keys(response).some((key) => !['kind', 'id', 'conversationMetadata'].includes(key))) {
     throw new Error('Command receipt response contains unsupported fields.');
   }
-  if (response.chatMetadata === undefined) {
+  if (response.conversationMetadata === undefined) {
     return { kind: response.kind, id: response.id };
   }
-  if (command !== 'chat.start') {
-    throw new Error('Only chat.start may store extra command receipt metadata.');
+  if (command !== 'conversation.submit') {
+    throw new Error('Only conversation.submit may store extra command receipt metadata.');
   }
-  const parsed = ChatCommandReceiptMetadataSchema.safeParse(response.chatMetadata);
+  const parsed = ConversationCommandReceiptMetadataSchema.safeParse(response.conversationMetadata);
   if (!parsed.success) {
-    throw new Error('chat.start command receipt metadata is invalid.');
+    throw new Error('conversation.submit command receipt metadata is invalid.');
   }
-  return { kind: response.kind, id: response.id, chatMetadata: parsed.data };
+  return { kind: response.kind, id: response.id, conversationMetadata: parsed.data };
 }
 
 /**
@@ -122,10 +129,7 @@ export function normalizeCommandRequestResponse(
 export function recordCommandRequestRecord(dataRoot: string, record: CommandRequestRecord): void {
   const owner = commandRequestOwner(record.scope);
 
-  if (
-    owner.scope === 'workspace' &&
-    !existsSync(resolveDataRootPath(dataRoot, 'workspaces', owner.workspaceId, 'workspace.json'))
-  ) {
+  if (owner.scope === 'workspace' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
     throw new Error(`Workspace not found: ${owner.workspaceId}`);
   }
 
@@ -173,7 +177,9 @@ export function recordCommandRequestRecordInDb(
       record.inputHash,
       response.kind,
       response.id,
-      response.chatMetadata === undefined ? null : JSON.stringify(response.chatMetadata),
+      response.conversationMetadata === undefined
+        ? null
+        : JSON.stringify(response.conversationMetadata),
       record.createdAt,
       record.expiresAt
     );
@@ -198,10 +204,7 @@ export function getCommandRequestRecord(
 ): CommandRequestRecord | null {
   const owner = commandRequestOwner(scope);
 
-  if (
-    owner.scope === 'workspace' &&
-    !existsSync(resolveDataRootPath(dataRoot, 'workspaces', owner.workspaceId, 'workspace.json'))
-  ) {
+  if (owner.scope === 'workspace' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
     return null;
   }
 
@@ -223,6 +226,22 @@ export function getCommandRequestRecord(
   } finally {
     db.sqlite.close();
   }
+}
+
+/**
+ * Returns whether one Workspace has the current canonical record and rejects the retired name.
+ *
+ * @param dataRoot Data root that owns the Workspace.
+ * @param workspaceId Workspace identity to inspect.
+ * @returns Whether the current canonical record exists.
+ */
+function workspaceRecordExists(dataRoot: string, workspaceId: string): boolean {
+  const workspaceRoot = resolveDataRootPath(dataRoot, 'workspaces', workspaceId);
+  const retiredPath = join(workspaceRoot, 'workspace.json');
+  if (existsSync(retiredPath)) {
+    throw new Error(`Unsupported canonical workspace file workspace.json: ${workspaceId}.`);
+  }
+  return existsSync(join(workspaceRoot, 'workspace-record.json'));
 }
 
 /**
@@ -439,7 +458,7 @@ function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
     response: normalizeCommandRequestResponse(row.command, {
       kind: row.responseKind,
       id: row.responseId,
-      ...(row.responseJson === null ? {} : { chatMetadata: JSON.parse(row.responseJson) }),
+      ...(row.responseJson === null ? {} : { conversationMetadata: JSON.parse(row.responseJson) }),
     }),
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,

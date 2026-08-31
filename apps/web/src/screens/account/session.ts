@@ -1,6 +1,7 @@
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
+import { useWorkspaceStore } from '../workspace-store';
 
 /** The single TanStack owner for protected account admission reads. */
 export const accountAdmissionKey = ['account', 'authorized-workspaces'] as const;
@@ -82,6 +83,8 @@ export function useAccountMutation() {
         mutationCache.remove(mutation);
       }
       queryClient.removeQueries({ queryKey: myInvitationsKey, exact: true });
+      queryClient.removeQueries({ queryKey: ['workspaces'], exact: true });
+      useWorkspaceStore.getState().setCurrentWorkspaceId(null);
       void queryClient.refetchQueries({ queryKey: accountAdmissionKey, exact: true });
     },
   });

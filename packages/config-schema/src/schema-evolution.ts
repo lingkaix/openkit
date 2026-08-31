@@ -34,7 +34,8 @@ export const REQUIRED_FEATURE_REGISTRY = {
   'session.concurrent-turns': {
     id: 'session.concurrent-turns',
     status: 'active',
-    description: 'AgentSession may process more than one turn concurrently.',
+    description:
+      'A Harness may process active Turns concurrently only across distinct single-flight AgentSessions and Threads.',
   },
   'vault.injection.query-param': {
     id: 'vault.injection.query-param',

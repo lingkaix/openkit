@@ -100,42 +100,31 @@ function writeFileIfMissing(target, content) {
   return true;
 }
 
-function readServerConfig(serverConfigPath) {
+function readJsoncObject(configPath) {
   const errors = [];
-  const text = fs.readFileSync(serverConfigPath, 'utf8');
+  const text = fs.readFileSync(configPath, 'utf8');
   const parsed = parse(text, errors, { allowTrailingComma: true });
 
   if (errors.length > 0) {
     const details = errors
       .map((error) => `${printParseErrorCode(error.error)} at offset ${error.offset}`)
       .join(', ');
-    throw new Error(`Failed to parse ${serverConfigPath}: ${details}`);
+    throw new Error(`Failed to parse ${configPath}: ${details}`);
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${serverConfigPath} must contain a JSON object.`);
+    throw new Error(`${configPath} must contain a JSON object.`);
   }
-
-  validateNoInlineProviderSecrets(parsed);
-
   return parsed;
 }
 
-function validateNoInlineProviderSecrets(serverConfig) {
-  const providers = Array.isArray(serverConfig.providers) ? serverConfig.providers : [];
-
-  for (const [index, provider] of providers.entries()) {
-    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
-      continue;
-    }
-
-    for (const field of inlineSecretFields) {
-      if (Object.hasOwn(provider, field)) {
-        const providerId = typeof provider.id === 'string' ? provider.id : `providers[${index}]`;
-        throw new Error(
-          `${field} is not supported in app provider config for ${providerId}; use secretRef such as "${defaultSecretRef}" instead.`
-        );
-      }
+function validateNoInlineProviderSecrets(provider) {
+  for (const field of inlineSecretFields) {
+    if (Object.hasOwn(provider, field)) {
+      const providerId = typeof provider.id === 'string' ? provider.id : 'unknown-provider';
+      throw new Error(
+        `${field} is not supported in app provider config for ${providerId}; use secretRef such as "${defaultSecretRef}" instead.`
+      );
     }
   }
 }
@@ -146,39 +135,59 @@ function serverConfig() {
       schemaVersion: 1,
       mode: 'local',
       defaults: {
-        coreProviderId: 'nanocore-openrouter',
-        coreModel: defaultModel,
-        gatewayProviderId: 'nano-agent-openrouter',
-        gatewayModel: defaultModel,
+        defaultAgentId: 'agent_codex_host',
       },
-      providers: [
+    },
+    null,
+    2
+  )}\n`;
+}
+
+function providerConfig() {
+  return `${JSON.stringify(
+    {
+      id: 'openrouter',
+      displayName: 'OpenRouter',
+      vendor: 'openrouter',
+      kind: 'custom',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      models,
+      defaultModel,
+      secretRef: defaultSecretRef,
+    },
+    null,
+    2
+  )}\n`;
+}
+
+function gatewayConfig() {
+  return `${JSON.stringify(
+    {
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'reasoning-free',
+      logicalModels: [
         {
-          id: 'nanocore-openrouter',
-          displayName: 'NanoCore OpenRouter',
-          vendor: 'openrouter',
-          kind: 'custom',
-          baseUrl: 'https://openrouter.ai/api/v1',
-          models,
-          defaultModel,
-          secretRef: defaultSecretRef,
-        },
-        {
-          id: 'nano-agent-openrouter',
-          displayName: 'Nano Agent OpenRouter',
-          vendor: 'openrouter',
-          kind: 'custom',
-          baseUrl: 'https://openrouter.ai/api/v1',
-          models,
-          defaultModel,
-          secretRef: defaultSecretRef,
+          id: 'reasoning-free',
+          displayName: 'Reasoning Free',
+          routes: [
+            { id: 'openrouter-primary', providerProfileId: 'openrouter', providerModel: defaultModel },
+          ],
         },
       ],
-      gateway: {
-        openaiCompatible: {
-          enabled: true,
-          allowedProviderIds: ['nano-agent-openrouter'],
-        },
-      },
+      requiredFeatures: [],
+    },
+    null,
+    2
+  )}\n`;
+}
+
+function internalRoleProfiles() {
+  return `${JSON.stringify(
+    {
+      schemaVersion: 1,
+      defaultLogicalModelId: 'reasoning-free',
+      profiles: [],
     },
     null,
     2
@@ -195,8 +204,15 @@ mkdirp(path.join(dataRoot, 'users', 'user_local'));
 mkdirp(path.join(dataRoot, 'workspaces'));
 
 const serverConfigPath = path.join(dataRoot, 'config', 'server.jsonc');
+const providerConfigPath = path.join(dataRoot, 'config', 'providers', 'openrouter.provider.jsonc');
+const gatewayConfigPath = path.join(dataRoot, 'config', 'gateway.jsonc');
+const internalRoleProfilesPath = path.join(dataRoot, 'config', 'internal-role-profiles.jsonc');
 const wroteServerConfig = writeFileIfMissing(serverConfigPath, serverConfig());
-readServerConfig(serverConfigPath);
+writeFileIfMissing(providerConfigPath, providerConfig());
+writeFileIfMissing(gatewayConfigPath, gatewayConfig());
+writeFileIfMissing(internalRoleProfilesPath, internalRoleProfiles());
+readJsoncObject(serverConfigPath);
+validateNoInlineProviderSecrets(readJsoncObject(providerConfigPath));
 
 if (wroteServerConfig) {
   console.log(`Created ${serverConfigPath} with secretRef env references.`);
@@ -220,16 +236,16 @@ const { parse } = require(path.join(
   'node_modules',
   'jsonc-parser'
 ));
-const serverConfigPath = path.join(dataRoot, 'config', 'server.jsonc');
+const providersRoot = path.join(dataRoot, 'config', 'providers');
 
-if (!fs.existsSync(serverConfigPath)) {
+if (!fs.existsSync(providersRoot)) {
   process.exit(0);
 }
-
-const parsed = parse(fs.readFileSync(serverConfigPath, 'utf8'), [], { allowTrailingComma: true });
 const envNames = new Set();
-
-for (const provider of Array.isArray(parsed?.providers) ? parsed.providers : []) {
+for (const fileName of fs.readdirSync(providersRoot).filter((name) => name.endsWith('.provider.jsonc'))) {
+  const provider = parse(fs.readFileSync(path.join(providersRoot, fileName), 'utf8'), [], {
+    allowTrailingComma: true,
+  });
   if (typeof provider?.secretRef === 'string' && provider.secretRef.startsWith('env:')) {
     const envName = provider.secretRef.slice('env:'.length);
     if (envName) {

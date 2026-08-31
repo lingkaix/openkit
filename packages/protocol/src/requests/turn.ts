@@ -32,6 +32,8 @@ const OrdinaryTurnInputRequestSchema = z
     threadId: ThreadIdSchema,
     requestId: RequestIdSchema,
     input: z.string().min(1),
+    agentId: z.string().min(1).optional(),
+    profileId: z.string().min(1).optional(),
     modelId: z.string().min(1).optional(),
   })
   .strict();

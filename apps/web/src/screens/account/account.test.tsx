@@ -35,7 +35,6 @@ const PRODUCT_WORKSPACES = {
       workspace: {
         counts: { artifactCount: 0, knowledgeEntryCount: 0, threadCount: 0 },
         createdAt: '2026-08-04T00:00:00.000Z',
-        defaults: { defaultAgentId: null, defaultModelId: null, defaultSkillIds: [] },
         id: 'ws1',
         kind: 'general' as const,
         name: 'Authorized Workspace',
@@ -907,7 +906,7 @@ describe('protected-read account gate', () => {
     const { client, forbidden } = makeClient({
       listAuthorizedWorkspaces,
     });
-    const { container, queryClient } = renderApp('/goals/deep-thread', client);
+    const { container, queryClient } = renderApp('/goals/ws1/deep-thread', client);
 
     await screen.findByRole('form', { name: /account access/i });
     expectAccountGate();
@@ -1266,6 +1265,7 @@ describe('email/password session operations', () => {
       actorAInvitation.invitationId,
       actorAInvitation.inviteeUserId,
       actorAInvitation.workspaceId,
+      'ws-actor-a-cached-catalog',
     ];
     const guards = guardSensitiveSinks(actorAValues);
     const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
@@ -1319,6 +1319,8 @@ describe('email/password session operations', () => {
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
     queryClient.setQueryData(unrelatedKey, unrelatedValue);
+    queryClient.setQueryData(['workspaces'], [{ id: 'ws-actor-a-cached-catalog' }]);
+    useWorkspaceStore.setState({ currentWorkspaceId: 'ws-actor-a-cached-catalog' });
     const unrelatedQuery = queryClient
       .getQueryCache()
       .find({ exact: true, queryKey: unrelatedKey });
@@ -1342,6 +1344,7 @@ describe('email/password session operations', () => {
     await userEvent.click(screen.getByRole('button', { name: operation }));
 
     await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
+    expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
     const auth = operation === 'signIn' ? signIn : operation === 'signUp' ? signUp : signOut;
     expect(auth).toHaveBeenCalledTimes(1);
     expect(auth.mock.invocationCallOrder[0]).toBeLessThan(

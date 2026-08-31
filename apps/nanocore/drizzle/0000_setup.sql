@@ -76,6 +76,7 @@ CREATE TABLE `harness_instance_records` (
 	`harness_instance_id` text PRIMARY KEY NOT NULL,
 	`sandbox_runtime_id` text NOT NULL REFERENCES `sandbox_runtime_records`(`sandbox_runtime_id`) ON DELETE CASCADE,
 	`harness_binding_ref` text NOT NULL,
+	`harness_compatibility_key` text NOT NULL,
 	`runtime_family` text NOT NULL,
 	`adapter_id` text NOT NULL,
 	`adapter_version` text NOT NULL,
@@ -195,10 +196,12 @@ CREATE TABLE `sandbox_runtime_records` (
 	`sandbox_runtime_id` text PRIMARY KEY NOT NULL,
 	`runtime_target_id` text NOT NULL REFERENCES `nanohost_runtime_targets`(`target_id`) ON DELETE RESTRICT,
 	`sandbox_binding_ref` text NOT NULL,
+	`sandbox_integration_binding_ref` text NOT NULL,
 	`sandbox_compatibility_key` text NOT NULL,
 	`image_digest` text NOT NULL,
 	`environment_class` text NOT NULL,
 	`max_open_sessions` integer NOT NULL,
+	`max_harnesses` integer NOT NULL,
 	`max_active_turns` integer NOT NULL,
 	`lifecycle_state` text NOT NULL,
 	`health_state` text NOT NULL,
@@ -207,6 +210,7 @@ CREATE TABLE `sandbox_runtime_records` (
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL, `pinned_goal_id` text,
 	CONSTRAINT `sandbox_runtime_records_open_capacity_check` CHECK (`max_open_sessions` >= 2),
+	CONSTRAINT `sandbox_runtime_records_harness_capacity_check` CHECK (`max_harnesses` >= 2),
 	CONSTRAINT `sandbox_runtime_records_turn_capacity_check` CHECK (`max_active_turns` = 1)
 );
 
@@ -221,7 +225,8 @@ CREATE TABLE `scheduler_admission_entries` (
 	`turn_id` text NOT NULL,
 	`turn_input` text NOT NULL,
 	`requested_agent_id` text NOT NULL,
-	`profile_ref` text NOT NULL,
+	`profile_ref` text,
+	`model_id` text,
 	`priority_class` text NOT NULL,
 	`enqueued_at` text NOT NULL,
 	`effective_priority_at` text NOT NULL,
@@ -671,7 +676,7 @@ CREATE INDEX `boot_audit_events_boot_idx` ON `boot_audit_events` (`boot_id`,`cre
 
 CREATE UNIQUE INDEX `harness_instance_records_binding_idx` ON `harness_instance_records` (`harness_binding_ref`);
 
-CREATE UNIQUE INDEX `harness_instance_records_sandbox_idx` ON `harness_instance_records` (`sandbox_runtime_id`);
+CREATE UNIQUE INDEX `harness_instance_records_compatibility_idx` ON `harness_instance_records` (`sandbox_runtime_id`,`harness_compatibility_key`);
 
 CREATE UNIQUE INDEX `nanohost_integration_identities_deployment_idx` ON `nanohost_integration_identities` (`deployment_id`);
 
@@ -688,6 +693,8 @@ CREATE INDEX `permission_decisions_enforcement_idx` ON `permission_decisions` (`
 CREATE INDEX `permission_decisions_owner_idx` ON `permission_decisions` (`owner_scope`,`workspace_id`,`created_at`);
 
 CREATE UNIQUE INDEX `sandbox_runtime_records_binding_idx` ON `sandbox_runtime_records` (`sandbox_binding_ref`);
+
+CREATE UNIQUE INDEX `sandbox_runtime_records_integration_binding_idx` ON `sandbox_runtime_records` (`sandbox_integration_binding_ref`);
 
 CREATE INDEX `sandbox_runtime_records_target_idx` ON `sandbox_runtime_records` (`runtime_target_id`,`lifecycle_state`);
 
@@ -1192,7 +1199,7 @@ CREATE TABLE `resolved_agent_setups` (
 	`turn_id` text,
 	`request_id` text,
 	`agent_id` text NOT NULL,
-	`provider_id` text,
+	`logical_model_id` text NOT NULL,
 	`runtime_kind` text NOT NULL,
 	`runtime_adapter` text NOT NULL,
 	`required_features_json` text NOT NULL,

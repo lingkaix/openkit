@@ -11,7 +11,12 @@ export { CountBadge, type CountBadgeProps } from './Badge';
 export { Button, type ButtonSize, type ButtonVariant, type OkButtonProps } from './Button';
 export { ChannelTag, type ChannelTagProps } from './ChannelTag';
 export { ContextChip, type ContextChipProps, StatusChip, type StatusChipProps } from './Chip';
-export { Composer, type ComposerProps } from './Composer';
+export {
+  Composer,
+  type ComposerArtifactOption,
+  type ComposerDraft,
+  type ComposerProps,
+} from './Composer';
 export { Dialog, type DialogProps, Modal, type ModalProps } from './Dialog';
 export { CodeView, type CodeViewProps, DiffView, type DiffViewProps } from './DiffView';
 export { Gallery } from './Gallery';

@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 date: 2026-08-13
 ---
 # Internal Agent Runtime
@@ -239,19 +239,19 @@ Acceptance requires restart reconstruction without a durable loop or toolset rec
 
 ## Internal Role Execution Profile
 
-Before model dispatch, the caller resolves one configuration-owned profile containing the internal role, risk or model-family independence requirement, preferred logical model and compatible logical-model candidates, required logical-model capabilities, security and policy compatibility, prompt version or digest, exact Tool schema versions or digests, context cap and reserved headroom, the three fuses, conversational objectives, and an ordered compatible pre-run fallback set when fallback is permitted.
+Before model dispatch, the caller resolves one configuration-owned profile containing the internal role, preferred logical model, compatible logical-model candidates, and required logical-model capabilities. Prompt, Tool, context-limit, fuse, model-family-independence, and fallback-profile configuration fields are not part of the current file contract because no runtime consumer owns them.
 
 One product execution is pinned to its resolved logical-model ID, Gateway-derived effective capabilities and `modelFamilyId`, prompt, Tool definitions, context policy, and limits. No logical model, Tool schema, role instruction, or safety limit changes after dispatch begins. Each Gateway call may select a different private route member within that same logical contract, including bounded pre-output failover, without changing the internal-role execution profile or exposing Provider identity.
 
-Fallback to another logical model is permitted only before the run's first dispatch and only to an already-approved candidate satisfying every capability, security, data-location, budget, context, role, and independence constraint. A started run never substitutes another logical model. Gateway-private fallback among route members of the pinned logical model follows the Gateway owner and may occur independently for each call only before that call emits output. Failure after output begins terminates with its exact typed outcome; retry is a newly admitted execution reconstructed from current durable truth.
+Selection of another compatible logical model is permitted only before the run's first dispatch and only when the caller explicitly selects an admitted candidate satisfying every required capability. A started run never substitutes another logical model. Gateway-private fallback among route members of the pinned logical model follows the Gateway owner and may occur independently for each call only before that call emits output. Failure after output begins terminates with its exact typed outcome; retry is a newly admitted execution reconstructed from current durable truth.
 
-`DATA_ROOT/config/internal-role-profiles.jsonc` is the sole Server projection of these profiles and contains one Server default logical-model preference for roles that do not select one. `workspace.jsonc` may bind a role to Workspace context, prompt, Tool, limit, capability, or logical-model preferences accepted by the role owner, and `user.jsonc` may carry a lighter per-Workspace role preference where the owning role permits personal selection. Persistent resolution uses User, then Workspace, then Server, while an explicit admitted request is more specific than those defaults. This composition creates no second role catalog and no worker Agent Manifest.
+`DATA_ROOT/config/internal-role-profiles.jsonc` is the sole Server projection of these profiles and contains one Server default logical-model preference for roles that do not select one. `workspace.jsonc` may bind a role to a profile, preferred logical model, and required capabilities, while `user.jsonc` may carry a lighter per-Workspace profile or logical-model preference. Persistent resolution uses User, then Workspace, then Server, while an explicit admitted request is more specific than those defaults. This composition creates no second role catalog and no worker Agent Manifest.
 
 Every material role prompt, Tool schema, model policy, or default-model change MUST pass a fixed role-relevant evaluation set before becoming the default. The set covers normal behavior, denied authority, malformed Tool input, prompt injection, result redaction, budget and context boundaries, provider failure, restart reconstruction, and duplicate-effect prevention, plus role-specific success and false-completion cases.
 
 Release begins with the current configured default and the smallest bounded canary or internal validation population able to expose regressions. Promotion changes the configuration selection only for new executions; rollback restores the prior accepted selection for new executions and does not rewrite completed durable history.
 
-If no compatible logical-model candidate exists before the run, the caller exposes an honest unavailable result. Independence requirements MUST compare the Gateway-derived `modelFamilyId` values and MUST NOT degrade to the same family when another family is required; an incompatible warm Gateway or Provider context MUST be discarded.
+If no compatible logical-model candidate exists before the run, the caller exposes an honest unavailable result.
 
 Acceptance requires recorded profile identity sufficient for explanation, no mid-dispatch substitution, evaluation evidence before a default change, bounded rollout, and configuration-only rollback.
 

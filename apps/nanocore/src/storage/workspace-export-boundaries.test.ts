@@ -57,7 +57,6 @@ function minimalExportInput(
       name: 'Boundary workspace',
       kind: 'general',
       status: 'active',
-      defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
       counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -73,6 +72,19 @@ function minimalExportInput(
     workspaceMaterials: [],
     agentSessions: [],
     turnEvents: [],
+    portableFileState: {
+      claims: new Map(),
+      conflicts: new Map(),
+      nativeKnowledgePages: new Map(),
+      observations: new Map(),
+      retrievalTraces: new Map(),
+      workerContextPackageFiles: new Map(),
+      workspaceConfig: JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Boundary workspace', defaultAgentId: null },
+      }),
+      workspaceSchema: null,
+    },
   };
 }
 
@@ -194,7 +206,7 @@ describe('workspace export filesystem boundaries', () => {
     expect(() => writeWorkspaceExportTree(minimalExportInput(exportRoot))).toThrow(
       /Export root must not already exist/
     );
-    expect(existsSync(join(exportRoot, 'records', 'workspace.json'))).toBe(false);
+    expect(existsSync(join(exportRoot, 'records', 'workspace-record.json'))).toBe(false);
 
     const target = join(parent, 'symlink-target');
     mkdirSync(target);
@@ -203,7 +215,7 @@ describe('workspace export filesystem boundaries', () => {
     expect(() => writeWorkspaceExportTree(minimalExportInput(linkedRoot))).toThrow(
       /Export root must not already exist/
     );
-    expect(existsSync(join(target, 'records', 'workspace.json'))).toBe(false);
+    expect(existsSync(join(target, 'records', 'workspace-record.json'))).toBe(false);
   });
 
   it('removes a partial export tree when writing fails', () => {
@@ -259,10 +271,10 @@ describe('workspace export filesystem boundaries', () => {
       fileContents?: ReadonlyMap<string, string>;
       manifestDigest?: string;
     };
-    const workspacePath = join(exportRoot, 'records', 'workspace.json');
+    const workspacePath = join(exportRoot, 'records', 'workspace-record.json');
     const manifestText = readFileSync(join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE), 'utf8');
 
-    expect(verified.fileContents?.get('records/workspace.json')).toBe(
+    expect(verified.fileContents?.get('records/workspace-record.json')).toBe(
       readFileSync(workspacePath, 'utf8')
     );
     expect(verified.manifestDigest).toBe(

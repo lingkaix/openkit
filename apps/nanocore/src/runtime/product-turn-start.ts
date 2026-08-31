@@ -4,7 +4,7 @@ import type { ActorRef, SubmitTurnInputRequestSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import { selectAgent } from '../agents/selector.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { type RuntimeConfigSnapshot, resolveDefaultAgentId } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import type { ProviderCredentialResolver } from '../providers/registry.js';
 import {
@@ -15,11 +15,7 @@ import {
   ensureConfiguredSchedulerBaseline,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
-import {
-  assertAgentManifestSupportsModel,
-  resolveModelAgentOverride,
-  TurnStartValidationError,
-} from './orchestrator.js';
+import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   materializeWorkspaceRootsForTurn,
@@ -91,17 +87,19 @@ export async function startProductTurn(input: StartProductTurnInput) {
     throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
 
-  const workspace = input.store.getWorkspace(input.input.workspaceId);
-  const modelAgentId = resolveModelAgentOverride(
-    input.snapshot.agentManifests,
-    input.snapshot.providerRegistry,
-    workspace.defaults?.defaultAgentId ?? null,
-    input.input.modelId,
-    { providerCredentialResolver: input.providerCredentialResolver }
+  input.store.getWorkspace(input.input.workspaceId);
+  const responsibleUserId =
+    canonicalTriggerActor.kind === 'user'
+      ? canonicalTriggerActor.id
+      : canonicalTriggerActor.responsibleUserId;
+  const defaultAgentId = resolveDefaultAgentId(
+    input.snapshot,
+    input.input.workspaceId,
+    responsibleUserId ?? undefined
   );
-  const requestedAgentOverride = input.requestedAgentId ?? modelAgentId;
+  const requestedAgentOverride = input.requestedAgentId ?? input.input.agentId;
   const selectedAgent = selectAgent(
-    { defaultAgentId: workspace.defaults?.defaultAgentId ?? null },
+    { defaultAgentId },
     requestedAgentOverride ? { agentId: requestedAgentOverride } : {},
     input.snapshot.agentManifests
   );
@@ -109,11 +107,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
   if (!('id' in selectedAgent)) {
     throw new TurnStartValidationError(selectedAgent.error.code, selectedAgent.error.message, 409);
   }
-  assertAgentManifestSupportsModel(
-    selectedAgent,
-    input.snapshot.providerRegistry,
-    input.input.modelId
-  );
+  assertAgentManifestSupportsModel(selectedAgent, input.input.modelId);
 
   const workspaceRoots = materializeWorkspaceRootsForTurn(
     input.snapshot,
@@ -145,7 +139,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
   ensureConfiguredSchedulerBaseline(input.coreDb, { placement: input.workerPlacement });
   createSchedulerAdmissionEntry(input.coreDb, {
     priorityClass: 'interactive',
-    profileRef: requestedAgentId,
+    modelId: input.input.modelId ?? null,
+    profileRef: input.input.profileId ?? null,
     queueEntryId,
     requestId: input.input.requestId,
     requestedAgentId,
@@ -173,6 +168,9 @@ export async function startProductTurn(input: StartProductTurnInput) {
     leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
     maxDispatches: 1,
     providerRegistry: input.snapshot.providerRegistry,
+    gatewayConfig: input.snapshot.gatewayConfig,
+    workspaceConfigs: input.snapshot.workspaceConfigs,
+    userConfigs: input.snapshot.userConfigs,
     schedulerEpoch: input.schedulerEpoch,
     startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
     store: input.store,

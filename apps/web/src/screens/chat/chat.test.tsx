@@ -21,6 +21,50 @@ const THREAD = {
   updatedAt: '2026-07-21T00:00:00.000Z',
 };
 
+const CONVERSATION_TARGET = {
+  workspaceId: 'ws1',
+  threadId: null,
+  defaultTargetRef: 'internal-role:assistant',
+  targets: [
+    {
+      targetRef: 'internal-role:assistant',
+      kind: 'assistant' as const,
+      label: 'Assistant',
+      description: 'Workspace assistant',
+      availability: 'available' as const,
+      unavailableReason: null,
+      threadId: null,
+      profileId: null,
+      logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+      defaultLogicalModelId: 'default',
+    },
+    {
+      targetRef: 'warm-worker:agent_codex_host:default',
+      kind: 'warm-worker' as const,
+      label: 'Codex Agent',
+      description: 'Reuse the configured Worker',
+      availability: 'available' as const,
+      unavailableReason: null,
+      threadId: null,
+      profileId: 'default',
+      logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+      defaultLogicalModelId: 'default',
+    },
+    {
+      targetRef: 'new-task-worker',
+      kind: 'new-task-worker' as const,
+      label: 'New task worker',
+      description: 'Start a task worker',
+      availability: 'available' as const,
+      unavailableReason: null,
+      threadId: null,
+      profileId: null,
+      logicalModels: [{ id: 'default', label: 'Default', capabilities: ['chat'] }],
+      defaultLogicalModelId: 'default',
+    },
+  ],
+};
+
 const ITEMS = ItemSchema.array().parse([
   {
     id: 'i1',
@@ -138,6 +182,13 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
           ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
         >),
       getThreadDashboard: vi.fn().mockResolvedValue({ turns: [] }),
+      getConversationTargets: vi.fn().mockImplementation((workspaceId: string, threadId?: string) =>
+        Promise.resolve({
+          ...CONVERSATION_TARGET,
+          workspaceId,
+          threadId: threadId ?? null,
+        })
+      ),
       ...app,
     },
   } as unknown as CoreClient;
@@ -186,10 +237,18 @@ const CHAT_MODE_RESPONSE = {
   turn: COMPLETED_TURN,
   item: ITEMS[1],
   handoff: null,
+  originatingWorkspaceId: 'ws1',
+  originatingThreadId: 'th1',
+  receivingWorkspaceId: 'ws1',
+  receivingThreadId: 'th1',
+  targetRef: 'internal-role:assistant',
+  logicalModelId: 'default',
 };
 
 const STARTER_CHAT_MODE_RESPONSE = {
   ...CHAT_MODE_RESPONSE,
+  originatingThreadId: 'th-new',
+  receivingThreadId: 'th-new',
   turn: TurnSchema.parse({
     ...COMPLETED_TURN,
     id: 't-new',
@@ -216,11 +275,6 @@ const QUICK_CHAT_WORKSPACE = WorkspaceRecordSchema.parse({
   name: 'Quick Chat',
   kind: 'quick-chat',
   status: 'active',
-  defaults: {
-    defaultModelId: null,
-    defaultAgentId: null,
-    defaultSkillIds: [],
-  },
   counts: {
     threadCount: 1,
     artifactCount: 0,
@@ -232,6 +286,8 @@ const QUICK_CHAT_WORKSPACE = WorkspaceRecordSchema.parse({
 
 const QUICK_CHAT_MODE_RESPONSE = {
   ...CHAT_MODE_RESPONSE,
+  originatingWorkspaceId: QUICK_CHAT_WORKSPACE.id,
+  receivingWorkspaceId: QUICK_CHAT_WORKSPACE.id,
   turn: TurnSchema.parse({
     ...COMPLETED_TURN,
     workspaceId: QUICK_CHAT_WORKSPACE.id,
@@ -396,21 +452,38 @@ describe('chat starter (board 01)', () => {
     const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
     const getThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
     const startTurn = vi.fn();
-    const startChatMode = vi.fn().mockResolvedValue(STARTER_CHAT_MODE_RESPONSE);
+    const submitConversation = vi.fn().mockResolvedValue(STARTER_CHAT_MODE_RESPONSE);
     const quickChat = vi.fn();
-    const client = makeClient({ createThread, getThread, startTurn }, { quickChat, startChatMode });
+    const client = makeClient(
+      { createThread, getThread, startTurn },
+      { quickChat, submitConversation }
+    );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Plan a launch');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
-      expect(createThread).toHaveBeenCalledWith({ workspaceId: 'ws1', name: 'Plan a launch' })
+      expect(createThread).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        name: 'Plan a launch',
+        requestId: expect.any(String),
+      })
     );
     await waitFor(() =>
-      expect(startChatMode).toHaveBeenCalledWith('ws1', 'th-new', { input: 'Plan a launch' })
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th-new',
+        expect.objectContaining({
+          artifactRefs: [],
+          input: 'Plan a launch',
+          logicalModelId: 'default',
+          requestId: expect.any(String),
+          targetRef: 'internal-role:assistant',
+        })
+      )
     );
     expect(createThread.mock.invocationCallOrder[0]).toBeLessThan(
-      startChatMode.mock.invocationCallOrder[0] ?? 0
+      submitConversation.mock.invocationCallOrder[0] ?? 0
     );
     expect(startTurn).not.toHaveBeenCalled();
     expect(quickChat).not.toHaveBeenCalled();
@@ -488,23 +561,29 @@ describe('chat starter (board 01)', () => {
     expect(await screen.findByText(/doesn't exist/i)).toBeInTheDocument();
   });
 
-  it('opens the new thread even when the first turn cannot start', async () => {
+  it('keeps the starter draft when the first conversation cannot start', async () => {
     const user = userEvent.setup();
     const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
     const startTurn = vi.fn();
-    const startChatMode = vi.fn().mockRejectedValue(new Error('chat_mode_unavailable'));
+    const submitConversation = vi.fn().mockRejectedValue(new Error('chat_mode_unavailable'));
     const quickChat = vi.fn();
-    const client = makeClient({ createThread, startTurn }, { quickChat, startChatMode });
+    const client = makeClient({ createThread, startTurn }, { quickChat, submitConversation });
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Story thread');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(
-      await screen.findByRole('heading', { name: 'Competitive teardown' })
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't start that chat. Try again.")).toBeInTheDocument();
     await waitFor(() =>
-      expect(startChatMode).toHaveBeenCalledWith('ws1', 'th-new', { input: 'Story thread' })
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th-new',
+        expect.objectContaining({
+          input: 'Story thread',
+          targetRef: 'internal-role:assistant',
+        })
+      )
     );
+    expect(input).toHaveValue('Story thread');
     expect(startTurn).not.toHaveBeenCalled();
     expect(quickChat).not.toHaveBeenCalled();
   });
@@ -514,15 +593,19 @@ describe('chat starter (board 01)', () => {
     const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
     const createThread = vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' });
     const getThread = vi.fn();
-    const startChatMode = vi.fn().mockReturnValue(started.promise);
-    const client = makeClient({ createThread, getThread }, { startChatMode });
+    const submitConversation = vi.fn().mockReturnValue(started.promise);
+    const client = makeClient({ createThread, getThread }, { submitConversation });
     const queryClient = renderApp('/chat', client);
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
 
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Plan for A');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
-      expect(startChatMode).toHaveBeenCalledWith('ws1', 'th-new', { input: 'Plan for A' })
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th-new',
+        expect.objectContaining({ input: 'Plan for A', targetRef: 'internal-role:assistant' })
+      )
     );
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: 'ws2' }));
@@ -738,23 +821,28 @@ describe('chat thread (boards 02/03)', () => {
   it('sends a follow-up turn', async () => {
     const user = userEvent.setup();
     const startTurn = vi.fn();
-    const startChatMode = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
+    const submitConversation = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
     const quickChat = vi.fn();
     const client = makeClient(
       {
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         startTurn,
       },
-      { quickChat, startChatMode }
+      { quickChat, submitConversation }
     );
     renderApp('/chat/ws1/th1', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Add a pricing table');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
-      expect(startChatMode).toHaveBeenCalledWith('ws1', 'th1', {
-        input: 'Add a pricing table',
-      })
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th1',
+        expect.objectContaining({
+          input: 'Add a pricing table',
+          targetRef: 'internal-role:assistant',
+        })
+      )
     );
     expect(startTurn).not.toHaveBeenCalled();
     expect(quickChat).not.toHaveBeenCalled();
@@ -1471,7 +1559,7 @@ describe('live turn subscription (S6)', () => {
     'approval',
   ] as const)('refreshes the dashboard and subscribes once after a successful %s command', async (command) => {
     const user = userEvent.setup();
-    const startChatMode = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
+    const submitConversation = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
     const respondApproval = vi.fn().mockResolvedValue({});
     const getThreadDashboard = vi
       .fn()
@@ -1491,7 +1579,7 @@ describe('live turn subscription (S6)', () => {
         respondApproval,
         subscribeTurnEvents,
       },
-      { getThreadDashboard, startChatMode }
+      { getThreadDashboard, submitConversation }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -1500,7 +1588,7 @@ describe('live turn subscription (S6)', () => {
     if (command === 'send') {
       await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start fresh work');
       await user.click(screen.getByRole('button', { name: 'Send message' }));
-      await waitFor(() => expect(startChatMode).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     } else {
       await user.click(await screen.findByRole('button', { name: 'Approve' }));
       await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(1));
@@ -1777,12 +1865,12 @@ describe('live turn subscription (S6)', () => {
     const subscribeTurnEvents = vi.fn().mockReturnValue({
       [Symbol.asyncIterator]: () => iterator,
     });
-    const startChatMode = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
+    const submitConversation = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
     const client = makeClient(
       { listThreadItems, subscribeTurnEvents },
       {
         getThreadDashboard: vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] }),
-        startChatMode,
+        submitConversation,
       }
     );
     const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
@@ -1796,7 +1884,7 @@ describe('live turn subscription (S6)', () => {
 
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start fresh work');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => expect(startChatMode).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(listThreadItems).toHaveBeenCalledTimes(1));
     expect(queryClient.getQueryState(chatKeys.items('ws1', 'th1'))?.fetchStatus).toBe('fetching');
     expect(returnStream).not.toHaveBeenCalled();
@@ -1866,7 +1954,7 @@ describe('live turn subscription (S6)', () => {
         listThreadItems,
         subscribeTurnEvents,
       },
-      { getThreadDashboard, startChatMode: vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE) }
+      { getThreadDashboard, submitConversation: vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE) }
     );
 
     const queryClient = renderApp('/chat/ws1/th1', client);
@@ -2122,18 +2210,21 @@ describe('task thread (board 04)', () => {
     expect(screen.getByText('Approve $5 spend')).toBeInTheDocument();
   });
 
-  it('dispatches the composer through Task Mode without a generic or standalone chat call', async () => {
+  it('dispatches the task Composer through the reusable warm Worker target', async () => {
     const user = userEvent.setup();
     const startTurn = vi.fn();
     const startTaskMode = vi.fn().mockResolvedValue(TASK_MODE_RESPONSE);
-    const startChatMode = vi.fn();
+    const submitConversation = vi.fn().mockResolvedValue({
+      ...CHAT_MODE_RESPONSE,
+      targetRef: 'warm-worker:agent_codex_host:default',
+    });
     const quickChat = vi.fn();
     const client = makeClient(
       {
         listThreadItems: vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         startTurn,
       },
-      { quickChat, startChatMode, startTaskMode }
+      { quickChat, submitConversation, startTaskMode }
     );
 
     renderApp('/tasks/ws1/th1', client);
@@ -2141,9 +2232,16 @@ describe('task thread (board 04)', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() =>
-      expect(startTaskMode).toHaveBeenCalledWith('ws1', 'th1', { input: 'Ship the fix' })
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th1',
+        expect.objectContaining({
+          input: 'Ship the fix',
+          targetRef: 'warm-worker:agent_codex_host:default',
+        })
+      )
     );
-    expect(startChatMode).not.toHaveBeenCalled();
+    expect(startTaskMode).not.toHaveBeenCalled();
     expect(startTurn).not.toHaveBeenCalled();
     expect(quickChat).not.toHaveBeenCalled();
   });
@@ -2153,7 +2251,7 @@ describe('mode entry and feedback (S8)', () => {
   it('uses the ordinary Chat Mode path for the built-in Quick Chat workspace', async () => {
     const user = userEvent.setup();
     const startTurn = vi.fn();
-    const startChatMode = vi.fn().mockResolvedValue(QUICK_CHAT_MODE_RESPONSE);
+    const submitConversation = vi.fn().mockResolvedValue(QUICK_CHAT_MODE_RESPONSE);
     const startTaskMode = vi.fn();
     const quickChat = vi.fn();
     const client = makeClient(
@@ -2163,7 +2261,7 @@ describe('mode entry and feedback (S8)', () => {
         listWorkspaces: vi.fn().mockResolvedValue({ items: [QUICK_CHAT_WORKSPACE] }),
         startTurn,
       },
-      { quickChat, startChatMode, startTaskMode }
+      { quickChat, submitConversation, startTaskMode }
     );
 
     renderApp('/chat/ws_quick_chat/th1', client);
@@ -2171,9 +2269,14 @@ describe('mode entry and feedback (S8)', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() =>
-      expect(startChatMode).toHaveBeenCalledWith('ws_quick_chat', 'th1', {
-        input: 'Answer directly',
-      })
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws_quick_chat',
+        'th1',
+        expect.objectContaining({
+          input: 'Answer directly',
+          targetRef: 'internal-role:assistant',
+        })
+      )
     );
     expect(startTaskMode).not.toHaveBeenCalled();
     expect(startTurn).not.toHaveBeenCalled();
@@ -2183,7 +2286,7 @@ describe('mode entry and feedback (S8)', () => {
   it('refreshes only the submitted composer owner after a workspace switch', async () => {
     const user = userEvent.setup();
     const started = createDeferred<typeof CHAT_MODE_RESPONSE>();
-    const startChatMode = vi.fn().mockReturnValue(started.promise);
+    const submitConversation = vi.fn().mockReturnValue(started.promise);
     const workspaceBThread = {
       ...THREAD,
       workspaceId: 'ws2',
@@ -2216,7 +2319,7 @@ describe('mode entry and feedback (S8)', () => {
           })
         ),
       },
-      { startChatMode }
+      { submitConversation }
     );
     const queryClient = renderApp('/chat/ws1/th1', client);
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
@@ -2224,7 +2327,11 @@ describe('mode entry and feedback (S8)', () => {
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Continue A');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
-      expect(startChatMode).toHaveBeenCalledWith('ws1', 'th1', { input: 'Continue A' })
+      expect(submitConversation).toHaveBeenCalledWith(
+        'ws1',
+        'th1',
+        expect.objectContaining({ input: 'Continue A', targetRef: 'internal-role:assistant' })
+      )
     );
 
     await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');

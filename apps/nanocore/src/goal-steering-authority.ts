@@ -291,7 +291,7 @@ export function requireGoalSteeringSendProof(
     receipt.scope.threadId !== owner.threadId ||
     receipt.response.kind !== 'pending_user_turn' ||
     receipt.response.id !== owner.pendingTurnId ||
-    receipt.response.chatMetadata !== undefined
+    receipt.response.conversationMetadata !== undefined
   ) {
     throw authorityError('recovery_required', 'The original steering send receipt is invalid.');
   }

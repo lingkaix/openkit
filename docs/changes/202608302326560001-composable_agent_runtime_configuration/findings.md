@@ -8,19 +8,19 @@ This report records non-authorizing findings raised by the independent Claude Co
 - [x] `CARC-FND-002` [closed] Duplicate Internal Role Catalog proposal
 - [x] `CARC-FND-003` [closed] Logical-model routing and internal-role pinning conflict
 - [x] `CARC-FND-004` [closed] Gateway fallback reversal lacks an owned contract
-- [ ] `CARC-FND-005` [open] Worker credentials are resolved but not materialized
-- [ ] `CARC-FND-006` [open] Workspace record rename and editable-field split can fail open
-- [ ] `CARC-FND-007` [open] Harness concurrency owners and vocabulary are incomplete
-- [ ] `CARC-FND-008` [open] Public model selection currently selects an Agent
+- [x] `CARC-FND-005` [closed] Worker credentials are resolved but not materialized
+- [x] `CARC-FND-006` [closed] Workspace record rename and editable-field split can fail open
+- [x] `CARC-FND-007` [closed] Harness concurrency owners and vocabulary are incomplete
+- [x] `CARC-FND-008` [closed] Public model selection currently selects an Agent
 - [x] `CARC-FND-009` [closed] Accepted owner inventory is incomplete
-- [ ] `CARC-FND-010` [open] Pi direct-provider routing conflicts with hidden routes
+- [x] `CARC-FND-010` [closed] Pi direct-provider routing conflicts with hidden routes
 - [x] `CARC-FND-011` [closed] Composer Shard label has no durable owner
-- [ ] `CARC-FND-012` [open] Gateway model discovery leaks and over-advertises provider supply
-- [ ] `CARC-FND-013` [open] Composer submission is Assistant-specific and attachment-free
+- [x] `CARC-FND-012` [closed] Gateway model discovery leaks and over-advertises provider supply
+- [x] `CARC-FND-013` [closed] Composer submission is Assistant-specific and attachment-free
 - [x] `CARC-FND-014` [closed] Required-feature registry table diverged from implementation
 - [x] `CARC-FND-015` [closed] Accepted runtime owners retained one-route and one-Harness contradictions
 - [x] `CARC-FND-016` [closed] Logical-model capability and family strings lacked authority
-- [ ] `CARC-FND-017` [open] Workspace public projection and config join are not implemented
+- [x] `CARC-FND-017` [closed] Workspace public projection and config join are not implemented
 - [x] `CARC-FND-018` [closed] Reload plan and native resume were documented as implemented seams
 - [x] `CARC-FND-019` [closed] Composer ownership, lifecycle, target stability, and replay were incomplete
 - [x] `CARC-FND-020` [closed] Documentation statuses and related accepted projections were stale
@@ -66,37 +66,45 @@ This report records non-authorizing findings raised by the independent Claude Co
 - **Closing verdict:** Closed because the smallest current fallback contract and its exclusions have one accepted owner.
 - **Closure evidence:** `docs/specs/20260526-llm_gateway_responses_api.md` defines ordered members, pre-output eligibility, attempt lineage, exhaustion, stable failures, and explicit balancing deferrals.
 
-## [open] CARC-FND-005 — Worker credentials are resolved but not materialized
+## [closed] CARC-FND-005 — Worker credentials are resolved but not materialized
 
 - **Observation:** Production resolves and receipts provider, runtime-environment, and runtime-file credentials but the NanoHost governance backend does not consume them during materialization.
 - **Impact:** Workspace credential binding and dynamic existing-secret replacement cannot pass real end-to-end acceptance in the current implementation.
 - **Evidence:** The independent consultant cited `apps/nanocore/src/runtime/worker-governance-turn-executor.ts:1116`, `apps/nanocore/src/runtime/worker-governance-turn-executor.ts:1307`, and `apps/nanocore/src/runtime/turn-executor-factory.ts:881`.
 - **Owner:** `docs/specs/20260709-worker_credential_access_declarations.md`, `docs/specs/20260703-vault_secret_injection.md`, and the NanoHost materialization owners.
-- **Next action:** Keep credential materialization inside this plan, complete the NanoHost or OpenShell projection, and prove existing-secret replacement plus process-static addition behavior through the real effect domain.
+- **Next action:** Keep credential materialization inside this plan, complete the NanoHost or OpenShell projection, and prove existing-secret replacement plus process-static addition behavior through the real effect domain. Closed 2026-08-31: the governed launch carries environment credentials through Sandbox creation and file credentials through `reference.import`, and writes receipts only after materialization succeeds.
+- **Closing verdict:** Closed because resolved Workspace credentials now reach their declared NanoHost and OpenShell sinks before any success receipt is recorded.
+- **Closure evidence:** `apps/nanocore/src/runtime/worker-governance-turn-executor.ts`, `apps/nanocore/src/runtime/turn-executor-factory.ts`, `containers/workers/openkit-file-effect`, and their focused tests prove fail-closed provider handling, environment and file delivery, sink permissions, and post-effect receipt ordering.
 
-## [open] CARC-FND-006 — Workspace record rename and editable-field split can fail open
+## [closed] CARC-FND-006 — Workspace record rename and editable-field split can fail open
 
 - **Observation:** Some current readers silently skip a Workspace when `workspace.json` is absent while others fail, so a direct rename to `workspace-record.json` can make an old directory look half-built. The same current record also owns editable `name` and execution defaults that belong in `workspace.jsonc` under the accepted target.
 - **Impact:** Boot index reconstruction could omit authoritative Workspace state without a compatibility alias or a visible error, while a partial field move could create two writers or lose the Workspace name.
 - **Evidence:** The independent consultant cited `apps/nanocore/src/storage/index-rebuild.ts:435` and `apps/nanocore/src/storage/command-request-records.ts:127` plus export and import readers.
 - **Owner:** `docs/specs/20260703-storage_layout_record_ownership.md` and `docs/specs/20260704-workspace_backup_export_import.md`.
-- **Next action:** Define and implement a loud fail-closed rejection when an old record file is present, move `name` and `defaultAgentId` atomically into `workspace.jsonc`, delete `defaultModelId` and `defaultSkillIds`, sweep every reader and writer, and retain no dual read or migration alias.
+- **Next action:** Define and implement a loud fail-closed rejection when an old record file is present, move `name` and `defaultAgentId` atomically into `workspace.jsonc`, delete `defaultModelId` and `defaultSkillIds`, sweep every reader and writer, and retain no dual read or migration alias. Closed 2026-08-31: every reader and writer uses the canonical record/config pair and an old `workspace.json` fails loudly.
+- **Closing verdict:** Closed because the machine record and editable Workspace config have one writer each, pair creation is staged atomically, and no compatibility reader remains.
+- **Closure evidence:** `apps/nanocore/src/storage/workspace-file-records.ts`, `apps/nanocore/src/storage/index-rebuild.ts`, export/import code, protocol schemas, fixtures, and migration tests prove `workspace-record.json`, joined `name`, config-owned `defaultAgentId`, and retired-path rejection.
 
-## [open] CARC-FND-007 — Harness concurrency owners and vocabulary are incomplete
+## [closed] CARC-FND-007 — Harness concurrency owners and vocabulary are incomplete
 
 - **Observation:** The requested multi-Harness and concurrent-AgentSession behavior is blocked by a one-Harness database index, Harness and NanoCore single-active-Turn checks, absent scheduler authorization, and a required-feature description that incorrectly permits concurrent Turns in one AgentSession.
 - **Impact:** Editing only the Harness would bypass the unique scheduling authority and contradict the one-active-Turn-per-AgentSession invariant.
 - **Evidence:** The independent consultant cited `apps/nanocore/src/storage/schema/nanohost-harness-runtime.ts:101`, `packages/worker-shim/src/harness.ts:183`, `apps/nanocore/src/runtime/turn-executor-factory.ts:567`, `docs/specs/20260703-runtime_scheduling_scale.md:71`, and `packages/config-schema/src/schema-evolution.ts:34`.
 - **Owner:** `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-durable_scheduler_design.md`, and `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-- **Next action:** Activate the reserved compatibility seam across all three owners, keep one active Turn per Thread and AgentSession, and update the existing `session.concurrent-turns` registry description plus mirrored table together without renaming the feature.
+- **Next action:** Activate the reserved compatibility seam across all three owners, keep one active Turn per Thread and AgentSession, and update the existing `session.concurrent-turns` registry description plus mirrored table together without renaming the feature. Closed 2026-08-31: one Sandbox may hold multiple compatibility-keyed Harness records and the worker shim maintains independent per-Harness routing and sequencing while one active Turn per Harness remains enforced.
+- **Closing verdict:** Closed for the accepted runnable slice because Harness multiplicity is implemented without claiming the still-deferred concurrent-active-Turn scheduler grant.
+- **Closure evidence:** `apps/nanocore/src/storage/schema/nanohost-harness-runtime.ts`, `apps/nanocore/src/runtime/nanohost-harness-records.ts`, `packages/worker-shim/src/harness.ts`, NanoHost integration code, and focused tests prove the multi-Harness topology and retained single-active-Turn bound.
 
-## [open] CARC-FND-008 — Public model selection currently selects an Agent
+## [closed] CARC-FND-008 — Public model selection currently selects an Agent
 
 - **Observation:** Current public `modelId` handling derives an Agent from provider-native model equality and rejects independently selected Agent and model combinations.
 - **Impact:** The Composer cannot offer independent Agent and logical Model selectors until this inversion is removed.
 - **Evidence:** The independent consultant cited `apps/nanocore/src/runtime/orchestrator.ts:148`, `apps/nanocore/src/runtime/orchestrator.ts:226`, and `apps/nanocore/src/runtime/product-turn-start.ts:95`.
 - **Owner:** The Turn request, Agent selector, Agent Manifest resolver, and Gateway logical-model contract.
-- **Next action:** Delete model-to-Agent resolution, add explicit Agent and profile input, and make `modelId` only a logical model preference validated after Agent selection.
+- **Next action:** Delete model-to-Agent resolution, add explicit Agent and profile input, and make `modelId` only a logical model preference validated after Agent selection. Closed 2026-08-31: the ordinary Turn request carries independent `agentId`, `profileId`, and logical `modelId`, and selection validates the model only after resolving the Agent.
+- **Closing verdict:** Closed because no model-to-Agent derivation remains and explicit request selection composes with User, Workspace, and Server defaults.
+- **Closure evidence:** `packages/protocol/src/requests/turn.ts`, `apps/nanocore/src/runtime/orchestrator.ts`, `apps/nanocore/src/runtime/product-turn-start.ts`, scheduler admission persistence, and focused tests prove independent Agent, profile, and logical-model flow.
 
 ## [closed] CARC-FND-009 — Accepted owner inventory is incomplete
 
@@ -108,13 +116,15 @@ This report records non-authorizing findings raised by the independent Claude Co
 - **Closing verdict:** Closed because every material affected owner identified by the consultant is now in the inventory and diff.
 - **Closure evidence:** The plan's Accepted Owners section names the scheduling, credential, Pi, subscription-account, Core Client, and Workspace portability documents, and the current documentation diff updates each affected contract.
 
-## [open] CARC-FND-010 — Pi direct-provider routing conflicts with hidden routes
+## [closed] CARC-FND-010 — Pi direct-provider routing conflicts with hidden routes
 
 - **Observation:** The accepted Pi worker adapter is direct-provider-only and carries worker-visible provider credentials, while the target design requires every dispatchable worker route to remain Gateway-private.
 - **Impact:** Pi cannot truthfully participate in the logical-model contract without a relay-capable projection or an explicit non-ready disposition.
 - **Evidence:** The independent consultant cited `docs/specs/20260716-pi_worker_adapter.md` and the closed runtime-route matrix in `docs/specs/20260703-agent_manifest_aep_resolution.md`.
 - **Owner:** `docs/specs/20260716-pi_worker_adapter.md` and the Agent Manifest, AEP, and Gateway owners.
-- **Next action:** Make Gateway-private relay support a readiness requirement and keep Pi non-dispatchable under this target until its pinned adapter can satisfy it; do not preserve the direct-provider exception.
+- **Next action:** Make Gateway-private relay support a readiness requirement and keep Pi non-dispatchable under this target until its pinned adapter can satisfy it; do not preserve the direct-provider exception. Closed 2026-08-31: the built-in Pi manifest is explicitly disabled and launch admission accepts only ready Agents.
+- **Closing verdict:** Closed because Pi can no longer enter dispatch through its incompatible direct-provider path.
+- **Closure evidence:** `apps/nanocore/data-templates/config/agents/pi.agent.jsonc`, `apps/nanocore/src/agents/readiness.ts`, and `apps/nanocore/e2e/agent-readiness.spec.ts` prove the disabled readiness projection and non-launchable result.
 
 ## [closed] CARC-FND-011 — Composer Shard label has no durable owner
 
@@ -126,21 +136,25 @@ This report records non-authorizing findings raised by the independent Claude Co
 - **Closing verdict:** Closed because no Shard entity is needed or authorized.
 - **Closure evidence:** `docs/core/work-model.md`, `docs/specs/20260704-task_mode_worker_delegation.md`, and `docs/specs/20260831-unified_conversation_composer.md` map the label to linked Task Thread creation and reject a Shard record, identifier, API, or lifecycle.
 
-## [open] CARC-FND-012 — Gateway model discovery leaks and over-advertises provider supply
+## [closed] CARC-FND-012 — Gateway model discovery leaks and over-advertises provider supply
 
 - **Observation:** `GET /v1/models` advertises models across allowlisted profiles and exposes `owned_by: profile.id`, while dispatch resolves only one default provider and rejects models absent from that profile.
 - **Impact:** The public model catalog can advertise an unusable model and leaks a concrete provider profile identity that the logical-model design must hide.
 - **Evidence:** The independent consultant cited `apps/nanocore/src/llm/gateway-routes.ts:1744`, `apps/nanocore/src/llm/gateway-routes.ts:1785`, `apps/nanocore/src/llm/gateway-routes.ts:1986`, and `apps/nanocore/src/app.ts:1022`.
 - **Owner:** `docs/specs/20260526-llm_gateway_responses_api.md`.
-- **Next action:** Make model discovery and dispatch use the same logical-model catalog, remove provider profile identity from public ownership fields, and add a two-provider regression.
+- **Next action:** Make model discovery and dispatch use the same logical-model catalog, remove provider profile identity from public ownership fields, and add a two-provider regression. Closed 2026-08-31: discovery and dispatch share the resolved logical catalog, retain only eligible route members, and expose the stable product owner `openkit`.
+- **Closing verdict:** Closed because the public catalog no longer leaks Provider profile identity or advertises a logical model with no eligible route.
+- **Closure evidence:** `apps/nanocore/src/llm/logical-models.ts`, `apps/nanocore/src/llm/gateway-routes.ts`, runtime-config validation, and multi-Provider regressions prove shared eligibility, hidden routes, and stable ownership.
 
-## [open] CARC-FND-013 — Composer submission is Assistant-specific and attachment-free
+## [closed] CARC-FND-013 — Composer submission is Assistant-specific and attachment-free
 
 - **Observation:** The shared Web `Composer` emits only a text string, the starter creates a Thread and calls `client.app.startChatMode`, and the strict Chat request contains only `input` and `requestId`. The current public command name and receipt owner are Assistant-specific even though the requested control must address internal roles, existing Workers, and new Task work.
 - **Impact:** Adding target-specific calls in Web would turn the client into a second dispatcher, duplicate replay behavior, and leave the Agent and Model selectors unrelated to one accepted command. Adding a general upload service would also duplicate the existing Artifact import owner for the first supported text-file slice.
 - **Evidence:** Current `apps/web/src/primitives/Composer.tsx`, `apps/web/src/screens/chat/ChatStarter.tsx`, `apps/web/src/screens/chat/data.ts`, `packages/app-api-schemas/src/chat-mode.ts`, `packages/core-client/src/app.ts`, and `apps/nanocore/src/mode-entry-routes.ts` show the text-only `chat.start` chain; `artifact.import` already accepts bounded UTF-8 Markdown, text, and JSON content.
 - **Owner:** `docs/specs/20260831-unified_conversation_composer.md`, `docs/specs/20260528-core_client_boundary.md`, and `docs/specs/20260713-work_resource_interaction_model.md`.
-- **Next action:** Replace `chat.start` with one structured `conversation.submit` command and one Workspace target catalog, branch into existing execution owners inside NanoCore, reuse Artifact import for supported local text files, and retain no old route or second dispatcher.
+- **Next action:** Replace `chat.start` with one structured `conversation.submit` command and one Workspace target catalog, branch into existing execution owners inside NanoCore, reuse Artifact import for supported local text files, and retain no old route or second dispatcher. Closed 2026-08-31: one catalog and one idempotent structured submission route reach the accepted internal-role, worker, and new-Task branches, while the shared Composer reuses Artifact import and retains its draft on failure.
+- **Closing verdict:** Closed because the Assistant-only command and text-only UI were deleted without adding a second dispatcher or Shard entity.
+- **Closure evidence:** `packages/app-api-schemas/src/chat-mode.ts`, `apps/nanocore/src/mode-entry-routes.ts`, `packages/core-client/src/app.ts`, `apps/web/src/primitives/Composer.tsx`, starter and active-Thread integrations, and focused Web/NanoCore tests prove the catalog, structured submission, attachments, retry identity, target routing, and logical-model selection.
 
 ## [closed] CARC-FND-014 — Required-feature registry table diverged from implementation
 
@@ -172,13 +186,15 @@ This report records non-authorizing findings raised by the independent Claude Co
 - **Closing verdict:** Closed because route equivalence is derived from a pinned authority rather than asserted through free strings.
 - **Closure evidence:** `docs/specs/20260526-llm_gateway_responses_api.md` authors only logical identity, display name, and ordered routes and derives the effective capabilities and `modelFamilyId` from `@openkit/models-dev-catalog` plus the endpoint matrix.
 
-## [open] CARC-FND-017 — Workspace public projection and config join are not implemented
+## [closed] CARC-FND-017 — Workspace public projection and config join are not implemented
 
 - **Observation:** Current protocol and Store code still serialize `name` and `defaults` in `WorkspaceRecordSchema` and `workspace.json` rather than joining editable config with a system record.
 - **Impact:** Moving the files alone would either remove the product-visible name or leave duplicate authority and stale defaults.
 - **Evidence:** The FalseFire review traced `packages/protocol/src/models/workspace.ts` and the Store creation path.
 - **Owner:** Storage layout, configuration identity, protocol/App API projection, Core Client, and Web Workspace consumers.
-- **Next action:** In Stage E, delete `WorkspaceDefaultsSchema`, retain protocol `name` only as a joined config projection, implement atomic pair creation and last-known-good failure behavior, and update every reader, writer, export, import, fixture, and test.
+- **Next action:** In Stage E, delete `WorkspaceDefaultsSchema`, retain protocol `name` only as a joined config projection, implement atomic pair creation and last-known-good failure behavior, and update every reader, writer, export, import, fixture, and test. Closed 2026-08-31: the public Workspace projection joins the machine record with config-owned `name`, and reload refreshes the Store projection without duplicate authority.
+- **Closing verdict:** Closed because the protocol remains product-complete while durable authority is split cleanly between `workspace-record.json` and `workspace.jsonc`.
+- **Closure evidence:** `packages/protocol/src/models/workspace.ts`, `apps/nanocore/src/lib/store.ts`, `apps/nanocore/src/storage/workspace-file-records.ts`, runtime-config reload wiring, Core Client, Web consumers, and focused tests prove the joined projection and last-known-good behavior.
 
 ## [closed] CARC-FND-018 — Reload plan and native resume were documented as implemented seams
 

@@ -37,21 +37,38 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  *
  * @param profile Provider profile with an explicit default model.
  * @param credential Credential resolved for the profile secret reference.
- * @returns Runtime provider registry, Gateway defaults, and credential resolver.
+ * @returns Runtime Provider supply, logical model route, and credential resolver.
  */
 function createProviderOptions(
   profile: ProviderProfile & { defaultModel: string },
   credential: string | null = null
 ) {
   return {
-    openKitConfig: {
-      defaults: {
-        gatewayModel: profile.defaultModel,
-        gatewayProviderId: profile.id,
-      },
-    },
+    gatewayConfig: logicalGatewayConfig(profile),
+    openKitConfig: {},
     providerCredentialResolver: () => credential,
     providerRegistry: new ProviderRegistry([profile]),
+  };
+}
+
+function logicalGatewayConfig(profile: ProviderProfile & { defaultModel: string }) {
+  return {
+    schemaVersion: 1 as const,
+    enabled: true,
+    defaultLogicalModelId: profile.defaultModel,
+    logicalModels: [
+      {
+        id: profile.defaultModel,
+        displayName: profile.defaultModel,
+        routes: [
+          {
+            id: 'primary',
+            providerProfileId: profile.id,
+            providerModel: profile.defaultModel,
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -71,15 +88,19 @@ function recordLocalGatewayAuthority(
 
 /** Creates the runtime Ollama fixture used by Gateway tests. */
 function createOllamaProviderOptions() {
-  return createProviderOptions({
-    baseUrl: 'http://localhost:11434/v1',
-    defaultModel: 'llama3.2',
-    displayName: 'Ollama',
-    id: 'ollama',
-    kind: 'local',
-    models: ['llama3.2'],
-    vendor: 'ollama',
-  });
+  return createProviderOptions(
+    {
+      baseUrl: 'https://openrouter.ai/api/v1',
+      defaultModel: 'openai/gpt-5.1',
+      displayName: 'OpenRouter',
+      id: 'openrouter-test',
+      kind: 'gateway',
+      models: ['openai/gpt-5.1'],
+      secretRef: 'env:OPENROUTER_API_KEY',
+      vendor: 'openrouter',
+    },
+    'openrouter-secret'
+  );
 }
 
 /** Creates the runtime OpenAI fixture used by Gateway tests. */
@@ -103,11 +124,11 @@ function createOpenAIProviderOptions() {
 function createAnthropicProviderOptions() {
   return createProviderOptions(
     {
-      defaultModel: 'faux-chat',
+      defaultModel: 'claude-sonnet-4-5',
       displayName: 'Anthropic',
       id: 'anthropic',
       kind: 'direct',
-      models: ['faux-chat'],
+      models: ['claude-sonnet-4-5'],
       secretRef: 'env:ANTHROPIC_API_KEY',
       vendor: 'anthropic',
     },
@@ -122,13 +143,14 @@ function createAnthropicProviderOptions() {
  * @returns Runtime provider options with the matching credential.
  */
 function createPiAiProviderOptions(providerId: 'google' | 'openrouter') {
+  const model = providerId === 'google' ? 'gemini-2.5-pro' : 'anthropic/claude-sonnet-4.5';
   return createProviderOptions(
     {
-      defaultModel: 'faux-chat',
+      defaultModel: model,
       displayName: providerId === 'google' ? 'Gemini' : 'OpenRouter',
       id: providerId,
       kind: providerId === 'openrouter' ? 'gateway' : 'direct',
-      models: ['faux-chat'],
+      models: [model],
       secretRef: providerId === 'google' ? 'env:GOOGLE_GEMINI_API_KEY' : 'env:OPENROUTER_API_KEY',
       vendor: providerId,
     },
@@ -139,12 +161,12 @@ function createPiAiProviderOptions(providerId: 'google' | 'openrouter') {
 function runtimeProviderRegistry(): ProviderRegistry {
   return new ProviderRegistry([
     {
-      defaultModel: 'llama3.2',
-      displayName: 'Runtime Ollama',
-      id: 'runtime-ollama',
+      defaultModel: 'gpt-5.1',
+      displayName: 'Runtime OpenAI',
+      id: 'runtime-openai',
       kind: 'local',
-      models: ['llama3.2'],
-      vendor: 'ollama',
+      models: ['gpt-5.1'],
+      vendor: 'openai',
     },
   ]);
 }
@@ -162,22 +184,35 @@ function createDirectGatewayApp(input: {
   readonly profiles: ProviderProfile[];
 }): Hono {
   const providerRegistry = new ProviderRegistry(input.profiles);
+  const defaultProfile = input.profiles.find((profile) => profile.id === input.defaultProviderId);
+  if (!defaultProfile?.defaultModel) throw new Error('Default test Provider model is required.');
   const snapshot = createInMemoryRuntimeConfigSnapshot({
     dataRoot: null,
-    openKitConfig: {
-      defaults: {
-        gatewayModel: input.profiles.find((profile) => profile.id === input.defaultProviderId)
-          ?.defaultModel,
-        gatewayProviderId: input.defaultProviderId,
-      },
+    gatewayConfig: {
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: defaultProfile.defaultModel,
+      logicalModels: [
+        {
+          id: defaultProfile.defaultModel,
+          displayName: defaultProfile.defaultModel,
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: defaultProfile.id,
+              providerModel: defaultProfile.defaultModel,
+            },
+          ],
+        },
+      ],
     },
+    openKitConfig: {},
     providerRegistry,
   });
   const app = new Hono();
   app.use('*', createAuthMiddleware('local'));
   (registerLlmGatewayRoutes as unknown as (dependencies: Record<string, unknown>) => void)({
     app,
-    gatewayDefaultProviderId: () => input.defaultProviderId,
     llmGatewayDispatcher: input.dispatcher,
     providerSubscriptionAccountManager: { getPairHandle: input.getPairHandle },
     resolveGatewayProvider: (providerId: string) => {
@@ -222,7 +257,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/internal/v1/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'llama3.2', messages: [] }),
+      body: JSON.stringify({ model: 'openai/gpt-5.1', messages: [] }),
     });
 
     expect(res.status).toBe(404);
@@ -245,7 +280,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         prompt: 'Hello',
       }),
       headers: { 'content-type': 'application/json' },
@@ -254,145 +289,61 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(res.status).toBe(404);
   });
 
-  it('lists models from the runtime provider registry', async () => {
-    const profiles: ProviderProfile[] = [
-      {
-        defaultModel: 'llama3.2',
-        displayName: 'Runtime Ollama',
-        id: 'runtime-ollama',
-        kind: 'local',
-        models: ['llama3.2'],
-        vendor: 'ollama',
-      },
-      {
-        displayName: 'Codex Ready',
-        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'shared' } } },
-        id: 'openai-codex',
-        kind: 'oauth',
-        models: ['openai-codex/gpt-5.6-sol'],
-      },
-      {
-        displayName: 'xAI Ready',
-        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'shared' } } },
-        id: 'xai-ready',
-        kind: 'oauth',
-        models: ['grok-4'],
-        vendor: 'xai',
-      },
-      {
-        displayName: 'xAI Missing Auth',
-        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'missing' } } },
-        id: 'xai-missing',
-        kind: 'oauth',
-        models: ['grok-4-fast'],
-        vendor: 'xai',
-      },
-      {
-        displayName: 'xAI Unavailable',
-        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'unavailable' } } },
-        id: 'xai-unavailable',
-        kind: 'oauth',
-        models: ['grok-4-latest'],
-        vendor: 'xai',
-      },
-    ];
-    const readyModels = createModels();
-    const missingModels = createModels();
-    vi.spyOn(readyModels, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
-    vi.spyOn(missingModels, 'checkAuth').mockResolvedValue(undefined);
-    const getPairHandle = vi.fn(
-      async (pair: { readonly accountSlotId: string; readonly subscriptionProviderId: string }) => {
-        if (pair.accountSlotId === 'unavailable') {
-          throw new ProviderSubscriptionAccountError(
-            'provider_subscription_vault_unavailable',
-            'Provider subscription Vault is unavailable.'
-          );
-        }
-        return {
-          credentials: {} as never,
-          models: pair.accountSlotId === 'missing' ? missingModels : readyModels,
-        };
-      }
-    );
-    const app = createDirectGatewayApp({
-      defaultProviderId: 'runtime-ollama',
-      dispatcher: {} as LLMGatewayProviderDispatcher,
-      getPairHandle,
-      profiles,
-    });
+  it('lists only product-visible logical models', async () => {
+    const app = createApp(createOpenAIProviderOptions());
 
     const res = await app.request('/v1/models');
+    const body = (await res.json()) as { data: Array<Record<string, unknown>>; object: string };
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({
+    expect(body).toMatchObject({
       object: 'list',
-      data: [
-        { id: 'llama3.2', object: 'model', owned_by: 'runtime-ollama' },
-        {
-          id: 'openai-codex/gpt-5.6-sol',
-          object: 'model',
-          owned_by: 'openai-codex',
-        },
-        {
-          id: 'grok-4',
-          object: 'model',
-          owned_by: 'xai-ready',
-        },
-      ],
+      data: [{ id: 'gpt-5.1', display_name: 'gpt-5.1', owned_by: 'openkit' }],
     });
-    expect(getPairHandle).toHaveBeenCalledTimes(4);
-    expect(getPairHandle.mock.calls.map(([pair]) => pair)).toEqual([
-      { accountSlotId: 'shared', subscriptionProviderId: 'openai-codex' },
-      { accountSlotId: 'shared', subscriptionProviderId: 'xai' },
-      { accountSlotId: 'missing', subscriptionProviderId: 'xai' },
-      { accountSlotId: 'unavailable', subscriptionProviderId: 'xai' },
-    ]);
-    expect(readyModels.checkAuth).toHaveBeenNthCalledWith(1, 'openai-codex');
-    expect(readyModels.checkAuth).toHaveBeenNthCalledWith(2, 'xai');
-    expect(missingModels.checkAuth).toHaveBeenCalledWith('xai');
+    expect(JSON.stringify(body)).not.toContain('openai');
   });
 
-  it('lists only explicit models from allowlisted dispatchable provider profiles', async () => {
-    const profile = (
-      id: string,
-      readiness?: 'ready' | 'degraded' | 'blocked' | 'disabled' | 'unknown'
-    ) => ({
-      displayName: id,
-      id,
-      kind: 'local' as const,
-      models: [`${id}-model`],
-      ...(readiness ? { readiness: { status: readiness } } : {}),
-    });
+  it('retains a logical model when at least one configured route is dispatchable', async () => {
     const app = createApp({
-      openKitConfig: {
-        gateway: {
-          openaiCompatible: {
-            allowedProviderIds: ['omitted', 'ready', 'degraded', 'blocked', 'disabled', 'unknown'],
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            routes: [
+              { id: 'blocked', providerProfileId: 'blocked', providerModel: 'gpt-5.1' },
+              { id: 'ready', providerProfileId: 'ready', providerModel: 'gpt-5.1' },
+            ],
           },
-        },
+        ],
       },
+      openKitConfig: {},
       providerRegistry: new ProviderRegistry([
-        profile('omitted'),
-        profile('ready', 'ready'),
-        profile('degraded', 'degraded'),
-        profile('blocked', 'blocked'),
-        profile('disabled', 'disabled'),
-        profile('unknown', 'unknown'),
-        profile('disallowed', 'ready'),
+        {
+          displayName: 'Blocked',
+          id: 'blocked',
+          kind: 'local',
+          models: ['gpt-5.1'],
+          readiness: { status: 'blocked', summary: 'Unavailable' },
+          vendor: 'openai',
+        },
+        {
+          displayName: 'Ready',
+          id: 'ready',
+          kind: 'local',
+          models: ['gpt-5.1'],
+          vendor: 'openai',
+        },
       ]),
     });
 
-    const res = await app.request('/v1/models');
+    const body = (await (await app.request('/v1/models')).json()) as {
+      data: Array<{ id: string }>;
+    };
 
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({
-      object: 'list',
-      data: [
-        { id: 'omitted-model', object: 'model', owned_by: 'omitted' },
-        { id: 'ready-model', object: 'model', owned_by: 'ready' },
-        { id: 'degraded-model', object: 'model', owned_by: 'degraded' },
-      ],
-    });
+    expect(body.data).toEqual([expect.objectContaining({ id: 'reasoning' })]);
   });
 
   it('projects JSON provider failures with stable generic OpenKit errors', async () => {
@@ -413,17 +364,17 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         messages: [{ role: 'user', content: 'Hello' }],
       }),
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status).toBe(429);
+    expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({
       error: {
-        code: 'gateway_provider_rate_limited',
-        message: 'Provider rate limit exceeded.',
+        code: 'gateway_logical_model_unavailable',
+        message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
     });
@@ -447,17 +398,17 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         messages: [{ role: 'user', content: 'Hello' }],
       }),
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({
       error: {
-        code: 'gateway_provider_unavailable',
-        message: 'Provider is unavailable.',
+        code: 'gateway_logical_model_unavailable',
+        message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
     });
@@ -491,7 +442,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         messages: [{ role: 'user', content: 'Hello' }],
       }),
       headers: { 'content-type': 'application/json' },
@@ -500,7 +451,7 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       id: 'chatcmpl_gateway',
-      model: 'llama3.2',
+      model: 'openai/gpt-5.1',
       choices: [{ message: { content: 'Gateway response' } }],
     });
     expect(seenRequests).toEqual([
@@ -508,6 +459,123 @@ describe('OpenAI-compatible agent gateway', () => {
         prompt_cache_key: expect.stringMatching(/^openkit:responses:request:/),
       }),
     ]);
+  });
+
+  it('keeps private routes hidden while falling back before output', async () => {
+    const attempts: Array<{ model: string; providerId: string }> = [];
+    const app = createApp({
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            routes: [
+              { id: 'primary', providerProfileId: 'openai-primary', providerModel: 'gpt-5.1' },
+              {
+                id: 'backup',
+                providerProfileId: 'openrouter-backup',
+                providerModel: 'openai/gpt-5.1',
+              },
+            ],
+          },
+        ],
+      },
+      openKitConfig: {},
+      providerRegistry: new ProviderRegistry([
+        {
+          displayName: 'Primary',
+          id: 'openai-primary',
+          kind: 'local',
+          models: ['gpt-5.1'],
+          vendor: 'openai',
+        },
+        {
+          displayName: 'Backup',
+          id: 'openrouter-backup',
+          kind: 'local',
+          models: ['openai/gpt-5.1'],
+          vendor: 'openrouter',
+        },
+      ]),
+      llmGatewayDispatcher: {
+        createChatCompletion: async (provider, request) => {
+          attempts.push({ model: request.model, providerId: provider.id });
+          if (provider.id === 'openai-primary') {
+            throw new OpenAICompatibleProviderError({ message: 'quota', status: 429 });
+          }
+          return {
+            id: 'chatcmpl_fallback',
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'backup' },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+        },
+      } as unknown as LLMGatewayProviderDispatcher,
+    });
+
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'reasoning',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ model: 'reasoning' });
+    expect(attempts).toEqual([
+      { model: 'gpt-5.1', providerId: 'openai-primary' },
+      { model: 'openai/gpt-5.1', providerId: 'openrouter-backup' },
+    ]);
+  });
+
+  it('rewrites provider-native models in public SSE events', async () => {
+    const options = createOpenAIProviderOptions();
+    const app = createApp({
+      ...options,
+      gatewayConfig: {
+        ...options.gatewayConfig,
+        defaultLogicalModelId: 'reasoning',
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            routes: [{ id: 'primary', providerProfileId: 'openai', providerModel: 'gpt-5.1' }],
+          },
+        ],
+      },
+      llmGatewayDispatcher: {
+        createChatCompletionStream: async () =>
+          new Response(
+            'data: {"id":"chunk","object":"chat.completion.chunk","model":"gpt-5.1","choices":[]}\n\ndata: [DONE]\n\n'
+          ).body!,
+      } as unknown as LLMGatewayProviderDispatcher,
+    });
+
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'reasoning',
+        messages: [{ role: 'user', content: 'Hello' }],
+        stream: true,
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const body = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(body).toContain('"model":"reasoning"');
+    expect(body).not.toContain('gpt-5.1');
   });
 
   it('passes the public request abort signal to the gateway dispatcher', async () => {
@@ -550,7 +618,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const responsePromise = app.request('/v1/chat/completions', {
       body: JSON.stringify({
         messages: [{ content: 'Hello', role: 'user' }],
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
       }),
       headers: { 'content-type': 'application/json' },
       method: 'POST',
@@ -567,7 +635,7 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('routes Anthropic chat completions through the pi-ai dispatcher path', async () => {
-    const faux = fauxProvider({ provider: 'anthropic', models: [{ id: 'faux-chat' }] });
+    const faux = fauxProvider({ provider: 'anthropic', models: [{ id: 'claude-sonnet-4-5' }] });
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic through pi-ai')]);
@@ -581,7 +649,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'faux-chat',
+        model: 'claude-sonnet-4-5',
         messages: [{ role: 'user', content: 'Hello' }],
       }),
       headers: { 'content-type': 'application/json' },
@@ -595,7 +663,7 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('routes Anthropic chat function tools through the pi-ai dispatcher path', async () => {
-    const faux = fauxProvider({ provider: 'anthropic', models: [{ id: 'faux-chat' }] });
+    const faux = fauxProvider({ provider: 'anthropic', models: [{ id: 'claude-sonnet-4-5' }] });
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([
@@ -613,7 +681,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'faux-chat',
+        model: 'claude-sonnet-4-5',
         messages: [{ role: 'user', content: 'Search the docs' }],
         tools: [
           {
@@ -653,7 +721,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('streams Anthropic chat completions through the pi-ai dispatcher path', async () => {
     const faux = fauxProvider({
       provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
+      models: [{ id: 'claude-sonnet-4-5' }],
       tokenSize: { min: 1000, max: 1000 },
     });
     const models = createModels();
@@ -669,7 +737,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'faux-chat',
+        model: 'claude-sonnet-4-5',
         stream: true,
         messages: [{ role: 'user', content: 'Hello' }],
       }),
@@ -688,7 +756,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('streams Anthropic chat function tools through the pi-ai dispatcher path', async () => {
     const faux = fauxProvider({
       provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
+      models: [{ id: 'claude-sonnet-4-5' }],
       tokenSize: { min: 1000, max: 1000 },
     });
     const models = createModels();
@@ -709,7 +777,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'faux-chat',
+        model: 'claude-sonnet-4-5',
         stream: true,
         messages: [{ role: 'user', content: 'Search the docs' }],
         tools: [
@@ -739,7 +807,7 @@ describe('OpenAI-compatible agent gateway', () => {
   });
 
   it('bridges Anthropic Responses requests through the pi-ai dispatcher path', async () => {
-    const faux = fauxProvider({ provider: 'anthropic', models: [{ id: 'faux-chat' }] });
+    const faux = fauxProvider({ provider: 'anthropic', models: [{ id: 'claude-sonnet-4-5' }] });
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses([fauxAssistantMessage('Anthropic responses through pi-ai')]);
@@ -753,7 +821,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'faux-chat',
+        model: 'claude-sonnet-4-5',
         input: 'Hello',
       }),
       headers: { 'content-type': 'application/json' },
@@ -769,9 +837,10 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('routes Google and OpenRouter Chat Completions through pi-ai', async () => {
     for (const providerId of ['google', 'openrouter']) {
+      const model = providerId === 'google' ? 'gemini-2.5-pro' : 'anthropic/claude-sonnet-4.5';
       const faux = fauxProvider({
         provider: providerId,
-        models: [{ id: 'faux-chat' }],
+        models: [{ id: model }],
         tokenSize: { min: 1000, max: 1000 },
       });
       const models = createModels();
@@ -787,7 +856,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'faux-chat',
+          model,
           messages: [{ role: 'user', content: 'Hello' }],
         }),
         headers: { 'content-type': 'application/json' },
@@ -858,7 +927,7 @@ describe('OpenAI-compatible agent gateway', () => {
         body: JSON.stringify({
           messages: [{ content: 'Do not dispatch', role: 'user' }],
           metadata: { openkit: { workspaceId: workspace.id } },
-          model: 'llama3.2',
+          model: 'openai/gpt-5.1',
         }),
         headers: { 'content-type': 'application/json' },
         method: 'POST',
@@ -935,7 +1004,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'faux-chat',
+          model: 'claude-sonnet-4-5',
           messages: [{ role: 'user', content: 'Hello with an appended suffix' }],
           prompt_cache_key: 'private-cache-key',
           prompt_cache_retention: 'long',
@@ -1055,7 +1124,7 @@ describe('OpenAI-compatible agent gateway', () => {
         usageRecords: expect.arrayContaining([
           expect.objectContaining({
             category: 'llm',
-            modelId: 'faux-chat',
+            modelId: 'claude-sonnet-4-5',
             providerRef: 'anthropic',
             unit: 'tokens',
             workspaceId: workspace.id,
@@ -1082,12 +1151,15 @@ describe('OpenAI-compatible agent gateway', () => {
         coreDb,
         dataRoot,
         store,
-        openKitConfig: {
-          defaults: {
-            gatewayModel: 'llama3.2',
-            gatewayProviderId: 'runtime-ollama',
-          },
-        },
+        gatewayConfig: logicalGatewayConfig({
+          defaultModel: 'gpt-5.1',
+          displayName: 'Runtime OpenAI',
+          id: 'runtime-openai',
+          kind: 'local',
+          models: ['gpt-5.1'],
+          vendor: 'openai',
+        }),
+        openKitConfig: {},
         providerRegistry: runtimeProviderRegistry(),
         llmPiAiClient: {
           createChatCompletion: async (_provider, request, onUsage) => {
@@ -1119,7 +1191,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'llama3.2',
+          model: 'gpt-5.1',
           messages: [{ role: 'user', content: 'Hello' }],
           metadata: {
             openkit: {
@@ -1144,7 +1216,7 @@ describe('OpenAI-compatible agent gateway', () => {
           expect.objectContaining({
             capabilityId: 'llm.chat_completions',
             operation: 'chat_completions',
-            providerRef: 'runtime-ollama',
+            providerRef: 'runtime-openai',
             status: 'succeeded',
             threadId: 'thread_openai',
           }),
@@ -1152,8 +1224,8 @@ describe('OpenAI-compatible agent gateway', () => {
         usageRecords: expect.arrayContaining([
           expect.objectContaining({
             category: 'llm',
-            modelId: 'llama3.2',
-            providerRef: 'runtime-ollama',
+            modelId: 'gpt-5.1',
+            providerRef: 'runtime-openai',
             quantity: 7,
             source: 'llm-gateway-adapter-reported:input',
             unit: 'tokens',
@@ -1161,8 +1233,8 @@ describe('OpenAI-compatible agent gateway', () => {
           }),
           expect.objectContaining({
             category: 'llm',
-            modelId: 'llama3.2',
-            providerRef: 'runtime-ollama',
+            modelId: 'gpt-5.1',
+            providerRef: 'runtime-openai',
             quantity: 5,
             source: 'llm-gateway-adapter-reported:output',
             unit: 'tokens',
@@ -1180,7 +1252,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const faux = fauxProvider({
       provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
+      models: [{ id: 'claude-sonnet-4-5' }],
       tokenSize: { min: 1000, max: 1000 },
     });
     const models = createModels();
@@ -1208,7 +1280,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'faux-chat',
+          model: 'claude-sonnet-4-5',
           messages: [{ role: 'user', content: 'Hello' }],
           metadata: {
             openkit: {
@@ -1220,10 +1292,10 @@ describe('OpenAI-compatible agent gateway', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(502);
+      expect(res.status).toBe(503);
       const body = await res.text();
 
-      expect(body).toContain('"code":"gateway_provider_unavailable"');
+      expect(body).toContain('"code":"gateway_logical_model_unavailable"');
       expect(body).not.toContain('tok_secret');
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_chat_failed_usage');
@@ -1256,7 +1328,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const faux = fauxProvider({
       provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
+      models: [{ id: 'claude-sonnet-4-5' }],
       tokenSize: { min: 1000, max: 1000 },
     });
     const models = createModels();
@@ -1279,7 +1351,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/responses', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'faux-chat',
+          model: 'claude-sonnet-4-5',
           input: 'Hello',
           metadata: {
             openkit: {
@@ -1330,7 +1402,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const faux = fauxProvider({
       provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
+      models: [{ id: 'claude-sonnet-4-5' }],
       tokenSize: { min: 1000, max: 1000 },
     });
     const models = createModels();
@@ -1358,7 +1430,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/responses', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'faux-chat',
+          model: 'claude-sonnet-4-5',
           input: 'Hello',
           metadata: {
             openkit: {
@@ -1370,10 +1442,10 @@ describe('OpenAI-compatible agent gateway', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(502);
+      expect(res.status).toBe(503);
       const body = await res.text();
 
-      expect(body).toContain('"code":"gateway_provider_unavailable"');
+      expect(body).toContain('"code":"gateway_logical_model_unavailable"');
       expect(body).not.toContain('tok_secret');
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_responses_failed_usage');
@@ -1404,7 +1476,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('bridges Anthropic Responses streams through the pi-ai dispatcher path', async () => {
     const faux = fauxProvider({
       provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
+      models: [{ id: 'claude-sonnet-4-5' }],
       tokenSize: { min: 1000, max: 1000 },
     });
     const models = createModels();
@@ -1420,7 +1492,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'faux-chat',
+        model: 'claude-sonnet-4-5',
         input: 'Hello',
         stream: true,
       }),
@@ -1441,7 +1513,7 @@ describe('OpenAI-compatible agent gateway', () => {
     for (const testCase of [
       {
         body: {
-          model: 'faux-chat',
+          model: 'claude-sonnet-4-5',
           stream: true,
           messages: [{ role: 'user', content: 'Hello' }],
           metadata: {
@@ -1458,7 +1530,7 @@ describe('OpenAI-compatible agent gateway', () => {
       },
       {
         body: {
-          model: 'faux-chat',
+          model: 'claude-sonnet-4-5',
           input: 'Hello',
           stream: true,
           metadata: {
@@ -1478,7 +1550,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const coreDb = openCoreDb(dataRoot);
       const faux = fauxProvider({
         provider: 'anthropic',
-        models: [{ id: 'faux-chat' }],
+        models: [{ id: 'claude-sonnet-4-5' }],
         tokenSize: { min: 1000, max: 1000 },
       });
       const models = createModels();
@@ -1537,7 +1609,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     const faux = fauxProvider({
       provider: 'anthropic',
-      models: [{ id: 'faux-chat' }],
+      models: [{ id: 'claude-sonnet-4-5' }],
       tokenSize: { min: 1000, max: 1000 },
     });
     const models = createModels();
@@ -1565,7 +1637,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'faux-chat',
+          model: 'claude-sonnet-4-5',
           stream: true,
           messages: [{ role: 'user', content: 'Hello' }],
           metadata: {
@@ -1633,7 +1705,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const coreDb = openCoreDb(dataRoot);
       const faux = fauxProvider({
         provider: 'anthropic',
-        models: [{ id: 'faux-chat' }],
+        models: [{ id: 'claude-sonnet-4-5' }],
         tokenSize: { min: 1000, max: 1000 },
       });
       const models = createModels();
@@ -1661,7 +1733,7 @@ describe('OpenAI-compatible agent gateway', () => {
         const res = await app.request('/v1/chat/completions', {
           method: 'POST',
           body: JSON.stringify({
-            model: 'faux-chat',
+            model: 'claude-sonnet-4-5',
             stream: true,
             messages: [{ role: 'user', content: 'Hello' }],
             metadata: {
@@ -1725,25 +1797,21 @@ describe('OpenAI-compatible agent gateway', () => {
         referenceId: 'vault_gateway',
       });
 
+      const profile = {
+        defaultModel: 'gpt-5.1',
+        displayName: 'Vault Backed Gateway',
+        id: 'vault-backed',
+        kind: 'direct' as const,
+        models: ['gpt-5.1'],
+        secretRef: 'vault://vault_gateway',
+        vendor: 'openai',
+      };
       const app = createApp({
         coreDb,
         dataRoot,
-        openKitConfig: {
-          defaults: {
-            gatewayModel: 'gpt-test',
-            gatewayProviderId: 'vault-backed',
-          },
-        },
-        providerRegistry: new ProviderRegistry([
-          {
-            defaultModel: 'gpt-test',
-            displayName: 'Vault Backed Gateway',
-            id: 'vault-backed',
-            kind: 'direct',
-            models: ['gpt-test'],
-            secretRef: 'vault://vault_gateway',
-          },
-        ]),
+        gatewayConfig: logicalGatewayConfig(profile),
+        openKitConfig: {},
+        providerRegistry: new ProviderRegistry([profile]),
         llmPiAiClient: {
           createChatCompletion: async (provider, request) => {
             seenApiKeys.push(provider.apiKey);
@@ -1784,7 +1852,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'gpt-test',
+          model: 'gpt-5.1',
           messages: [{ role: 'user', content: 'Hello' }],
         }),
         headers: { 'content-type': 'application/json' },
@@ -1816,25 +1884,21 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
+      const profile = {
+        defaultModel: 'gpt-5.1',
+        displayName: 'Vault Locked Gateway',
+        id: 'vault-locked',
+        kind: 'direct' as const,
+        models: ['gpt-5.1'],
+        secretRef: 'vault://vault_locked_gateway',
+        vendor: 'openai',
+      };
       const app = createApp({
         coreDb,
         dataRoot,
-        openKitConfig: {
-          defaults: {
-            gatewayModel: 'gpt-test',
-            gatewayProviderId: 'vault-locked',
-          },
-        },
-        providerRegistry: new ProviderRegistry([
-          {
-            defaultModel: 'gpt-test',
-            displayName: 'Vault Locked Gateway',
-            id: 'vault-locked',
-            kind: 'direct',
-            models: ['gpt-test'],
-            secretRef: 'vault://vault_locked_gateway',
-          },
-        ]),
+        gatewayConfig: logicalGatewayConfig(profile),
+        openKitConfig: {},
+        providerRegistry: new ProviderRegistry([profile]),
         llmPiAiClient: {
           createChatCompletion: async () => {
             throw new Error('provider should not be called while vault is locked');
@@ -1846,17 +1910,17 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'gpt-test',
+          model: 'gpt-5.1',
           messages: [{ role: 'user', content: 'Hello' }],
         }),
         headers: { 'content-type': 'application/json' },
       });
 
-      expect(res.status).toBe(423);
+      expect(res.status).toBe(503);
       await expect(res.json()).resolves.toMatchObject({
         error: {
-          code: 'gateway_provider_unavailable',
-          message: 'Provider is unavailable.',
+          code: 'gateway_logical_model_unavailable',
+          message: 'Logical model is temporarily unavailable.',
           type: 'provider_error',
         },
       });
@@ -1898,7 +1962,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         stream: true,
         messages: [{ role: 'user', content: 'Hello' }],
       }),
@@ -2004,7 +2068,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         stream: true,
         messages: [{ role: 'user', content: 'Hello' }],
       }),
@@ -2065,7 +2129,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'llama3.2',
+          model: 'openai/gpt-5.1',
           stream: true,
           messages: [{ role: 'user', content: 'Hello' }],
         }),
@@ -2150,7 +2214,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         instructions: 'Be brief.',
         input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hello' }] }],
       }),
@@ -2178,7 +2242,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         input: 'Hello',
         tools: [{ type: 'web_search_preview' }],
       }),
@@ -2274,12 +2338,12 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('injects exact xAI pair Models without changing native Chat capability', async () => {
     const profile: ProviderProfile = {
-      defaultModel: 'grok-4',
+      defaultModel: 'grok-4.3',
       displayName: 'xAI Subscription',
       extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
       id: 'xai-work',
       kind: 'oauth',
-      models: ['grok-4'],
+      models: ['grok-4.3'],
       vendor: 'xai',
     };
     const models = createModels();
@@ -2318,7 +2382,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'grok-4',
+        model: 'grok-4.3',
         messages: [{ role: 'user', content: 'Hello' }],
       }),
       headers: { 'content-type': 'application/json' },
@@ -2398,7 +2462,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/chat/completions', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'openai/gpt-5.1',
         messages: [{ role: 'user', content: 'Hello' }],
         prompt_cache_key: 'chat-client-key',
         prompt_cache_retention: 'in-memory',
@@ -2438,7 +2502,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'llama3.2',
+          model: 'openai/gpt-5.1',
           messages: [{ role: 'user', content: 'Hello' }],
           metadata: {
             openkit: {
@@ -2558,12 +2622,12 @@ describe('OpenAI-compatible agent gateway', () => {
 
   it('maps unavailable subscription pairs before upstream or SSE startup', async () => {
     const profile: ProviderProfile = {
-      defaultModel: 'grok-4',
+      defaultModel: 'grok-4.3',
       displayName: 'xAI Subscription',
       extensions: { openkit: { subscriptionAccount: { accountSlotId: 'unavailable' } } },
       id: 'xai-unavailable',
       kind: 'oauth',
-      models: ['grok-4'],
+      models: ['grok-4.3'],
       vendor: 'xai',
     };
     const getPairHandle = vi.fn(async () => {
@@ -2587,7 +2651,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const res = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
-        model: 'grok-4',
+        model: 'grok-4.3',
         input: 'Hello',
         stream: true,
       }),
@@ -2599,8 +2663,8 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(res.headers.get('content-type')).not.toContain('text/event-stream');
     await expect(res.json()).resolves.toEqual({
       error: {
-        code: 'gateway_provider_unavailable',
-        message: 'Provider is unavailable.',
+        code: 'gateway_logical_model_unavailable',
+        message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
     });
@@ -2646,13 +2710,13 @@ describe('OpenAI-compatible agent gateway', () => {
       headers: { 'content-type': 'application/json' },
     });
 
-    expect(res.status, await res.clone().text()).toBe(401);
+    expect(res.status, await res.clone().text()).toBe(503);
     expect(res.headers.get('content-type')).toContain('application/json');
     expect(res.headers.get('content-type')).not.toContain('text/event-stream');
     await expect(res.json()).resolves.toEqual({
       error: {
-        code: 'gateway_provider_authentication_failed',
-        message: 'Provider authentication failed.',
+        code: 'gateway_logical_model_unavailable',
+        message: 'Logical model is temporarily unavailable.',
         type: 'provider_error',
       },
     });

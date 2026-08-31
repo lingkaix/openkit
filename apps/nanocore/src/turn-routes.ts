@@ -26,6 +26,7 @@ import {
 import {
   chatTaskModeTurnId,
   commandInputHash,
+  findExactConversationWorkerOwnerReceipt,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -563,18 +564,34 @@ function hasExactWorkerUserInputOwnerReceipt(
     checkpoint.requestId
   );
   if (turnId === chatSubordinateTurnId) {
-    const receipt = store.getCommandRequest('chat.start', checkpoint.requestId, ownerScope);
+    const receipt = store.getCommandRequest(
+      'conversation.submit',
+      checkpoint.requestId,
+      ownerScope
+    );
     return (
-      receipt?.inputHash === checkpoint.requestInputHash &&
-      receipt.scope.actorId === ownerScope.actorId &&
+      receipt?.scope.actorId === ownerScope.actorId &&
       receipt.scope.workspaceId === ownerScope.workspaceId &&
       receipt.scope.threadId === ownerScope.threadId &&
       receipt.response.kind === 'turn' &&
-      receipt.response.chatMetadata?.resultKind === 'task-handoff' &&
-      receipt.response.chatMetadata.status === 202 &&
-      receipt.response.chatMetadata.downstream?.kind === 'task' &&
-      receipt.response.chatMetadata.downstream.turnId === turnId
+      receipt.response.conversationMetadata?.resultKind === 'task-handoff' &&
+      receipt.response.conversationMetadata.status === 202 &&
+      receipt.response.conversationMetadata.downstream?.kind === 'task' &&
+      receipt.response.conversationMetadata.downstream.turnId === turnId
     );
+  }
+
+  if (
+    findExactConversationWorkerOwnerReceipt(store, {
+      actorId: ownerScope.actorId,
+      workspaceId: ownerScope.workspaceId,
+      receivingThreadId: ownerScope.threadId,
+      requestId: checkpoint.requestId,
+      requestInputHash: checkpoint.requestInputHash,
+      turnId,
+    })
+  ) {
+    return true;
   }
 
   const receipt = store.getCommandRequest('task.start', checkpoint.requestId, ownerScope);

@@ -218,7 +218,7 @@ pub struct WorkerBootstrapRequest {
     /// Current request lineage value.
     pub request_id: String,
     /// Static non-secret Harness binding retained only by NanoHost bridge context.
-    pub harness_binding_ref: String,
+    pub sandbox_integration_binding_ref: String,
 }
 
 impl WorkerBootstrapRequest {
@@ -231,7 +231,7 @@ impl WorkerBootstrapRequest {
         let lineage_valid = [
             &self.sandbox_id,
             &self.request_id,
-            &self.harness_binding_ref,
+            &self.sandbox_integration_binding_ref,
         ]
         .iter()
         .all(|value| {
@@ -534,7 +534,7 @@ impl NanoHostOpenShellClient {
     pub async fn open_sandbox_bridge(
         &self,
         sandbox_id: &str,
-        harness_binding_ref: String,
+        sandbox_integration_binding_ref: String,
         route_projection: OuterRouteProjection,
     ) -> Result<OpenSandboxBridge, EpochFault> {
         let client = self.connected()?;
@@ -616,15 +616,16 @@ impl NanoHostOpenShellClient {
             let mut stream = TcpForwardByteStream::from_grpc(response.into_inner(), outbound);
             let (harness_ready, mut harness_ready_rx) = mpsc::channel(1);
             let projection = route_projection.clone();
-            let route_harness_binding_ref = harness_binding_ref.clone();
+            let route_sandbox_integration_binding_ref = sandbox_integration_binding_ref.clone();
             let mut route_server = tokio::spawn(async move {
                 let _ = serve_sandbox_http2(&mut stream, move |family, request, respond| {
                     let projection = projection.clone();
                     let harness_ready = harness_ready.clone();
-                    let harness_binding_ref = route_harness_binding_ref.clone();
+                    let sandbox_integration_binding_ref =
+                        route_sandbox_integration_binding_ref.clone();
                     async move {
                         if projection
-                            .forward(family, request, respond, &harness_binding_ref)
+                            .forward(family, request, respond, &sandbox_integration_binding_ref)
                             .await
                             == Ok(true)
                         {
@@ -642,7 +643,7 @@ impl NanoHostOpenShellClient {
                         return Ok(OpenSandboxBridge::new(
                             route_server,
                             session.token,
-                            harness_binding_ref,
+                            sandbox_integration_binding_ref,
                             true,
                         ));
                     }
@@ -750,12 +751,13 @@ impl NanoHostOpenShellClient {
                 let worker_bootstrap = worker_bootstrap.ok_or(EpochFault::IdentityMismatch)?;
                 let route_projection = route_projection.ok_or(EpochFault::IdentityMismatch)?;
                 let sandbox_id = worker_bootstrap.sandbox_id.clone();
-                let harness_binding_ref = worker_bootstrap.harness_binding_ref.clone();
+                let sandbox_integration_binding_ref =
+                    worker_bootstrap.sandbox_integration_binding_ref.clone();
                 let mut exec_monitor = self.exec_sandbox_worker_bootstrap(worker_bootstrap).await?;
                 let bridge = tokio::select! {
                     bridge = self.open_sandbox_bridge(
                         &sandbox_id,
-                        harness_binding_ref,
+                        sandbox_integration_binding_ref,
                         route_projection,
                     ) => bridge?,
                     _ = &mut exec_monitor.response => return Err(EpochFault::MemberExited),
@@ -903,7 +905,7 @@ impl NanoHostOpenShellClient {
         let WorkerBootstrapRequest {
             sandbox_id,
             request_id,
-            harness_binding_ref: _,
+            sandbox_integration_binding_ref: _,
         } = request;
         let _request_id = request_id;
         let events = self

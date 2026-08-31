@@ -97,11 +97,6 @@ function workspaceImportPayload(
       name: 'Imported workspace',
       kind: 'general',
       status: 'active',
-      defaults: {
-        defaultModelId: 'model_codex',
-        defaultAgentId: 'agent_codex_host',
-        defaultSkillIds: [],
-      },
       counts: {
         threadCount: 0,
         artifactCount: 0,
@@ -1315,7 +1310,7 @@ describe('FsStore canonical reload', () => {
     });
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const paths = [
-      join(workspaceRoot, 'workspace.json'),
+      join(workspaceRoot, 'workspace-record.json'),
       join(workspaceRoot, 'threads', thread.id, 'thread.json'),
       join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json'),
       join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl'),

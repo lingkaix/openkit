@@ -2,10 +2,6 @@ import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
 
-import { OpenKitProviderInstanceSchema } from './provider.js';
-
-export { OpenKitProviderInstanceSchema } from './provider.js';
-
 /** Exact HTTP or HTTPS origin accepted by browser-facing server configuration. */
 const HttpOriginSchema = z
   .string()
@@ -30,10 +26,7 @@ export type CoreMode = z.infer<typeof CoreModeSchema>;
  */
 export const OpenKitConfigDefaultsSchema = z
   .object({
-    coreModel: z.string().min(1).optional(),
-    coreProviderId: z.string().min(1).optional(),
-    gatewayModel: z.string().min(1).optional(),
-    gatewayProviderId: z.string().min(1).optional(),
+    defaultAgentId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -96,25 +89,6 @@ export const OpenKitVaultConfigSchema = z
       })
       .strict()
       .optional(),
-  })
-  .strict();
-
-/**
- * OpenAI-compatible gateway configuration.
- */
-export const OpenKitOpenAICompatibleGatewaySchema = z
-  .object({
-    allowedProviderIds: z.array(z.string().min(1)).optional(),
-    enabled: z.boolean().optional(),
-  })
-  .strict();
-
-/**
- * Gateway configuration.
- */
-export const OpenKitGatewayConfigSchema = z
-  .object({
-    openaiCompatible: OpenKitOpenAICompatibleGatewaySchema.optional(),
   })
   .strict();
 
@@ -224,10 +198,8 @@ export const OpenKitConfigSchema = z
   .object({
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),
-    gateway: OpenKitGatewayConfigSchema.optional(),
     mode: CoreModeSchema.optional(),
     nanohost: OpenKitNanoHostConfigSchema.optional(),
-    providers: z.array(OpenKitProviderInstanceSchema).optional(),
     schemaVersion: z.literal(1).optional(),
     server: OpenKitServerRuntimeSchema.optional(),
     vault: OpenKitVaultConfigSchema.optional(),

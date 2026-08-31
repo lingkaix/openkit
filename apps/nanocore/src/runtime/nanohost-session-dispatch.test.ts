@@ -106,7 +106,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ?.split("operation === 'bridge.close'")[0];
     expect(bridgeOpen).toBeDefined();
     expect(bridgeOpen).toContain('requireBridgeOpenCommand');
-    expect(dispatchSource).toContain('harnessBindingRef');
+    expect(dispatchSource).toContain('sandboxIntegrationBindingRef');
     expect(dispatchSource).not.toContain('workerControlToken');
     expect(dispatchSource).not.toContain('workerInferenceToken');
     expect(bridgeOpen).toContain('accepted');
@@ -116,7 +116,7 @@ describe('authoritative NanoHost session dispatch', () => {
     expect(dispatchSource).toContain('/api/nanohost/transport/session/readiness');
     expect(dispatchSource).toContain('/worker-control/harness/poll');
     expect(dispatchSource).toContain('/worker-control/harness/result');
-    expect(dispatchSource).toContain('x-openkit-harness-binding');
+    expect(dispatchSource).toContain('x-openkit-integration-binding');
     expect(dispatchSource).toContain('upsertNanoHostRuntimeTarget');
     expect(dispatchSource).toContain('connectionGeneration');
     expect(dispatchSource).toContain('mayCarryWork');
@@ -280,25 +280,25 @@ describe('authoritative NanoHost session dispatch', () => {
 
       const bridgeRequestId = 'c'.repeat(64);
       const bridgePromise = dispatch.effect({
-        input: { harnessBindingRef: 'harness-binding-special' },
+        input: { sandboxIntegrationBindingRef: 'harness-binding-special' },
         kind: 'bridge.open',
         requestId: bridgeRequestId,
       });
       await expect(dispatch.poll(successorPhysical, 'bridge.open')).resolves.toEqual({
-        harnessBindingRef: 'harness-binding-special',
+        sandboxIntegrationBindingRef: 'harness-binding-special',
         requestId: bridgeRequestId,
       });
       await expect(
         dispatch.result(successorPhysical, 'bridge.open', {
           accepted: true,
-          harnessReady: true,
+          integrationReady: true,
           requestId: bridgeRequestId,
           state: 'open',
         })
       ).resolves.toBeUndefined();
       await expect(bridgePromise).resolves.toEqual({
         accepted: true,
-        harnessReady: true,
+        integrationReady: true,
         state: 'open',
       });
 

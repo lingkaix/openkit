@@ -34,7 +34,7 @@ function manifest() {
     exportFormatVersion: 2,
     contentInventory: [
       {
-        path: 'records/workspace.json',
+        path: 'records/workspace-record.json',
         digest: 'sha256:ab4a13e5a040b76a82521f52dabddd42e7e4d4244c47e16ee8c6e1aa16233f3f',
         bytes: 42,
       },
@@ -46,7 +46,7 @@ describe('workspace export manifest schema', () => {
   it('parses the current workspace-export manifest shape', () => {
     expect(WorkspaceExportManifestSchema.parse(manifest()).recordType).toBe('workspace-export');
     expect(parseWorkspaceExportManifest(manifest()).contentInventory[0]?.path).toBe(
-      'records/workspace.json'
+      'records/workspace-record.json'
     );
   });
 

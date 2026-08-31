@@ -21,7 +21,7 @@ import {
 } from '@openkit/config-schema';
 import type { WorkspaceDb } from '../storage/db.js';
 
-/** Durable workspace-owned AEP snapshot record with its strictly parsed V2 snapshot. */
+/** Durable Workspace-owned AEP snapshot record with its strictly parsed V4 snapshot. */
 export type AgentEnvironmentPackageSnapshotRecord = Omit<
   AppApiAgentEnvironmentPackageSnapshotRecord,
   'snapshot'
@@ -29,7 +29,7 @@ export type AgentEnvironmentPackageSnapshotRecord = Omit<
 
 /** Input for recording an AEP snapshot. */
 export interface RecordAgentEnvironmentPackageSnapshotInput {
-  /** Full parsed V2 AEP snapshot. The helper stores only its redacted form. */
+  /** Full parsed V4 AEP snapshot. The helper stores only its redacted form. */
   readonly environmentPackage: AgentEnvironmentPackage;
   /** Record creation timestamp. */
   readonly createdAt: string;

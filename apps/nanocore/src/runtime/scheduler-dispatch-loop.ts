@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { GatewayConfig, UserConfig, WorkspaceConfig } from '@openkit/config-schema';
 import { TurnSchema } from '@openkit/protocol';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
@@ -65,6 +66,12 @@ export interface RunSchedulerDispatchLoopInput {
   now?: () => string;
   /** Provider registry used by start-turn orchestration. */
   providerRegistry: ProviderRegistry;
+  /** Gateway logical model catalog used by setup composition. */
+  gatewayConfig: GatewayConfig;
+  /** Workspace Agent composition inventory used by setup resolution. */
+  workspaceConfigs?: readonly { workspaceId: string; config: WorkspaceConfig }[];
+  /** Personal Agent preference inventory used by setup resolution. */
+  userConfigs?: readonly { userId: string; config: UserConfig }[];
   /** Scheduler epoch recorded on placement and lease records. */
   schedulerEpoch: number;
   /** Startup timeout in milliseconds. */
@@ -156,7 +163,25 @@ export async function runSchedulerDispatchLoop(
     }
     const freshAgentSessionId = (input.createAgentSessionId ?? generateUuidV7)();
     const timestamp = input.now?.() ?? new Date().toISOString();
-    const setup = resolveDispatchAgentSetup(input, entry.requestedAgentId);
+    const responsibleUserId =
+      entry.triggerActor.kind === 'user'
+        ? entry.triggerActor.id
+        : entry.triggerActor.responsibleUserId;
+    const workspaceConfig = input.workspaceConfigs?.find(
+      (candidate) => candidate.workspaceId === entry.workspaceId
+    )?.config;
+    const userConfig = input.userConfigs?.find(
+      (candidate) => candidate.userId === responsibleUserId
+    )?.config;
+    const setup = resolveDispatchAgentSetup(
+      input,
+      entry.requestedAgentId,
+      entry.profileRef,
+      entry.modelId,
+      entry.workspaceId,
+      workspaceConfig,
+      userConfig
+    );
     const workspaceRoots =
       entry.workspaceRoots.length > 0 ? entry.workspaceRoots : (input.workspaceRoots ?? []);
     const futureTurn = TurnSchema.parse({
@@ -248,7 +273,10 @@ export async function runSchedulerDispatchLoop(
           agentManifests: input.agentManifests,
           agentSetupWorkspaceDb,
           agentSessionId: dispatch.lease.agentSessionId,
+          gatewayConfig: input.gatewayConfig,
           input: dispatch.entry.turnInput,
+          modelId: dispatch.entry.modelId,
+          profileId: dispatch.entry.profileRef,
           providerRegistry: input.providerRegistry,
           requestId: dispatch.entry.requestId,
           sandboxBindingRef: dispatch.lease.sandboxBindingRef,
@@ -260,6 +288,8 @@ export async function runSchedulerDispatchLoop(
           turnId: dispatch.entry.turnId,
           workspaceCwd: dispatch.entry.workspaceCwd ?? input.workspaceCwd ?? null,
           workspaceId: dispatch.entry.workspaceId,
+          ...(workspaceConfig ? { workspaceConfig } : {}),
+          ...(userConfig ? { userConfig } : {}),
           workspaceRoots:
             dispatch.entry.workspaceRoots.length > 0
               ? dispatch.entry.workspaceRoots
@@ -371,7 +401,15 @@ function isExactUnavailableHumanGateCloseout(
 }
 
 /** Resolves the exact authored setup needed by pre-lease static AEP planning. */
-function resolveDispatchAgentSetup(input: RunSchedulerDispatchLoopInput, requestedAgentId: string) {
+function resolveDispatchAgentSetup(
+  input: RunSchedulerDispatchLoopInput,
+  requestedAgentId: string,
+  profileId: string | null,
+  modelId: string | null,
+  workspaceId: string,
+  workspaceConfig: WorkspaceConfig | undefined,
+  userConfig: UserConfig | undefined
+) {
   const manifest = input.agentManifests.find((candidate) => candidate.id === requestedAgentId);
   if (!manifest) {
     throw new TurnStartValidationError(
@@ -380,18 +418,23 @@ function resolveDispatchAgentSetup(input: RunSchedulerDispatchLoopInput, request
       409
     );
   }
-  const readinessDependencies = input.dependencies?.providerCredentialResolver
-    ? { providerCredentialResolver: input.dependencies.providerCredentialResolver }
-    : {};
-  const readiness = computeReadiness(manifest, input.providerRegistry, readinessDependencies);
-  if (!isAgentLaunchable(readiness, manifest, input.providerRegistry, readinessDependencies)) {
+  const readiness = computeReadiness(manifest);
+  if (!isAgentLaunchable(readiness)) {
     throw new TurnStartValidationError(
       'agent_not_ready',
       `Agent ${requestedAgentId} readiness is ${readiness.status}.`,
       409
     );
   }
-  const resolved = resolveAgentSetup(manifest, { providerRegistry: input.providerRegistry });
+  const resolved = resolveAgentSetup(manifest, {
+    gatewayConfig: input.gatewayConfig,
+    providerRegistry: input.providerRegistry,
+    selectedProfileId: profileId,
+    requestedLogicalModelId: modelId,
+    workspaceId,
+    ...(workspaceConfig ? { workspaceConfig } : {}),
+    ...(userConfig ? { userConfig } : {}),
+  });
   if (!resolved.setup || resolved.diagnostics.length > 0) {
     throw new TurnStartValidationError(
       'agent_not_ready',

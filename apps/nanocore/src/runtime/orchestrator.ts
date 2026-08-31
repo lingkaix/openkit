@@ -1,14 +1,14 @@
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
-import { resolveWorkspaceDataSourceReference } from '@openkit/config-schema';
+import {
+  type GatewayConfig,
+  resolveWorkspaceDataSourceReference,
+  type UserConfig,
+  type WorkspaceConfig,
+} from '@openkit/config-schema';
 import type { ActorRef, TurnSchema } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
-import {
-  type AgentReadiness,
-  type AgentReadinessDependencies,
-  computeReadiness,
-  isAgentLaunchable,
-} from '../agents/readiness.js';
+import { type AgentReadiness, computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
 import {
   type AgentSelectionDefaults,
   type AgentSelectionOverride,
@@ -38,8 +38,16 @@ export interface StartTurnInput {
   input: string;
   /** Optional per-turn model override. */
   modelId?: string | null;
+  /** Optional per-turn Agent profile override. */
+  profileId?: string | null;
   /** Provider registry used for readiness evaluation. */
   providerRegistry: ProviderRegistry;
+  /** Gateway logical model catalog used for Agent composition. */
+  gatewayConfig: GatewayConfig;
+  /** Workspace composition applied to the selected Agent. */
+  workspaceConfig?: WorkspaceConfig;
+  /** Personal preferences applied after Workspace composition. */
+  userConfig?: UserConfig;
   /** Request id for the command that accepted the turn. */
   requestId?: string | null;
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */
@@ -58,6 +66,8 @@ export interface StartTurnInput {
   turnExecutor: TurnExecutor;
   /** Optional per-request agent override. */
   agentId?: string | null;
+  /** Resolved User, Workspace, or Server Agent fallback. */
+  defaultAgentId?: string | null;
   /** Optional workspace database used to persist resolved setup lineage. */
   agentSetupWorkspaceDb?: WorkspaceDb;
   /** Available agent manifests. */
@@ -135,100 +145,31 @@ export class TurnStartValidationError extends Error {
 }
 
 /**
- * Resolves a model override to a compatible manifest-owned agent.
- *
- * @param manifests Current file-backed agent manifests.
- * @param providerRegistry Current provider profiles and their model declarations.
- * @param defaultAgentId Workspace default agent id, when configured.
- * @param modelId Requested model override.
- * @param dependencies Readiness dependencies used for launchability checks.
- * @returns Matching agent id, or null when no override was supplied.
- * @throws TurnStartValidationError when the model is missing or unsupported.
- */
-export function resolveModelAgentOverride(
-  manifests: readonly AgentManifest[],
-  providerRegistry: ProviderRegistry,
-  defaultAgentId: string | null,
-  modelId?: string | null,
-  dependencies: AgentReadinessDependencies = {}
-): string | null {
-  if (!modelId) {
-    return null;
-  }
-
-  const modelProviders = providerRegistry
-    .list()
-    .filter((provider) => provider.defaultModel === modelId || provider.models.includes(modelId));
-  const matchingManifests = manifests.filter(
-    (manifest) => modelForManifest(manifest, providerRegistry) === modelId
-  );
-  const modelKnown =
-    modelProviders.length > 0 || manifests.some((manifest) => manifest.provider?.model === modelId);
-  if (!modelKnown) {
-    throw new TurnStartValidationError('model_not_found', `Model not found: ${modelId}.`);
-  }
-
-  const modelDisabled =
-    (modelProviders.length > 0 &&
-      modelProviders.every((provider) => provider.readiness?.status === 'disabled')) ||
-    (matchingManifests.length > 0 &&
-      matchingManifests.every((manifest) => manifest.readiness?.status === 'disabled'));
-  if (modelDisabled) {
-    throw new TurnStartValidationError('model_disabled', `Model is disabled: ${modelId}.`);
-  }
-
-  const launchableManifests = matchingManifests.filter((manifest) => {
-    const readiness = computeReadiness(manifest, providerRegistry, dependencies);
-    return isAgentLaunchable(readiness, manifest, providerRegistry, dependencies);
-  });
-  const matchingAgent = launchableManifests.sort((left, right) => {
-    const defaultOrder = Number(right.id === defaultAgentId) - Number(left.id === defaultAgentId);
-    return defaultOrder || left.id.localeCompare(right.id);
-  })[0];
-
-  if (!matchingAgent) {
-    throw new TurnStartValidationError(
-      'model_not_supported_by_agent',
-      `No enabled agent supports model: ${modelId}.`
-    );
-  }
-
-  return matchingAgent.id;
-}
-
-/**
- * Resolves one manifest's effective model through its provider declaration.
+ * Checks whether one Agent Manifest admits a logical model ID.
  *
  * @param manifest Agent manifest to inspect.
- * @param providerRegistry Current provider registry.
- * @returns Explicit or provider-default model id, when configured.
+ * @param modelId Requested logical model ID.
+ * @returns True when the Manifest admits the requested logical model.
  */
-function modelForManifest(
-  manifest: AgentManifest,
-  providerRegistry: ProviderRegistry
-): string | null {
-  const providerRef = manifest.provider?.ref;
+function manifestAllowsModel(manifest: AgentManifest, modelId: string): boolean {
   return (
-    manifest.provider?.model ??
-    (providerRef ? providerRegistry.get(providerRef)?.defaultModel : null) ??
-    null
+    manifest.models.allowedLogicalModelIds === 'all' ||
+    manifest.models.allowedLogicalModelIds.includes(modelId)
   );
 }
 
 /**
- * Ensures an explicitly selected manifest uses the requested effective provider model.
+ * Ensures an explicitly selected Manifest admits the requested logical model.
  *
  * @param manifest Selected agent manifest.
- * @param providerRegistry Current provider registry.
  * @param modelId Requested model override.
  * @throws TurnStartValidationError when the selected manifest resolves another model.
  */
 export function assertAgentManifestSupportsModel(
   manifest: AgentManifest,
-  providerRegistry: ProviderRegistry,
   modelId?: string | null
 ): void {
-  if (!modelId || modelForManifest(manifest, providerRegistry) === modelId) {
+  if (!modelId || manifestAllowsModel(manifest, modelId)) {
     return;
   }
 
@@ -318,16 +259,9 @@ function assertWorkspaceSourceRefsReady(
  * @throws Error when agent selection fails.
  */
 export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
-  const workspace = input.store.getWorkspace(input.workspaceId);
-  const defaultAgentId = workspace.defaults?.defaultAgentId ?? null;
-  const modelAgentId = resolveModelAgentOverride(
-    input.agentManifests,
-    input.providerRegistry,
-    defaultAgentId,
-    input.modelId,
-    input.dependencies
-  );
-  const selectedAgentId = input.agentId ?? modelAgentId;
+  input.store.getWorkspace(input.workspaceId);
+  const defaultAgentId = input.defaultAgentId ?? null;
+  const selectedAgentId = input.agentId;
   const override = selectedAgentId ? { agentId: selectedAgentId } : {};
   const selector = input.dependencies?.selectAgent ?? selectAgent;
   const selectedAgent = selector({ defaultAgentId }, override, input.agentManifests);
@@ -335,10 +269,16 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   if (!('id' in selectedAgent)) {
     throw new Error(selectedAgent.error.message);
   }
-  assertAgentManifestSupportsModel(selectedAgent, input.providerRegistry, input.modelId);
+  assertAgentManifestSupportsModel(selectedAgent, input.modelId);
 
   const agentSetupResult = resolveAgentSetup(selectedAgent, {
+    gatewayConfig: input.gatewayConfig,
     providerRegistry: input.providerRegistry,
+    ...(input.profileId !== undefined ? { selectedProfileId: input.profileId } : {}),
+    ...(input.modelId !== undefined ? { requestedLogicalModelId: input.modelId } : {}),
+    workspaceId: input.workspaceId,
+    ...(input.workspaceConfig ? { workspaceConfig: input.workspaceConfig } : {}),
+    ...(input.userConfig ? { userConfig: input.userConfig } : {}),
   });
 
   if (agentSetupResult.diagnostics.length > 0) {
@@ -347,8 +287,8 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     );
   }
 
-  const readiness = computeReadiness(selectedAgent, input.providerRegistry, input.dependencies);
-  if (!isAgentLaunchable(readiness, selectedAgent, input.providerRegistry, input.dependencies)) {
+  const readiness = computeReadiness(selectedAgent);
+  if (!isAgentLaunchable(readiness)) {
     throw new TurnStartValidationError(
       'agent_not_ready',
       `Agent ${selectedAgent.id} readiness is ${readiness.status}.`,
@@ -407,7 +347,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   });
 
   return {
-    modelId: input.modelId ?? null,
+    modelId: agentSetupResult.setup?.logicalModels.preferredLogicalModelId ?? null,
     readiness,
     turn: input.store.getTurnById(turn.id),
     agent: selectedAgent,

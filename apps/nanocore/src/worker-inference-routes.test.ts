@@ -226,6 +226,8 @@ interface WorkerInferenceRouteFixture {
 const ownedCoreDatabases: CoreDb[] = [];
 /** Request body limit shared with the worker inference transport contract. */
 const WORKER_INFERENCE_TEST_BODY_LIMIT = 16 * 1024 * 1024;
+const WORKER_LOGICAL_MODEL_ID = 'worker-reasoning';
+const WORKER_PROVIDER_MODEL = 'openai/gpt-5.2';
 
 afterEach(() => {
   for (const coreDb of ownedCoreDatabases.splice(0)) {
@@ -273,11 +275,10 @@ function createWorkerInferenceRouteFixture(
     id: 'user_local',
   });
   const agentSetup = createTestAgentSetup({
-    provider: {
-      model: 'openai/gpt-5.2',
-      origin: 'server-providers',
-      providerId: 'agent-openrouter',
-      secretRef: null,
+    logicalModelId: WORKER_LOGICAL_MODEL_ID,
+    privateRoute: {
+      providerProfileId: 'agent-openrouter',
+      providerModel: WORKER_PROVIDER_MODEL,
     },
     requiredCapabilities: trustedRelay
       ? [
@@ -330,23 +331,37 @@ function createWorkerInferenceRouteFixture(
   return {
     app: createApp({
       ...(appCoreDb ? { coreDb: appCoreDb } : {}),
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: WORKER_LOGICAL_MODEL_ID,
+        logicalModels: [
+          {
+            id: WORKER_LOGICAL_MODEL_ID,
+            displayName: 'Worker reasoning',
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'agent-openrouter',
+                providerModel: WORKER_PROVIDER_MODEL,
+              },
+            ],
+          },
+        ],
+        requiredFeatures: [],
+      },
       llmGatewayDispatcher: dispatcher as unknown as LLMGatewayProviderDispatcher,
       mode: 'server',
-      openKitConfig: {
-        defaults: {
-          gatewayModel: 'public-model',
-          gatewayProviderId: 'public-default',
-        },
-      },
+      openKitConfig: {},
       providerRegistry: new ProviderRegistry([
         ...(includeWorkerProvider
           ? [
               {
-                defaultModel: 'openai/gpt-5.2',
+                defaultModel: WORKER_PROVIDER_MODEL,
                 displayName: 'Agent OpenRouter',
                 id: 'agent-openrouter',
                 kind: 'gateway' as const,
-                models: ['openai/gpt-5.2'],
+                models: [WORKER_PROVIDER_MODEL],
                 vendor: 'openrouter' as const,
               },
             ]
@@ -481,7 +496,7 @@ describe('worker inference routes', () => {
         metadata: {
           trace: 'preserve-me',
         },
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
         prompt_cache_key: 'raw-worker-cache-key',
         prompt_cache_retention: '24h',
         user: 'caller-controlled-user',
@@ -495,14 +510,17 @@ describe('worker inference routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('x-codex-turn-state')).toBe('worker-provider-response-state');
     expect(response.headers.get('x-request-id')).toBeNull();
-    await expect(response.json()).resolves.toMatchObject({ id: 'resp_worker_inference' });
+    await expect(response.json()).resolves.toMatchObject({
+      id: 'resp_worker_inference',
+      model: WORKER_LOGICAL_MODEL_ID,
+    });
     expect(fixture.dispatcher.responseCalls).toHaveLength(1);
     expect(fixture.dispatcher.responseCalls[0]?.provider.id).toBe('agent-openrouter');
     expect(fixture.dispatcher.responseCalls[0]?.request).toEqual(
       expect.objectContaining({
         input: 'Hello from the worker',
         metadata: { trace: 'preserve-me' },
-        model: 'openai/gpt-5.2',
+        model: WORKER_PROVIDER_MODEL,
         prompt_cache_key: expect.stringMatching(/^openkit:responses:request:/),
         prompt_cache_retention: '24h',
         store: false,
@@ -535,7 +553,7 @@ describe('worker inference routes', () => {
 
     const response = await postWorkerResponses(fixture, {
       input: 'Missing adapter authority',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(response.status).toBe(400);
@@ -550,7 +568,7 @@ describe('worker inference routes', () => {
     const response = await fixture.app.request('/api/worker-inference/v1/chat/completions', {
       body: JSON.stringify({
         messages: [{ content: 'Hello', role: 'user' }],
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
       }),
       headers: {
         authorization: `Bearer ${fixture.token}`,
@@ -563,7 +581,7 @@ describe('worker inference routes', () => {
     await expect(response.json()).resolves.toMatchObject({ id: 'chatcmpl_worker_inference' });
     expect(fixture.dispatcher.chatCalls[0]).toMatchObject({
       provider: { id: 'agent-openrouter' },
-      request: { model: 'openai/gpt-5.2', stream: false },
+      request: { model: WORKER_PROVIDER_MODEL, stream: false },
     });
   });
 
@@ -590,7 +608,7 @@ describe('worker inference routes', () => {
           'x-openai-subagent': 'collab_spawn',
         },
         input: 'Hello from a Codex child',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
         prompt_cache_key: 'private-runtime-cache-lineage',
       },
       {
@@ -607,7 +625,7 @@ describe('worker inference routes', () => {
     expect(fixture.dispatcher.responseCalls[0]?.request).toEqual(
       expect.objectContaining({
         input: 'Hello from a Codex child',
-        model: 'openai/gpt-5.2',
+        model: WORKER_PROVIDER_MODEL,
         prompt_cache_key: expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
         store: false,
         stream: false,
@@ -646,7 +664,7 @@ describe('worker inference routes', () => {
     const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, true);
     const response = await postWorkerResponses(fixture, {
       input: 'Missing provenance hint',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(response.status).toBe(400);
@@ -676,7 +694,7 @@ describe('worker inference routes', () => {
           'x-codex-turn-metadata': encodedMetadata,
         },
         input: 'Hello',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
       },
       {
         'session-id': turnMetadata.session_id,
@@ -700,7 +718,7 @@ describe('worker inference routes', () => {
         'x-codex-turn-metadata': { thread_id: 'nested-object' },
       },
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(response.status).toBe(400);
@@ -722,7 +740,7 @@ describe('worker inference routes', () => {
     const response = await fixture.app.request('/api/worker-inference/v1/chat/completions', {
       body: JSON.stringify({
         messages: [{ content: null, role: 'assistant', tool_calls: toolCalls }],
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
         tools: [{ function: { name: 'read_file' }, type: 'function' }],
       }),
       headers: {
@@ -745,7 +763,7 @@ describe('worker inference routes', () => {
       {
         body: {
           messages: [{ content: 'Hello', role: 'user' }],
-          model: 'openai/gpt-5.2',
+          model: WORKER_PROVIDER_MODEL,
           tools: [
             { function: { name: 'read_file' }, type: 'function' },
             { function: { name: 'read_file' }, type: 'function' },
@@ -756,7 +774,7 @@ describe('worker inference routes', () => {
       {
         body: {
           input: 'Hello',
-          model: 'openai/gpt-5.2',
+          model: WORKER_LOGICAL_MODEL_ID,
           tools: [
             { name: 'read_file', parameters: { type: 'object' }, type: 'function' },
             { name: 'read_file', parameters: { type: 'object' }, type: 'function' },
@@ -767,7 +785,7 @@ describe('worker inference routes', () => {
       {
         body: {
           input: 'Hello',
-          model: 'openai/gpt-5.2',
+          model: WORKER_LOGICAL_MODEL_ID,
           tools: [{ type: 'tool_search' }, { type: 'tool_search' }],
         },
         path: '/api/worker-inference/v1/responses',
@@ -797,14 +815,14 @@ describe('worker inference routes', () => {
     const fixture = createWorkerInferenceRouteFixture();
     const cases = [
       {
-        body: { input: 'Hello', model: 'openai/gpt-5.2', stream: true },
+        body: { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID, stream: true },
         expected: 'data: {"type":"response.completed"}\n\ndata: [DONE]\n\n',
         path: '/api/worker-inference/v1/responses',
       },
       {
         body: {
           messages: [{ content: 'Hello', role: 'user' }],
-          model: 'openai/gpt-5.2',
+          model: WORKER_LOGICAL_MODEL_ID,
           stream: true,
         },
         expected: 'data: {"id":"chatcmpl_worker_stream"}\n\ndata: [DONE]\n\n',
@@ -845,7 +863,7 @@ describe('worker inference routes', () => {
     const request = new Request('http://localhost/api/worker-inference/v1/responses', {
       body: JSON.stringify({
         input: 'Wait for cancellation',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
         stream: true,
       }),
       headers: {
@@ -929,7 +947,7 @@ describe('worker inference routes', () => {
     fixture.dispatcher.shouldHoldResponsesStream = true;
     const response = await postWorkerResponses(fixture, {
       input: 'Wait through one idle interval',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
       stream: true,
     });
     const reader = response.body!.getReader();
@@ -972,7 +990,7 @@ describe('worker inference routes', () => {
         {
           body: JSON.stringify({
             input: 'Wait for network cancellation',
-            model: 'openai/gpt-5.2',
+            model: WORKER_LOGICAL_MODEL_ID,
             stream: true,
           }),
           headers: {
@@ -1027,7 +1045,7 @@ describe('worker inference routes', () => {
     fixture.dispatcher.responseErrorAfterAbort = testCase.error;
     const responsePromise = fixture.app.fetch(
       new Request('http://localhost/api/worker-inference/v1/responses', {
-        body: JSON.stringify({ input: 'Wait for abort', model: 'openai/gpt-5.2' }),
+        body: JSON.stringify({ input: 'Wait for abort', model: WORKER_LOGICAL_MODEL_ID }),
         headers: {
           authorization: `Bearer ${fixture.token}`,
           'content-type': 'application/json',
@@ -1076,7 +1094,7 @@ describe('worker inference routes', () => {
 
     const response = await postWorkerResponses(fixture, {
       input: 'Finish despite audit failure',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
       stream: true,
     });
 
@@ -1097,11 +1115,11 @@ describe('worker inference routes', () => {
 
       await postWorkerResponses(fixture, {
         input: 'First sibling call',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
       });
       await postWorkerResponses(fixture, {
         input: 'Second sibling call',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
       });
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -1153,7 +1171,7 @@ describe('worker inference routes', () => {
 
     const response = await postWorkerResponses(fixture, {
       input: 'Do not dispatch',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(response.status).toBe(503);
@@ -1180,21 +1198,19 @@ describe('worker inference routes', () => {
     }
   });
 
-  it('rejects missing, invalid, and non-relay worker identity', async () => {
+  it('rejects missing and invalid worker identity', async () => {
     const trusted = createWorkerInferenceRouteFixture();
-    const direct = createWorkerInferenceRouteFixture(false);
     const requests = [
       trusted.app.request('/api/worker-inference/v1/responses', {
-        body: JSON.stringify({ input: 'Hello', model: 'openai/gpt-5.2' }),
+        body: JSON.stringify({ input: 'Hello', model: WORKER_LOGICAL_MODEL_ID }),
         headers: { 'content-type': 'application/json' },
         method: 'POST',
       }),
       trusted.app.request('/api/worker-inference/v1/responses', {
-        body: JSON.stringify({ input: 'Hello', model: 'openai/gpt-5.2' }),
+        body: JSON.stringify({ input: 'Hello', model: WORKER_LOGICAL_MODEL_ID }),
         headers: { authorization: 'Bearer okt_product_token', 'content-type': 'application/json' },
         method: 'POST',
       }),
-      postWorkerResponses(direct, { input: 'Hello', model: 'openai/gpt-5.2' }),
     ];
 
     for (const pending of requests) {
@@ -1206,7 +1222,6 @@ describe('worker inference routes', () => {
       });
     }
     expect(trusted.dispatcher.responseCalls).toEqual([]);
-    expect(direct.dispatcher.responseCalls).toEqual([]);
   });
 
   it('rejects caller authority conflicts before provider dispatch', async () => {
@@ -1224,7 +1239,7 @@ describe('worker inference routes', () => {
     for (const conflict of conflicts) {
       const response = await postWorkerResponses(fixture, {
         input: 'Hello',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
         ...conflict,
       });
 
@@ -1236,7 +1251,7 @@ describe('worker inference routes', () => {
 
     const headerConflict = await postWorkerResponses(
       fixture,
-      { input: 'Hello', model: 'openai/gpt-5.2' },
+      { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID },
       { 'x-openkit-workspace-id': 'ws_demo' }
     );
 
@@ -1259,7 +1274,7 @@ describe('worker inference routes', () => {
     for (const alias of aliases) {
       const response = await postWorkerResponses(fixture, {
         input: 'Hello',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
         ...alias,
       });
       expect(response.status).toBe(403);
@@ -1275,7 +1290,7 @@ describe('worker inference routes', () => {
     deadLease.expireLease();
     const deadLeaseResponse = await postWorkerResponses(deadLease, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(deadLeaseResponse.status).toBe(403);
@@ -1303,7 +1318,7 @@ describe('worker inference routes', () => {
     });
     const unhydratedResponse = await postWorkerResponses(unhydrated, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(unhydratedResponse.status).toBe(401);
@@ -1318,7 +1333,7 @@ describe('worker inference routes', () => {
     const scope = fixture.environmentPackage.scope;
     const accepted = await postWorkerResponses(fixture, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
       prompt_cache_key: 'runtime-private-cache-key',
       safety_identifier: 'caller-safety-id',
       sessionId: 'runtime-cache-session',
@@ -1328,7 +1343,7 @@ describe('worker inference routes', () => {
     expect(accepted.status).toBe(200);
     expect(fixture.dispatcher.responseCalls[0]?.request).toEqual({
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_PROVIDER_MODEL,
       prompt_cache_key: expect.stringMatching(/^openkit:responses:request:/),
       store: false,
       stream: false,
@@ -1374,7 +1389,7 @@ describe('worker inference routes', () => {
     for (const conflict of conflicts) {
       const response = await postWorkerResponses(fixture, {
         input: 'Hello',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
         ...conflict,
       });
 
@@ -1390,7 +1405,7 @@ describe('worker inference routes', () => {
     const fixture = createWorkerInferenceRouteFixture(true, undefined, false);
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(response.status).toBe(503);
@@ -1411,7 +1426,7 @@ describe('worker inference routes', () => {
     try {
       const response = await postWorkerResponses(fixture, {
         input: 'Hello',
-        model: 'openai/gpt-5.2',
+        model: WORKER_LOGICAL_MODEL_ID,
       });
 
       expect(response.status).toBe(503);
@@ -1430,7 +1445,7 @@ describe('worker inference routes', () => {
     dispatchFailure.dispatcher.responseError = new Error('private provider failure');
     const rejected = await postWorkerResponses(dispatchFailure, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(rejected.status).toBe(400);
@@ -1450,7 +1465,7 @@ describe('worker inference routes', () => {
       cyclicResponse as OpenAICompatibleResponsesResponse;
     const unserializable = await postWorkerResponses(serializationFailure, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(unserializable.status).toBe(400);
@@ -1470,7 +1485,7 @@ describe('worker inference routes', () => {
 
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
     const body = await response.json();
     const calls = readWorkerInferenceCapabilityCalls(fixture);
@@ -1494,7 +1509,7 @@ describe('worker inference routes', () => {
     fixture.dispatcher.shouldFailResponsesStream = true;
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
       stream: true,
     });
 
@@ -1514,7 +1529,7 @@ describe('worker inference routes', () => {
     const fixture = createWorkerInferenceRouteFixture(true, undefined, true, false);
     const response = await postWorkerResponses(fixture, {
       input: 'Hello',
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
 
     expect(response.status).toBe(503);
@@ -1527,7 +1542,7 @@ describe('worker inference routes', () => {
       expect.objectContaining({
         errorCode: 'worker_inference_provider_unavailable',
         packageSnapshotId: fixture.environmentPackage.snapshotId,
-        providerRef: 'agent-openrouter',
+        providerRef: WORKER_LOGICAL_MODEL_ID,
         runtimeCacheLineageRef: null,
         runtimeOriginRef: null,
         status: 'failed',
@@ -1537,7 +1552,10 @@ describe('worker inference routes', () => {
 
   it('decodes identity and Zstd JSON into the same provider request', async () => {
     const fixture = createWorkerInferenceRouteFixture();
-    const body = JSON.stringify({ input: 'Compressed worker input', model: 'openai/gpt-5.2' });
+    const body = JSON.stringify({
+      input: 'Compressed worker input',
+      model: WORKER_LOGICAL_MODEL_ID,
+    });
     const identity = await postRawWorkerResponses(fixture, body);
     const compressed = await postRawWorkerResponses(fixture, zstdCompressSync(body), {
       'content-encoding': 'zstd',
@@ -1550,7 +1568,7 @@ describe('worker inference routes', () => {
       expect(call.request).toEqual(
         expect.objectContaining({
           input: 'Compressed worker input',
-          model: 'openai/gpt-5.2',
+          model: WORKER_PROVIDER_MODEL,
           prompt_cache_key: expect.stringMatching(/^openkit:responses:request:/),
           store: false,
           stream: false,
@@ -1566,13 +1584,13 @@ describe('worker inference routes', () => {
     const fixture = createWorkerInferenceRouteFixture();
     const cases = [
       {
-        body: JSON.stringify({ input: 'Hello', model: 'openai/gpt-5.2' }),
+        body: JSON.stringify({ input: 'Hello', model: WORKER_LOGICAL_MODEL_ID }),
         code: 'worker_inference_unsupported_media_type',
         headers: { 'content-type': 'text/plain' },
         status: 415,
       },
       {
-        body: JSON.stringify({ input: 'Hello', model: 'openai/gpt-5.2' }),
+        body: JSON.stringify({ input: 'Hello', model: WORKER_LOGICAL_MODEL_ID }),
         code: 'worker_inference_unsupported_content_encoding',
         headers: { 'content-encoding': 'gzip' },
         status: 415,
@@ -1616,7 +1634,7 @@ describe('worker inference routes', () => {
     );
     const decodedBody = JSON.stringify({
       input: 'x'.repeat(WORKER_INFERENCE_TEST_BODY_LIMIT),
-      model: 'openai/gpt-5.2',
+      model: WORKER_LOGICAL_MODEL_ID,
     });
     const decodedOverflow = await postRawWorkerResponses(fixture, zstdCompressSync(decodedBody), {
       'content-encoding': 'zstd',

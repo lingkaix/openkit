@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { ApiErrorSchema, TurnReadProjectionSchema, TurnSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import type { FsStore } from './lib/store.js';
@@ -25,6 +24,7 @@ import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -501,6 +501,7 @@ describe('generic turn routes', () => {
       const startResponse = await fixture.app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
+          agentId: 'agent_codex_host',
           input: 'Pause for the responsible user.',
           requestId: startRequestId,
           threadId: 'th_demo',
@@ -604,6 +605,7 @@ describe('generic turn routes', () => {
       const response = await fixture.app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
+          agentId: 'agent_codex_host',
           input: 'Complete synchronously',
           requestId: '00000000-0000-4000-8000-000000000301',
           threadId: 'th_demo',
@@ -632,6 +634,7 @@ describe('generic turn routes', () => {
       const response = await fixture.app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
+          agentId: 'agent_codex_host',
           input: 'Run on the remote target',
           requestId: '00000000-0000-4000-8000-000000000309',
           threadId: 'th_demo',
@@ -729,6 +732,7 @@ describe('generic turn routes', () => {
       const startResponse = await fixture.app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
+          agentId: 'agent_codex_host',
           input: 'Keep running until interrupted',
           requestId: '00000000-0000-4000-8000-000000000302',
           threadId: 'th_demo',
@@ -774,6 +778,7 @@ describe('generic turn routes', () => {
     const executor = new RecordingTurnExecutor();
     const fixture = await createSchedulerFixture(executor, 'repository-replay');
     const body = {
+      agentId: 'agent_codex_host',
       input: 'Replay this completed turn',
       requestId: '00000000-0000-4000-8000-000000000304',
       threadId: 'th_demo',
@@ -836,6 +841,7 @@ describe('generic turn routes', () => {
       const response = await fixture.app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
+          agentId: 'agent_codex_host',
           input: 'Do not admit an invalid thread',
           requestId,
           threadId,

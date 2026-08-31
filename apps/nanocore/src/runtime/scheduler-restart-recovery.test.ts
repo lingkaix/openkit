@@ -144,7 +144,7 @@ function dispatchLease(
   createSchedulerAdmissionEntry(coreDb, {
     triggerActor,
     priorityClass: 'interactive',
-    profileRef: 'profile_worker',
+    profileRef: null,
     queueEntryId: `queue_${suffix}`,
     requestId: `request_${suffix}`,
     requestedAgentId: 'agent_codex_host',
@@ -1504,7 +1504,7 @@ describe('scheduler restart recovery', () => {
     createSchedulerAdmissionEntry(coreDb, {
       triggerActor: { kind: 'user', id: 'user_local' },
       priorityClass: 'interactive',
-      profileRef: 'profile_worker',
+      profileRef: null,
       queueEntryId: 'queue_product_projection',
       requestedAgentId: 'agent_codex_host',
       requiredPoolConstraints: ['openshell.local'],

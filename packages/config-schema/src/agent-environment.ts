@@ -3,8 +3,6 @@ import { createHash } from 'node:crypto';
 import { ActorRefSchema } from '@openkit/protocol';
 import { WORKER_RUNTIME_PROVENANCE_FEATURE } from '@openkit/worker-protocol';
 import { z } from 'zod';
-import { ProviderProfileSchema } from './provider.js';
-import { OpenKitProviderInstanceSchema } from './server.js';
 
 const RAW_SECRET_FIELD_NAMES = new Set(['apiKey', 'clientSecret', 'secret', 'token', 'password']);
 const SECRET_SHAPED_BUILD_ARGUMENT_PATTERN =
@@ -17,6 +15,14 @@ const BACKEND_PRIVATE_FIELD_NAMES = new Set([
   'vmId',
 ]);
 const WORKER_CREDENTIAL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const WORKER_RUNTIME_CREDENTIAL_FILE_PATH_SCHEMA = z
+  .string()
+  .min(1)
+  .startsWith('/sandbox/')
+  .refine(
+    (path) => path !== '/sandbox/openkit' && !path.startsWith('/sandbox/openkit/'),
+    'Runtime credential files cannot target OpenKit-managed sandbox paths.'
+  );
 const WORKER_SANDBOX_ACCESS_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY = 'trusted-worker-inference-relay';
 const LOWERCASE_SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -191,6 +197,7 @@ export const AgentEnvironmentAgentSchema = z
     profileId: z.string().min(1).nullable(),
     displayName: z.string().min(1),
     runtimeKind: z.string().min(1),
+    runtimeVersion: z.string().min(1),
     profileKind: z.string().min(1).nullable().optional(),
     instructions: z.array(AgentEnvironmentInstructionSchema).default([]),
     capabilityRequests: z.array(z.string().min(1)).default([]),
@@ -300,7 +307,6 @@ export const AgentEnvironmentRuntimeSessionSchema = z
   .object({
     reuse: z.enum(['never', 'same-thread', 'same-agent-session']).default('never'),
     resumeHandleRef: z.string().min(1).nullable().default(null),
-    staleWhenPackageChanges: z.boolean().default(true),
   })
   .strict();
 
@@ -618,42 +624,6 @@ export const AgentEnvironmentCapabilitiesSchema = z
   .strict();
 
 /**
- * Provider attachment visible to one worker package.
- */
-export const AgentEnvironmentProviderAttachmentSchema = z
-  .object({
-    id: z.string().min(1),
-    providerInstanceId: z.string().min(1),
-    vaultGrantIds: z.array(z.string().min(1)).default([]),
-    binaryIds: z.array(z.string().min(1)).default([]),
-    policyContributionIds: z.array(z.string().min(1)).default([]),
-  })
-  .strict();
-
-/**
- * Provider profile and instance section of a package.
- */
-export const AgentEnvironmentProvidersSchema = z
-  .object({
-    providerProfiles: z.array(ProviderProfileSchema).default([]),
-    providerInstances: z
-      .array(
-        OpenKitProviderInstanceSchema.extend({
-          profileId: z.string().min(1).optional(),
-          vaultRefIds: z.array(z.string().min(1)).default([]),
-        })
-      )
-      .default([]),
-    attachments: z.array(AgentEnvironmentProviderAttachmentSchema).default([]),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addDuplicateIdIssues(value.providerProfiles, ctx, ['providerProfiles']);
-    addDuplicateIdIssues(value.providerInstances, ctx, ['providerInstances']);
-    addDuplicateIdIssues(value.attachments, ctx, ['attachments']);
-  });
-
-/**
  * Worker credential declaration visibility classes resolved before launch.
  */
 export const AgentEnvironmentCredentialVisibilitySchema = z.enum([
@@ -674,30 +644,65 @@ export const AgentEnvironmentCredentialProviderSchema = z
   })
   .strict();
 
+const RESOLVED_CREDENTIAL_DECLARATION_BASE = {
+  id: z.string().min(1),
+  requirementId: z.string().min(1).optional(),
+  vaultGrantId: z.string().min(1),
+};
+
+const CREDENTIAL_REQUIREMENT_BASE = {
+  id: z.string().min(1),
+  purpose: z.string().min(1),
+  required: z.boolean().default(true),
+  requirementId: z.string().min(1),
+};
+
 /**
  * Worker credential declaration resolved from vault grants before launch.
  */
 export const AgentEnvironmentCredentialDeclarationSchema = z.discriminatedUnion('visibility', [
   z
     .object({
-      id: z.string().min(1),
-      vaultGrantId: z.string().min(1),
+      ...RESOLVED_CREDENTIAL_DECLARATION_BASE,
       visibility: z.literal('sandbox-provider'),
       provider: AgentEnvironmentCredentialProviderSchema,
     })
     .strict(),
   z
     .object({
-      id: z.string().min(1),
-      vaultGrantId: z.string().min(1),
+      ...RESOLVED_CREDENTIAL_DECLARATION_BASE,
       visibility: z.literal('runtime-file'),
-      targetPath: z.string().min(1).startsWith('/'),
+      targetPath: WORKER_RUNTIME_CREDENTIAL_FILE_PATH_SCHEMA,
     })
     .strict(),
   z
     .object({
-      id: z.string().min(1),
-      vaultGrantId: z.string().min(1),
+      ...RESOLVED_CREDENTIAL_DECLARATION_BASE,
+      visibility: z.literal('runtime-env'),
+      targetEnvVarName: z.string().regex(WORKER_CREDENTIAL_ENV_NAME_PATTERN),
+    })
+    .strict(),
+]);
+
+/** Reusable authored credential requirement resolved by one Workspace binding. */
+export const AgentEnvironmentCredentialRequirementSchema = z.discriminatedUnion('visibility', [
+  z
+    .object({
+      ...CREDENTIAL_REQUIREMENT_BASE,
+      visibility: z.literal('sandbox-provider'),
+      provider: AgentEnvironmentCredentialProviderSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...CREDENTIAL_REQUIREMENT_BASE,
+      visibility: z.literal('runtime-file'),
+      targetPath: WORKER_RUNTIME_CREDENTIAL_FILE_PATH_SCHEMA,
+    })
+    .strict(),
+  z
+    .object({
+      ...CREDENTIAL_REQUIREMENT_BASE,
       visibility: z.literal('runtime-env'),
       targetEnvVarName: z.string().regex(WORKER_CREDENTIAL_ENV_NAME_PATTERN),
     })
@@ -920,11 +925,11 @@ export const AgentEnvironmentLlmRouteSchema = z
 export const AgentEnvironmentLlmSchema = z
   .object({
     mode: z.enum(['gateway', 'backend-local', 'direct-external']),
-    routes: z.array(AgentEnvironmentLlmRouteSchema).length(1),
+    preferredLogicalModelId: z.string().min(1),
+    routes: z.array(AgentEnvironmentLlmRouteSchema).min(1),
   })
   .strict()
   .superRefine((value, ctx) => {
-    const route = value.routes[0];
     const expected =
       value.mode === 'gateway'
         ? (['placeholder', 'openai-compatible', 'nanocore-gateway', false] as const)
@@ -932,19 +937,35 @@ export const AgentEnvironmentLlmSchema = z
           ? (['environment', 'provider-compatible', 'direct-provider', false] as const)
           : (['none', 'backend-local', 'backend-local', false] as const);
 
-    if (
-      route &&
-      (route.credentialVisibility !== expected[0] ||
+    for (const [index, route] of value.routes.entries()) {
+      if (
+        route.credentialVisibility !== expected[0] ||
         route.endpoint.kind !== expected[1] ||
         route.endpoint.upstream?.kind !== expected[2] ||
-        Boolean(route.endpoint.workerBaseUrl) !== expected[3])
-    ) {
+        Boolean(route.endpoint.workerBaseUrl) !== expected[3]
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `LLM ${value.mode} mode requires its matching credential, endpoint, upstream, and worker base URL authority.`,
+          path: ['routes', index],
+        });
+      }
+    }
+    if (value.mode !== 'gateway' && value.routes.length !== 1) {
       ctx.addIssue({
         code: 'custom',
-        message: `LLM ${value.mode} mode requires its matching credential, endpoint, upstream, and worker base URL authority.`,
-        path: ['routes', 0],
+        message: `${value.mode} permits exactly one LLM route.`,
+        path: ['routes'],
       });
     }
+    if (!value.routes.some((route) => route.model === value.preferredLogicalModelId)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'The preferred logical model must be present in the LLM routes.',
+        path: ['preferredLogicalModelId'],
+      });
+    }
+    addDuplicateIdIssues(value.routes, ctx, ['routes']);
   });
 
 /**
@@ -1006,7 +1027,7 @@ export const AgentEnvironmentBackendRequirementsSchema = z
  */
 export const AgentEnvironmentPackageSchema = z
   .object({
-    schemaVersion: z.literal(3),
+    schemaVersion: z.literal(4),
     packageId: z.string().min(1),
     snapshotId: z.string().min(1),
     createdAt: z.string().datetime(),
@@ -1021,7 +1042,6 @@ export const AgentEnvironmentPackageSchema = z
       protocol: 'openkit-worker-capability-v1',
       routes: [],
     }),
-    providers: AgentEnvironmentProvidersSchema,
     credentials: AgentEnvironmentCredentialsSchema.default({ declarations: [] }),
     vault: AgentEnvironmentVaultSchema,
     policy: AgentEnvironmentPolicySchema,
@@ -1107,63 +1127,37 @@ export const AgentEnvironmentPackageSchema = z
         path: ['llm', 'mode'],
       });
     }
-    const route = value.llm.routes[0];
-
-    if (route?.endpoint.kind !== 'openai-compatible') {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference requires an OpenAI-compatible endpoint.',
-        path: ['llm', 'routes', 0, 'endpoint', 'kind'],
-      });
-    }
-    if (route?.credentialVisibility !== 'placeholder') {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference requires placeholder credentials.',
-        path: ['llm', 'routes', 0, 'credentialVisibility'],
-      });
-    }
-    if (route?.endpoint.upstream?.kind !== 'nanocore-gateway') {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference must route through the NanoCore gateway.',
-        path: ['llm', 'routes', 0, 'endpoint', 'upstream'],
-      });
-    }
-
-    if (route?.endpoint.workerBaseUrl) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference derives its endpoint from Sandbox Integration.',
-        path: ['llm', 'routes', 0, 'endpoint', 'workerBaseUrl'],
-      });
-    }
-
-    const targetRuntimeBinaryIds = new Set([
-      value.control.adapter.targetRuntime,
-      `${value.control.adapter.targetRuntime}-native`,
-    ]);
-    const targetRuntimeBinaryPaths = new Set(
-      value.runtime.binaries
-        .filter((binary) => targetRuntimeBinaryIds.has(binary.id))
-        .map((binary) => binary.path)
-    );
-    for (const [ruleIndex, rule] of (value.policy.network?.rules ?? []).entries()) {
-      if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
-        continue;
+    for (const [index, route] of value.llm.routes.entries()) {
+      if (route.endpoint.kind !== 'openai-compatible') {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Trusted worker inference requires an OpenAI-compatible endpoint.',
+          path: ['llm', 'routes', index, 'endpoint', 'kind'],
+        });
       }
-      const binaries = (rule as { binaries?: unknown }).binaries;
-      if (!Array.isArray(binaries)) {
-        continue;
+      if (route.credentialVisibility !== 'placeholder') {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Trusted worker inference requires placeholder credentials.',
+          path: ['llm', 'routes', index, 'credentialVisibility'],
+        });
       }
-      for (const [binaryIndex, binary] of binaries.entries()) {
-        if (typeof binary === 'string' && targetRuntimeBinaryPaths.has(binary)) {
-          ctx.addIssue({
-            code: 'custom',
-            message: 'Trusted inference runtime binaries cannot receive external network grants.',
-            path: ['policy', 'network', 'rules', ruleIndex, 'binaries', binaryIndex],
-          });
-        }
+      if (route.endpoint.upstream?.kind !== 'nanocore-gateway') {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Trusted worker inference must route through the NanoCore gateway.',
+          path: ['llm', 'routes', index, 'endpoint', 'upstream'],
+        });
+      }
+    }
+
+    for (const [index, route] of value.llm.routes.entries()) {
+      if (route.endpoint.workerBaseUrl) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Trusted worker inference derives its endpoint from Sandbox Integration.',
+          path: ['llm', 'routes', index, 'endpoint', 'workerBaseUrl'],
+        });
       }
     }
 
@@ -1178,66 +1172,14 @@ export const AgentEnvironmentPackageSchema = z
       });
     }
 
-    if (value.providers.attachments.length > 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference does not allow provider attachments.',
-        path: ['providers', 'attachments'],
-      });
-    }
-    if (value.credentials.declarations.length > 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference does not allow direct credential declarations.',
-        path: ['credentials', 'declarations'],
-      });
-    }
-    if (value.vault.references.length > 0 || value.vault.grants.length > 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference does not allow direct vault material.',
-        path: ['vault'],
-      });
-    }
-
-    const providerInstance = route
-      ? value.providers.providerInstances.find(
-          (candidate) => candidate.id === route.providerInstanceId
-        )
-      : undefined;
-
-    if (
-      !providerInstance ||
-      providerInstance.kind !== 'gateway' ||
-      !providerInstance.models.includes(route?.model ?? '') ||
-      providerInstance.secretRef ||
-      providerInstance.vaultRefIds.length > 0
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference requires a secret-free gateway provider instance.',
-        path: ['llm', 'routes', 0, 'providerInstanceId'],
-      });
-      return;
-    }
-
-    const providerProfile = providerInstance.profileId
-      ? value.providers.providerProfiles.find(
-          (candidate) => candidate.id === providerInstance.profileId
-        )
-      : undefined;
-
-    if (
-      !providerProfile ||
-      providerProfile.kind !== 'gateway' ||
-      !providerProfile.models.includes(route?.model ?? '') ||
-      providerProfile.secretRef
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Trusted worker inference requires a matching secret-free gateway profile.',
-        path: ['providers', 'providerProfiles'],
-      });
+    for (const [index, route] of value.llm.routes.entries()) {
+      if (route.providerInstanceId !== 'openkit-gateway') {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Trusted worker inference requires the logical OpenKit Gateway identity.',
+          path: ['llm', 'routes', index, 'providerInstanceId'],
+        });
+      }
     }
   });
 
@@ -1256,6 +1198,11 @@ export type AgentEnvironmentRuntimeProvenanceOutput = z.infer<
  */
 export type AgentEnvironmentCredentialDeclaration = z.infer<
   typeof AgentEnvironmentCredentialDeclarationSchema
+>;
+
+/** Parsed reusable worker credential requirement. */
+export type AgentEnvironmentCredentialRequirement = z.infer<
+  typeof AgentEnvironmentCredentialRequirementSchema
 >;
 
 /**

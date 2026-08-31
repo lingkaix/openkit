@@ -36,9 +36,12 @@ import {
   RuntimeConfigValidationResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
+  GatewayConfigSchema,
   getConfigSchemaCatalog,
+  InternalRoleProfilesConfigSchema,
   OpenKitConfigSchema,
   ProviderProfileSchema,
+  UserConfigSchema,
   WorkspaceConfigSchema,
   type WorkspaceDataSource,
   type WorkspaceDataSourceCatalog,
@@ -75,6 +78,8 @@ export interface RuntimeConfigFileServiceOptions {
   dataRoot: string | null;
   /** Workspace ids authorized for the current request. */
   workspaceIds: string[];
+  /** User id that owns the personal preference file exposed by this service. */
+  userId: string;
   /** Runtime config manager used for current snapshot and status reads. */
   runtimeConfigManager: RuntimeConfigManager;
   /** Reads stale-session-aware runtime config status for API responses. */
@@ -126,6 +131,7 @@ export class RuntimeConfigFileServiceError extends Error {
 export class RuntimeConfigFileService {
   private readonly dataRoot: string;
   private readonly workspaceIds: string[];
+  private readonly userId: string;
   private readonly runtimeConfigManager: RuntimeConfigManager;
   private readonly readRuntimeConfigStatus: () => RuntimeConfigStatus;
   private readonly onDataSourceAuthorityChange:
@@ -148,6 +154,7 @@ export class RuntimeConfigFileService {
 
     this.dataRoot = options.dataRoot;
     this.workspaceIds = options.workspaceIds;
+    this.userId = options.userId;
     this.runtimeConfigManager = options.runtimeConfigManager;
     this.readRuntimeConfigStatus = options.readRuntimeConfigStatus;
     this.onDataSourceAuthorityChange = options.onDataSourceAuthorityChange;
@@ -161,8 +168,11 @@ export class RuntimeConfigFileService {
   public listFiles(): RuntimeConfigFileListResponse {
     const files = [
       this.summaryForSpec(this.resolveFileSpec('server.jsonc')),
+      this.summaryForSpec(this.resolveFileSpec('gateway.jsonc')),
+      this.summaryForSpec(this.resolveFileSpec('internal-role-profiles.jsonc')),
       ...this.listDirectoryFiles('providers', '.provider.jsonc', 'provider'),
       ...this.listDirectoryFiles('agents', '.agent.jsonc', 'agent'),
+      this.summaryForSpec(this.resolveFileSpec(`users/${this.userId}/user.jsonc`)),
       ...this.listWorkspaceFiles(),
     ].filter((file) => file.exists);
 
@@ -184,6 +194,8 @@ export class RuntimeConfigFileService {
 
     if (isWorkspaceScopedKind(spec.kind)) {
       this.assertInsideWorkspaceConfigRoot(spec.workspaceId ?? '', spec.absolutePath);
+    } else if (spec.kind === 'user') {
+      this.assertInsideUserConfigRoot(spec.userId ?? '', spec.absolutePath);
     } else {
       this.assertInsideConfigRoot(spec.absolutePath);
     }
@@ -360,7 +372,16 @@ export class RuntimeConfigFileService {
     return RuntimeConfigSchemaCatalogResponseSchema.parse({
       schemas: [
         ...getConfigSchemaCatalog().filter((entry) =>
-          ['server', 'provider', 'agent', 'workspace', 'data-source'].includes(entry.kind)
+          [
+            'server',
+            'gateway',
+            'internal-role',
+            'provider',
+            'agent',
+            'workspace',
+            'data-source',
+            'user',
+          ].includes(entry.kind)
         ),
       ],
     });
@@ -427,13 +448,20 @@ export class RuntimeConfigFileService {
 
     const absolutePath = isWorkspaceScopedKind(spec.kind)
       ? this.workspaceConfigPath(spec.workspaceId ?? '', spec.kind)
-      : resolve(this.configRoot(), spec.relativePath);
+      : spec.kind === 'user'
+        ? this.userConfigPath(spec.userId ?? '')
+        : resolve(this.configRoot(), spec.relativePath);
 
     if (isWorkspaceScopedKind(spec.kind)) {
       if (!this.workspaceIds.includes(spec.workspaceId ?? '')) {
         throw invalidPathError(id);
       }
       this.assertInsideWorkspaceConfigRoot(spec.workspaceId ?? '', absolutePath, true);
+    } else if (spec.kind === 'user') {
+      if (spec.userId !== this.userId) {
+        throw invalidPathError(id);
+      }
+      this.assertInsideUserConfigRoot(spec.userId ?? '', absolutePath, true);
     } else {
       this.assertInsideConfigRoot(absolutePath, true);
     }
@@ -560,6 +588,13 @@ export class RuntimeConfigFileService {
       }
     }
 
+    const sourceUserConfigPath = this.userConfigPath(this.userId);
+    if (existsSync(sourceUserConfigPath)) {
+      const targetPath = join(tempRoot, 'users', this.userId, 'config', 'user.jsonc');
+      mkdirSync(dirname(targetPath), { recursive: true });
+      cpSync(sourceUserConfigPath, targetPath);
+    }
+
     for (const file of input.files) {
       const spec = parseFileId(file.id);
       const targetPath = isWorkspaceScopedKind(spec.kind)
@@ -570,7 +605,9 @@ export class RuntimeConfigFileService {
             'config',
             spec.kind === 'data-source' ? 'data-sources.jsonc' : 'workspace.jsonc'
           )
-        : join(tempConfigRoot, spec.relativePath);
+        : spec.kind === 'user'
+          ? join(tempRoot, 'users', spec.userId ?? '', 'config', 'user.jsonc')
+          : join(tempConfigRoot, spec.relativePath);
       mkdirSync(dirname(targetPath), { recursive: true });
       writeFileSync(targetPath, file.content);
     }
@@ -594,6 +631,8 @@ export class RuntimeConfigFileService {
         dirname(spec.absolutePath),
         true
       );
+    } else if (spec.kind === 'user') {
+      this.assertInsideUserConfigRoot(spec.userId ?? '', dirname(spec.absolutePath), true);
     } else {
       this.assertInsideConfigRoot(dirname(spec.absolutePath), true);
     }
@@ -656,6 +695,7 @@ export class RuntimeConfigFileService {
       return `{
   "schemaVersion": 1,
   "workspace": {
+    "name": "${titleFromId(spec.workspaceId ?? 'workspace')}",
     "roots": []
   },
   "extensions": {}
@@ -668,6 +708,31 @@ export class RuntimeConfigFileService {
   "schemaVersion": 1,
   "sources": [],
   "extensions": {}
+}
+`;
+    }
+
+    if (spec.kind === 'gateway') {
+      return `{
+  "schemaVersion": 1,
+  "enabled": true,
+  "logicalModels": []
+}
+`;
+    }
+
+    if (spec.kind === 'internal-role') {
+      return `{
+  "schemaVersion": 1,
+  "profiles": []
+}
+`;
+    }
+
+    if (spec.kind === 'user') {
+      return `{
+  "schemaVersion": 1,
+  "workspaces": []
 }
 `;
     }
@@ -717,9 +782,9 @@ export class RuntimeConfigFileService {
       { "id": "codex-native", "path": "/usr/local/lib/codex/bin/codex" }
     ]
   },
-  "provider": {
-    "ref": "agent-openrouter",
-    "model": "openai/gpt-5.1"
+  "models": {
+    "preferredLogicalModelId": "reasoning",
+    "allowedLogicalModelIds": "all"
   },
   "profiles": [{ "id": "default" }],
   "defaultProfileId": "default",
@@ -847,6 +912,33 @@ export class RuntimeConfigFileService {
     return join(this.dataRoot, 'workspaces', workspaceId, 'config');
   }
 
+  /** Returns the canonical personal User config path. */
+  private userConfigPath(userId: string): string {
+    return join(this.dataRoot, 'users', userId, 'config', 'user.jsonc');
+  }
+
+  /** Ensures one path remains inside its canonical personal User config root. */
+  private assertInsideUserConfigRoot(userId: string, path: string, allowMissing = false): void {
+    const root = join(this.dataRoot, 'users', userId, 'config');
+    const resolvedRoot = existsSync(root) ? realpathSync(root) : resolve(root);
+    const realPath = existsSync(path)
+      ? realpathSync(path)
+      : allowMissing
+        ? resolve(resolvedRoot, relative(resolve(root), resolve(path)))
+        : path;
+    const relativePath = relative(resolvedRoot, realPath);
+    if (relativePath === '..' || relativePath.startsWith(`..${sep}`)) {
+      throw invalidPathError(`users/${userId}/user.jsonc`);
+    }
+    if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
+      throw new RuntimeConfigFileServiceError(
+        'config_symlink_not_allowed',
+        'User config files cannot be symlinks.',
+        400
+      );
+    }
+  }
+
   /**
    * Resolves the real config root path, optionally allowing a missing root before first create.
    *
@@ -954,6 +1046,7 @@ interface RuntimeConfigFileSpec {
   relativePath: string;
   absolutePath: string;
   workspaceId?: string;
+  userId?: string;
 }
 
 /**
@@ -965,6 +1058,12 @@ interface RuntimeConfigFileSpec {
 function parseFileId(id: string): Omit<RuntimeConfigFileSpec, 'absolutePath'> {
   if (id === 'server.jsonc') {
     return { kind: 'server', relativePath: id };
+  }
+  if (id === 'gateway.jsonc') {
+    return { kind: 'gateway', relativePath: id };
+  }
+  if (id === 'internal-role-profiles.jsonc') {
+    return { kind: 'internal-role', relativePath: id };
   }
 
   const parts = id.split('/');
@@ -982,6 +1081,17 @@ function parseFileId(id: string): Omit<RuntimeConfigFileSpec, 'absolutePath'> {
       relativePath: id,
       workspaceId: parts[1],
     };
+  }
+
+  if (
+    parts.length === 3 &&
+    parts[0] === 'users' &&
+    parts[2] === 'user.jsonc' &&
+    parts[1] &&
+    VALID_FILE_NAME.test(parts[1]) &&
+    !parts[1].includes('..')
+  ) {
+    return { kind: 'user', relativePath: id, userId: parts[1] };
   }
 
   if (parts.length !== 2) {
@@ -1042,6 +1152,18 @@ function schemaForKind(kind: RuntimeConfigFileKind): z.ZodType {
 
   if (kind === 'provider') {
     return ProviderProfileSchema;
+  }
+
+  if (kind === 'gateway') {
+    return GatewayConfigSchema;
+  }
+
+  if (kind === 'internal-role') {
+    return InternalRoleProfilesConfigSchema;
+  }
+
+  if (kind === 'user') {
+    return UserConfigSchema;
   }
 
   if (kind === 'agent') {

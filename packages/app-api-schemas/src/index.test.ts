@@ -167,8 +167,6 @@ import {
   SetupDiagnosticsResponseSchema,
   SetWorkspaceRepositoryResponseSchema,
   StagedWorkspaceReviewSchema,
-  StartChatModeRequestSchema,
-  StartChatModeResponseSchema,
   StartTaskModeRequestSchema,
   StartTaskModeResponseSchema,
   StartThreadGoalRequestSchema,
@@ -176,6 +174,8 @@ import {
   StorageLayoutReportResponseSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   SubmitArtifactReviewDecisionResponseSchema,
+  SubmitConversationRequestSchema,
+  SubmitConversationResponseSchema,
   SubmitGoalReviewDecisionRequestSchema,
   SubmitGoalReviewDecisionResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
@@ -795,33 +795,18 @@ function runtimeConfigPlan(): unknown {
   };
 }
 
-function defaultProviders(): unknown {
-  return {
-    core: {
-      configured: false,
-      origin: 'unset',
-      reason: 'unset',
-    },
-    gateway: {
-      configured: false,
-      origin: 'unset',
-      reason: 'unset',
-    },
-  };
-}
-
 /** Builds one valid App Diagnostics payload. */
 function appDiagnosticsPayload(): Record<string, unknown> {
   return {
     service: 'nanocore',
     boot: bootReadiness(),
-    gateway: { status: 'ok', endpoints: ['/health'] },
-    providers: { diagnostics: [], registry: [] },
-    defaultProviders: defaultProviders(),
-    defaults: {
-      quickChat: { providerId: null, model: null },
-      gateway: { providerId: null, model: null },
+    gateway: {
+      status: 'ok',
+      endpoints: ['/health'],
+      defaultModelId: 'default',
+      models: [{ id: 'default', displayName: 'Default', capabilities: ['chat'] }],
     },
+    providers: { diagnostics: [], registry: [] },
     capabilities: ['core.stream.replay'],
     runtimeConfig: runtimeConfigStatus(),
   };
@@ -852,16 +837,7 @@ function setupDiagnosticsPayload(): Record<string, unknown> {
       dataRoot: 'configured',
       config: {
         schemaVersion: 1,
-        defaults: { coreProviderId: null, gatewayProviderId: null },
-        gateway: {
-          openaiCompatible: {
-            auth: { configured: false, marker: 'none', ref: null },
-            defaultModel: null,
-            defaultProviderId: null,
-            enabled: true,
-            route: '/v1',
-          },
-        },
+        defaultAgentId: 'codex',
       },
     },
     providers: [],
@@ -1731,7 +1707,7 @@ describe('app api schemas', () => {
         exportFormatVersion: 2,
         contentInventory: [
           {
-            path: 'records/workspace.json',
+            path: 'records/workspace-record.json',
             digest: 'sha256:ab4a13e5a040b76a82521f52dabddd42e7e4d4244c47e16ee8c6e1aa16233f3f',
             bytes: 16,
           },
@@ -1739,7 +1715,7 @@ describe('app api schemas', () => {
       },
       fileCount: 1,
       totalBytes: 16,
-      checkedFiles: ['records/workspace.json'],
+      checkedFiles: ['records/workspace-record.json'],
     };
 
     expect(WorkspaceExportResponseSchema.parse(payload)).toMatchObject({
@@ -1902,7 +1878,6 @@ describe('app api schemas', () => {
           name: 'Demo workspace',
           kind: 'general',
           status: 'active',
-          defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
           counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 1 },
           importedFrom: {
             sourceDeploymentId: 'dep_source',
@@ -1914,7 +1889,11 @@ describe('app api schemas', () => {
           createdAt: timestamp,
           updatedAt: timestamp,
         },
-        verification: { fileCount: 4, totalBytes: 16, checkedFiles: ['records/workspace.json'] },
+        verification: {
+          fileCount: 4,
+          totalBytes: 16,
+          checkedFiles: ['records/workspace-record.json'],
+        },
         collision: {
           status: 'collides',
           workspaceId: 'ws_demo',
@@ -3350,12 +3329,11 @@ describe('app api schemas', () => {
       },
       composer: {
         disabled: false,
-        defaultModelId: null,
         defaultAgentId: null,
       },
       itemLog: { href: '/api/app/workspaces/ws_demo/threads/th_demo/items' },
     });
-    const chat = StartChatModeResponseSchema.parse({
+    const chat = SubmitConversationResponseSchema.parse({
       outcome: 'answered',
       explanation: 'Answered.',
       turn,
@@ -3373,6 +3351,12 @@ describe('app api schemas', () => {
         completedAt: timestamp,
       },
       handoff: null,
+      originatingWorkspaceId: 'ws_demo',
+      originatingThreadId: 'th_demo',
+      receivingWorkspaceId: 'ws_demo',
+      receivingThreadId: 'th_demo',
+      targetRef: 'internal-role:assistant',
+      logicalModelId: 'default',
     });
     const task = StartTaskModeResponseSchema.parse({
       state: 'running',
@@ -3386,9 +3370,9 @@ describe('app api schemas', () => {
     expect(
       jsonContainsKey(z.toJSONSchema(appApiSchemas.ThreadDashboardResponseSchema), 'agentSessionId')
     ).toBe(false);
-    expect(jsonContainsKey(z.toJSONSchema(StartChatModeResponseSchema), 'agentSessionId')).toBe(
-      false
-    );
+    expect(
+      jsonContainsKey(z.toJSONSchema(SubmitConversationResponseSchema), 'agentSessionId')
+    ).toBe(false);
     expect(jsonContainsKey(z.toJSONSchema(StartTaskModeResponseSchema), 'agentSessionId')).toBe(
       false
     );
@@ -3559,17 +3543,18 @@ describe('app api schemas', () => {
 
   it('accepts Chat Mode Assistant answers and handoff projections', () => {
     expect(ChatModeOutcomeSchema.safeParse('failed').success).toBe(false);
-    expect(StartChatModeRequestSchema.safeParse({ input: 'Missing request id.' }).success).toBe(
-      false
-    );
     expect(
-      StartChatModeRequestSchema.parse({
+      SubmitConversationRequestSchema.safeParse({ input: 'Missing request id.' }).success
+    ).toBe(false);
+    expect(
+      SubmitConversationRequestSchema.parse({
         input: 'What is this workspace?',
+        targetRef: 'internal-role:assistant',
         requestId: 'req_chat_1',
       }).input
     ).toBe('What is this workspace?');
     expect(
-      StartChatModeResponseSchema.parse({
+      SubmitConversationResponseSchema.parse({
         outcome: 'task-handoff',
         explanation: 'The request needs bounded worker execution.',
         handoff: {
@@ -3605,6 +3590,12 @@ describe('app api schemas', () => {
           createdAt: timestamp,
           completedAt: timestamp,
         },
+        originatingWorkspaceId: 'ws_demo',
+        originatingThreadId: 'th_demo',
+        receivingWorkspaceId: 'ws_demo',
+        receivingThreadId: 'th_demo',
+        targetRef: 'internal-role:assistant',
+        logicalModelId: 'default',
       }).handoff?.targetMode
     ).toBe('task');
   });
@@ -3613,7 +3604,7 @@ describe('app api schemas', () => {
     ['Quick Chat', QuickChatRequestSchema, { input: 'Hello' }],
     [
       'Chat Mode',
-      StartChatModeRequestSchema,
+      SubmitConversationRequestSchema,
       { input: 'Hello', requestId: 'req_chat_provider_authority' },
     ],
   ])('rejects caller provider and model authority from %s requests', (_name, schema, input) => {
@@ -4651,8 +4642,7 @@ describe('app api schemas', () => {
         id: 'quick_1',
         status: 'completed',
         workspaceId: 'ws_demo',
-        providerId: 'provider_demo',
-        model: 'model_demo',
+        modelId: 'default',
         content: 'ok',
       }).content
     ).toBe('ok');
@@ -4692,13 +4682,12 @@ describe('app api schemas', () => {
           name: 'Demo',
           kind: 'code',
           status: 'active',
-          defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
           counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
           createdAt: timestamp,
           updatedAt: timestamp,
         },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0, providerCount: 0 },
-        defaultContext: { modelId: null, agentId: null, skillIds: [] },
+        defaultContext: { agentId: null },
         agentHealth: [],
         activeWork: [],
         recentCompletions: [],
@@ -5429,6 +5418,7 @@ describe('app api schemas', () => {
             turnId: 'turn_demo',
             requestedAgentId: 'agent_codex_host',
             profileRef: 'default',
+            modelId: null,
             priorityClass: 'interactive',
             enqueuedAt: timestamp,
             effectivePriorityAt: timestamp,
@@ -5446,6 +5436,7 @@ describe('app api schemas', () => {
             turnId: 'turn_denied',
             requestedAgentId: 'agent_codex_host',
             profileRef: 'default',
+            modelId: null,
             priorityClass: 'interactive',
             enqueuedAt: timestamp,
             effectivePriorityAt: timestamp,

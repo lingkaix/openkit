@@ -28,6 +28,7 @@ import {
 import {
   AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
+  WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
@@ -52,6 +53,7 @@ import {
   deriveArtifactReviewWorkerRequestId,
   serializeArtifactReviewFollowUpRequest,
 } from '../artifact-reviews.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
   createWorkerContextPackageFiles,
@@ -102,6 +104,7 @@ import {
   listUnresolvedUserInputRequestItemIds,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
+  WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 import type { WorkspacePortableFileState } from './workspace-portable-file-state.js';
 
@@ -172,7 +175,7 @@ const ExportedResolvedAgentSetupSchema = z
     turnId: z.string().min(1).nullable(),
     requestId: z.string().min(1).nullable(),
     agentId: z.string().min(1),
-    providerId: z.string().min(1).nullable(),
+    logicalModelId: z.string().min(1),
     runtimeKind: z.string().min(1),
     runtimeAdapter: z.string().min(1),
     setupRequiredFeatures: z.array(z.string().min(1)),
@@ -1122,22 +1125,21 @@ function remintPortableArtifact(
  */
 function readCanonicalImportState(context: ImportRemintContext) {
   const { report } = context;
-  const exportedWorkspace = WorkspaceRecordSchema.parse(
-    readImportJson(context.files, 'records/workspace.json')
+  if (context.files.has('records/workspace.json')) {
+    throw new Error('Unsupported workspace export file: records/workspace.json.');
+  }
+  const exportedWorkspaceRecord = WorkspaceSystemRecordSchema.parse(
+    readImportJson(context.files, 'records/workspace-record.json')
   );
-  if (exportedWorkspace.id !== report.manifest.workspaceId) {
+  const exportedWorkspaceConfig = WorkspaceConfigSchema.parse(
+    parseJsoncObject(
+      requiredExportFile(context.files, 'workspace-files/config/workspace.jsonc'),
+      'workspace-files/config/workspace.jsonc'
+    )
+  );
+  if (exportedWorkspaceRecord.id !== report.manifest.workspaceId) {
     throw new Error('Workspace record id does not match the export manifest.');
   }
-  const workspace = WorkspaceRecordSchema.parse({
-    ...exportedWorkspace,
-    id: context.targetWorkspaceId,
-    importedFrom: {
-      sourceDeploymentId: report.manifest.sourceDeploymentId,
-      sourceWorkspaceId: report.exportedWorkspaceId,
-      exportCreatedAt: report.manifest.exportCreatedAt,
-      manifestDigest: context.manifestDigest,
-    },
-  });
   const exportedThreads = readImportJsonl(context.files, 'records/threads.jsonl').map((record) =>
     ThreadSchema.parse(record)
   );
@@ -1164,6 +1166,25 @@ function readCanonicalImportState(context: ImportRemintContext) {
     ])
   );
   const exportedArtifacts = readExportedArtifacts(context.files, report.manifest);
+  const exportedWorkspace = WorkspaceRecordSchema.parse({
+    ...exportedWorkspaceRecord,
+    name: exportedWorkspaceConfig.workspace.name,
+    counts: {
+      threadCount: exportedThreads.length,
+      artifactCount: exportedArtifacts.length,
+      knowledgeEntryCount: exportedKnowledge.length,
+    },
+  });
+  const workspace = WorkspaceRecordSchema.parse({
+    ...exportedWorkspace,
+    id: context.targetWorkspaceId,
+    importedFrom: {
+      sourceDeploymentId: report.manifest.sourceDeploymentId,
+      sourceWorkspaceId: report.exportedWorkspaceId,
+      exportCreatedAt: report.manifest.exportCreatedAt,
+      manifestDigest: context.manifestDigest,
+    },
+  });
   const artifactIds = new Map(
     exportedArtifacts.map((artifact, index) => [
       artifact.id,
@@ -2278,7 +2299,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
       turnId: parsed.turnId ? requiredMapValue(turnIds, parsed.turnId, 'turn') : null,
       requestId: parsed.requestId,
       agentId: parsed.agentId,
-      providerId: parsed.providerId,
+      logicalModelId: parsed.logicalModelId,
       runtimeKind: parsed.runtimeKind,
       runtimeAdapter: parsed.runtimeAdapter,
       requiredFeatures: parsed.setupRequiredFeatures,

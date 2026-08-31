@@ -3,6 +3,10 @@
   "requiredFeatures": [],
   "id": "agent_pi",
   "displayName": "Pi Agent",
+  "readiness": {
+    "status": "disabled",
+    "message": "Pi 0.80.7 requires a direct Provider route and is disabled until its adapter supports the Gateway relay."
+  },
   "runtime": {
     "kind": "pi",
     "adapter": "pi",
@@ -29,9 +33,9 @@
       { "id": "pi", "path": "/usr/local/bin/pi" }
     ]
   },
-  "provider": {
-    "ref": "anthropic",
-    "model": "claude-sonnet-4-5"
+  "models": {
+    "preferredLogicalModelId": "claude",
+    "allowedLogicalModelIds": "all"
   },
   "profiles": [
     {
@@ -114,25 +118,9 @@
           "/sandbox/.venv/bin/pip",
           "/sandbox/.venv/bin/pip3"
         ]
-      },
-      {
-        "id": "anthropic-api",
-        "host": "api.anthropic.com",
-        "port": 443,
-        "protocol": "rest",
-        "access": "read-write",
-        "purpose": "Use the pinned Anthropic direct provider.",
-        "binaries": ["/usr/local/bin/node"]
       }
     ],
-    "credentialDeclarations": [
-      {
-        "id": "anthropic_api_key",
-        "vaultGrantId": "grant_anthropic_api_key",
-        "visibility": "runtime-env",
-        "targetEnvVarName": "ANTHROPIC_API_KEY"
-      }
-    ],
+    "credentialDeclarations": [],
     "backend": {
       "allowedKinds": ["openshell"],
       "preferred": "openshell",

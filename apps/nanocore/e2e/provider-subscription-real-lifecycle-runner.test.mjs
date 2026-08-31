@@ -118,7 +118,7 @@ const HAPPY_SCRIPT = () => [
     { accounts: [accountDescriptor('logged_in')] },
   ],
   [`/accounts/${SLOT}/status`, 200, accountDescriptor('logged_in')],
-  ['/api/app/diagnostics', 200, { defaults: { gateway: { model: MODEL, providerId: PROFILE } } }],
+  ['/api/app/diagnostics', 200, { gateway: { defaultModelId: MODEL } }],
   ['/v1/responses', 200, SSE_OK],
   [
     `/accounts/${SLOT}/quota`,
@@ -146,7 +146,6 @@ const PASSING_OBSERVATIONS = Object.freeze({
   accountListed: true,
   diagnostics: {
     model: 'openai-codex/gpt-5.6-sol',
-    providerId: 'real-lifecycle-openai-codex',
     status: 200,
   },
   finalStatus: { status: 200, value: 'logged_out' },
@@ -1607,7 +1606,7 @@ test('parses the documented App API response shapes into passing observations', 
   assert.equal(remaining(), 0);
   assert.equal(observations.providerListed, true);
   assert.equal(observations.accountListed, true);
-  assert.deepEqual(observations.diagnostics, { model: MODEL, providerId: PROFILE, status: 200 });
+  assert.deepEqual(observations.diagnostics, { model: MODEL, status: 200 });
   assert.deepEqual(observations.inference, {
     completed: true,
     errorEvents: 0,
@@ -1660,10 +1659,7 @@ test('rejects each individually falsified lifecycle assertion', () => {
     [{ providerListed: false }, /provider inventory/],
     [{ accountListed: false }, /account inventory/],
     [{ initialStatus: { status: 200, value: 'logged_out' } }, /logged_in/],
-    [
-      { diagnostics: { model: 'other', providerId: 'real-lifecycle-openai-codex', status: 200 } },
-      /Gateway defaults/,
-    ],
+    [{ diagnostics: { model: 'other', status: 200 } }, /logical-model default/],
     [
       { inference: { completed: true, errorEvents: 0, outputNonEmpty: true, status: 500 } },
       /HTTP 200/,

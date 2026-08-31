@@ -37,6 +37,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = {
 const CANONICAL_SLOT_ROOTS = {
   ...CANONICAL_WORKSPACE_SLOT_ROOTS,
   'package-config': '/openkit/config',
+  'runtime-credential': '/',
 };
 
 /** Runs the exported CLI seam with byte input or an exact injected async stream. */
@@ -88,7 +89,9 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
   assert.deepEqual(installedSlotRoots, CANONICAL_SLOT_ROOTS);
   assert.deepEqual(
     Object.fromEntries(
-      Object.entries(installedSlotRoots).filter(([slot]) => slot !== 'package-config')
+      Object.entries(installedSlotRoots).filter(
+        ([slot]) => slot !== 'package-config' && slot !== 'runtime-credential'
+      )
     ),
     CANONICAL_WORKSPACE_SLOT_ROOTS
   );
@@ -164,6 +167,32 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     assert.equal(importedStat.isFile(), true);
     assert.equal(importedStat.isSymbolicLink(), false);
     assert.equal(importedStat.mode & 0o777, 0o600);
+
+    const credentialPath = 'sandbox/.config/example/credentials.json';
+    const credentialTarget = join(slotRoots['runtime-credential'], credentialPath);
+    for (const credentialBytes of [Buffer.from('first-secret'), Buffer.from('rotated-secret')]) {
+      const credentialDigest = `sha256:${createHash('sha256').update(credentialBytes).digest('hex')}`;
+      const credentialImport = await invokeFileEffect(
+        runFileEffect,
+        slotRoots,
+        [
+          'reference.import',
+          '--slot',
+          'runtime-credential',
+          '--path',
+          credentialPath,
+          '--length',
+          String(credentialBytes.length),
+          '--sha256',
+          credentialDigest,
+        ],
+        credentialBytes
+      );
+      assert.equal(credentialImport.exitCode, 0);
+      assert.equal(credentialImport.stderr.length, 0);
+      assert.deepEqual(await readFile(credentialTarget), credentialBytes);
+      assert.equal((await lstat(credentialTarget)).mode & 0o777, 0o600);
+    }
 
     const declaredLengthPath = 'turn/declared-length.bin';
     let declaredLengthReads = 0;

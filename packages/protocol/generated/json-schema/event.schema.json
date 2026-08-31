@@ -98,46 +98,6 @@
                     "archived"
                   ]
                 },
-                "defaults": {
-                  "type": "object",
-                  "properties": {
-                    "defaultModelId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "defaultAgentId": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "defaultSkillIds": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    }
-                  },
-                  "required": [
-                    "defaultModelId",
-                    "defaultAgentId",
-                    "defaultSkillIds"
-                  ],
-                  "additionalProperties": false
-                },
                 "counts": {
                   "type": "object",
                   "properties": {

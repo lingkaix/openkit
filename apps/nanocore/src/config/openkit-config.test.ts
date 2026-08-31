@@ -21,10 +21,10 @@ describe('loadOpenKitConfig', () => {
     const config = loadOpenKitConfig(dataRoot);
 
     expect(config).toEqual({});
-    expect(config.defaults?.coreProviderId).toBeUndefined();
+    expect(config.defaults?.defaultAgentId).toBeUndefined();
   });
 
-  it('treats a config without defaults as having no default provider', () => {
+  it('treats a config without defaults as having no default Agent', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(join(dataRoot, 'config', 'server.jsonc'), '{ "mode": "local" }');
@@ -32,67 +32,49 @@ describe('loadOpenKitConfig', () => {
     const config = loadOpenKitConfig(dataRoot);
 
     expect(config).toEqual({ mode: 'local' });
-    expect(config.defaults?.coreProviderId).toBeUndefined();
+    expect(config.defaults?.defaultAgentId).toBeUndefined();
   });
 
-  it('treats defaults without coreProviderId as having no Core default provider', () => {
+  it('loads defaults.defaultAgentId when it is a valid string', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify({
         defaults: {
-          gatewayProviderId: 'gateway-openrouter',
+          defaultAgentId: 'agent_codex',
         },
       })
     );
 
     const config = loadOpenKitConfig(dataRoot);
 
-    expect(config.defaults).toEqual({ gatewayProviderId: 'gateway-openrouter' });
-    expect(config.defaults?.coreProviderId).toBeUndefined();
-  });
-
-  it('loads defaults.coreProviderId when it is a valid string', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
-    mkdirSync(join(dataRoot, 'config'), { recursive: true });
-    writeFileSync(
-      join(dataRoot, 'config', 'server.jsonc'),
-      JSON.stringify({
-        defaults: {
-          coreProviderId: 'openai',
-        },
-      })
-    );
-
-    const config = loadOpenKitConfig(dataRoot);
-
-    if (!config.defaults?.coreProviderId) {
-      throw new Error('expected coreProviderId to be loaded');
+    if (!config.defaults?.defaultAgentId) {
+      throw new Error('expected defaultAgentId to be loaded');
     }
 
-    const providerId: string = config.defaults.coreProviderId;
-    expect(providerId).toBe('openai');
+    const agentId: string = config.defaults.defaultAgentId;
+    expect(agentId).toBe('agent_codex');
   });
 
-  it('rejects non-string defaults.coreProviderId values with a boot error', () => {
+  it('rejects non-string defaults.defaultAgentId values with a boot error', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify({
         defaults: {
-          coreProviderId: 123,
+          defaultAgentId: 123,
         },
       })
     );
 
     try {
       loadOpenKitConfig(dataRoot);
-      throw new Error('expected coreProviderId validation to fail');
+      throw new Error('expected defaultAgentId validation to fail');
     } catch (error) {
       expect(error).toBeInstanceOf(BootConfigError);
-      expect((error as Error).message).toMatch(/defaults\.coreProviderId/);
+      expect((error as Error).message).toMatch(/defaults\.defaultAgentId/);
       expect((error as Error).message).toMatch(/string/);
     }
   });
@@ -106,7 +88,7 @@ describe('loadOpenKitConfig', () => {
         // Explicit mode from file-backed config.
         "mode": "server",
         "defaults": {
-          "coreModel": "model_codex",
+          "defaultAgentId": "agent_codex",
         },
       }`
     );
@@ -114,7 +96,7 @@ describe('loadOpenKitConfig', () => {
     expect(loadOpenKitConfig(dataRoot)).toEqual({
       mode: 'server',
       defaults: {
-        coreModel: 'model_codex',
+        defaultAgentId: 'agent_codex',
       },
     });
   });
@@ -142,39 +124,8 @@ describe('loadOpenKitConfig', () => {
             "enabled": false
           }
         },
-        "providers": [
-          {
-            "id": "core-openrouter",
-            "vendor": "openrouter",
-            "kind": "gateway",
-            "displayName": "OpenRouter for Core",
-            "baseUrl": "https://openrouter.ai/api/v1",
-            "models": ["openai/gpt-5.1"],
-            "defaultModel": "openai/gpt-5.1",
-            "secretRef": "env:CORE_OPENROUTER_API_KEY"
-          },
-          {
-            "id": "agent-openrouter",
-            "vendor": "openrouter",
-            "kind": "gateway",
-            "displayName": "OpenRouter for Agents",
-            "baseUrl": "https://openrouter.ai/api/v1",
-            "models": ["openai/gpt-5.1"],
-            "defaultModel": "openai/gpt-5.1",
-            "secretRef": "env:AGENT_OPENROUTER_API_KEY"
-          }
-        ],
         "defaults": {
-          "coreProviderId": "core-openrouter",
-          "coreModel": "openai/gpt-5.1",
-          "gatewayProviderId": "agent-openrouter",
-          "gatewayModel": "openai/gpt-5.1"
-        },
-        "gateway": {
-          "openaiCompatible": {
-            "enabled": true,
-            "allowedProviderIds": ["agent-openrouter"]
-          }
+          "defaultAgentId": "agent_codex"
         }
       }`
     );
@@ -187,16 +138,9 @@ describe('loadOpenKitConfig', () => {
       schemaVersion: 1,
       mode: 'server',
       defaults: {
-        coreProviderId: 'core-openrouter',
-        gatewayProviderId: 'agent-openrouter',
+        defaultAgentId: 'agent_codex',
       },
-      providers: [
-        expect.objectContaining({ id: 'core-openrouter', vendor: 'openrouter' }),
-        expect.objectContaining({ id: 'agent-openrouter', vendor: 'openrouter' }),
-      ],
     });
-    expect(config.providers?.[0]).toMatchObject({ secretRef: 'env:CORE_OPENROUTER_API_KEY' });
-    expect(config.providers?.[1]).toMatchObject({ secretRef: 'env:AGENT_OPENROUTER_API_KEY' });
   });
 
   it('ignores removed OpenKit-specific config filenames', () => {
@@ -208,7 +152,7 @@ describe('loadOpenKitConfig', () => {
     );
     writeFileSync(
       join(dataRoot, 'config', `openkit.${'config'}.jsonc`),
-      JSON.stringify({ defaults: { coreProviderId: 'removed-openrouter' } })
+      JSON.stringify({ defaults: { defaultAgentId: 'removed-agent' } })
     );
 
     const result = loadOpenKitConfigWithDiagnostics(dataRoot);
@@ -221,21 +165,21 @@ describe('loadOpenKitConfig', () => {
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
       join(dataRoot, 'config', 'openkit.server.jsonc'),
-      JSON.stringify({ defaults: { coreProviderId: 'core-openrouter' } })
+      JSON.stringify({ defaults: { defaultAgentId: 'legacy-agent' } })
     );
     writeFileSync(
       join(dataRoot, 'config', `openkit.${'config'}.jsonc`),
-      JSON.stringify({ defaults: { coreProviderId: 'removed-openrouter' } })
+      JSON.stringify({ defaults: { defaultAgentId: 'removed-agent' } })
     );
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
-      JSON.stringify({ defaults: { coreProviderId: 'current-openrouter' } })
+      JSON.stringify({ defaults: { defaultAgentId: 'current-agent' } })
     );
 
     const result = loadOpenKitConfigWithDiagnostics(dataRoot);
 
     expect(result.source).toBe('config');
-    expect(result.config.defaults?.coreProviderId).toBe('current-openrouter');
+    expect(result.config.defaults?.defaultAgentId).toBe('current-agent');
     expect(result.diagnostics).toEqual([]);
   });
 

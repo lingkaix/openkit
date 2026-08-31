@@ -45,6 +45,7 @@ export interface ProviderProfileLoadResult {
 export function loadProviderProfiles(dataRoot: string): ProviderProfileLoadResult {
   const providersRoot = join(dataRoot, 'config', 'providers');
   const result: ProviderProfileLoadResult = { profiles: [], diagnostics: [] };
+  const duplicateIds = new Set<string>();
 
   if (!existsSync(providersRoot)) {
     return result;
@@ -71,6 +72,23 @@ export function loadProviderProfiles(dataRoot: string): ProviderProfileLoadResul
     }
 
     const profile = applyRequiredExtensionDiagnostics(profileResult.data, path, result.diagnostics);
+
+    const existingIndex = result.profiles.findIndex((candidate) => candidate.id === profile.id);
+    if (existingIndex >= 0) {
+      result.profiles.splice(existingIndex, 1);
+      duplicateIds.add(profile.id);
+      result.diagnostics.push({
+        code: 'provider.duplicate_id',
+        message: `Duplicate provider profile id: ${profile.id}.`,
+        path,
+        profileId: profile.id,
+        severity: 'error',
+      });
+      continue;
+    }
+    if (duplicateIds.has(profile.id)) {
+      continue;
+    }
 
     result.profiles.push(profile);
   }

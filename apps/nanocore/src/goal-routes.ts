@@ -158,6 +158,132 @@ type SteeringSendCommandInput = WithoutRequestId<
   z.infer<typeof SubmitThreadGoalSteeringRequestSchema>
 >;
 
+/** Submits Goal steering through the existing durable owner for route and Composer callers. */
+export async function submitGoalSteeringCommand(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly actorId: string;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly commandInput: SteeringSendCommandInput;
+  readonly expectedGoalId?: string;
+}): Promise<SteeringSendResponse> {
+  const ids = derivePendingUserTurnIds({
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: input.requestId,
+  });
+  const scope = { workspaceId: input.workspaceId, threadId: input.threadId };
+  try {
+    return await runIdempotentCommand({
+      store: input.store,
+      workspaceDb: input.workspaceDb,
+      inflightCommands: input.inflightCommands,
+      command: 'goal.steering.send',
+      requestId: input.requestId,
+      scope,
+      input: input.commandInput,
+      responseKind: 'pending_user_turn',
+      responseId: (result) => result.pendingTurnId,
+      replay: (record) =>
+        projectSteeringSendResponse(
+          input.coreDb,
+          input.workspaceDb,
+          input.store,
+          record,
+          input.workspaceId,
+          input.threadId
+        ),
+      workspaceTransaction: true,
+      execute: () => {
+        const existing = getPendingUserTurnRecord(
+          input.workspaceDb,
+          input.workspaceId,
+          input.threadId
+        );
+        if (existing) {
+          if (existing.requestId !== input.requestId) {
+            throw new GoalSteeringAuthorityError(
+              'conflict',
+              'This Thread already has a pending steering input.'
+            );
+          }
+          throw steeringRecoveryRequired(
+            'The steering owner exists without its completed send receipt.'
+          );
+        }
+        if (input.store.listAllItems().some((item) => item.id === ids.contentItemId)) {
+          throw steeringRecoveryRequired(
+            'The steering Item exists without its pending owner and receipt.'
+          );
+        }
+        const resolved = resolveSteeringSendInput(input.workspaceDb, input.commandInput);
+        const target = requireSteeringSendTarget(
+          input.workspaceDb,
+          input.store,
+          input.workspaceId,
+          input.threadId
+        );
+        if (input.expectedGoalId && target.goal.goalId !== input.expectedGoalId) {
+          throw new TurnStartValidationError(
+            'stale',
+            'The selected Goal Orchestrator is no longer active.',
+            409
+          );
+        }
+        const acceptedAt = new Date().toISOString();
+        input.store.createItem({
+          id: ids.contentItemId,
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          turnId: target.turn.id,
+          type: 'user-message',
+          status: 'completed',
+          actor: { kind: 'user', id: input.actorId },
+          text: resolved.text,
+          parentItemId: null,
+          causationId: input.requestId,
+          createdAt: acceptedAt,
+          completedAt: acceptedAt,
+        });
+        const pending = createPendingUserTurnRecord(input.workspaceDb, {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          goalId: target.goal.goalId,
+          activeTurnId: target.turn.id,
+          requestId: input.requestId,
+          input: resolved.pendingInput,
+          receivedAt: acceptedAt,
+        });
+        return SubmitThreadGoalSteeringResponseSchema.parse({
+          state: 'queued',
+          pendingTurnId: pending.pendingTurnId,
+          requestId: input.requestId,
+          contentItemId: pending.contentItemId,
+          goalId: pending.goalId,
+          activeTurnId: pending.activeTurnId,
+        });
+      },
+    });
+  } catch (error) {
+    const receipt = input.store.getCommandRequest(
+      'goal.steering.send',
+      input.requestId,
+      scope,
+      input.workspaceDb
+    );
+    if (!receipt && input.store.listAllItems().some((item) => item.id === ids.contentItemId)) {
+      throw steeringRecoveryRequired(
+        'The steering Item exists without its pending owner and receipt.'
+      );
+    }
+    throw error;
+  }
+}
+
 /** Public result returned by either terminal steering command. */
 type SteeringTerminalResponse =
   | z.infer<typeof ConvertGoalSteeringToFollowUpResponseSchema>
@@ -177,7 +303,10 @@ function projectSteeringSendResponse(
   workspaceId: string,
   threadId: string
 ): SteeringSendResponse {
-  if (record.response.kind !== 'pending_user_turn' || record.response.chatMetadata !== undefined) {
+  if (
+    record.response.kind !== 'pending_user_turn' ||
+    record.response.conversationMetadata !== undefined
+  ) {
     throw steeringRecoveryRequired('The Goal steering send receipt is contradictory.');
   }
   const ids = derivePendingUserTurnIds({ workspaceId, threadId, requestId: record.requestId });
@@ -598,7 +727,7 @@ function requireSteeringTerminalOutcome(
     !outcome ||
     record.response.kind !== 'steering_terminal_outcome' ||
     record.response.id !== ids.outcomeId ||
-    record.response.chatMetadata !== undefined ||
+    record.response.conversationMetadata !== undefined ||
     outcome.workspaceId !== workspaceId ||
     outcome.threadId !== threadId ||
     outcome.pendingTurnId !== pendingTurnId ||
@@ -2029,7 +2158,7 @@ function deriveThreadGoalTitle(title: string | undefined, objective: string): st
 }
 
 /** Commands allowed to own the Goal tuple created through the shared start path. */
-type GoalStartOwningCommand = 'goal.start' | 'chat.start' | 'task.start';
+type GoalStartOwningCommand = 'goal.start' | 'conversation.submit' | 'task.start';
 
 /** Durable result returned by one complete Goal start owner tuple. */
 type GoalStartResult = {
@@ -2606,103 +2735,22 @@ export function registerGoalRoutes({
       }
 
       const { requestId, ...input } = parsed.data;
-      const ids = derivePendingUserTurnIds({ workspaceId, threadId, requestId });
-      const scope = { workspaceId, threadId };
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
-        try {
-          return c.json(
-            await runIdempotentCommand({
-              store,
-              workspaceDb,
-              inflightCommands,
-              command: 'goal.steering.send',
-              requestId,
-              scope,
-              input,
-              responseKind: 'pending_user_turn',
-              responseId: (result) => result.pendingTurnId,
-              replay: (record) =>
-                projectSteeringSendResponse(
-                  coreDb,
-                  workspaceDb,
-                  store,
-                  record,
-                  workspaceId,
-                  threadId
-                ),
-              workspaceTransaction: true,
-              execute: () => {
-                const existing = getPendingUserTurnRecord(workspaceDb, workspaceId, threadId);
-                if (existing) {
-                  if (existing.requestId !== requestId) {
-                    throw new GoalSteeringAuthorityError(
-                      'conflict',
-                      'This Thread already has a pending steering input.'
-                    );
-                  }
-                  throw steeringRecoveryRequired(
-                    'The steering owner exists without its completed send receipt.'
-                  );
-                }
-                if (store.listAllItems().some((item) => item.id === ids.contentItemId)) {
-                  throw steeringRecoveryRequired(
-                    'The steering Item exists without its pending owner and receipt.'
-                  );
-                }
-
-                const resolved = resolveSteeringSendInput(workspaceDb, input);
-                const target = requireSteeringSendTarget(workspaceDb, store, workspaceId, threadId);
-                const acceptedAt = new Date().toISOString();
-                store.createItem({
-                  id: ids.contentItemId,
-                  workspaceId,
-                  threadId,
-                  turnId: target.turn.id,
-                  type: 'user-message',
-                  status: 'completed',
-                  actor: { kind: 'user', id: c.get('actor').userId },
-                  text: resolved.text,
-                  parentItemId: null,
-                  causationId: requestId,
-                  createdAt: acceptedAt,
-                  completedAt: acceptedAt,
-                });
-                const pending = createPendingUserTurnRecord(workspaceDb, {
-                  workspaceId,
-                  threadId,
-                  goalId: target.goal.goalId,
-                  activeTurnId: target.turn.id,
-                  requestId,
-                  input: resolved.pendingInput,
-                  receivedAt: acceptedAt,
-                });
-                return SubmitThreadGoalSteeringResponseSchema.parse({
-                  state: 'queued',
-                  pendingTurnId: pending.pendingTurnId,
-                  requestId,
-                  contentItemId: pending.contentItemId,
-                  goalId: pending.goalId,
-                  activeTurnId: pending.activeTurnId,
-                });
-              },
-            }),
-            202
-          );
-        } catch (error) {
-          const receipt = store.getCommandRequest(
-            'goal.steering.send',
+        return c.json(
+          await submitGoalSteeringCommand({
+            coreDb,
+            store,
+            workspaceDb,
+            inflightCommands,
+            actorId: c.get('actor').userId,
+            workspaceId,
+            threadId,
             requestId,
-            scope,
-            workspaceDb
-          );
-          if (!receipt && store.listAllItems().some((item) => item.id === ids.contentItemId)) {
-            throw steeringRecoveryRequired(
-              'The steering Item exists without its pending owner and receipt.'
-            );
-          }
-          throw error;
-        }
+            commandInput: input,
+          }),
+          202
+        );
       } finally {
         workspaceDb.sqlite.close();
       }

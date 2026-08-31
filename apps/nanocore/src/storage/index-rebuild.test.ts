@@ -653,7 +653,7 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
 
     expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'missing' })).toThrow(
-      'Workspace projection is missing: workspaces/missing/workspace.json'
+      'Workspace projection is missing: workspaces/missing/workspace-record.json'
     );
   });
 

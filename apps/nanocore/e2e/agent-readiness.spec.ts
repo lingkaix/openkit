@@ -22,10 +22,13 @@ describe('nanocore e2e agent readiness', () => {
     let diagnostics = await readDiagnostics(harness.baseUrl);
 
     expect(diagnostics.agents).toContainEqual(
-      expect.objectContaining({ id: 'agent_codex_host', readiness: 'blocked' })
+      expect.objectContaining({ id: 'agent_codex_host', readiness: 'ready' })
     );
     expect(diagnostics.agents).toContainEqual(
-      expect.objectContaining({ id: 'agent_opencode_server', readiness: 'blocked' })
+      expect.objectContaining({ id: 'agent_opencode_server', readiness: 'ready' })
+    );
+    expect(diagnostics.agents).toContainEqual(
+      expect.objectContaining({ id: 'agent_pi', readiness: 'disabled' })
     );
 
     const dataRoot = harness.dataRoot;
@@ -44,7 +47,7 @@ describe('nanocore e2e agent readiness', () => {
     diagnostics = await readDiagnostics(harness.baseUrl);
 
     expect(diagnostics.agents).toContainEqual(
-      expect.objectContaining({ id: 'agent_opencode_server', readiness: 'blocked' })
+      expect.objectContaining({ id: 'agent_opencode_server', readiness: 'ready' })
     );
   });
 });

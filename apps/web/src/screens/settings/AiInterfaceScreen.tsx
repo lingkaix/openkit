@@ -1,7 +1,6 @@
 import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { applyEdits, modify, parse } from 'jsonc-parser';
 import { useCallback, useEffect, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
@@ -35,14 +34,7 @@ type ProviderRegistryEntry = Awaited<
 type ProviderDiagnostic = Awaited<
   ReturnType<CoreClient['app']['getDiagnostics']>
 >['providers']['diagnostics'][number];
-type RuntimeConfigValidation = Awaited<ReturnType<CoreClient['runtimeConfig']['validate']>>;
-type RuntimeConfigReload = Awaited<ReturnType<CoreClient['runtimeConfig']['reload']>>;
-type ServerDefaults = {
-  coreProviderId: string | null;
-  coreModel: string | null;
-  gatewayProviderId: string | null;
-  gatewayModel: string | null;
-};
+type GatewayDiagnostics = Awaited<ReturnType<CoreClient['app']['getDiagnostics']>>['gateway'];
 
 const OAUTH_VENDORS: Record<SubscriptionProviderId, string> = {
   'openai-codex': 'openai_codex',
@@ -57,30 +49,6 @@ function isAdminDenied(error: unknown): boolean {
   return error instanceof ApiCallError && (error.status === 401 || error.status === 403);
 }
 
-/** Writes one JSONC path while preserving unrelated comments and formatting. */
-function setJsoncPath(source: string, path: string[], value: unknown): string {
-  return applyEdits(
-    source,
-    modify(source, path, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } })
-  );
-}
-
-function readOptionalString(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-/** Reads authored core and gateway defaults from the current server.jsonc text. */
-function readServerDefaults(content: string): ServerDefaults {
-  const parsed = parse(content) as { defaults?: Record<string, unknown> } | undefined;
-  const defaults = parsed && typeof parsed === 'object' ? parsed.defaults : undefined;
-  return {
-    coreProviderId: readOptionalString(defaults?.coreProviderId),
-    coreModel: readOptionalString(defaults?.coreModel),
-    gatewayProviderId: readOptionalString(defaults?.gatewayProviderId),
-    gatewayModel: readOptionalString(defaults?.gatewayModel),
-  };
-}
-
 /**
  * AI interface settings — published deployment-admin provider, account, and default workflow.
  *
@@ -93,7 +61,6 @@ export function AiInterfaceScreen() {
   const { failed: disconnected } = useConnection();
   const accountsKey = [...settingsKeys.aiInterface, 'accounts'] as const;
   const diagnosticsKey = [...settingsKeys.aiInterface, 'diagnostics'] as const;
-  const serverKey = [...settingsKeys.aiInterface, 'server'] as const;
 
   const accounts = useQuery({
     queryKey: accountsKey,
@@ -131,21 +98,12 @@ export function AiInterfaceScreen() {
     retry: false,
   });
 
-  const serverFile = useQuery({
-    queryKey: serverKey,
-    queryFn: () => client.runtimeConfig.getFile('server.jsonc'),
-    enabled: accounts.isSuccess,
-    gcTime: 0,
-    retry: false,
-  });
-
   function retry() {
     queryClient.removeQueries({
       queryKey: [...settingsKeys.aiInterface, 'status'],
     });
     void accounts.refetch();
     void diagnostics.refetch();
-    void serverFile.refetch();
   }
 
   const adminDenied = isAdminDenied(accounts.error);
@@ -227,17 +185,7 @@ export function AiInterfaceScreen() {
               profiles={diagnostics.data?.providers.registry ?? []}
               diagnostics={diagnostics.data?.providers.diagnostics ?? []}
               accounts={accounts.data ?? []}
-              defaultReady={Boolean(diagnostics.data?.defaultProviders.core.configured)}
-              configuredCoreProviderId={
-                diagnostics.data?.defaultProviders.core.configured
-                  ? diagnostics.data.defaultProviders.core.providerId
-                  : null
-              }
-              serverRevision={serverFile.data?.file.revision ?? null}
-              serverContent={serverFile.data?.content ?? ''}
-              serverLoading={serverFile.isLoading}
-              serverError={serverFile.isError}
-              onReloadServer={() => void serverFile.refetch()}
+              gateway={diagnostics.data?.gateway ?? null}
               onProfilesChanged={onProfilesChanged}
             />
           )}
@@ -661,20 +609,14 @@ function QuotaStatus({ account }: { account: ConnectedAppRow }) {
   );
 }
 
-/** Configured provider profiles, core and gateway defaults, profile creation, and API-key controls. */
+/** Configured Provider profiles, logical Gateway catalog, profile creation, and API-key controls. */
 function ProviderProfiles({
   client,
   disconnected,
   profiles,
   diagnostics,
   accounts,
-  defaultReady,
-  configuredCoreProviderId,
-  serverRevision,
-  serverContent,
-  serverLoading,
-  serverError,
-  onReloadServer,
+  gateway,
   onProfilesChanged,
 }: {
   client: CoreClient;
@@ -682,53 +624,16 @@ function ProviderProfiles({
   profiles: ProviderRegistryEntry[];
   diagnostics: ProviderDiagnostic[];
   accounts: ConnectedAppProviderRow[];
-  defaultReady: boolean;
-  configuredCoreProviderId: string | null;
-  serverRevision: string | null;
-  serverContent: string;
-  serverLoading: boolean;
-  serverError: boolean;
-  onReloadServer: () => void;
+  gateway: GatewayDiagnostics | null;
   onProfilesChanged: () => void;
 }) {
-  const [coreProviderId, setCoreProviderId] = useState<string | null>(
-    () => readServerDefaults(serverContent).coreProviderId
-  );
-  const [coreModel, setCoreModel] = useState<string | null>(
-    () => readServerDefaults(serverContent).coreModel
-  );
-  const [gatewayProviderId, setGatewayProviderId] = useState<string | null>(
-    () => readServerDefaults(serverContent).gatewayProviderId
-  );
-  const [gatewayModel, setGatewayModel] = useState<string | null>(
-    () => readServerDefaults(serverContent).gatewayModel
-  );
   const [apiKey, setApiKey] = useState('');
-  const [apiKeyProviderId, setApiKeyProviderId] = useState<string | null>(
-    () => readServerDefaults(serverContent).coreProviderId
-  );
-  const coreProfile = profiles.find((profile) => profile.id === coreProviderId) ?? null;
-  const gatewayProfile = profiles.find((profile) => profile.id === gatewayProviderId) ?? null;
+  const [apiKeyProviderId, setApiKeyProviderId] = useState<string | null>(null);
   const apiKeyProfiles = profiles.filter(
     (profile) =>
       profile.kind === 'direct' || profile.kind === 'gateway' || profile.kind === 'custom'
   );
   const apiKeyProfile = apiKeyProfiles.find((profile) => profile.id === apiKeyProviderId) ?? null;
-  const persistedDefaults = readServerDefaults(serverContent);
-  const defaultsDirty =
-    coreProviderId !== persistedDefaults.coreProviderId ||
-    coreModel !== persistedDefaults.coreModel ||
-    gatewayProviderId !== persistedDefaults.gatewayProviderId ||
-    gatewayModel !== persistedDefaults.gatewayModel;
-
-  useEffect(() => {
-    const defaults = readServerDefaults(serverContent);
-    setCoreProviderId(defaults.coreProviderId);
-    setCoreModel(defaults.coreModel);
-    setGatewayProviderId(defaults.gatewayProviderId);
-    setGatewayModel(defaults.gatewayModel);
-  }, [serverContent]);
-
   useEffect(() => {
     setApiKeyProviderId((current) => {
       const eligible = profiles.filter(
@@ -738,51 +643,9 @@ function ProviderProfiles({
       if (current && eligible.some((profile) => profile.id === current)) {
         return current;
       }
-      const configured = readServerDefaults(serverContent).coreProviderId;
-      return eligible.find((profile) => profile.id === configured)?.id ?? eligible[0]?.id ?? null;
+      return eligible[0]?.id ?? null;
     });
-  }, [profiles, serverContent]);
-
-  const saveDefaults = useMutation({
-    mutationFn: async () => {
-      const content = setJsoncPath(
-        setJsoncPath(
-          setJsoncPath(
-            setJsoncPath(
-              serverContent,
-              ['defaults', 'coreProviderId'],
-              coreProviderId ?? undefined
-            ),
-            ['defaults', 'coreModel'],
-            coreModel ?? undefined
-          ),
-          ['defaults', 'gatewayProviderId'],
-          gatewayProviderId ?? undefined
-        ),
-        ['defaults', 'gatewayModel'],
-        gatewayModel ?? undefined
-      );
-      const checked = await client.runtimeConfig.validate({
-        files: [{ id: 'server.jsonc', content }],
-        mode: 'safe',
-      });
-      if (!checked.valid) return { checked, written: false };
-      await client.runtimeConfig.updateFile({
-        id: 'server.jsonc',
-        kind: 'server',
-        content,
-        expectedRevision: serverRevision,
-      });
-      return { checked, written: true };
-    },
-    onSuccess: (result) => {
-      if (result.written) onProfilesChanged();
-    },
-  });
-  const applyConfig = useMutation({
-    mutationFn: () => client.runtimeConfig.reload({ dryRun: false, mode: 'safe' }),
-    onSuccess: onProfilesChanged,
-  });
+  }, [profiles]);
   const saveKey = useMutation({
     mutationFn: () => {
       if (!apiKeyProfile) {
@@ -822,9 +685,6 @@ function ProviderProfiles({
                 <StatusChip tone={profile.readiness?.status === 'ready' ? 'positive' : 'notice'}>
                   {profile.readiness?.status ?? 'unknown'}
                 </StatusChip>
-                {defaultReady && profile.id === configuredCoreProviderId ? (
-                  <StatusChip tone="positive">Default ready</StatusChip>
-                ) : null}
               </div>
               <p className="text-xs text-fg-muted">{profile.id}</p>
               <ul className="flex flex-wrap gap-2 text-xs text-fg">
@@ -856,104 +716,23 @@ function ProviderProfiles({
         </Card>
       ) : null}
 
-      {serverLoading ? (
-        <Skeleton lines={3} />
-      ) : serverError ? (
-        <ErrorBanner message="Couldn't load server.jsonc." onRetry={onReloadServer} />
-      ) : (
-        <Card className="flex flex-col gap-3">
-          <Select
-            label="Core provider"
-            items={profiles.map((profile) => ({ id: profile.id, label: profile.displayName }))}
-            selectedKey={coreProviderId}
-            onSelectionChange={(key) => {
-              if (typeof key !== 'string') return;
-              setCoreProviderId(key);
-              setCoreModel(null);
-            }}
-            isDisabled={disconnected || profiles.length === 0}
-          />
-          <Select
-            label="Core model"
-            items={(coreProfile?.models ?? []).map((model) => ({ id: model, label: model }))}
-            selectedKey={coreModel}
-            onSelectionChange={(key) => {
-              if (typeof key === 'string') setCoreModel(key);
-            }}
-            isDisabled={disconnected || !coreProfile}
-          />
-          <Select
-            label="Gateway provider"
-            items={profiles.map((profile) => ({ id: profile.id, label: profile.displayName }))}
-            selectedKey={gatewayProviderId}
-            onSelectionChange={(key) => {
-              if (typeof key !== 'string') return;
-              setGatewayProviderId(key);
-              setGatewayModel(null);
-            }}
-            isDisabled={disconnected || profiles.length === 0}
-          />
-          <Select
-            label="Gateway model"
-            items={(gatewayProfile?.models ?? []).map((model) => ({ id: model, label: model }))}
-            selectedKey={gatewayModel}
-            onSelectionChange={(key) => {
-              if (typeof key === 'string') setGatewayModel(key);
-            }}
-            isDisabled={disconnected || !gatewayProfile}
-          />
-          <div className="flex justify-end">
-            <Button
-              size="sm"
-              variant="quiet"
-              isDisabled={disconnected || (gatewayProviderId === null && gatewayModel === null)}
-              onPress={() => {
-                setGatewayProviderId(null);
-                setGatewayModel(null);
-              }}
-            >
-              Clear gateway default
-            </Button>
-          </div>
-          {saveDefaults.isError ? (
-            <ErrorBanner message="Couldn't save defaults." onRetry={() => saveDefaults.mutate()} />
-          ) : null}
-          {saveDefaults.data?.checked ? (
-            <DefaultsValidationResult result={saveDefaults.data.checked} />
-          ) : null}
-          {saveDefaults.data?.written ? (
-            <p role="status" className="text-xs text-fg-muted">
-              Defaults file saved. Apply configuration to load it.
-            </p>
-          ) : null}
-          {applyConfig.isError ? (
-            <ErrorBanner
-              message="Couldn't apply configuration."
-              onRetry={() => applyConfig.mutate()}
-            />
-          ) : null}
-          {applyConfig.data ? <DefaultsReloadResult result={applyConfig.data} /> : null}
-          <div className="flex justify-end gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              isDisabled={
-                disconnected || defaultsDirty || saveDefaults.isPending || applyConfig.isPending
-              }
-              onPress={() => applyConfig.mutate()}
-            >
-              Apply configuration
-            </Button>
-            <Button
-              size="sm"
-              isDisabled={disconnected || saveDefaults.isPending || !coreProviderId || !coreModel}
-              onPress={() => saveDefaults.mutate()}
-            >
-              Save defaults
-            </Button>
-          </div>
+      {gateway ? (
+        <Card className="flex flex-col gap-2" aria-label="Logical Gateway models">
+          <h3 className="text-sm font-bold text-fg-strong">Logical Gateway models</h3>
+          <p className="text-xs text-fg-muted">
+            Default: {gateway.defaultModelId ?? 'Not configured'}
+          </p>
+          {gateway.models.map((model) => (
+            <div key={model.id} className="flex flex-wrap items-center gap-2 text-sm text-fg">
+              <span className="font-bold">{model.displayName}</span>
+              <span className="text-xs text-fg-muted">{model.id}</span>
+              {model.id === gateway.defaultModelId ? (
+                <StatusChip tone="positive">Default</StatusChip>
+              ) : null}
+            </div>
+          ))}
         </Card>
-      )}
+      ) : null}
 
       {apiKeyProfiles.length > 0 ? (
         <Card className="flex flex-col gap-3">
@@ -1177,44 +956,5 @@ function ProviderProfileForm({
         </Button>
       </div>
     </Card>
-  );
-}
-
-/** Displays the server.jsonc validation result after an attempted defaults save. */
-function DefaultsValidationResult({ result }: { result: RuntimeConfigValidation }) {
-  return (
-    <div
-      role="status"
-      className={`rounded-ok px-3 py-2 text-xs ${
-        result.valid ? 'bg-positive-bg text-positive-fg' : 'bg-negative-bg text-negative-fg'
-      }`}
-    >
-      <p className="font-bold">{result.valid ? 'Draft is valid' : 'Draft has errors'}</p>
-      {result.diagnostics.map((diagnostic, index) => (
-        <p key={`${diagnostic.code}:${diagnostic.range?.startLine ?? index}`}>
-          {diagnostic.range ? `Line ${diagnostic.range.startLine}: ` : ''}
-          {diagnostic.message}
-        </p>
-      ))}
-    </div>
-  );
-}
-
-/** Displays the truthful reload outcome after defaults were written. */
-function DefaultsReloadResult({ result }: { result: RuntimeConfigReload }) {
-  const applied = result.status === 'applied';
-  return (
-    <div
-      role="status"
-      className={`rounded-ok px-3 py-2 text-xs ${
-        applied ? 'bg-positive-bg text-positive-fg' : 'bg-notice-bg text-notice-fg'
-      }`}
-    >
-      <p className="font-bold">{applied ? 'Configuration applied' : `Reload ${result.status}`}</p>
-      <p>
-        Runtime version {result.runtimeConfig.currentVersion} · {result.plan.requiresRestart.length}{' '}
-        changes require restart
-      </p>
-    </div>
   );
 }

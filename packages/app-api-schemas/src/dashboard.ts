@@ -570,7 +570,8 @@ export const SchedulerAdmissionReadModelSchema = z.object({
   threadId: z.string().min(1),
   turnId: z.string().min(1),
   requestedAgentId: z.string().min(1),
-  profileRef: z.string().min(1),
+  profileRef: z.string().min(1).nullable(),
+  modelId: z.string().min(1).nullable(),
   priorityClass: SchedulerAdmissionPriorityClassSchema,
   enqueuedAt: TimestampSchema,
   effectivePriorityAt: TimestampSchema,
@@ -596,9 +597,7 @@ export const WorkspaceDashboardResponseSchema = z.object({
     providerCount: z.number().int().nonnegative(),
   }),
   defaultContext: z.object({
-    modelId: z.string().min(1).nullable(),
     agentId: z.string().min(1).nullable(),
-    skillIds: z.array(z.string().min(1)),
   }),
   agentHealth: z.array(
     z.object({
@@ -622,7 +621,6 @@ export const ThreadDashboardResponseSchema = z.object({
   workStatus: ThreadWorkStatusSchema,
   composer: z.object({
     disabled: z.boolean(),
-    defaultModelId: z.string().min(1).nullable(),
     defaultAgentId: z.string().min(1).nullable(),
   }),
   itemLog: z.object({

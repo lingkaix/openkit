@@ -92,11 +92,6 @@ function workspaceImportPayload(
       name: 'Imported symlink boundary workspace',
       kind: 'general',
       status: 'active',
-      defaults: {
-        defaultModelId: 'model_codex',
-        defaultAgentId: 'agent_codex_host',
-        defaultSkillIds: [],
-      },
       counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
       createdAt: timestamp,
       updatedAt: timestamp,

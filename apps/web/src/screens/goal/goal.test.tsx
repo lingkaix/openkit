@@ -483,7 +483,7 @@ describe('goal surfaces (WP-5)', () => {
     const client = makeClient({
       app: { getThreadGoalSummary: vi.fn().mockReturnValue(new Promise(() => {})) },
     });
-    renderApp('/goals/th1', client);
+    renderApp('/goals/ws1/th1', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
   });
 
@@ -493,7 +493,7 @@ describe('goal surfaces (WP-5)', () => {
         getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('awaiting_plan_approval')),
       },
     });
-    renderApp('/goals/th1?lens=plan', client);
+    renderApp('/goals/ws1/th1?lens=plan', client);
     expect(await screen.findByText('Ship release')).toBeInTheDocument();
     expect(screen.getByText('Make v0.0.6 ready.')).toBeInTheDocument();
     expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument();
@@ -514,7 +514,7 @@ describe('goal surfaces (WP-5)', () => {
         approveThreadGoalPlan,
       },
     });
-    renderApp('/goals/th1?lens=plan', client);
+    renderApp('/goals/ws1/th1?lens=plan', client);
     await user.click(await screen.findByRole('button', { name: /approve plan/i }));
     await waitFor(() =>
       expect(approveThreadGoalPlan).toHaveBeenCalledWith(
@@ -574,7 +574,7 @@ describe('goal surfaces (WP-5)', () => {
       app: { getThreadGoalSummary, submitGoalReviewDecision },
       actionCenter: { listHumanAttention },
     });
-    renderApp('/goals/th1?lens=plan', client);
+    renderApp('/goals/ws1/th1?lens=plan', client);
 
     const action = await screen.findByRole('button', { name: actionLabel });
     await user.click(action);
@@ -639,7 +639,7 @@ describe('goal surfaces (WP-5)', () => {
       app: { getThreadGoalSummary, submitGoalReviewDecision },
       actionCenter: { listHumanAttention },
     });
-    const queryClient = renderApp('/goals/th1?lens=plan', client);
+    const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
 
     await user.click(await screen.findByRole('button', { name: 'Accept review' }));
 
@@ -670,7 +670,7 @@ describe('goal surfaces (WP-5)', () => {
       app: { getThreadGoalSummary: vi.fn().mockResolvedValue(REVIEWING_SUMMARY) },
       actionCenter: { listHumanAttention },
     });
-    renderApp(`/goals/th1?lens=${lens}`, client, (nextSearch, nextPathname) => {
+    renderApp(`/goals/ws1/th1?lens=${lens}`, client, (nextSearch, nextPathname) => {
       search = nextSearch;
       pathname = nextPathname;
     });
@@ -688,7 +688,7 @@ describe('goal surfaces (WP-5)', () => {
     expect(accept).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Request refinement' })).toBeInTheDocument();
     expect(search).toBe(`?lens=${lens}`);
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
   });
 
   it('keeps the cached current Goal Review visible and read-only after an attention refetch fails', async () => {
@@ -705,7 +705,7 @@ describe('goal surfaces (WP-5)', () => {
       },
       actionCenter: { listHumanAttention },
     });
-    const queryClient = renderApp('/goals/th1?lens=plan', client);
+    const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
 
     expect(await screen.findByText(GOAL_REVIEW_ROW.title)).toBeInTheDocument();
     await queryClient.refetchQueries({
@@ -796,7 +796,7 @@ describe('goal surfaces (WP-5)', () => {
         }),
       },
     });
-    renderApp('/goals/th1?lens=plan', client);
+    renderApp('/goals/ws1/th1?lens=plan', client);
 
     expect(await screen.findByText(GOAL_REVIEW_ROW.title)).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Accept review' })).toHaveLength(1);
@@ -827,7 +827,7 @@ describe('goal surfaces (WP-5)', () => {
       },
       actionCenter: { listHumanAttention },
     });
-    renderApp('/goals/th1?lens=plan', client);
+    renderApp('/goals/ws1/th1?lens=plan', client);
 
     await waitFor(() => expect(listHumanAttention).toHaveBeenCalledWith('ws1'));
     await user.click(screen.getByRole('tab', { name: 'Thread' }));
@@ -860,7 +860,7 @@ describe('goal surfaces (WP-5)', () => {
         }),
       },
     });
-    renderApp('/goals/th1?lens=plan', client);
+    renderApp('/goals/ws1/th1?lens=plan', client);
 
     await screen.findByText('Ship release');
     await waitFor(() =>
@@ -888,10 +888,14 @@ describe('goal surfaces (WP-5)', () => {
       app: { getThreadGoalSummary, submitGoalReviewDecision },
       actionCenter: { listHumanAttention },
     });
-    const queryClient = renderApp('/goals/th1?lens=board', client, (nextSearch, nextPathname) => {
-      search = nextSearch;
-      pathname = nextPathname;
-    });
+    const queryClient = renderApp(
+      '/goals/ws1/th1?lens=board',
+      client,
+      (nextSearch, nextPathname) => {
+        search = nextSearch;
+        pathname = nextPathname;
+      }
+    );
 
     await user.click(await screen.findByRole('button', { name: 'Accept review' }));
 
@@ -904,7 +908,7 @@ describe('goal surfaces (WP-5)', () => {
     expect(getThreadGoalSummary).toHaveBeenCalledTimes(1);
     expect(listHumanAttention).toHaveBeenCalledTimes(1);
     expect(search).toBe('?lens=board');
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
   });
 
   it('keeps a disconnected Goal Review visible and read-only without a decision call', async () => {
@@ -920,7 +924,7 @@ describe('goal surfaces (WP-5)', () => {
         listHumanAttention: vi.fn().mockResolvedValue({ items: [GOAL_REVIEW_ROW] }),
       },
     });
-    renderApp('/goals/th1?lens=thread', disconnectedClient);
+    renderApp('/goals/ws1/th1?lens=thread', disconnectedClient);
     expect(await screen.findByText(GOAL_REVIEW_ROW.title)).toBeInTheDocument();
     expect(await screen.findByText(/read-only/i)).toBeInTheDocument();
     for (const control of screen.queryAllByRole('button', {
@@ -939,7 +943,7 @@ describe('goal surfaces (WP-5)', () => {
         listHumanAttention: vi.fn().mockResolvedValue({ items: [GOAL_REVIEW_ROW] }),
       },
     });
-    renderApp('/goals/th1?lens=plan', client);
+    renderApp('/goals/ws1/th1?lens=plan', client);
 
     expect(await screen.findByText(/Goal completed/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Accept review' })).not.toBeInTheDocument();
@@ -965,10 +969,14 @@ describe('goal surfaces (WP-5)', () => {
         startThreadGoal,
       },
     });
-    const queryClient = renderApp('/goals/th1?lens=plan', client, (nextSearch, nextPathname) => {
-      search = nextSearch;
-      pathname = nextPathname;
-    });
+    const queryClient = renderApp(
+      '/goals/ws1/th1?lens=plan',
+      client,
+      (nextSearch, nextPathname) => {
+        search = nextSearch;
+        pathname = nextPathname;
+      }
+    );
     const unrelatedSummary = goalSummary('completed');
     queryClient.setQueryData(goalKeys.summary('ws2', 'th2'), unrelatedSummary);
 
@@ -988,7 +996,7 @@ describe('goal surfaces (WP-5)', () => {
     expect(queryClient.getQueryData(goalKeys.summary('ws2', 'th2'))).toEqual(unrelatedSummary);
     expect(await screen.findByText('Authoritative started goal')).toBeInTheDocument();
     expect(search).toBe('?lens=plan');
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
   });
 
   it('reuses the caller request id when the unchanged start objective is retried', async () => {
@@ -1011,7 +1019,7 @@ describe('goal surfaces (WP-5)', () => {
         startThreadGoal,
       },
     });
-    const queryClient = renderApp('/goals/th1?lens=plan', client);
+    const queryClient = renderApp('/goals/ws1/th1?lens=plan', client);
 
     await user.type(await screen.findByRole('textbox'), 'Investigate the release blocker.');
     await user.click(screen.getByRole('button', { name: 'Start Goal' }));
@@ -1041,7 +1049,7 @@ describe('goal surfaces (WP-5)', () => {
         startThreadGoal,
       },
     });
-    renderApp('/goals/th1', client);
+    renderApp('/goals/ws1/th1', client);
     const objective = await screen.findByRole('textbox');
 
     await user.type(objective, '  Investigate the release blocker.  ');
@@ -1074,7 +1082,7 @@ describe('goal surfaces (WP-5)', () => {
         startThreadGoal,
       },
     });
-    renderApp('/goals/th1', startClient);
+    renderApp('/goals/ws1/th1', startClient);
     await user.type(await screen.findByRole('textbox'), 'Investigate the release blocker.');
     const startControl = screen.getByRole('button', { name: 'Start Goal' });
 
@@ -1093,7 +1101,7 @@ describe('goal surfaces (WP-5)', () => {
         runThreadGoalStep,
       },
     });
-    renderApp('/goals/th1', lifecycleClient);
+    renderApp('/goals/ws1/th1', lifecycleClient);
     const pauseControl = await screen.findByRole('button', { name: /pause goal/i });
     const stepControl = screen.getByRole('button', { name: /one (?:bounded )?step/i });
 
@@ -1121,7 +1129,7 @@ describe('goal surfaces (WP-5)', () => {
         startThreadGoal,
       },
     });
-    const queryClient = renderApp('/goals/th1', client);
+    const queryClient = renderApp('/goals/ws1/th1', client);
     const main = await screen.findByRole('main', { name: 'Workspace' });
     const objective = await within(main).findByRole('textbox');
 
@@ -1206,10 +1214,14 @@ describe('goal surfaces (WP-5)', () => {
         [method]: mutation,
       },
     });
-    const queryClient = renderApp('/goals/th1?lens=plan', client, (nextSearch, nextPathname) => {
-      search = nextSearch;
-      pathname = nextPathname;
-    });
+    const queryClient = renderApp(
+      '/goals/ws1/th1?lens=plan',
+      client,
+      (nextSearch, nextPathname) => {
+        search = nextSearch;
+        pathname = nextPathname;
+      }
+    );
     const unrelatedSummary = goalSummary('completed');
     queryClient.setQueryData(goalKeys.summary('ws2', 'th2'), unrelatedSummary);
 
@@ -1224,7 +1236,7 @@ describe('goal surfaces (WP-5)', () => {
     expect(await screen.findByText(response.goal.title)).toBeInTheDocument();
     expect(mutation).toHaveBeenCalledTimes(1);
     expect(search).toBe('?lens=plan');
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
   });
 
   it('keeps the authoritative goal and route context visible when a command fails', async () => {
@@ -1241,10 +1253,14 @@ describe('goal surfaces (WP-5)', () => {
         pauseThreadGoal,
       },
     });
-    const queryClient = renderApp('/goals/th1?lens=plan', client, (nextSearch, nextPathname) => {
-      search = nextSearch;
-      pathname = nextPathname;
-    });
+    const queryClient = renderApp(
+      '/goals/ws1/th1?lens=plan',
+      client,
+      (nextSearch, nextPathname) => {
+        search = nextSearch;
+        pathname = nextPathname;
+      }
+    );
 
     expect(await screen.findByText('Ship release')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /pause goal/i }));
@@ -1256,7 +1272,7 @@ describe('goal surfaces (WP-5)', () => {
     expect(screen.getByText('Make v0.0.6 ready.')).toBeInTheDocument();
     expect(queryClient.getQueryData(goalKeys.summary('ws1', 'th1'))).toEqual(priorSummary);
     expect(search).toBe('?lens=plan');
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
   });
 
   it('does not invoke lifecycle commands outside their summary-visible safe boundaries', async () => {
@@ -1326,7 +1342,7 @@ describe('goal surfaces (WP-5)', () => {
           [invalidCase.method]: mutation,
         },
       });
-      renderApp('/goals/th1', client);
+      renderApp('/goals/ws1/th1', client);
       await screen.findByText('Ship release');
       const control = screen.queryByRole('button', { name: invalidCase.buttonName });
       if (control) {
@@ -1353,7 +1369,7 @@ describe('goal surfaces (WP-5)', () => {
         runThreadGoalStep,
       },
     });
-    renderApp('/goals/th1', runningClient);
+    renderApp('/goals/ws1/th1', runningClient);
     const pauseControl = await screen.findByRole('button', { name: /pause goal/i });
     const stepControl = screen.getByRole('button', { name: /one (?:bounded )?step/i });
 
@@ -1378,7 +1394,7 @@ describe('goal surfaces (WP-5)', () => {
         resumeThreadGoal,
       },
     });
-    renderApp('/goals/th1', pausedClient);
+    renderApp('/goals/ws1/th1', pausedClient);
     const resumeControl = await screen.findByRole('button', { name: /resume goal/i });
 
     await waitFor(() => expect(resumeControl).toBeDisabled(), { timeout: 3000 });
@@ -1402,7 +1418,7 @@ describe('goal surfaces (WP-5)', () => {
     const client = makeClient({
       app: { getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary(status)) },
     });
-    renderApp('/goals/th1', client);
+    renderApp('/goals/ws1/th1', client);
 
     expect(await screen.findByRole('tab', { name: selectedLens })).toHaveAttribute(
       'aria-selected',
@@ -1416,34 +1432,34 @@ describe('goal surfaces (WP-5)', () => {
     let search = '';
     let pathname = '';
     const client = makeClient();
-    renderApp('/goals/th1?lens=plan', client, (s, p) => {
+    renderApp('/goals/ws1/th1?lens=plan', client, (s, p) => {
       search = s;
       pathname = p;
     });
     expect(await screen.findByText('Ship release')).toBeInTheDocument();
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
 
     await user.click(screen.getByRole('tab', { name: 'Thread' }));
     await waitFor(() => expect(search).toContain('lens=thread'));
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
 
     await user.click(screen.getByRole('tab', { name: 'Board' }));
     await waitFor(() => expect(search).toContain('lens=board'));
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
     expect(screen.getByText('To do')).toBeInTheDocument();
     expect(screen.getByText('In progress')).toBeInTheDocument();
     expect(screen.getAllByText('Done').length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole('tab', { name: 'Plan' }));
     await waitFor(() => expect(search).toContain('lens=plan'));
-    expect(pathname).toBe('/goals/th1');
+    expect(pathname).toBe('/goals/ws1/th1');
   });
 
   it('opens board cards into the thread lens and offers no Done drop control', async () => {
     const user = userEvent.setup();
     let search = '';
     const client = makeClient();
-    renderApp('/goals/th1?lens=board', client, (s) => {
+    renderApp('/goals/ws1/th1?lens=board', client, (s) => {
       search = s;
     });
     const card = await screen.findByRole('button', { name: /Run verification/i });
@@ -1459,7 +1475,7 @@ describe('goal surfaces (WP-5)', () => {
     const client = makeClient({
       app: { getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('completed')) },
     });
-    renderApp('/goals/th1', client);
+    renderApp('/goals/ws1/th1', client);
     expect(await screen.findByText(/Goal completed/i)).toBeInTheDocument();
     expect(screen.getByText('Release verification passed.')).toBeInTheDocument();
     expect(screen.getByText('Publish v0.0.6.')).toBeInTheDocument();
@@ -1469,7 +1485,7 @@ describe('goal surfaces (WP-5)', () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
-    renderApp('/goals/th1', client);
+    renderApp('/goals/ws1/th1', client);
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled(), {
       timeout: 3000,
     });
@@ -1483,7 +1499,7 @@ describe('goal surfaces (WP-5)', () => {
     const emptyView = render(
       <QueryClientProvider client={emptyQuery}>
         <CoreClientProvider client={emptyClient}>
-          <MemoryRouter initialEntries={['/goals/th1']}>
+          <MemoryRouter initialEntries={['/goals/ws1/th1']}>
             <AppRoutes />
           </MemoryRouter>
         </CoreClientProvider>
@@ -1495,7 +1511,7 @@ describe('goal surfaces (WP-5)', () => {
     const errorClient = makeClient({
       app: { getThreadGoalSummary: vi.fn().mockRejectedValue(new Error('boom')) },
     });
-    renderApp('/goals/th1', errorClient);
+    renderApp('/goals/ws1/th1', errorClient);
     expect(await screen.findByText(/Couldn't load this goal/i)).toBeInTheDocument();
   });
 });
@@ -1523,7 +1539,7 @@ describe('Artifact Review S14', () => {
         getWorkspaceMaterialRevision,
       },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     const proposal = await screen.findByRole('region', { name: /reviewed artifact proposal/i });
     const base = screen.getByRole('region', { name: /recorded base revision/i });
@@ -1565,7 +1581,7 @@ describe('Artifact Review S14', () => {
         submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     const unavailable = await screen.findByRole('alert');
     expect(unavailable).toHaveTextContent(/review (?:is )?unavailable|recovery required/i);
@@ -1607,7 +1623,7 @@ describe('Artifact Review S14', () => {
         submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     const action = await screen.findByRole('button', { name: label });
     if (feedback) {
@@ -1699,7 +1715,7 @@ describe('Artifact Review S14', () => {
         submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     await user.click(await screen.findByRole('button', { name: /^accept$/i }));
 
@@ -1782,7 +1798,7 @@ describe('Artifact Review S14', () => {
       core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
       app: { listArtifactReviews },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     await user.click(await screen.findByRole('button', { name: /^accept$/i }));
     await waitFor(() => expect(listArtifactReviews).toHaveBeenCalledTimes(2));
@@ -1815,7 +1831,7 @@ describe('Artifact Review S14', () => {
       core: { getArtifact: vi.fn().mockResolvedValue(newerArtifact) },
       app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [decidedReview] }) },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     const status = await screen.findByRole('status', { name: /artifact review/i });
     expect(status).toHaveTextContent(/approved/i);
@@ -1885,7 +1901,7 @@ describe('Artifact Review S14', () => {
         core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
         app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [decidedReview] }) },
       });
-      renderApp('/goals/th1/artifacts/artifact1', client);
+      renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
       const status = await screen.findByRole('status', { name: /artifact review/i });
       const chip = within(status).queryByText(new RegExp(`^${statusText}$`, 'i'));
@@ -1912,7 +1928,7 @@ describe('Artifact Review S14', () => {
       },
       app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }) },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     const actions = await Promise.all(
       [/^accept$/i, /request refinement/i, /^redo$/i, /^reject$/i, /^defer$/i].map((name) =>
@@ -1930,7 +1946,7 @@ describe('Artifact Review S14', () => {
       },
       app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }) },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     const actions = await Promise.all(
       [/^accept$/i, /request refinement/i, /^redo$/i, /^reject$/i, /^defer$/i].map((name) =>
@@ -1953,7 +1969,7 @@ describe('Artifact Review S14', () => {
         submitArtifactReviewDecision,
       },
     });
-    renderApp('/goals/th1/artifacts/artifact1', client);
+    renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
     const actions = await Promise.all(
       [/^accept$/i, /request refinement/i, /^redo$/i, /^reject$/i, /^defer$/i].map((name) =>

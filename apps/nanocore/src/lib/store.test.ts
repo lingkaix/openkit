@@ -217,11 +217,6 @@ describe('FsStore persistence', () => {
       id: 'ws_quick_chat',
       name: 'Quick Chat',
       kind: 'quick-chat',
-      defaults: {
-        defaultModelId: null,
-        defaultAgentId: null,
-        defaultSkillIds: [],
-      },
     });
   });
 
@@ -230,11 +225,7 @@ describe('FsStore persistence', () => {
     const workspace = store.createWorkspace('Runnable workspace');
     const resources = store.getWorkspaceResources(workspace.id);
 
-    expect(workspace.defaults).toEqual({
-      defaultModelId: null,
-      defaultAgentId: null,
-      defaultSkillIds: [],
-    });
+    expect(workspace).not.toHaveProperty('defaults');
     expect(resources.models).toEqual([]);
     expect(resources.agents).toEqual([]);
   });
@@ -877,14 +868,22 @@ describe('FsStore persistence', () => {
     const workspace = store.createWorkspace('Idempotency workspace');
 
     store.recordCommandRequest({
-      command: 'chat.start',
+      command: 'conversation.submit',
       requestId: '0190f4c8-0000-7000-8000-000000000501',
       scope: { workspaceId: workspace.id },
       inputHash: 'sha256:live',
       response: {
         kind: 'turn',
         id: 'tu_chat',
-        chatMetadata: { downstream: null, resultKind: 'provider-answer', status: 200 },
+        conversationMetadata: {
+          downstream: null,
+          logicalModelId: 'reasoning',
+          receivingThreadId: 'th_chat',
+          receivingWorkspaceId: workspace.id,
+          resultKind: 'provider-answer',
+          status: 200,
+          targetRef: 'internal-role:assistant',
+        },
       },
       createdAt: '2026-05-27T00:00:00.000Z',
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -902,13 +901,21 @@ describe('FsStore persistence', () => {
     const restarted = new FsStore({ dataRoot });
 
     expect(
-      restarted.getCommandRequest('chat.start', '0190f4c8-0000-7000-8000-000000000501', {
+      restarted.getCommandRequest('conversation.submit', '0190f4c8-0000-7000-8000-000000000501', {
         workspaceId: workspace.id,
       })?.response
     ).toEqual({
       kind: 'turn',
       id: 'tu_chat',
-      chatMetadata: { downstream: null, resultKind: 'provider-answer', status: 200 },
+      conversationMetadata: {
+        downstream: null,
+        logicalModelId: 'reasoning',
+        receivingThreadId: 'th_chat',
+        receivingWorkspaceId: workspace.id,
+        resultKind: 'provider-answer',
+        status: 200,
+        targetRef: 'internal-role:assistant',
+      },
     });
     expect(
       restarted.getCommandRequest('thread.create', '0190f4c8-0000-7000-8000-000000000502', {
@@ -972,7 +979,7 @@ describe('FsStore persistence', () => {
     }
   });
 
-  it('rejects extra receipt metadata outside chat.start', () => {
+  it('rejects extra receipt metadata outside conversation.submit', () => {
     const store = new FsStore();
 
     expect(() =>
@@ -984,10 +991,10 @@ describe('FsStore persistence', () => {
         response: {
           kind: 'thread',
           id: 'th_forbidden',
-          chatMetadata: { state: 'queued' },
+          conversationMetadata: { state: 'queued' },
         },
       })
-    ).toThrow('Only chat.start may store extra command receipt metadata.');
+    ).toThrow('Only conversation.submit may store extra command receipt metadata.');
     expect(() =>
       store.recordCommandRequest({
         command: 'thread.create',
@@ -1003,17 +1010,17 @@ describe('FsStore persistence', () => {
     ).toThrow('Command receipt response contains unsupported fields.');
     expect(() =>
       store.recordCommandRequest({
-        command: 'chat.start',
+        command: 'conversation.submit',
         requestId: '0190f4c8-0000-7000-8000-000000000505',
         scope: { workspaceId: 'ws_quick_chat' },
         inputHash: 'sha256:invalid-chat-metadata',
         response: {
           kind: 'turn',
           id: 'tu_invalid_chat_metadata',
-          chatMetadata: { downstream: null, resultKind: 'answered', status: 200 },
+          conversationMetadata: { downstream: null, resultKind: 'answered', status: 200 },
         },
       })
-    ).toThrow('chat.start command receipt metadata is invalid.');
+    ).toThrow('conversation.submit command receipt metadata is invalid.');
     expect(store.listCommandRequests()).toEqual([]);
   });
 

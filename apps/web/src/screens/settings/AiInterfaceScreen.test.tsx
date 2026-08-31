@@ -13,10 +13,7 @@ const SERVER_JSONC = `{
   "mode": "local",
   "defaults": {
     // Keep this comment
-    "coreProviderId": "provider_demo",
-    "coreModel": "gpt-demo",
-    "gatewayProviderId": "provider_demo",
-    "gatewayModel": "gpt-strong"
+    "defaultAgentId": "agent_demo"
   }
 }
 `;
@@ -98,7 +95,12 @@ const DIAGNOSTICS = {
       knowledgeIndex: { state: 'ready', reasons: [] },
     },
   },
-  gateway: { status: 'ok', endpoints: ['/v1/chat/completions'] },
+  gateway: {
+    status: 'ok',
+    endpoints: ['/v1/chat/completions'],
+    defaultModelId: 'default',
+    models: [{ id: 'default', displayName: 'Default', capabilities: ['chat'] }],
+  },
   providers: {
     diagnostics: [
       {
@@ -120,19 +122,6 @@ const DIAGNOSTICS = {
         readiness: { status: 'ready', message: null, checkedAt: TIMESTAMP },
       },
     ],
-  },
-  defaultProviders: {
-    core: {
-      configured: true,
-      model: 'gpt-demo',
-      origin: 'canonical',
-      providerId: 'provider_demo',
-    },
-    gateway: { configured: false, origin: 'unset', reason: 'unset' },
-  },
-  defaults: {
-    quickChat: { providerId: 'provider_demo', model: 'gpt-demo' },
-    gateway: { providerId: null, model: null },
   },
   capabilities: [],
   runtimeConfig: {
@@ -416,97 +405,16 @@ describe('AI interface deployment-admin workflow', () => {
     );
   });
 
-  it('shows configured provider profiles and saves core and gateway defaults from the current server.jsonc', async () => {
-    const user = userEvent.setup();
+  it('shows configured provider profiles and the logical Gateway catalog', async () => {
     const client = makeClient();
     renderScreen(client);
 
     expect((await screen.findAllByText('Demo provider')).length).toBeGreaterThan(0);
     expect(screen.getAllByText('gpt-strong').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Default ready/i)).toBeInTheDocument();
+    expect(screen.getByText('Default: default')).toBeInTheDocument();
     expect(screen.getByText(/Provider is ready\./)).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: 'Save defaults' })).toBeEnabled();
-
-    await user.click(screen.getByRole('button', { name: /Core model/ }));
-    await user.click(
-      within(await screen.findByRole('listbox')).getByRole('option', { name: 'gpt-strong' })
-    );
-    expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: 'Save defaults' }));
-
-    await waitFor(() => expect(client.runtimeConfig.validate).toHaveBeenCalled());
-    const saved = vi.mocked(client.runtimeConfig.updateFile).mock.calls[0]?.[0];
-    expect(saved).toMatchObject({
-      id: 'server.jsonc',
-      kind: 'server',
-      expectedRevision: 'revision-1',
-    });
-    expect(saved?.content).toContain('// Keep this comment');
-    expect(saved?.content).toContain('"coreProviderId": "provider_demo"');
-    expect(saved?.content).toContain('"coreModel": "gpt-strong"');
-    expect(saved?.content).toContain('"gatewayProviderId": "provider_demo"');
-    expect(saved?.content).toContain('"gatewayModel": "gpt-strong"');
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText('Defaults file saved. Apply configuration to load it.')
-    ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeEnabled()
-    );
-    const accountReadsBeforeApply = vi.mocked(client.providerSubscriptions.listAccounts).mock.calls
-      .length;
-    await user.click(screen.getByRole('button', { name: 'Apply configuration' }));
-    expect(client.runtimeConfig.reload).toHaveBeenCalledWith({ dryRun: false, mode: 'safe' });
-    expect(await screen.findByText('Configuration applied')).toBeInTheDocument();
-    await waitFor(() =>
-      expect(
-        vi.mocked(client.providerSubscriptions.listAccounts).mock.calls.length
-      ).toBeGreaterThan(accountReadsBeforeApply)
-    );
-  });
-
-  it('shows a save validation failure without writing or reloading', async () => {
-    const user = userEvent.setup();
-    const client = makeClient({
-      runtimeConfig: {
-        validate: vi.fn().mockResolvedValue({
-          valid: false,
-          diagnostics: [
-            {
-              code: 'defaults.coreModel',
-              message: 'coreModel is not a known model',
-              severity: 'error',
-            },
-          ],
-          plan: PLAN,
-          runtimeConfig: RUNTIME_CONFIG,
-        }),
-      },
-    });
-    renderScreen(client);
-
-    await user.click(await screen.findByRole('button', { name: 'Save defaults' }));
-
-    expect(await screen.findByText('Draft has errors')).toBeInTheDocument();
-    expect(screen.getByText('coreModel is not a known model')).toBeInTheDocument();
     expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
     expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
-    expect(screen.queryByText('Configuration applied')).not.toBeInTheDocument();
-  });
-
-  it('clears optional gateway defaults through the bounded settings form', async () => {
-    const user = userEvent.setup();
-    const client = makeClient();
-    renderScreen(client);
-
-    await user.click(await screen.findByRole('button', { name: 'Clear gateway default' }));
-    expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: 'Save defaults' }));
-
-    await waitFor(() => expect(client.runtimeConfig.updateFile).toHaveBeenCalled());
-    const saved = vi.mocked(client.runtimeConfig.updateFile).mock.calls[0]?.[0];
-    expect(saved?.content).not.toContain('"gatewayProviderId"');
-    expect(saved?.content).not.toContain('"gatewayModel"');
   });
 
   it('creates an oauth provider profile bound to an existing subscription account slot', async () => {

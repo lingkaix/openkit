@@ -14,8 +14,7 @@ This directory owns configured provider instances, provider profiles, credential
 
 - `registry.ts` owns configured provider instance lookup, readiness, and capability projection.
 - `../config/providers-loader.ts` validates and loads provider profiles using the canonical `@openkit/config-schema` profile schema.
-- `default-provider.ts` resolves role-specific Core and gateway defaults from the configured registry.
-- `data-root.ts` assembles the registry from loaded profiles and server-configured provider projections.
+- `data-root.ts` assembles the registry from the canonical file-backed Provider profiles.
 - `llm-config.ts` projects configured instances into the LLM dispatch shape.
 - `vault-credential-resolver.ts` owns explicit credential resolution and redaction boundaries.
 

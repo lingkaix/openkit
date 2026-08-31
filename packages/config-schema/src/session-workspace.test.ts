@@ -65,9 +65,6 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
       mode: 'sidecar',
       transcript: { root: '/openkit/session' },
     },
-    providers: {
-      attachments: [{ id: 'provider_github', providerInstanceId: 'github' }],
-    },
     vault: {
       references: [{ id: 'vault_github', kind: 'secret-ref', secretRef: 'secret://github' }],
     },

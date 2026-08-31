@@ -603,14 +603,19 @@ describe('primitive tier — behavior', () => {
     expect(onChange).toHaveBeenCalledWith(true);
   });
 
-  it('Composer submits the trimmed value and clears', async () => {
+  it('Composer submits the structured draft and clears', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     render(<Composer onSubmit={onSubmit} />);
     const input = screen.getByRole('textbox', { name: 'Message' });
     await user.type(input, '  hello  ');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(onSubmit).toHaveBeenCalledWith('hello');
+    expect(onSubmit).toHaveBeenCalledWith({
+      artifactRefs: [],
+      input: '  hello  ',
+      requestId: expect.any(String),
+      targetRef: '',
+    });
     expect(input).toHaveValue('');
   });
 

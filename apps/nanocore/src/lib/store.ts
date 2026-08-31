@@ -199,7 +199,7 @@ export type CommandRequestName =
   | 'thread.create'
   | 'thread.update'
   | 'thread.archive'
-  | 'chat.start'
+  | 'conversation.submit'
   | 'task.start'
   | 'turn.start'
   | 'turn.input.submit'
@@ -271,8 +271,15 @@ export type CommandRequestResponseKind =
  */
 export type CommandRequestScope = Readonly<Record<string, string>>;
 
-/** Bounded, non-authoritative metadata retained only by a `chat.start` receipt. */
-export interface ChatCommandReceiptMetadata {
+/** Bounded, non-authoritative metadata retained only by a `conversation.submit` receipt. */
+export interface ConversationCommandReceiptMetadata {
+  /** Opaque target accepted by the original command. */
+  readonly targetRef: string;
+  /** Product-visible logical model accepted by the original command. */
+  readonly logicalModelId: string | null;
+  /** Actual receiving Workspace and Thread selected by the branch. */
+  readonly receivingWorkspaceId: string;
+  readonly receivingThreadId: string;
   /** Optional downstream business owner created by a handoff. */
   readonly downstream:
     | { readonly kind: 'task'; readonly turnId: string }
@@ -286,6 +293,8 @@ export interface ChatCommandReceiptMetadata {
     | 'clarification'
     | 'task-handoff'
     | 'goal-handoff'
+    | 'worker-turn'
+    | 'goal-steering'
     | 'refused';
   /** Original successful HTTP status for the closed outcome. */
   readonly status: 200 | 202;
@@ -299,8 +308,8 @@ export interface CommandRequestResponse {
   kind: CommandRequestResponseKind;
   /** Resource id produced by the original command. */
   id: string;
-  /** Sole bounded extra receipt metadata allowed for `chat.start`; rejected for every other command. */
-  chatMetadata?: ChatCommandReceiptMetadata;
+  /** Sole bounded extra receipt metadata allowed for `conversation.submit`; rejected for every other command. */
+  conversationMetadata?: ConversationCommandReceiptMetadata;
 }
 
 /**
@@ -728,6 +737,23 @@ function createWorkspaceResources(knowledge: KnowledgeEntry[] = []): WorkspaceRe
   };
 }
 
+/** Builds the canonical empty history used when publishing a new Workspace. */
+function emptyWorkspaceFileRecords(workspace: WorkspaceRecord): WorkspaceFileRecords {
+  return {
+    workspace,
+    knowledge: [],
+    threads: [],
+    turns: [],
+    itemRevisions: [],
+    artifacts: [],
+    knowledgeProposals: [],
+    knowledgeProposalReviews: [],
+    knowledgeSources: [],
+    agentSessions: [],
+    streamEvents: [],
+  };
+}
+
 /**
  * Demo workspace fixture for tests and local development tools.
  */
@@ -753,11 +779,6 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
     name: 'Demo Workspace',
     kind: 'code',
     status: 'active',
-    defaults: {
-      defaultModelId: null,
-      defaultAgentId: null,
-      defaultSkillIds: [],
-    },
     counts: {
       threadCount: 1,
       artifactCount: 0,
@@ -992,22 +1013,22 @@ export class FsStore {
    *
    * @param workspaceId Workspace to persist.
    */
-  private persist(workspaceId: string): void {
+  private persist(workspaceId: string, updateWorkspaceConfigName = false): void {
     if (!this.dataRoot) {
       return;
     }
 
     const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
-    this.writeWorkspaceFileRecordsToRoot(workspaceId, workspaceRoot);
+    this.writeWorkspaceFileRecordsToRoot(workspaceId, workspaceRoot, updateWorkspaceConfigName);
   }
 
   /**
-   * Publishes one newly imported workspace through a same-filesystem staging root.
+   * Publishes one new workspace through a same-filesystem staging root.
    *
    * @param records Complete canonical records to publish.
    * @param stageWorkspace Optional side-effect writer that runs under the staging root.
    */
-  private persistImportedWorkspaceAtomically(
+  private persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
     stageWorkspace?: (stage: ImportWorkspaceStage) => void
   ): void {
@@ -1036,8 +1057,8 @@ export class FsStore {
     try {
       rmSync(stagingRoot, { recursive: true, force: true });
       ensureWorkspaceLayoutRoot(stagingRoot);
-      writeWorkspaceFileRecords(stagingRoot, records);
       stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
+      writeWorkspaceFileRecords(stagingRoot, records);
       renameSync(stagingRoot, finalRoot);
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
@@ -1051,7 +1072,11 @@ export class FsStore {
    * @param workspaceId Workspace to write.
    * @param workspaceRoot Resolved workspace root.
    */
-  private writeWorkspaceFileRecordsToRoot(workspaceId: string, workspaceRoot: string): void {
+  private writeWorkspaceFileRecordsToRoot(
+    workspaceId: string,
+    workspaceRoot: string,
+    updateWorkspaceConfigName = false
+  ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
       [...this.turns.values()]
@@ -1059,29 +1084,33 @@ export class FsStore {
         .map((turn) => turn.id)
     );
 
-    writeWorkspaceFileRecords(workspaceRoot, {
-      workspace,
-      knowledge: this.getWorkspaceResources(workspaceId).knowledge,
-      threads: this.listThreads(workspaceId),
-      turns: [...this.turns.values()].filter((turn) => turn.workspaceId === workspaceId),
-      itemRevisions: this.itemRevisions.filter((item) => item.workspaceId === workspaceId),
-      artifacts: this.listArtifacts(workspaceId),
-      knowledgeProposals: [...this.knowledgeProposals.values()].filter(
-        (proposal) => proposal.workspaceId === workspaceId
-      ),
-      knowledgeProposalReviews: [...this.knowledgeProposalReviews.values()]
-        .flat()
-        .filter((review) => review.workspaceId === workspaceId),
-      knowledgeSources: [...this.knowledgeSources.values()].filter(
-        (source) => source.workspaceId === workspaceId
-      ),
-      agentSessions: [...this.agentSessions.values()].filter(
-        (session) => session.workspaceId === workspaceId
-      ),
-      streamEvents: [...this.streams.entries()]
-        .filter(([turnId]) => turnIds.has(turnId))
-        .map(([turnId, stream]) => [turnId, stream.events]),
-    });
+    writeWorkspaceFileRecords(
+      workspaceRoot,
+      {
+        workspace,
+        knowledge: this.getWorkspaceResources(workspaceId).knowledge,
+        threads: this.listThreads(workspaceId),
+        turns: [...this.turns.values()].filter((turn) => turn.workspaceId === workspaceId),
+        itemRevisions: this.itemRevisions.filter((item) => item.workspaceId === workspaceId),
+        artifacts: this.listArtifacts(workspaceId),
+        knowledgeProposals: [...this.knowledgeProposals.values()].filter(
+          (proposal) => proposal.workspaceId === workspaceId
+        ),
+        knowledgeProposalReviews: [...this.knowledgeProposalReviews.values()]
+          .flat()
+          .filter((review) => review.workspaceId === workspaceId),
+        knowledgeSources: [...this.knowledgeSources.values()].filter(
+          (source) => source.workspaceId === workspaceId
+        ),
+        agentSessions: [...this.agentSessions.values()].filter(
+          (session) => session.workspaceId === workspaceId
+        ),
+        streamEvents: [...this.streams.entries()]
+          .filter(([turnId]) => turnIds.has(turnId))
+          .map(([turnId, stream]) => [turnId, stream.events]),
+      },
+      updateWorkspaceConfigName
+    );
   }
 
   /**
@@ -1557,11 +1586,6 @@ export class FsStore {
       name: 'Quick Chat',
       kind: 'quick-chat',
       status: 'active',
-      defaults: {
-        defaultModelId: null,
-        defaultAgentId: null,
-        defaultSkillIds: [],
-      },
       counts: {
         threadCount: 0,
         artifactCount: 0,
@@ -1570,9 +1594,9 @@ export class FsStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+    this.persistNewWorkspaceAtomically(emptyWorkspaceFileRecords(workspace));
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, createWorkspaceResources());
-    this.persist(workspace.id);
     return workspace;
   }
 
@@ -1583,11 +1607,6 @@ export class FsStore {
       name,
       kind: 'general',
       status: 'active',
-      defaults: {
-        defaultModelId: null,
-        defaultAgentId: null,
-        defaultSkillIds: [],
-      },
       counts: {
         threadCount: 0,
         artifactCount: 0,
@@ -1597,9 +1616,9 @@ export class FsStore {
       updatedAt: timestamp,
     };
     const resources = createWorkspaceResources();
+    this.persistNewWorkspaceAtomically(emptyWorkspaceFileRecords(workspace));
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, resources);
-    this.persist(workspace.id);
     return workspace;
   }
 
@@ -1705,7 +1724,7 @@ export class FsStore {
       streamEvents: history.turnEvents,
     };
 
-    this.persistImportedWorkspaceAtomically(records, (stage) => {
+    this.persistNewWorkspaceAtomically(records, (stage) => {
       this.writeKnowledgeSourceMaterialsToRoot(
         stage.workspaceRoot,
         input.knowledgeSourceMaterials ?? [],
@@ -1849,13 +1868,6 @@ export class FsStore {
       name?: WorkspaceRecord['name'] | undefined;
       kind?: WorkspaceRecord['kind'] | undefined;
       status?: WorkspaceRecord['status'] | undefined;
-      defaults?:
-        | {
-            defaultModelId?: string | null | undefined;
-            defaultAgentId?: string | null | undefined;
-            defaultSkillIds?: string[] | undefined;
-          }
-        | undefined;
     }
   ): WorkspaceRecord {
     const workspace = this.getWorkspace(workspaceId);
@@ -1864,25 +1876,28 @@ export class FsStore {
       name: input.name ?? workspace.name,
       kind: input.kind ?? workspace.kind,
       status: input.status ?? workspace.status,
-      defaults: input.defaults
-        ? {
-            defaultModelId:
-              input.defaults.defaultModelId === undefined
-                ? (workspace.defaults?.defaultModelId ?? null)
-                : input.defaults.defaultModelId,
-            defaultAgentId:
-              input.defaults.defaultAgentId === undefined
-                ? (workspace.defaults?.defaultAgentId ?? null)
-                : input.defaults.defaultAgentId,
-            defaultSkillIds:
-              input.defaults.defaultSkillIds ?? workspace.defaults?.defaultSkillIds ?? [],
-          }
-        : workspace.defaults,
       updatedAt: now(),
     };
     this.workspaces.set(workspaceId, updated);
-    this.persist(workspaceId);
+    try {
+      this.persist(workspaceId, input.name !== undefined);
+    } catch (error) {
+      this.workspaces.set(workspaceId, workspace);
+      throw error;
+    }
     return updated;
+  }
+
+  /** Refreshes joined Workspace names after an accepted runtime-config reload. */
+  public refreshWorkspaceConfigNames(
+    workspaceNames: readonly { readonly workspaceId: string; readonly name: string }[]
+  ): void {
+    for (const { workspaceId, name } of workspaceNames) {
+      const workspace = this.workspaces.get(workspaceId);
+      if (workspace && workspace.name !== name) {
+        this.workspaces.set(workspaceId, { ...workspace, name });
+      }
+    }
   }
 
   public listKnowledge(workspaceId: string): KnowledgeEntry[] {
@@ -2099,9 +2114,13 @@ export class FsStore {
     return [...this.threads.values()].filter((thread) => thread.workspaceId === workspaceId);
   }
 
-  public createThread(workspaceId: string, title: string): Thread {
+  public createThread(workspaceId: string, title: string, threadId?: string): Thread {
+    const id = threadId ?? threadIdForUser(LOCAL_USER_ID, String(this.threads.size + 1));
+    if (this.threads.has(id)) {
+      throw new Error(`Thread already exists: ${id}`);
+    }
     const thread: Thread = {
-      id: threadIdForUser(LOCAL_USER_ID, String(this.threads.size + 1)),
+      id,
       workspaceId,
       name: title,
       preview: title,

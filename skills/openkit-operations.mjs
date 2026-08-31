@@ -766,16 +766,32 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
-    id: 'chat.start',
+    id: 'conversation.targets',
     source: 'app-api',
-    appOperationId: 'startChatMode',
-    clientMethod: 'app.startChatMode',
-    group: 'chat',
-    summary: 'Start one thread-scoped Chat Mode turn.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.StartChatModeRequestSchema, threadScope),
+    appOperationId: 'getConversationTargets',
+    clientMethod: 'app.getConversationTargets',
+    group: 'conversation',
+    summary: 'List context-sensitive conversation targets.',
+    mutating: false,
+    inputSchema: strictScope({
+      ...workspaceScope,
+      threadId: protocol.ThreadIdSchema.optional(),
+    }),
     handler: ({ client }, input) =>
-      client.app.startChatMode(
+      client.app.getConversationTargets(input.workspaceId, input.threadId),
+  },
+  {
+    ...STANDARD,
+    id: 'conversation.submit',
+    source: 'app-api',
+    appOperationId: 'submitConversation',
+    clientMethod: 'app.submitConversation',
+    group: 'conversation',
+    summary: 'Submit one structured conversation turn.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.SubmitConversationRequestSchema, threadScope),
+    handler: ({ client }, input) =>
+      client.app.submitConversation(
         input.workspaceId,
         input.threadId,
         bodyWithout(input, 'workspaceId', 'threadId')

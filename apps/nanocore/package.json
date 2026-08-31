@@ -27,6 +27,7 @@
     "@hono/node-server": "^1.19.14",
     "@openkit/app-api-schemas": "workspace:*",
     "@openkit/config-schema": "workspace:*",
+    "@openkit/models-dev-catalog": "workspace:*",
     "@openkit/openshell-schema-snapshot": "workspace:*",
     "@openkit/policy-kernel": "workspace:*",
     "@openkit/protocol": "workspace:*",

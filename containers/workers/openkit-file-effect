@@ -2,7 +2,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { link, lstat, mkdir, open, unlink } from 'node:fs/promises';
+import { link, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, posix } from 'node:path';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
@@ -30,6 +30,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = Object.freeze({
 export const CANONICAL_SLOT_ROOTS = Object.freeze({
   ...CANONICAL_WORKSPACE_SLOT_ROOTS,
   'package-config': '/openkit/config',
+  'runtime-credential': '/',
 });
 
 const IMPORT_SLOTS = new Set([
@@ -40,6 +41,7 @@ const IMPORT_SLOTS = new Set([
   'turn-inputs',
 ]);
 const PACKAGE_CONFIG_SLOTS = new Set(['package-config']);
+const RUNTIME_CREDENTIAL_SLOTS = new Set(['runtime-credential']);
 const EXPORT_SLOTS = new Set([
   'cache',
   'main-worktree',
@@ -81,7 +83,7 @@ export async function runFileEffect({ argv, stdin, stdout, stderr, slotRoots }) 
  *
  * @param {string[]} argv CLI arguments after the executable name.
  * @param {Record<string, string>} slotRoots Canonical slot-to-root projection.
- * @returns {{operation: 'reference.import', root: string, relativePath: string, length: number, digest: string} | {operation: 'file.export', root: string, relativePath: string, allowMissing: boolean}}
+ * @returns {{operation: 'reference.import', root: string, relativePath: string, length: number, digest: string, replace: boolean} | {operation: 'file.export', root: string, relativePath: string, allowMissing: boolean}}
  */
 function parseCommand(argv, slotRoots) {
   if (!Array.isArray(argv) || !slotRoots || typeof slotRoots !== 'object') {
@@ -98,16 +100,19 @@ function parseCommand(argv, slotRoots) {
   ) {
     const relativePath = parseRelativePath(argv[4]);
     const slot = argv[2];
+    const replace = slot === 'runtime-credential';
     const root =
       slot === 'package-config'
         ? resolvePackageConfigRoot(slotRoots, relativePath)
-        : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
+        : replace
+          ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
+          : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
     const length = parseBoundedDecimal(argv[6]);
     const digest = argv[8];
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error('invalid digest');
     }
-    return { digest, length, operation: 'reference.import', relativePath, root };
+    return { digest, length, operation: 'reference.import', relativePath, replace, root };
   }
 
   if (
@@ -139,6 +144,18 @@ function resolvePackageConfigRoot(slotRoots, relativePath) {
     throw new Error('invalid package path');
   }
   return resolveSlotRoot(slotRoots, 'package-config', PACKAGE_CONFIG_SLOTS);
+}
+
+/** Resolves the one worker-owned namespace accepted for replaceable runtime credentials. */
+function resolveRuntimeCredentialRoot(slotRoots, relativePath) {
+  if (
+    !relativePath.startsWith('sandbox/') ||
+    relativePath === 'sandbox/openkit' ||
+    relativePath.startsWith('sandbox/openkit/')
+  ) {
+    throw new Error('invalid runtime credential path');
+  }
+  return resolveSlotRoot(slotRoots, 'runtime-credential', RUNTIME_CREDENTIAL_SLOTS);
 }
 
 /**
@@ -205,13 +222,17 @@ function parseBoundedDecimal(value) {
 /**
  * Imports one verified stdin body through private fsynced no-overwrite placement.
  *
- * @param {{root: string, relativePath: string, length: number, digest: string}} command Parsed import command.
+ * @param {{root: string, relativePath: string, length: number, digest: string, replace: boolean}} command Parsed import command.
  * @param {AsyncIterable<Uint8Array | string>} stdin Import body stream.
  * @param {NodeJS.WritableStream} stdout Result stream.
  * @returns {Promise<void>}
  */
 async function importReference(command, stdin, stdout) {
-  const { parent, target } = await prepareImportTarget(command.root, command.relativePath);
+  const { parent, target } = await prepareImportTarget(
+    command.root,
+    command.relativePath,
+    command.replace
+  );
   const partial = join(parent, `.openkit-file-effect-${randomUUID()}.partial`);
   let partialHandle;
   let placed = false;
@@ -251,9 +272,13 @@ async function importReference(command, stdin, stdout) {
     await partialHandle.sync();
     await partialHandle.close();
     partialHandle = undefined;
-    await link(partial, target);
-    placed = true;
-    await unlink(partial);
+    if (command.replace) {
+      await rename(partial, target);
+    } else {
+      await link(partial, target);
+      placed = true;
+      await unlink(partial);
+    }
     await syncDirectory(parent);
 
     const admitted = await lstat(target);
@@ -278,9 +303,10 @@ async function importReference(command, stdin, stdout) {
  *
  * @param {string} root Canonical slot root.
  * @param {string} relativePath Validated slot-relative path.
+ * @param {boolean} allowExisting Whether one regular credential target may be atomically replaced.
  * @returns {Promise<{parent: string, target: string}>} Secured parent and target paths.
  */
-async function prepareImportTarget(root, relativePath) {
+async function prepareImportTarget(root, relativePath, allowExisting) {
   await requireDirectory(root);
   const segments = relativePath.split('/');
   let parent = root;
@@ -298,7 +324,15 @@ async function prepareImportTarget(root, relativePath) {
 
   const target = join(parent, segments.at(-1));
   try {
-    await lstat(target);
+    const existing = await lstat(target);
+    if (
+      allowExisting &&
+      existing.isFile() &&
+      !existing.isSymbolicLink() &&
+      existing.nlink === 1
+    ) {
+      return { parent, target };
+    }
   } catch (error) {
     if (error?.code === 'ENOENT') {
       return { parent, target };

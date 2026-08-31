@@ -167,7 +167,7 @@ export const SURFACES: Surface[] = [
   {
     id: 'goal',
     title: 'Goal',
-    path: '/goals/:threadId',
+    path: '/goals/:workspaceId/:threadId',
     tier: 'A',
     nav: 'route-only',
     board: '05/05b/05c/06/21',
@@ -176,7 +176,7 @@ export const SURFACES: Surface[] = [
   {
     id: 'artifact-review',
     title: 'Artifact review',
-    path: '/goals/:threadId/artifacts/:artifactId',
+    path: '/goals/:workspaceId/:threadId/artifacts/:artifactId',
     tier: 'A',
     nav: 'route-only',
     board: '12',
@@ -185,7 +185,7 @@ export const SURFACES: Surface[] = [
   {
     id: 'material',
     title: 'Material',
-    path: '/materials/:threadId/:materialId?',
+    path: '/materials/:workspaceId/:threadId/:materialId?',
     tier: 'A',
     nav: 'route-only',
     board: '05c/12/11/22',

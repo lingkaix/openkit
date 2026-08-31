@@ -79,6 +79,7 @@ function createLineageExportInput(
     | 'vault-approval'
     | 'vault-session'
 ): WriteWorkspaceExportTreeInput {
+  const agentSetup = createTestAgentSetup();
   const item = {
     id: source.itemId,
     workspaceId: source.workspaceId,
@@ -199,7 +200,7 @@ function createLineageExportInput(
         capabilities: [],
       },
     },
-    agentSetup: createTestAgentSetup(),
+    agentSetup,
     agentSessionId: source.sessionId,
     triggerActor: { kind: 'user', id: 'user_local' },
     userId: 'user_local',
@@ -290,10 +291,22 @@ function createLineageExportInput(
       name: 'Lineage workspace',
       kind: 'general',
       status: 'active',
-      defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
       counts: { threadCount: 1, artifactCount: 1, knowledgeEntryCount: 0 },
       createdAt: timestamp,
       updatedAt: timestamp,
+    },
+    portableFileState: {
+      claims: new Map(),
+      conflicts: new Map(),
+      nativeKnowledgePages: new Map(),
+      observations: new Map(),
+      retrievalTraces: new Map(),
+      workerContextPackageFiles: new Map(),
+      workspaceConfig: JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Lineage workspace', defaultAgentId: null },
+      }),
+      workspaceSchema: null,
     },
     threads: [
       {
@@ -344,11 +357,29 @@ function createLineageExportInput(
         turnId: missing === 'resolved-turn' ? 'tu_missing' : source.turnId,
         requestId: 'request_source',
         agentId: 'agent_codex_host',
-        providerId: 'openai_codex',
+        logicalModelId: agentSetup.logicalModels.preferredLogicalModelId,
         runtimeKind: 'codex',
         runtimeAdapter: 'codex-app-server',
         requiredFeatures: [],
-        setup: {},
+        setup: {
+          manifest: {
+            id: agentSetup.manifest.id,
+            requiredFeatures: agentSetup.manifest.requiredFeatures,
+            runtime: agentSetup.manifest.runtime,
+            sandbox: {
+              credentialDeclarations: agentSetup.manifest.sandbox.credentialDeclarations,
+              network: agentSetup.manifest.sandbox.network,
+            },
+          },
+          logicalModels: {
+            preferredLogicalModelId: agentSetup.logicalModels.preferredLogicalModelId,
+            allowed: agentSetup.logicalModels.allowed.map((model) => ({
+              id: model.id,
+              capabilities: model.capabilities,
+              modelFamilyId: model.modelFamilyId,
+            })),
+          },
+        },
         createdAt: timestamp,
       },
     ],
@@ -1087,7 +1118,10 @@ function createWorkResourceLineageExportInput(followUp?: {
         serializeWorkerContextPackageTrace(trace),
       ],
     ]),
-    workspaceConfig: null,
+    workspaceConfig: JSON.stringify({
+      schemaVersion: 1,
+      workspace: { name: 'Lineage workspace', defaultAgentId: null },
+    }),
     workspaceSchema: null,
   };
   if (followUp) {

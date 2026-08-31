@@ -35,7 +35,9 @@ export const schedulerAdmissionEntries = sqliteTable(
     /** Requested agent id. */
     requestedAgentId: text('requested_agent_id').notNull(),
     /** Requested agent profile reference. */
-    profileRef: text('profile_ref').notNull(),
+    profileRef: text('profile_ref'),
+    /** Requested logical model id. */
+    modelId: text('model_id'),
     /** Scheduler priority class. */
     priorityClass: text('priority_class').$type<SchedulerAdmissionPriorityClass>().notNull(),
     /** Entry enqueue timestamp. */

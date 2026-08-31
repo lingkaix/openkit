@@ -415,7 +415,12 @@ function appDiagnostics() {
   return {
     service: 'nanocore',
     boot: bootReadiness(),
-    gateway: { status: 'ok', endpoints: ['/v1/chat/completions'] },
+    gateway: {
+      status: 'ok',
+      endpoints: ['/v1/chat/completions'],
+      defaultModelId: 'default',
+      models: [{ id: 'default', displayName: 'Default', capabilities: ['chat'] }],
+    },
     providers: {
       diagnostics: [
         {
@@ -435,23 +440,6 @@ function appDiagnostics() {
           models: ['gpt-demo'],
         },
       ],
-    },
-    defaultProviders: {
-      core: {
-        configured: true,
-        model: 'gpt-demo',
-        origin: 'canonical',
-        providerId: 'provider_demo',
-      },
-      gateway: {
-        configured: false,
-        origin: 'unset',
-        reason: 'unset',
-      },
-    },
-    defaults: {
-      quickChat: { providerId: 'provider_demo', model: 'gpt-demo' },
-      gateway: { providerId: null, model: null },
     },
     capabilities: ['core.questions'],
     runtimeConfig: runtimeConfigStatus(),
@@ -551,9 +539,7 @@ function workspaceDashboard() {
       providerCount: 1,
     },
     defaultContext: {
-      modelId: null,
       agentId: 'agent_demo',
-      skillIds: [],
     },
     agentHealth: [
       {
@@ -601,7 +587,6 @@ function threadDashboard() {
     },
     composer: {
       disabled: false,
-      defaultModelId: null,
       defaultAgentId: 'agent_demo',
     },
     itemLog: {
@@ -799,15 +784,7 @@ function setupDiagnostics() {
       dataRoot: 'configured',
       config: {
         schemaVersion: 1,
-        defaults: {
-          coreProviderId: null,
-          gatewayProviderId: null,
-        },
-        gateway: {
-          openaiCompatible: {
-            enabled: null,
-          },
-        },
+        defaultAgentId: 'agent_codex_host',
       },
     },
     providers: [],
@@ -861,7 +838,7 @@ function workspaceExportResponse() {
       exportFormatVersion: 2,
       contentInventory: [
         {
-          path: 'records/workspace.json',
+          path: 'records/workspace-record.json',
           digest: 'sha256:ab4a13e5a040b76a82521f52dabddd42e7e4d4244c47e16ee8c6e1aa16233f3f',
           bytes: 16,
         },
@@ -869,7 +846,7 @@ function workspaceExportResponse() {
     },
     fileCount: 1,
     totalBytes: 16,
-    checkedFiles: ['records/workspace.json'],
+    checkedFiles: ['records/workspace-record.json'],
   };
 }
 
@@ -1329,7 +1306,7 @@ function workspaceImportDryRunResponse() {
     sourceWorkspaceId: 'ws_demo',
     exportedWorkspaceId: 'ws_demo',
     manifest: workspaceExportResponse().manifest,
-    verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace.json'] },
+    verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace-record.json'] },
     collision: {
       status: 'collides',
       workspaceId: 'ws_demo',
@@ -1348,7 +1325,7 @@ function workspaceImportResponse() {
     exportedWorkspaceId: 'ws_demo',
     importedWorkspaceId: 'ws_imported_ws_demo',
     manifest: workspaceExportResponse().manifest,
-    verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace.json'] },
+    verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace-record.json'] },
     collision: {
       status: 'collides',
       workspaceId: 'ws_demo',
@@ -1359,7 +1336,6 @@ function workspaceImportResponse() {
       name: 'Imported workspace',
       kind: 'general',
       status: 'active',
-      defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
       counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -1646,7 +1622,7 @@ describe('createCoreClient', () => {
     [
       'Chat Mode',
       (client: CoreClient) =>
-        client.app.startChatMode('ws_demo', 'th_demo', {
+        client.app.submitConversation('ws_demo', 'th_demo', {
           input: 'Hello',
           model: 'caller-model',
         } as never),
@@ -2753,8 +2729,7 @@ describe('createCoreClient', () => {
           id: 'quick_demo',
           status: 'completed',
           workspaceId: 'ws_demo',
-          providerId: 'provider_demo',
-          model: 'gpt-demo',
+          modelId: 'default',
           content: 'Answer',
         },
       },
@@ -2768,7 +2743,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/chat': {
+      'POST /api/app/workspaces/ws_demo/threads/th_demo/conversation-turns': {
         body: {
           outcome: 'answered',
           explanation: 'The Assistant answered directly.',
@@ -2785,6 +2760,12 @@ describe('createCoreClient', () => {
             completedAt: timestamp,
           },
           handoff: null,
+          originatingWorkspaceId: 'ws_demo',
+          originatingThreadId: 'th_demo',
+          receivingWorkspaceId: 'ws_demo',
+          receivingThreadId: 'th_demo',
+          targetRef: 'assistant',
+          logicalModelId: null,
         },
       },
       'POST /api/app/workspaces/ws_demo/knowledge/manager/answer': {
@@ -3251,6 +3232,7 @@ describe('createCoreClient', () => {
               turnId: 'turn_scheduler',
               requestedAgentId: 'agent_codex_host',
               profileRef: 'agent_codex_host',
+              modelId: null,
               priorityClass: 'interactive',
               enqueuedAt: timestamp,
               effectivePriorityAt: timestamp,
@@ -3373,7 +3355,11 @@ describe('createCoreClient', () => {
       state: 'running',
     });
     await expect(
-      client.app.startChatMode('ws_demo', 'th_demo', { input: 'What is OpenKit?' })
+      client.app.submitConversation('ws_demo', 'th_demo', {
+        input: 'What is OpenKit?',
+        targetRef: 'assistant',
+        artifactRefs: [],
+      })
     ).resolves.toMatchObject({
       outcome: 'answered',
       item: { type: 'assistant-message', text: 'Answer' },
@@ -3635,7 +3621,7 @@ describe('createCoreClient', () => {
       'GET /api/app/permission-decisions',
       'POST /api/app/quick-chat',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/task',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/chat',
+      'POST /api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       'POST /api/app/workspaces/ws_demo/knowledge/manager/answer',
       'POST /api/app/workspaces/ws_demo/knowledge/sources',
       'GET /api/app/workspaces/ws_demo/knowledge/sources',

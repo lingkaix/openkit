@@ -3,7 +3,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { codexAdapter } from './adapters/codex.js';
+import { WORKER_ADAPTERS, type WorkerAdapter } from './adapter-registry.js';
 import {
   runWorkerShim,
   type WorkerProcessRunner,
@@ -36,6 +36,11 @@ interface HarnessCommand {
   readonly body: Readonly<Record<string, unknown>>;
 }
 
+interface RoutedHarnessCommand extends HarnessCommand {
+  readonly adapterId: string;
+  readonly harnessInstanceId: string;
+}
+
 interface HarnessResult {
   readonly schemaVersion: 1;
   readonly operationId: string;
@@ -63,8 +68,10 @@ interface HarnessSession {
   readonly workspaceId: string;
 }
 
-/** Options for the one concrete shared Codex Harness. */
+/** Options for one adapter-selected Harness instance. */
 export interface WorkerHarnessOptions {
+  /** Static registry adapter owned by this Harness instance. */
+  readonly adapterId?: string | undefined;
   /** Harness-lifetime Sandbox Integration client. */
   readonly integration: SandboxIntegrationClient;
   /** Private writable root for AgentSession state and Turn outputs. */
@@ -79,8 +86,10 @@ export interface WorkerHarnessOptions {
   readonly runner?: WorkerProcessRunner | undefined;
 }
 
-/** One shared multi-AgentSession Codex Harness over the existing supervisor. */
+/** One adapter-selected multi-AgentSession Harness over the Sandbox Integration. */
 export class WorkerHarness {
+  private readonly adapter: WorkerAdapter;
+  private readonly adapterId: string;
   private draining = false;
   private readonly environment: WorkerShimEnvironment;
   private readonly integration: SandboxIntegrationClient;
@@ -90,8 +99,14 @@ export class WorkerHarness {
   private readonly sessions = new Map<string, HarnessSession>();
   private readonly turnOutputDirectory: string;
 
-  /** Creates the fixed one-Harness implementation without a registry or runtime selector. */
+  /** Creates one adapter-selected Harness with an AgentSession registry. */
   public constructor(options: WorkerHarnessOptions) {
+    this.adapterId = options.adapterId ?? 'codex';
+    const adapter = WORKER_ADAPTERS[this.adapterId];
+    if (!adapter) {
+      throw new Error(`Unknown worker Harness adapter: ${this.adapterId}`);
+    }
+    this.adapter = adapter;
     this.integration = options.integration;
     this.environment = options.environment ?? process.env;
     this.rootDirectory = resolve(options.rootDirectory ?? '/openkit/harness/agent-sessions');
@@ -139,7 +154,7 @@ export class WorkerHarness {
     }
   }
 
-  /** Opens one pending Codex Session in an independently derived private root. */
+  /** Opens one pending AgentSession in an independently derived private root. */
   private async openSession(body: Readonly<Record<string, unknown>>) {
     requireExactFields(body, [
       'agentSessionId',
@@ -158,7 +173,10 @@ export class WorkerHarness {
     const workspaceId = requireIdentity(body.workspaceId);
     const threadId = requireIdentity(body.threadId);
     const compatibilityKey = requireDigest(body.agentSessionCompatibilityKey);
-    if (body.adapterId !== 'codex' || !isPositiveSafeInteger(body.effectiveSetupGeneration)) {
+    if (
+      body.adapterId !== this.adapterId ||
+      !isPositiveSafeInteger(body.effectiveSetupGeneration)
+    ) {
       throw harnessError('unsupported');
     }
     if (this.sessions.has(bindingId)) {
@@ -166,9 +184,12 @@ export class WorkerHarness {
     }
     const privateName = createHash('sha256').update(bindingId).digest('hex');
     const sessionDirectory = resolve(this.rootDirectory, privateName);
-    const stateRoot = resolve(sessionDirectory, 'codex-home');
+    const stateRoot = resolve(sessionDirectory, 'native-state');
     await mkdir(sessionDirectory, { mode: 0o700, recursive: true });
-    const opened = await codexAdapter.openSession({ stateRoot });
+    const opened =
+      this.adapter.mode === 'session-continuity'
+        ? await this.adapter.openSession({ stateRoot })
+        : { nativeHandle: null, nativeHandleDigest: null, nativeHandleState: 'pending' as const };
     this.sessions.set(bindingId, {
       activeTurn: null,
       agentSessionId,
@@ -191,7 +212,10 @@ export class WorkerHarness {
   private async inspectSession(body: Readonly<Record<string, unknown>>) {
     requireExactFields(body, ['agentSessionId', 'agentSessionRuntimeBindingId']);
     const session = this.requireSession(body);
-    const inspected = await codexAdapter.inspectSession({ stateRoot: session.stateRoot });
+    const inspected =
+      this.adapter.mode === 'session-continuity'
+        ? await this.adapter.inspectSession({ stateRoot: session.stateRoot })
+        : { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
     return {
       childState: session.activeTurn && !session.activeTurn.barrierReached ? 'running' : 'absent',
       cleanupState: 'clean',
@@ -243,7 +267,10 @@ export class WorkerHarness {
     ) {
       throw harnessError('stale');
     }
-    const prior = await codexAdapter.inspectSession({ stateRoot: session.stateRoot });
+    const prior =
+      this.adapter.mode === 'session-continuity'
+        ? await this.adapter.inspectSession({ stateRoot: session.stateRoot })
+        : { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
     const abort = new AbortController();
     const nativeTurnDirectory = resolve(
       session.sessionDirectory,
@@ -270,6 +297,7 @@ export class WorkerHarness {
         OPENKIT_WORKSPACE_ID: session.workspaceId,
       },
       integration: this.integration,
+      expectedAdapterId: this.adapterId,
       nativeTurnDirectory,
       onNativeStart: markStarted,
       onTurnBarrier: () => {
@@ -332,10 +360,15 @@ export class WorkerHarness {
     if (session.activeTurn) {
       throw harnessError('busy');
     }
-    const closed = await codexAdapter.closeSession({
-      sessionDirectory: session.sessionDirectory,
-      stateRoot: session.stateRoot,
-    });
+    const closed =
+      this.adapter.mode === 'session-continuity'
+        ? await this.adapter.closeSession({
+            sessionDirectory: session.sessionDirectory,
+            stateRoot: session.stateRoot,
+          })
+        : await rm(session.sessionDirectory, { force: true, recursive: true }).then(() => ({
+            privateState: 'absent' as const,
+          }));
     this.sessions.delete(session.bindingId);
     return { childState: 'absent', ...closed, state: 'closed' };
   }
@@ -376,11 +409,10 @@ export async function runWorkerHarness(
   const integration = await openSandboxIntegration(
     options.signal ? { signal: options.signal } : undefined
   );
-  const harness = new WorkerHarness({
-    environment: options.environment,
-    integration,
-  });
-  let nextExpectedSequence = 0;
+  const harnesses = new Map<
+    string,
+    { readonly adapterId: string; readonly harness: WorkerHarness; nextExpectedSequence: number }
+  >();
   try {
     process.stdout.write('OPENKIT_WORKER_SHIM_ENTRY_V1\n');
     await integration.ready;
@@ -389,7 +421,7 @@ export async function runWorkerHarness(
       const response = await requestWithOutageBudget(
         integration,
         HARNESS_POLL_PATH,
-        JSON.stringify({ nextExpectedSequence, schemaVersion: 1 }),
+        JSON.stringify({ schemaVersion: 1 }),
         options.signal
       );
       if (response.status === 204) {
@@ -402,18 +434,37 @@ export async function runWorkerHarness(
       if (response.status !== 200) {
         throw new Error(`Harness poll failed with HTTP ${response.status}.`);
       }
-      const command = parseHarnessCommand(await response.text(), nextExpectedSequence);
-      const result = await harness.handle(command);
+      const command = parseHarnessCommand(await response.text());
+      let owner = harnesses.get(command.harnessInstanceId);
+      if (!owner) {
+        owner = {
+          adapterId: command.adapterId,
+          harness: new WorkerHarness({
+            adapterId: command.adapterId,
+            environment: options.environment,
+            integration,
+          }),
+          nextExpectedSequence: 0,
+        };
+        harnesses.set(command.harnessInstanceId, owner);
+      }
+      if (
+        owner.adapterId !== command.adapterId ||
+        owner.nextExpectedSequence !== command.sequence
+      ) {
+        throw new Error('Harness command selected stale or conflicting instance state.');
+      }
+      const result = await owner.harness.handle(command);
       const resultResponse = await requestWithOutageBudget(
         integration,
         HARNESS_RESULT_PATH,
-        JSON.stringify(result),
+        JSON.stringify({ ...result, harnessInstanceId: command.harnessInstanceId }),
         options.signal
       );
       if (resultResponse.status !== 204 || (await resultResponse.text()) !== '') {
         throw new Error('Harness result was not accepted with an empty 204.');
       }
-      nextExpectedSequence += 1;
+      owner.nextExpectedSequence += 1;
     }
   } finally {
     await integration.close();
@@ -449,22 +500,32 @@ async function requestWithOutageBudget(
 }
 
 /** Parses one exact current-sequence command from NanoCore. */
-function parseHarnessCommand(text: string, nextExpectedSequence: number): HarnessCommand {
+function parseHarnessCommand(text: string): RoutedHarnessCommand {
   const value = JSON.parse(text) as unknown;
   if (!isRecord(value)) {
     throw new Error('Harness command must be an object.');
   }
-  requireExactFields(value, ['schemaVersion', 'operationId', 'sequence', 'operation', 'body']);
+  requireExactFields(value, [
+    'schemaVersion',
+    'operationId',
+    'sequence',
+    'operation',
+    'body',
+    'adapterId',
+    'harnessInstanceId',
+  ]);
   if (
     value.schemaVersion !== 1 ||
-    value.sequence !== nextExpectedSequence ||
+    !isNonnegativeSafeInteger(value.sequence) ||
     !HEX_64_PATTERN.test(String(value.operationId)) ||
     typeof value.operation !== 'string' ||
+    typeof value.adapterId !== 'string' ||
+    typeof value.harnessInstanceId !== 'string' ||
     !isRecord(value.body)
   ) {
     throw new Error('Harness command envelope is invalid.');
   }
-  return value as unknown as HarnessCommand;
+  return value as unknown as RoutedHarnessCommand;
 }
 
 /** Requires the already parsed envelope identity used by every result. */

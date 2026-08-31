@@ -5,6 +5,8 @@ This directory owns LLM Gateway behavior, provider dispatch, upstream clients an
 ## Boundaries
 
 - Keep Gateway routes, dispatch, native and bridged request handling, upstream error normalization, provider-subscription account state, and prompt-cache behavior here.
+- Publish logical model IDs only. Private Provider profile and native model route members remain Gateway-owned, and a logical model stays available while at least one configured route member is dispatchable.
+- Preserve ordered pre-output route fallback today while leaving load balancing, quota rollover, and same-family account switching to accepted Gateway extensions.
 - `../providers/` is the single owner of configured provider instances, profiles, credential references, and readiness projection.
 - `../capability/` owns durable capability-call and usage ledger operations; LLM code records observations through that owner.
 - Consume resolved credentials without serializing secret-bearing configuration or creating a second provider vocabulary.

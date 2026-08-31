@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import {
-  type ChatCommandReceiptMetadata,
   type CommandRequestName,
   type CommandRequestRecord,
   type CommandRequestResponseKind,
   type CommandRequestScope,
+  type ConversationCommandReceiptMetadata,
   commandRequestKey,
   type FsStore,
 } from '../lib/store.js';
@@ -33,6 +33,56 @@ export interface InflightIdempotentCommand {
   readonly promise: Promise<unknown>;
 }
 
+/** Exact lineage used to locate one Worker Turn owned by `conversation.submit`. */
+export interface ConversationWorkerReceiptLineage {
+  /** Responsible product user. */
+  readonly actorId: string;
+  /** Workspace receiving the Worker Turn. */
+  readonly workspaceId: string;
+  /** Thread receiving the Worker Turn. */
+  readonly receivingThreadId: string;
+  /** Original conversation command request. */
+  readonly requestId: string;
+  /** Canonical conversation command input hash retained by the Worker checkpoint. */
+  readonly requestInputHash: string;
+  /** Worker Turn owned by the receipt. */
+  readonly turnId: string;
+}
+
+/**
+ * Finds the unique conversation receipt that owns one selected Worker Turn.
+ *
+ * The originating Thread is intentionally read from the receipt scope because a new Task Worker may receive the Turn in a different Thread.
+ *
+ * @param store Product store containing bounded command receipts.
+ * @param lineage Exact responsible actor, receiving lineage, request, input, and Turn tuple.
+ * @returns The unique matching receipt, or null when authority is absent or contradictory.
+ */
+export function findExactConversationWorkerOwnerReceipt(
+  store: FsStore,
+  lineage: ConversationWorkerReceiptLineage
+): CommandRequestRecord | null {
+  const matches = store.listCommandRequests().filter((receipt) => {
+    const metadata = receipt.response.conversationMetadata;
+    return (
+      receipt.command === 'conversation.submit' &&
+      receipt.requestId === lineage.requestId &&
+      receipt.inputHash === lineage.requestInputHash &&
+      receipt.scope.actorId === lineage.actorId &&
+      receipt.scope.workspaceId === lineage.workspaceId &&
+      receipt.response.kind === 'turn' &&
+      receipt.response.id === lineage.turnId &&
+      metadata?.receivingWorkspaceId === lineage.workspaceId &&
+      metadata.receivingThreadId === lineage.receivingThreadId &&
+      metadata.resultKind === 'worker-turn' &&
+      metadata.status === 202 &&
+      metadata.downstream?.kind === 'task' &&
+      metadata.downstream.turnId === lineage.turnId
+    );
+  });
+  return matches.length === 1 ? matches[0]! : null;
+}
+
 /** Options shared by synchronous transactional and ordinary idempotent commands. */
 interface IdempotentCommandBaseOptions<T> {
   /** Store that owns the idempotency ledger. */
@@ -49,8 +99,8 @@ interface IdempotentCommandBaseOptions<T> {
   readonly input: unknown;
   /** Resource kind returned by this command. */
   readonly responseKind: CommandRequestResponseKind;
-  /** Captures the sole Core-authorized extra receipt metadata for `chat.start`. */
-  readonly chatResponseMetadata?: (result: T) => ChatCommandReceiptMetadata;
+  /** Captures the sole Core-authorized extra receipt metadata for `conversation.submit`. */
+  readonly conversationResponseMetadata?: (result: T) => ConversationCommandReceiptMetadata;
   /** Replays the current resource snapshot for an existing ledger record. */
   readonly replay: (record: CommandRequestRecord) => Promise<T> | T;
   /** Extracts the response resource id from a fresh command result. */
@@ -107,8 +157,8 @@ type IdempotentCommandOptions<T> = IdempotentCommandBaseOptions<T> &
  * @throws Error when transaction mode lacks its database or receives asynchronous execution.
  */
 export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<T>): Promise<T> {
-  if (options.chatResponseMetadata && options.command !== 'chat.start') {
-    throw new Error('Only chat.start may store extra command receipt metadata.');
+  if (options.conversationResponseMetadata && options.command !== 'conversation.submit') {
+    throw new Error('Only conversation.submit may store extra command receipt metadata.');
   }
   let transaction: { readonly db: CoreDb | WorkspaceDb; readonly execute: () => T } | undefined;
 
@@ -182,8 +232,8 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
         response: {
           kind: options.responseKind,
           id: options.responseId(result),
-          ...(options.chatResponseMetadata
-            ? { chatMetadata: options.chatResponseMetadata(result) }
+          ...(options.conversationResponseMetadata
+            ? { conversationMetadata: options.conversationResponseMetadata(result) }
             : {}),
         },
       },
@@ -273,7 +323,7 @@ export function chatTaskModeTurnId(
   requestId: string
 ): string {
   const suffix = commandInputHash({
-    command: 'chat.start.task',
+    command: 'conversation.submit.task',
     actorId,
     workspaceId,
     threadId,

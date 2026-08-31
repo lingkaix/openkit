@@ -220,12 +220,12 @@ The implementation includes package tests for unknown optional field tolerance, 
 | Feature | Status | Description |
 | --- | --- | --- |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
-| `session.concurrent-turns` | active | AgentSession may process more than one turn concurrently. |
+| `session.concurrent-turns` | active | A Harness may process active Turns concurrently only across distinct single-flight AgentSessions and Threads. |
 | `vault.injection.query-param` | active | Vault injection may place secret references into query parameters. |
 | `workspace.mount.fuse` | active | Workspace input requires a FUSE-style mount implementation. |
 | `workspace.writeback.external` | active | Workspace writes are committed through an external writeback mechanism. |
 
-The current registry description for `session.concurrent-turns` is semantically overbroad. The accepted runtime target permits concurrent Turns only across distinct AgentSessions and Threads and keeps each AgentSession and Thread single-flight. Stage E updates the shared registry description and this mirrored table together while retaining the identifier; until then this specification is `Partial` and no reader may interpret the current sentence as authority to run concurrent Turns in one AgentSession.
+The `session.concurrent-turns` identifier describes a Harness capability and never authorizes more than one active Turn in one AgentSession or Thread. The current scheduler does not grant this capability.
 
 ## Extension Namespaces
 

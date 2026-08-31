@@ -8,8 +8,11 @@ export const RuntimeConfigReloadModeSchema = z.enum(['safe', 'strict']);
 /** Runtime config file kind exposed to the admin UI. */
 export const RuntimeConfigFileKindSchema = z.enum([
   'server',
+  'gateway',
+  'internal-role',
   'provider',
   'agent',
+  'user',
   'workspace',
   'data-source',
 ]);

@@ -51,13 +51,21 @@ async function createMountedDataRootFixture(workspaceId: string): Promise<string
     join(workspaceRoot, 'reviews'),
     join(workspaceRoot, 'evidence'),
     join(workspaceRoot, 'indexes'),
+    join(workspaceRoot, 'config'),
   ]) {
     mkdirSync(directory, { recursive: true });
   }
 
   writeFileSync(join(dataRoot, 'server', 'db', 'core.sqlite'), '');
   writeFileSync(join(dataRoot, 'config', 'server.jsonc'), '{ "schemaVersion": 1 }\n');
-  writeFileSync(join(workspaceRoot, 'workspace.json'), '{ "id": "ws_1" }\n');
+  writeFileSync(
+    join(workspaceRoot, 'workspace-record.json'),
+    '{ "id": "ws_1", "kind": "general", "status": "active", "createdAt": "2026-08-31T00:00:00.000Z", "updatedAt": "2026-08-31T00:00:00.000Z" }\n'
+  );
+  writeFileSync(
+    join(workspaceRoot, 'config', 'workspace.jsonc'),
+    '{ "schemaVersion": 1, "workspace": { "name": "Smoke Workspace", "defaultAgentId": null } }\n'
+  );
   writeFileSync(
     join(dataRoot, 'server', 'runtime', 'agents', 'agent_codex_host', 'resolved', 'latest.json'),
     '{ "agentId": "agent_codex_host" }\n'

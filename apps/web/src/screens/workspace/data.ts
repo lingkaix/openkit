@@ -625,7 +625,7 @@ export function canDecideInline(
 /** Deep-link into the owning thread / goal / artifact for a Needs-you row. */
 export function openHrefForRow(row: AttentionRow): string | null {
   if (row.source.type === 'artifact_review') {
-    return `/goals/${row.source.threadId}/artifacts/${row.source.artifactId}`;
+    return `/goals/${row.workspaceId}/${row.source.threadId}/artifacts/${row.source.artifactId}`;
   }
   if (
     row.source.type === 'goal' ||
@@ -633,7 +633,7 @@ export function openHrefForRow(row: AttentionRow): string | null {
     row.kind === 'artifact_review'
   ) {
     const threadId = row.threadId ?? ('threadId' in row.source ? row.source.threadId : null);
-    return threadId ? `/goals/${threadId}` : null;
+    return threadId ? `/goals/${row.workspaceId}/${threadId}` : null;
   }
   if (row.threadId) {
     return chatThreadPath(row.workspaceId, row.threadId);

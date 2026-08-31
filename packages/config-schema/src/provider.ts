@@ -155,7 +155,7 @@ export const ProviderProfileSchema = ProviderProfileObjectSchema.superRefine(
 /**
  * Configured provider instance schema derived from the canonical provider profile.
  *
- * Server-embedded providers require an explicit vendor and cannot declare profile-derived category or readiness state.
+ * Materialized runtime instances require an explicit vendor and cannot declare profile-derived category or readiness state.
  */
 export const OpenKitProviderInstanceSchema = z
   .object(ProviderProfileObjectSchema.shape)

@@ -94,7 +94,6 @@ function createOwnerNestedWorkspaceRoot(
         name: workspaceId,
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -206,7 +205,7 @@ function sourceWorkspaceRoot(fixture: ReturnType<typeof createMigrationFixture>)
 }
 
 /**
- * Records one valid V2 AEP fixture, then rewrites it into the migration-only V1 input shape.
+ * Records one valid V4 AEP fixture, then rewrites it into the migration-only V1 input shape.
  *
  * @param fixture Existing predecessor-layout fixture.
  * @param suffix Stable package lineage suffix.
@@ -542,7 +541,7 @@ describe('workspace storage migration', () => {
     ).toMatchObject({ layoutVersion: 1 });
   });
 
-  it('transforms every staged V1 AEP snapshot into the strict V3 runtime and actor shape', () => {
+  it('transforms every staged V1 AEP snapshot into the strict V4 runtime and actor shape', () => {
     const fixture = createMigrationFixture();
     const userSnapshot = writeLegacyAepSnapshot(
       fixture,
@@ -583,7 +582,7 @@ describe('workspace storage migration', () => {
       const successorDigest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
       successorDigests.push(successorDigest);
 
-      expect(snapshot.schemaVersion).toBe(3);
+      expect(snapshot.schemaVersion).toBe(4);
       expect(snapshot.runtime.image).toEqual({
         kind: 'reference',
         pullPolicy: 'if-not-present',

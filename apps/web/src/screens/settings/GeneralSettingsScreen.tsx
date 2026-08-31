@@ -7,21 +7,11 @@ import {
   ErrorBanner,
   Page,
   PageHeader,
-  Select,
   Skeleton,
   StatusChip,
-  Switch,
   TextField,
 } from '../../primitives';
-import {
-  useCurrentWorkspaceId,
-  useSettingsWorkspace,
-  useSettingsWorkspaceResources,
-  useUpdateWorkspaceDefaults,
-  useUpdateWorkspaceName,
-} from './data';
-
-const SYSTEM_DEFAULT = 'system-default';
+import { useCurrentWorkspaceId, useSettingsWorkspace, useUpdateWorkspaceName } from './data';
 
 /**
  * General settings (WP-7, board 10).
@@ -33,15 +23,10 @@ const SYSTEM_DEFAULT = 'system-default';
 export function GeneralSettingsScreen() {
   const workspaceId = useCurrentWorkspaceId();
   const workspace = useSettingsWorkspace(workspaceId);
-  const resources = useSettingsWorkspaceResources(workspaceId);
   const updateName = useUpdateWorkspaceName(workspaceId);
-  const updateDefaults = useUpdateWorkspaceDefaults(workspaceId);
   const { failed: disconnected } = useConnection();
 
   const [displayName, setDisplayName] = useState('');
-  const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
-  const [defaultAgentId, setDefaultAgentId] = useState<string | null>(null);
-  const [defaultSkillIds, setDefaultSkillIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (workspace.data?.name) {
@@ -49,18 +34,11 @@ export function GeneralSettingsScreen() {
     }
   }, [workspace.data?.name]);
 
-  useEffect(() => {
-    setDefaultModelId(workspace.data?.defaults?.defaultModelId ?? null);
-    setDefaultAgentId(workspace.data?.defaults?.defaultAgentId ?? null);
-    setDefaultSkillIds(workspace.data?.defaults?.defaultSkillIds ?? []);
-  }, [workspace.data?.defaults]);
-
-  const loading = !workspaceId || workspace.isLoading || resources.isLoading;
-  const loadError = workspace.isError || resources.isError;
+  const loading = !workspaceId || workspace.isLoading;
+  const loadError = workspace.isError;
 
   function retry() {
     void workspace.refetch();
-    void resources.refetch();
   }
 
   function save() {
@@ -69,53 +47,15 @@ export function GeneralSettingsScreen() {
     updateName.mutate(next);
   }
 
-  function saveDefaults() {
-    if (!workspaceId) return;
-    updateDefaults.mutate({ defaultModelId, defaultAgentId, defaultSkillIds });
-  }
-
-  function resetDefaults() {
-    setDefaultModelId(workspace.data?.defaults?.defaultModelId ?? null);
-    setDefaultAgentId(workspace.data?.defaults?.defaultAgentId ?? null);
-    setDefaultSkillIds(workspace.data?.defaults?.defaultSkillIds ?? []);
-  }
-
   const dirty = Boolean(workspace.data && displayName.trim() !== workspace.data.name);
   const saveDisabled = disconnected || !dirty || updateName.isPending || !displayName.trim();
-  const savedDefaults = workspace.data?.defaults;
-  const defaultsDirty = Boolean(
-    workspace.data &&
-      (defaultModelId !== (savedDefaults?.defaultModelId ?? null) ||
-        defaultAgentId !== (savedDefaults?.defaultAgentId ?? null) ||
-        defaultSkillIds.length !== (savedDefaults?.defaultSkillIds.length ?? 0) ||
-        defaultSkillIds.some((id) => !savedDefaults?.defaultSkillIds.includes(id)))
-  );
-  const modelItems = [
-    { id: SYSTEM_DEFAULT, label: 'Use system default' },
-    ...(resources.data?.models
-      .filter((model) => model.enabled)
-      .map((model) => ({
-        id: model.id,
-        label: model.name,
-      })) ?? []),
-  ];
-  const agentItems = [
-    { id: SYSTEM_DEFAULT, label: 'Use system default' },
-    ...(resources.data?.agents
-      .filter((agent) => agent.status === 'enabled')
-      .map((agent) => ({
-        id: agent.id,
-        label: agent.name,
-      })) ?? []),
-  ];
-  const skills = resources.data?.skills.filter((skill) => skill.enabled) ?? [];
 
   return (
     <Page>
       <PageHeader
         eyebrow="Workspace"
         title="General"
-        subtitle="Workspace identity, execution defaults, and knowledge."
+        subtitle="Workspace identity and knowledge."
         actions={
           disconnected ? <StatusChip tone="notice">Save disabled — disconnected</StatusChip> : null
         }
@@ -166,77 +106,6 @@ export function GeneralSettingsScreen() {
                 </Button>
                 <Button size="sm" isDisabled={saveDisabled} onPress={save}>
                   Save changes
-                </Button>
-              </div>
-            </Card>
-          </section>
-          <section className="flex flex-col gap-3" aria-labelledby="settings-execution-defaults">
-            <h2
-              id="settings-execution-defaults"
-              className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-            >
-              Execution defaults
-            </h2>
-            <Card className="flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-3">
-                <Select
-                  label="Default model"
-                  items={modelItems}
-                  selectedKey={defaultModelId ?? SYSTEM_DEFAULT}
-                  isDisabled={disconnected}
-                  onSelectionChange={(key) =>
-                    setDefaultModelId(key === SYSTEM_DEFAULT ? null : String(key))
-                  }
-                />
-                <Select
-                  label="Default agent"
-                  items={agentItems}
-                  selectedKey={defaultAgentId ?? SYSTEM_DEFAULT}
-                  isDisabled={disconnected}
-                  onSelectionChange={(key) =>
-                    setDefaultAgentId(key === SYSTEM_DEFAULT ? null : String(key))
-                  }
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <p className="text-xs font-bold text-fg">Default skills</p>
-                {skills.length === 0 ? (
-                  <p className="text-xs text-fg-muted">No enabled skills are available.</p>
-                ) : (
-                  skills.map((skill) => (
-                    <Switch
-                      key={skill.id}
-                      isSelected={defaultSkillIds.includes(skill.id)}
-                      isDisabled={disconnected}
-                      onChange={(selected) =>
-                        setDefaultSkillIds((ids) =>
-                          selected ? [...ids, skill.id] : ids.filter((id) => id !== skill.id)
-                        )
-                      }
-                    >
-                      {skill.name}
-                    </Switch>
-                  ))
-                )}
-              </div>
-              {updateDefaults.isError ? (
-                <ErrorBanner message="Couldn't save execution defaults." onRetry={saveDefaults} />
-              ) : null}
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="quiet"
-                  size="sm"
-                  isDisabled={disconnected || !defaultsDirty || updateDefaults.isPending}
-                  onPress={resetDefaults}
-                >
-                  Reset
-                </Button>
-                <Button
-                  size="sm"
-                  isDisabled={disconnected || !defaultsDirty || updateDefaults.isPending}
-                  onPress={saveDefaults}
-                >
-                  Save execution defaults
                 </Button>
               </div>
             </Card>

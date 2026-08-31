@@ -16,7 +16,7 @@ import {
   assertAuthorizedWorkspaceLineage,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
-import type { RuntimeConfigManager } from './config/runtime-config.js';
+import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { hasExactActiveHumanGate } from './runtime/worker-recovery.js';
@@ -481,7 +481,9 @@ export function registerDashboardRoutes({
       const threads = store
         .listThreads(workspaceId)
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      const providerCount = runtimeConfigManager.current().providerRegistry.list().length;
+      const snapshot = runtimeConfigManager.current();
+      const providerCount = snapshot.providerRegistry.list().length;
+      const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId);
       const workspaceArtifacts = store.listArtifacts(workspaceId);
       const workSections = buildWorkspaceWorkSections(
         store,
@@ -501,9 +503,7 @@ export function registerDashboardRoutes({
             providerCount,
           },
           defaultContext: {
-            modelId: workspace.defaults?.defaultModelId ?? null,
-            agentId: workspace.defaults?.defaultAgentId ?? null,
-            skillIds: workspace.defaults?.defaultSkillIds ?? [],
+            agentId: defaultAgentId,
           },
           agentHealth: resources.agents.map((agent) => ({
             agentId: agent.id,
@@ -542,7 +542,6 @@ export function registerDashboardRoutes({
             policyOperation: 'turn.run',
           }));
       const threadId = c.req.param('threadId');
-      const workspace = store.getWorkspace(workspaceId);
       const workspaceAccess = c.get('workspaceAccess');
       let thread: ReturnType<FsStore['getThread']>;
       try {
@@ -559,9 +558,8 @@ export function registerDashboardRoutes({
       const turns = store.listThreadTurns(workspaceId, threadId);
       const threadItems = store.listThreadItems(workspaceId, threadId);
       const latestTurn = turns.at(-1) ?? null;
-      const selectedAgentId = latestTurn
-        ? (latestTurn.agentId ?? null)
-        : (workspace.defaults?.defaultAgentId ?? null);
+      const defaultAgentId = resolveDefaultAgentId(runtimeConfigManager.current(), workspaceId);
+      const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
       const threadArtifacts = store
         .listArtifacts(workspaceId)
         .filter((artifact) => artifact.threadId === threadId);
@@ -584,8 +582,7 @@ export function registerDashboardRoutes({
           }),
           composer: {
             disabled: !turnDecisionAuthorized,
-            defaultModelId: workspace.defaults?.defaultModelId ?? null,
-            defaultAgentId: workspace.defaults?.defaultAgentId ?? null,
+            defaultAgentId,
           },
           itemLog: {
             href: `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`,

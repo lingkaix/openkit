@@ -26,12 +26,32 @@ export const chatKeys = {
   items: (workspaceId: string, threadId: string) => ['items', workspaceId, threadId] as const,
   dashboard: (workspaceId: string, threadId: string) =>
     ['thread-dashboard', workspaceId, threadId] as const,
+  conversationTargets: (workspaceId: string, threadId?: string) =>
+    ['conversation-targets', workspaceId, threadId ?? 'starter'] as const,
   feedback: (workspaceId: string, threadId: string, turnId: string) =>
     ['turn-feedback', workspaceId, threadId, turnId] as const,
   renameMutation: ['thread-lifecycle', 'rename'] as const,
   archiveMutation: ['thread-lifecycle', 'archive'] as const,
   interruptMutation: ['thread-lifecycle', 'interrupt'] as const,
 };
+
+export interface ConversationDraft {
+  input: string;
+  targetRef: string;
+  logicalModelId?: string;
+  artifactRefs: Array<{ artifactId: string; artifactVersion: number }>;
+  requestId: string;
+}
+
+/** Lists the current Workspace Composer targets for a starter or active Thread. */
+export function useConversationTargets(workspaceId: string | null, threadId?: string) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: chatKeys.conversationTargets(workspaceId ?? '', threadId),
+    queryFn: () => client.app.getConversationTargets(workspaceId as string, threadId),
+    enabled: Boolean(workspaceId),
+  });
+}
 
 /**
  * Builds a Chat deep link that retains the Thread's owning Workspace.
@@ -42,6 +62,11 @@ export const chatKeys = {
  */
 export function chatThreadPath(workspaceId: string, threadId: string): string {
   return `/chat/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
+}
+
+/** Builds a Task deep link that retains the Thread's owning Workspace. */
+export function taskThreadPath(workspaceId: string, threadId: string): string {
+  return `/tasks/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
 }
 
 /** List the workspaces the user can act in. */
@@ -296,25 +321,17 @@ export function useSendTurn() {
     mutationFn: async (input: {
       workspaceId: string;
       threadId: string;
-      mode: 'chat' | 'task';
-      message: string;
-    }) => {
-      if (input.mode === 'task') {
-        await client.app.startTaskMode(input.workspaceId, input.threadId, {
-          input: input.message,
-        });
-      } else {
-        await client.app.startChatMode(input.workspaceId, input.threadId, {
-          input: input.message,
-        });
-      }
-    },
-    onSuccess: (_response, input) => {
+      draft: ConversationDraft;
+    }) => client.app.submitConversation(input.workspaceId, input.threadId, input.draft),
+    onSuccess: (response) => {
       void queryClient.invalidateQueries({
-        queryKey: chatKeys.items(input.workspaceId, input.threadId),
+        queryKey: chatKeys.items(response.receivingWorkspaceId, response.receivingThreadId),
       });
       void queryClient.invalidateQueries({
-        queryKey: chatKeys.dashboard(input.workspaceId, input.threadId),
+        queryKey: chatKeys.dashboard(response.receivingWorkspaceId, response.receivingThreadId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: chatKeys.threads(response.receivingWorkspaceId),
       });
     },
   });
@@ -468,19 +485,16 @@ export function useCreateThread() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { workspaceId: string; firstMessage: string }): Promise<Thread> => {
-      const name = input.firstMessage.slice(0, 60);
-      const thread = await client.core.createThread({ workspaceId: input.workspaceId, name });
-      // Open the thread even when the first turn cannot start (for example when the
-      // workspace has no repository yet). The user can retry from ThreadScreen.
-      try {
-        await client.app.startChatMode(input.workspaceId, thread.id, { input: input.firstMessage });
-      } catch {
-        // Thread create succeeded; turn failure must not block navigation.
-      }
-      return thread;
+    mutationFn: async (input: { workspaceId: string; draft: ConversationDraft }) => {
+      const name = input.draft.input.trim().slice(0, 60) || 'Artifact task';
+      const thread = await client.core.createThread({
+        workspaceId: input.workspaceId,
+        name,
+        requestId: input.draft.requestId,
+      });
+      return client.app.submitConversation(input.workspaceId, thread.id, input.draft);
     },
-    onSuccess: (_thread, input) => {
+    onSettled: (_thread, _error, input) => {
       void queryClient.invalidateQueries({ queryKey: chatKeys.threads(input.workspaceId) });
     },
   });

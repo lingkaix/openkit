@@ -497,6 +497,8 @@ describe('ensureLayout', () => {
     ensureConfigTemplateSurface(root);
 
     expect(existsSync(join(root, 'config', 'server.jsonc'))).toBe(true);
+    expect(existsSync(join(root, 'config', 'gateway.jsonc'))).toBe(true);
+    expect(existsSync(join(root, 'config', 'internal-role-profiles.jsonc'))).toBe(true);
     expect(existsSync(join(root, 'config', 'providers', 'openai-default.provider.jsonc'))).toBe(
       true
     );
@@ -529,8 +531,10 @@ describe('ensureLayout', () => {
     ensureLayout(root);
 
     expect(existsSync(configPath)).toBe(true);
-    expect(readFileSync(configPath, 'utf8')).toContain('coreProviderId');
-    expect(readFileSync(configPath, 'utf8')).toContain('no default provider');
+    expect(readFileSync(configPath, 'utf8')).toContain('defaultAgentId');
+    expect(readFileSync(join(root, 'config', 'gateway.jsonc'), 'utf8')).toContain(
+      'defaultLogicalModelId'
+    );
 
     writeFileSync(configPath, '{ "mode": "server" }\n');
     ensureLayout(root);

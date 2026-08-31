@@ -164,6 +164,7 @@ const DENIED_ADMISSION = {
     turnId: 'tu_denied',
     requestedAgentId: 'agent_scout',
     profileRef: 'scout/default',
+    modelId: null,
     priorityClass: 'interactive',
     enqueuedAt: TIMESTAMP,
     effectivePriorityAt: TIMESTAMP,

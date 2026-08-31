@@ -44,6 +44,10 @@ function workerRuntime(kind = 'codex', adapter = 'codex-app-server'): Record<str
   };
 }
 
+function logicalModels() {
+  return { preferredLogicalModelId: 'reasoning', allowedLogicalModelIds: ['reasoning'] };
+}
+
 describe('loadAgentManifests', () => {
   it('loads authored agent config templates copied by ensureLayout', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agents-'));
@@ -69,22 +73,20 @@ describe('loadAgentManifests', () => {
         expect.objectContaining({
           displayName: 'Codex Agent',
           id: 'agent_codex_host',
-          provider: expect.objectContaining({ ref: 'openai' }),
+          models: expect.objectContaining({ preferredLogicalModelId: 'reasoning' }),
           runtime: expect.objectContaining({ kind: 'codex' }),
         }),
         expect.objectContaining({
           displayName: 'OpenCode Agent',
           id: 'agent_opencode_server',
-          provider: expect.objectContaining({ ref: 'openrouter' }),
+          models: expect.objectContaining({ preferredLogicalModelId: 'reasoning' }),
           runtime: expect.objectContaining({ kind: 'opencode' }),
         }),
         expect.objectContaining({
           displayName: 'Pi Agent',
           id: 'agent_pi',
-          provider: expect.objectContaining({
-            model: 'claude-sonnet-4-5',
-            ref: 'anthropic',
-          }),
+          models: expect.objectContaining({ preferredLogicalModelId: 'claude' }),
+          readiness: expect.objectContaining({ status: 'disabled' }),
           runtime: expect.objectContaining({ adapter: 'pi', kind: 'pi' }),
         }),
       ])
@@ -132,6 +134,7 @@ describe('loadAgentManifests', () => {
           },
         },
         id: 'agent_extended',
+        models: logicalModels(),
         runtime: { ...workerRuntime('custom', 'custom-http'), version: '0.0.1' },
       })
     );
@@ -154,11 +157,8 @@ describe('loadAgentManifests', () => {
         schemaVersion: 1,
         id: 'agent_codex_host',
         displayName: 'Codex Agent',
+        models: logicalModels(),
         runtime: { ...workerRuntime(), version: '0.130.0' },
-        provider: {
-          ref: 'agent-openrouter',
-          model: 'openai/gpt-5.1',
-        },
         sandbox: {
           backend: {
             allowedKinds: ['openshell'],
@@ -174,7 +174,7 @@ describe('loadAgentManifests', () => {
               port: 443,
               protocol: 'https',
               access: 'read-write',
-              purpose: 'Use the selected provider.',
+              purpose: 'Use a declared runtime endpoint.',
               binaries: ['/usr/local/bin/codex'],
             },
           ],
@@ -189,10 +189,7 @@ describe('loadAgentManifests', () => {
       expect.objectContaining({
         displayName: 'Codex Agent',
         id: 'agent_codex_host',
-        provider: {
-          model: 'openai/gpt-5.1',
-          ref: 'agent-openrouter',
-        },
+        models: logicalModels(),
         runtime: expect.objectContaining({
           adapter: 'codex-app-server',
           kind: 'codex',
@@ -212,6 +209,7 @@ describe('loadAgentManifests', () => {
         schemaVersion: 1,
         id: 'agent_unknown',
         displayName: 'Unknown Agent',
+        models: logicalModels(),
         runtime: workerRuntime(),
         unsupportedTopLevel: true,
       })
@@ -238,6 +236,7 @@ describe('loadAgentManifests', () => {
         schemaVersion: 1,
         id: 'agent_unsafe_paths',
         displayName: 'Unsafe Paths',
+        models: logicalModels(),
         runtime: workerRuntime(),
         workspace: {
           inputs: [
@@ -266,6 +265,7 @@ describe('loadAgentManifests', () => {
         schemaVersion: 1,
         id: 'agent_unsafe_mcp',
         displayName: 'Unsafe MCP',
+        models: logicalModels(),
         runtime: workerRuntime(),
         mcp: [{ id: 'github', mode: 'agent.local', credentialRef: 'env:GITHUB_TOKEN' }],
       })

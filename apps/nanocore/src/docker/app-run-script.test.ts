@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { OpenKitConfigSchema } from '@openkit/config-schema';
+import {
+  GatewayConfigSchema,
+  InternalRoleProfilesConfigSchema,
+  OpenKitConfigSchema,
+  ProviderProfileSchema,
+} from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -86,12 +91,24 @@ describe('app run script', () => {
     expect(existsSync(join(dataRoot, 'config', 'agents', 'codex-home', 'config.toml'))).toBe(false);
 
     const serverConfig = readFileSync(join(dataRoot, 'config', 'server.jsonc'), 'utf8');
-    expect(serverConfig).toContain('"id": "nanocore-openrouter"');
-    expect(serverConfig).toContain('"id": "nano-agent-openrouter"');
-    expect(serverConfig).not.toContain('"apiKey"');
-    expect(serverConfig).toContain('"secretRef": "env:OPENROUTER_API_KEY"');
-    expect(serverConfig).toContain('"defaultModel": "z-ai/glm-4.5-air:free"');
+    const providerConfig = readFileSync(
+      join(dataRoot, 'config', 'providers', 'openrouter.provider.jsonc'),
+      'utf8'
+    );
+    const gatewayConfig = readFileSync(join(dataRoot, 'config', 'gateway.jsonc'), 'utf8');
+    const internalRoleProfiles = readFileSync(
+      join(dataRoot, 'config', 'internal-role-profiles.jsonc'),
+      'utf8'
+    );
+    expect(providerConfig).not.toContain('"apiKey"');
+    expect(providerConfig).toContain('"secretRef": "env:OPENROUTER_API_KEY"');
+    expect(providerConfig).toContain('"defaultModel": "z-ai/glm-4.5-air:free"');
     expect(() => OpenKitConfigSchema.parse(JSON.parse(serverConfig))).not.toThrow();
+    expect(() => ProviderProfileSchema.parse(JSON.parse(providerConfig))).not.toThrow();
+    expect(() => GatewayConfigSchema.parse(JSON.parse(gatewayConfig))).not.toThrow();
+    expect(() =>
+      InternalRoleProfilesConfigSchema.parse(JSON.parse(internalRoleProfiles))
+    ).not.toThrow();
   });
 
   it('does not copy a process-env provider secret into workspace-owned state', async () => {
@@ -99,27 +116,27 @@ describe('app run script', () => {
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     const storePath = join(workspaceRoot, 'store.json');
     const secret = 'fake-provider-secret-from-process-env';
-    mkdirSync(join(dataRoot, 'config'), { recursive: true });
+    mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
     mkdirSync(workspaceRoot, { recursive: true });
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify(
         {
           schemaVersion: 1,
-          providers: [
-            { id: 'nanocore-openrouter', displayName: 'core', kind: 'custom', models: ['m'] },
-            {
-              id: 'nano-agent-openrouter',
-              displayName: 'agent',
-              kind: 'custom',
-              models: ['m'],
-              secretRef: 'env:OPENROUTER_API_KEY',
-            },
-          ],
         },
         null,
         2
       )
+    );
+    writeFileSync(
+      join(dataRoot, 'config', 'providers', 'openrouter.provider.jsonc'),
+      JSON.stringify({
+        id: 'openrouter',
+        displayName: 'OpenRouter',
+        kind: 'custom',
+        models: ['m'],
+        secretRef: 'env:OPENROUTER_API_KEY',
+      })
     );
     const persistedStore = `${JSON.stringify(
       {
@@ -160,7 +177,7 @@ describe('app run script', () => {
     const storePath = join(workspaceRoot, 'store.json');
     const secret = 'fake-provider-secret-from-env-file';
     const persistedSecrets = `OPENROUTER_API_KEY='${secret}'\n`;
-    mkdirSync(join(dataRoot, 'config'), { recursive: true });
+    mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
     mkdirSync(join(dataRoot, 'secrets'), { recursive: true });
     mkdirSync(workspaceRoot, { recursive: true });
     writeFileSync(
@@ -168,19 +185,20 @@ describe('app run script', () => {
       JSON.stringify(
         {
           schemaVersion: 1,
-          providers: [
-            {
-              id: 'nano-agent-openrouter',
-              displayName: 'agent',
-              kind: 'custom',
-              models: ['m'],
-              secretRef: 'env:OPENROUTER_API_KEY',
-            },
-          ],
         },
         null,
         2
       )
+    );
+    writeFileSync(
+      join(dataRoot, 'config', 'providers', 'openrouter.provider.jsonc'),
+      JSON.stringify({
+        id: 'openrouter',
+        displayName: 'OpenRouter',
+        kind: 'custom',
+        models: ['m'],
+        secretRef: 'env:OPENROUTER_API_KEY',
+      })
     );
     writeFileSync(secretsPath, persistedSecrets);
     const persistedStore = `${JSON.stringify(
@@ -214,21 +232,16 @@ describe('app run script', () => {
 
   it('rejects existing app provider config that still contains inline api keys', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
-    mkdirSync(join(dataRoot, 'config'), { recursive: true });
+    mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
     writeFileSync(
-      join(dataRoot, 'config', 'server.jsonc'),
+      join(dataRoot, 'config', 'providers', 'openrouter.provider.jsonc'),
       JSON.stringify(
         {
-          schemaVersion: 1,
-          providers: [
-            {
-              id: 'nano-agent-openrouter',
-              displayName: 'agent',
-              kind: 'custom',
-              models: ['m'],
-              apiKey: 'sk-old-inline-secret',
-            },
-          ],
+          id: 'openrouter',
+          displayName: 'OpenRouter',
+          kind: 'custom',
+          models: ['m'],
+          apiKey: 'sk-old-inline-secret',
         },
         null,
         2

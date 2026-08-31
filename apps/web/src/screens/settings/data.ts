@@ -665,22 +665,3 @@ export function useUpdateWorkspaceName(workspaceId: string | null) {
     },
   });
 }
-
-/** Update the active Workspace execution defaults from General settings. */
-export function useUpdateWorkspaceDefaults(workspaceId: string | null) {
-  const client = useCoreClient();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (defaults: NonNullable<WorkspaceRecord['defaults']>): Promise<WorkspaceRecord> =>
-      client.core.updateWorkspace(workspaceId as string, {
-        defaults,
-        requestId: createRequestId(),
-      }),
-    onSuccess: () => {
-      if (workspaceId) {
-        void queryClient.invalidateQueries({ queryKey: settingsKeys.workspace(workspaceId) });
-      }
-      void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
-    },
-  });
-}

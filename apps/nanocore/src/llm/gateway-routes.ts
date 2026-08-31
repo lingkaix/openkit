@@ -19,10 +19,7 @@ import {
 } from '../capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { recordGatewayPolicyDecision } from '../policy/permission-decisions.js';
-import {
-  isProviderProfileDispatchable,
-  type ResolvedLLMProviderConfig,
-} from '../providers/llm-config.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -32,6 +29,11 @@ import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
 import { parseUsage } from './gateway-usage.js';
+import {
+  type ResolvedLogicalModel,
+  resolveLogicalModel,
+  resolveLogicalModelCatalog,
+} from './logical-models.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   type OpenAICompatibleChatCompletionResponse,
@@ -876,15 +878,16 @@ function workerInferenceLineageMismatch(): WorkerInferenceRouteError {
 }
 
 /**
- * Requires the trusted relay capability and its single authoritative gateway route.
+ * Requires the trusted relay capability and one AEP-authorized logical model route.
  *
  * @param environmentPackage Authenticated Agent Environment Package.
+ * @param logicalModelId Worker-requested logical model id.
  * @returns AEP-owned inference route.
  */
 function requireTrustedWorkerInferenceRoute(
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackage,
+  logicalModelId: string
 ): WorkerInferenceLlmRoute {
-  const route = environmentPackage.llm.routes[0];
   const trustedRelay = environmentPackage.backend.requiredCapabilities.includes(
     'trusted-worker-inference-relay'
   );
@@ -892,10 +895,12 @@ function requireTrustedWorkerInferenceRoute(
   if (
     !trustedRelay ||
     environmentPackage.llm.mode !== 'gateway' ||
-    environmentPackage.llm.routes.length !== 1 ||
-    !route ||
-    route.credentialVisibility !== 'placeholder' ||
-    route.endpoint.upstream?.kind !== 'nanocore-gateway'
+    environmentPackage.llm.routes.length === 0 ||
+    environmentPackage.llm.routes.some(
+      (route) =>
+        route.credentialVisibility !== 'placeholder' ||
+        route.endpoint.upstream?.kind !== 'nanocore-gateway'
+    )
   ) {
     throw new WorkerInferenceRouteError(
       'worker_inference_unauthorized',
@@ -904,6 +909,10 @@ function requireTrustedWorkerInferenceRoute(
     );
   }
 
+  const route = environmentPackage.llm.routes.find(
+    (candidate) => candidate.model === logicalModelId
+  );
+  if (!route) throw workerInferenceLineageMismatch();
   return route;
 }
 
@@ -954,6 +963,7 @@ function asWorkerInferenceError(error: unknown): Response {
   }
 
   if (
+    error instanceof LogicalModelRoutesExhaustedError ||
     error instanceof GatewayUnsupportedFeatureError ||
     error instanceof OpenAICompatibleProviderError
   ) {
@@ -976,6 +986,13 @@ function asWorkerInferenceError(error: unknown): Response {
  * Converts gateway dispatch failures into OpenAI-compatible error envelopes.
  */
 function asOpenAIGatewayError(error: unknown): Response {
+  if (error instanceof LogicalModelRoutesExhaustedError) {
+    return Response.json(
+      { error: { message: error.message, type: error.type, code: error.code } },
+      { status: error.status }
+    );
+  }
+
   if (error instanceof GatewayRequestCancelledError) {
     return Response.json(
       {
@@ -1007,7 +1024,7 @@ function asOpenAIGatewayError(error: unknown): Response {
       return Response.json(
         {
           error: {
-            message: 'Requested model is not configured for this provider.',
+            message: 'Requested logical model is not configured.',
             type: 'invalid_request_error',
             code: error.code,
           },
@@ -1348,7 +1365,9 @@ export function registerWorkerInferenceRoutes({
   app,
   coreDb,
   llmGatewayDispatcher,
+  providerSubscriptionAccountManager,
   resolveGatewayProvider,
+  runtimeConfig,
   workerControlGateway,
 }: {
   /** Hono application receiving the internal routes. */
@@ -1357,8 +1376,12 @@ export function registerWorkerInferenceRoutes({
   readonly coreDb?: CoreDb;
   /** Shared provider dispatcher. */
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
-  /** Resolves the provider selected by the authenticated AEP. */
+  /** Optional subscription-account supply used by private Gateway routes. */
+  readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  /** Resolves a private Provider route selected by the current Gateway config. */
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  /** Returns the current hot-reloadable Gateway configuration snapshot. */
+  readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
   readonly workerControlGateway: WorkerControlGateway;
 }): void {
@@ -1381,7 +1404,6 @@ export function registerWorkerInferenceRoutes({
         c.req.header('authorization') ?? null,
         workerInferenceTokenHashAuthentication
       );
-      const route = requireTrustedWorkerInferenceRoute(environmentPackage);
 
       rejectWorkerInferenceAuthorityHeaders(c.req.raw.headers);
       const json = await parseWorkerInferenceJsonRequest(c.req.raw);
@@ -1389,6 +1411,7 @@ export function registerWorkerInferenceRoutes({
         endpoint === 'chat_completions'
           ? GatewayChatCompletionRequestSchema.parse(json)
           : GatewayResponsesRequestSchema.parse(json);
+      const route = requireTrustedWorkerInferenceRoute(environmentPackage, input.model);
       let runtimeHint: WorkerInferenceRuntimeHint | undefined;
       try {
         runtimeHint = readWorkerInferenceRuntimeHint(
@@ -1426,17 +1449,24 @@ export function registerWorkerInferenceRoutes({
           503
         );
       }
-      let provider: ResolvedLLMProviderConfig;
-
+      let logicalModel: ResolvedLogicalModel | null = null;
       try {
-        provider = resolveGatewayProvider(route.providerInstanceId, route.model);
+        const snapshot = runtimeConfig();
+        logicalModel = resolveLogicalModel(
+          snapshot.gatewayConfig,
+          snapshot.providerRegistry,
+          route.model
+        );
       } catch {
+        logicalModel = null;
+      }
+      if (!logicalModel) {
         const unavailableCall = startWorkerInferenceCall({
           ...(coreDb ? { coreDb } : {}),
           cacheDegraded: false,
           endpoint,
           environmentPackage,
-          providerRef: route.providerInstanceId,
+          providerRef: route.model,
           runtimeCacheLineageRef: null,
           runtimeOriginRef,
         });
@@ -1451,145 +1481,157 @@ export function registerWorkerInferenceRoutes({
           503
         );
       }
-      const cache = resolveWorkerPromptCacheKey({
-        accountSlotId: provider.accountSlotId ?? null,
-        model: route.model,
-        ...(runtimeHint?.nativeCacheLineageId
-          ? { nativeCacheLineageId: runtimeHint.nativeCacheLineageId }
-          : {}),
-        providerId: provider.id,
-        runtimeFamily:
-          runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
-        subscriptionProviderId: provider.subscriptionProviderId ?? null,
-        workspaceId: environmentPackage.scope.workspaceId,
-      });
-      sanitized.prompt_cache_key = cache.promptCacheKey;
-      const durableCall = startWorkerInferenceCall({
-        ...(coreDb ? { coreDb } : {}),
-        cacheDegraded: cache.degraded,
-        endpoint,
-        environmentPackage,
-        providerRef: route.providerInstanceId,
-        runtimeCacheLineageRef: cache.runtimeCacheLineageRef,
-        runtimeOriginRef,
-      });
-
-      let responseTurnState: string | undefined;
-      const requestTurnState = c.req.header('x-codex-turn-state');
-      const dispatchContext = {
-        onUsage: (usage: unknown) =>
-          recordLlmGatewayUsage({
-            durableCall,
-            model: route.model,
-            provider,
-            usage,
-          }),
-        transport: {
-          ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
-          onCodexTurnState: (value: string) => {
-            responseTurnState = value;
-          },
-          signal: c.req.raw.signal,
-        },
-      };
-
-      try {
-        if (endpoint === 'chat_completions') {
-          const chatInput = input as z.infer<typeof GatewayChatCompletionRequestSchema>;
-          const request: OpenAICompatibleChatCompletionRequest = {
-            ...sanitized,
-            messages: chatInput.messages.map((message): OpenAICompatibleChatMessage => {
-              const { tool_call_id: toolCallId, ...rest } = message;
-
-              return toolCallId ? { ...rest, tool_call_id: toolCallId } : rest;
-            }),
-            model: route.model,
-            stream: chatInput.stream ?? false,
-          };
-
-          if (request.stream) {
-            const stream = await llmGatewayDispatcher.createChatCompletionStream(
-              provider,
-              { ...request, stream: true },
-              dispatchContext
-            );
-
-            return workerInferenceStreamResponse(
-              stream,
-              durableCall,
+      return await dispatchLogicalModel<Response>({
+        logicalModel,
+        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+        resolveGatewayProvider,
+        signal: c.req.raw.signal,
+        attempt: async ({ provider, providerModel, subscriptionModels }) => {
+          const cache = resolveWorkerPromptCacheKey({
+            accountSlotId: provider.accountSlotId ?? null,
+            model: providerModel,
+            ...(runtimeHint?.nativeCacheLineageId
+              ? { nativeCacheLineageId: runtimeHint.nativeCacheLineageId }
+              : {}),
+            providerId: provider.id,
+            runtimeFamily:
+              runtimeHint?.runtimeFamily ?? environmentPackage.control.adapter.targetRuntime,
+            subscriptionProviderId: provider.subscriptionProviderId ?? null,
+            workspaceId: environmentPackage.scope.workspaceId,
+          });
+          const requestBody = { ...sanitized, prompt_cache_key: cache.promptCacheKey };
+          let durableCall: DurableLlmGatewayCall | null;
+          try {
+            durableCall = startWorkerInferenceCall({
+              ...(coreDb ? { coreDb } : {}),
+              cacheDegraded: cache.degraded,
               endpoint,
-              c.req.raw.signal,
-              responseTurnState
+              environmentPackage,
+              providerRef: provider.id,
+              runtimeCacheLineageRef: cache.runtimeCacheLineageRef,
+              runtimeOriginRef,
+            });
+          } catch {
+            throw new WorkerInferenceRouteError(
+              'worker_inference_unavailable',
+              'Worker inference durable attribution is unavailable.',
+              503
             );
           }
+          let responseTurnState: string | undefined;
+          const requestTurnState = c.req.header('x-codex-turn-state');
+          const dispatchContext = {
+            onUsage: (usage: unknown) =>
+              recordLlmGatewayUsage({
+                durableCall,
+                model: logicalModel.id,
+                provider,
+                usage,
+              }),
+            ...(subscriptionModels ? { models: subscriptionModels } : {}),
+            transport: {
+              ...(requestTurnState ? { codexTurnState: requestTurnState } : {}),
+              onCodexTurnState: (value: string) => {
+                responseTurnState = value;
+              },
+              signal: c.req.raw.signal,
+            },
+          };
 
-          const response = await llmGatewayDispatcher.createChatCompletion(
-            provider,
-            { ...request, stream: false },
-            dispatchContext
-          );
-          const workerResponse = Response.json(
-            response,
-            responseTurnState ? { headers: { 'x-codex-turn-state': responseTurnState } } : undefined
-          );
-          finishDurableLlmGatewayCall(durableCall, 'succeeded');
+          try {
+            if (endpoint === 'chat_completions') {
+              const chatInput = input as z.infer<typeof GatewayChatCompletionRequestSchema>;
+              const request: OpenAICompatibleChatCompletionRequest = {
+                ...requestBody,
+                messages: chatInput.messages.map((message): OpenAICompatibleChatMessage => {
+                  const { tool_call_id: toolCallId, ...rest } = message;
+                  return toolCallId ? { ...rest, tool_call_id: toolCallId } : rest;
+                }),
+                model: providerModel,
+                stream: chatInput.stream ?? false,
+              };
+              if (request.stream) {
+                const stream = await llmGatewayDispatcher.createChatCompletionStream(
+                  provider,
+                  { ...request, stream: true },
+                  dispatchContext
+                );
+                return workerInferenceStreamResponse(
+                  rewriteGatewayStreamModel(stream, logicalModel.id),
+                  durableCall,
+                  endpoint,
+                  c.req.raw.signal,
+                  responseTurnState
+                );
+              }
+              const response = await llmGatewayDispatcher.createChatCompletion(
+                provider,
+                { ...request, stream: false },
+                dispatchContext
+              );
+              const workerResponse = Response.json(
+                { ...response, model: logicalModel.id },
+                responseTurnState
+                  ? { headers: { 'x-codex-turn-state': responseTurnState } }
+                  : undefined
+              );
+              finishDurableLlmGatewayCall(durableCall, 'succeeded');
+              return workerResponse;
+            }
 
-          return workerResponse;
-        }
-
-        const responsesInput = input as z.infer<typeof GatewayResponsesRequestSchema>;
-        const request: OpenAICompatibleResponsesRequest = {
-          ...sanitized,
-          input: responsesInput.input,
-          model: route.model,
-          stream: responsesInput.stream ?? false,
-        };
-
-        if (request.stream) {
-          const stream = await llmGatewayDispatcher.createResponsesStream(
-            provider,
-            { ...request, stream: true },
-            dispatchContext
-          );
-
-          return workerInferenceStreamResponse(
-            stream,
-            durableCall,
-            endpoint,
-            c.req.raw.signal,
-            responseTurnState
-          );
-        }
-
-        const response = await llmGatewayDispatcher.createResponses(
-          provider,
-          { ...request, stream: false },
-          dispatchContext
-        );
-        const workerResponse = Response.json(
-          response,
-          responseTurnState ? { headers: { 'x-codex-turn-state': responseTurnState } } : undefined
-        );
-        finishDurableLlmGatewayCall(durableCall, 'succeeded');
-
-        return workerResponse;
-      } catch (error) {
-        const cancelled = finishDurableLlmGatewayFailure(
-          durableCall,
-          error,
-          c.req.raw.signal,
-          'worker_inference_failed',
-          'worker_inference_cancelled'
-        );
-        if (cancelled) {
-          throw new WorkerInferenceRouteError(
-            'worker_inference_cancelled',
-            'Worker inference request was cancelled.',
-            499
-          );
-        }
-        throw error;
-      }
+            const responsesInput = input as z.infer<typeof GatewayResponsesRequestSchema>;
+            const request: OpenAICompatibleResponsesRequest = {
+              ...requestBody,
+              input: responsesInput.input,
+              model: providerModel,
+              stream: responsesInput.stream ?? false,
+            };
+            if (request.stream) {
+              const stream = await llmGatewayDispatcher.createResponsesStream(
+                provider,
+                { ...request, stream: true },
+                dispatchContext
+              );
+              return workerInferenceStreamResponse(
+                rewriteGatewayStreamModel(stream, logicalModel.id),
+                durableCall,
+                endpoint,
+                c.req.raw.signal,
+                responseTurnState
+              );
+            }
+            const response = await llmGatewayDispatcher.createResponses(
+              provider,
+              { ...request, stream: false },
+              dispatchContext
+            );
+            const workerResponse = Response.json(
+              { ...response, model: logicalModel.id },
+              responseTurnState
+                ? { headers: { 'x-codex-turn-state': responseTurnState } }
+                : undefined
+            );
+            finishDurableLlmGatewayCall(durableCall, 'succeeded');
+            return workerResponse;
+          } catch (error) {
+            const cancelled = finishDurableLlmGatewayFailure(
+              durableCall,
+              error,
+              c.req.raw.signal,
+              'worker_inference_failed',
+              'worker_inference_cancelled'
+            );
+            if (cancelled) {
+              throw new WorkerInferenceRouteError(
+                'worker_inference_cancelled',
+                'Worker inference request was cancelled.',
+                499
+              );
+            }
+            throw error;
+          }
+        },
+      });
     } catch (error) {
       return asWorkerInferenceError(error);
     }
@@ -1640,6 +1682,85 @@ function workerInferenceStreamResponse(
   );
 }
 
+/** Stable error returned after every eligible private route fails before output starts. */
+export class LogicalModelRoutesExhaustedError extends Error {
+  public readonly code = 'gateway_logical_model_unavailable';
+  public readonly status = 503;
+  public readonly type = 'provider_error';
+
+  public constructor() {
+    super('Logical model is temporarily unavailable.');
+    this.name = 'LogicalModelRoutesExhaustedError';
+  }
+}
+
+/** Returns whether one pre-output failure permits trying the next ordered route member. */
+function isLogicalModelFallbackEligible(error: unknown): boolean {
+  if (error instanceof WorkerInferenceRouteError) return false;
+  const code = classifyGatewayProviderFailure(error, 'provider_error').code;
+  return (
+    code === 'gateway_provider_authentication_failed' ||
+    code === 'gateway_provider_rate_limited' ||
+    code === 'gateway_provider_unavailable'
+  );
+}
+
+/** Rewrites provider-native model fields in one JSON SSE payload to the public logical ID. */
+function rewriteGatewaySseEventModel(event: string, logicalModelId: string): string {
+  return event
+    .split(/(\r?\n)/)
+    .map((line) => {
+      const match = /^data:\s*(.+)$/.exec(line);
+      if (!match || match[1] === '[DONE]') return line;
+      try {
+        const payload = JSON.parse(match[1]!) as Record<string, unknown>;
+        if (typeof payload.model === 'string') payload.model = logicalModelId;
+        if (payload.response && typeof payload.response === 'object') {
+          const response = payload.response as Record<string, unknown>;
+          if (typeof response.model === 'string') response.model = logicalModelId;
+        }
+        return `data: ${JSON.stringify(payload)}`;
+      } catch {
+        return line;
+      }
+    })
+    .join('');
+}
+
+/** Hides provider-native model fields in an OpenAI-compatible SSE stream. */
+function rewriteGatewayStreamModel(
+  stream: ReadableStream<Uint8Array>,
+  logicalModelId: string
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = '';
+
+  return stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let boundary = /\r?\n\r?\n/.exec(buffer);
+        while (boundary?.index !== undefined) {
+          const end = boundary.index + boundary[0].length;
+          controller.enqueue(
+            encoder.encode(
+              `${rewriteGatewaySseEventModel(buffer.slice(0, boundary.index), logicalModelId)}${boundary[0]}`
+            )
+          );
+          buffer = buffer.slice(end);
+          boundary = /\r?\n\r?\n/.exec(buffer);
+        }
+      },
+      flush(controller) {
+        buffer += decoder.decode();
+        if (buffer)
+          controller.enqueue(encoder.encode(rewriteGatewaySseEventModel(buffer, logicalModelId)));
+      },
+    })
+  );
+}
+
 /**
  * Requires authored provider authority for a public Gateway model before subscription work.
  *
@@ -1658,6 +1779,41 @@ function assertGatewayModelAuthorized(provider: ResolvedLLMProviderConfig, model
   }
 }
 
+/** Dispatches one logical model through its ordered private routes before output starts. */
+export async function dispatchLogicalModel<T>(input: {
+  logicalModel: ResolvedLogicalModel;
+  signal: AbortSignal;
+  resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
+  attempt: (route: {
+    provider: ResolvedLLMProviderConfig;
+    providerModel: string;
+    subscriptionModels: Awaited<ReturnType<typeof resolveGatewaySubscriptionModels>>;
+  }) => Promise<T>;
+}): Promise<T> {
+  for (const [index, route] of input.logicalModel.routes.entries()) {
+    try {
+      const provider = input.resolveGatewayProvider(route.providerProfileId, route.providerModel);
+      assertGatewayModelAuthorized(provider, route.providerModel);
+      const subscriptionModels = await resolveGatewaySubscriptionModels(
+        provider,
+        input.providerSubscriptionAccountManager
+      );
+      return await input.attempt({
+        provider,
+        providerModel: route.providerModel,
+        subscriptionModels,
+      });
+    } catch (error) {
+      if (input.signal.aborted || !isLogicalModelFallbackEligible(error)) throw error;
+      if (index === input.logicalModel.routes.length - 1) {
+        throw new LogicalModelRoutesExhaustedError();
+      }
+    }
+  }
+  throw new LogicalModelRoutesExhaustedError();
+}
+
 /**
  * Registers the public OpenAI-compatible LLM Gateway routes.
  *
@@ -1666,7 +1822,6 @@ function assertGatewayModelAuthorized(provider: ResolvedLLMProviderConfig, model
 export function registerLlmGatewayRoutes({
   app,
   coreDb,
-  gatewayDefaultProviderId,
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
   resolveGatewayProvider,
@@ -1674,7 +1829,6 @@ export function registerLlmGatewayRoutes({
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb?: CoreDb;
-  readonly gatewayDefaultProviderId: () => string | null;
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
@@ -1686,20 +1840,7 @@ export function registerLlmGatewayRoutes({
    * @returns True when Gateway routes are enabled.
    */
   function isGatewayEnabled(): boolean {
-    return runtimeConfig().openKitConfig.gateway?.openaiCompatible?.enabled !== false;
-  }
-
-  /**
-   * Checks whether a provider id is allowed by runtime config.
-   *
-   * @param providerId Provider id to check.
-   * @returns True when Gateway routing is allowed.
-   */
-  function isGatewayProviderAllowed(providerId: string): boolean {
-    const runtimeAllowlist =
-      runtimeConfig().openKitConfig.gateway?.openaiCompatible?.allowedProviderIds;
-
-    return !runtimeAllowlist || runtimeAllowlist.includes(providerId);
+    return runtimeConfig().gatewayConfig.enabled;
   }
 
   /**
@@ -1727,6 +1868,31 @@ export function registerLlmGatewayRoutes({
     }
   }
 
+  function requireLogicalModel(logicalModelId: string): ResolvedLogicalModel {
+    try {
+      const snapshot = runtimeConfig();
+      const logicalModel = resolveLogicalModel(
+        snapshot.gatewayConfig,
+        snapshot.providerRegistry,
+        logicalModelId
+      );
+      if (logicalModel) return logicalModel;
+    } catch {
+      throw new OpenAICompatibleProviderError({
+        code: 'gateway_not_configured',
+        message: 'Gateway logical model configuration is unavailable.',
+        status: 503,
+        type: 'provider_error',
+      });
+    }
+    throw new OpenAICompatibleProviderError({
+      code: 'model_not_configured',
+      message: 'Requested logical model is not configured.',
+      status: 400,
+      type: 'invalid_request_error',
+    });
+  }
+
   app.get('/v1/models', async (c) => {
     if (!isGatewayEnabled()) {
       return c.json(
@@ -1741,53 +1907,39 @@ export function registerLlmGatewayRoutes({
       );
     }
 
-    const data = (
-      await Promise.all(
-        runtimeConfig()
-          .providerRegistry.list()
-          .filter(
-            (provider) =>
-              isGatewayProviderAllowed(provider.id) && isProviderProfileDispatchable(provider)
-          )
-          .map(async (profile) => {
-            if (!profile.extensions?.openkit?.subscriptionAccount) {
-              return profile.models.map((model) => ({
-                id: model,
-                object: 'model',
-                owned_by: profile.id,
-              }));
-            }
-
-            try {
-              const provider = resolveGatewayProvider(profile.id, profile.models[0]!);
-              await resolveGatewaySubscriptionModels(provider, providerSubscriptionAccountManager);
-              return profile.models.map((model) => ({
-                id: model,
-                object: 'model',
-                owned_by: profile.id,
-              }));
-            } catch {
-              return [];
-            }
-          })
-      )
-    ).flat();
-
-    return c.json({
-      object: 'list',
-      data,
-    });
+    try {
+      const snapshot = runtimeConfig();
+      const data = resolveLogicalModelCatalog(
+        snapshot.gatewayConfig,
+        snapshot.providerRegistry
+      ).map((model) => ({
+        id: model.id,
+        object: 'model',
+        owned_by: 'openkit',
+        display_name: model.displayName,
+        capabilities: model.capabilities,
+      }));
+      return c.json({ object: 'list', data });
+    } catch {
+      return asOpenAIGatewayError(
+        new OpenAICompatibleProviderError({
+          code: 'gateway_not_configured',
+          message: 'Gateway logical model configuration is unavailable.',
+          status: 503,
+          type: 'provider_error',
+        })
+      );
+    }
   });
 
   app.post('/v1/chat/completions', async (c) => {
     try {
       const input = GatewayChatCompletionRequestSchema.parse(await c.req.json());
-      const providerId = gatewayDefaultProviderId();
 
       if (!isGatewayEnabled()) {
         recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.chat_completions',
-          providerId,
+          providerId: null,
           reasonCode: 'gateway_disabled',
           result: 'deny',
           route: '/v1/chat/completions',
@@ -1798,39 +1950,6 @@ export function registerLlmGatewayRoutes({
               message: 'Gateway is disabled by policy.',
               type: 'invalid_request_error',
               code: 'gateway_disabled',
-            },
-          },
-          403
-        );
-      }
-
-      if (!providerId) {
-        return c.json(
-          {
-            error: {
-              message: 'Gateway requires a default provider.',
-              type: 'invalid_request_error',
-              code: 'gateway_not_configured',
-            },
-          },
-          400
-        );
-      }
-
-      if (!isGatewayProviderAllowed(providerId)) {
-        recordLlmGatewayPolicyDecision({
-          action: 'llm.gateway.chat_completions',
-          providerId,
-          reasonCode: 'gateway_provider_not_allowed',
-          result: 'deny',
-          route: '/v1/chat/completions',
-        });
-        return c.json(
-          {
-            error: {
-              message: `Gateway policy does not allow provider: ${providerId}`,
-              type: 'invalid_request_error',
-              code: 'gateway_provider_not_allowed',
             },
           },
           403
@@ -1848,20 +1967,16 @@ export function registerLlmGatewayRoutes({
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
       }
 
+      const logicalModel = requireLogicalModel(input.model);
+
       recordLlmGatewayPolicyDecision({
         action: 'llm.gateway.chat_completions',
-        providerId,
+        providerId: logicalModel.routes[0]?.providerProfileId ?? null,
         reasonCode: 'gateway_allowed',
         result: 'allow',
         route: '/v1/chat/completions',
       });
 
-      const provider = resolveGatewayProvider(providerId, input.model);
-      assertGatewayModelAuthorized(provider, input.model);
-      const models = await resolveGatewaySubscriptionModels(
-        provider,
-        providerSubscriptionAccountManager
-      );
       const request = {
         ...input,
         messages: input.messages.map((message): OpenAICompatibleChatMessage => {
@@ -1874,107 +1989,83 @@ export function registerLlmGatewayRoutes({
         }),
       };
 
-      if (input.stream) {
-        const durableCall = startPublicLlmGatewayCall({
-          ...(coreDb ? { coreDb } : {}),
-          authorityActor,
-          endpoint: 'chat_completions',
-          metadata: (request as { metadata?: unknown }).metadata,
-          provider,
-        });
-
-        try {
-          const stream = await llmGatewayDispatcher.createChatCompletionStream(
+      return await dispatchLogicalModel<Response>({
+        logicalModel,
+        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+        resolveGatewayProvider,
+        signal: c.req.raw.signal,
+        attempt: async ({ provider, providerModel, subscriptionModels }) => {
+          const durableCall = startPublicLlmGatewayCall({
+            ...(coreDb ? { coreDb } : {}),
+            authorityActor,
+            endpoint: 'chat_completions',
+            metadata: (request as { metadata?: unknown }).metadata,
             provider,
-            {
-              ...request,
-              stream: true,
-            },
-            {
-              onUsage: (usage) =>
-                recordLlmGatewayUsage({
-                  durableCall,
-                  model: request.model,
-                  provider,
-                  usage,
-                }),
-              ...(models ? { models } : {}),
-              transport: { signal: c.req.raw.signal },
+          });
+          try {
+            if (input.stream) {
+              const stream = await llmGatewayDispatcher.createChatCompletionStream(
+                provider,
+                { ...request, model: providerModel, stream: true },
+                {
+                  onUsage: (usage) =>
+                    recordLlmGatewayUsage({
+                      durableCall,
+                      model: logicalModel.id,
+                      provider,
+                      usage,
+                    }),
+                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                  transport: { signal: c.req.raw.signal },
+                }
+              );
+              return new Response(
+                normalizeGatewayTerminalStream(
+                  rewriteGatewayStreamModel(stream, logicalModel.id),
+                  'chat_completions',
+                  { durableCall, signal: c.req.raw.signal }
+                ),
+                {
+                  headers: {
+                    'content-type': 'text/event-stream; charset=utf-8',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                  },
+                }
+              );
             }
-          );
 
-          return new Response(
-            normalizeGatewayTerminalStream(stream, 'chat_completions', {
+            const completion: OpenAICompatibleChatCompletionResponse =
+              await llmGatewayDispatcher.createChatCompletion(
+                provider,
+                { ...request, model: providerModel, stream: false },
+                {
+                  onUsage: (usage) =>
+                    recordLlmGatewayUsage({
+                      durableCall,
+                      model: logicalModel.id,
+                      provider,
+                      usage,
+                    }),
+                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                  transport: { signal: c.req.raw.signal },
+                }
+              );
+            finishDurableLlmGatewayCall(durableCall, 'succeeded');
+            return c.json({ ...completion, model: logicalModel.id });
+          } catch (error) {
+            const cancelled = finishDurableLlmGatewayFailure(
               durableCall,
-              signal: c.req.raw.signal,
-            }),
-            {
-              headers: {
-                'content-type': 'text/event-stream; charset=utf-8',
-                'cache-control': 'no-cache',
-                connection: 'keep-alive',
-              },
-            }
-          );
-        } catch (error) {
-          const cancelled = finishDurableLlmGatewayFailure(
-            durableCall,
-            error,
-            c.req.raw.signal,
-            'llm_gateway_failed',
-            'llm_gateway_cancelled'
-          );
-          if (cancelled) {
-            throw new GatewayRequestCancelledError();
+              error,
+              c.req.raw.signal,
+              'llm_gateway_failed',
+              'llm_gateway_cancelled'
+            );
+            if (cancelled) throw new GatewayRequestCancelledError();
+            throw error;
           }
-          throw error;
-        }
-      }
-
-      const durableCall = startPublicLlmGatewayCall({
-        ...(coreDb ? { coreDb } : {}),
-        authorityActor,
-        endpoint: 'chat_completions',
-        metadata: (request as { metadata?: unknown }).metadata,
-        provider,
+        },
       });
-
-      try {
-        const completion: OpenAICompatibleChatCompletionResponse =
-          await llmGatewayDispatcher.createChatCompletion(
-            provider,
-            {
-              ...request,
-              stream: false,
-            },
-            {
-              onUsage: (usage) =>
-                recordLlmGatewayUsage({
-                  durableCall,
-                  model: request.model,
-                  provider,
-                  usage,
-                }),
-              ...(models ? { models } : {}),
-              transport: { signal: c.req.raw.signal },
-            }
-          );
-        finishDurableLlmGatewayCall(durableCall, 'succeeded');
-
-        return c.json(completion);
-      } catch (error) {
-        const cancelled = finishDurableLlmGatewayFailure(
-          durableCall,
-          error,
-          c.req.raw.signal,
-          'llm_gateway_failed',
-          'llm_gateway_cancelled'
-        );
-        if (cancelled) {
-          throw new GatewayRequestCancelledError();
-        }
-        throw error;
-      }
     } catch (error) {
       return asOpenAIGatewayError(error);
     }
@@ -1983,12 +2074,11 @@ export function registerLlmGatewayRoutes({
   app.post('/v1/responses', async (c) => {
     try {
       const input = GatewayResponsesRequestSchema.parse(await c.req.json());
-      const providerId = gatewayDefaultProviderId();
 
       if (!isGatewayEnabled()) {
         recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.responses',
-          providerId,
+          providerId: null,
           reasonCode: 'gateway_disabled',
           result: 'deny',
           route: '/v1/responses',
@@ -1999,39 +2089,6 @@ export function registerLlmGatewayRoutes({
               message: 'Gateway is disabled by policy.',
               type: 'invalid_request_error',
               code: 'gateway_disabled',
-            },
-          },
-          403
-        );
-      }
-
-      if (!providerId) {
-        return c.json(
-          {
-            error: {
-              message: 'Gateway requires a default provider.',
-              type: 'invalid_request_error',
-              code: 'gateway_not_configured',
-            },
-          },
-          400
-        );
-      }
-
-      if (!isGatewayProviderAllowed(providerId)) {
-        recordLlmGatewayPolicyDecision({
-          action: 'llm.gateway.responses',
-          providerId,
-          reasonCode: 'gateway_provider_not_allowed',
-          result: 'deny',
-          route: '/v1/responses',
-        });
-        return c.json(
-          {
-            error: {
-              message: `Gateway policy does not allow provider: ${providerId}`,
-              type: 'invalid_request_error',
-              code: 'gateway_provider_not_allowed',
             },
           },
           403
@@ -2049,119 +2106,98 @@ export function registerLlmGatewayRoutes({
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
       }
 
+      const logicalModel = requireLogicalModel(input.model);
+
       recordLlmGatewayPolicyDecision({
         action: 'llm.gateway.responses',
-        providerId,
+        providerId: logicalModel.routes[0]?.providerProfileId ?? null,
         reasonCode: 'gateway_allowed',
         result: 'allow',
         route: '/v1/responses',
       });
 
-      const provider = resolveGatewayProvider(providerId, input.model);
-      assertGatewayModelAuthorized(provider, input.model);
-      const models = await resolveGatewaySubscriptionModels(
-        provider,
-        providerSubscriptionAccountManager
-      );
       const request = {
         ...input,
         stream: input.stream ?? false,
       };
 
-      if (input.stream) {
-        const durableCall = startPublicLlmGatewayCall({
-          ...(coreDb ? { coreDb } : {}),
-          authorityActor,
-          endpoint: 'responses',
-          metadata: (request as { metadata?: unknown }).metadata,
-          provider,
-        });
-
-        try {
-          const stream = await llmGatewayDispatcher.createResponsesStream(
+      return await dispatchLogicalModel<Response>({
+        logicalModel,
+        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+        resolveGatewayProvider,
+        signal: c.req.raw.signal,
+        attempt: async ({ provider, providerModel, subscriptionModels }) => {
+          const durableCall = startPublicLlmGatewayCall({
+            ...(coreDb ? { coreDb } : {}),
+            authorityActor,
+            endpoint: 'responses',
+            metadata: (request as { metadata?: unknown }).metadata,
             provider,
-            {
-              ...request,
-              stream: true,
-            },
-            {
-              onUsage: (usage) =>
-                recordLlmGatewayUsage({
-                  durableCall,
-                  model: request.model,
-                  provider,
-                  usage,
-                }),
-              ...(models ? { models } : {}),
-              transport: { signal: c.req.raw.signal },
-            }
-          );
-
-          return new Response(
-            normalizeGatewayTerminalStream(stream, 'responses', {
-              durableCall,
-              signal: c.req.raw.signal,
-            }),
-            {
-              headers: {
-                'content-type': 'text/event-stream; charset=utf-8',
-                'cache-control': 'no-cache',
-                connection: 'keep-alive',
-              },
-            }
-          );
-        } catch (error) {
-          const cancelled = finishDurableLlmGatewayFailure(
-            durableCall,
-            error,
-            c.req.raw.signal,
-            'llm_gateway_failed',
-            'llm_gateway_cancelled'
-          );
-          if (cancelled) {
-            throw new GatewayRequestCancelledError();
-          }
-          throw error;
-        }
-      }
-
-      const durableCall = startPublicLlmGatewayCall({
-        ...(coreDb ? { coreDb } : {}),
-        authorityActor,
-        endpoint: 'responses',
-        metadata: (request as { metadata?: unknown }).metadata,
-        provider,
-      });
-
-      try {
-        const response: OpenAICompatibleResponsesResponse =
-          await llmGatewayDispatcher.createResponses(provider, request, {
-            onUsage: (usage) =>
-              recordLlmGatewayUsage({
-                durableCall,
-                model: request.model,
-                provider,
-                usage,
-              }),
-            ...(models ? { models } : {}),
-            transport: { signal: c.req.raw.signal },
           });
-        finishDurableLlmGatewayCall(durableCall, 'succeeded');
+          try {
+            if (input.stream) {
+              const stream = await llmGatewayDispatcher.createResponsesStream(
+                provider,
+                { ...request, model: providerModel, stream: true },
+                {
+                  onUsage: (usage) =>
+                    recordLlmGatewayUsage({
+                      durableCall,
+                      model: logicalModel.id,
+                      provider,
+                      usage,
+                    }),
+                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                  transport: { signal: c.req.raw.signal },
+                }
+              );
+              return new Response(
+                normalizeGatewayTerminalStream(
+                  rewriteGatewayStreamModel(stream, logicalModel.id),
+                  'responses',
+                  { durableCall, signal: c.req.raw.signal }
+                ),
+                {
+                  headers: {
+                    'content-type': 'text/event-stream; charset=utf-8',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                  },
+                }
+              );
+            }
 
-        return c.json(response);
-      } catch (error) {
-        const cancelled = finishDurableLlmGatewayFailure(
-          durableCall,
-          error,
-          c.req.raw.signal,
-          'llm_gateway_failed',
-          'llm_gateway_cancelled'
-        );
-        if (cancelled) {
-          throw new GatewayRequestCancelledError();
-        }
-        throw error;
-      }
+            const response: OpenAICompatibleResponsesResponse =
+              await llmGatewayDispatcher.createResponses(
+                provider,
+                { ...request, model: providerModel },
+                {
+                  onUsage: (usage) =>
+                    recordLlmGatewayUsage({
+                      durableCall,
+                      model: logicalModel.id,
+                      provider,
+                      usage,
+                    }),
+                  ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                  transport: { signal: c.req.raw.signal },
+                }
+              );
+            finishDurableLlmGatewayCall(durableCall, 'succeeded');
+            return c.json({ ...response, model: logicalModel.id });
+          } catch (error) {
+            const cancelled = finishDurableLlmGatewayFailure(
+              durableCall,
+              error,
+              c.req.raw.signal,
+              'llm_gateway_failed',
+              'llm_gateway_cancelled'
+            );
+            if (cancelled) throw new GatewayRequestCancelledError();
+            throw error;
+          }
+        },
+      });
     } catch (error) {
       return asOpenAIGatewayError(error);
     }

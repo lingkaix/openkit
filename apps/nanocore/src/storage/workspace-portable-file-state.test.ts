@@ -139,6 +139,7 @@ describe('workspace portable file state', () => {
       '  // This workspace-local policy comment must survive transfer.',
       '  "schemaVersion": 1,',
       '  "workspace": {',
+      '    "name": "Demo Workspace",',
       '    "roots": [],',
       '    "assistant": { "repositoryInspection": { "enabled": false } }',
       '  }',

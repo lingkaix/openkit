@@ -48,10 +48,12 @@ function requireRuntimeConfigAdminActor(c: Context<{ Variables: AuthVariables }>
  */
 export function registerRuntimeConfigRoutes({
   app,
+  onReloadApplied,
   runtimeConfigFileService,
   runtimeConfigManager,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly onReloadApplied?: () => void;
   readonly runtimeConfigFileService: (
     context: Context<{ Variables: AuthVariables }>
   ) => RuntimeConfigFileService;
@@ -69,7 +71,9 @@ export function registerRuntimeConfigRoutes({
       return asInvalidRequestError(parsed.error);
     }
 
-    return c.json(runtimeConfigManager.reload(parsed.data));
+    const response = runtimeConfigManager.reload(parsed.data);
+    if (response.status === 'applied') onReloadApplied?.();
+    return c.json(response);
   });
 
   registerAppApiRoute(app, 'listRuntimeConfigFiles', (c) => {

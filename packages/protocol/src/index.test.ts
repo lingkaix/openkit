@@ -629,11 +629,6 @@ describe('protocol schemas', () => {
       name: 'Demo Workspace',
       kind: 'code',
       status: 'active',
-      defaults: {
-        defaultModelId: 'model_gpt_5_4',
-        defaultAgentId: 'agent_planner',
-        defaultSkillIds: ['skill_protocol'],
-      },
       counts: {
         threadCount: 2,
         artifactCount: 1,
@@ -653,17 +648,27 @@ describe('protocol schemas', () => {
     expect(parsed.importedFrom?.sourceWorkspaceId).toBe('ws_source');
   });
 
+  it('rejects retired workspace execution defaults', () => {
+    expect(() =>
+      WorkspaceRecordSchema.parse({
+        id: 'ws_retired_defaults',
+        name: 'Retired defaults',
+        kind: 'general',
+        status: 'active',
+        defaults: { defaultAgentId: 'agent_planner' },
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: '2026-04-15T00:00:00Z',
+        updatedAt: '2026-04-15T00:00:00Z',
+      })
+    ).toThrow();
+  });
+
   it('accepts the Quick Chat workspace kind', () => {
     const parsed = WorkspaceRecordSchema.parse({
       id: 'ws_quick_chat',
       name: 'Quick Chat',
       kind: 'quick-chat',
       status: 'active',
-      defaults: {
-        defaultModelId: null,
-        defaultAgentId: null,
-        defaultSkillIds: [],
-      },
       counts: {
         threadCount: 0,
         artifactCount: 0,

@@ -1,14 +1,12 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
 import type { BetterAuthServer } from './auth/middleware.js';
-import type { OpenKitConfig } from './config/openkit-config.js';
-import { loadOpenKitConfig, openKitConfigPath } from './config/openkit-config.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { ensureLayout } from './storage/fs-layout.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 
 /**
@@ -29,35 +27,6 @@ function createAuthStub(
 }
 
 /**
- * Creates a registry containing one hosted direct provider.
- *
- * @returns Provider registry with the OpenAI test profile.
- */
-function createProviderRegistry(): ProviderRegistry {
-  return new ProviderRegistry([
-    {
-      baseUrl: 'https://api.openai.com/v1',
-      defaultModel: 'gpt-5.1',
-      displayName: 'OpenAI Default',
-      id: 'openai-default',
-      kind: 'direct',
-      models: ['gpt-5.1'],
-      secretRef: 'env:OPENKIT_TEST_PROVIDER_KEY',
-    },
-  ]);
-}
-
-/**
- * Builds the minimal OpenKit config override used by default-provider tests.
- *
- * @param providerId Optional configured Core default provider id.
- * @returns OpenKit config override.
- */
-function createConfig(providerId?: string): OpenKitConfig {
-  return providerId ? { defaults: { coreProviderId: providerId } } : {};
-}
-
-/**
  * Creates an agent manifest aligned with the authored agent config.
  *
  * @param overrides Manifest fields to override.
@@ -65,64 +34,9 @@ function createConfig(providerId?: string): OpenKitConfig {
  */
 function createAgentManifest(overrides: Partial<AgentManifest> = {}): AgentManifest {
   return {
-    displayName: 'Codex Host Agent',
-    id: 'agent_codex_host',
-    provider: { model: 'openai/gpt-5.2', ref: 'agent-openrouter' },
-    requiredFeatures: [],
-    runtime: {
-      adapter: 'codex',
-      binaries: [
-        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
-        { id: 'node', path: '/usr/local/bin/node' },
-        { id: 'codex', path: '/usr/local/bin/codex' },
-      ],
-      image: { kind: 'reference', pullPolicy: 'never', ref: 'openkit/worker-codex:test' },
-      kind: 'codex',
-    },
-    schemaVersion: 1,
+    ...createTestAgentSetup().manifest,
     ...overrides,
   };
-}
-
-/**
- * Creates an app backed by seeded provider templates without provider-registry injection.
- *
- * @param providerId Optional Core default provider id to write into server.jsonc.
- * @returns App configured from the temporary data root and loaded config.
- */
-function createSeededDiagnosticsApp(providerId?: string): ReturnType<typeof createApp> {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-seeded-diagnostics-'));
-
-  ensureLayout(dataRoot);
-
-  if (providerId) {
-    writeFileSync(
-      openKitConfigPath(dataRoot),
-      `${JSON.stringify({ defaults: { coreProviderId: providerId } }, null, 2)}\n`
-    );
-  }
-
-  return createApp({
-    dataRoot,
-    openKitConfig: loadOpenKitConfig(dataRoot),
-    agentManifests: [],
-  });
-}
-
-/**
- * Requests app diagnostics from a seeded data-root app.
- *
- * @param providerId Optional Core default provider id to write into server.jsonc.
- * @returns Parsed diagnostics response body.
- */
-async function requestSeededDiagnostics(providerId?: string): Promise<Record<string, unknown>> {
-  const app = createSeededDiagnosticsApp(providerId);
-  const res = await app.request('/api/app/diagnostics');
-  const body = (await res.json()) as Record<string, unknown>;
-
-  expect(res.status).toBe(200);
-
-  return body;
 }
 
 describe('Settings diagnostics app API', () => {
@@ -177,9 +91,6 @@ describe('Settings diagnostics app API', () => {
           },
         ],
         diagnostics: [],
-      },
-      defaults: {
-        gateway: { providerId: null, model: null },
       },
     });
     expect(body).not.toHaveProperty('oauth');
@@ -242,131 +153,6 @@ describe('Settings diagnostics app API', () => {
     }
   });
 
-  it('resolves default-provider diagnostics from seeded provider templates', async () => {
-    const previousKey = process.env.OPENROUTER_API_KEY;
-
-    try {
-      delete process.env.OPENROUTER_API_KEY;
-
-      const unset = await requestSeededDiagnostics();
-      expect((unset.defaultProviders as { core: unknown }).core).toEqual({
-        configured: false,
-        origin: 'unset',
-        reason: 'unset',
-      });
-
-      const unknown = await requestSeededDiagnostics('no-such-id');
-      expect((unknown.defaultProviders as { core: unknown }).core).toEqual({
-        configured: false,
-        model: null,
-        origin: 'canonical',
-        providerId: 'no-such-id',
-        reason: 'unknown-id',
-      });
-
-      const missingCredentials = await requestSeededDiagnostics('openrouter');
-      expect((missingCredentials.defaultProviders as { core: unknown }).core).toEqual({
-        configured: false,
-        model: null,
-        origin: 'canonical',
-        providerId: 'openrouter',
-        reason: 'credentials-missing',
-      });
-
-      process.env.OPENROUTER_API_KEY = 'sk-openrouter-secret';
-
-      const stillMissingCredentials = await requestSeededDiagnostics('openrouter');
-      expect((stillMissingCredentials.defaultProviders as { core: unknown }).core).toEqual({
-        configured: false,
-        model: null,
-        origin: 'canonical',
-        providerId: 'openrouter',
-        reason: 'credentials-missing',
-      });
-      expect(
-        (stillMissingCredentials.providers as { registry: Array<{ id: string }> }).registry.map(
-          (provider) => provider.id
-        )
-      ).toContain('anthropic');
-      expect(stillMissingCredentials.providers).toEqual({
-        diagnostics: [],
-        registry: expect.arrayContaining([
-          expect.objectContaining({
-            baseUrl: 'https://api.openai.com/v1',
-            id: 'openai',
-          }),
-          expect.objectContaining({
-            baseUrl: 'https://openrouter.ai/api/v1',
-            id: 'openrouter',
-          }),
-          expect.objectContaining({
-            baseUrl: 'https://api.x.ai/v1',
-            id: 'xai',
-          }),
-          expect.objectContaining({
-            baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-            id: 'google',
-          }),
-          expect.objectContaining({
-            baseUrl: 'https://example.invalid/v1',
-            id: 'openai-compatible-custom',
-          }),
-        ]),
-      });
-      expect(JSON.stringify(stillMissingCredentials)).not.toContain('OPENROUTER_API_KEY');
-      expect(JSON.stringify(stillMissingCredentials)).not.toContain('sk-openrouter-secret');
-      expect(JSON.stringify(stillMissingCredentials)).not.toContain('user:password');
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.OPENROUTER_API_KEY;
-      } else {
-        process.env.OPENROUTER_API_KEY = previousKey;
-      }
-    }
-  });
-
-  it('reports role-scoped default providers on the app diagnostics route', async () => {
-    const app = createApp({
-      openKitConfig: createConfig(),
-      providerRegistry: createProviderRegistry(),
-    });
-
-    const res = await app.request('/api/app/diagnostics');
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body).toMatchObject({
-      service: 'nanocore',
-      gateway: {
-        status: 'ok',
-        endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],
-      },
-      providers: {
-        diagnostics: [],
-        registry: expect.any(Array),
-      },
-      defaults: {
-        gateway: { providerId: null, model: null },
-      },
-      capabilities: expect.any(Array),
-      defaultProviders: {
-        core: {
-          configured: false,
-          reason: 'unset',
-        },
-        gateway: {
-          configured: false,
-          reason: 'unset',
-        },
-      },
-    });
-    expect(body).not.toHaveProperty('oauth');
-    for (const provider of body.providers.registry) {
-      expect(provider).not.toHaveProperty('dispatchFamily');
-    }
-    expect(body).not.toHaveProperty('defaultProvider');
-  });
-
   it('preserves provider diagnostic fields through shared App API schema parsing', async () => {
     const app = createApp({
       providerDiagnostics: {
@@ -400,99 +186,6 @@ describe('Settings diagnostics app API', () => {
     expect(body.providers.diagnostics[0]).not.toHaveProperty('checkedAt');
   });
 
-  it('reports an unknown configured default provider on the existing app diagnostics route', async () => {
-    const app = createApp({
-      openKitConfig: createConfig('no-such-provider'),
-      providerRegistry: createProviderRegistry(),
-    });
-
-    const res = await app.request('/api/app/diagnostics');
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.defaultProviders.core).toEqual({
-      configured: false,
-      model: null,
-      origin: 'canonical',
-      providerId: 'no-such-provider',
-      reason: 'unknown-id',
-    });
-  });
-
-  it('reports missing credentials for an existing default provider', async () => {
-    const app = createApp({
-      openKitConfig: createConfig('openai-default'),
-      providerCredentialResolver: () => null,
-      providerRegistry: createProviderRegistry(),
-    });
-
-    const res = await app.request('/api/app/diagnostics');
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.defaultProviders.core).toEqual({
-      configured: false,
-      model: null,
-      origin: 'canonical',
-      providerId: 'openai-default',
-      reason: 'credentials-missing',
-    });
-  });
-
-  it('reports a usable configured default provider without a reason', async () => {
-    const app = createApp({
-      openKitConfig: createConfig('openai-default'),
-      providerCredentialResolver: () => 'sk-test',
-      providerRegistry: createProviderRegistry(),
-    });
-
-    const res = await app.request('/api/app/diagnostics');
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.defaultProviders.core).toEqual({
-      configured: true,
-      model: null,
-      origin: 'canonical',
-      providerId: 'openai-default',
-    });
-    expect(body.defaultProviders.core).not.toHaveProperty('reason');
-  });
-
-  it('reports resolved core and gateway defaults with origins', async () => {
-    const app = createApp({
-      openKitConfig: {
-        defaults: {
-          coreProviderId: 'openai-default',
-          coreModel: 'gpt-5.1',
-          gatewayProviderId: 'openai-default',
-          gatewayModel: 'gpt-5.1',
-        },
-      },
-      providerCredentialResolver: () => 'sk-test',
-      providerRegistry: createProviderRegistry(),
-    });
-
-    const res = await app.request('/api/app/diagnostics');
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.defaultProviders).toEqual({
-      core: {
-        configured: true,
-        model: 'gpt-5.1',
-        origin: 'canonical',
-        providerId: 'openai-default',
-      },
-      gateway: {
-        configured: true,
-        model: 'gpt-5.1',
-        origin: 'canonical',
-        providerId: 'openai-default',
-      },
-    });
-  });
-
   it('keeps generic internal-agent runtime state out of App Diagnostics', async () => {
     const app = createApp();
     const res = await app.request('/api/app/diagnostics');
@@ -500,7 +193,7 @@ describe('Settings diagnostics app API', () => {
 
     expect(res.status).toBe(200);
     expect(body).not.toHaveProperty('internalAgents');
-    expect(body.defaults).not.toHaveProperty('internalTasks');
+    expect(body).not.toHaveProperty('internalTasks');
   });
 
   it('exposes the aggregate diagnostics snapshot in local mode', async () => {
@@ -562,17 +255,7 @@ describe('Settings diagnostics app API', () => {
     ]);
     const app = createApp({
       dataRoot,
-      openKitConfig: {
-        defaults: {
-          coreProviderId: 'agent-openrouter',
-          gatewayProviderId: 'agent-openrouter',
-        },
-        gateway: {
-          openaiCompatible: {
-            enabled: true,
-          },
-        },
-      },
+      openKitConfig: {},
       providerRegistry,
       providerCredentialResolver: (secretRef) =>
         secretRef === 'env:OPENROUTER_API_KEY' ? rawSecrets[1] : null,
@@ -590,22 +273,15 @@ describe('Settings diagnostics app API', () => {
         mode: 'local',
         dataRoot: 'configured',
         config: {
-          defaults: {
-            coreProviderId: 'agent-openrouter',
-            gatewayProviderId: 'agent-openrouter',
-          },
-          gateway: {
-            openaiCompatible: {
-              enabled: true,
-            },
-          },
+          defaultAgentId: null,
+          schemaVersion: null,
         },
       },
       providers: [
         {
           id: 'agent-openrouter',
           vendor: 'openrouter',
-          role: 'core+gateway',
+          role: 'available',
           secret: {
             configured: true,
             marker: 'secret-ref',
@@ -620,14 +296,13 @@ describe('Settings diagnostics app API', () => {
           setup: {
             status: 'ready',
             deploymentMode: null,
-            providerId: 'agent-openrouter',
+            logicalModelId: 'openai/gpt-5.2',
           },
         },
       ],
     });
     expect(serialized).not.toContain(rawSecrets[0]);
     expect(serialized).not.toContain(rawSecrets[1]);
-    expect(serialized).not.toContain(rawSecrets[2]);
     expect(serialized).not.toMatch(/sk-[A-Za-z0-9_-]+/);
     expect(serialized).not.toMatch(/hf_[A-Za-z0-9_-]+/);
     expect(serialized).not.toMatch(/ghp_[A-Za-z0-9_-]+/);

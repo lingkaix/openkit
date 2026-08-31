@@ -30,9 +30,9 @@
       { "id": "codex-native", "path": "/usr/local/lib/codex/bin/codex" }
     ]
   },
-  "provider": {
-    "ref": "openai",
-    "model": "gpt-5.1"
+  "models": {
+    "preferredLogicalModelId": "reasoning",
+    "allowedLogicalModelIds": "all"
   },
   "profiles": [
     {

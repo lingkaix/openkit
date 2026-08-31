@@ -3,12 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { createApp } from '../app.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
-import { ProviderRegistry } from './registry.js';
 import { createVaultProviderCredentialResolver } from './vault-credential-resolver.js';
 
 /**
@@ -110,99 +108,6 @@ describe('vault provider credential resolver', () => {
         }),
       ]);
     } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('wires vault-backed provider credentials into app diagnostics defaults', async () => {
-    const { coreDb, dataRoot, vaultUnlockState } = createVaultProviderFixture();
-
-    try {
-      const app = createApp({
-        coreDb,
-        dataRoot,
-        openKitConfig: {
-          defaults: {
-            coreProviderId: 'vault-backed',
-          },
-        },
-        providerRegistry: new ProviderRegistry([
-          {
-            displayName: 'Vault Backed',
-            id: 'vault-backed',
-            kind: 'direct',
-            models: ['gpt-test'],
-            secretRef: 'vault://vault_provider',
-          },
-        ]),
-        vaultUnlockState,
-      });
-      const response = await app.request('/api/app/diagnostics');
-      const body = (await response.json()) as {
-        defaultProviders?: { core?: { configured?: boolean; providerId?: string } };
-      };
-
-      expect(response.status).toBe(200);
-      expect(body.defaultProviders?.core).toMatchObject({
-        configured: true,
-        providerId: 'vault-backed',
-      });
-      expect(listVaultUseRecords(coreDb)).toEqual([
-        expect.objectContaining({
-          outcome: 'succeeded',
-          resolvingPath: 'provider',
-          vaultReferenceId: 'vault_provider',
-        }),
-      ]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('uses env-backed provider credentials as the app resolver fallback when vault auditing is enabled', async () => {
-    const previousKey = process.env.OPENKIT_APP_PROVIDER_ENV_CANARY;
-    process.env.OPENKIT_APP_PROVIDER_ENV_CANARY = 'sk-env-provider';
-    const { coreDb, dataRoot, vaultUnlockState } = createVaultProviderFixture();
-
-    try {
-      const app = createApp({
-        coreDb,
-        dataRoot,
-        openKitConfig: {
-          defaults: {
-            gatewayProviderId: 'env-backed',
-            gatewayModel: 'gpt-test',
-          },
-        },
-        providerRegistry: new ProviderRegistry([
-          {
-            displayName: 'Env Backed',
-            id: 'env-backed',
-            kind: 'custom',
-            baseUrl: 'https://proxy.example/v1',
-            models: ['gpt-test'],
-            secretRef: 'env:OPENKIT_APP_PROVIDER_ENV_CANARY',
-          },
-        ]),
-        vaultUnlockState,
-      });
-      const response = await app.request('/api/app/diagnostics');
-      const body = (await response.json()) as {
-        defaultProviders?: { gateway?: { configured?: boolean; providerId?: string } };
-      };
-
-      expect(response.status).toBe(200);
-      expect(body.defaultProviders?.gateway).toMatchObject({
-        configured: true,
-        providerId: 'env-backed',
-      });
-      expect(listVaultUseRecords(coreDb)).toEqual([]);
-    } finally {
-      if (previousKey === undefined) {
-        delete process.env.OPENKIT_APP_PROVIDER_ENV_CANARY;
-      } else {
-        process.env.OPENKIT_APP_PROVIDER_ENV_CANARY = previousKey;
-      }
       coreDb.sqlite.close();
     }
   });

@@ -2,6 +2,7 @@ import { ListWorkspacesResponseSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 
 describe('quick-chat workspace mode', () => {
@@ -21,19 +22,19 @@ describe('quick-chat workspace mode', () => {
 
   it('uses the quick-chat workspace when no workspace is selected', async () => {
     const app = createApp({
-      openKitConfig: {
-        defaults: {
-          coreModel: 'llama3.2',
-          coreProviderId: 'ollama',
-        },
+      gatewayConfig: createTestGatewayConfig(),
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        defaultLogicalModelId: 'openai/gpt-5.2',
+        profiles: [],
       },
       providerRegistry: new ProviderRegistry([
         {
-          defaultModel: 'llama3.2',
-          displayName: 'Ollama',
-          id: 'ollama',
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Quick Chat Provider',
+          id: 'agent-openrouter',
           kind: 'local',
-          models: ['llama3.2'],
+          models: ['openai/gpt-5.2'],
         },
       ]),
       llmPiAiClient: {
@@ -41,7 +42,7 @@ describe('quick-chat workspace mode', () => {
           id: 'chatcmpl_quick_workspace',
           object: 'chat.completion',
           created: 1,
-          model: 'llama3.2',
+          model: 'openai/gpt-5.2',
           choices: [
             {
               index: 0,

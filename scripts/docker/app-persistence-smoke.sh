@@ -175,6 +175,8 @@ assert_data_root_layout() {
   assert_directory_exists "${data_root}/users/user_local/config" "data-root users/user_local/config"
   assert_directory_exists "${data_root}/workspaces" "data-root workspaces"
   assert_directory_exists "${workspace_root}" "data-root workspaces/${workspace_id}"
+  assert_file_exists "${workspace_root}/workspace-record.json" "data-root workspaces/${workspace_id}/workspace-record.json"
+  assert_file_exists "${workspace_root}/config/workspace.jsonc" "data-root workspaces/${workspace_id}/config/workspace.jsonc"
   assert_directory_exists "${workspace_root}/files" "data-root workspaces/${workspace_id}/files"
   assert_directory_exists "${workspace_root}/data" "data-root workspaces/${workspace_id}/data"
   assert_directory_exists "${workspace_root}/db" "data-root workspaces/${workspace_id}/db"

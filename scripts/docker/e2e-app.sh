@@ -53,11 +53,7 @@ const providersRoot = path.join(configRoot, 'providers');
 fs.mkdirSync(providersRoot, { recursive: true });
 fs.writeFileSync(
   path.join(configRoot, 'server.jsonc'),
-  `${JSON.stringify(
-    { defaults: { coreProviderId: providerId, gatewayProviderId: providerId } },
-    null,
-    2
-  )}\n`
+  `${JSON.stringify({ schemaVersion: 1, mode: 'local' }, null, 2)}\n`
 );
 fs.writeFileSync(
   path.join(providersRoot, 'app-redaction.provider.jsonc'),
@@ -71,6 +67,31 @@ fs.writeFileSync(
       defaultModel: 'app-redaction-model',
       secretRef: 'env:OPENKIT_APP_E2E_SECRET',
       readiness: { status: 'ready' },
+    },
+    null,
+    2
+  )}\n`
+);
+fs.writeFileSync(
+  path.join(configRoot, 'gateway.jsonc'),
+  `${JSON.stringify(
+    {
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'app-redaction-model',
+      logicalModels: [
+        {
+          id: 'app-redaction-model',
+          displayName: 'App Redaction Model',
+          routes: [
+            {
+              id: 'app-redaction-primary',
+              providerProfileId: providerId,
+              providerModel: 'app-redaction-model',
+            },
+          ],
+        },
+      ],
     },
     null,
     2

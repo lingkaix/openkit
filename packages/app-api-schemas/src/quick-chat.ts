@@ -13,8 +13,7 @@ export const QuickChatResponseSchema = z.object({
   id: z.string().min(1),
   status: z.literal('completed'),
   workspaceId: z.string().min(1),
-  providerId: z.string().min(1),
-  model: z.string().min(1),
+  modelId: z.string().min(1),
   content: z.string(),
 });
 

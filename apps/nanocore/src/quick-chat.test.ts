@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai';
-import { StartChatModeResponseSchema } from '@openkit/app-api-schemas';
+import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from './app.js';
@@ -55,25 +55,72 @@ class ThrowingTurnExecutor implements TurnExecutor {
  */
 function createQuickChatProviderOptions() {
   return {
-    openKitConfig: {
-      defaults: {
-        coreModel: 'llama3.2',
-        coreProviderId: 'ollama',
-      },
+    gatewayConfig: {
+      schemaVersion: 1 as const,
+      enabled: true,
+      defaultLogicalModelId: 'quick-chat',
+      logicalModels: [
+        {
+          id: 'quick-chat',
+          displayName: 'Quick Chat',
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'ollama',
+              providerModel: 'openai/gpt-5.2',
+            },
+          ],
+        },
+      ],
+      requiredFeatures: [],
+    },
+    internalRoleProfiles: {
+      schemaVersion: 1 as const,
+      defaultLogicalModelId: 'quick-chat',
+      profiles: [],
     },
     providerRegistry: new ProviderRegistry([
       {
-        defaultModel: 'llama3.2',
+        defaultModel: 'openai/gpt-5.2',
         displayName: 'Ollama',
         id: 'ollama',
         kind: 'local' as const,
-        models: ['llama3.2'],
+        models: ['openai/gpt-5.2'],
       },
     ]),
   };
 }
 
+/** Builds one explicit Assistant-targeted conversation submission. */
+function conversationRequest(input: string, requestId: string) {
+  return { input, requestId, targetRef: 'internal-role:assistant', artifactRefs: [] };
+}
+
 describe('quick chat app API', () => {
+  it('falls back only to the configured default Worker when Assistant is unavailable', async () => {
+    const workerSetup = createTestAgentSetup({
+      logicalModelId: 'quick-chat',
+      privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
+    });
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      agentManifests: [workerSetup.manifest],
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        defaultLogicalModelId: 'missing',
+        profiles: [],
+      },
+      openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
+      store: createDemoStore(),
+      turnExecutor: new ThrowingTurnExecutor(),
+    });
+
+    const response = await app.request('/api/app/workspaces/ws_demo/conversation-targets');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ defaultTargetRef: 'new-task-worker' });
+  });
+
   it('keeps Quick Chat, Chat Mode, and Task Mode route ownership outside app composition', () => {
     const appSource = readFileSync('./src/app.ts', 'utf8');
     const modeEntrySource = readFileSync('./src/mode-entry-routes.ts', 'utf8');
@@ -81,10 +128,10 @@ describe('quick chat app API', () => {
     expect(appSource).toContain('registerQuickAndChatModeRoutes({');
     expect(appSource).toContain('registerTaskModeRoute({');
     expect(appSource).not.toContain("registerAppApiRoute(app, 'quickChat'");
-    expect(appSource).not.toContain("registerAppApiRoute(app, 'startChatMode'");
+    expect(appSource).not.toContain("registerAppApiRoute(app, 'submitConversation'");
     expect(appSource).not.toContain("registerAppApiRoute(app, 'startTaskMode'");
     expect(modeEntrySource).toContain("registerAppApiRoute(app, 'quickChat'");
-    expect(modeEntrySource).toContain("registerAppApiRoute(app, 'startChatMode'");
+    expect(modeEntrySource).toContain("registerAppApiRoute(app, 'submitConversation'");
     expect(modeEntrySource).toContain("registerAppApiRoute(app, 'startTaskMode'");
     expect(appSource).not.toContain('InternalAgentRunner');
     expect(appSource).not.toContain('getInternalAgentRunner');
@@ -121,14 +168,17 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'What is OpenKit?', requestId: 'req_chat_answer' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('What is OpenKit?', 'req_chat_answer')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
-    expect(res.status).toBe(200);
-    const parsed = StartChatModeResponseSchema.parse(await res.json());
+    expect(res.status, await res.clone().text()).toBe(200);
+    const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
     expect(parsed).toMatchObject({
       outcome: 'answered',
@@ -160,14 +210,17 @@ describe('quick chat app API', () => {
         },
       },
     });
-    const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'What is OpenKit?', requestId: 'req_chat_answer' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const replayRes = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('What is OpenKit?', 'req_chat_answer')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(replayRes.status).toBe(200);
-    expect(StartChatModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+    expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(parsed);
     expect(calls).toHaveLength(1);
   });
 
@@ -214,19 +267,16 @@ describe('quick chat app API', () => {
       });
 
       const res = await app.request(
-        `/api/app/workspaces/${workspace.id}/threads/${thread.id}/chat`,
+        `/api/app/workspaces/${workspace.id}/threads/${thread.id}/conversation-turns`,
         {
           method: 'POST',
-          body: JSON.stringify({
-            input: 'Answer through the provider.',
-            requestId,
-          }),
+          body: JSON.stringify(conversationRequest('Answer through the provider.', requestId)),
           headers: { 'content-type': 'application/json' },
         }
       );
 
       expect(res.status).toBe(200);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspace.id);
       try {
@@ -291,21 +341,21 @@ describe('quick chat app API', () => {
     expect(createRes.status).toBe(201);
     const knowledge = (await createRes.json()) as { id: string };
 
-    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({
-        input: 'Launch cadence',
-        requestId: 'req_chat_knowledge_answer',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('Launch cadence', 'req_chat_knowledge_answer')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(res.status).toBe(200);
-    const parsed = StartChatModeResponseSchema.parse(await res.json());
+    const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
     expect(parsed).toMatchObject({
       outcome: 'answered',
-      explanation: 'The Assistant answered from workspace knowledge.',
+      explanation: 'The Knowledge Manager answered from Workspace Knowledge.',
       handoff: null,
       item: {
         type: 'assistant-message',
@@ -316,17 +366,17 @@ describe('quick chat app API', () => {
       'OpenKit ships release candidates only after NanoCore smoke passes on a1.'
     );
     expect(parsed.item.text).toContain('Sources: Launch cadence');
-    const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({
-        input: 'Launch cadence',
-        requestId: 'req_chat_knowledge_answer',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const replayRes = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('Launch cadence', 'req_chat_knowledge_answer')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(replayRes.status).toBe(200);
-    expect(StartChatModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+    expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(parsed);
     const pageBytes = readFileSync(
       join(dataRoot, 'workspaces', 'ws_demo', 'knowledge', 'pages', `${knowledge.id}.md`)
     );
@@ -367,14 +417,17 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'Help', requestId: 'req_chat_clarify' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('Help', 'req_chat_clarify')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(res.status).toBe(202);
-    const parsed = StartChatModeResponseSchema.parse(await res.json());
+    const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
     expect(parsed).toMatchObject({
       outcome: 'clarification-needed',
@@ -396,15 +449,19 @@ describe('quick chat app API', () => {
       'user-input-request',
     ]);
     expect(
-      store.getCommandRequest('chat.start', 'req_chat_clarify', {
+      store.getCommandRequest('conversation.submit', 'req_chat_clarify', {
         actorId: 'user_local',
         threadId: 'th_demo',
         workspaceId: 'ws_demo',
-      })?.response.chatMetadata
+      })?.response.conversationMetadata
     ).toEqual({
       downstream: null,
+      logicalModelId: 'quick-chat',
+      receivingThreadId: 'th_demo',
+      receivingWorkspaceId: 'ws_demo',
       resultKind: 'clarification',
       status: 202,
+      targetRef: 'internal-role:assistant',
     });
 
     const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
@@ -424,12 +481,15 @@ describe('quick chat app API', () => {
     const completedAt = new Date().toISOString();
     store.updateTurn(parsed.turn.id, { status: 'completed', humanGate: null, completedAt });
 
-    const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'Help', requestId: 'req_chat_clarify' }),
-      headers: { 'content-type': 'application/json' },
-    });
-    const replay = StartChatModeResponseSchema.parse(await replayRes.json());
+    const replayRes = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest('Help', 'req_chat_clarify')),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
+    const replay = SubmitConversationResponseSchema.parse(await replayRes.json());
 
     expect(replayRes.status).toBe(202);
     expect(replay.turn).toEqual(parsed.turn);
@@ -443,10 +503,10 @@ describe('quick chat app API', () => {
     }
     storedRequest.responsibleUserId = 'user_other';
     const contradictedReplay = await app.request(
-      '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
         method: 'POST',
-        body: JSON.stringify({ input: 'Help', requestId: 'req_chat_clarify' }),
+        body: JSON.stringify(conversationRequest('Help', 'req_chat_clarify')),
         headers: { 'content-type': 'application/json' },
       }
     );
@@ -456,26 +516,36 @@ describe('quick chat app API', () => {
 
   it('fails Chat Mode replay closed when durable owners contradict', async () => {
     const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new ThrowingTurnExecutor() });
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      store,
+      turnExecutor: new ThrowingTurnExecutor(),
+    });
     const requestId = 'req_chat_missing_owner';
     const input = 'Search the web for current OpenKit news.';
     const scope = { actorId: 'user_local', threadId: 'th_demo', workspaceId: 'ws_demo' };
-    const first = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({ input, requestId }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const first = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest(input, requestId)),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(first.status).toBe(200);
-    const accepted = StartChatModeResponseSchema.parse(await first.json());
-    const successfulReplay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({ input, requestId }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const accepted = SubmitConversationResponseSchema.parse(await first.json());
+    const successfulReplay = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest(input, requestId)),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(successfulReplay.status).toBe(200);
-    expect(StartChatModeResponseSchema.parse(await successfulReplay.json())).toEqual(accepted);
+    expect(SubmitConversationResponseSchema.parse(await successfulReplay.json())).toEqual(accepted);
     const userItem = store
       .listThreadItems('ws_demo', 'th_demo')
       .find((item) => item.id === `it_chat_user_${accepted.turn.id}`);
@@ -484,10 +554,10 @@ describe('quick chat app API', () => {
     }
     userItem.actor = { kind: 'user', id: 'user_other' };
     const contradictedActorReplay = await app.request(
-      '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
         method: 'POST',
-        body: JSON.stringify({ input, requestId }),
+        body: JSON.stringify(conversationRequest(input, requestId)),
         headers: { 'content-type': 'application/json' },
       }
     );
@@ -498,10 +568,10 @@ describe('quick chat app API', () => {
     userItem.actor = accepted.turn.triggerActor;
     store.updateTurn(accepted.turn.id, { status: 'failed' });
     const contradictedTurnReplay = await app.request(
-      '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       {
         method: 'POST',
-        body: JSON.stringify({ input, requestId }),
+        body: JSON.stringify(conversationRequest(input, requestId)),
         headers: { 'content-type': 'application/json' },
       }
     );
@@ -511,21 +581,24 @@ describe('quick chat app API', () => {
       code: 'recovery_required',
     });
     store.updateTurn(accepted.turn.id, { status: 'completed' });
-    const receipt = store.getCommandRequest('chat.start', requestId, scope);
+    const receipt = store.getCommandRequest('conversation.submit', requestId, scope);
     expect(receipt).not.toBeNull();
     store.recordCommandRequest({
-      command: 'chat.start',
+      command: 'conversation.submit',
       inputHash: receipt!.inputHash,
       requestId,
       response: { id: 'tu_missing_chat_owner', kind: 'turn' },
       scope,
     });
 
-    const replay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-      method: 'POST',
-      body: JSON.stringify({ input, requestId }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const replay = await app.request(
+      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      {
+        method: 'POST',
+        body: JSON.stringify(conversationRequest(input, requestId)),
+        headers: { 'content-type': 'application/json' },
+      }
+    );
 
     expect(replay.status).toBe(409);
     await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
@@ -539,7 +612,8 @@ describe('quick chat app API', () => {
     try {
       const store = createDemoStore({ dataRoot });
       const app = createApp({
-        agentManifests: [createTestAgentSetup({ provider: null }).manifest],
+        ...createQuickChatProviderOptions(),
+        agentManifests: [createTestAgentSetup().manifest],
         coreDb,
         dataRoot,
         store,
@@ -553,30 +627,40 @@ describe('quick chat app API', () => {
       const request = {
         input: 'Plan a multi-step release goal for NanoCore.',
         requestId: 'req_chat_goal',
+        targetRef: 'internal-role:assistant',
+        artifactRefs: [],
       };
 
-      const goalRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify(request),
-        headers: { 'content-type': 'application/json' },
-      });
+      const goalRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: JSON.stringify(request),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(goalRes.status).toBe(202);
-      const accepted = StartChatModeResponseSchema.parse(await goalRes.json());
+      const accepted = SubmitConversationResponseSchema.parse(await goalRes.json());
       expect(accepted).toMatchObject({
         outcome: 'goal-handoff',
         handoff: { targetMode: 'goal' },
         item: { type: 'status', title: 'Goal Mode handoff' },
       });
-      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify(request),
-        headers: { 'content-type': 'application/json' },
-      });
+      const replayRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: JSON.stringify(request),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(replayRes.status).toBe(202);
-      expect(StartChatModeResponseSchema.parse(await replayRes.json())).toEqual(accepted);
-      expect(store.listCommandRequests().map((record) => record.command)).toEqual(['chat.start']);
+      expect(SubmitConversationResponseSchema.parse(await replayRes.json())).toEqual(accepted);
+      expect(store.listCommandRequests().map((record) => record.command)).toEqual([
+        'conversation.submit',
+      ]);
 
       const goalTurn = store
         .listThreadTurns('ws_demo', 'th_demo')
@@ -589,7 +673,7 @@ describe('quick chat app API', () => {
 
       store.updateItem(creationItem.id, { status: 'in_progress', completedAt: null });
       const contradictedReplayRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
         {
           method: 'POST',
           body: JSON.stringify(request),
@@ -646,15 +730,14 @@ describe('quick chat app API', () => {
       id: 'chatcmpl_route_agent',
       status: 'completed',
       workspaceId: 'ws_quick_chat',
-      providerId: 'ollama',
-      model: 'llama3.2',
+      modelId: 'quick-chat',
       content: 'Agent-routed answer',
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       providerId: 'ollama',
       request: {
-        model: 'llama3.2',
+        model: 'openai/gpt-5.2',
         messages: [
           { role: 'system', content: EXPECTED_QUICK_CHAT_SYSTEM_PROMPT },
           { role: 'user', content: 'Route this.' },
@@ -820,7 +903,7 @@ describe('quick chat app API', () => {
             id: 'chatcmpl_quick',
             object: 'chat.completion',
             created: 1,
-            model: 'llama3.2',
+            model: 'openai/gpt-5.2',
             choices: [
               {
                 index: 0,
@@ -842,8 +925,7 @@ describe('quick chat app API', () => {
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
       status: 'completed',
-      providerId: 'ollama',
-      model: 'llama3.2',
+      modelId: 'quick-chat',
       content: 'It is sunny.',
     });
     expect(seenRequests[0]?.metadata).toEqual({
@@ -876,20 +958,38 @@ describe('quick chat app API', () => {
       const app = createApp({
         coreDb,
         dataRoot,
-        openKitConfig: {
-          defaults: {
-            coreModel: 'quick-vault-model',
-            coreProviderId: 'quick-vault',
-          },
+        gatewayConfig: {
+          schemaVersion: 1,
+          enabled: true,
+          defaultLogicalModelId: 'quick-vault-model',
+          logicalModels: [
+            {
+              id: 'quick-vault-model',
+              displayName: 'Quick Vault Model',
+              routes: [
+                {
+                  id: 'primary',
+                  providerProfileId: 'quick-vault',
+                  providerModel: 'openai/gpt-5.2',
+                },
+              ],
+            },
+          ],
+          requiredFeatures: [],
+        },
+        internalRoleProfiles: {
+          schemaVersion: 1,
+          defaultLogicalModelId: 'quick-vault-model',
+          profiles: [],
         },
         providerRegistry: new ProviderRegistry([
           {
             baseUrl: 'https://api.example.com/v1',
-            defaultModel: 'quick-vault-model',
+            defaultModel: 'openai/gpt-5.2',
             displayName: 'Quick Vault',
             id: 'quick-vault',
             kind: 'direct',
-            models: ['quick-vault-model'],
+            models: ['openai/gpt-5.2'],
             secretRef: 'vault://vault_quick_chat',
           },
         ]),
@@ -928,8 +1028,7 @@ describe('quick chat app API', () => {
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({
         status: 'completed',
-        providerId: 'quick-vault',
-        model: 'quick-vault-model',
+        modelId: 'quick-vault-model',
         content: 'Vault quick answer.',
       });
       expect(seenProviders).toEqual([
@@ -1011,7 +1110,7 @@ describe('quick chat app API', () => {
           .get(call?.call_id) as Record<string, unknown> | undefined;
         expect(usage).toMatchObject({
           category: 'llm',
-          model_id: 'llama3.2',
+          model_id: 'quick-chat',
           provider_ref: 'ollama',
           quantity: 12,
           unit: 'tokens',
@@ -1048,11 +1147,29 @@ describe('quick chat app API', () => {
     vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
     const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
     const app = createApp({
-      openKitConfig: {
-        defaults: {
-          coreModel: 'openai-codex/gpt-5.1-codex',
-          coreProviderId: 'openai_codex',
-        },
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'codex-fast',
+        logicalModels: [
+          {
+            id: 'codex-fast',
+            displayName: 'Codex Fast',
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'openai_codex',
+                providerModel: 'openai-codex/gpt-5.1-codex',
+              },
+            ],
+          },
+        ],
+        requiredFeatures: [],
+      },
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        defaultLogicalModelId: 'codex-fast',
+        profiles: [],
       },
       providerRegistry: new ProviderRegistry([
         {

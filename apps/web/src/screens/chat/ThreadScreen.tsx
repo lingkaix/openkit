@@ -1,11 +1,12 @@
 import { useMutationState } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   ArtifactRow,
   Button,
   Composer,
+  type ComposerDraft,
   ContextChip,
   EmptyState,
   ErrorBanner,
@@ -15,9 +16,12 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
+import { createRequestId, useArtifacts, useImportWorkspaceArtifact } from '../artifacts/data';
 import {
   chatKeys,
+  taskThreadPath,
   useArchiveThread,
+  useConversationTargets,
   useCurrentWorkspaceId,
   useInterruptTurn,
   useRenameThread,
@@ -80,12 +84,16 @@ export interface ThreadScreenProps {
  * trigger actor without deployment or identity inference.
  */
 export function ThreadScreen({ mode }: ThreadScreenProps) {
+  const navigate = useNavigate();
   const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const thread = useThread(workspaceId, threadId);
   const items = useThreadItems(workspaceId, threadId);
   const dashboard = useThreadDashboard(workspaceId, threadId);
+  const targets = useConversationTargets(workspaceId, threadId);
+  const workspaceArtifacts = useArtifacts(workspaceId);
+  const importArtifact = useImportWorkspaceArtifact();
   const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
   const send = useSendTurn();
   const rename = useRenameThread();
@@ -157,9 +165,47 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     submitFeedback.variables.threadId === threadId &&
     submitFeedback.variables.turnId === feedbackTurn?.id;
   const sendOwner =
-    send.variables?.workspaceId === workspaceId &&
-    send.variables.threadId === threadId &&
-    send.variables.mode === mode;
+    send.variables?.workspaceId === workspaceId && send.variables.threadId === threadId;
+  const taskDefaultTarget =
+    mode === 'task'
+      ? (targets.data?.targets.find(
+          (target) =>
+            target.kind === 'running-worker' &&
+            target.threadId === threadId &&
+            target.availability === 'available'
+        ) ??
+        targets.data?.targets.find(
+          (target) => target.kind === 'warm-worker' && target.availability === 'available'
+        ) ??
+        targets.data?.targets.find(
+          (target) => target.kind === 'new-task-worker' && target.availability === 'available'
+        ))
+      : undefined;
+
+  async function importFile(file: File) {
+    if (!workspaceId) throw new Error('Workspace is required.');
+    const mediaType = file.name.endsWith('.md')
+      ? 'text/markdown'
+      : file.name.endsWith('.json')
+        ? 'application/json'
+        : 'text/plain';
+    const imported = await importArtifact.mutateAsync({
+      workspaceId,
+      title: file.name,
+      mediaType,
+      content: await file.text(),
+      requestId: createRequestId(),
+    });
+    void workspaceArtifacts.refetch();
+    return { id: imported.artifactId, version: imported.artifactVersion, label: file.name };
+  }
+
+  async function submitConversation(draft: ComposerDraft) {
+    const response = await send.mutateAsync({ workspaceId: workspaceId ?? '', threadId, draft });
+    if (response.receivingThreadId !== threadId) {
+      navigate(taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId));
+    }
+  }
 
   if (workspaces.isLoading) {
     return <Skeleton lines={5} className="m-6" />;
@@ -392,10 +438,25 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             ) : null}
             <Composer
               chips={<ContextChip>{title}</ContextChip>}
-              disabledReason={disconnected ? "Couldn't reach the local runtime." : undefined}
-              onSubmit={(message) =>
-                send.mutate({ workspaceId: workspaceId ?? '', threadId, mode, message })
+              targetCatalog={
+                taskDefaultTarget && targets.data
+                  ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
+                  : (targets.data ?? null)
               }
+              artifacts={(workspaceArtifacts.data ?? []).map((artifact) => ({
+                id: artifact.id,
+                version: artifact.version,
+                label: artifact.title,
+              }))}
+              onImportFile={importFile}
+              disabledReason={
+                disconnected
+                  ? "Couldn't reach the local runtime."
+                  : targets.isError
+                    ? "Couldn't load conversation agents."
+                    : undefined
+              }
+              onSubmit={submitConversation}
             />
           </div>
         </div>

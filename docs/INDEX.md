@@ -115,9 +115,9 @@ and are not listed here.
 - `docs/specs/20260801-nanohost_workspace_data_boundary.md` — Accepted, Not Started — The separation between NanoCore durable product authority and one independently deployed NanoHost that performs already-authorized worker execution.
 - `docs/specs/20260802-nanohost_runtime_and_transport.md` — Accepted, Partial — The implementation-facing definition, lifecycle, failure boundary, recovery, and readiness contract for one configured NanoHost and its private Runtime Epoch.
 - `docs/specs/20260811-execution_residue_measurement.md` — Accepted, Not Started — This specification owns task-external measurement of the repository's execution framework from evidence left by completed work: its audit-side trigger, compara…
-- `docs/specs/20260813-internal_agent_runtime.md` — Accepted, Not Started — This specification owns the role-agnostic bounded runtime used by NanoCore-internal model-using roles: its assembled input, transient loop algorithm, emergency…
+- `docs/specs/20260813-internal_agent_runtime.md` — Accepted, Partial — This specification owns the role-agnostic bounded runtime used by NanoCore-internal model-using roles: its assembled input, transient loop algorithm, emergency…
 - `docs/specs/20260829-release_management.md` — Accepted, Implemented — The product-wide release identity and release-channel policy.
-- `docs/specs/20260831-unified_conversation_composer.md` — Accepted, Not Started — This specification owns the Workspace-scoped conversation-target catalog, the shared user-observable Composer interaction contract, and the one structured conv…
+- `docs/specs/20260831-unified_conversation_composer.md` — Accepted, Implemented — This specification owns the Workspace-scoped conversation-target catalog, the shared user-observable Composer interaction contract, and the one structured conv…
 
 ## Terminal Specifications
 
@@ -200,7 +200,7 @@ Change plans are not indexed. List `docs/changes/` to see them.
 ## User Manuals
 
 - `docs/manual/getting-started.en.md` — Accepted — > Scope placeholder: This page intentionally records what the complete Getting Started manual must contain.
-- `docs/manual/nanocore-data-root-config.en.md` — Accepted — This manual explains the user-editable files under `DATAROOT/config` for NanoCore.
+- `docs/manual/nanocore-data-root-config.en.md` — Accepted — This manual describes the authored JSONC configuration loaded by NanoCore from `OPENKITDATAROOT`.
 - `docs/manual/nanocore-deployment-modes.en.md` — Accepted — This manual explains the two supported NanoCore product modes and their shared NanoHost worker-runtime boundary.
 - `docs/manual/nanocore-operations.en.md` — Accepted — > Scope placeholder: This page intentionally records the operator procedures that must be documented before OpenKit has a complete supported operations manual.
 - `docs/manual/sandbox-container-tests.en.md` — Accepted — A Worker Agent sandbox carries the OpenKit worker baseline and can provision a declared toolchain through mise, and that sandbox cannot start a container of it…

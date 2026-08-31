@@ -367,11 +367,17 @@ function MaterialDetail({
  */
 export function MaterialScreen() {
   const workspaces = useWorkspaces();
-  const workspaceId = useCurrentWorkspaceId();
-  const { materialId: routeMaterialId, threadId } = useParams<{
+  const {
+    materialId: routeMaterialId,
+    threadId,
+    workspaceId: routeWorkspaceId,
+  } = useParams<{
     materialId?: string;
     threadId?: string;
+    workspaceId?: string;
   }>();
+  const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
+  if (!routeWorkspaceId) throw new Error('The registered Material route requires a Workspace id.');
   if (!threadId) throw new Error('The registered Material route requires a Thread id.');
   const navigate = useNavigate();
   const materials = useWorkspaceMaterials(workspaceId);
@@ -416,7 +422,7 @@ export function MaterialScreen() {
         selectedMaterialId={selectedMaterialId}
         routeMaterialId={routeMaterialId}
         threadId={threadId}
-        onSelect={(id) => navigate(`/materials/${threadId}/${id}`)}
+        onSelect={(id) => navigate(`/materials/${routeWorkspaceId}/${threadId}/${id}`)}
         create={create}
         showNew={showNew}
         disconnected={disconnected}

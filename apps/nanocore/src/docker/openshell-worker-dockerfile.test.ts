@@ -323,15 +323,6 @@ describe('governed worker image contracts', () => {
       );
       expect(JSON.stringify(manifest.sandbox.network)).not.toContain('git-receive-pack');
     }
-    expect(readAgentManifest('pi.agent.jsonc').sandbox.network).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          binaries: ['/usr/local/bin/node'],
-          host: 'api.anthropic.com',
-          id: 'anthropic-api',
-        }),
-      ])
-    );
   });
 
   it('uses one sanitized launcher for static Harness and bounded-turn modes', () => {

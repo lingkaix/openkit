@@ -215,7 +215,7 @@ function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides }
         goalId: QUEUED_DELIVERY.goalId,
         activeTurnId: QUEUED_DELIVERY.activeTurnId,
       }),
-      startChatMode: vi.fn(),
+      submitConversation: vi.fn(),
       startTaskMode: vi.fn(),
       ...overrides.app,
     },
@@ -414,7 +414,7 @@ describe('Workspace Material Plane 1 S11', () => {
       )
     );
     expect(client.core.startTurn).not.toHaveBeenCalled();
-    expect(client.app.startChatMode).not.toHaveBeenCalled();
+    expect(client.app.submitConversation).not.toHaveBeenCalled();
     expect(client.app.startTaskMode).not.toHaveBeenCalled();
   });
 
@@ -479,7 +479,7 @@ describe('Workspace Material Plane 1 S11', () => {
       })
     );
     expect(client.core.startTurn).not.toHaveBeenCalled();
-    expect(client.app.startChatMode).not.toHaveBeenCalled();
+    expect(client.app.submitConversation).not.toHaveBeenCalled();
     expect(client.app.startTaskMode).not.toHaveBeenCalled();
   });
 
@@ -557,7 +557,7 @@ describe('Workspace Material Plane 1 S11', () => {
     expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
     expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
     expect(client.core.startTurn).not.toHaveBeenCalled();
-    expect(client.app.startChatMode).not.toHaveBeenCalled();
+    expect(client.app.submitConversation).not.toHaveBeenCalled();
     expect(client.app.startTaskMode).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Save' }));

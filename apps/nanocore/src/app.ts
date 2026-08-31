@@ -6,6 +6,8 @@ import {
   SetupDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
+  type GatewayConfig,
+  type InternalRoleProfilesConfig,
   type ProviderSubscriptionAccountSlotId,
   resolveProviderSubscriptionFamily,
   type SubscriptionProviderId,
@@ -52,6 +54,7 @@ import {
   createRuntimeConfigManager,
   type RuntimeConfigManager,
   type RuntimeConfigSnapshot,
+  resolveDefaultAgentId,
 } from './config/runtime-config.js';
 import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { registerRuntimeConfigRoutes } from './config/runtime-config-routes.js';
@@ -65,6 +68,7 @@ import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
 import { GatewayUsageTracker } from './llm/gateway-usage.js';
+import { resolveLogicalModelCatalog } from './llm/logical-models.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
@@ -73,7 +77,6 @@ import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-
 import { registerMaterialRoutes } from './material-routes.js';
 import { registerQuickAndChatModeRoutes, registerTaskModeRoute } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
-import { resolveDefaultProviderStates } from './providers/default-provider.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
@@ -283,30 +286,25 @@ function assertProjectWorkspace(workspace: WorkspaceRecord, action: string): voi
  * @param store Store that owns workspace resources.
  * @param workspaceId Workspace whose agents should be projected.
  * @param agentManifests Current file-backed agent manifests.
- * @param providerRegistry Current provider registry.
- * @param providerCredentialResolver Resolver used to prove provider credentials.
+ * @param defaultAgentId Resolved User, Workspace, or Server Agent preference.
  * @returns Coordinator-visible worker candidates.
  */
 function workerCoordinatorCandidates(
   store: FsStore,
   workspaceId: string,
   agentManifests: readonly AgentManifest[],
-  providerRegistry: ProviderRegistry,
-  providerCredentialResolver: ProviderCredentialResolver
+  defaultAgentId: string | null
 ): WorkerCoordinatorCandidate[] {
-  const workspace = store.getWorkspace(workspaceId);
+  store.getWorkspace(workspaceId);
 
   return [...agentManifests]
     .sort((left, right) => {
-      const defaultOrder =
-        Number(right.id === workspace.defaults?.defaultAgentId) -
-        Number(left.id === workspace.defaults?.defaultAgentId);
+      const defaultOrder = Number(right.id === defaultAgentId) - Number(left.id === defaultAgentId);
       return defaultOrder || left.id.localeCompare(right.id);
     })
     .map((manifest) => {
-      const dependencies = { providerCredentialResolver };
-      const readiness = computeReadiness(manifest, providerRegistry, dependencies);
-      const launchable = isAgentLaunchable(readiness, manifest, providerRegistry, dependencies);
+      const readiness = computeReadiness(manifest);
+      const launchable = isAgentLaunchable(readiness);
 
       return {
         agentId: manifest.id,
@@ -337,6 +335,10 @@ export interface CreateAppOptions {
   gatewayUsageTracker?: GatewayUsageTracker;
   /** Loaded operator config used for app diagnostics defaults. */
   openKitConfig?: OpenKitConfig;
+  /** Server-scoped logical model catalog and private routes. */
+  gatewayConfig?: GatewayConfig;
+  /** Server-scoped Internal Role Execution Profiles. */
+  internalRoleProfiles?: InternalRoleProfilesConfig;
   providerRegistry?: ProviderRegistry;
   /** Resolver used to check provider profile credential references. */
   providerCredentialResolver?: ProviderCredentialResolver;
@@ -654,7 +656,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.openKitConfig ??
       options.providerRegistry ??
       options.providerDiagnostics ??
-      options.agentManifests
+      options.agentManifests ??
+      options.gatewayConfig ??
+      options.internalRoleProfiles
   );
   const runtimeConfigManager =
     options.runtimeConfigManager ??
@@ -670,6 +674,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 ? { providerDiagnostics: options.providerDiagnostics }
                 : {}),
               agentManifests: options.agentManifests ?? [],
+              ...(options.gatewayConfig ? { gatewayConfig: options.gatewayConfig } : {}),
+              ...(options.internalRoleProfiles
+                ? { internalRoleProfiles: options.internalRoleProfiles }
+                : {}),
             }),
           }
         : {}),
@@ -841,8 +849,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       store,
       workspaceId,
       snapshot.agentManifests,
-      snapshot.providerRegistry,
-      providerCredentialResolver
+      resolveDefaultAgentId(snapshot, workspaceId)
     );
   }
 
@@ -859,6 +866,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly threadId: string;
     readonly prompt: string;
     readonly modelId?: string | undefined;
+    readonly profileId?: string | undefined;
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
@@ -867,6 +875,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     const handle = await startProductTurn({
       input: {
         input: input.prompt,
+        ...(input.profileId ? { profileId: input.profileId } : {}),
         modelId: input.modelId,
         requestId: input.requestId,
         threadId: input.threadId,
@@ -902,6 +911,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
     return new RuntimeConfigFileService({
       dataRoot,
+      userId: c.get('actor')?.userId ?? LOCAL_USER_ID,
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
       runtimeConfigManager,
       readRuntimeConfigStatus: () => runtimeConfigManager.status(),
@@ -927,47 +937,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
-  }
-
-  /**
-   * Resolves the Internal Core Role default provider id from runtime config.
-   *
-   * @returns Core provider id or null.
-   */
-  function coreDefaultProviderId(): string | null {
-    return runtimeConfig().openKitConfig.defaults?.coreProviderId ?? null;
-  }
-
-  /**
-   * Resolves the Internal Core Role default model from runtime config.
-   *
-   * @returns Core model or null.
-   */
-  function coreDefaultModel(): string | null {
-    return runtimeConfig().openKitConfig.defaults?.coreModel ?? null;
-  }
-
-  /**
-   * Resolves the Gateway default provider id from runtime config and provider defaults.
-   *
-   * @returns Gateway provider id or null.
-   */
-  function gatewayDefaultProviderId(): string | null {
-    return runtimeConfig().openKitConfig.defaults?.gatewayProviderId ?? null;
-  }
-
-  /**
-   * Resolves the Gateway default model from runtime config and provider defaults.
-   *
-   * @returns Gateway model or null.
-   */
-  function gatewayDefaultModel(): string | null {
-    const providerId = gatewayDefaultProviderId();
-    const runtimeProfile = providerId ? runtimeConfig().providerRegistry.get(providerId) : null;
-
-    return (
-      runtimeConfig().openKitConfig.defaults?.gatewayModel ?? runtimeProfile?.defaultModel ?? null
-    );
   }
 
   /**
@@ -1031,24 +1000,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return resolveProviderProfileToLLMConfig(profile, providerCredentialResolver);
   }
 
-  /**
-   * Returns app-diagnostics default provider and model selections.
-   *
-   * @returns Default provider/model selections for diagnostics.
-   */
-  function diagnosticsProviderDefaults() {
-    return {
-      quickChat: {
-        providerId: coreDefaultProviderId(),
-        model: coreDefaultModel(),
-      },
-      gateway: {
-        providerId: gatewayDefaultProviderId(),
-        model: gatewayDefaultModel(),
-      },
-    };
-  }
-
   app.use('/api/worker-control/*', browserCors);
   registerWorkerControlRoutes({
     app,
@@ -1061,7 +1012,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     llmGatewayDispatcher,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     resolveGatewayProvider,
+    runtimeConfig,
     workerControlGateway,
   });
 
@@ -1168,18 +1121,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         gateway: {
           status: 'ok',
           endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],
+          defaultModelId: runtimeConfig().gatewayConfig.defaultLogicalModelId ?? null,
+          models: resolveLogicalModelCatalog(
+            runtimeConfig().gatewayConfig,
+            runtimeConfig().providerRegistry
+          ).map(({ id, displayName, capabilities }) => ({ id, displayName, capabilities })),
           usage: gatewayUsageTracker.snapshot(),
         },
         providers: {
           diagnostics: runtimeConfig().providerDiagnostics.summaries,
           registry: runtimeConfig().providerRegistry.summarize(),
         },
-        defaultProviders: resolveDefaultProviderStates(
-          runtimeConfig().openKitConfig,
-          runtimeConfig().providerRegistry,
-          providerCredentialResolver
-        ),
-        defaults: diagnosticsProviderDefaults(),
         // Diagnostics mirrors protocol-visible capabilities for one consistent app surface.
         capabilities: mapRuntimeCapabilitiesToFlags(turnExecutor.capabilities),
         runtimeConfig: runtimeConfigManager.status(),
@@ -1197,10 +1149,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       SetupDiagnosticsResponseSchema.parse(
         createSetupDiagnostics({
           dataRoot,
+          gatewayConfig: runtimeConfig().gatewayConfig,
           mode,
           openKitConfig: runtimeConfig().openKitConfig,
           providerRegistry: runtimeConfig().providerRegistry,
-          providerCredentialResolver,
           agentManifests: runtimeConfig().agentManifests,
           runtimeConfig: runtimeConfigManager.status(),
         })
@@ -1224,6 +1176,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerRuntimeConfigRoutes({
     app,
+    onReloadApplied: () =>
+      sharedStore.refreshWorkspaceConfigNames(
+        runtimeConfigManager.current().workspaceConfigs.map(({ config, workspaceId }) => ({
+          name: config.workspace.name,
+          workspaceId,
+        }))
+      ),
     runtimeConfigFileService,
     runtimeConfigManager,
   });
@@ -1231,7 +1190,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerLlmGatewayRoutes({
     app,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-    gatewayDefaultProviderId,
     llmGatewayDispatcher,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     resolveGatewayProvider,
@@ -1242,10 +1200,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     assertProjectWorkspace,
     coreDb: options.coreDb,
-    coreDefaultModel,
-    coreDefaultProviderId,
     inflightCommands,
     llmGatewayDispatcher,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     repositoryWorkspaceDb,
     requestStore,
     resolveGatewayProvider,

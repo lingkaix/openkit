@@ -30,6 +30,85 @@ function writeServerConfig(dataRoot: string, body: string): void {
   writeFileSync(join(dataRoot, 'config', 'server.jsonc'), body);
 }
 
+/** Writes the canonical provider profile used by runtime-config tests. */
+function writeProviderConfig(dataRoot: string, model: string): void {
+  const providersRoot = join(dataRoot, 'config', 'providers');
+  mkdirSync(providersRoot, { recursive: true });
+  writeFileSync(
+    join(providersRoot, 'agent-openrouter.provider.jsonc'),
+    JSON.stringify({
+      id: 'agent-openrouter',
+      vendor: 'openrouter',
+      kind: 'gateway',
+      displayName: 'Agent OpenRouter',
+      models: [model],
+    })
+  );
+}
+
+/** Writes the independent Server and Provider files used by one test snapshot. */
+function writeConfiguredServer(dataRoot: string, model: string, extra = ''): void {
+  writeServerConfig(
+    dataRoot,
+    `{
+      "schemaVersion": 1,
+      "defaults": {
+        "defaultAgentId": "agent_server"
+      }${extra}
+    }`
+  );
+  writeProviderConfig(dataRoot, model);
+}
+
+function writeGatewayConfig(dataRoot: string, model = 'openai/gpt-5.1'): void {
+  mkdirSync(join(dataRoot, 'config'), { recursive: true });
+  writeFileSync(
+    join(dataRoot, 'config', 'gateway.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'reasoning',
+      logicalModels: [
+        {
+          id: 'reasoning',
+          displayName: 'Reasoning',
+          routes: [{ id: 'primary', providerProfileId: 'agent-openrouter', providerModel: model }],
+        },
+      ],
+    })
+  );
+}
+
+function writeInternalRoleProfiles(dataRoot: string): void {
+  mkdirSync(join(dataRoot, 'config'), { recursive: true });
+  writeFileSync(
+    join(dataRoot, 'config', 'internal-role-profiles.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      defaultLogicalModelId: 'reasoning',
+      profiles: [
+        {
+          id: 'assistant-default',
+          roleId: 'assistant',
+          preferredLogicalModelId: 'reasoning',
+        },
+      ],
+    })
+  );
+}
+
+function writeUserConfig(dataRoot: string): void {
+  const configRoot = join(dataRoot, 'users', 'user_demo', 'config');
+  mkdirSync(configRoot, { recursive: true });
+  writeFileSync(
+    join(configRoot, 'user.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      workspaces: [{ workspaceId: 'ws_demo', agentId: 'agent_personal' }],
+    })
+  );
+}
+
 /**
  * Writes one authored agent config whose display name can drive semantic reload tests.
  *
@@ -59,8 +138,8 @@ function writeAgentConfig(dataRoot: string, displayName: string): void {
           { "id": "future-runtime", "path": "/usr/local/bin/future-runtime" }
         ]
       },
-      "provider": { "ref": "agent-openrouter", "model": "openai/gpt-5.1" },
-      "profiles": [{ "id": "default", "instructionsRef": "codex", "skills": [] }],
+      "models": { "preferredLogicalModelId": "reasoning", "allowedLogicalModelIds": ["reasoning"] },
+      "profiles": [{ "id": "default", "instructionsRef": "codex", "skills": [], "mcp": [] }],
       "defaultProfileId": "default",
       "skills": [],
       "workspace": { "root": "." },
@@ -97,47 +176,27 @@ function writeWorkspaceDataSources(dataRoot: string, workspaceId: string, body: 
   writeFileSync(join(configRoot, 'data-sources.jsonc'), body);
 }
 
-/**
- * Builds a minimal server config with one provider model.
- *
- * @param model Provider model id.
- * @param extra Optional extra server config fields.
- * @returns JSONC config text.
- */
-function serverConfig(model: string, extra = ''): string {
-  return `{
-    "schemaVersion": 1,
-    "providers": [
-      {
-        "id": "agent-openrouter",
-        "vendor": "openrouter",
-        "kind": "gateway",
-        "displayName": "Agent OpenRouter",
-        "models": ["${model}"]
-      }
-    ],
-    "defaults": {
-      "coreProviderId": "agent-openrouter",
-      "gatewayProviderId": "agent-openrouter"
-    }${extra}
-  }`;
-}
-
 describe('runtime config loading and reload planning', () => {
   it('loads one immutable runtime config snapshot from canonical config inputs', () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeGatewayConfig(dataRoot);
+    writeInternalRoleProfiles(dataRoot);
+    writeUserConfig(dataRoot);
 
     const snapshot = loadRuntimeConfig(dataRoot, { version: 1 });
 
     expect(snapshot.version).toBe(1);
-    expect(snapshot.openKitConfig.defaults?.coreProviderId).toBe('agent-openrouter');
+    expect(snapshot.openKitConfig.defaults?.defaultAgentId).toBe('agent_server');
     expect(snapshot.providerRegistry.get('agent-openrouter')?.models).toEqual(['openai/gpt-5.1']);
+    expect(snapshot.gatewayConfig.defaultLogicalModelId).toBe('reasoning');
+    expect(snapshot.internalRoleProfiles.profiles[0]?.roleId).toBe('assistant');
+    expect(snapshot.userConfigs[0]?.config.workspaces[0]?.agentId).toBe('agent_personal');
   });
 
   it('exposes one authored agent manifest collection without a derived projection', () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeAgentConfig(dataRoot, 'Opaque Runtime Agent');
 
     const snapshot = loadRuntimeConfig(dataRoot, { version: 1 });
@@ -148,13 +207,14 @@ describe('runtime config loading and reload planning', () => {
 
   it('loads workspace config from the owner-independent Workspace tree', () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeWorkspaceConfig(
       dataRoot,
       'ws_demo',
       `{
         "schemaVersion": 1,
         "workspace": {
+          "name": "Demo Workspace",
           "roots": [
             {
               "id": "data",
@@ -183,7 +243,7 @@ describe('runtime config loading and reload planning', () => {
 
   it('loads workspace data source catalogs from the owner-independent Workspace tree', () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeWorkspaceDataSources(
       dataRoot,
       'ws_demo',
@@ -219,13 +279,14 @@ describe('runtime config loading and reload planning', () => {
   it('classifies workspace root changes as session-scoped', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();
-    writeServerConfig(baseRoot, serverConfig('openai/gpt-5.1'));
-    writeServerConfig(nextRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(baseRoot, 'openai/gpt-5.1');
+    writeConfiguredServer(nextRoot, 'openai/gpt-5.1');
     writeWorkspaceConfig(
       baseRoot,
       'ws_demo',
       `{
         "workspace": {
+          "name": "Demo Workspace",
           "roots": [
             { "id": "data", "kind": "host-dir", "path": "files/data", "access": "read-only" }
           ]
@@ -237,6 +298,7 @@ describe('runtime config loading and reload planning', () => {
       'ws_demo',
       `{
         "workspace": {
+          "name": "Demo Workspace",
           "roots": [
             { "id": "data", "kind": "host-dir", "path": "files/raw", "access": "read-only" }
           ]
@@ -261,27 +323,18 @@ describe('runtime config loading and reload planning', () => {
   it('does not produce runtime changes for comment-only config edits', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();
-    writeServerConfig(baseRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(baseRoot, 'openai/gpt-5.1');
     writeServerConfig(
       nextRoot,
       `{
         // comments must not affect semantic reload diffing
         "schemaVersion": 1,
-        "providers": [
-          {
-            "id": "agent-openrouter",
-            "vendor": "openrouter",
-            "kind": "gateway",
-            "displayName": "Agent OpenRouter",
-            "models": ["openai/gpt-5.1"]
-          }
-        ],
         "defaults": {
-          "coreProviderId": "agent-openrouter",
-          "gatewayProviderId": "agent-openrouter"
+          "defaultAgentId": "agent_server"
         }
       }`
     );
+    writeProviderConfig(nextRoot, 'openai/gpt-5.1');
 
     const plan = diffRuntimeConfig(
       loadRuntimeConfig(baseRoot, { version: 1 }),
@@ -297,15 +350,13 @@ describe('runtime config loading and reload planning', () => {
   it('classifies provider updates and server process changes as restart-required', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();
-    writeServerConfig(baseRoot, serverConfig('openai/gpt-5.1'));
-    writeServerConfig(
+    writeConfiguredServer(baseRoot, 'openai/gpt-5.1');
+    writeConfiguredServer(
       nextRoot,
-      serverConfig(
-        'openai/gpt-5.2',
-        `,
+      'openai/gpt-5.2',
+      `,
     "server": { "bind": { "host": "0.0.0.0", "port": 4000 } },
     "vault": { "encryptedFile": { "keyFilePath": "/run/secrets/openkit-vault.key" } }`
-      )
     );
 
     const plan = diffRuntimeConfig(
@@ -333,11 +384,11 @@ describe('runtime config loading and reload planning', () => {
     ]);
   });
 
-  it('classifies agent config changes as restart-required', () => {
+  it('classifies agent config changes as session-scoped', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();
-    writeServerConfig(baseRoot, serverConfig('openai/gpt-5.1'));
-    writeServerConfig(nextRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(baseRoot, 'openai/gpt-5.1');
+    writeConfiguredServer(nextRoot, 'openai/gpt-5.1');
     writeAgentConfig(baseRoot, 'Runtime Agent One');
     writeAgentConfig(nextRoot, 'Runtime Agent Two');
 
@@ -346,19 +397,19 @@ describe('runtime config loading and reload planning', () => {
       loadRuntimeConfig(nextRoot, { version: 2 })
     );
 
-    expect(plan.deferred).toEqual([]);
-    expect(plan.requiresRestart).toEqual([
+    expect(plan.deferred).toEqual([
       expect.objectContaining({
-        action: 'requires-restart',
-        category: 'restart-required',
+        action: 'deferred',
+        category: 'session-scoped',
         path: 'agents',
       }),
     ]);
+    expect(plan.requiresRestart).toEqual([]);
   });
 
   it('keeps the current snapshot after failed and strict rejected reloads', () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const manager = createRuntimeConfigManager({ dataRoot });
 
     writeServerConfig(dataRoot, '{ invalid jsonc');
@@ -371,13 +422,11 @@ describe('runtime config loading and reload planning', () => {
     expect(failed.plan.rejected[0]?.summary).toContain('DATA_ROOT/config/server.jsonc');
     expect(manager.status().lastFailedReload?.message).toContain('DATA_ROOT/config/server.jsonc');
 
-    writeServerConfig(
+    writeConfiguredServer(
       dataRoot,
-      serverConfig(
-        'openai/gpt-5.1',
-        `,
+      'openai/gpt-5.1',
+      `,
     "server": { "bind": { "host": "0.0.0.0", "port": 4000 } }`
-      )
     );
     const rejected = manager.reload({ dryRun: false, mode: 'strict' });
 
@@ -388,16 +437,14 @@ describe('runtime config loading and reload planning', () => {
 
   it('safe reload preserves provider and server state until restart', () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const manager = createRuntimeConfigManager({ dataRoot });
 
-    writeServerConfig(
+    writeConfiguredServer(
       dataRoot,
-      serverConfig(
-        'openai/gpt-5.2',
-        `,
+      'openai/gpt-5.2',
+      `,
     "server": { "bind": { "host": "0.0.0.0", "port": 4000 } }`
-      )
     );
 
     const applied = manager.reload({ dryRun: false, mode: 'safe' });
@@ -424,30 +471,18 @@ describe('runtime config loading and reload planning', () => {
 
   it('keeps the current snapshot when candidate config has blocking diagnostics', () => {
     const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, serverConfig('openai/gpt-5.1'));
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const manager = createRuntimeConfigManager({ dataRoot });
 
-    writeServerConfig(
-      dataRoot,
-      `{
-        "schemaVersion": 1,
-        "providers": [
-          {
-            "id": "agent-openrouter",
-            "vendor": "openrouter",
-            "kind": "gateway",
-            "displayName": "Agent OpenRouter",
-            "models": ["openai/gpt-5.2"]
-          },
-          {
-            "id": "agent-openrouter",
-            "vendor": "openrouter",
-            "kind": "gateway",
-            "displayName": "Duplicate OpenRouter",
-            "models": ["openai/gpt-5.3"]
-          }
-        ]
-      }`
+    writeFileSync(
+      join(dataRoot, 'config', 'providers', 'duplicate.provider.jsonc'),
+      JSON.stringify({
+        id: 'agent-openrouter',
+        vendor: 'openrouter',
+        kind: 'gateway',
+        displayName: 'Duplicate OpenRouter',
+        models: ['openai/gpt-5.3'],
+      })
     );
 
     const failed = manager.reload({ dryRun: false, mode: 'safe' });

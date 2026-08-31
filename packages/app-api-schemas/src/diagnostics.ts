@@ -81,44 +81,6 @@ export const GatewayUsageSnapshotSchema = z
   })
   .strict();
 
-const DefaultProviderOriginSchema = z.literal('canonical');
-
-/** Role-scoped default provider diagnostic. */
-export const RoleDefaultProviderDiagnosticsSchema = z.union([
-  z
-    .object({
-      configured: z.literal(true),
-      model: z.string().nullable(),
-      origin: DefaultProviderOriginSchema,
-      providerId: z.string().min(1),
-      reason: z.never().optional(),
-    })
-    .strict(),
-  z
-    .object({
-      configured: z.literal(false),
-      origin: z.literal('unset'),
-      providerId: z.never().optional(),
-      reason: z.literal('unset'),
-    })
-    .strict(),
-  z
-    .object({
-      configured: z.literal(false),
-      model: z.string().nullable(),
-      origin: DefaultProviderOriginSchema,
-      providerId: z.string().min(1),
-      reason: z.enum(['unknown-id', 'credentials-missing']),
-    })
-    .strict(),
-]);
-
-/** Role-scoped default provider diagnostics. */
-export const DefaultProvidersDiagnosticsSchema = z.object({
-  core: RoleDefaultProviderDiagnosticsSchema,
-  gateway: RoleDefaultProviderDiagnosticsSchema,
-});
-
 /** Secret marker safe for setup diagnostics. */
 export const SetupSecretMarkerSchema = z.object({
   configured: z.boolean(),
@@ -135,15 +97,7 @@ export const SetupDiagnosticsResponseSchema = z
       dataRoot: z.literal('configured').nullable(),
       config: z.object({
         schemaVersion: z.number().nullable(),
-        defaults: z.object({
-          coreProviderId: z.string().nullable(),
-          gatewayProviderId: z.string().nullable(),
-        }),
-        gateway: z.object({
-          openaiCompatible: z.object({
-            enabled: z.boolean().nullable(),
-          }),
-        }),
+        defaultAgentId: z.string().nullable(),
       }),
     }),
     providers: z.array(
@@ -168,7 +122,7 @@ export const SetupDiagnosticsResponseSchema = z
         setup: z.object({
           status: z.enum(['ready', 'degraded', 'blocked', 'disabled']),
           deploymentMode: z.string().nullable(),
-          providerId: z.string().nullable(),
+          logicalModelId: z.string().nullable(),
           diagnostics: z.array(
             z.object({
               code: z.string().min(1),
@@ -233,16 +187,19 @@ export const AppDiagnosticsResponseSchema = z
     gateway: z.object({
       status: z.string().min(1),
       endpoints: z.array(z.string().min(1)),
+      defaultModelId: z.string().nullable(),
+      models: z.array(
+        z
+          .object({
+            id: z.string().min(1),
+            displayName: z.string().min(1),
+            capabilities: z.array(z.string().min(1)),
+          })
+          .strict()
+      ),
       usage: GatewayUsageSnapshotSchema.optional(),
     }),
     providers: ProvidersDiagnosticsSchema,
-    defaultProviders: DefaultProvidersDiagnosticsSchema,
-    defaults: z
-      .object({
-        quickChat: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
-        gateway: z.object({ providerId: z.string().nullable(), model: z.string().nullable() }),
-      })
-      .strict(),
     capabilities: MetaResponseSchema.shape.capabilities,
     runtimeConfig: RuntimeConfigStatusSchema,
   })
@@ -257,10 +214,6 @@ export type ProviderDiagnostic = z.infer<typeof ProviderDiagnosticSchema>;
 export type ProviderRegistryEntry = z.infer<typeof ProviderRegistryEntrySchema>;
 /** Strict provider diagnostics response shape returned by NanoCore. */
 export type ProvidersDiagnostics = z.infer<typeof ProvidersDiagnosticsSchema>;
-/** Role-scoped default provider diagnostic. */
-export type RoleDefaultProviderDiagnostics = z.infer<typeof RoleDefaultProviderDiagnosticsSchema>;
-/** Role-scoped default provider diagnostics. */
-export type DefaultProvidersDiagnostics = z.infer<typeof DefaultProvidersDiagnosticsSchema>;
 /** Setup diagnostics response. */
 export type SetupDiagnosticsResponse = z.infer<typeof SetupDiagnosticsResponseSchema>;
 /** Boot readiness projection returned by App Diagnostics. */

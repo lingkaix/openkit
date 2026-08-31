@@ -314,7 +314,6 @@ export function computeSessionCompatibilityKey(
           control: environmentPackage.control ?? null,
           layout,
           policy: environmentPackage.policy ?? null,
-          providers: environmentPackage.providers ?? null,
           runtime: environmentPackage.runtime ?? null,
           vault: environmentPackage.vault ?? null,
         })

@@ -64,7 +64,7 @@ describe('resolved agent setup ledger', () => {
         turnId: 'turn_1',
         requestId: 'req_1',
         agentId: 'agent_codex_host',
-        providerId: 'agent-openrouter',
+        logicalModelId: 'openai/gpt-5.2',
         runtimeKind: 'codex',
         runtimeAdapter: 'codex',
         requiredFeatures: ['workspace.mount.fuse'],
@@ -87,11 +87,6 @@ describe('resolved agent setup ledger', () => {
         observability: { authorization: 'observability-secret' },
         permissions: { password: 'permissions-secret' },
         profiles: [{ id: 'profile_default', credential: 'profile-secret' }],
-        provider: {
-          fallbacks: [{ apiKey: 'fallback-secret' }],
-          model: 'openai/gpt-5.2',
-          ref: 'agent-openrouter',
-        },
         resources: { secret: 'resources-secret' },
         sandbox: {
           ...base.manifest.sandbox,
@@ -115,6 +110,7 @@ describe('resolved agent setup ledger', () => {
             },
             {
               id: 'runtime_api_key',
+              requirementId: 'runtime-api-key',
               targetEnvVarName: 'RUNTIME_API_KEY',
               vaultGrantId: 'grant_runtime_api_key',
               visibility: 'runtime-env',
@@ -142,13 +138,14 @@ describe('resolved agent setup ledger', () => {
           root: '/workspace',
         },
       },
-      provider: {
-        model: 'openai/gpt-5.2',
-        origin: 'server-providers',
-        providerId: 'agent-openrouter',
-        secretRef: 'vault:provider-secret-ref',
+      logicalModels: {
+        ...base.logicalModels,
+        allowed: base.logicalModels.allowed.map((model) => ({
+          ...model,
+          routeSecret: 'logical-route-secret',
+        })),
       },
-    };
+    } as ResolvedAgentSetup;
 
     try {
       const record = recordResolvedAgentSetup(workspaceDb, {
@@ -167,9 +164,13 @@ describe('resolved agent setup ledger', () => {
             network: setup.manifest.sandbox?.network,
           },
         },
-        provider: {
-          model: 'openai/gpt-5.2',
-          providerId: 'agent-openrouter',
+        logicalModels: {
+          preferredLogicalModelId: setup.logicalModels.preferredLogicalModelId,
+          allowed: setup.logicalModels.allowed.map((model) => ({
+            id: model.id,
+            capabilities: model.capabilities,
+            modelFamilyId: model.modelFamilyId,
+          })),
         },
       };
 
@@ -187,14 +188,13 @@ describe('resolved agent setup ledger', () => {
         'observability-secret',
         'permissions-secret',
         'profile-secret',
-        'fallback-secret',
         'resources-secret',
         'skill-secret',
         'workspace-env-secret',
         'workspace-ephemeral-secret',
         'filesystem-secret',
         'workspace-input-secret',
-        'provider-secret-ref',
+        'logical-route-secret',
       ]) {
         expect(exportableJson).not.toContain(secret);
       }
@@ -216,9 +216,13 @@ describe('resolved agent setup ledger', () => {
           network: setup.manifest.sandbox?.network ?? [],
         },
       },
-      provider: {
-        model: setup.provider?.model ?? null,
-        providerId: setup.provider?.providerId ?? 'agent-openrouter',
+      logicalModels: {
+        preferredLogicalModelId: setup.logicalModels.preferredLogicalModelId,
+        allowed: setup.logicalModels.allowed.map((model) => ({
+          id: model.id,
+          capabilities: model.capabilities,
+          modelFamilyId: model.modelFamilyId,
+        })),
       },
     };
     const suppliedSetup = {
@@ -226,15 +230,15 @@ describe('resolved agent setup ledger', () => {
       manifest: {
         ...redactedSetup.manifest,
         extensions: { apiKey: 'import-extension-secret' },
-        provider: { fallbacks: [{ token: 'import-fallback-secret' }] },
+        modelRoutes: [{ token: 'import-route-secret' }],
         workspace: {
           env: { API_KEY: 'import-workspace-secret' },
           inputs: [{ target: '/workspace/input', token: 'import-passthrough-secret' }],
         },
       },
-      provider: {
-        ...redactedSetup.provider,
-        secretRef: 'vault:import-provider-secret-ref',
+      logicalModels: {
+        ...redactedSetup.logicalModels,
+        privateRoutes: [{ token: 'import-logical-route-secret' }],
       },
     };
 
@@ -246,7 +250,7 @@ describe('resolved agent setup ledger', () => {
           turnId: null,
           requestId: null,
           agentId: setup.manifest.id,
-          providerId: setup.provider?.providerId ?? null,
+          logicalModelId: setup.logicalModels.preferredLogicalModelId,
           runtimeKind: setup.manifest.runtime.kind,
           runtimeAdapter: setup.manifest.runtime.adapter,
           requiredFeatures: setup.manifest.requiredFeatures,
@@ -265,10 +269,10 @@ describe('resolved agent setup ledger', () => {
       const exportableJson = JSON.stringify(listExportableResolvedAgentSetups(workspaceDb, 'ws_1'));
       for (const secret of [
         'import-extension-secret',
-        'import-fallback-secret',
+        'import-route-secret',
         'import-workspace-secret',
         'import-passthrough-secret',
-        'import-provider-secret-ref',
+        'import-logical-route-secret',
       ]) {
         expect(exportableJson).not.toContain(secret);
       }
@@ -299,12 +303,12 @@ describe('resolved agent setup ledger', () => {
             manifest: {
               ...record.setup.manifest,
               extensions: { apiKey: 'stored-extension-secret' },
-              provider: { fallbacks: [{ token: 'stored-fallback-secret' }] },
+              modelRoutes: [{ token: 'stored-route-secret' }],
               workspace: { env: { API_KEY: 'stored-workspace-secret' } },
             },
-            provider: {
-              ...record.setup.provider,
-              secretRef: 'vault:stored-provider-secret-ref',
+            logicalModels: {
+              ...record.setup.logicalModels,
+              privateRoutes: [{ token: 'stored-logical-route-secret' }],
             },
           }),
           record.id
@@ -316,9 +320,9 @@ describe('resolved agent setup ledger', () => {
       const exportableJson = JSON.stringify(exportable);
       for (const secret of [
         'stored-extension-secret',
-        'stored-fallback-secret',
+        'stored-route-secret',
         'stored-workspace-secret',
-        'stored-provider-secret-ref',
+        'stored-logical-route-secret',
       ]) {
         expect(exportableJson).not.toContain(secret);
       }

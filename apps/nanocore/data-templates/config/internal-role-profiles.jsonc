@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "defaultLogicalModelId": "reasoning",
+  "profiles": [
+    {
+      "id": "assistant-default",
+      "roleId": "assistant",
+      "preferredLogicalModelId": "reasoning",
+      "compatibleLogicalModelIds": ["claude", "gemini", "grok"],
+      "requiredLogicalModelCapabilities": ["chat-completions"]
+    }
+  ],
+  "extensions": {}
+}

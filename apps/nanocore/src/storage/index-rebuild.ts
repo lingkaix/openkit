@@ -2,8 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
 
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { ArtifactSchema } from '@openkit/protocol';
 
+import { parseJsoncObject } from '../config/jsonc.js';
 import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
@@ -26,6 +28,7 @@ import {
   readCanonicalJsonLines,
   readCanonicalTextFile,
   readWorkspaceKnowledgePage,
+  WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 import {
   appendWorkspaceKnowledgeRetrievalTrace,
@@ -347,8 +350,14 @@ export function rebuildWorkspaceDerivedIndexes(
   input: RebuildWorkspaceDerivedIndexesInput
 ): RebuildWorkspaceDerivedIndexesResult {
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
-  const workspacePath = join(workspaceRoot, 'workspace.json');
+  const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
+  const workspacePath = join(workspaceRoot, 'workspace-record.json');
 
+  if (existsSync(retiredWorkspacePath)) {
+    throw new Error(
+      `Unsupported Workspace projection: ${toReportPath(input.dataRoot, retiredWorkspacePath)}`
+    );
+  }
   if (!existsSync(workspacePath)) {
     throw new Error(
       `Workspace projection is missing: ${toReportPath(input.dataRoot, workspacePath)}`
@@ -432,7 +441,11 @@ export function rebuildExistingWorkspaceDerivedIndexes(
   const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
 
   for (const workspaceId of listDirectories(workspacesRoot)) {
-    if (!existsSync(join(workspacesRoot, workspaceId, 'workspace.json'))) {
+    const workspaceRoot = join(workspacesRoot, workspaceId);
+    if (existsSync(join(workspaceRoot, 'workspace.json'))) {
+      throw new Error(`Unsupported Workspace projection: workspaces/${workspaceId}/workspace.json`);
+    }
+    if (!existsSync(join(workspaceRoot, 'workspace-record.json'))) {
       continue;
     }
 
@@ -991,16 +1004,19 @@ function buildSearchEntries(
   workspaceId: string
 ): WorkspaceSearchIndexEntry[] {
   const entries: WorkspaceSearchIndexEntry[] = [];
-  const workspace = readJsonRecord(join(workspaceRoot, 'workspace.json')) as {
-    id: string;
-    name?: string;
-  };
+  const workspace = WorkspaceSystemRecordSchema.parse(
+    readJsonRecord(join(workspaceRoot, 'workspace-record.json'))
+  );
+  const configPath = join(workspaceRoot, 'config', 'workspace.jsonc');
+  const config = WorkspaceConfigSchema.parse(
+    parseJsoncObject(readCanonicalTextFile(configPath), configPath)
+  );
 
   entries.push({
     kind: 'workspace',
     id: workspace.id,
-    title: workspace.name ?? workspace.id,
-    searchText: workspace.name ?? workspace.id,
+    title: config.workspace.name,
+    searchText: config.workspace.name,
   });
   entries.push(...readKnowledgePageEntries(workspaceRoot, workspaceId));
   entries.push(...readArtifactEntries(workspaceRoot, workspaceId));

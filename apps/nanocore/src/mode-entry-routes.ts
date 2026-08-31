@@ -1,16 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, relative, resolve, sep } from 'node:path';
 
 import {
+  ConversationTargetCatalogSchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
-  StartChatModeRequestSchema,
-  type StartChatModeResponse,
-  StartChatModeResponseSchema,
   StartTaskModeRequestSchema,
   type StartTaskModeResponse,
   StartTaskModeResponseSchema,
+  SubmitConversationRequestSchema,
+  SubmitConversationResponseSchema,
   type TaskDelegationDecision,
   type TaskModeEvidence,
 } from '@openkit/app-api-schemas';
@@ -18,7 +18,7 @@ import { type ActorRef, type StopReason, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
-
+import { resolveAgentSetup } from './agents/setup-resolver.js';
 import {
   apiErrorPayload,
   asApiError,
@@ -33,12 +33,22 @@ import {
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
-import { findWorkspaceConfig, type RuntimeConfigSnapshot } from './config/runtime-config.js';
-import { goalStartOwnerIds, startGoalModeObjective } from './goal-routes.js';
 import {
+  findWorkspaceConfig,
+  type RuntimeConfigSnapshot,
+  resolveDefaultAgentId,
+} from './config/runtime-config.js';
+import {
+  goalStartOwnerIds,
+  startGoalModeObjective,
+  submitGoalSteeringCommand,
+} from './goal-routes.js';
+import {
+  createStructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from './internal-agents/delegation.js';
+import { resolveInternalRoleProfile } from './internal-agents/profile-resolver.js';
 import { redactInternalAgentText } from './internal-agents/redaction.js';
 import {
   createWorkerCoordinatorDecision,
@@ -50,13 +60,20 @@ import {
   prepareTaskKnowledgeContext,
   resolveWorkspaceKnowledgeReferenceProofs,
 } from './knowledge-manager.js';
-import type { ChatCommandReceiptMetadata, CommandRequestRecord, FsStore } from './lib/store.js';
+import type {
+  CommandRequestRecord,
+  ConversationCommandReceiptMetadata,
+  FsStore,
+} from './lib/store.js';
+import { dispatchLogicalModel, LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
 import { parseUsage } from './llm/gateway-usage.js';
+import type { ResolvedLogicalModel } from './llm/logical-models.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
+import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from './openapi.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
-import { getGoalRecord } from './runtime/goal-store.js';
+import { getGoalRecord, listGoalRecordsForThread } from './runtime/goal-store.js';
 import {
   chatTaskModeTurnId,
   commandInputHash,
@@ -104,32 +121,43 @@ const QUICK_CHAT_SYSTEM_PROMPT =
 
 /** Maximum duration of one direct Quick Chat provider call. */
 const QUICK_CHAT_TIMEOUT_MS = 30_000;
+const ConversationCommandBodySchema = SubmitConversationResponseSchema.omit({
+  originatingWorkspaceId: true,
+  originatingThreadId: true,
+  receivingWorkspaceId: true,
+  receivingThreadId: true,
+  targetRef: true,
+  logicalModelId: true,
+});
+type ConversationCommandBody = z.infer<typeof ConversationCommandBodySchema>;
 
 /** Closed Chat result kind retained by the bounded receipt. */
-type ChatModeCommandResultKind = ChatCommandReceiptMetadata['resultKind'];
+type ConversationCommandResultKind = ConversationCommandReceiptMetadata['resultKind'];
 
 /** Deterministic durable Item prefix for each accepted Chat result kind. */
-const CHAT_MODE_RESULT_ITEM_PREFIX = {
+const CONVERSATION_RESULT_ITEM_PREFIX = {
   'knowledge-answer': 'it_chat_answer_',
   'repository-answer': 'it_chat_repo_files_',
   'provider-answer': 'it_chat_answer_',
   clarification: 'it_chat_clarify_',
   'task-handoff': 'it_chat_task_',
   'goal-handoff': 'it_chat_goal_',
+  'worker-turn': 'it_worker_result_',
+  'goal-steering': 'it_steering_result_',
   refused: 'it_chat_refused_',
-} satisfies Record<ChatModeCommandResultKind, string>;
+} satisfies Record<ConversationCommandResultKind, string>;
 
 /** Stable downstream business-owner identifiers retained by the bounded receipt. */
-type ChatModeCommandDownstream = ChatCommandReceiptMetadata['downstream'];
+type ConversationCommandDownstream = ConversationCommandReceiptMetadata['downstream'];
 
 /** Accepted Chat Mode result plus its HTTP status. */
-type ChatModeCommandResult = {
+type ConversationCommandResult = {
   /** Public response projected from durable Chat owners. */
-  readonly body: StartChatModeResponse;
+  readonly body: ConversationCommandBody;
   /** Stable downstream owner identifiers for handoff validation. */
-  readonly downstream: ChatModeCommandDownstream;
+  readonly downstream: ConversationCommandDownstream;
   /** Closed result kind used to reconstruct fixed response fields. */
-  readonly resultKind: ChatModeCommandResultKind;
+  readonly resultKind: ConversationCommandResultKind;
   /** Existing success status for this Chat outcome. */
   readonly status: 200 | 202;
 };
@@ -145,23 +173,98 @@ type ChatModeCommandResult = {
  * @returns Original Chat response without rerunning routing or downstream effects.
  * @throws TurnStartValidationError when the receipt and durable owners disagree.
  */
-function replayChatModeCommand(
+function replayConversationCommand(
   store: FsStore,
   actorId: string,
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb,
   workspaceId: string,
   threadId: string,
   record: CommandRequestRecord
-): ChatModeCommandResult {
+): ConversationCommandResult {
   try {
-    const metadata = record.response.chatMetadata;
+    const metadata = record.response.conversationMetadata;
     if (!metadata) {
       throw new Error('Chat command receipt metadata is missing.');
     }
     const currentTurn = store.getTurnById(record.response.id);
     const itemRevisions = store.listWorkspaceItemRevisions(workspaceId);
+    if (
+      currentTurn.workspaceId !== metadata.receivingWorkspaceId ||
+      currentTurn.threadId !== metadata.receivingThreadId
+    ) {
+      throw new Error('Conversation receiving lineage is contradictory.');
+    }
+    if (metadata.resultKind === 'worker-turn') {
+      const resultItem = currentTurn.items.find(
+        (item) => item.id === `it_worker_result_${currentTurn.id}`
+      );
+      if (
+        record.response.kind !== 'turn' ||
+        metadata.status !== 202 ||
+        metadata.downstream?.kind !== 'task' ||
+        metadata.downstream.turnId !== currentTurn.id ||
+        !resultItem ||
+        resultItem.type !== 'status'
+      ) {
+        throw new Error('Conversation Worker result is contradictory.');
+      }
+      return {
+        body: ConversationCommandBodySchema.parse({
+          outcome: 'accepted',
+          explanation: 'The selected Worker accepted the conversation Turn.',
+          turn: currentTurn,
+          item: resultItem,
+          handoff: null,
+        }),
+        downstream: metadata.downstream,
+        resultKind: metadata.resultKind,
+        status: metadata.status,
+      };
+    }
+    if (metadata.resultKind === 'goal-steering') {
+      const resultItem = currentTurn.items.find(
+        (item) =>
+          item.type === 'user-message' &&
+          item.causationId === record.requestId &&
+          item.actor.kind === 'user' &&
+          item.actor.id === actorId
+      );
+      if (
+        record.response.kind !== 'turn' ||
+        metadata.status !== 202 ||
+        metadata.downstream?.kind !== 'goal' ||
+        metadata.downstream.turnId !== currentTurn.id ||
+        !resultItem
+      ) {
+        throw new Error('Conversation Goal steering result is contradictory.');
+      }
+      const workspaceDb = repositoryWorkspaceDb(metadata.receivingWorkspaceId);
+      try {
+        const goal = getGoalRecord(
+          workspaceDb,
+          metadata.receivingWorkspaceId,
+          metadata.receivingThreadId,
+          metadata.downstream.goalId
+        );
+        if (!goal) throw new Error('Conversation Goal steering owner is missing.');
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      return {
+        body: ConversationCommandBodySchema.parse({
+          outcome: 'accepted',
+          explanation: 'The active Goal Orchestrator accepted the steering input.',
+          turn: currentTurn,
+          item: resultItem,
+          handoff: null,
+        }),
+        downstream: metadata.downstream,
+        resultKind: metadata.resultKind,
+        status: metadata.status,
+      };
+    }
     const userItemId = `it_chat_user_${currentTurn.id}`;
-    const resultItemId = `${CHAT_MODE_RESULT_ITEM_PREFIX[metadata.resultKind]}${currentTurn.id}`;
+    const resultItemId = `${CONVERSATION_RESULT_ITEM_PREFIX[metadata.resultKind]}${currentTurn.id}`;
     const userItem = itemRevisions.find((item) => item.id === userItemId);
     const resultItem = itemRevisions.find((item) => item.id === resultItemId);
     const currentUserItem = currentTurn.items.find((item) => item.id === userItemId);
@@ -213,7 +316,7 @@ function replayChatModeCommand(
       }
 
       return {
-        body: StartChatModeResponseSchema.parse({
+        body: ConversationCommandBodySchema.parse({
           outcome: 'clarification-needed',
           explanation: 'The Assistant needs a concrete request before choosing a mode.',
           turn: {
@@ -246,9 +349,9 @@ function replayChatModeCommand(
       throw new Error('Chat terminal result Item is incomplete.');
     }
 
-    let outcome: StartChatModeResponse['outcome'];
+    let outcome: ConversationCommandBody['outcome'];
     let explanation: string;
-    let handoff: StartChatModeResponse['handoff'] = null;
+    let handoff: ConversationCommandBody['handoff'] = null;
 
     if (
       metadata.resultKind === 'knowledge-answer' ||
@@ -269,7 +372,7 @@ function replayChatModeCommand(
       outcome = 'answered';
       explanation =
         metadata.resultKind === 'knowledge-answer'
-          ? 'The Assistant answered from workspace knowledge.'
+          ? 'The Knowledge Manager answered from Workspace Knowledge.'
           : metadata.resultKind === 'repository-answer'
             ? 'The Assistant answered from a read-only repository inspection.'
             : 'The Assistant answered directly.';
@@ -319,7 +422,7 @@ function replayChatModeCommand(
       const goalTurn = store.getTurnById(metadata.downstream.turnId);
       const ids = goalStartOwnerIds({
         actorId,
-        owningCommand: 'chat.start',
+        owningCommand: 'conversation.submit',
         requestId: record.requestId,
         workspaceId,
         threadId,
@@ -371,7 +474,7 @@ function replayChatModeCommand(
     }
 
     return {
-      body: StartChatModeResponseSchema.parse({
+      body: ConversationCommandBodySchema.parse({
         outcome,
         explanation,
         turn: {
@@ -919,7 +1022,11 @@ function hasChatTaskCheckpointWithoutReceipt(
   const turnId = chatTaskModeTurnId(actorId, workspaceId, threadId, requestId);
   return (
     getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId) !== null &&
-    store.getCommandRequest('chat.start', requestId, { actorId, workspaceId, threadId }) === null
+    store.getCommandRequest('conversation.submit', requestId, {
+      actorId,
+      workspaceId,
+      threadId,
+    }) === null
   );
 }
 
@@ -1033,7 +1140,15 @@ function recordQuickChatLlmUsage(input: {
  * @param error Provider failure to normalize.
  * @returns Status-preserving App API error response.
  */
-function asProviderApiError(error: OpenAICompatibleProviderError): Response {
+function asProviderApiError(
+  error: OpenAICompatibleProviderError | LogicalModelRoutesExhaustedError
+): Response {
+  if (error instanceof LogicalModelRoutesExhaustedError) {
+    return Response.json(apiErrorPayload({ code: error.code, message: error.message }), {
+      status: error.status,
+    });
+  }
+
   if (error.status === 429) {
     return Response.json(
       apiErrorPayload({
@@ -1655,10 +1770,9 @@ export function registerQuickAndChatModeRoutes({
   app,
   assertProjectWorkspace,
   coreDb,
-  coreDefaultModel,
-  coreDefaultProviderId,
   inflightCommands,
   llmGatewayDispatcher,
+  providerSubscriptionAccountManager,
   repositoryWorkspaceDb,
   requestStore,
   resolveGatewayProvider,
@@ -1672,10 +1786,9 @@ export function registerQuickAndChatModeRoutes({
     action: string
   ) => void;
   readonly coreDb: CoreDb | undefined;
-  readonly coreDefaultModel: () => string | null;
-  readonly coreDefaultProviderId: () => string | null;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createChatCompletion'>;
+  readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
@@ -1687,6 +1800,7 @@ export function registerQuickAndChatModeRoutes({
     readonly threadId: string;
     readonly prompt: string;
     readonly modelId?: string | undefined;
+    readonly profileId?: string | undefined;
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
@@ -1696,17 +1810,241 @@ export function registerQuickAndChatModeRoutes({
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
 }): void {
-  /**
-   * Resolves provider and model for quick-chat requests.
-   *
-   * @returns Provider id and model selected for quick chat.
-   */
-  function quickChatSelection() {
-    return {
-      providerId: coreDefaultProviderId(),
-      model: coreDefaultModel(),
-    };
+  /** Resolves one internal-role profile and logical model for one User and Workspace. */
+  function internalRoleSelection(
+    roleId: string,
+    userId: string,
+    workspaceId: string,
+    requestedLogicalModelId?: string
+  ) {
+    const snapshot = runtimeConfig();
+    return resolveInternalRoleProfile({
+      roleId,
+      workspaceId,
+      gatewayConfig: snapshot.gatewayConfig,
+      profilesConfig: snapshot.internalRoleProfiles,
+      providerRegistry: snapshot.providerRegistry,
+      ...(requestedLogicalModelId ? { requestedLogicalModelId } : {}),
+      ...(findWorkspaceConfig(snapshot, workspaceId)?.config
+        ? { workspaceConfig: findWorkspaceConfig(snapshot, workspaceId)!.config }
+        : {}),
+      ...(snapshot.userConfigs.find((entry) => entry.userId === userId)?.config
+        ? { userConfig: snapshot.userConfigs.find((entry) => entry.userId === userId)!.config }
+        : {}),
+    });
   }
+
+  /** Resolves the Assistant role used by Quick Chat and direct Assistant submissions. */
+  function quickChatSelection(
+    userId: string,
+    workspaceId: string,
+    requestedLogicalModelId?: string
+  ) {
+    return internalRoleSelection('assistant', userId, workspaceId, requestedLogicalModelId);
+  }
+
+  /** Projects one resolved logical model without private Gateway routes. */
+  function conversationModelChoice(model: ResolvedLogicalModel) {
+    return { id: model.id, label: model.displayName, capabilities: [...model.capabilities] };
+  }
+
+  /** Builds the single target projection shared by catalog reads and command acceptance. */
+  function conversationTargetCatalog(
+    store: FsStore,
+    workspaceId: string,
+    requestedThreadId: string | null,
+    userId: string
+  ): z.infer<typeof ConversationTargetCatalogSchema> {
+    const snapshot = runtimeConfig();
+    const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
+    const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
+    const assistant = quickChatSelection(userId, workspaceId);
+    const knowledgeManager = internalRoleSelection('knowledge-manager', userId, workspaceId);
+    const targets: Array<z.infer<typeof ConversationTargetCatalogSchema>['targets'][number]> = [
+      {
+        targetRef: 'internal-role:assistant',
+        kind: 'assistant',
+        label: 'Assistant',
+        description: 'OpenKit Core Assistant.',
+        availability: assistant ? 'available' : 'unavailable',
+        unavailableReason: assistant ? null : 'No admitted logical model is configured.',
+        threadId: requestedThreadId,
+        profileId: assistant?.profile?.id ?? null,
+        logicalModels: assistant?.logicalModels.map(conversationModelChoice) ?? [],
+        defaultLogicalModelId: assistant?.logicalModel.id ?? null,
+      },
+      {
+        targetRef: 'internal-role:knowledge-manager',
+        kind: 'knowledge-manager',
+        label: 'Knowledge Manager',
+        description: 'Answers from Workspace Knowledge.',
+        availability: knowledgeManager ? 'available' : 'unavailable',
+        unavailableReason: knowledgeManager ? null : 'No admitted logical model is configured.',
+        threadId: requestedThreadId,
+        profileId: null,
+        logicalModels: knowledgeManager?.logicalModels.map(conversationModelChoice) ?? [],
+        defaultLogicalModelId: knowledgeManager?.logicalModel.id ?? null,
+      },
+    ];
+
+    if (requestedThreadId && coreDb) {
+      const workspaceDb = repositoryWorkspaceDb(workspaceId);
+      try {
+        const goal = listGoalRecordsForThread(workspaceDb, {
+          workspaceId,
+          threadId: requestedThreadId,
+        }).findLast((candidate) =>
+          [
+            'planning',
+            'awaiting_plan_approval',
+            'running',
+            'paused',
+            'awaiting_user',
+            'reviewing',
+          ].includes(candidate.status)
+        );
+        if (goal) {
+          const goalOrchestrator = internalRoleSelection('goal-orchestrator', userId, workspaceId);
+          targets.push({
+            targetRef: `goal-orchestrator:${goal.goalId}`,
+            kind: 'goal-orchestrator',
+            label: 'Goal Orchestrator',
+            description: 'Steers the active Goal in this Thread.',
+            availability: goalOrchestrator ? 'available' : 'unavailable',
+            unavailableReason: goalOrchestrator ? null : 'No admitted logical model is configured.',
+            threadId: requestedThreadId,
+            profileId: null,
+            logicalModels: goalOrchestrator?.logicalModels.map(conversationModelChoice) ?? [],
+            defaultLogicalModelId: goalOrchestrator?.logicalModel.id ?? null,
+          });
+        }
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    }
+
+    const pinnedAgentIds = new Set([
+      ...(workspaceConfig?.workspace.agents.map((binding) => binding.agentId) ?? []),
+      ...(workspaceConfig?.workspace.defaultAgentId
+        ? [workspaceConfig.workspace.defaultAgentId]
+        : []),
+    ]);
+    for (const candidate of workerCoordinatorCandidates(store, workspaceId)) {
+      if (!pinnedAgentIds.has(candidate.agentId)) continue;
+      const manifest = snapshot.agentManifests.find((entry) => entry.id === candidate.agentId);
+      if (!manifest) continue;
+      const setup = resolveAgentSetup(manifest, {
+        gatewayConfig: snapshot.gatewayConfig,
+        providerRegistry: snapshot.providerRegistry,
+        workspaceId,
+        ...(workspaceConfig ? { workspaceConfig } : {}),
+        ...(userConfig ? { userConfig } : {}),
+      }).setup;
+      targets.push({
+        targetRef: `warm-worker:${encodeURIComponent(candidate.agentId)}:${encodeURIComponent(setup?.profileId ?? manifest.defaultProfileId ?? '')}`,
+        kind: 'warm-worker',
+        label: candidate.displayName,
+        description: 'Reusable Worker supply configured for this Workspace.',
+        availability: candidate.readiness === 'ready' && setup ? 'available' : 'unavailable',
+        unavailableReason:
+          candidate.readiness === 'ready' && setup
+            ? null
+            : candidate.reasons?.join(' ') || 'Worker is not ready.',
+        threadId: null,
+        profileId: setup?.profileId ?? manifest.defaultProfileId ?? null,
+        logicalModels: setup?.logicalModels.allowed.map(conversationModelChoice) ?? [],
+        defaultLogicalModelId: setup?.logicalModels.preferredLogicalModelId ?? null,
+      });
+    }
+
+    for (const session of store.listWorkspaceAgentSessions(workspaceId)) {
+      if (!session.threadId || session.status === 'closed') continue;
+      const manifest = snapshot.agentManifests.find((entry) => entry.id === session.agentId);
+      if (!manifest) continue;
+      const setup = resolveAgentSetup(manifest, {
+        gatewayConfig: snapshot.gatewayConfig,
+        providerRegistry: snapshot.providerRegistry,
+        workspaceId,
+        ...(workspaceConfig ? { workspaceConfig } : {}),
+        ...(userConfig ? { userConfig } : {}),
+      }).setup;
+      targets.push({
+        targetRef: `running-worker:${encodeURIComponent(session.threadId)}:${encodeURIComponent(session.agentId)}`,
+        kind: 'running-worker',
+        label: `${manifest.displayName} · Running`,
+        description: 'Worker continuing on its existing Thread.',
+        availability: session.status === 'busy' ? 'busy' : setup ? 'available' : 'unavailable',
+        unavailableReason:
+          session.status === 'busy' ? 'Worker is busy.' : setup ? null : 'Worker is not ready.',
+        threadId: session.threadId,
+        profileId: setup?.profileId ?? manifest.defaultProfileId ?? null,
+        logicalModels: setup?.logicalModels.allowed.map(conversationModelChoice) ?? [],
+        defaultLogicalModelId: setup?.logicalModels.preferredLogicalModelId ?? null,
+      });
+    }
+
+    const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId, userId);
+    const defaultManifest = snapshot.agentManifests.find((entry) => entry.id === defaultAgentId);
+    const defaultSetup = defaultManifest
+      ? resolveAgentSetup(defaultManifest, {
+          gatewayConfig: snapshot.gatewayConfig,
+          providerRegistry: snapshot.providerRegistry,
+          workspaceId,
+          ...(workspaceConfig ? { workspaceConfig } : {}),
+          ...(userConfig ? { userConfig } : {}),
+        }).setup
+      : null;
+    targets.push({
+      targetRef: 'new-task-worker',
+      kind: 'new-task-worker',
+      label: 'New Shard + Worker',
+      description: 'Create a linked Task execution Thread and start a Worker.',
+      availability: defaultSetup ? 'available' : 'unavailable',
+      unavailableReason: defaultSetup ? null : 'No default Worker is ready.',
+      threadId: null,
+      profileId: defaultSetup?.profileId ?? null,
+      logicalModels: defaultSetup?.logicalModels.allowed.map(conversationModelChoice) ?? [],
+      defaultLogicalModelId: defaultSetup?.logicalModels.preferredLogicalModelId ?? null,
+    });
+
+    const uniqueTargets = [
+      ...new Map(targets.map((target) => [target.targetRef, target])).values(),
+    ];
+    const defaultTargetRef = assistant
+      ? 'internal-role:assistant'
+      : defaultSetup
+        ? 'new-task-worker'
+        : null;
+    if (!defaultTargetRef) {
+      throw new TurnStartValidationError(
+        'conversation_target_not_configured',
+        'No default Assistant or Worker is configured for this Workspace.',
+        409
+      );
+    }
+    return ConversationTargetCatalogSchema.parse({
+      workspaceId,
+      threadId: requestedThreadId,
+      targets: uniqueTargets,
+      defaultTargetRef,
+    });
+  }
+
+  registerAppApiRoute(app, 'getConversationTargets', (c) => {
+    const workspaceId = c.req.param('workspaceId');
+    const requestedThreadId = c.req.query('threadId')?.trim() || null;
+    const store = requestStore(c);
+    store.getWorkspace(workspaceId);
+    if (c.get('workspaceAccess')) {
+      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), workspaceId);
+    }
+    if (requestedThreadId) {
+      requireAuthorizedModeThread(c, store, workspaceId, requestedThreadId);
+    }
+    return c.json(
+      conversationTargetCatalog(store, workspaceId, requestedThreadId, c.get('actor').userId)
+    );
+  });
 
   /**
    * Executes one bounded Quick Chat provider call without creating a private runtime.
@@ -1717,10 +2055,8 @@ export function registerQuickAndChatModeRoutes({
    * @throws Error when provider resolution or dispatch fails.
    */
   async function callQuickChatProvider(input: {
-    /** Selected provider id. */
-    readonly providerId: string;
-    /** Selected model id. */
-    readonly model: string;
+    /** Selected logical-model contract. */
+    readonly logicalModel: ResolvedLogicalModel;
     /** User prompt. */
     readonly prompt: string;
     /** Stable cache and diagnostics session id. */
@@ -1735,7 +2071,6 @@ export function registerQuickAndChatModeRoutes({
     readonly providerId: string;
     readonly usage?: unknown;
   }> {
-    const provider = resolveGatewayProvider(input.providerId, input.model);
     const timeoutSignal = AbortSignal.timeout(QUICK_CHAT_TIMEOUT_MS);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
     let abortListener: (() => void) | undefined;
@@ -1743,37 +2078,50 @@ export function registerQuickAndChatModeRoutes({
       abortListener = () => reject(signal.reason);
       signal.addEventListener('abort', abortListener, { once: true });
     });
-    let response: Awaited<ReturnType<LLMGatewayProviderDispatcher['createChatCompletion']>>;
+    let selected: {
+      response: Awaited<ReturnType<LLMGatewayProviderDispatcher['createChatCompletion']>>;
+      providerId: string;
+    };
 
     try {
       signal.throwIfAborted();
-      response = await Promise.race([
-        llmGatewayDispatcher.createChatCompletion(
-          provider,
-          {
-            model: input.model,
-            messages: [
-              { role: 'system', content: QUICK_CHAT_SYSTEM_PROMPT },
-              { role: 'user', content: input.prompt },
-            ],
-            metadata: {
-              openkit: {
-                sessionId: input.sessionId,
-                workspaceId: input.workspaceId,
+      selected = await dispatchLogicalModel({
+        logicalModel: input.logicalModel,
+        signal,
+        resolveGatewayProvider,
+        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+        attempt: async ({ provider, providerModel, subscriptionModels }) => ({
+          providerId: provider.id,
+          response: await Promise.race([
+            llmGatewayDispatcher.createChatCompletion(
+              provider,
+              {
+                model: providerModel,
+                messages: [
+                  { role: 'system', content: QUICK_CHAT_SYSTEM_PROMPT },
+                  { role: 'user', content: input.prompt },
+                ],
+                metadata: {
+                  openkit: {
+                    sessionId: input.sessionId,
+                    workspaceId: input.workspaceId,
+                  },
+                },
               },
-            },
-          },
-          {
-            promptCacheScope: {
-              sessionId: input.sessionId,
-              workspaceId: input.workspaceId,
-            },
-            usageEndpoint: 'quick_chat',
-            transport: { signal },
-          }
-        ),
-        aborted,
-      ]);
+              {
+                ...(subscriptionModels ? { subscriptionModels } : {}),
+                promptCacheScope: {
+                  sessionId: input.sessionId,
+                  workspaceId: input.workspaceId,
+                },
+                usageEndpoint: 'quick_chat',
+                transport: { signal },
+              }
+            ),
+            aborted,
+          ]),
+        }),
+      });
     } catch (error) {
       if (input.signal.aborted) {
         throw new TurnStartValidationError(
@@ -1797,7 +2145,7 @@ export function registerQuickAndChatModeRoutes({
         signal.removeEventListener('abort', abortListener);
       }
     }
-    const content = response.choices[0]?.message.content;
+    const content = selected.response.choices[0]?.message.content;
 
     if (typeof content !== 'string' || content.trim().length === 0) {
       throw new TurnStartValidationError(
@@ -1808,10 +2156,10 @@ export function registerQuickAndChatModeRoutes({
     }
 
     return {
-      id: response.id,
+      id: selected.response.id,
       content,
-      providerId: provider.id,
-      ...(response.usage === undefined ? {} : { usage: response.usage }),
+      providerId: selected.providerId,
+      ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
     };
   }
 
@@ -1824,7 +2172,7 @@ export function registerQuickAndChatModeRoutes({
 
     try {
       const input = parsed.data;
-      const { model, providerId } = quickChatSelection();
+      const userId = c.get('actor').userId;
       const workspaceAccess = c.get('workspaceAccess');
       const workspaceId =
         workspaceAccess?.kind === 'workspace'
@@ -1837,20 +2185,20 @@ export function registerQuickAndChatModeRoutes({
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
       }
       const sessionId = `quick-chat:${workspaceId}`;
+      const selection = quickChatSelection(userId, workspaceId);
 
-      if (!providerId || !model) {
+      if (!selection) {
         return c.json(
           apiErrorPayload({
             code: 'quick_chat_not_configured',
-            message: 'Quick chat requires a default provider and model.',
+            message: 'Quick chat requires an admitted logical model.',
           }),
           400
         );
       }
 
       const result = await callQuickChatProvider({
-        providerId,
-        model,
+        logicalModel: selection.logicalModel,
         prompt: input.input,
         sessionId,
         workspaceId,
@@ -1859,7 +2207,7 @@ export function registerQuickAndChatModeRoutes({
       recordQuickChatLlmUsage({
         ...(coreDb ? { coreDb } : {}),
         authorityActor: { kind: 'user', id: c.get('actor').userId },
-        model,
+        model: selection.logicalModel.id,
         providerId: result.providerId,
         ...(result.usage === undefined ? {} : { usage: result.usage }),
         workspaceId,
@@ -1870,13 +2218,15 @@ export function registerQuickAndChatModeRoutes({
           id: result.id,
           status: 'completed',
           workspaceId,
-          providerId: result.providerId,
-          model,
+          modelId: selection.logicalModel.id,
           content: result.content,
         })
       );
     } catch (error) {
-      if (error instanceof OpenAICompatibleProviderError) {
+      if (
+        error instanceof OpenAICompatibleProviderError ||
+        error instanceof LogicalModelRoutesExhaustedError
+      ) {
         return asProviderApiError(error);
       }
       if (error instanceof TurnStartValidationError) {
@@ -1887,18 +2237,28 @@ export function registerQuickAndChatModeRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'startChatMode', async (c) => {
-    const parsed = StartChatModeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+  registerAppApiRoute(app, 'submitConversation', async (c) => {
+    const parsed = SubmitConversationRequestSchema.safeParse(await c.req.json().catch(() => ({})));
 
     if (!parsed.success) {
       return asInvalidRequestError(parsed.error);
     }
     const chatInput = parsed.data;
+    const workspaceId = c.req.param('workspaceId');
+    const threadId = c.req.param('threadId');
+    const store = requestStore(c);
+    try {
+      requireAuthorizedModeThread(c, store, workspaceId, threadId);
+    } catch (error) {
+      if (error instanceof HTTPException) throw error;
+      return asApiError('Conversation Thread is unavailable.', 'target_missing', 409);
+    }
     const triggerActor = {
       kind: 'user',
       id: c.get('actor').userId,
     } as const satisfies ActorRef;
     const actorId = triggerActor.id;
+    let freshLogicalModelId: string | null = null;
 
     /**
      * Executes one fresh Chat command after the command ledger accepts its identity.
@@ -1912,9 +2272,78 @@ export function registerQuickAndChatModeRoutes({
       store: FsStore,
       workspaceId: string,
       threadId: string
-    ): Promise<ChatModeCommandResult> {
+    ): Promise<ConversationCommandResult> {
       const workspace = store.getWorkspace(workspaceId);
       const isQuickChatWorkspace = workspace.kind === 'quick-chat';
+      const acceptedTarget = conversationTargetCatalog(
+        store,
+        workspaceId,
+        threadId,
+        actorId
+      ).targets.find((candidate) => candidate.targetRef === chatInput.targetRef);
+      if (!acceptedTarget) {
+        throw new TurnStartValidationError(
+          'target_missing',
+          'Conversation target no longer exists.',
+          409
+        );
+      }
+      if (acceptedTarget.availability === 'busy') {
+        throw new TurnStartValidationError(
+          'target_busy',
+          acceptedTarget.unavailableReason ?? 'Conversation target is busy.',
+          409
+        );
+      }
+      if (acceptedTarget.availability !== 'available') {
+        throw new TurnStartValidationError(
+          'target_unavailable',
+          acceptedTarget.unavailableReason ?? 'Conversation target is unavailable.',
+          409
+        );
+      }
+      const logicalModelId = chatInput.logicalModelId ?? acceptedTarget.defaultLogicalModelId;
+      if (
+        logicalModelId &&
+        !acceptedTarget.logicalModels.some((logicalModel) => logicalModel.id === logicalModelId)
+      ) {
+        throw new TurnStartValidationError(
+          'model_not_allowed',
+          'The selected logical model is not admitted for this target.',
+          409
+        );
+      }
+      freshLogicalModelId = logicalModelId;
+      const artifacts: Array<ReturnType<FsStore['getArtifact']>> = [];
+      for (const reference of chatInput.artifactRefs) {
+        let artifact: ReturnType<FsStore['getArtifact']>;
+        try {
+          artifact = store.getArtifact(workspaceId, reference.artifactId);
+        } catch {
+          throw new TurnStartValidationError(
+            'artifact_not_found',
+            'The selected Artifact is unavailable.',
+            409
+          );
+        }
+        if (artifact.version !== reference.artifactVersion) {
+          throw new TurnStartValidationError(
+            'artifact_version_mismatch',
+            'The selected Artifact version is no longer current.',
+            409
+          );
+        }
+        artifacts.push(artifact);
+      }
+      const conversationPrompt = [
+        chatInput.input,
+        ...artifacts.map(
+          (artifact) =>
+            `Artifact ${artifact.title} (${artifact.id} v${artifact.version}):\n${artifact.content.body}`
+        ),
+      ]
+        .filter(Boolean)
+        .join('\n\n');
 
       /**
        * Creates the durable Chat Mode turn and its user-message item.
@@ -1937,6 +2366,24 @@ export function registerQuickAndChatModeRoutes({
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
+
+        for (const [index, artifact] of artifacts.entries()) {
+          store.createItem({
+            id: `it_conversation_artifact_${turn.id}_${index + 1}`,
+            workspaceId,
+            threadId,
+            turnId: turn.id,
+            type: 'artifact-reference',
+            status: 'completed',
+            artifactId: artifact.id,
+            artifactVersion: artifact.version,
+            title: artifact.title,
+            summary: artifact.summary,
+            lastMutationRequestId: chatInput.requestId,
+            createdAt: turn.startedAt ?? completedAt,
+            completedAt,
+          });
+        }
 
         return turn;
       };
@@ -1970,7 +2417,7 @@ export function registerQuickAndChatModeRoutes({
           completedAt,
         });
 
-        return StartChatModeResponseSchema.parse({
+        return ConversationCommandBodySchema.parse({
           outcome: `${targetMode}-handoff`,
           explanation: reason,
           turn: completedTurn,
@@ -2024,7 +2471,7 @@ export function registerQuickAndChatModeRoutes({
           },
         });
 
-        return StartChatModeResponseSchema.parse({
+        return ConversationCommandBodySchema.parse({
           outcome: 'clarification-needed',
           explanation: 'The Assistant needs a concrete request before choosing a mode.',
           turn: waitingTurn,
@@ -2060,13 +2507,323 @@ export function registerQuickAndChatModeRoutes({
           completedAt,
         });
 
-        return StartChatModeResponseSchema.parse({
+        return ConversationCommandBodySchema.parse({
           outcome: 'refused',
           explanation,
           turn: completedTurn,
           item: refusedItem,
           handoff: null,
         });
+      };
+
+      /** Runs the existing Workspace Knowledge Manager and projects its answer into this Thread. */
+      const answerFromWorkspaceKnowledge = (
+        caller: 'assistant' | 'app-api'
+      ): ConversationCommandResult | null => {
+        const dataRoot = store.getDataRoot();
+        if (!dataRoot) return null;
+        const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
+        let referenceProofs: ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> =
+          new Map();
+        try {
+          referenceProofs = resolveWorkspaceKnowledgeReferenceProofs({
+            coreDb,
+            store,
+            workspaceDb,
+            workspaceId,
+          });
+        } finally {
+          workspaceDb?.sqlite.close();
+        }
+        const knowledgeAnswer = answerKnowledgeManager({
+          dataRoot,
+          operationId: `km_answer_${randomUUID()}`,
+          workspaceId,
+          caller,
+          query: conversationPrompt,
+          limit: 3,
+          referenceProofs,
+        });
+        if (caller === 'assistant' && knowledgeAnswer.outcome !== 'answered') return null;
+        const completedAt = new Date().toISOString();
+        const turn = createChatTurn(completedAt);
+        const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
+        const answerItem = store.createItem({
+          id: `it_chat_answer_${turn.id}`,
+          workspaceId,
+          threadId,
+          turnId: turn.id,
+          type: 'assistant-message',
+          status: 'completed',
+          text: sourceTitles
+            ? `${knowledgeAnswer.answer}\n\nSources: ${sourceTitles}`
+            : knowledgeAnswer.answer,
+          createdAt: turn.startedAt ?? completedAt,
+          completedAt,
+        });
+        const completedTurn = store.updateTurn(turn.id, { status: 'completed', completedAt });
+        return {
+          body: ConversationCommandBodySchema.parse({
+            outcome: 'answered',
+            explanation:
+              knowledgeAnswer.outcome === 'answered'
+                ? 'The Knowledge Manager answered from Workspace Knowledge.'
+                : 'The Knowledge Manager found insufficient Workspace evidence.',
+            turn: completedTurn,
+            item: answerItem,
+            handoff: null,
+          }),
+          downstream: null,
+          resultKind: 'knowledge-answer',
+          status: 200,
+        };
+      };
+
+      /** Starts one selected Worker through the existing product Turn owner. */
+      const startSelectedWorker = async (): Promise<ConversationCommandResult> => {
+        const snapshot = runtimeConfig();
+        let receivingThreadId = threadId;
+        let agentId: string | null = null;
+        if (acceptedTarget.kind === 'warm-worker') {
+          agentId = decodeURIComponent(
+            acceptedTarget.targetRef.slice('warm-worker:'.length).split(':', 1)[0] ?? ''
+          );
+        } else if (acceptedTarget.kind === 'running-worker') {
+          const session = store
+            .listWorkspaceAgentSessions(workspaceId)
+            .find(
+              (candidate) =>
+                candidate.threadId &&
+                `running-worker:${encodeURIComponent(candidate.threadId)}:${encodeURIComponent(candidate.agentId)}` ===
+                  acceptedTarget.targetRef
+            );
+          if (!session?.threadId) {
+            throw new TurnStartValidationError(
+              'target_missing',
+              'The selected running Worker no longer exists.',
+              409
+            );
+          }
+          receivingThreadId = session.threadId;
+          agentId = session.agentId;
+        } else {
+          agentId = resolveDefaultAgentId(snapshot, workspaceId, actorId);
+          const createdThreadId = `th_task_${createHash('sha256')
+            .update(JSON.stringify([actorId, workspaceId, threadId, chatInput.requestId]))
+            .digest('hex')
+            .slice(0, 24)}`;
+          if (
+            store.listThreads(workspaceId).some((candidate) => candidate.id === createdThreadId)
+          ) {
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The Task execution Thread exists without its conversation receipt.',
+              409
+            );
+          }
+          const title = chatInput.input.trim().split(/\r?\n/, 1)[0] || 'Artifact task';
+          receivingThreadId = store.createThread(workspaceId, title, createdThreadId).id;
+        }
+        if (!agentId) {
+          throw new TurnStartValidationError(
+            'target_unavailable',
+            'The selected Worker has no Agent configuration.',
+            409
+          );
+        }
+        const workerRequest = createStructuredWorkerDelegationRequest({
+          objective: conversationPrompt,
+          acceptanceCriteria: [
+            'The bounded worker task satisfies the requested objective.',
+            'The worker reports verification evidence or a clear blocker.',
+          ],
+          contextRefs: [
+            { kind: 'workspace', id: workspaceId },
+            { kind: 'thread', id: receivingThreadId },
+            ...artifacts.map((artifact) => ({ kind: 'artifact' as const, id: artifact.id })),
+          ],
+          resources: artifacts.map((artifact) => ({
+            kind: 'artifact',
+            reference: `${artifact.id}:v${artifact.version}`,
+            reason: 'Selected by the user for this conversation Turn.',
+          })),
+          expectedArtifacts: [],
+          constraints: { maxContextTokens: 240_000, maxWorkerIterations: 1 },
+          verification: [
+            {
+              kind: 'manual',
+              description: 'Report the focused verification performed for the requested work.',
+            },
+          ],
+          reviewPolicy: {
+            required: false,
+            reviewers: ['human'],
+            instructions: 'Review the worker result and its verification evidence.',
+          },
+          escalationConditions: ['Escalate instead of inventing missing scope or authority.'],
+          reviewContext: null,
+        });
+        const reservedTurnId = `tu_conversation_${createHash('sha256')
+          .update(
+            JSON.stringify([actorId, workspaceId, threadId, receivingThreadId, chatInput.requestId])
+          )
+          .digest('hex')
+          .slice(0, 24)}`;
+        if (
+          store
+            .listThreadTurns(workspaceId, receivingThreadId)
+            .some((candidate) => candidate.id === reservedTurnId)
+        ) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The Worker Turn exists without its conversation receipt.',
+            409
+          );
+        }
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        let started: z.infer<typeof TurnSchema>;
+        try {
+          await runWorkerTurnLoop({
+            coreDb: coreDb!,
+            triggerActor,
+            workspaceDb,
+            workspaceId,
+            threadId: receivingThreadId,
+            requestId: chatInput.requestId,
+            requestInputHash: commandInputHash({
+              input: chatInput.input,
+              targetRef: chatInput.targetRef,
+              logicalModelId: chatInput.logicalModelId ?? null,
+              artifactRefs: chatInput.artifactRefs,
+            }),
+            reviewRequired: false,
+            remainingWorkerIterations: 0,
+            prepare: () => {
+              const dataRoot = store.getDataRoot();
+              if (!dataRoot) {
+                throw directTaskModeRecoveryError(
+                  'Task Knowledge retrieval requires a file-backed data root.'
+                );
+              }
+              let knowledgeSelectionInput: { readonly retrievalTraceId: string };
+              try {
+                knowledgeSelectionInput = prepareTaskKnowledgeContext({
+                  dataRoot,
+                  workspaceId,
+                  query: chatInput.input,
+                  referenceProofs: resolveWorkspaceKnowledgeReferenceProofs({
+                    coreDb: coreDb!,
+                    store,
+                    workspaceDb,
+                    workspaceId,
+                  }),
+                  traceId: directTaskKnowledgeRetrievalTraceId(
+                    actorId,
+                    workspaceId,
+                    receivingThreadId,
+                    chatInput.requestId
+                  ),
+                });
+              } catch (error) {
+                throw directTaskModeRecoveryError(
+                  error instanceof Error &&
+                    error.message === 'Duplicate Knowledge retrieval trace id.'
+                    ? 'Task Knowledge retrieval exists without a provable worker owner.'
+                    : 'Task Knowledge retrieval could not establish one coherent selection.'
+                );
+              }
+              return {
+                delegationRequest: workerRequest,
+                contextPackageDigest: commandInputHash(workerRequest),
+                knowledgeSelectionInput,
+              };
+            },
+            reserveTurn: () => ({ turnId: reservedTurnId }),
+            startWorker: async ({ turnId, prepared }) => {
+              const turn = await startModeWorkerTurn({
+                triggerActor,
+                store,
+                workspaceId,
+                threadId: receivingThreadId,
+                prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+                ...(logicalModelId ? { modelId: logicalModelId } : {}),
+                ...(acceptedTarget.profileId ? { profileId: acceptedTarget.profileId } : {}),
+                requestId: chatInput.requestId,
+                requestedAgentId: agentId!,
+                reservedTurnId: turnId,
+              });
+              return { workerSessionId: turn.agentSessionId ?? null };
+            },
+            awaitWorker: ({ turnId }) => {
+              const turn = store.getTurn(workspaceId, receivingThreadId, turnId);
+              const stopReason = taskModeTerminalStopReason(store, turnId);
+              if (!stopReason) {
+                throw new Error('Selected Worker Turn has no unique terminal outcome.');
+              }
+              const evidence = taskModeEvidenceForTurn(
+                store,
+                workspaceDb,
+                workspaceId,
+                receivingThreadId,
+                turn
+              );
+              return {
+                stopReason,
+                itemIds: evidence.itemIds,
+                artifactIds: evidence.artifactIds,
+                diagnosticsSummary:
+                  turn.error?.message ??
+                  (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
+              };
+            },
+          });
+          started = store.getTurn(workspaceId, receivingThreadId, reservedTurnId);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+        const completedAt = new Date().toISOString();
+        for (const [index, artifact] of artifacts.entries()) {
+          store.createItem({
+            id: `it_conversation_artifact_${started.id}_${index + 1}`,
+            workspaceId,
+            threadId: receivingThreadId,
+            turnId: started.id,
+            type: 'artifact-reference',
+            status: 'completed',
+            artifactId: artifact.id,
+            artifactVersion: artifact.version,
+            title: artifact.title,
+            summary: artifact.summary,
+            lastMutationRequestId: chatInput.requestId,
+            createdAt: started.startedAt ?? completedAt,
+            completedAt,
+          });
+        }
+        const item = store.createItem({
+          id: `it_worker_result_${started.id}`,
+          workspaceId,
+          threadId: receivingThreadId,
+          turnId: started.id,
+          type: 'status',
+          status: 'completed',
+          level: started.status === 'completed' ? 'info' : 'warning',
+          title: 'Worker Turn accepted',
+          summary: `Conversation continued with ${agentId}.`,
+          createdAt: completedAt,
+          completedAt,
+        });
+        return {
+          body: ConversationCommandBodySchema.parse({
+            outcome: 'accepted',
+            explanation: 'The selected Worker accepted the conversation Turn.',
+            turn: store.getTurn(workspaceId, receivingThreadId, started.id),
+            item,
+            handoff: null,
+          }),
+          downstream: { kind: 'task', turnId: started.id },
+          resultKind: 'worker-turn',
+          status: 202,
+        };
       };
 
       if (coreDb) {
@@ -2091,6 +2848,78 @@ export function registerQuickAndChatModeRoutes({
         } finally {
           workspaceDb.sqlite.close();
         }
+      }
+
+      if (acceptedTarget.kind === 'knowledge-manager') {
+        const response = answerFromWorkspaceKnowledge('app-api');
+        if (response) return response;
+        return {
+          body: createRefusedResponse('Workspace Knowledge storage is unavailable.'),
+          downstream: null,
+          resultKind: 'refused',
+          status: 200,
+        };
+      }
+
+      if (acceptedTarget.kind === 'goal-orchestrator') {
+        if (!coreDb || !acceptedTarget.threadId) {
+          throw new TurnStartValidationError(
+            'target_unavailable',
+            'Goal steering storage is unavailable.',
+            503
+          );
+        }
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        try {
+          const steering = await submitGoalSteeringCommand({
+            coreDb,
+            store,
+            workspaceDb,
+            inflightCommands,
+            actorId,
+            workspaceId,
+            threadId: acceptedTarget.threadId,
+            requestId: chatInput.requestId,
+            commandInput: { message: conversationPrompt },
+            expectedGoalId: acceptedTarget.targetRef.slice('goal-orchestrator:'.length),
+          });
+          const item = store
+            .listThreadItems(workspaceId, acceptedTarget.threadId)
+            .find((candidate) => candidate.id === steering.contentItemId);
+          if (!item) {
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'Goal steering accepted without its source Item.',
+              409
+            );
+          }
+          return {
+            body: ConversationCommandBodySchema.parse({
+              outcome: 'accepted',
+              explanation: 'The active Goal Orchestrator accepted the steering input.',
+              turn: store.getTurn(workspaceId, acceptedTarget.threadId, steering.activeTurnId),
+              item,
+              handoff: null,
+            }),
+            downstream: {
+              kind: 'goal',
+              goalId: steering.goalId,
+              turnId: steering.activeTurnId,
+            },
+            resultKind: 'goal-steering',
+            status: 202,
+          };
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
+
+      if (
+        acceptedTarget.kind === 'warm-worker' ||
+        acceptedTarget.kind === 'running-worker' ||
+        acceptedTarget.kind === 'new-task-worker'
+      ) {
+        return startSelectedWorker();
       }
 
       if (isClarificationChatPrompt(chatInput.input)) {
@@ -2217,7 +3046,7 @@ export function registerQuickAndChatModeRoutes({
           store,
           workspaceId,
           threadId,
-          owningCommand: 'chat.start',
+          owningCommand: 'conversation.submit',
           requestId: chatInput.requestId,
           objective: chatInput.input,
         });
@@ -2243,69 +3072,8 @@ export function registerQuickAndChatModeRoutes({
         };
       }
 
-      const dataRoot = store.getDataRoot();
-      let knowledgeAnswer: ReturnType<typeof answerKnowledgeManager> | null = null;
-
-      if (dataRoot) {
-        const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
-        let referenceProofs: ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> =
-          new Map();
-        try {
-          referenceProofs = resolveWorkspaceKnowledgeReferenceProofs({
-            coreDb,
-            store,
-            workspaceDb,
-            workspaceId,
-          });
-        } finally {
-          workspaceDb?.sqlite.close();
-        }
-        knowledgeAnswer = answerKnowledgeManager({
-          dataRoot,
-          operationId: `km_answer_${randomUUID()}`,
-          workspaceId,
-          caller: 'assistant',
-          query: chatInput.input,
-          limit: 3,
-          referenceProofs,
-        });
-      }
-
-      if (knowledgeAnswer?.outcome === 'answered') {
-        const completedAt = new Date().toISOString();
-        const turn = createChatTurn(completedAt);
-        const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
-        const answerItem = store.createItem({
-          id: `it_chat_answer_${turn.id}`,
-          workspaceId,
-          threadId,
-          turnId: turn.id,
-          type: 'assistant-message',
-          status: 'completed',
-          text: sourceTitles
-            ? `${knowledgeAnswer.answer}\n\nSources: ${sourceTitles}`
-            : knowledgeAnswer.answer,
-          createdAt: turn.startedAt ?? completedAt,
-          completedAt,
-        });
-        const completedTurn = store.updateTurn(turn.id, {
-          status: 'completed',
-          completedAt,
-        });
-
-        return {
-          body: StartChatModeResponseSchema.parse({
-            outcome: 'answered',
-            explanation: 'The Assistant answered from workspace knowledge.',
-            turn: completedTurn,
-            item: answerItem,
-            handoff: null,
-          }),
-          downstream: null,
-          resultKind: 'knowledge-answer',
-          status: 200,
-        };
-      }
+      const knowledgeResponse = answerFromWorkspaceKnowledge('assistant');
+      if (knowledgeResponse) return knowledgeResponse;
 
       if (
         (isRepositoryFileListChatPrompt(chatInput.input) ||
@@ -2406,7 +3174,7 @@ export function registerQuickAndChatModeRoutes({
             });
 
             return {
-              body: StartChatModeResponseSchema.parse({
+              body: ConversationCommandBodySchema.parse({
                 outcome: 'answered',
                 explanation: 'The Assistant answered from a read-only repository inspection.',
                 turn: completedTurn,
@@ -2423,21 +3191,24 @@ export function registerQuickAndChatModeRoutes({
         }
       }
 
-      const { model, providerId } = quickChatSelection();
+      const selection = quickChatSelection(
+        c.get('actor').userId,
+        workspaceId,
+        logicalModelId ?? undefined
+      );
       const sessionId = `chat-mode:${workspaceId}:${threadId}`;
 
-      if (!providerId || !model) {
+      if (!selection) {
         throw new TurnStartValidationError(
           'chat_mode_not_configured',
-          'Chat Mode requires a default provider and model.',
+          'Chat Mode requires an admitted logical model.',
           400
         );
       }
 
       const result = await callQuickChatProvider({
-        providerId,
-        model,
-        prompt: chatInput.input,
+        logicalModel: selection.logicalModel,
+        prompt: conversationPrompt,
         sessionId,
         workspaceId,
         signal: c.req.raw.signal,
@@ -2447,7 +3218,7 @@ export function registerQuickAndChatModeRoutes({
       recordQuickChatLlmUsage({
         ...(coreDb ? { coreDb } : {}),
         authorityActor: triggerActor,
-        model,
+        model: selection.logicalModel.id,
         providerId: result.providerId,
         requestId: chatInput.requestId,
         threadId,
@@ -2473,7 +3244,7 @@ export function registerQuickAndChatModeRoutes({
       });
 
       return {
-        body: StartChatModeResponseSchema.parse({
+        body: ConversationCommandBodySchema.parse({
           outcome: 'answered',
           explanation: 'The Assistant answered directly.',
           turn: completedTurn,
@@ -2487,19 +3258,18 @@ export function registerQuickAndChatModeRoutes({
     }
 
     try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-      requireAuthorizedModeThread(c, store, workspaceId, threadId);
       const result = await runIdempotentCommand({
-        command: 'chat.start',
+        command: 'conversation.submit',
         execute: () => executeChatCommand(store, workspaceId, threadId),
         inflightCommands,
         input: {
           input: chatInput.input,
+          targetRef: chatInput.targetRef,
+          logicalModelId: chatInput.logicalModelId ?? null,
+          artifactRefs: chatInput.artifactRefs,
         },
         replay: (record) =>
-          replayChatModeCommand(
+          replayConversationCommand(
             store,
             actorId,
             repositoryWorkspaceDb,
@@ -2510,16 +3280,44 @@ export function registerQuickAndChatModeRoutes({
         requestId: chatInput.requestId,
         responseId: ({ body }) => body.turn.id,
         responseKind: 'turn',
-        chatResponseMetadata: ({ downstream, resultKind, status }) => ({
+        conversationResponseMetadata: ({ body, downstream, resultKind, status }) => ({
           downstream,
+          targetRef: chatInput.targetRef,
+          logicalModelId: freshLogicalModelId,
+          receivingWorkspaceId: body.turn.workspaceId,
+          receivingThreadId: body.turn.threadId,
           resultKind,
           status,
         }),
         scope: { actorId, threadId, workspaceId },
         store,
       });
+      const receipt = store.getCommandRequest('conversation.submit', chatInput.requestId, {
+        actorId,
+        threadId,
+        workspaceId,
+      });
+      const metadata = receipt?.response.conversationMetadata;
+      if (!metadata) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Conversation result is missing its command receipt metadata.',
+          409
+        );
+      }
 
-      return c.json(result.body, result.status);
+      return c.json(
+        SubmitConversationResponseSchema.parse({
+          ...result.body,
+          originatingWorkspaceId: workspaceId,
+          originatingThreadId: threadId,
+          receivingWorkspaceId: metadata.receivingWorkspaceId,
+          receivingThreadId: metadata.receivingThreadId,
+          targetRef: metadata.targetRef,
+          logicalModelId: metadata.logicalModelId,
+        }),
+        result.status
+      );
     } catch (error) {
       if (error instanceof HTTPException) {
         throw error;
@@ -2558,7 +3356,10 @@ export function registerQuickAndChatModeRoutes({
       if (error instanceof TurnStartValidationError) {
         return asApiError(redactInternalAgentText(error.message), error.code, error.status);
       }
-      if (error instanceof OpenAICompatibleProviderError) {
+      if (
+        error instanceof OpenAICompatibleProviderError ||
+        error instanceof LogicalModelRoutesExhaustedError
+      ) {
         return asProviderApiError(error);
       }
       if (error instanceof IdempotencyKeyConflictError) {

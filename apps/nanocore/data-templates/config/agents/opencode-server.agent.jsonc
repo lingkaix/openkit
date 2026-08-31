@@ -33,9 +33,9 @@
       }
     ]
   },
-  "provider": {
-    "ref": "openrouter",
-    "model": "openai/gpt-5.1"
+  "models": {
+    "preferredLogicalModelId": "reasoning",
+    "allowedLogicalModelIds": "all"
   },
   "profiles": [
     {

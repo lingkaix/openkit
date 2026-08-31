@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,24 +41,75 @@ function writeServerConfig(dataRoot: string, model: string): void {
     join(dataRoot, 'config', 'server.jsonc'),
     `{
       "schemaVersion": 1,
-      "providers": [
-        {
-          "id": "agent-openrouter",
-          "vendor": "openrouter",
-          "kind": "gateway",
-          "displayName": "Agent OpenRouter",
-          "models": ["${model}"]
-        }
-      ],
       "defaults": {
-        "coreProviderId": "agent-openrouter",
-        "gatewayProviderId": "agent-openrouter"
+        "defaultAgentId": "agent_codex_host"
       }
     }`
   );
+  const providersRoot = join(dataRoot, 'config', 'providers');
+  mkdirSync(providersRoot, { recursive: true });
+  writeFileSync(
+    join(providersRoot, 'agent-openrouter.provider.jsonc'),
+    JSON.stringify({
+      id: 'agent-openrouter',
+      vendor: 'openrouter',
+      kind: 'gateway',
+      displayName: `Agent OpenRouter ${model}`,
+      models: ['openai/gpt-5.1'],
+    })
+  );
+  const gatewayPath = join(dataRoot, 'config', 'gateway.jsonc');
+  if (!existsSync(gatewayPath))
+    writeFileSync(
+      gatewayPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            routes: [
+              { id: 'primary', providerProfileId: 'agent-openrouter', providerModel: model },
+            ],
+          },
+        ],
+        requiredFeatures: [],
+      })
+    );
 }
 
 describe('runtime config reload API', () => {
+  it('hydrates the joined Workspace name after an accepted config reload', async () => {
+    const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
+    const store = createDemoStore({ dataRoot });
+    const workspaceConfigPath = join(
+      dataRoot,
+      'workspaces',
+      'ws_demo',
+      'config',
+      'workspace.jsonc'
+    );
+    const app = createApp({ dataRoot, store, turnExecutor: new SimulatedTurnExecutor() });
+
+    writeFileSync(
+      workspaceConfigPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Reloaded Workspace', defaultAgentId: null },
+      })
+    );
+    const response = await app.request('/api/admin/config/reload', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'safe' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(store.getWorkspace('ws_demo').name).toBe('Reloaded Workspace');
+  });
+
   it('keeps provider changes pending restart and exposes the live runtime status', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const app = createApp({ dataRoot, turnExecutor: new SimulatedTurnExecutor() });
@@ -105,23 +156,43 @@ describe('runtime config reload API', () => {
     });
     const store = createDemoStore({ dataRoot });
     const agentSetup = createTestAgentSetup({
-      provider: {
-        model: 'openai/gpt-5.1',
-        origin: 'server-providers',
-        providerId: 'agent-openrouter',
-        secretRef: null,
+      logicalModelId: 'reasoning',
+      privateRoute: {
+        providerProfileId: 'agent-openrouter',
+        providerModel: 'openai/gpt-5.1',
       },
     });
     const app = createApp({
       agentManifests: [agentSetup.manifest],
       coreDb,
       dataRoot,
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'agent-openrouter',
+                providerModel: 'openai/gpt-5.1',
+              },
+            ],
+          },
+        ],
+        requiredFeatures: [],
+      },
       providerRegistry: new ProviderRegistry([
         {
+          defaultModel: 'openai/gpt-5.1',
           displayName: 'Agent OpenRouter',
           id: 'agent-openrouter',
-          kind: 'local',
+          kind: 'gateway',
           models: ['openai/gpt-5.1'],
+          vendor: 'openrouter',
         },
       ]),
       store,
@@ -184,7 +255,7 @@ describe('runtime config reload API', () => {
       const dashboard = await dashboardRes.json();
       const sessionsAfterReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
 
-      expect(dashboardRes.status).toBe(200);
+      expect(dashboardRes.status, JSON.stringify(dashboard)).toBe(200);
       expect(JSON.stringify(dashboard)).not.toMatch(/agentSession/i);
       expect(sessionsAfterReload).toEqual(sessionsBeforeReload);
       expect(

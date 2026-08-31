@@ -105,7 +105,6 @@ describe('thread dashboard app API', () => {
       artifacts: [{ id: artifact.id, title: 'Thread summary' }],
       composer: {
         disabled: false,
-        defaultModelId: null,
         defaultAgentId: null,
       },
       itemLog: {

@@ -19,6 +19,49 @@ import {
 const now = '2026-08-21T00:00:00.000Z';
 
 describe('private NanoHost Harness records', () => {
+  it('retains two compatibility-keyed Harnesses in one Sandbox', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-multi-harness-records-')));
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      for (const [adapterId, adapterVersion, harnessInstanceId, compatibilityKey] of [
+        ['codex', '0.144.1', 'harness-codex', 'b'.repeat(64)],
+        ['opencode', '1.18.1', 'harness-opencode', 'c'.repeat(64)],
+      ] as const) {
+        createNanoHostHarnessRuntime(coreDb, {
+          adapterId,
+          adapterVersion,
+          harnessBindingRef: `binding-${harnessInstanceId}`,
+          harnessCompatibilityKey: compatibilityKey,
+          harnessInstanceId,
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          sandboxBindingRef: 'sandbox-binding-shared',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration-binding-shared',
+          sandboxRuntimeId: 'sandbox-runtime-shared',
+          runtimeTargetId: 'nanohost-a1',
+          timestamp: now,
+        });
+      }
+
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT adapter_id AS adapterId, harness_compatibility_key AS harnessCompatibilityKey FROM harness_instance_records ORDER BY adapter_id'
+          )
+          .all()
+      ).toEqual([
+        { adapterId: 'codex', harnessCompatibilityKey: 'b'.repeat(64) },
+        { adapterId: 'opencode', harnessCompatibilityKey: 'c'.repeat(64) },
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('keeps Sandbox, Harness, AgentSession, and Turn projections distinct', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-records-')));
     try {
@@ -28,10 +71,12 @@ describe('private NanoHost Harness records', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         sandboxRuntimeId: 'sandbox-runtime-1',
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
@@ -131,10 +176,12 @@ describe('private NanoHost Harness records', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         sandboxRuntimeId: 'sandbox-runtime-1',
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
@@ -174,8 +221,7 @@ describe('private NanoHost Harness records', () => {
       const inferenceToken = Buffer.alloc(32, 2).toString('base64url');
       const tokens = [workerControlToken, inferenceToken];
       const command = dispatchNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
-        nextExpectedSequence: 0,
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         now: () => now,
         routeToken: () => tokens.shift()!,
       });
@@ -210,31 +256,31 @@ describe('private NanoHost Harness records', () => {
       expect(durableHarness).not.toContain(inferenceToken);
       expect(
         dispatchNanoHostHarnessOperation(coreDb, {
-          harnessBindingRef: 'harness-binding-1',
-          nextExpectedSequence: 0,
+          sandboxIntegrationBindingRef: 'integration-binding-1',
         })
       ).toBeNull();
 
       const result = {
         body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' },
         disposition: 'succeeded' as const,
+        harnessInstanceId: 'harness-1',
         operationId: command!.operationId,
         schemaVersion: 1 as const,
         sequence: 0,
       };
       settleNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         result,
         timestamp: now,
       });
       settleNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         result,
         timestamp: now,
       });
       expect(() =>
         settleNanoHostHarnessOperation(coreDb, {
-          harnessBindingRef: 'harness-binding-1',
+          sandboxIntegrationBindingRef: 'integration-binding-1',
           result: { ...result, body: { reasonCode: 'busy' }, disposition: 'refused' },
           timestamp: now,
         })
@@ -257,8 +303,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
       });
       const inspect = dispatchNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
-        nextExpectedSequence: 1,
+        sandboxIntegrationBindingRef: 'integration-binding-1',
       });
       markNanoHostHarnessOperationUnknown(coreDb, {
         harnessBindingRef: 'harness-binding-1',
@@ -286,10 +331,12 @@ describe('private NanoHost Harness records', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         sandboxRuntimeId: 'sandbox-runtime-1',
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
@@ -324,15 +371,15 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
       });
       const command = dispatchNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
-        nextExpectedSequence: 0,
+        sandboxIntegrationBindingRef: 'integration-binding-1',
       });
       expect(() =>
         settleNanoHostHarnessOperation(coreDb, {
-          harnessBindingRef: 'harness-binding-1',
+          sandboxIntegrationBindingRef: 'integration-binding-1',
           result: {
             body: { childState: 'absent', privateState: 'absent', state: 'closed' },
             disposition: 'succeeded',
+            harnessInstanceId: 'harness-1',
             operationId: command!.operationId,
             schemaVersion: 1,
             sequence: 0,
@@ -385,10 +432,12 @@ describe('private NanoHost Harness records', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         sandboxRuntimeId: 'sandbox-runtime-1',
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
@@ -423,14 +472,14 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
       });
       const command = dispatchNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
-        nextExpectedSequence: 0,
+        sandboxIntegrationBindingRef: 'integration-binding-1',
       });
       settleNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         result: {
           body: { reasonCode: 'outcome_unknown' },
           disposition: 'unknown',
+          harnessInstanceId: 'harness-1',
           operationId: command!.operationId,
           schemaVersion: 1,
           sequence: 0,
@@ -492,10 +541,12 @@ describe('private NanoHost Harness records', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-1',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         sandboxRuntimeId: 'sandbox-runtime-1',
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
@@ -527,8 +578,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
       });
       const sessionOpenCommand = dispatchNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
-        nextExpectedSequence: 0,
+        sandboxIntegrationBindingRef: 'integration-binding-1',
       });
       expect(Object.keys(sessionOpenCommand?.body ?? {}).sort()).toEqual(
         Object.keys(sessionOpenBody).sort()
@@ -537,7 +587,7 @@ describe('private NanoHost Harness records', () => {
       expect(sessionOpenCommand?.body).not.toHaveProperty('pin');
       expect(sessionOpenCommand?.body).not.toHaveProperty('pinnedGoalId');
       settleNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-1',
+        sandboxIntegrationBindingRef: 'integration-binding-1',
         result: {
           body: {
             maxActiveTurns: 1,
@@ -546,6 +596,7 @@ describe('private NanoHost Harness records', () => {
             state: 'open',
           },
           disposition: 'succeeded',
+          harnessInstanceId: 'harness-1',
           operationId: sessionOpenCommand!.operationId,
           schemaVersion: 1,
           sequence: 0,

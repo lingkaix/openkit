@@ -241,11 +241,11 @@ The legacy `oauth.openaiCodexAccounts` diagnostics field is removed rather than 
 
 ## Current Implementation Projection
 
-NanoCore currently implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` with server authentication, Gateway policy, one default Provider profile plus Provider-native model authority, optional public metadata, durable attribution, prompt-cache resolution, stable errors, streaming, usage projection, and no retired internal facade. It does not yet load `gateway.jsonc` or resolve logical models.
+NanoCore implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` with server authentication, Gateway policy, `gateway.jsonc` logical-model loading, private Provider route resolution, ordered pre-output fallback, durable route attribution, prompt-cache resolution, stable errors, streaming, usage projection, and no retired internal facade. Public discovery and requests expose logical model IDs rather than Provider profiles or Provider-native model authority.
 
 Provider resolution now accepts only the provider-neutral `extensions.openkit.subscriptionAccount` binding for recognized subscription profiles, validates the exact slot and local credential before dispatch, and sends both Codex and xAI subscription requests through the unified pi-ai dispatcher. Codex Responses is native through stock pi-ai, xAI uses its reviewed model capability, subscription-provider and account-slot identity participate in the hashed cache scope, and stable pre-dispatch and post-start errors expose no provider-private data.
 
-The current `/v1/models` implementation can advertise a model from one allowed Provider profile while inference validates only the default profile, and it exposes the concrete profile through `owned_by`. The target logical resolver must remove both divergences. This spec remains `Partial` until logical discovery and dispatch share one resolver, private routes remain hidden, ordered fallback is implemented and attributed, and the owner-governed real-use evidence passes.
+Logical discovery and dispatch share one resolver, private Provider identities remain hidden, and ordered fallback is attributed per attempt. This specification remains `Partial` only for acceptance evidence or Provider capability cases still named by its owning test strategy, not for the retired concrete-model dispatch shape.
 
 ## Accepted Design
 
@@ -253,7 +253,7 @@ The Hono route layer remains thin: authenticate, authorize, validate, resolve on
 
 ## Rollout / Migration Plan
 
-Remaining rollout is owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md` and `docs/specs/20260708-pi_ai_unified_llm_backend.md`. One clean cutover adds `gateway.jsonc`, replaces request and discovery model meaning with logical IDs, deletes Server Gateway Provider/model defaults and the public Provider-profile ownership leak, routes worker and internal-role inference through the same resolver, and adds ordered pre-output member fallback with complete attempt attribution. It retains no compatibility aliases, dual model meaning, direct worker Provider route, default-Provider dispatch branch, or intermediate account selector.
+The clean cutover owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md` and `docs/specs/20260708-pi_ai_unified_llm_backend.md` is implemented: `gateway.jsonc` owns logical IDs and ordered routes, Server Gateway Provider/model defaults and public Provider ownership are deleted, and worker plus internal-role inference use the same resolver. No compatibility alias, dual model meaning, direct worker Provider route, default-Provider dispatch branch, or intermediate account selector remains.
 
 The removed Gateway and account dependencies do not remove or rename `/api/app/vault/bootstrap/codex-auth-json` and do not alter worker-runtime Codex app-server ownership; those boundaries remain with their existing specifications.
 

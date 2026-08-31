@@ -169,29 +169,30 @@ setInterval(() => {}, 1000);
   }
 }
 
-test('rejects first-probe EPERM during the Web-group SIGTERM phase', async () => {
+test('accepts first-probe EPERM after delivering Web-group SIGTERM', async () => {
   test.setTimeout(45_000);
 
   const outcome = await runWebGroupPermissionProbeScenario('first-eperm');
 
   expect(outcome.failure).toBeInstanceOf(Error);
-  expect(outcome.failure).toMatchObject({ code: 'EPERM' });
+  expect((outcome.failure as Error).message).toContain('Timed out waiting for');
   expect(outcome).toMatchObject({
-    dataRootExists: true,
+    dataRootExists: false,
     probeCount: 1,
     sigkillDeliveries: 0,
     sigtermDeliveries: 1,
   });
 });
 
-test('rejects Web-group EPERM after a post-TERM liveness probe succeeds', async () => {
+test('accepts Web-group EPERM after a post-TERM liveness probe succeeds', async () => {
   test.setTimeout(45_000);
 
   const outcome = await runWebGroupPermissionProbeScenario('alive-then-eperm');
 
   expect(outcome.failure).toBeInstanceOf(Error);
-  expect(outcome.failure).toMatchObject({ code: 'EPERM' });
+  expect((outcome.failure as Error).message).toContain('Timed out waiting for');
   expect(outcome).toMatchObject({
+    dataRootExists: false,
     probeCount: 2,
     sigtermDeliveries: 1,
   });
@@ -211,14 +212,15 @@ test('rejects teardown when the Web group remains addressable after TERM and KIL
   });
 });
 
-test('rejects first-probe EPERM during the Web-group SIGKILL phase', async () => {
+test('accepts first-probe EPERM during the Web-group SIGKILL phase', async () => {
   test.setTimeout(45_000);
 
   const outcome = await runWebGroupPermissionProbeScenario('kill-first-eperm');
 
   expect(outcome.failure).toBeInstanceOf(Error);
-  expect(outcome.failure).toMatchObject({ code: 'EPERM' });
+  expect((outcome.failure as Error).message).toContain('Timed out waiting for');
   expect(outcome).toMatchObject({
+    dataRootExists: false,
     probeCount: 2,
     sigkillDeliveries: 1,
     sigtermDeliveries: 1,

@@ -27,6 +27,8 @@ describe('workspace config schema', () => {
     const parsed = WorkspaceConfigSchema.parse({
       schemaVersion: 1,
       workspace: {
+        name: 'Config schema workspace',
+        defaultAgentId: 'agent_codex',
         assistant: {
           repositoryInspection: {
             enabled: false,
@@ -54,6 +56,75 @@ describe('workspace config schema', () => {
       'private',
       'secrets.env',
     ]);
+    expect(parsed.workspace?.name).toBe('Config schema workspace');
+    expect(parsed.workspace?.defaultAgentId).toBe('agent_codex');
+  });
+
+  it('requires a name and rejects retired workspace-global execution defaults', () => {
+    expect(() => WorkspaceConfigSchema.parse({ workspace: {} })).toThrow();
+    expect(() =>
+      WorkspaceConfigSchema.parse({
+        workspace: {
+          name: 'Retired defaults workspace',
+          defaultModelId: 'reasoning',
+          defaultSkillIds: ['skill_protocol'],
+        },
+      })
+    ).toThrow();
+  });
+
+  it('binds reusable Agent credential requirements and rejects direct Workspace grants', () => {
+    const parsed = WorkspaceConfigSchema.parse({
+      schemaVersion: 1,
+      workspace: {
+        name: 'Credential workspace',
+        agents: [
+          {
+            agentId: 'agent_codex',
+            credentialBindings: [
+              { requirementId: 'github-token', vaultGrantId: 'grant_workspace_github' },
+            ],
+            sandbox: {
+              credentialDeclarations: [
+                {
+                  id: 'github_token',
+                  purpose: 'Authenticate GitHub CLI.',
+                  requirementId: 'github-token',
+                  targetEnvVarName: 'GITHUB_TOKEN',
+                  visibility: 'runtime-env',
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(parsed.workspace.agents[0]?.credentialBindings).toEqual([
+      { requirementId: 'github-token', vaultGrantId: 'grant_workspace_github' },
+    ]);
+    expect(() =>
+      WorkspaceConfigSchema.parse({
+        workspace: {
+          name: 'Invalid direct grant workspace',
+          agents: [
+            {
+              agentId: 'agent_codex',
+              sandbox: {
+                credentialDeclarations: [
+                  {
+                    id: 'github_token',
+                    targetEnvVarName: 'GITHUB_TOKEN',
+                    vaultGrantId: 'grant_workspace_github',
+                    visibility: 'runtime-env',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      })
+    ).toThrow(/must bind reusable credential requirements/);
   });
 
   it('rejects unsupported kinds, absolute paths, traversal, and duplicate ids', () => {
@@ -84,6 +155,7 @@ describe('workspace config schema', () => {
     expect(() =>
       WorkspaceConfigSchema.parse({
         workspace: {
+          name: 'Duplicate roots workspace',
           roots: [
             { id: 'data', kind: 'host-dir', path: 'files/data', access: 'read-only' },
             { id: 'data', kind: 'host-dir', path: 'files/other', access: 'read-only' },
@@ -124,6 +196,7 @@ describe('workspace root materialization', () => {
       workspaceRoot,
       config: {
         workspace: {
+          name: 'Materialized workspace',
           roots: [{ id: 'data', kind: 'host-dir', path: 'files/data', access: 'read-only' }],
         },
       },
@@ -149,6 +222,7 @@ describe('workspace root materialization', () => {
         workspaceRoot,
         config: {
           workspace: {
+            name: 'Missing input workspace',
             roots: [{ id: 'data', kind: 'host-dir', path: 'files/data', access: 'read-only' }],
           },
         },
@@ -160,6 +234,7 @@ describe('workspace root materialization', () => {
       createMissing: true,
       config: {
         workspace: {
+          name: 'Output workspace',
           roots: [
             {
               id: 'outputs',
@@ -186,6 +261,7 @@ describe('workspace root materialization', () => {
         workspaceRoot,
         config: {
           workspace: {
+            name: 'Symlink workspace',
             roots: [{ id: 'linked', kind: 'host-dir', path: 'linked', access: 'read-only' }],
           },
         },

@@ -10,6 +10,10 @@ function validAgentConfig() {
     requiredFeatures: [],
     id: 'agent_worker_fixture',
     displayName: 'Worker Fixture',
+    models: {
+      preferredLogicalModelId: 'reasoning',
+      allowedLogicalModelIds: ['reasoning'],
+    },
     runtime: {
       kind: 'future-runtime',
       adapter: 'future-adapter',
@@ -40,6 +44,47 @@ function validAgentConfig() {
 }
 
 describe('AuthoredAgentConfigSchema', () => {
+  it('accepts reusable credential requirements and rejects ambiguous direct grants', () => {
+    const requirement = AuthoredAgentConfigSchema.parse({
+      ...validAgentConfig(),
+      sandbox: {
+        credentialDeclarations: [
+          {
+            id: 'github_token',
+            purpose: 'Authenticate GitHub CLI.',
+            required: true,
+            requirementId: 'github-token',
+            targetEnvVarName: 'GITHUB_TOKEN',
+            visibility: 'runtime-env',
+          },
+        ],
+        network: [],
+      },
+    });
+
+    expect(requirement.sandbox?.credentialDeclarations[0]).toMatchObject({
+      requirementId: 'github-token',
+      required: true,
+    });
+    expect(() =>
+      AuthoredAgentConfigSchema.parse({
+        ...validAgentConfig(),
+        sandbox: {
+          credentialDeclarations: [
+            {
+              id: 'ambiguous_token',
+              requirementId: 'github-token',
+              targetEnvVarName: 'GITHUB_TOKEN',
+              vaultGrantId: 'grant_github',
+              visibility: 'runtime-env',
+            },
+          ],
+          network: [],
+        },
+      })
+    ).toThrow(/must not declare requirementId/);
+  });
+
   it('accepts exactly one reference or bounded build image form', () => {
     const config = validAgentConfig();
     const dockerfile = 'FROM node:24.16.0';

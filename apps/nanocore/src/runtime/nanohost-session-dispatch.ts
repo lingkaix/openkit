@@ -42,7 +42,7 @@ const FILE_DATA_HEADERS = {
   sha256: 'x-openkit-sha256',
   slot: 'x-openkit-slot',
 } as const;
-const HARNESS_BINDING_HEADER = 'x-openkit-harness-binding';
+const INTEGRATION_BINDING_HEADER = 'x-openkit-integration-binding';
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
 
@@ -247,9 +247,7 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   /** Live runtime owner that binds dispatch-time Turn credentials before carriage. */
   readonly harnessCommandDispatched?: ((command: NanoHostHarnessCommand) => void) | undefined;
   /** Live runtime owner that advances the exact settled Harness operation. */
-  readonly harnessResultSettled?:
-    | ((harnessBindingRef: string, result: NanoHostHarnessResult) => void)
-    | undefined;
+  readonly harnessResultSettled?: ((result: NanoHostHarnessResult) => void) | undefined;
   /** Configured target identity and deployment checked against durable allocation. */
   readonly nanoHostConfig?: {
     readonly deploymentId: string;
@@ -741,14 +739,14 @@ export function registerNanoHostSessionSemanticRoutes(
         if (request.headers.has('authorization')) {
           throw new Error('NanoHost private Harness route rejects bearer authorization.');
         }
-        const harnessBindingRef = request.headers.get(HARNESS_BINDING_HEADER);
+        const sandboxIntegrationBindingRef = request.headers.get(INTEGRATION_BINDING_HEADER);
         if (
-          !harnessBindingRef ||
-          harnessBindingRef.length > 512 ||
-          harnessBindingRef.includes(',') ||
-          /[\r\n\0]/.test(harnessBindingRef)
+          !sandboxIntegrationBindingRef ||
+          sandboxIntegrationBindingRef.length > 512 ||
+          sandboxIntegrationBindingRef.includes(',') ||
+          /[\r\n\0]/.test(sandboxIntegrationBindingRef)
         ) {
-          throw new Error('NanoHost private Harness binding is missing or ambiguous.');
+          throw new Error('NanoHost private Sandbox Integration binding is missing or ambiguous.');
         }
         if (request.headers.get('content-type') !== 'application/json') {
           throw new Error('NanoHost private Harness content type must be application/json.');
@@ -761,17 +759,11 @@ export function registerNanoHostSessionSemanticRoutes(
         });
         const value = parseJsonObject(body, 'NanoHost private Harness body is invalid.');
         if (path === HARNESS_POLL_PATH) {
-          if (
-            Object.keys(value).length !== 2 ||
-            value.schemaVersion !== 1 ||
-            !Number.isSafeInteger(value.nextExpectedSequence) ||
-            (value.nextExpectedSequence as number) < 0
-          ) {
+          if (Object.keys(value).length !== 1 || value.schemaVersion !== 1) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
           const command = dispatchNanoHostHarnessOperation(input.coreDb, {
-            harnessBindingRef,
-            nextExpectedSequence: value.nextExpectedSequence as number,
+            sandboxIntegrationBindingRef,
           });
           if (command) {
             input.harnessCommandDispatched?.(command);
@@ -780,11 +772,11 @@ export function registerNanoHostSessionSemanticRoutes(
         }
         const result = value as unknown as NanoHostHarnessResult;
         settleNanoHostHarnessOperation(input.coreDb, {
-          harnessBindingRef,
+          sandboxIntegrationBindingRef,
           result,
           timestamp: new Date().toISOString(),
         });
-        input.harnessResultSettled?.(harnessBindingRef, result);
+        input.harnessResultSettled?.(result);
         return context.body(null, 204);
       }
       await input.dispatch.route(requirePhysicalConnection(context.env), {
@@ -996,11 +988,14 @@ function requireBridgeOpenCommand(
   value: Readonly<Record<string, unknown>>,
   requestId: string
 ): Readonly<Record<string, unknown>> {
-  if (Object.keys(value).length !== 1 || !Object.hasOwn(value, 'harnessBindingRef')) {
+  if (Object.keys(value).length !== 1 || !Object.hasOwn(value, 'sandboxIntegrationBindingRef')) {
     throw new Error('NanoHost bridge command contains an unowned field.');
   }
   return {
-    harnessBindingRef: readBoundedIdentity(value.harnessBindingRef, 'Harness binding'),
+    sandboxIntegrationBindingRef: readBoundedIdentity(
+      value.sandboxIntegrationBindingRef,
+      'Sandbox Integration binding'
+    ),
     requestId,
   };
 }
@@ -1033,9 +1028,9 @@ function requireBridgeOpenResult(
   if (
     Object.keys(result).length !== 3 ||
     result.accepted !== true ||
-    result.harnessReady !== true ||
+    result.integrationReady !== true ||
     result.state !== 'open' ||
-    typeof command.harnessBindingRef !== 'string'
+    typeof command.sandboxIntegrationBindingRef !== 'string'
   ) {
     throw effectTransportError(409, 'NanoHost bridge result disagrees with its command.');
   }

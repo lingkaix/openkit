@@ -3334,13 +3334,71 @@
         }
       }
     },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/chat": {
-      "post": {
-        "operationId": "startChatMode",
+    "/api/app/workspaces/{workspaceId}/conversation-targets": {
+      "get": {
+        "operationId": "getConversationTargets",
         "tags": [
           "modes"
         ],
-        "summary": "Start one thread-scoped Chat Mode Assistant turn.",
+        "summary": "List the context-sensitive targets available to the shared Composer.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "in": "query",
+            "name": "threadId",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace conversation targets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationTargetCatalog"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/workspaces/{workspaceId}/threads/{threadId}/conversation-turns": {
+      "post": {
+        "operationId": "submitConversation",
+        "tags": [
+          "modes"
+        ],
+        "summary": "Submit one structured message to a selected conversation target.",
         "security": [
           {
             "bearerAuth": []
@@ -3372,7 +3430,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StartChatModeRequest"
+                "$ref": "#/components/schemas/SubmitConversationRequest"
               }
             }
           }
@@ -3383,7 +3441,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StartChatModeResponse"
+                  "$ref": "#/components/schemas/SubmitConversationResponse"
                 }
               }
             }
@@ -3393,7 +3451,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StartChatModeResponse"
+                  "$ref": "#/components/schemas/SubmitConversationResponse"
                 }
               }
             }
@@ -9577,46 +9635,6 @@
                         "archived"
                       ]
                     },
-                    "defaults": {
-                      "type": "object",
-                      "properties": {
-                        "defaultModelId": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "defaultAgentId": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "defaultSkillIds": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        }
-                      },
-                      "required": [
-                        "defaultModelId",
-                        "defaultAgentId",
-                        "defaultSkillIds"
-                      ],
-                      "additionalProperties": false
-                    },
                     "counts": {
                       "type": "object",
                       "properties": {
@@ -11287,46 +11305,6 @@
                       "active",
                       "archived"
                     ]
-                  },
-                  "defaults": {
-                    "type": "object",
-                    "properties": {
-                      "defaultModelId": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "defaultAgentId": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "defaultSkillIds": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      }
-                    },
-                    "required": [
-                      "defaultModelId",
-                      "defaultAgentId",
-                      "defaultSkillIds"
-                    ],
-                    "additionalProperties": false
                   },
                   "counts": {
                     "type": "object",
@@ -13168,6 +13146,45 @@
                   "minLength": 1
                 }
               },
+              "defaultModelId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "displayName",
+                    "capabilities"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "usage": {
                 "type": "object",
                 "properties": {
@@ -13237,7 +13254,9 @@
             },
             "required": [
               "status",
-              "endpoints"
+              "endpoints",
+              "defaultModelId",
+              "models"
             ],
             "additionalProperties": false
           },
@@ -13391,304 +13410,6 @@
             "required": [
               "diagnostics",
               "registry"
-            ],
-            "additionalProperties": false
-          },
-          "defaultProviders": {
-            "type": "object",
-            "properties": {
-              "core": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "configured": {
-                        "type": "boolean",
-                        "const": true
-                      },
-                      "model": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "origin": {
-                        "type": "string",
-                        "const": "canonical"
-                      },
-                      "providerId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "reason": {
-                        "not": {}
-                      }
-                    },
-                    "required": [
-                      "configured",
-                      "model",
-                      "origin",
-                      "providerId"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "configured": {
-                        "type": "boolean",
-                        "const": false
-                      },
-                      "origin": {
-                        "type": "string",
-                        "const": "unset"
-                      },
-                      "providerId": {
-                        "not": {}
-                      },
-                      "reason": {
-                        "type": "string",
-                        "const": "unset"
-                      }
-                    },
-                    "required": [
-                      "configured",
-                      "origin",
-                      "reason"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "configured": {
-                        "type": "boolean",
-                        "const": false
-                      },
-                      "model": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "origin": {
-                        "type": "string",
-                        "const": "canonical"
-                      },
-                      "providerId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "reason": {
-                        "type": "string",
-                        "enum": [
-                          "unknown-id",
-                          "credentials-missing"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "configured",
-                      "model",
-                      "origin",
-                      "providerId",
-                      "reason"
-                    ],
-                    "additionalProperties": false
-                  }
-                ]
-              },
-              "gateway": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "configured": {
-                        "type": "boolean",
-                        "const": true
-                      },
-                      "model": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "origin": {
-                        "type": "string",
-                        "const": "canonical"
-                      },
-                      "providerId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "reason": {
-                        "not": {}
-                      }
-                    },
-                    "required": [
-                      "configured",
-                      "model",
-                      "origin",
-                      "providerId"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "configured": {
-                        "type": "boolean",
-                        "const": false
-                      },
-                      "origin": {
-                        "type": "string",
-                        "const": "unset"
-                      },
-                      "providerId": {
-                        "not": {}
-                      },
-                      "reason": {
-                        "type": "string",
-                        "const": "unset"
-                      }
-                    },
-                    "required": [
-                      "configured",
-                      "origin",
-                      "reason"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "configured": {
-                        "type": "boolean",
-                        "const": false
-                      },
-                      "model": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "origin": {
-                        "type": "string",
-                        "const": "canonical"
-                      },
-                      "providerId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "reason": {
-                        "type": "string",
-                        "enum": [
-                          "unknown-id",
-                          "credentials-missing"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "configured",
-                      "model",
-                      "origin",
-                      "providerId",
-                      "reason"
-                    ],
-                    "additionalProperties": false
-                  }
-                ]
-              }
-            },
-            "required": [
-              "core",
-              "gateway"
-            ],
-            "additionalProperties": false
-          },
-          "defaults": {
-            "type": "object",
-            "properties": {
-              "quickChat": {
-                "type": "object",
-                "properties": {
-                  "providerId": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "model": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "providerId",
-                  "model"
-                ],
-                "additionalProperties": false
-              },
-              "gateway": {
-                "type": "object",
-                "properties": {
-                  "providerId": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "model": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "providerId",
-                  "model"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "quickChat",
-              "gateway"
             ],
             "additionalProperties": false
           },
@@ -13902,8 +13623,6 @@
           "boot",
           "gateway",
           "providers",
-          "defaultProviders",
-          "defaults",
           "capabilities",
           "runtimeConfig"
         ],
@@ -22298,8 +22017,26 @@
                   "minLength": 1
                 },
                 "profileRef": {
-                  "type": "string",
-                  "minLength": 1
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "modelId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "priorityClass": {
                   "type": "string",
@@ -22380,6 +22117,7 @@
                 "turnId",
                 "requestedAgentId",
                 "profileRef",
+                "modelId",
                 "priorityClass",
                 "enqueuedAt",
                 "effectivePriorityAt",
@@ -30023,11 +29761,7 @@
             "type": "string",
             "minLength": 1
           },
-          "providerId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "model": {
+          "modelId": {
             "type": "string",
             "minLength": 1
           },
@@ -30039,8 +29773,7 @@
           "id",
           "status",
           "workspaceId",
-          "providerId",
-          "model",
+          "modelId",
           "content"
         ],
         "additionalProperties": false
@@ -34216,8 +33949,11 @@
                   "type": "string",
                   "enum": [
                     "server",
+                    "gateway",
+                    "internal-role",
                     "provider",
                     "agent",
+                    "user",
                     "workspace",
                     "data-source"
                   ]
@@ -34284,8 +34020,11 @@
                 "type": "string",
                 "enum": [
                   "server",
+                  "gateway",
+                  "internal-role",
                   "provider",
                   "agent",
+                  "user",
                   "workspace",
                   "data-source"
                 ]
@@ -34352,8 +34091,11 @@
             "type": "string",
             "enum": [
               "server",
+              "gateway",
+              "internal-role",
               "provider",
               "agent",
+              "user",
               "workspace",
               "data-source"
             ]
@@ -34394,8 +34136,11 @@
                 "type": "string",
                 "enum": [
                   "server",
+                  "gateway",
+                  "internal-role",
                   "provider",
                   "agent",
+                  "user",
                   "workspace",
                   "data-source"
                 ]
@@ -35005,8 +34750,11 @@
                   "type": "string",
                   "enum": [
                     "server",
+                    "gateway",
+                    "internal-role",
                     "provider",
                     "agent",
+                    "user",
                     "workspace",
                     "data-source"
                   ]
@@ -36513,69 +36261,20 @@
                       }
                     ]
                   },
-                  "defaults": {
-                    "type": "object",
-                    "properties": {
-                      "coreProviderId": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
+                  "defaultAgentId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
                       },
-                      "gatewayProviderId": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
+                      {
+                        "type": "null"
                       }
-                    },
-                    "required": [
-                      "coreProviderId",
-                      "gatewayProviderId"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "gateway": {
-                    "type": "object",
-                    "properties": {
-                      "openaiCompatible": {
-                        "type": "object",
-                        "properties": {
-                          "enabled": {
-                            "anyOf": [
-                              {
-                                "type": "boolean"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "enabled"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "required": [
-                      "openaiCompatible"
-                    ],
-                    "additionalProperties": false
+                    ]
                   }
                 },
                 "required": [
                   "schemaVersion",
-                  "defaults",
-                  "gateway"
+                  "defaultAgentId"
                 ],
                 "additionalProperties": false
               }
@@ -36732,7 +36431,7 @@
                         }
                       ]
                     },
-                    "providerId": {
+                    "logicalModelId": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -36777,7 +36476,7 @@
                   "required": [
                     "status",
                     "deploymentMode",
-                    "providerId",
+                    "logicalModelId",
                     "diagnostics"
                   ],
                   "additionalProperties": false
@@ -36999,13 +36698,43 @@
         ],
         "additionalProperties": false
       },
-      "StartChatModeRequest": {
+      "SubmitConversationRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "input": {
+            "type": "string"
+          },
+          "targetRef": {
             "type": "string",
             "minLength": 1
+          },
+          "logicalModelId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactRefs": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "artifactId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "artifactVersion": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "artifactId",
+                "artifactVersion"
+              ],
+              "additionalProperties": false
+            }
           },
           "requestId": {
             "type": "string",
@@ -37014,11 +36743,13 @@
         },
         "required": [
           "input",
+          "targetRef",
+          "artifactRefs",
           "requestId"
         ],
         "additionalProperties": false
       },
-      "StartChatModeResponse": {
+      "SubmitConversationResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -37029,6 +36760,7 @@
               "clarification-needed",
               "task-handoff",
               "goal-handoff",
+              "accepted",
               "refused"
             ]
           },
@@ -52816,6 +52548,37 @@
                 "type": "null"
               }
             ]
+          },
+          "originatingWorkspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "originatingThreadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "receivingWorkspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "receivingThreadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "logicalModelId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -52823,7 +52586,177 @@
           "explanation",
           "turn",
           "item",
-          "handoff"
+          "handoff",
+          "originatingWorkspaceId",
+          "originatingThreadId",
+          "receivingWorkspaceId",
+          "receivingThreadId",
+          "targetRef",
+          "logicalModelId"
+        ],
+        "additionalProperties": false
+      },
+      "ConversationTargetCatalog": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "targetRef": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "assistant",
+                    "knowledge-manager",
+                    "goal-orchestrator",
+                    "warm-worker",
+                    "running-worker",
+                    "new-task-worker"
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "availability": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "busy",
+                    "unavailable"
+                  ]
+                },
+                "unavailableReason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "threadId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "profileId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "logicalModels": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "label": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "capabilities": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label",
+                      "capabilities"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "defaultLogicalModelId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "targetRef",
+                "kind",
+                "label",
+                "description",
+                "availability",
+                "unavailableReason",
+                "threadId",
+                "profileId",
+                "logicalModels",
+                "defaultLogicalModelId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "defaultTargetRef": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "targets",
+          "defaultTargetRef"
         ],
         "additionalProperties": false
       },
@@ -82667,17 +82600,6 @@
               "disabled": {
                 "type": "boolean"
               },
-              "defaultModelId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
               "defaultAgentId": {
                 "anyOf": [
                   {
@@ -82692,7 +82614,6 @@
             },
             "required": [
               "disabled",
-              "defaultModelId",
               "defaultAgentId"
             ],
             "additionalProperties": false
@@ -84237,46 +84158,6 @@
                   "archived"
                 ]
               },
-              "defaults": {
-                "type": "object",
-                "properties": {
-                  "defaultModelId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "defaultAgentId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "defaultSkillIds": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  }
-                },
-                "required": [
-                  "defaultModelId",
-                  "defaultAgentId",
-                  "defaultSkillIds"
-                ],
-                "additionalProperties": false
-              },
               "counts": {
                 "type": "object",
                 "properties": {
@@ -84400,46 +84281,6 @@
                   "archived"
                 ]
               },
-              "defaults": {
-                "type": "object",
-                "properties": {
-                  "defaultModelId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "defaultAgentId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "defaultSkillIds": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  }
-                },
-                "required": [
-                  "defaultModelId",
-                  "defaultAgentId",
-                  "defaultSkillIds"
-                ],
-                "additionalProperties": false
-              },
               "counts": {
                 "type": "object",
                 "properties": {
@@ -84549,17 +84390,6 @@
           "defaultContext": {
             "type": "object",
             "properties": {
-              "modelId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
               "agentId": {
                 "anyOf": [
                   {
@@ -84570,19 +84400,10 @@
                     "type": "null"
                   }
                 ]
-              },
-              "skillIds": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
               }
             },
             "required": [
-              "modelId",
-              "agentId",
-              "skillIds"
+              "agentId"
             ],
             "additionalProperties": false
           },
@@ -85043,5 +84864,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:12ec496f20bf98ac014c60a8e2fed2c270f685ca92fc6d83b3eb55b086abe59b"
+  "x-openkit-source-digest": "sha256:aa8d22e069c1c3aeb5f1d4a86b59734336f68d3aa9408db65ff2d4e816693daa"
 }

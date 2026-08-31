@@ -78,6 +78,45 @@ describe('shared Worker Harness', () => {
     expect(loopFixture.events).toEqual(['listener', 'marker', 'poll', 'close']);
   });
 
+  it('routes one Integration poll loop to two independent Harness instances', async () => {
+    const controller = new AbortController();
+    const results: Array<Record<string, unknown>> = [];
+    const commands = [
+      {
+        ...command('harness.drain', 0, {}),
+        adapterId: 'codex',
+        harnessInstanceId: 'harness-codex',
+      },
+      {
+        ...command('harness.drain', 0, {}),
+        adapterId: 'opencode',
+        harnessInstanceId: 'harness-opencode',
+      },
+    ];
+    loopFixture.client = {
+      close: async () => undefined,
+      harnessControlFetch: async (path: string, init: { body: string }) => {
+        if (path.endsWith('/result')) {
+          results.push(JSON.parse(init.body) as Record<string, unknown>);
+          return { ok: true, status: 204, text: async () => '' };
+        }
+        const next = commands.shift();
+        if (!next) {
+          controller.abort(new Error('fixture-complete'));
+          return { ok: true, status: 204, text: async () => '' };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify(next) };
+      },
+      ready: Promise.resolve(),
+    } as unknown as SandboxIntegrationClient;
+
+    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(/abort/i);
+    expect(results).toMatchObject([
+      { disposition: 'succeeded', harnessInstanceId: 'harness-codex', sequence: 0 },
+      { disposition: 'succeeded', harnessInstanceId: 'harness-opencode', sequence: 0 },
+    ]);
+  });
+
   it('runs sequential Turns by resuming the exact first Codex UUID', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-turns-'));
     const sandboxRoot = join(root, 'openkit');
@@ -361,6 +400,38 @@ describe('shared Worker Harness', () => {
         })
       )
     ).resolves.toMatchObject({ disposition: 'succeeded' });
+  });
+
+  it('binds one Harness instance to a non-Codex registry adapter', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-opencode-'));
+    const harness = new WorkerHarness({
+      adapterId: 'opencode',
+      integration: {} as SandboxIntegrationClient,
+      rootDirectory: root,
+      sandboxRoot: root,
+    });
+
+    const opened = await harness.handle(
+      command('session.open', 0, {
+        ...openBody('binding-opencode', 'as-opencode'),
+        adapterId: 'opencode',
+      })
+    );
+    expect(opened).toMatchObject({
+      body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'open' },
+      disposition: 'succeeded',
+    });
+    await expect(
+      harness.handle(
+        command('session.close', 1, {
+          agentSessionId: 'as-opencode',
+          agentSessionRuntimeBindingId: 'binding-opencode',
+        })
+      )
+    ).resolves.toMatchObject({
+      body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+      disposition: 'succeeded',
+    });
   });
 
   it('rejects unknown operations and executable fields before any Turn effect', async () => {

@@ -169,7 +169,7 @@ describe('nanocore e2e workspace portability', () => {
       workspaceId,
       exportId,
       'records',
-      'workspace.json'
+      'workspace-record.json'
     );
 
     await writeFile(workspaceRecordPath, '{"id":"tampered"}\n');

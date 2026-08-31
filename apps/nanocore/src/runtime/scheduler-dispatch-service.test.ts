@@ -13,7 +13,10 @@ import {
 } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { runSchedulerDispatchRetryOnce } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
@@ -128,9 +131,7 @@ describe('scheduler dispatch service', () => {
       cwd: repositoryPath,
       stdio: 'ignore',
     });
-    const providerCredentialResolver = vi.fn((secretRef: string) =>
-      secretRef === 'vault://provider_background' ? 'test-key' : null
-    );
+    const providerCredentialResolver = vi.fn(() => null);
 
     try {
       coreDb.sqlite
@@ -148,7 +149,7 @@ describe('scheduler dispatch service', () => {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         priorityClass: 'interactive',
-        profileRef: 'profile_worker',
+        profileRef: null,
         queueEntryId: 'queue_background',
         requestedAgentId: 'agent_codex_host',
         requiredPoolConstraints: ['openshell.local'],
@@ -171,6 +172,7 @@ describe('scheduler dispatch service', () => {
       });
 
       const result = await runSchedulerDispatchRetryOnce({
+        gatewayConfig: createTestGatewayConfig(),
         agentManifests: [createTestAgentSetup().manifest],
         coreDb,
         createAgentSessionId: () => 'as_background',
@@ -185,12 +187,11 @@ describe('scheduler dispatch service', () => {
         maxDispatches: 1,
         providerRegistry: new ProviderRegistry([
           {
-            baseUrl: 'https://api.example.com/v1',
+            baseUrl: 'http://127.0.0.1:11434/v1',
             displayName: 'Background provider',
             id: 'agent-openrouter',
-            kind: 'gateway',
+            kind: 'local',
             models: ['openai/gpt-5.2'],
-            secretRef: 'vault://provider_background',
           },
         ]),
         schedulerEpoch: 1,
@@ -200,7 +201,7 @@ describe('scheduler dispatch service', () => {
       });
 
       expect(result?.startedTurns).toHaveLength(1);
-      expect(providerCredentialResolver).toHaveBeenCalledWith('vault://provider_background');
+      expect(providerCredentialResolver).not.toHaveBeenCalled();
       expect(turnExecutor.calls).toMatchObject([
         { input: 'Run from the owner store', turnId: 'turn_background' },
       ]);
@@ -208,7 +209,10 @@ describe('scheduler dispatch service', () => {
       expect(turnExecutor.calls[0]?.context).toMatchObject({
         agentSetup: {
           manifest: createTestAgentSetup().manifest,
-          provider: expect.objectContaining({ providerId: 'agent-openrouter' }),
+          profileId: 'default',
+          logicalModels: expect.objectContaining({
+            preferredLogicalModelId: 'openai/gpt-5.2',
+          }),
         },
         workspaceCwd: '/workspace/background',
         workspaceRoots: [

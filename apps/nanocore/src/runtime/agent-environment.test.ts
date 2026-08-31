@@ -41,15 +41,15 @@ const AUTOMATION_TRIGGER_ACTOR = {
  * Creates one complete resolved setup for AEP contract tests.
  *
  * @param options Explicit manifest changes relevant to the test.
- * @returns Complete manifest and resolved provider snapshot.
+ * @returns Complete manifest and resolved logical model snapshot.
  */
 function createTestSetup(
   options: {
     readonly adapter?: string;
     readonly credentialDeclarations?: AgentEnvironmentCredentialDeclaration[];
+    readonly logicalModelId?: string;
     readonly mcpIds?: string[];
     readonly network?: WorkerSandboxAccess['network'];
-    readonly provider?: ResolvedAgentSetup['provider'];
     readonly requiredCapabilities?: Array<
       'backend-local-inference' | 'trusted-worker-inference-relay' | 'worker.runtime-provenance.v1'
     >;
@@ -58,6 +58,7 @@ function createTestSetup(
   } = {}
 ): ResolvedAgentSetup {
   const adapter = options.adapter ?? 'codex';
+  const logicalModelId = options.logicalModelId ?? 'reasoning';
 
   return {
     manifest: {
@@ -65,12 +66,12 @@ function createTestSetup(
       displayName: 'Test Worker',
       id: 'agent_codex_host',
       mcp: (options.mcpIds ?? []).map((id) => ({ id })),
-      provider: {
-        model: options.provider?.model ?? 'openai/gpt-5.2',
-        ref: options.provider?.providerId ?? 'agent-openrouter',
+      models: {
+        preferredLogicalModelId: logicalModelId,
+        allowedLogicalModelIds: [logicalModelId],
       },
       requiredFeatures: [],
-      profiles: [{ id: 'default', instructionsRef: adapter, skills: [] }],
+      profiles: [{ id: 'default', instructionsRef: adapter, skills: [], mcp: [] }],
       runtime: {
         adapter,
         binaries: [
@@ -100,15 +101,25 @@ function createTestSetup(
       schemaVersion: 1,
       skills: (options.skillIds ?? []).map((id) => ({ id })),
     },
-    provider:
-      options.provider === undefined
-        ? {
-            model: 'openai/gpt-5.2',
-            origin: 'server-providers',
-            providerId: 'agent-openrouter',
-            secretRef: null,
-          }
-        : options.provider,
+    profileId: 'default',
+    logicalModels: {
+      preferredLogicalModelId: logicalModelId,
+      allowed: [
+        {
+          id: logicalModelId,
+          displayName: logicalModelId,
+          capabilities: ['chat-completions', 'responses', 'tool-calling'],
+          modelFamilyId: 'test-model-family',
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'agent-openrouter',
+              providerModel: 'openai/gpt-5.1',
+            },
+          ],
+        },
+      ],
+    },
   };
 }
 
@@ -160,7 +171,7 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     });
 
-    expect(resolved.schemaVersion).toBe(3);
+    expect(resolved.schemaVersion).toBe(4);
     expect(resolved.scope.triggerActor).toEqual(AUTOMATION_TRIGGER_ACTOR);
     expect(resolved.scope).not.toHaveProperty('userId');
     expect(resolved.scope).not.toHaveProperty('automationId');
@@ -170,12 +181,33 @@ describe('agent environment package resolver', () => {
   it('projects one resolved opaque manifest into the generic relay launch contract', () => {
     const turn = createTurnFixture('Run the opaque worker');
     const setupResult = resolveAgentSetup(createTestSetup({ adapter: 'future-adapter' }).manifest, {
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'agent-openrouter',
+                providerModel: 'openai/gpt-5.1',
+              },
+            ],
+          },
+        ],
+        requiredFeatures: [],
+      },
       providerRegistry: new ProviderRegistry([
         {
+          defaultModel: 'openai/gpt-5.1',
           displayName: 'Agent OpenRouter',
           id: 'agent-openrouter',
           kind: 'gateway',
-          models: ['openai/gpt-5.2'],
+          models: ['openai/gpt-5.1'],
+          vendor: 'openrouter',
         },
       ]),
     });
@@ -217,11 +249,12 @@ describe('agent environment package resolver', () => {
     });
     expect(resolved.llm).toEqual({
       mode: 'gateway',
+      preferredLogicalModelId: 'reasoning',
       routes: [
         expect.objectContaining({
           credentialVisibility: 'placeholder',
-          model: 'openai/gpt-5.2',
-          providerInstanceId: 'agent-openrouter',
+          model: 'reasoning',
+          providerInstanceId: 'openkit-gateway',
         }),
       ],
     });
@@ -252,7 +285,7 @@ describe('agent environment package resolver', () => {
     ).toThrow();
   });
 
-  it('preserves authored development grants with trusted inference and rejects direct credentials and incomplete provenance', () => {
+  it('preserves authored development grants with trusted inference and rejects incomplete provenance', () => {
     const turn = createTurnFixture('Reject authority conflict');
     const common = {
       agentSessionId: 'session_reject_1',
@@ -292,7 +325,7 @@ describe('agent environment package resolver', () => {
       }),
     });
 
-    expect(resolved.schemaVersion).toBe(3);
+    expect(resolved.schemaVersion).toBe(4);
     expect(resolved.control).toMatchObject({
       mode: 'sandbox-integration',
       bindings: {
@@ -304,17 +337,18 @@ describe('agent environment package resolver', () => {
     });
     expect(resolved.llm).toEqual({
       mode: 'gateway',
+      preferredLogicalModelId: 'reasoning',
       routes: [
         expect.objectContaining({
           credentialVisibility: 'placeholder',
           endpoint: {
             kind: 'openai-compatible',
             upstream: {
-              baseUrlRef: 'agent-openrouter',
+              baseUrlRef: 'openkit-gateway',
               kind: 'nanocore-gateway',
             },
           },
-          providerInstanceId: 'agent-openrouter',
+          providerInstanceId: 'openkit-gateway',
         }),
       ],
     });
@@ -384,29 +418,16 @@ describe('agent environment package resolver', () => {
         },
       })
     ).toThrow();
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        ...common,
-        agentSetup: createTestSetup({
-          credentialDeclarations: [
-            {
-              id: 'direct_provider_key',
-              targetEnvVarName: 'OPENAI_API_KEY',
-              vaultGrantId: 'grant_direct_provider_key',
-              visibility: 'runtime-env',
-            },
-          ],
-        }),
-      })
-    ).toThrow('Trusted worker inference does not allow direct credentials.');
-    expect(() =>
+    expect(
       resolveAgentEnvironmentPackage({
         ...common,
         agentSetup: createTestSetup({
           requiredCapabilities: ['worker.runtime-provenance.v1'],
         }),
-      })
-    ).toThrow('Runtime provenance requires the trusted worker inference relay.');
+      }).backend.requiredCapabilities
+    ).toEqual(
+      expect.arrayContaining(['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'])
+    );
   });
 
   it('keeps approved Skill and MCP supply static and non-executable', () => {
@@ -434,7 +455,7 @@ describe('agent environment package resolver', () => {
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('materialization');
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('providerInstanceIds');
-    expect(resolved.providers.attachments).toEqual([]);
+    expect(resolved).not.toHaveProperty('providers');
   });
 
   it('projects one prepared worker Context Package through the existing generated context slot', () => {
@@ -545,7 +566,7 @@ describe('agent environment package resolver', () => {
       sourceRef: 'main-repo',
       vaultGrantRef: 'grant_github_read',
     });
-    expect(resolved.providers.attachments).toEqual([]);
+    expect(resolved).not.toHaveProperty('providers');
   });
 
   it('does not apply responsible-user identity to server-scoped Vault authority', () => {
@@ -616,12 +637,7 @@ describe('agent environment package resolver', () => {
               protocol: 'rest',
             },
           ],
-          provider: {
-            model: 'claude-sonnet-4-5',
-            origin: 'server-providers',
-            providerId: 'anthropic',
-            secretRef: null,
-          },
+          logicalModelId: 'claude',
           requiredCapabilities: [],
         }),
         agentSessionId: 'session_direct_1',
@@ -640,12 +656,13 @@ describe('agent environment package resolver', () => {
       });
 
       expect(resolved.llm).toEqual({
-        mode: 'direct-external',
+        mode: 'gateway',
+        preferredLogicalModelId: 'claude',
         routes: [
           expect.objectContaining({
-            credentialVisibility: 'environment',
-            model: 'claude-sonnet-4-5',
-            providerInstanceId: 'anthropic',
+            credentialVisibility: 'placeholder',
+            model: 'claude',
+            providerInstanceId: 'openkit-gateway',
           }),
         ],
       });
@@ -667,8 +684,95 @@ describe('agent environment package resolver', () => {
       ]);
       expect(JSON.stringify(resolved)).not.toContain('direct_secret_value');
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
-      expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
+      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('materializes a Workspace-bound credential requirement without exposing its value', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-workspace-binding-'));
+    const coreDb = openCoreDb(dataRoot);
+    const vaultUnlockState = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(dataRoot, 'server', 'vault'),
+    });
+    const now = '2026-07-18T00:00:00.000Z';
+    const runtimeEnvCredentials: string[] = [];
+
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      now: new Date(now),
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
+    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 24) });
+    vaultUnlockState.backend().store({
+      material: 'workspace_github_secret',
+      metadata: { ownerScope: 'workspace', workspaceId: 'ws_demo' },
+      referenceId: 'vault_workspace_github',
+    });
+    createVaultReference(coreDb, {
+      backendKind: 'encrypted-file',
+      backendLocator: 'encrypted-file://server/vault/vault_workspace_github',
+      displayName: 'Workspace GitHub token',
+      now: () => now,
+      ownerScope: 'workspace',
+      referenceId: 'vault_workspace_github',
+      secretKind: 'provider-api-key',
+      workspaceId: 'ws_demo',
+    });
+    createVaultGrant(coreDb, {
+      allowedInjectionPaths: ['runtime-env'],
+      grantId: 'grant_workspace_github',
+      lifetime: 'agent-session',
+      now: () => now,
+      ownerScope: 'workspace',
+      targetAgentId: 'agent_codex_host',
+      targetAgentSessionId: 'session_workspace_binding',
+      vaultReferenceId: 'vault_workspace_github',
+      workspaceId: 'ws_demo',
+    });
+
+    try {
+      const resolved = resolveAgentEnvironmentPackage({
+        agentSetup: createTestSetup({
+          credentialDeclarations: [
+            {
+              id: 'github_token',
+              requirementId: 'github-token',
+              targetEnvVarName: 'GITHUB_TOKEN',
+              vaultGrantId: 'grant_workspace_github',
+              visibility: 'runtime-env',
+            },
+          ],
+          requiredCapabilities: [],
+        }),
+        agentSessionId: 'session_workspace_binding',
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: now,
+        requestId: 'req_workspace_binding',
+        runtimeEnvCredentialSink: (credential) =>
+          runtimeEnvCredentials.push(credential.credentialValue),
+        turn: createTurnFixture('Use the Workspace GitHub account'),
+        triggerActor: USER_TRIGGER_ACTOR,
+        vaultBackend: () => vaultUnlockState.backend(),
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      });
+
+      expect(resolved.credentials.declarations).toEqual([
+        expect.objectContaining({
+          requirementId: 'github-token',
+          vaultGrantId: 'grant_workspace_github',
+        }),
+      ]);
+      expect(runtimeEnvCredentials).toEqual(['workspace_github_secret']);
+      expect(JSON.stringify(resolved)).not.toContain('workspace_github_secret');
     } finally {
       coreDb.sqlite.close();
     }
@@ -698,12 +802,7 @@ describe('agent environment package resolver', () => {
           protocol: 'rest',
         },
       ],
-      provider: {
-        model: 'preview-model',
-        origin: 'server-providers',
-        providerId: 'preview-provider',
-        secretRef: null,
-      },
+      logicalModelId: 'preview-model',
       requiredCapabilities: [],
     });
     let sinkCalls = 0;
@@ -781,7 +880,7 @@ describe('agent environment package resolver', () => {
           },
           requestId: 'req_context_digest',
           turn,
-          triggerActor: USER_TRIGGER_ACTOR,
+          triggerActor: AUTOMATION_TRIGGER_ACTOR,
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         });
@@ -895,14 +994,14 @@ describe('agent environment package resolver', () => {
 
   it.each([
     {
-      expectedError: 'Vault grant targets a different responsible user: scope_user',
+      expectedError: 'Credential requirement binding must use a Workspace grant: scope_user',
       grantTarget: {},
       name: 'user',
       referenceScope: { ownerScope: 'user' as const, userId: 'user_other' },
       triggerActor: AUTOMATION_TRIGGER_ACTOR,
     },
     {
-      expectedError: 'Vault grant targets a different workspace: scope_workspace',
+      expectedError: 'Credential requirement binding must use a Workspace grant: scope_workspace',
       grantTarget: {},
       name: 'workspace',
       referenceScope: { ownerScope: 'workspace' as const, workspaceId: 'ws_other' },
@@ -975,6 +1074,9 @@ describe('agent environment package resolver', () => {
             credentialDeclarations: [
               {
                 id: declarationId,
+                ...(name === 'user' || name === 'workspace'
+                  ? { requirementId: `requirement_${name}` }
+                  : {}),
                 targetEnvVarName: 'SCOPE_SECRET',
                 vaultGrantId: grantId,
                 visibility: 'runtime-env',
@@ -1017,7 +1119,7 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('fails direct credential resolution before durable writes when no sink exists', () => {
+  it('writes no receipt when a credential sink fails after Vault resolution', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-direct-sink-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -1027,6 +1129,13 @@ describe('agent environment package resolver', () => {
     const now = '2026-07-18T00:00:00.000Z';
 
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      now: new Date(now),
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 22) });
     vaultUnlockState.backend().store({
       material: 'missing_sink_secret',
@@ -1076,12 +1185,7 @@ describe('agent environment package resolver', () => {
                 protocol: 'rest',
               },
             ],
-            provider: {
-              model: 'claude-sonnet-4-5',
-              origin: 'server-providers',
-              providerId: 'anthropic',
-              secretRef: null,
-            },
+            logicalModelId: 'claude',
             requiredCapabilities: [],
           }),
           agentSessionId: 'session_missing_sink',
@@ -1091,16 +1195,19 @@ describe('agent environment package resolver', () => {
           coreDb,
           createdAt: now,
           requestId: 'req_missing_sink',
+          runtimeEnvCredentialSink: () => {
+            throw new Error('credential sink failed');
+          },
           turn,
-          triggerActor: USER_TRIGGER_ACTOR,
+          triggerActor: AUTOMATION_TRIGGER_ACTOR,
           vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         })
-      ).toThrow('Runtime-env credential sink is required for declaration: missing_sink');
-      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+      ).toThrow('credential sink failed');
+      expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
-      expect(listVaultUseRecords(coreDb)).toEqual([]);
+      expect(listVaultUseRecords(coreDb)).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }

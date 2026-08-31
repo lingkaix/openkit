@@ -1,12 +1,12 @@
 import type { RuntimeConfigStatus, SetupDiagnosticsResponse } from '@openkit/app-api-schemas';
+import type { GatewayConfig } from '@openkit/config-schema';
 import type { AgentManifest } from '../agents/manifest.js';
 import { type AgentReadinessStatus, computeReadiness } from '../agents/readiness.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import type { CoreMode } from '../config/mode.js';
 import type { OpenKitConfig } from '../config/openkit-config.js';
-import type { ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 
-type SetupDiagnosticsProviderRole = SetupDiagnosticsResponse['providers'][number]['role'];
 type SetupDiagnosticsAgentStatus =
   SetupDiagnosticsResponse['agents'][number]['readiness']['status'];
 type SetupDiagnosticsSecretMarker = SetupDiagnosticsResponse['providers'][number]['secret'];
@@ -23,8 +23,8 @@ interface CreateSetupDiagnosticsInput {
   mode: CoreMode;
   /** Loaded OpenKit server config. */
   openKitConfig: OpenKitConfig;
-  /** Provider credential resolver used for readiness checks. */
-  providerCredentialResolver?: ProviderCredentialResolver;
+  /** Current Gateway logical model catalog. */
+  gatewayConfig: GatewayConfig;
   /** Provider registry. */
   providerRegistry: ProviderRegistry;
   /** Agent manifests available for setup and readiness checks. */
@@ -42,14 +42,6 @@ interface CreateSetupDiagnosticsInput {
 export function createSetupDiagnostics(
   input: CreateSetupDiagnosticsInput
 ): SetupDiagnosticsResponse {
-  const readinessDependencies = input.providerCredentialResolver
-    ? {
-        providerCredentialResolver: safeProviderCredentialResolver(
-          input.providerCredentialResolver
-        ),
-      }
-    : {};
-
   return {
     service: 'nanocore',
     server: {
@@ -62,32 +54,14 @@ export function createSetupDiagnostics(
       displayName: provider.displayName,
       id: provider.id,
       kind: provider.kind,
-      role: providerRole(provider.id, input.openKitConfig),
+      role: 'available',
       secret: providerSecretMarker(provider),
       vendor: typeof provider.vendor === 'string' ? provider.vendor : provider.kind,
     })),
     agents: input.agentManifests.map((manifest) =>
-      summarizeAgentSetup(manifest, input.providerRegistry, readinessDependencies)
+      summarizeAgentSetup(manifest, input.gatewayConfig, input.providerRegistry)
     ),
     runtimeConfig: input.runtimeConfig,
-  };
-}
-
-/**
- * Converts provider credential resolver failures into a missing-credential result for diagnostics.
- *
- * @param resolver Provider credential resolver that may throw backend-specific errors.
- * @returns Resolver safe for setup diagnostics rendering.
- */
-function safeProviderCredentialResolver(
-  resolver: ProviderCredentialResolver
-): ProviderCredentialResolver {
-  return (secretRef) => {
-    try {
-      return resolver(secretRef);
-    } catch {
-      return null;
-    }
   };
 }
 
@@ -98,18 +72,8 @@ function safeProviderCredentialResolver(
  * @returns Redacted server config summary.
  */
 function summarizeServerConfig(config: OpenKitConfig): SetupDiagnosticsServerConfig {
-  const gatewayConfig = config.gateway?.openaiCompatible;
-
   return {
-    defaults: {
-      coreProviderId: config.defaults?.coreProviderId ?? null,
-      gatewayProviderId: config.defaults?.gatewayProviderId ?? null,
-    },
-    gateway: {
-      openaiCompatible: {
-        enabled: gatewayConfig?.enabled ?? null,
-      },
-    },
+    defaultAgentId: config.defaults?.defaultAgentId ?? null,
     schemaVersion: config.schemaVersion ?? null,
   };
 }
@@ -133,44 +97,19 @@ function providerSecretMarker(
 }
 
 /**
- * Infers a provider role from server config defaults.
- *
- * @param providerId Provider id to inspect.
- * @param config OpenKit server config.
- * @returns Provider role.
- */
-function providerRole(providerId: string, config: OpenKitConfig): SetupDiagnosticsProviderRole {
-  const coreProviderId = config.defaults?.coreProviderId ?? null;
-  const gatewayProviderId = config.defaults?.gatewayProviderId ?? null;
-  const isCore = providerId === coreProviderId;
-  const isGateway = providerId === gatewayProviderId;
-
-  if (isCore && isGateway) {
-    return 'core+gateway';
-  }
-
-  if (isCore) {
-    return 'core';
-  }
-
-  return isGateway ? 'gateway' : 'available';
-}
-
-/**
  * Summarizes one agent setup.
  *
  * @param manifest Agent manifest.
  * @param providerRegistry Provider registry.
- * @param dependencies Readiness dependencies.
  * @returns Agent setup diagnostics summary.
  */
 function summarizeAgentSetup(
   manifest: AgentManifest,
-  providerRegistry: ProviderRegistry,
-  dependencies: { providerCredentialResolver?: ProviderCredentialResolver }
+  gatewayConfig: GatewayConfig,
+  providerRegistry: ProviderRegistry
 ): SetupDiagnosticsAgent {
-  const readiness = computeReadiness(manifest, providerRegistry, dependencies);
-  const setupResult = resolveAgentSetup(manifest, { providerRegistry });
+  const readiness = computeReadiness(manifest);
+  const setupResult = resolveAgentSetup(manifest, { gatewayConfig, providerRegistry });
   const setupStatus = setupResult.diagnostics.length > 0 ? 'blocked' : 'ready';
   const readinessStatus =
     setupStatus === 'blocked' ? 'blocked' : normalizeReadinessStatus(readiness.status);
@@ -191,7 +130,7 @@ function summarizeAgentSetup(
     setup: {
       deploymentMode: null,
       diagnostics: setupResult.diagnostics,
-      providerId: setupResult.setup?.provider?.providerId ?? manifest.provider?.ref ?? null,
+      logicalModelId: setupResult.setup?.logicalModels.preferredLogicalModelId ?? null,
       status: setupStatus,
     },
   };

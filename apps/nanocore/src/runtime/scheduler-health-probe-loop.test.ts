@@ -145,7 +145,7 @@ describe('scheduler health probe loop', () => {
       createSchedulerAdmissionEntry(coreDb, {
         triggerActor: { kind: 'user', id: 'user_local' },
         priorityClass: 'interactive',
-        profileRef: 'profile_worker',
+        profileRef: null,
         queueEntryId: 'queue_quarantined',
         requestedAgentId: 'agent_codex_host',
         requiredPoolConstraints: ['openshell.local'],

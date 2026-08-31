@@ -10,9 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 /**
@@ -22,6 +23,18 @@ import { createDemoStore } from './test-support/demo-store.js';
  */
 function createDataRoot(): string {
   return mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+}
+
+/** Creates a simulated app whose runtime config owner reads the real test data root. */
+function createApp(options: Parameters<typeof createTestApp>[0]): ReturnType<typeof createTestApp> {
+  const dataRoot = options.dataRoot;
+  if (!dataRoot) {
+    throw new Error('Runtime config file tests require a data root.');
+  }
+  return createTestApp({
+    ...options,
+    runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
+  });
 }
 
 /**
@@ -36,22 +49,53 @@ function writeServerConfig(dataRoot: string): void {
     `{
       // comments must survive editor round-trips
       "schemaVersion": 1,
-      "providers": [
-        {
-          "id": "agent-openrouter",
-          "vendor": "openrouter",
-          "displayName": "Agent OpenRouter",
-          "kind": "custom",
-          "baseUrl": "https://openrouter.ai/api/v1",
-          "models": ["openai/gpt-5.1"],
-          "secretRef": "vault://provider_agent_openrouter"
-        }
-      ],
       "defaults": {
-        "coreProviderId": "agent-openrouter",
-        "gatewayProviderId": "agent-openrouter"
+        "defaultAgentId": "agent_codex"
       }
     }\n`
+  );
+  mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
+  writeFileSync(
+    join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc'),
+    `${JSON.stringify(
+      {
+        id: 'agent-openrouter',
+        vendor: 'openrouter',
+        displayName: 'Agent OpenRouter',
+        kind: 'custom',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        models: ['openai/gpt-5.1'],
+        secretRef: 'vault://provider_agent_openrouter',
+      },
+      null,
+      2
+    )}\n`
+  );
+  writeFileSync(
+    join(dataRoot, 'config', 'gateway.jsonc'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'openai/gpt-5.2',
+        logicalModels: [
+          {
+            id: 'openai/gpt-5.2',
+            displayName: 'OpenAI GPT-5.2',
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'agent-openrouter',
+                providerModel: 'openai/gpt-5.1',
+              },
+            ],
+          },
+        ],
+        requiredFeatures: [],
+      },
+      null,
+      2
+    )}\n`
   );
 }
 
@@ -94,6 +138,7 @@ describe('runtime config file API', () => {
       `{
         "schemaVersion": 1,
         "workspace": {
+          "name": "Demo Workspace",
           "roots": []
         }
       }\n`
@@ -287,7 +332,7 @@ describe('runtime config file API', () => {
       const app = createApp({ dataRoot });
       const readRes = await app.request('/api/admin/config/file?id=server.jsonc');
       const read = (await readRes.json()) as { file: { revision: string }; content: string };
-      const nextContent = read.content.replace('openai/gpt-5.1', 'openai/gpt-5.2');
+      const nextContent = read.content.replace('agent_codex', 'agent_pi');
 
       const okRes = await app.request('/api/admin/config/file', {
         method: 'PUT',
@@ -344,7 +389,9 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
     const app = createApp({ dataRoot });
-    const original = readFileSync(join(dataRoot, 'config', 'server.jsonc'), 'utf8');
+    const providerFileId = 'providers/agent-openrouter.provider.jsonc';
+    const providerPath = join(dataRoot, 'config', providerFileId);
+    const original = readFileSync(providerPath, 'utf8');
 
     const invalidRes = await app.request('/api/admin/config/validate', {
       method: 'POST',
@@ -360,8 +407,8 @@ describe('runtime config file API', () => {
       body: JSON.stringify({
         files: [
           {
-            id: 'server.jsonc',
-            content: original.replace('openai/gpt-5.1', 'openai/gpt-5.3'),
+            id: providerFileId,
+            content: original.replace('openrouter.ai', 'openrouter.example.com'),
           },
         ],
         mode: 'safe',
@@ -381,7 +428,7 @@ describe('runtime config file API', () => {
     expect(changed.valid).toBe(true);
     expect(changed.plan.applied).toEqual([]);
     expect(changed.plan.requiresRestart).toEqual([expect.objectContaining({ path: 'providers' })]);
-    expect(readFileSync(join(dataRoot, 'config', 'server.jsonc'), 'utf8')).toBe(original);
+    expect(readFileSync(providerPath, 'utf8')).toBe(original);
   });
 
   it('keeps admin config routes protected in server mode', async () => {
@@ -404,7 +451,8 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
     const app = createApp({ dataRoot });
-    const original = readFileSync(join(dataRoot, 'config', 'server.jsonc'), 'utf8');
+    const providerFileId = 'providers/agent-openrouter.provider.jsonc';
+    const original = readFileSync(join(dataRoot, 'config', providerFileId), 'utf8');
 
     await app.request('/api/admin/config/validate', {
       method: 'POST',
@@ -412,8 +460,8 @@ describe('runtime config file API', () => {
       body: JSON.stringify({
         files: [
           {
-            id: 'server.jsonc',
-            content: original.replace('openai/gpt-5.1', 'openai/gpt-5.4'),
+            id: providerFileId,
+            content: original.replace('openrouter.ai', 'openrouter.example.com'),
           },
         ],
       }),

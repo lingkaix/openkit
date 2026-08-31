@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   AgentEnvironmentBinarySchema,
+  AgentEnvironmentCredentialDeclarationSchema,
+  AgentEnvironmentCredentialRequirementSchema,
   AgentEnvironmentDockerfileInputSchema,
   EMPTY_BUILD_CONTEXT_DIGEST,
   EMPTY_BUILD_CONTEXT_REF,
@@ -81,15 +83,33 @@ export const AuthoredAgentRuntimeSchema = z
   })
   .strict();
 
-/**
- * v0.0.4 agent provider assignment schema.
- */
-export const AuthoredAgentProviderSchema = z
+/** Worker-visible logical model preference and admitted model set. */
+export const AuthoredAgentLogicalModelsSchema = z
   .object({
-    model: z.string().min(1).optional(),
-    ref: z.string().min(1).optional(),
+    preferredLogicalModelId: z.string().min(1),
+    allowedLogicalModelIds: z.union([
+      z.literal('all'),
+      z
+        .array(z.string().min(1))
+        .min(1)
+        .refine((ids) => new Set(ids).size === ids.length, {
+          message: 'Allowed logical model ids must be unique.',
+        }),
+    ]),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.allowedLogicalModelIds !== 'all' &&
+      !value.allowedLogicalModelIds.includes(value.preferredLogicalModelId)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'The preferred logical model must be included in the allowed model list.',
+        path: ['preferredLogicalModelId'],
+      });
+    }
+  });
 
 /**
  * v0.0.4 agent workspace input schema.
@@ -134,6 +154,20 @@ export const AuthoredAgentMcpEntrySchema = z
   })
   .strict();
 
+/** One authored Agent profile that may refine the base manifest. */
+export const AuthoredAgentProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    instructionsRef: z.string().min(1).optional(),
+    preferredLogicalModelId: z.string().min(1).optional(),
+    allowedLogicalModelIds: z
+      .union([z.literal('all'), z.array(z.string().min(1)).min(1)])
+      .optional(),
+    skills: z.array(z.object({ id: z.string().min(1) }).strict()).default([]),
+    mcp: z.array(AuthoredAgentMcpEntrySchema).default([]),
+  })
+  .strict();
+
 /**
  * v0.0.4 agent backend requirement schema.
  */
@@ -145,12 +179,30 @@ export const AuthoredAgentBackendRequirementsSchema = z
   })
   .strict();
 
+/** Server-only direct grant or reusable Workspace-bound credential requirement. */
+export const AuthoredAgentCredentialDeclarationSchema = z
+  .union([AgentEnvironmentCredentialDeclarationSchema, AgentEnvironmentCredentialRequirementSchema])
+  .superRefine((value, ctx) => {
+    if ('vaultGrantId' in value && value.requirementId !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Direct Server credential declarations must not declare requirementId.',
+        path: ['requirementId'],
+      });
+    }
+  });
+
 /**
  * v0.0.4 agent sandbox schema.
  */
-export const AuthoredAgentSandboxSchema = WorkerSandboxAccessSchema.safeExtend({
-  backend: AuthoredAgentBackendRequirementsSchema.optional(),
-});
+export const AuthoredAgentSandboxSchema = z
+  .object({
+    backend: AuthoredAgentBackendRequirementsSchema.optional(),
+    credentialDeclarations: z.array(AuthoredAgentCredentialDeclarationSchema).default([]),
+    filesystem: WorkerSandboxAccessSchema.shape.filesystem,
+    network: WorkerSandboxAccessSchema.shape.network,
+  })
+  .strict();
 
 /**
  * v0.0.4 agent config schema loaded from JSONC files.
@@ -163,10 +215,10 @@ export const AuthoredAgentConfigSchema = z
     id: z.string().min(1),
     lifecycle: z.record(z.string().min(1), z.unknown()).optional(),
     mcp: z.array(AuthoredAgentMcpEntrySchema).optional(),
+    models: AuthoredAgentLogicalModelsSchema,
     observability: z.record(z.string().min(1), z.unknown()).optional(),
     permissions: z.record(z.string().min(1), z.unknown()).optional(),
-    provider: AuthoredAgentProviderSchema.optional(),
-    profiles: z.array(z.object({ id: z.string().min(1) }).passthrough()).optional(),
+    profiles: z.array(AuthoredAgentProfileSchema).optional(),
     readiness: ProviderReadinessSchema.optional(),
     requiredFeatures: z.array(z.string().min(1)).default([]),
     resources: z.record(z.string().min(1), z.unknown()).optional(),
@@ -188,6 +240,18 @@ export const AuthoredAgentConfigSchema = z
       }
     }
 
+    const profileIds = new Set<string>();
+    for (const [index, profile] of (value.profiles ?? []).entries()) {
+      if (profileIds.has(profile.id)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Duplicate Agent profile: ${profile.id}.`,
+          path: ['profiles', index, 'id'],
+        });
+      }
+      profileIds.add(profile.id);
+    }
+
     const runtimeBinaryPaths = new Set(value.runtime.binaries.map((binary) => binary.path));
     for (const [grantIndex, grant] of (value.sandbox?.network ?? []).entries()) {
       for (const [binaryIndex, binary] of (grant.binaries ?? []).entries()) {
@@ -198,6 +262,42 @@ export const AuthoredAgentConfigSchema = z
             path: ['sandbox', 'network', grantIndex, 'binaries', binaryIndex],
           });
         }
+      }
+    }
+
+    const credentialIds = new Set<string>();
+    const requirementIds = new Set<string>();
+    for (const [index, declaration] of (value.sandbox?.credentialDeclarations ?? []).entries()) {
+      if (credentialIds.has(declaration.id)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `Duplicate credential declaration: ${declaration.id}.`,
+          path: ['sandbox', 'credentialDeclarations', index, 'id'],
+        });
+      }
+      credentialIds.add(declaration.id);
+      if (declaration.requirementId !== undefined) {
+        if (requirementIds.has(declaration.requirementId)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Duplicate credential requirement: ${declaration.requirementId}.`,
+            path: ['sandbox', 'credentialDeclarations', index, 'requirementId'],
+          });
+        }
+        requirementIds.add(declaration.requirementId);
+      }
+    }
+    for (const field of ['filesystem', 'network'] as const) {
+      const ids = new Set<string>();
+      for (const [index, declaration] of (value.sandbox?.[field] ?? []).entries()) {
+        if (ids.has(declaration.id)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Duplicate sandbox ${field} declaration: ${declaration.id}.`,
+            path: ['sandbox', field, index, 'id'],
+          });
+        }
+        ids.add(declaration.id);
       }
     }
   });

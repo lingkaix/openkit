@@ -28,10 +28,9 @@ describe('workspace dashboard app API', () => {
         threadCount: 1,
         artifactCount: 0,
         knowledgeEntryCount: 1,
-        providerCount: 0,
+        providerCount: 1,
       },
       defaultContext: {
-        modelId: null,
         agentId: null,
       },
       agentHealth: [],

@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,21 +30,45 @@ describe('FsStore workspace persistence scope', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-owner-independent-'));
     const firstStore = new FsStore({ dataRoot });
     const workspace = firstStore.createWorkspace('Owner-independent workspace');
-    const canonicalRecordPath = join(dataRoot, 'workspaces', workspace.id, 'workspace.json');
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+    const canonicalRecordPath = join(workspaceRoot, 'workspace-record.json');
+    const canonicalConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');
     const ownerNestedRecordPath = join(
       dataRoot,
       'users',
       'user_local',
       'workspaces',
       workspace.id,
-      'workspace.json'
+      'workspace-record.json'
     );
 
     expect.soft(existsSync(canonicalRecordPath)).toBe(true);
+    expect.soft(existsSync(canonicalConfigPath)).toBe(true);
+    expect.soft(existsSync(join(workspaceRoot, 'workspace.json'))).toBe(false);
     expect.soft(existsSync(ownerNestedRecordPath)).toBe(false);
+    expect.soft(JSON.parse(readFileSync(canonicalRecordPath, 'utf8'))).not.toHaveProperty('name');
+    expect.soft(JSON.parse(readFileSync(canonicalRecordPath, 'utf8'))).not.toHaveProperty('counts');
+    expect
+      .soft(JSON.parse(readFileSync(canonicalRecordPath, 'utf8')))
+      .not.toHaveProperty('defaults');
+    expect.soft(JSON.parse(readFileSync(canonicalConfigPath, 'utf8')).workspace).toMatchObject({
+      name: 'Owner-independent workspace',
+      defaultAgentId: null,
+    });
 
     const secondStore = new FsStore({ dataRoot });
     expect(() => secondStore.getWorkspace(workspace.id)).not.toThrow();
+  });
+
+  it('rejects the retired workspace.json layout instead of skipping it', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-retired-workspace-layout-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Retired layout workspace');
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+
+    renameSync(join(workspaceRoot, 'workspace-record.json'), join(workspaceRoot, 'workspace.json'));
+
+    expect(() => new FsStore({ dataRoot })).toThrow(/unsupported.*workspace\.json/i);
   });
 
   it('persists one workspace when another workspace canonical tree is blocked', () => {
@@ -61,6 +93,23 @@ describe('FsStore workspace persistence scope', () => {
     expect.soft(updateError).toBeUndefined();
     const restarted = new FsStore({ dataRoot });
     expect(restarted.getWorkspace(targetWorkspace.id).name).toBe('Updated target workspace');
+  });
+
+  it('does not overwrite an authored Workspace name during unrelated persistence', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-authored-workspace-name-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Initial workspace name');
+    const configPath = join(dataRoot, 'workspaces', workspace.id, 'config', 'workspace.jsonc');
+    const authored = `{
+      // Authored outside the record store.
+      "schemaVersion": 1,
+      "workspace": { "name": "Authored workspace name", "defaultAgentId": null }
+    }`;
+
+    writeFileSync(configPath, authored);
+    store.createThread(workspace.id, 'Unrelated thread');
+
+    expect(readFileSync(configPath, 'utf8')).toBe(authored);
   });
 
   it('retains Artifact authority when its reference append has an ambiguous outcome', () => {

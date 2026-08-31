@@ -25,21 +25,25 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.goto(stack.webUrl);
   expect(browserRuntimeErrors, 'browser startup must not raise runtime errors').toEqual([]);
 
+  await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^New workspace$/ }).click();
   await page.getByLabel('Name').fill('Story Workspace');
   await page.getByRole('button', { name: /^Create workspace$/ }).click();
   await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 
-  await page.getByRole('button', { name: /^Chat$/ }).click();
+  await page.getByRole('button', { name: /^New conversation$/ }).click();
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
+  await page.getByRole('button', { name: /Conversation agent$/ }).click();
+  await page.getByRole('option', { name: 'New Shard + Worker' }).click();
   await page.getByRole('button', { name: /^Send message$/ }).click();
   await expect(page.getByRole('heading', { name: 'Story thread' })).toBeVisible({
     timeout: 15_000,
   });
 
-  await page.getByRole('button', { name: /^Settings$/ }).click();
+  await page.getByRole('button', { name: /^General$/ }).click();
   await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
   await expect(page.getByLabel('Display name')).toHaveValue('Story Workspace');
+  await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^Debug$/ }).click();
   await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Runtime evidence' })).toBeVisible();
@@ -129,7 +133,7 @@ async function createMaterial(
   title: string,
   content: string
 ): Promise<MaterialSummary> {
-  await page.goto(`${stack?.webUrl}/materials/${threadId}`);
+  await page.goto(`${stack?.webUrl}/materials/ws_demo/${threadId}`);
   await page
     .getByRole('button', { name: /^New Material$/ })
     .first()
@@ -192,10 +196,10 @@ async function materialRevision(
  * @throws When browser submission, the Task response, or Gate rendering fails.
  */
 async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
-  await page.goto(`${stack?.webUrl}/tasks/${threadId}`);
+  await page.goto(`${stack?.webUrl}/tasks/ws_demo/${threadId}`);
   await page.getByRole('textbox', { name: 'Message' }).fill(input);
   const turnResponse = page.waitForResponse((response) =>
-    response.url().endsWith(`/api/app/workspaces/ws_demo/threads/${threadId}/task`)
+    response.url().endsWith(`/api/app/workspaces/ws_demo/threads/${threadId}/conversation-turns`)
   );
   await page.getByRole('button', { name: /^Send message$/ }).click();
   const response = await turnResponse;
@@ -239,7 +243,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const materialProjectionResponse = page.waitForResponse((response) =>
     response.url().endsWith(`/api/app/workspaces/ws_demo/threads/${threadId}/material`)
   );
-  await page.goto(`${stack.webUrl}/materials/${threadId}/${primary.materialId}`);
+  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
   const projectionResponse = await materialProjectionResponse;
   const projectionBody = await projectionResponse.text();
   await expect(
@@ -292,7 +296,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .locator('dd')
   ).toHaveText(revisionOne.revisionId);
 
-  await page.goto(`${stack.webUrl}/tasks/${threadId}`);
+  await page.goto(`${stack.webUrl}/tasks/ws_demo/${threadId}`);
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
   const answerResponse = page.waitForResponse(
     (response) => response.request().method() === 'POST' && response.url().endsWith('/api/turns')
@@ -341,7 +345,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     )
   ).filter((artifact): artifact is ProposalArtifactSummary => artifact !== null);
   expect(proposals).toHaveLength(2);
-  await page.goto(`${stack.webUrl}/goals/${threadId}/artifacts/${proposals[0]!.id}`);
+  await page.goto(`${stack.webUrl}/goals/ws_demo/${threadId}/artifacts/${proposals[0]!.id}`);
   await expect(page.getByRole('region', { name: /reviewed artifact proposal/i })).toBeVisible();
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
@@ -352,7 +356,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await page.getByRole('button', { name: /^Accept$/ }).click();
   await expect(page.getByRole('status', { name: 'Artifact review' })).toContainText('Approved');
 
-  await page.goto(`${stack.webUrl}/materials/${threadId}/${primary.materialId}`);
+  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
   await expect(materialEditor).toHaveValue(proposals[0]!.content.body);
   const revisionsAfterApply = await materialRevisions(primary.materialId);
   expect(revisionsAfterApply).toHaveLength(3);
@@ -400,7 +404,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     .map((revision) => revision.revisionId)
     .sort();
 
-  await page.goto(`${stack.webUrl}/goals/${threadId}/artifacts/${proposals[1]!.id}`);
+  await page.goto(`${stack.webUrl}/goals/ws_demo/${threadId}/artifacts/${proposals[1]!.id}`);
   const reviewedProposal = page.getByRole('region', { name: /reviewed artifact proposal/i });
   const recordedBase = page.getByRole('region', { name: /recorded base revision/i });
   await expect(reviewedProposal).toBeVisible();
@@ -434,7 +438,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByRole('region', { name: /recorded base revision/i })).toContainText(
     revisionTwoContent
   );
-  await page.goto(`${stack.webUrl}/materials/${threadId}/${primary.materialId}`);
+  await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
   const recoveredRevisions = await materialRevisions(primary.materialId);
   expect(recoveredRevisions.map((revision) => revision.revisionId).sort()).toEqual(
     revisionIdsAfterUserSave

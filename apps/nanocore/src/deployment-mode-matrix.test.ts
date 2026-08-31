@@ -38,7 +38,7 @@ import type { WorkerTranscriptPayload } from './runtime/worker-transcript.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -148,6 +148,7 @@ describe('NanoCore deployment mode matrix', () => {
       const app = createApp({
         ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
         agentManifests: [createTestAgentSetup().manifest],
+        gatewayConfig: createTestGatewayConfig(),
         coreDb,
         providerRegistry: new ProviderRegistry([
           {

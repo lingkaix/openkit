@@ -10,8 +10,8 @@ import { join } from 'node:path';
 export function seedDemoWorkspaceDataRoot(dataRoot) {
   const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
   const quickChatRoot = join(dataRoot, 'workspaces', 'ws_quick_chat');
-  const workspacePath = join(workspaceRoot, 'workspace.json');
-  const quickChatPath = join(quickChatRoot, 'workspace.json');
+  const workspacePath = join(workspaceRoot, 'workspace-record.json');
+  const quickChatPath = join(quickChatRoot, 'workspace-record.json');
 
   if (existsSync(workspacePath) && existsSync(quickChatPath)) {
     return;
@@ -23,37 +23,15 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   const timestamp = new Date().toISOString();
   const workspace = {
     id: 'ws_demo',
-    name: 'Demo Workspace',
     kind: 'code',
     status: 'active',
-    defaults: {
-      defaultModelId: 'model_codex',
-      defaultAgentId: 'agent_codex_host',
-      defaultSkillIds: [],
-    },
-    counts: {
-      threadCount: 1,
-      artifactCount: 0,
-      knowledgeEntryCount: 1,
-    },
     createdAt: timestamp,
     updatedAt: timestamp,
   };
   const quickChatWorkspace = {
     id: 'ws_quick_chat',
-    name: 'Quick Chat',
     kind: 'quick-chat',
     status: 'active',
-    defaults: {
-      defaultModelId: null,
-      defaultAgentId: null,
-      defaultSkillIds: [],
-    },
-    counts: {
-      threadCount: 0,
-      artifactCount: 0,
-      knowledgeEntryCount: 0,
-    },
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -100,6 +78,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   for (const root of [workspaceRoot, quickChatRoot]) {
     for (const relativePath of [
       'artifacts',
+      'config',
       'knowledge/pages',
       'knowledge/proposals',
       'knowledge/reviews',
@@ -116,6 +95,14 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   mkdirSync(join(threadRoot, 'turns'), { recursive: true });
   writeFileSync(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`);
   writeFileSync(quickChatPath, `${JSON.stringify(quickChatWorkspace, null, 2)}\n`);
+  writeFileSync(
+    join(workspaceRoot, 'config', 'workspace.jsonc'),
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Demo Workspace', defaultAgentId: 'agent_codex_host' } }, null, 2)}\n`
+  );
+  writeFileSync(
+    join(quickChatRoot, 'config', 'workspace.jsonc'),
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Quick Chat', defaultAgentId: null } }, null, 2)}\n`
+  );
   writeFileSync(join(threadRoot, 'thread.json'), `${JSON.stringify(thread, null, 2)}\n`);
   writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'mem_project.md'), knowledgePage);
 }

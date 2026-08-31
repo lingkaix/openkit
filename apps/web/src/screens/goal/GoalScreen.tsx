@@ -42,11 +42,11 @@ const LENS_TABS: { id: GoalLens; label: string }[] = [
  * disconnected). Completed goals show the board-21 closeout on the plan lens.
  */
 export function GoalScreen() {
-  const { threadId = '' } = useParams();
+  const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const [objective, setObjective] = useState('');
   const startIntent = useRef<{ objective: string; requestId: string } | null>(null);
-  const workspaceId = useCurrentWorkspaceId();
+  const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const summary = useGoalSummary(workspaceId, threadId);
   const { failed: disconnected } = useConnection();
   const start = useStartThreadGoal(workspaceId ?? '', threadId);
@@ -246,7 +246,7 @@ export function GoalScreen() {
             placeholder="Steer the goal — a nudge lands in the Thread lens"
             chips={<ContextChip>Steer</ContextChip>}
             disabledReason={disconnected ? "Couldn't reach the local runtime." : undefined}
-            onSubmit={(value) => steer.mutate(value)}
+            onSubmit={(draft) => steer.mutateAsync(draft.input)}
           />
         </div>
       </div>

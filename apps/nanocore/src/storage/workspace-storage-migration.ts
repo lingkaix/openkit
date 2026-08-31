@@ -17,6 +17,7 @@ import { AgentEnvironmentPackageSnapshotRecordSchema } from '@openkit/app-api-sc
 import {
   AgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
+  WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -37,7 +38,7 @@ import { readDataRootLayoutMarker, resolveDataRootPath } from './fs-layout.js';
 import { rebuildExistingWorkspaceDerivedIndexes } from './index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import * as schema from './schema/index.js';
-import { loadWorkspaceFileRecords } from './workspace-file-records.js';
+import { loadWorkspaceFileRecords, WorkspaceSystemRecordSchema } from './workspace-file-records.js';
 
 /** Stable preflight diagnostic codes for the one-way Workspace storage migration. */
 export type WorkspaceStorageMigrationDiagnosticCode =
@@ -152,7 +153,7 @@ interface AepSnapshotDigestMapping {
   readonly path: string;
   /** V1 enclosing snapshot-record content digest. */
   readonly sourceContentDigest: string;
-  /** V3 enclosing snapshot-record content digest. */
+  /** V4 enclosing snapshot-record content digest. */
   readonly targetContentDigest: string;
 }
 
@@ -170,7 +171,7 @@ interface WorkspaceMigrationReportEntry {
 
 /** Evidence-only report written after a verified predecessor backup exists. */
 interface WorkspaceStorageMigrationReport {
-  /** Deterministic V1-to-V3 AEP snapshot digest rewrites. */
+  /** Deterministic V1-to-V4 AEP snapshot digest rewrites. */
   readonly aepSnapshots: AepSnapshotDigestMapping[];
   /** Verified predecessor backup identity and digest. */
   readonly backup: {
@@ -207,7 +208,7 @@ interface WorkspaceStorageMigrationReport {
 
 /** Input used to build one success or failure evidence report. */
 interface CreateMigrationReportInput {
-  /** Deterministic V1-to-V3 AEP snapshot digest rewrites. */
+  /** Deterministic V1-to-V4 AEP snapshot digest rewrites. */
   readonly aepSnapshots: AepSnapshotDigestMapping[];
   /** Verified predecessor cold backup. */
   readonly backup: VerifiedDataRootBackupManifest;
@@ -341,6 +342,7 @@ export function migrateWorkspaceStorage(
       });
 
       try {
+        migrateStagedWorkspaceMetadata(stagedWorkspaceRoot, source.workspaceId);
         applyScopedMigrations(workspaceDb);
         stage = 'aep-snapshots';
         aepSnapshots.push(...migrateStagedAepSnapshots(stagedWorkspaceRoot, source.targetPath));
@@ -434,6 +436,30 @@ export function migrateWorkspaceStorage(
 
     throw error;
   }
+}
+
+/** Rewrites predecessor Workspace metadata into the current record and editable-config split. */
+function migrateStagedWorkspaceMetadata(workspaceRoot: string, workspaceId: string): void {
+  const predecessorPath = join(workspaceRoot, 'workspace.json');
+  const value = JSON.parse(readFileSync(predecessorPath, 'utf8')) as unknown;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid predecessor Workspace record: ${workspaceId}.`);
+  }
+
+  const { counts: _counts, defaults, name, ...systemFields } = value as Record<string, unknown>;
+  const defaultAgentId =
+    typeof defaults === 'object' && defaults !== null && !Array.isArray(defaults)
+      ? ((defaults as Record<string, unknown>).defaultAgentId ?? null)
+      : null;
+  const record = WorkspaceSystemRecordSchema.parse(systemFields);
+  const config = WorkspaceConfigSchema.parse({
+    schemaVersion: 1,
+    workspace: { name, defaultAgentId },
+  });
+
+  writeJsonAtomically(join(workspaceRoot, 'workspace-record.json'), record);
+  writeJsonAtomically(join(workspaceRoot, 'config', 'workspace.jsonc'), config);
+  rmSync(predecessorPath);
 }
 
 /**
@@ -912,7 +938,7 @@ function migrateStagedAepSnapshots(
           ? snapshot.schemaVersion
           : undefined;
 
-      if (schemaVersion === 3) {
+      if (schemaVersion === 4) {
         continue;
       }
       if (schemaVersion !== 1) {
@@ -933,13 +959,13 @@ function migrateStagedAepSnapshots(
 }
 
 /**
- * Rewrites one V1 AEP snapshot record into the exact redacted V3 schema.
+ * Rewrites one V1 AEP snapshot record into the exact redacted V4 schema.
  *
  * @param path Staged snapshot record path.
  * @param reportPath Canonical successor path relative to the data root.
  * @param value Parsed V1 snapshot record.
  * @returns Predecessor and successor record-content digests.
- * @throws Error when V1 lineage, identity, digest, or final V3 validation fails.
+ * @throws Error when V1 lineage, identity, digest, or final V4 validation fails.
  */
 function migrateLegacyAepSnapshotRecord(
   path: string,
@@ -948,6 +974,7 @@ function migrateLegacyAepSnapshotRecord(
 ): AepSnapshotDigestMapping {
   const record = AgentEnvironmentPackageSnapshotRecordSchema.parse(value);
   const legacySnapshot = record.snapshot as Record<string, unknown>;
+  const { providers: _retiredProviders, ...successorPackage } = legacySnapshot;
   const legacyScope = legacySnapshot.scope;
   if (
     legacySnapshot.schemaVersion !== 1 ||
@@ -1000,7 +1027,7 @@ function migrateLegacyAepSnapshotRecord(
   delete successorControl.auth;
 
   const snapshot = AgentEnvironmentPackageSchema.parse({
-    ...legacySnapshot,
+    ...successorPackage,
     control: successorControl,
     runtime: {
       ...legacyRuntime,
@@ -1013,14 +1040,14 @@ function migrateLegacyAepSnapshotRecord(
               ref: legacyImage.ref,
             },
     },
-    schemaVersion: 3,
+    schemaVersion: 4,
     scope: successorScope,
   });
   const redactedSnapshot = AgentEnvironmentPackageSchema.parse(
     redactAgentEnvironmentPackageSnapshot(snapshot)
   );
   if (JSON.stringify(snapshot) !== JSON.stringify(redactedSnapshot)) {
-    throw new Error('AEP migration V1 snapshot is not a redacted durable V3 record.');
+    throw new Error('AEP migration V1 snapshot is not a redacted durable V4 record.');
   }
 
   const targetContentDigest = digestJson(snapshot);
@@ -1035,10 +1062,10 @@ function migrateLegacyAepSnapshotRecord(
 }
 
 /**
- * Maps legacy AEP identity fields to one exact V3 trigger actor.
+ * Maps legacy AEP identity fields to one exact V4 trigger actor.
  *
  * @param scope Parsed V1 scope object.
- * @returns Deterministic V3 trigger actor.
+ * @returns Deterministic V4 trigger actor.
  * @throws Error when legacy identity is ambiguous, malformed, or absent.
  */
 function legacyAepTriggerActor(scope: Record<string, unknown>):

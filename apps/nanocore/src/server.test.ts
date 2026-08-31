@@ -41,8 +41,8 @@ import {
   ListWorkspaceVaultUseRecordsResponseSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
-  StartChatModeResponseSchema,
   StartTaskModeResponseSchema,
+  SubmitConversationResponseSchema,
   SubmitWorkspaceRecoveryDecisionResponseSchema,
   ThreadGoalSummaryResponseSchema,
   WorkspaceExportResponseSchema,
@@ -193,7 +193,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { readWorkspaceImportSnapshot } from './storage/workspace-import.js';
 import { readWorkspaceKnowledgeRetrievalTrace } from './storage/workspace-portable-file-state.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp as createDeterministicTestApp } from './test-support/app.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -389,6 +389,18 @@ function testProviderRegistry(): ProviderRegistry {
   ]);
 }
 
+/** Serializes the explicit Assistant-targeted Composer contract used by Chat tests. */
+function conversationRequest(input: {
+  readonly input: string;
+  readonly requestId: string;
+}): string {
+  return JSON.stringify({
+    ...input,
+    targetRef: 'internal-role:assistant',
+    artifactRefs: [],
+  });
+}
+
 /**
  * Creates a test app with the legacy Demo Workspace fixture.
  *
@@ -421,6 +433,7 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
   }
   return createDeterministicTestApp({
     agentManifests: [createTestAgentSetup().manifest],
+    openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
     providerRegistry: testProviderRegistry(),
     ...options,
     store,
@@ -1426,7 +1439,7 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 20,
+      fileCount: 21,
       checkedFiles: [
         'records/agent-sessions.jsonl',
         'records/artifact-reviews.jsonl',
@@ -1444,7 +1457,8 @@ describe('nanocore server', () => {
         'records/vault-injection-receipts.jsonl',
         'records/workspace-material-revisions.jsonl',
         'records/workspace-materials.jsonl',
-        'records/workspace.json',
+        'records/workspace-record.json',
+        'workspace-files/config/workspace.jsonc',
         'workspace-files/knowledge/pages/mem_2.md',
         'workspace-files/knowledge/pages/mem_project.md',
         'workspace-files/knowledge/schema/workspace-schema.yaml',
@@ -1485,7 +1499,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_demo',
       exportedWorkspaceId: 'ws_demo',
       collision: { status: 'collides', workspaceId: 'ws_demo' },
-      verification: { fileCount: 19 },
+      verification: { fileCount: 20 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -2062,9 +2076,12 @@ describe('nanocore server', () => {
     );
 
     expect(reExported.checkedFiles).toEqual(expect.arrayContaining(exported.checkedFiles));
-    expect(readExportJson(sourceRoot, 'records/workspace.json')).toMatchObject({
-      counts: readExportJson(reExportRoot, 'records/workspace.json').counts,
-    });
+    expect(readExportJson(sourceRoot, 'records/workspace-record.json')).not.toHaveProperty(
+      'counts'
+    );
+    expect(readExportJson(reExportRoot, 'records/workspace-record.json')).not.toHaveProperty(
+      'counts'
+    );
     expect(
       readExportJsonl(reExportRoot, 'records/threads.jsonl').map((thread) => thread.name)
     ).toEqual(readExportJsonl(sourceRoot, 'records/threads.jsonl').map((thread) => thread.name));
@@ -5055,7 +5072,7 @@ describe('nanocore server', () => {
     });
   });
 
-  it('starts scheduled turns with provider credentials resolved by app composition', async () => {
+  it('starts scheduled turns without resolving Gateway credentials in Agent composition', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     const providerCredentialResolver = vi.fn((secretRef: string) =>
@@ -5110,7 +5127,7 @@ describe('nanocore server', () => {
         requestId: '0190f4c8-0000-7000-8000-000000000216',
         sandboxBindingRef: expect.stringMatching(/^lease-binding:/),
       });
-      expect(providerCredentialResolver).toHaveBeenCalledWith('vault://provider_openrouter');
+      expect(providerCredentialResolver).not.toHaveBeenCalled();
       expect(turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000216/);
     } finally {
       coreDb.sqlite.close();
@@ -5304,7 +5321,7 @@ describe('nanocore server', () => {
     },
     {
       entry: 'Chat-to-Task',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       requestId: '0190f4c8-0000-7000-8000-000000000322',
       responseKind: 'chat' as const,
     },
@@ -5344,6 +5361,7 @@ describe('nanocore server', () => {
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         agentManifests: [agentManifest],
         dataRoot: coreDb.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
         providerRegistry: testProviderRegistry(),
         workspaceDataSourceCatalogs: [
           {
@@ -5391,7 +5409,10 @@ describe('nanocore server', () => {
 
       const response = await app.request(path, {
         method: 'POST',
-        body: JSON.stringify({ input, requestId }),
+        body:
+          responseKind === 'chat'
+            ? conversationRequest({ input, requestId })
+            : JSON.stringify({ input, requestId }),
         headers: { 'content-type': 'application/json' },
       });
       const responseBody = await response.json();
@@ -5400,7 +5421,7 @@ describe('nanocore server', () => {
       if (responseKind === 'task') {
         expect(StartTaskModeResponseSchema.parse(responseBody).state).toBe('completed');
       } else {
-        expect(StartChatModeResponseSchema.parse(responseBody)).toMatchObject({
+        expect(SubmitConversationResponseSchema.parse(responseBody)).toMatchObject({
           outcome: 'task-handoff',
           handoff: { targetMode: 'task' },
         });
@@ -5444,7 +5465,7 @@ describe('nanocore server', () => {
     },
     {
       entry: 'Chat-to-Task',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/chat',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
       requestId: '0190f4c8-0000-7000-8000-000000000324',
     },
   ])('records the product-safe $entry failure in RuntimeEvidence', async ({
@@ -5515,10 +5536,16 @@ describe('nanocore server', () => {
     try {
       const response = await app.request(path, {
         method: 'POST',
-        body: JSON.stringify({
-          input: 'Implement the focused Task Mode fix.',
-          requestId,
-        }),
+        body:
+          entry === 'Chat-to-Task'
+            ? conversationRequest({
+                input: 'Implement the focused Task Mode fix.',
+                requestId,
+              })
+            : JSON.stringify({
+                input: 'Implement the focused Task Mode fix.',
+                requestId,
+              }),
         headers: { 'content-type': 'application/json' },
       });
       expect(response.status, await response.clone().text()).toBe(202);
@@ -6014,29 +6041,41 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
       const acceptedTurnIds = store
         .listThreadTurns('ws_demo', 'th_demo')
         .map((turn) => turn.id)
         .sort();
 
-      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const conflictRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input: 'Implement a different focused Task Mode fix.' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const replayRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      const conflictRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId,
+            input: 'Implement a different focused Task Mode fix.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       const directTaskRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
         body: JSON.stringify({ requestId, input }),
@@ -6049,7 +6088,7 @@ describe('nanocore server', () => {
         item: { type: 'status', title: 'Task Mode handoff' },
       });
       expect(replayRes.status).toBe(202);
-      const replay = StartChatModeResponseSchema.parse(await replayRes.json());
+      const replay = SubmitConversationResponseSchema.parse(await replayRes.json());
       expect(replay.turn.id).toBe(parsed.turn.id);
       expect(replay.item.id).toBe(parsed.item.id);
       expect(replay.handoff).toEqual(parsed.handoff);
@@ -6123,15 +6162,18 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const response = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const response = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       const body = await response.json();
 
       expect(response.status, JSON.stringify(body)).toBe(202);
-      const accepted = StartChatModeResponseSchema.parse(body);
+      const accepted = SubmitConversationResponseSchema.parse(body);
       expect(accepted).toMatchObject({
         outcome: 'task-handoff',
         handoff: { targetMode: 'task' },
@@ -6147,19 +6189,25 @@ describe('nanocore server', () => {
       });
       expect(workerTurn.id).toMatch(new RegExp(`^turn_${requestId}_`));
 
-      const replay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const conflict = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input: 'Use a conflicting Chat handoff input.' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const replay = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      const conflict = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input: 'Use a conflicting Chat handoff input.' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(replay.status).toBe(202);
-      expect(StartChatModeResponseSchema.parse(await replay.json())).toEqual(accepted);
+      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(accepted);
       expect(conflict.status).toBe(409);
       await expect(conflict.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
       expect(
@@ -6194,7 +6242,7 @@ describe('nanocore server', () => {
         ).toBeNull();
 
         const chatReceiptBefore = store.getCommandRequest(
-          'chat.start',
+          'conversation.submit',
           requestId,
           {
             actorId: LOCAL_USER_ID,
@@ -6230,7 +6278,7 @@ describe('nanocore server', () => {
             .listThreadItems('ws_demo', 'th_demo')
             .filter((item) => item.turnId === workerTurn.id && item.type === 'user-input-response'),
           chatReceipt: store.getCommandRequest(
-            'chat.start',
+            'conversation.submit',
             requestId,
             {
               actorId: LOCAL_USER_ID,
@@ -6389,7 +6437,6 @@ describe('nanocore server', () => {
     ['wrong-workspace', 3],
     ['wrong-thread', 4],
     ['wrong-request', 5],
-    ['wrong-hash', 6],
     ['wrong-result-kind', 7],
     ['wrong-status', 8],
     ['wrong-downstream-kind', 9],
@@ -6411,13 +6458,16 @@ describe('nanocore server', () => {
         body: JSON.stringify({ displayName: 'Chat Gate repository', localPath: repositoryPath }),
         headers: { 'content-type': 'application/json' },
       });
-      const start = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const start = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       expect(start.status, await start.clone().text()).toBe(202);
-      const chat = StartChatModeResponseSchema.parse(await start.json());
+      const chat = SubmitConversationResponseSchema.parse(await start.json());
       const workerTurn = store
         .listThreadTurns('ws_demo', 'th_demo')
         .find((turn) => turn.id !== chat.turn.id);
@@ -6483,15 +6533,14 @@ describe('nanocore server', () => {
           itemIds: expect.arrayContaining([gateItem.id]),
         });
         const outerReceipt = store.getCommandRequest(
-          'chat.start',
+          'conversation.submit',
           requestId,
           { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
           workspaceDb
         );
         expect(outerReceipt).toMatchObject({
-          inputHash: completeCheckpoint.requestInputHash,
           response: {
-            chatMetadata: {
+            conversationMetadata: {
               downstream: { kind: 'task', turnId: workerTurn.id },
               resultKind: 'task-handoff',
               status: 202,
@@ -6503,7 +6552,7 @@ describe('nanocore server', () => {
           workspaceDb.sqlite
             .prepare(
               `DELETE FROM idempotency_requests
-                  WHERE command_name = 'chat.start' AND request_id = ?`
+                  WHERE command_name = 'conversation.submit' AND request_id = ?`
             )
             .run(requestId);
           store.recordCommandRequest(
@@ -6527,7 +6576,7 @@ describe('nanocore server', () => {
           workspaceDb.sqlite
             .prepare(
               `DELETE FROM idempotency_requests
-                  WHERE command_name = 'chat.start' AND request_id = ?`
+                  WHERE command_name = 'conversation.submit' AND request_id = ?`
             )
             .run(requestId);
         } else if (fault === 'wrong-request') {
@@ -6538,14 +6587,6 @@ describe('nanocore server', () => {
                   WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?`
             )
             .run('ws_demo', 'th_demo', workerTurn.id);
-        } else if (fault === 'wrong-hash') {
-          workspaceDb.sqlite
-            .prepare(
-              `UPDATE idempotency_requests
-                    SET input_hash = 'sha256:wrong-chat-gate-hash'
-                  WHERE command_name = 'chat.start' AND request_id = ?`
-            )
-            .run(requestId);
         } else if (
           fault === 'wrong-actor' ||
           fault === 'wrong-workspace' ||
@@ -6555,7 +6596,7 @@ describe('nanocore server', () => {
             .prepare(
               `SELECT scope_json AS scopeJson
                    FROM idempotency_requests
-                  WHERE command_name = 'chat.start' AND request_id = ?`
+                  WHERE command_name = 'conversation.submit' AND request_id = ?`
             )
             .get(requestId) as { scopeJson: string };
           const scope = JSON.parse(row.scopeJson) as Record<string, string>;
@@ -6566,7 +6607,7 @@ describe('nanocore server', () => {
             .prepare(
               `UPDATE idempotency_requests
                     SET scope_json = ?
-                  WHERE command_name = 'chat.start' AND request_id = ?`
+                  WHERE command_name = 'conversation.submit' AND request_id = ?`
             )
             .run(JSON.stringify(scope), requestId);
         } else {
@@ -6574,7 +6615,7 @@ describe('nanocore server', () => {
             .prepare(
               `SELECT response_json AS responseJson
                    FROM idempotency_requests
-                  WHERE command_name = 'chat.start' AND request_id = ?`
+                  WHERE command_name = 'conversation.submit' AND request_id = ?`
             )
             .get(requestId) as { responseJson: string };
           const response = JSON.parse(row.responseJson) as {
@@ -6601,7 +6642,7 @@ describe('nanocore server', () => {
             .prepare(
               `UPDATE idempotency_requests
                     SET response_json = ?
-                  WHERE command_name = 'chat.start' AND request_id = ?`
+                  WHERE command_name = 'conversation.submit' AND request_id = ?`
             )
             .run(JSON.stringify(response), requestId);
         }
@@ -6610,7 +6651,7 @@ describe('nanocore server', () => {
           .prepare(
             `SELECT scope_json AS scopeJson, input_hash AS inputHash, response_json AS responseJson
                FROM idempotency_requests
-              WHERE command_name = 'chat.start' AND request_id = ?`
+              WHERE command_name = 'conversation.submit' AND request_id = ?`
           )
           .get(requestId) as
           | { scopeJson: string; inputHash: string; responseJson: string }
@@ -6645,8 +6686,6 @@ describe('nanocore server', () => {
           expect(storedOuter).toBeUndefined();
         } else if (fault === 'wrong-request') {
           expect(storedCheckpoint.requestId).toBe('req_wrong_chat_gate');
-        } else if (fault === 'wrong-hash') {
-          expect(storedOuter?.inputHash).toBe('sha256:wrong-chat-gate-hash');
         } else if (
           fault === 'wrong-actor' ||
           fault === 'wrong-workspace' ||
@@ -6727,7 +6766,7 @@ describe('nanocore server', () => {
         );
         receiptRead.mockRestore();
         const expectedChatReceiptRead = {
-          command: 'chat.start',
+          command: 'conversation.submit',
           requestId: storedCheckpoint.requestId,
           scope: { actorId: LOCAL_USER_ID, workspaceId: 'ws_demo', threadId: 'th_demo' },
         };
@@ -6835,11 +6874,14 @@ describe('nanocore server', () => {
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Chat receipt write failure');
       });
-      const first = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const first = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       receiptWrite.mockRestore();
       const firstBody = await first.json();
       const turnIdsAfterFirst = store
@@ -6866,7 +6908,7 @@ describe('nanocore server', () => {
       expect.soft(firstBody).toMatchObject({ code: 'recovery_required' });
       expect
         .soft(
-          store.getCommandRequest('chat.start', requestId, {
+          store.getCommandRequest('conversation.submit', requestId, {
             actorId: LOCAL_USER_ID,
             threadId: 'th_demo',
             workspaceId: 'ws_demo',
@@ -6876,11 +6918,14 @@ describe('nanocore server', () => {
       expect(coordinator).toHaveBeenCalledTimes(1);
       expect(executor.startContexts).toHaveLength(1);
 
-      const retry = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const retry = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       const retryBody = await retry.json();
 
       expect.soft(retry.status, JSON.stringify(retryBody)).toBe(409);
@@ -6936,9 +6981,9 @@ describe('nanocore server', () => {
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Chat receipt write failure');
       });
-      await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      await app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
         method: 'POST',
-        body: JSON.stringify({ requestId, input: taskInput }),
+        body: conversationRequest({ requestId, input: taskInput }),
         headers: { 'content-type': 'application/json' },
       });
       receiptWrite.mockRestore();
@@ -6964,18 +7009,21 @@ describe('nanocore server', () => {
       expect(coordinator).toHaveBeenCalledTimes(1);
       expect(executor.startContexts).toHaveLength(1);
 
-      const reroute = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input: changedInput }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const reroute = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId, input: changedInput }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       const rerouteBody = await reroute.json();
 
       expect.soft(reroute.status, JSON.stringify(rerouteBody)).toBe(409);
       expect.soft(rerouteBody).toMatchObject({ code: 'recovery_required' });
       expect
         .soft(
-          store.getCommandRequest('chat.start', requestId, {
+          store.getCommandRequest('conversation.submit', requestId, {
             actorId: LOCAL_USER_ID,
             threadId: 'th_demo',
             workspaceId: 'ws_demo',
@@ -7019,11 +7067,14 @@ describe('nanocore server', () => {
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Chat receipt write failure');
       });
-      const gapResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId: forgedRequestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const gapResponse = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId: forgedRequestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       receiptWrite.mockRestore();
       const gapBody = await gapResponse.json();
       expect.soft(gapResponse.status, JSON.stringify(gapBody)).toBe(409);
@@ -7048,19 +7099,28 @@ describe('nanocore server', () => {
       expect(directTask.turn.id).toMatch(new RegExp(`^turn_${forgedRequestId}_`));
 
       store.recordCommandRequest({
-        command: 'chat.start',
+        command: 'conversation.submit',
         requestId: forgedRequestId,
         scope: {
           actorId: LOCAL_USER_ID,
           threadId: 'th_demo',
           workspaceId: 'ws_demo',
         },
-        inputHash: commandInputHash({ input }),
+        inputHash: commandInputHash({
+          input,
+          targetRef: 'internal-role:assistant',
+          logicalModelId: null,
+          artifactRefs: [],
+        }),
         response: {
           kind: 'turn',
           id: outerChatTurn.id,
-          chatMetadata: {
+          conversationMetadata: {
             downstream: { kind: 'task', turnId: directTask.turn.id },
+            targetRef: 'internal-role:assistant',
+            logicalModelId: null,
+            receivingWorkspaceId: 'ws_demo',
+            receivingThreadId: 'th_demo',
             resultKind: 'task-handoff',
             status: 202,
           },
@@ -7069,11 +7129,14 @@ describe('nanocore server', () => {
       const startsBeforeReplay = executor.startContexts.length;
       const turnsBeforeReplay = store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id);
 
-      const replay = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({ requestId: forgedRequestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const replay = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({ requestId: forgedRequestId, input }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       const replayBody = await replay.json();
 
       expect(replay.status, JSON.stringify(replayBody)).toBe(409);
@@ -7093,17 +7156,20 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, turnExecutor: executor });
 
     try {
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000306',
-          input: 'Plan a multi-step release goal for NanoCore.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000306',
+            input: 'Plan a multi-step release goal for NanoCore.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'goal-handoff',
@@ -7131,17 +7197,20 @@ describe('nanocore server', () => {
 
     try {
       for (const [index, input] of ['Can you help with this?', 'What should I do?'].entries()) {
-        const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: `0190f4c8-0000-7000-8000-00000000031${index}`,
-            input,
-          }),
-          headers: { 'content-type': 'application/json' },
-        });
+        const res = await app.request(
+          '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: `0190f4c8-0000-7000-8000-00000000031${index}`,
+              input,
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        );
 
         expect(res.status).toBe(202);
-        const parsed = StartChatModeResponseSchema.parse(await res.json());
+        const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
         expect(parsed).toMatchObject({
           outcome: 'clarification-needed',
@@ -7163,17 +7232,20 @@ describe('nanocore server', () => {
     const thread = store.createThread('ws_quick_chat', 'Quick Chat thread');
 
     try {
-      const res = await app.request(`/api/app/workspaces/ws_quick_chat/threads/${thread.id}/chat`, {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000321',
-          input: 'Can you help with this?',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000321',
+            input: 'Can you help with this?',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'clarification-needed',
@@ -7194,14 +7266,17 @@ describe('nanocore server', () => {
     const thread = store.createThread('ws_quick_chat', 'Quick Chat project request');
 
     try {
-      const res = await app.request(`/api/app/workspaces/ws_quick_chat/threads/${thread.id}/chat`, {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000322',
-          input: 'Implement the focused worker fix.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000322',
+            input: 'Implement the focused worker fix.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
@@ -7220,17 +7295,20 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, turnExecutor: executor });
 
     try {
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000320',
-          input: 'Search the web for NanoCore release notes.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000320',
+            input: 'Search the web for NanoCore release notes.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(200);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'refused',
@@ -7263,17 +7341,20 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000309',
-          input: 'List repository files.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000309',
+            input: 'List repository files.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'answered',
@@ -7320,6 +7401,8 @@ describe('nanocore server', () => {
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         dataRoot: coreDb.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: testProviderRegistry(),
         workspaceConfigs: [
           {
             workspaceId: 'ws_demo',
@@ -7327,6 +7410,7 @@ describe('nanocore server', () => {
             config: {
               schemaVersion: 1,
               workspace: {
+                name: 'Demo Workspace',
                 assistant: {
                   repositoryInspection: {
                     enabled: false,
@@ -7352,17 +7436,20 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000312',
-          input: 'List repository files.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000312',
+            input: 'List repository files.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
-      expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      expect(res.status, await res.clone().text()).toBe(202);
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'refused',
@@ -7392,6 +7479,8 @@ describe('nanocore server', () => {
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         dataRoot: coreDb.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: testProviderRegistry(),
         workspaceConfigs: [
           {
             workspaceId: 'ws_demo',
@@ -7399,6 +7488,7 @@ describe('nanocore server', () => {
             config: {
               schemaVersion: 1,
               workspace: {
+                name: 'Demo Workspace',
                 assistant: {
                   repositoryInspection: {
                     excludedPaths: ['docs'],
@@ -7426,32 +7516,38 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const listRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000313',
-          input: 'List repository files.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const readRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000314',
-          input: 'Read repository file docs/guide.md.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const listRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000313',
+            input: 'List repository files.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      const readRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000314',
+            input: 'Read repository file docs/guide.md.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
-      expect(listRes.status).toBe(202);
-      const listParsed = StartChatModeResponseSchema.parse(await listRes.json());
+      expect(listRes.status, await listRes.clone().text()).toBe(202);
+      const listParsed = SubmitConversationResponseSchema.parse(await listRes.json());
       const listText = listParsed.item.type === 'assistant-message' ? listParsed.item.text : '';
 
       expect(listText).toContain('README.md');
       expect(listText).not.toContain('docs/');
 
       expect(readRes.status).toBe(202);
-      const readParsed = StartChatModeResponseSchema.parse(await readRes.json());
+      const readParsed = SubmitConversationResponseSchema.parse(await readRes.json());
 
       expect(readParsed).toMatchObject({
         outcome: 'refused',
@@ -7487,17 +7583,20 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000310',
-          input: 'List repository files in docs.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000310',
+            input: 'List repository files in docs.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
       const text = parsed.item.type === 'assistant-message' ? parsed.item.text : '';
 
       expect(parsed).toMatchObject({
@@ -7553,17 +7652,20 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000311',
-          input: 'Read repository file docs/guide.md.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000311',
+            input: 'Read repository file docs/guide.md.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
       const text = parsed.item.type === 'assistant-message' ? parsed.item.text : '';
 
       expect(parsed).toMatchObject({
@@ -7616,17 +7718,20 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000315',
-          input: 'Delete repository file README.md.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000315',
+            input: 'Delete repository file README.md.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(202);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'task-handoff',
@@ -7667,17 +7772,20 @@ describe('nanocore server', () => {
     });
 
     try {
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000316',
-          input: 'Implement the focused worker fix.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000316',
+            input: 'Implement the focused worker fix.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(200);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'refused',
@@ -7696,17 +7804,20 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, turnExecutor: executor });
 
     try {
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000317',
-          input: 'Retry the previous worker turn.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000317',
+            input: 'Retry the previous worker turn.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(200);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'refused',
@@ -7738,17 +7849,20 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, turnExecutor: executor });
 
     try {
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000319',
-          input,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+        {
+          method: 'POST',
+          body: conversationRequest({
+            requestId: '0190f4c8-0000-7000-8000-000000000319',
+            input,
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
 
       expect(res.status).toBe(200);
-      const parsed = StartChatModeResponseSchema.parse(await res.json());
+      const parsed = SubmitConversationResponseSchema.parse(await res.json());
 
       expect(parsed).toMatchObject({
         outcome: 'refused',
@@ -7940,8 +8054,8 @@ describe('nanocore server', () => {
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
-        code: 'model_not_found',
-        message: 'Model not found: model_missing.',
+        code: 'model_not_supported_by_agent',
+        message: 'Agent agent_codex_host does not support model override: model_missing.',
       });
     } finally {
       coreDb.sqlite.close();
@@ -8017,31 +8131,6 @@ describe('nanocore server', () => {
       }
       coreDb.sqlite.close();
     }
-  });
-
-  it('clears workspace default model and agent selections with explicit nulls', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
-    const res = await app.request('/api/workspaces/ws_demo', {
-      method: 'PATCH',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000210',
-        defaults: {
-          defaultModelId: null,
-          defaultAgentId: null,
-          defaultSkillIds: [],
-        },
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
-
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
-      defaults: {
-        defaultModelId: null,
-        defaultAgentId: null,
-        defaultSkillIds: [],
-      },
-    });
   });
 
   it('creates a thread from the name field used by the protocol package', async () => {
@@ -12859,6 +12948,7 @@ describe('nanocore server', () => {
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         dataRoot: coreDb.dataRoot,
+        openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
         agentManifests: [
           {
             ...createTestAgentSetup().manifest,
@@ -12867,6 +12957,7 @@ describe('nanocore server', () => {
             },
           },
         ],
+        gatewayConfig: createTestGatewayConfig(),
         providerRegistry: testProviderRegistry(),
         workspaceDataSourceCatalogs: [
           {
@@ -12952,6 +13043,7 @@ describe('nanocore server', () => {
       dataRoot: coreDb.dataRoot,
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         dataRoot: coreDb.dataRoot,
+        openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
         agentManifests: [
           {
             ...createTestAgentSetup().manifest,
@@ -13021,14 +13113,14 @@ describe('nanocore server', () => {
     });
   });
 
-  it('returns a rate-limit API error for quick chat provider 429 responses', async () => {
+  it('returns the logical-model fallback error after quick chat routes are exhausted', async () => {
     const app = createApp({
-      openKitConfig: {
-        defaults: {
-          coreModel: 'openai/gpt-5.2',
-          coreProviderId: 'openrouter',
+      gatewayConfig: createTestGatewayConfig({
+        privateRoute: {
+          providerProfileId: 'openrouter',
+          providerModel: 'openai/gpt-5.2',
         },
-      },
+      }),
       providerCredentialResolver: () => 'test-key',
       providerRegistry: new ProviderRegistry([
         {
@@ -13062,10 +13154,10 @@ describe('nanocore server', () => {
 
     const body = await res.json();
 
-    expect(res.status, JSON.stringify(body)).toBe(429);
+    expect(res.status, JSON.stringify(body)).toBe(503);
     expect(body).toMatchObject({
-      code: 'provider_rate_limited',
-      message: 'Provider rate limit exceeded.',
+      code: 'gateway_logical_model_unavailable',
+      message: 'Logical model is temporarily unavailable.',
     });
     expect(body).not.toHaveProperty('details');
   });

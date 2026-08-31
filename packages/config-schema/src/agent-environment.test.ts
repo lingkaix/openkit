@@ -26,7 +26,7 @@ import {
  */
 function openshellPackageFixture(): unknown {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     packageId: 'aepkg_demo',
     snapshotId: 'aepsnap_demo',
     createdAt: '2026-06-16T00:00:00.000Z',
@@ -43,6 +43,7 @@ function openshellPackageFixture(): unknown {
       profileId: 'coder',
       displayName: 'Codex Worker',
       runtimeKind: 'codex',
+      runtimeVersion: '0.144.1',
       profileKind: 'coder',
       instructions: [],
       capabilityRequests: ['llm', 'shell', 'filesystem', 'network', 'artifacts'],
@@ -75,7 +76,6 @@ function openshellPackageFixture(): unknown {
       session: {
         reuse: 'never',
         resumeHandleRef: null,
-        staleWhenPackageChanges: true,
       },
     },
     workspace: {
@@ -208,42 +208,10 @@ function openshellPackageFixture(): unknown {
       mode: 'disabled',
       routes: [],
     },
-    providers: {
-      providerProfiles: [
-        {
-          id: 'github-read',
-          displayName: 'GitHub Read',
-          kind: 'oauth',
-          models: ['github/api'],
-          category: 'repository',
-        },
-      ],
-      providerInstances: [
-        {
-          id: 'provider_github_read',
-          profileId: 'github-read',
-          vendor: 'github',
-          displayName: 'GitHub Read',
-          kind: 'oauth',
-          models: ['github/api'],
-          vaultRefIds: ['vault_github_read'],
-        },
-      ],
-      attachments: [
-        {
-          id: 'attach_github_read',
-          providerInstanceId: 'provider_github_read',
-          vaultGrantIds: ['grant_github_read'],
-          binaryIds: ['git'],
-          policyContributionIds: ['github-read-network'],
-        },
-      ],
-    },
     vault: {
       references: [
         {
           id: 'vault_github_read',
-          providerInstanceId: 'provider_github_read',
           kind: 'secret-ref',
           secretRef: 'vault://github/read',
         },
@@ -268,6 +236,7 @@ function openshellPackageFixture(): unknown {
     },
     llm: {
       mode: 'gateway',
+      preferredLogicalModelId: 'gpt-5',
       routes: [
         {
           id: 'default-openai',
@@ -337,6 +306,7 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
     credentials: { declarations: [] },
     llm: {
       mode: 'gateway',
+      preferredLogicalModelId: 'openai/gpt-5.2',
       routes: [
         {
           credentialVisibility: 'placeholder',
@@ -348,7 +318,7 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
           },
           id: 'worker-inference',
           model: 'openai/gpt-5.2',
-          providerInstanceId: 'agent-openrouter',
+          providerInstanceId: 'openkit-gateway',
         },
       ],
     },
@@ -360,29 +330,6 @@ function trustedWorkerInferenceRelayPackageFixture(): Record<string, unknown> {
         enforcement: 'openshell',
         rules: [],
       },
-    },
-    providers: {
-      attachments: [],
-      providerInstances: [
-        {
-          displayName: 'OpenRouter',
-          id: 'agent-openrouter',
-          kind: 'gateway',
-          models: ['openai/gpt-5.2'],
-          profileId: 'agent-openrouter',
-          vendor: 'openrouter',
-          vaultRefIds: [],
-        },
-      ],
-      providerProfiles: [
-        {
-          category: 'model',
-          displayName: 'OpenRouter',
-          id: 'agent-openrouter',
-          kind: 'gateway',
-          models: ['openai/gpt-5.2'],
-        },
-      ],
     },
     supply: { ...supply, mcpServers: [] },
     vault: { grants: [], references: [] },
@@ -426,14 +373,15 @@ function runtimeProvenancePackageFixture(): Record<string, unknown> {
 }
 
 describe('agent environment package schema', () => {
-  it('accepts only strict AEP version 3', () => {
-    const versionThree = openshellPackageFixture() as Record<string, unknown>;
+  it('accepts only strict AEP version 4', () => {
+    const versionFour = openshellPackageFixture() as Record<string, unknown>;
 
-    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(3).success).toBe(true);
+    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(4).success).toBe(true);
+    expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(3).success).toBe(false);
     expect(AgentEnvironmentPackageSchema.shape.schemaVersion.safeParse(2).success).toBe(false);
-    expect(AgentEnvironmentPackageSchema.parse(versionThree).schemaVersion).toBe(3);
+    expect(AgentEnvironmentPackageSchema.parse(versionFour).schemaVersion).toBe(4);
     expect(
-      AgentEnvironmentPackageSchema.safeParse({ ...versionThree, schemaVersion: 2 }).success
+      AgentEnvironmentPackageSchema.safeParse({ ...versionFour, schemaVersion: 3 }).success
     ).toBe(false);
   });
 
@@ -532,12 +480,12 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it('accepts only V3 package scope with one exact trigger actor', () => {
+  it('accepts only V4 package scope with one exact trigger actor', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
     const scope = fixture.scope as Record<string, unknown>;
     const parsed = AgentEnvironmentPackageSchema.parse(fixture);
 
-    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.schemaVersion).toBe(4);
     expect(parsed.scope.triggerActor).toEqual({ kind: 'user', id: 'user_demo' });
     expect(
       AgentEnvironmentPackageSchema.parse({
@@ -1047,7 +995,7 @@ describe('agent environment package schema', () => {
     ).toBe(false);
   });
 
-  it('requires exactly one resolved LLM route for every worker package', () => {
+  it('requires a nonempty uniquely identified resolved LLM route list', () => {
     const llm = (openshellPackageFixture() as Record<string, unknown>).llm as {
       routes: unknown[];
     };
@@ -1055,6 +1003,15 @@ describe('agent environment package schema', () => {
     for (const routes of [[], [llm.routes[0], llm.routes[0]]]) {
       expect(AgentEnvironmentLlmSchema.safeParse({ ...llm, routes }).success).toBe(false);
     }
+    expect(
+      AgentEnvironmentLlmSchema.safeParse({
+        ...llm,
+        routes: [
+          llm.routes[0],
+          { ...(llm.routes[0] as object), id: 'alternate', model: 'alternate-model' },
+        ],
+      }).success
+    ).toBe(true);
   });
 
   it('accepts only local Integration gateway inference coherence', () => {
@@ -1068,7 +1025,13 @@ describe('agent environment package schema', () => {
     };
 
     expect
-      .soft(AgentEnvironmentLlmSchema.safeParse({ mode: 'gateway', routes: [route] }).success)
+      .soft(
+        AgentEnvironmentLlmSchema.safeParse({
+          mode: 'gateway',
+          preferredLogicalModelId: 'gpt-5',
+          routes: [route],
+        }).success
+      )
       .toBe(true);
 
     for (const invalidRoute of [
@@ -1079,13 +1042,23 @@ describe('agent environment package schema', () => {
     ]) {
       expect
         .soft(
-          AgentEnvironmentLlmSchema.safeParse({ mode: 'gateway', routes: [invalidRoute] }).success
+          AgentEnvironmentLlmSchema.safeParse({
+            mode: 'gateway',
+            preferredLogicalModelId: 'gpt-5',
+            routes: [invalidRoute],
+          }).success
         )
         .toBe(false);
     }
     for (const mode of ['direct-external', 'backend-local']) {
       expect
-        .soft(AgentEnvironmentLlmSchema.safeParse({ mode, routes: [route] }).success)
+        .soft(
+          AgentEnvironmentLlmSchema.safeParse({
+            mode,
+            preferredLogicalModelId: 'gpt-5',
+            routes: [route],
+          }).success
+        )
         .toBe(false);
     }
   });
@@ -1367,8 +1340,8 @@ describe('agent environment package schema', () => {
               },
             },
           }),
-        `expected external network rule for ${binaryId} to be rejected`
-      ).toThrow();
+        `expected declared external network rule for ${binaryId} to be accepted`
+      ).not.toThrow();
     }
   });
 
@@ -1556,61 +1529,39 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it('rejects direct credentials and provider attachments for trusted worker inference', () => {
+  it('allows governed tool credentials alongside trusted worker inference', () => {
     const fixture = trustedWorkerInferenceRelayPackageFixture();
-    const providers = fixture.providers as Record<string, unknown>;
-
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        providers: {
-          ...providers,
-          attachments: [
-            {
-              binaryIds: ['codex'],
-              id: 'attach_direct_provider',
-              providerInstanceId: 'agent-openrouter',
-            },
-          ],
-        },
-      })
-    ).toThrow();
     expect(() =>
       AgentEnvironmentPackageSchema.parse({
         ...fixture,
         credentials: {
           declarations: [
             {
-              id: 'direct_runtime_env',
-              targetEnvVarName: 'OPENAI_API_KEY',
-              vaultGrantId: 'grant_direct_runtime_env',
+              id: 'github_runtime_env',
+              targetEnvVarName: 'GITHUB_TOKEN',
+              vaultGrantId: 'grant_github_runtime_env',
               visibility: 'runtime-env',
             },
           ],
         },
-      })
-    ).toThrow();
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
         vault: {
           grants: [
             {
-              id: 'grant_direct_runtime_env',
+              id: 'grant_github_runtime_env',
               scope: 'agent-session',
-              vaultRefId: 'vault_direct_runtime_env',
+              vaultRefId: 'vault_github_runtime_env',
             },
           ],
           references: [
             {
-              id: 'vault_direct_runtime_env',
+              id: 'vault_github_runtime_env',
               kind: 'secret-ref',
-              secretRef: 'vault://provider/direct',
+              secretRef: 'vault://workspace/github',
             },
           ],
         },
       })
-    ).toThrow();
+    ).not.toThrow();
   });
 
   it('requires trusted worker inference routes to match one gateway provider and model', () => {
@@ -1722,20 +1673,7 @@ describe('agent environment package schema', () => {
     expect(() =>
       AgentEnvironmentPackageSchema.parse({
         ...openshellPackageFixture(),
-        providers: {
-          ...(openshellPackageFixture() as { providers: Record<string, unknown> }).providers,
-          providerInstances: [
-            {
-              id: 'provider_openai_default',
-              profileId: 'openai',
-              vendor: 'openai',
-              displayName: 'OpenAI',
-              kind: 'direct',
-              models: ['gpt-5'],
-              apiKey: 'sk-raw',
-            },
-          ],
-        },
+        providers: {},
       })
     ).toThrow();
   });

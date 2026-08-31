@@ -17,6 +17,7 @@ import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
@@ -62,32 +63,42 @@ function completeNanoHostPackage(input: {
   readonly snapshotId: string;
   readonly workspace?: Record<string, unknown>;
 }): AgentEnvironmentPackage {
-  return {
-    agent: { runtimeKind: 'codex' },
-    backend: {},
-    capabilities: {},
-    control: {},
-    credentials: {},
-    llm: {},
-    policy: {},
-    providers: {},
-    resources: {},
-    runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
-    schemaVersion: 3,
-    supply: { services: [] },
-    vault: {},
-    ...input,
-    scope: {
+  const base = resolveAgentEnvironmentPackage({
+    agentSessionId: 'as_factory_fixture',
+    agentSetup: createTestAgentSetup(),
+    backend: { kind: 'openshell' },
+    createdAt: '2026-08-21T00:00:00.000Z',
+    requestId: 'request_factory_fixture',
+    triggerActor: { kind: 'user', id: 'user-factory' },
+    turn: {
+      completedAt: null,
+      configVersion: null,
+      durationMs: null,
+      error: null,
+      humanGate: null,
+      id: 'turn_factory_fixture',
+      items: [],
+      startedAt: '2026-08-21T00:00:00.000Z',
+      status: 'running',
+      threadId: 'thread_factory_fixture',
       triggerActor: { kind: 'user', id: 'user-factory' },
-      ...input.scope,
+      workspaceId: 'workspace_factory_fixture',
     },
-    workspace: {
-      generatedFiles: [],
-      inputs: [],
-      outputs: [],
-      root: '/workspace',
-      ...input.workspace,
+    turnInput: 'Run fixture',
+    workspaceCwd: '/workspace',
+    workspaceRoots: [],
+  });
+  const runtime = input.runtime as Partial<AgentEnvironmentPackage['runtime']> | undefined;
+  return {
+    ...base,
+    ...input,
+    runtime: {
+      ...base.runtime,
+      ...runtime,
+      image: runtime?.image ?? base.runtime.image,
     },
+    scope: { ...base.scope, ...input.scope },
+    workspace: { ...base.workspace, ...input.workspace },
   } as AgentEnvironmentPackage;
 }
 
@@ -190,7 +201,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(effectSource).toContain("operation === 'bridge.open'");
     for (const bootstrapField of [
       'harnessBindingRef',
-      'harnessReady',
+      'integrationReady',
       'session.open',
       'final_status',
       'processGroupAbsent',
@@ -375,10 +386,12 @@ describe('createConfiguredTurnExecutor', () => {
       adapterId: 'codex',
       adapterVersion: '0.144.1',
       harnessBindingRef: 'harness-binding-unready-admission',
+      harnessCompatibilityKey: 'd'.repeat(64),
       harnessInstanceId: 'harness-unready-admission',
       imageDigest: `sha256:${'a'.repeat(64)}`,
       sandboxBindingRef: 'sandbox-binding-unready-admission',
       sandboxCompatibilityKey: 'b'.repeat(64),
+      sandboxIntegrationBindingRef: 'integration-sandbox-binding-unready-admission',
       sandboxRuntimeId: 'sandbox-runtime-unready-admission',
       runtimeTargetId: 'target-unready-admission',
       timestamp: '2026-08-21T00:00:01.000Z',
@@ -534,10 +547,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-factory-restore',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-factory-restore',
         imageDigest: `sha256:${'f'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-factory-restore',
         sandboxCompatibilityKey,
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-factory-restore',
         sandboxRuntimeId: 'sandbox-runtime-factory-restore',
         runtimeTargetId: 'target_factory_restore',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -563,8 +578,11 @@ describe('createConfiguredTurnExecutor', () => {
         runtime.turnExecutor as unknown as {
           readonly backend: {
             restoreSharedHarness(
-              compatibilityKey: string,
-              runtimeTargetId: string
+              sandboxCompatibilityKey: string,
+              harnessCompatibilityKey: string,
+              runtimeTargetId: string,
+              adapterId: 'codex',
+              adapterVersion: string
             ): { readonly bindings: Map<string, unknown> } | null;
           };
         }
@@ -572,8 +590,13 @@ describe('createConfiguredTurnExecutor', () => {
 
       expect(
         [
-          ...backend.restoreSharedHarness(sandboxCompatibilityKey, 'target_factory_restore')!
-            .bindings,
+          ...backend.restoreSharedHarness(
+            sandboxCompatibilityKey,
+            'd'.repeat(64),
+            'target_factory_restore',
+            'codex',
+            '0.144.1'
+          )!.bindings,
         ]
           .map(([agentSessionId]) => agentSessionId)
           .sort()
@@ -587,6 +610,9 @@ describe('createConfiguredTurnExecutor', () => {
     const coreDb = createFactoryCoreDb();
     const sessionCompatibilityKey = `sha256:${'a'.repeat(64)}`;
     const runtimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
+      adapterId: 'codex',
+      adapterVersion: '0.144.1',
+      harnessCompatibilityKey: 'd'.repeat(64),
       sessionCompatibilityKey,
       threadId: 'thread-continuity-key',
     });
@@ -603,10 +629,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-continuity-key',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-continuity-key',
         imageDigest: `sha256:${'b'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-continuity-key',
         sandboxCompatibilityKey: 'c'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
         sandboxRuntimeId: 'sandbox-runtime-continuity-key',
         runtimeTargetId: 'target_continuity_key',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -636,15 +664,14 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: '2026-08-21T00:00:01.000Z',
       });
       const command = dispatchNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-continuity-key',
-        nextExpectedSequence: 0,
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
         timestamp: '2026-08-21T00:00:02.000Z',
       });
       if (!command) {
         throw new Error('Expected the continuity fixture session.open command.');
       }
       settleNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-continuity-key',
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
         result: {
           body: {
             maxActiveTurns: 1,
@@ -653,6 +680,7 @@ describe('createConfiguredTurnExecutor', () => {
             state: 'open',
           },
           disposition: 'succeeded',
+          harnessInstanceId: 'harness-continuity-key',
           operationId: command.operationId,
           schemaVersion: 1,
           sequence: command.sequence,
@@ -830,10 +858,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-absent-cleanup',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-absent-cleanup',
         imageDigest: `sha256:${'a'.repeat(64)}`,
         sandboxBindingRef: identity.backendSessionId,
         sandboxCompatibilityKey: `${identity.backendSessionId.slice(3)}${'b'.repeat(48)}`,
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-absent-cleanup',
         sandboxRuntimeId: 'sandbox-runtime-absent-cleanup',
         runtimeTargetId: 'target_absent_cleanup',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -937,10 +967,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-post-fence',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-post-fence',
         imageDigest: `sha256:${'1'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-post-fence',
         sandboxCompatibilityKey,
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-post-fence',
         sandboxRuntimeId: 'sandbox-runtime-post-fence',
         runtimeTargetId: identity.runtimeTargetId,
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -977,10 +1009,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-post-fence-sibling',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-post-fence-sibling',
         imageDigest: `sha256:${'3'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-post-fence-sibling',
         sandboxCompatibilityKey: '4'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-post-fence-sibling',
         sandboxRuntimeId: 'sandbox-runtime-post-fence-sibling',
         runtimeTargetId: identity.runtimeTargetId,
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -1226,10 +1260,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-lookup-a',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-a',
         imageDigest: `sha256:${'1'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-lookup-a',
         sandboxCompatibilityKey: `${projectingPrefix}${'c'.repeat(48)}`,
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-a',
         sandboxRuntimeId: 'sandbox-runtime-lookup-a',
         runtimeTargetId: 'target_lookup',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -1250,10 +1286,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-lookup-dup',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-dup',
         imageDigest: `sha256:${'2'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-lookup-dup',
         sandboxCompatibilityKey: `${projectingPrefix}${'d'.repeat(48)}`,
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-dup',
         sandboxRuntimeId: 'sandbox-runtime-lookup-dup',
         runtimeTargetId: 'target_lookup',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -1272,10 +1310,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-lookup-worker',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-worker',
         imageDigest: `sha256:${'3'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-lookup-worker',
         sandboxCompatibilityKey: 'b'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-worker',
         sandboxRuntimeId: 'sandbox-runtime-lookup-worker',
         runtimeTargetId: 'target_lookup',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -1312,10 +1352,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-lookup-agent',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-agent',
         imageDigest: `sha256:${'4'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-lookup-agent',
         sandboxCompatibilityKey: '9'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-agent',
         sandboxRuntimeId: 'sandbox-runtime-lookup-agent',
         runtimeTargetId: 'target_lookup',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -1372,10 +1414,12 @@ describe('createConfiguredTurnExecutor', () => {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
         harnessBindingRef: 'harness-binding-unknown',
+        harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-unknown',
         imageDigest: `sha256:${'c'.repeat(64)}`,
         sandboxBindingRef: 'sandbox-binding-unknown',
         sandboxCompatibilityKey: 'd'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-unknown',
         sandboxRuntimeId: 'sandbox-runtime-unknown',
         runtimeTargetId: 'target_harness_unknown',
         timestamp: '2026-08-21T00:00:00.000Z',
@@ -1387,8 +1431,7 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: '2026-08-21T00:00:01.000Z',
       });
       const command = dispatchNanoHostHarnessOperation(coreDb, {
-        harnessBindingRef: 'harness-binding-unknown',
-        nextExpectedSequence: 0,
+        sandboxIntegrationBindingRef: 'integration-sandbox-binding-unknown',
         timestamp: '2026-08-21T00:00:02.000Z',
       });
       if (!command) {
@@ -1450,17 +1493,16 @@ describe('createConfiguredTurnExecutor', () => {
         } = {}
       ) =>
         ({
-          agent: { runtimeKind: 'codex' },
+          agent: { runtimeKind: 'codex', runtimeVersion: '0.144.1' },
           backend: {},
           capabilities: {},
-          control: {},
+          control: { adapter: { targetRuntime: 'codex' } },
           credentials: {},
           llm: {},
           policy: {},
-          providers: {},
           resources: {},
           runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
-          schemaVersion: 3,
+          schemaVersion: 4,
           scope: {
             agentSessionId: `agent-session-${turnId}`,
             threadId: `thread-${turnId}`,
@@ -1801,6 +1843,209 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it('materializes two adapter-keyed Harnesses without creating a second compatible Sandbox', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch = {
+      async effect(request: NanoHostSessionEffectRequest) {
+        effects.push(request);
+        if (request.kind === 'image.acquire') {
+          return { digest: `sha256:${'f'.repeat(64)}` };
+        }
+        if (request.kind === 'reference.import') {
+          return { state: 'imported' };
+        }
+        if (request.kind !== 'sandbox.create') {
+          throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+        }
+        return { sandboxId: request.input.sandboxId, state: 'created' };
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    } satisfies NanoHostSessionDispatch;
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_multi_harness', 'identity_multi_harness', 'deployment_multi_harness', 1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-08-21T00:00:00.000Z');
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      const packageFor = (adapterId: 'codex' | 'opencode') => {
+        const triggerActor = { id: 'user-multi-harness', kind: 'user' as const };
+        return resolveAgentEnvironmentPackage({
+          agentSessionId: `agent-session-${adapterId}`,
+          agentSetup: createTestAgentSetup({
+            adapter: adapterId,
+            agentId: `agent-${adapterId}`,
+            imageRef: `sha256:${'f'.repeat(64)}`,
+          }),
+          backend: { kind: 'openshell' },
+          requestId: `request-${adapterId}`,
+          triggerActor,
+          turn: {
+            completedAt: null,
+            configVersion: null,
+            durationMs: null,
+            error: null,
+            humanGate: null,
+            id: `turn-${adapterId}`,
+            items: [],
+            startedAt: '2026-08-21T00:00:00.000Z',
+            status: 'running',
+            threadId: `thread-${adapterId}`,
+            triggerActor,
+            workspaceId: 'workspace-multi-harness',
+          },
+          turnInput: `Run ${adapterId}`,
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        });
+      };
+
+      await backend.materialize(packageFor('codex'), { workspaceRoots: [] });
+      await backend.materialize(packageFor('opencode'), { workspaceRoots: [] });
+
+      expect(effects.filter((effect) => effect.kind === 'image.acquire')).toHaveLength(1);
+      expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT adapter_id AS adapterId FROM harness_instance_records ORDER BY adapter_id'
+          )
+          .all()
+      ).toEqual([{ adapterId: 'codex' }, { adapterId: 'opencode' }]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('delivers runtime credentials to NanoHost effects and rejects unsupported Providers first', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch = {
+      async effect(request: NanoHostSessionEffectRequest) {
+        effects.push(request);
+        if (request.kind === 'image.acquire') return { digest: `sha256:${'e'.repeat(64)}` };
+        if (request.kind === 'sandbox.create') {
+          return { sandboxId: request.input.sandboxId, state: 'created' };
+        }
+        if (request.kind === 'reference.import') return { state: 'imported' };
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    } satisfies NanoHostSessionDispatch;
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_credentials', 'identity_credentials', 'deployment_credentials', 1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-08-21T00:00:00.000Z');
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = () => 'lease-credentials';
+      const environmentPackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'agent-session-credentials',
+          threadId: 'thread-credentials',
+          turnId: 'turn-credentials',
+          workspaceId: 'workspace-credentials',
+        },
+        snapshotId: 'snapshot-credentials',
+      });
+
+      await backend.materialize(environmentPackage, {
+        runtimeEnvCredentials: [
+          { credentialValue: 'runtime-env-secret', targetEnvVarName: 'EXAMPLE_TOKEN' },
+        ],
+        runtimeFileCredentials: [
+          {
+            credentialValue: 'runtime-file-secret',
+            targetPath: '/sandbox/.config/example/credentials',
+          },
+        ],
+        workspaceRoots: [],
+      });
+
+      expect(effects.find((effect) => effect.kind === 'sandbox.create')?.input.environment).toEqual(
+        {
+          EXAMPLE_TOKEN: 'runtime-env-secret',
+        }
+      );
+      expect(
+        effects.find((effect) => effect.input.slot === 'runtime-credential')?.input
+      ).toMatchObject({
+        body: Buffer.from('runtime-file-secret'),
+        relativePath: 'sandbox/.config/example/credentials',
+        slot: 'runtime-credential',
+      });
+
+      effects.length = 0;
+      await expect(
+        backend.materialize(
+          { ...environmentPackage, snapshotId: 'snapshot-provider-rejected' },
+          {
+            providerCredentials: [
+              {
+                credentialKey: 'EXAMPLE_TOKEN',
+                credentialValue: 'provider-secret',
+                providerInstanceId: 'provider-example',
+                providerType: 'generic',
+              },
+            ],
+            workspaceRoots: [],
+          }
+        )
+      ).rejects.toThrow('Provider credential materialization is not supported');
+      expect(effects).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('derives deterministic distinct DNS-1123 sandbox identities before sandbox creation', async () => {
     const coreDb = createFactoryCoreDb();
     const sandboxCreates: NanoHostSessionEffectRequest[] = [];
@@ -1909,6 +2154,7 @@ describe('createConfiguredTurnExecutor', () => {
         const sandboxCreate = sandboxCreates.at(-1);
         expect(sandboxCreate?.input).toEqual({
           backendSessionId: firstPlan.backendSessionId,
+          environment: {},
           imageDigest: `sha256:${'b'.repeat(64)}`,
           leaseId: 'lease_factory_dns_sandbox',
           packageSnapshotId: snapshotId,

@@ -20,20 +20,20 @@ export async function seedDemoWorkspaceDataRoot(
   fixtureRoot: string
 ): Promise<void> {
   seedSharedDemoWorkspaceDataRoot(dataRoot);
-  await seedSimulatorProvider(dataRoot);
+  await seedSimulatorInferenceConfig(dataRoot);
   await seedSimulatorAgent(dataRoot);
   await seedDemoWorkspaceAuthority(dataRoot);
   await seedReadyRepository(dataRoot, await createDisposableGitRepository(fixtureRoot));
 }
 
 /**
- * Installs the secret-free local provider profile resolved by the simulator Agent fixture.
+ * Installs the secret-free provider profile and logical Gateway route resolved by the simulator Agent fixture.
  *
  * @param dataRoot NanoCore data root to seed.
- * @returns Resolves after the provider profile is durable.
- * @throws When the config directory or provider profile cannot be written.
+ * @returns Resolves after the provider profile and Gateway route are durable.
+ * @throws When the config directory, provider profile, or Gateway route cannot be written.
  */
-async function seedSimulatorProvider(dataRoot: string): Promise<void> {
+async function seedSimulatorInferenceConfig(dataRoot: string): Promise<void> {
   const providersRoot = join(dataRoot, 'config', 'providers');
   await mkdir(providersRoot, { recursive: true });
   await writeFile(
@@ -45,6 +45,33 @@ async function seedSimulatorProvider(dataRoot: string): Promise<void> {
         kind: 'local',
         defaultModel: 'openai/gpt-5.2',
         models: ['openai/gpt-5.2'],
+      },
+      null,
+      2
+    )}\n`
+  );
+  await writeFile(
+    join(dataRoot, 'config', 'gateway.jsonc'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'reasoning',
+        logicalModels: [
+          {
+            id: 'reasoning',
+            displayName: 'Reasoning',
+            routes: [
+              {
+                id: 'simulator',
+                providerProfileId: 'agent-openrouter',
+                providerModel: 'openai/gpt-5.2',
+              },
+            ],
+          },
+        ],
+        requiredFeatures: [],
+        extensions: {},
       },
       null,
       2
@@ -165,9 +192,9 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
             { id: 'codex', path: '/usr/local/bin/codex' },
           ],
         },
-        provider: {
-          ref: 'agent-openrouter',
-          model: 'openai/gpt-5.2',
+        models: {
+          preferredLogicalModelId: 'reasoning',
+          allowedLogicalModelIds: ['reasoning'],
         },
         profiles: [{ id: 'default', instructionsRef: 'codex', skills: [] }],
         defaultProfileId: 'default',
@@ -177,7 +204,7 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
           backend: {
             allowedKinds: ['openshell'],
             preferred: 'openshell',
-            requiredCapabilities: ['backend-local-inference'],
+            requiredCapabilities: ['trusted-worker-inference-relay'],
           },
           credentialDeclarations: [],
           filesystem: [],

@@ -251,7 +251,8 @@ async function stopProcess(
         try {
           process.kill(-processGroupId, 0);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === 'ESRCH' || code === 'EPERM') {
             return;
           }
           throw error;

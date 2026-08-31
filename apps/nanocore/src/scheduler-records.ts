@@ -43,7 +43,9 @@ export interface SchedulerAdmissionEntryRecord {
   /** Requested agent id. */
   readonly requestedAgentId: string;
   /** Requested agent profile reference. */
-  readonly profileRef: string;
+  readonly profileRef: string | null;
+  /** Requested logical model id. */
+  readonly modelId: string | null;
   /** Scheduler priority class. */
   readonly priorityClass: SchedulerAdmissionPriorityClass;
   /** Entry enqueue timestamp. */
@@ -325,7 +327,8 @@ interface SchedulerAdmissionEntryRow {
   readonly turn_id: string;
   readonly turn_input: string;
   readonly requested_agent_id: string;
-  readonly profile_ref: string;
+  readonly profile_ref: string | null;
+  readonly model_id: string | null;
   readonly priority_class: SchedulerAdmissionPriorityClass;
   readonly enqueued_at: string;
   readonly effective_priority_at: string;
@@ -497,7 +500,9 @@ export interface CreateSchedulerAdmissionEntryInput {
   /** Requested agent id. */
   readonly requestedAgentId: string;
   /** Requested agent profile reference. */
-  readonly profileRef: string;
+  readonly profileRef?: string | null;
+  /** Requested logical model id. */
+  readonly modelId?: string | null;
   /** Scheduler priority class. */
   readonly priorityClass: SchedulerAdmissionPriorityClass;
   /** Required pool constraints. */
@@ -979,6 +984,7 @@ export function createSchedulerAdmissionEntry(
         turn_input,
         requested_agent_id,
         profile_ref,
+        model_id,
         priority_class,
         enqueued_at,
         effective_priority_at,
@@ -989,7 +995,7 @@ export function createSchedulerAdmissionEntry(
         trigger_actor_json,
         workspace_cwd,
         workspace_roots_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.queueEntryId,
@@ -999,7 +1005,8 @@ export function createSchedulerAdmissionEntry(
       input.turnId,
       input.turnInput,
       input.requestedAgentId,
-      input.profileRef,
+      input.profileRef ?? null,
+      input.modelId ?? null,
       input.priorityClass,
       timestamp,
       timestamp,
@@ -3356,6 +3363,7 @@ function schedulerAdmissionSelectSql(): string {
     turn_input,
     requested_agent_id,
     profile_ref,
+    model_id,
     priority_class,
     enqueued_at,
     effective_priority_at,
@@ -3534,6 +3542,7 @@ function mapSchedulerAdmissionEntryRow(
     turnInput: row.turn_input,
     requestedAgentId: row.requested_agent_id,
     profileRef: row.profile_ref,
+    modelId: row.model_id,
     priorityClass: row.priority_class,
     enqueuedAt: row.enqueued_at,
     effectivePriorityAt: row.effective_priority_at,

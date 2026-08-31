@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import {
@@ -74,7 +73,8 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
@@ -1105,11 +1105,16 @@ describe('thread goal summary app API', () => {
       });
       expect(nextGoalRes.status).toBe(200);
       const clarificationRes = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/chat`,
+        `/api/app/workspaces/ws_demo/threads/${thread.id}/conversation-turns`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestId: 'chat-after-goal-start', input: 'Help.' }),
+          body: JSON.stringify({
+            requestId: 'chat-after-goal-start',
+            input: 'Help.',
+            targetRef: 'internal-role:assistant',
+            artifactRefs: [],
+          }),
         }
       );
       expect(clarificationRes.status).toBe(202);
@@ -3047,6 +3052,7 @@ describe('thread goal summary app API', () => {
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({
         agentManifests: [agentManifest],
         dataRoot: coreDb.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
         providerRegistry: testProviderRegistry(),
         workspaceDataSourceCatalogs: [
           {
@@ -3210,14 +3216,17 @@ describe('thread goal summary app API', () => {
 
       expect(interruptedStepRes.status).toBe(409);
       await expect(interruptedStepRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      const workerTurnId = store.listThreadTurns('ws_demo', thread.id).at(-1)?.id;
-      expect(workerTurnId).toBeDefined();
-      expect(getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id)).toEqual(
+      const pendingSteering = getPendingUserTurnRecord(workspaceDb, 'ws_demo', thread.id);
+      expect(pendingSteering).toEqual(
         expect.objectContaining({
           terminalClaimKind: 'applied',
-          terminalClaimId: `ctxpkg_${workerTurnId}`,
+          terminalClaimId: expect.stringMatching(/^ctxpkg_/),
         })
       );
+      const workerTurnId = store
+        .listThreadTurns('ws_demo', thread.id)
+        .find((turn) => turn.id !== contextTurn.id)?.id;
+      expect(workerTurnId).toBeDefined();
       const steeringReplay = await app.request(
         `/api/app/workspaces/ws_demo/threads/${thread.id}/goal/steering`,
         {

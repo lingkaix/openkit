@@ -19,6 +19,7 @@ import {
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
+  ConversationTargetCatalogSchema,
   ConvertGoalSteeringToFollowUpRequestSchema,
   ConvertGoalSteeringToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
@@ -177,8 +178,6 @@ import {
   SetupDiagnosticsResponseSchema,
   SetWorkspaceRepositoryRequestSchema,
   SetWorkspaceRepositoryResponseSchema,
-  StartChatModeRequestSchema,
-  StartChatModeResponseSchema,
   StartProviderSubscriptionAccountLoginRequestSchema,
   StartTaskModeRequestSchema,
   StartTaskModeResponseSchema,
@@ -187,6 +186,8 @@ import {
   StorageLayoutReportResponseSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   SubmitArtifactReviewDecisionResponseSchema,
+  SubmitConversationRequestSchema,
+  SubmitConversationResponseSchema,
   SubmitGoalReviewDecisionRequestSchema,
   SubmitGoalReviewDecisionResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
@@ -2057,18 +2058,53 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/chat': {
-        post: {
-          operationId: 'startChatMode',
+      '/api/app/workspaces/{workspaceId}/conversation-targets': {
+        get: {
+          operationId: 'getConversationTargets',
           tags: ['modes'],
-          summary: 'Start one thread-scoped Chat Mode Assistant turn.',
+          summary: 'List the context-sensitive targets available to the shared Composer.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [
+            WORKSPACE_ID_PARAMETER,
+            {
+              in: 'query',
+              name: 'threadId',
+              required: false,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Workspace conversation targets.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ConversationTargetCatalog' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/conversation-turns': {
+        post: {
+          operationId: 'submitConversation',
+          tags: ['modes'],
+          summary: 'Submit one structured message to a selected conversation target.',
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
           requestBody: {
             required: true,
             content: {
               [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/StartChatModeRequest' },
+                schema: { $ref: '#/components/schemas/SubmitConversationRequest' },
               },
             },
           },
@@ -2077,7 +2113,7 @@ export function createAppOpenApiDocument() {
               description: 'Completed Chat Mode response.',
               content: {
                 [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/StartChatModeResponse' },
+                  schema: { $ref: '#/components/schemas/SubmitConversationResponse' },
                 },
               },
             },
@@ -2085,7 +2121,7 @@ export function createAppOpenApiDocument() {
               description: 'Accepted Chat Mode handoff or clarification response.',
               content: {
                 [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/StartChatModeResponse' },
+                  schema: { $ref: '#/components/schemas/SubmitConversationResponse' },
                 },
               },
             },
@@ -5265,8 +5301,9 @@ export function createAppOpenApiDocument() {
         SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
         SetProviderApiKeyResponse: toJsonSchema(SetProviderApiKeyResponseSchema),
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),
-        StartChatModeRequest: toJsonSchema(StartChatModeRequestSchema),
-        StartChatModeResponse: toJsonSchema(StartChatModeResponseSchema),
+        SubmitConversationRequest: toJsonSchema(SubmitConversationRequestSchema),
+        SubmitConversationResponse: toJsonSchema(SubmitConversationResponseSchema),
+        ConversationTargetCatalog: toJsonSchema(ConversationTargetCatalogSchema),
         StartProviderSubscriptionAccountLoginRequest: toJsonSchema(
           StartProviderSubscriptionAccountLoginRequestSchema
         ),

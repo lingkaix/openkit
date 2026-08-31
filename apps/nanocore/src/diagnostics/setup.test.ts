@@ -1,56 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentManifest } from '../agents/manifest.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createSetupDiagnostics } from './setup.js';
 
-/**
- * Creates a minimal agent manifest for setup diagnostics tests.
- *
- * @param input Manifest fields to override.
- * @returns Agent manifest.
- */
-function manifest(input: Partial<AgentManifest> = {}): AgentManifest {
-  return {
-    displayName: 'Agent',
-    id: 'agent_test',
-    requiredFeatures: [],
-    runtime: {
-      adapter: 'custom',
-      binaries: [
-        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
-        { id: 'node', path: '/usr/local/bin/node' },
-        { id: 'custom', path: '/usr/local/bin/custom' },
-      ],
-      image: { kind: 'reference', pullPolicy: 'never', ref: 'openkit/worker-custom:test' },
-      kind: 'custom',
-    },
-    schemaVersion: 1,
-    ...input,
-  };
-}
-
 describe('createSetupDiagnostics', () => {
-  it('keeps diagnostics available when credential resolution fails', () => {
+  it('keeps Provider secret references redacted without making them Agent readiness inputs', () => {
     const registry = new ProviderRegistry([
       {
         baseUrl: 'https://user:sk-secret@example.com/v1',
         displayName: 'Hosted',
-        id: 'hosted',
+        id: 'agent-openrouter',
         kind: 'custom',
-        models: ['model'],
+        models: ['openai/gpt-5.2'],
         secretRef: 'vault://missing',
       },
     ]);
 
     const diagnostics = createSetupDiagnostics({
-      agentManifests: [manifest({ provider: { ref: 'hosted' } })],
+      agentManifests: [createTestAgentSetup().manifest],
       dataRoot: '/tmp/openkit-test',
+      gatewayConfig: createTestGatewayConfig(),
       mode: 'local',
       openKitConfig: {},
-      providerCredentialResolver: () => {
-        throw new Error('reference-not-found: Vault reference material was not found.');
-      },
       providerRegistry: registry,
       runtimeConfig: {
         currentVersion: 1,
@@ -64,13 +39,13 @@ describe('createSetupDiagnostics', () => {
 
     expect(diagnostics.providers).toEqual([
       expect.objectContaining({
-        id: 'hosted',
+        id: 'agent-openrouter',
         secret: { configured: true, marker: 'secret-ref', ref: 'vault://missing' },
       }),
     ]);
     expect(diagnostics.agents[0]?.readiness).toEqual({
-      reasons: ['Provider hosted is missing credentials.'],
-      status: 'blocked',
+      reasons: [],
+      status: 'ready',
     });
     expect(diagnostics.server.dataRoot).toBe('configured');
     expect(JSON.stringify(diagnostics)).not.toContain('/tmp/openkit-test');

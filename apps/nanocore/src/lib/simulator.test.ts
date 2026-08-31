@@ -7,7 +7,6 @@ import {
   CreateWorkspaceMaterialResponseSchema,
   GetThreadMaterialResponseSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
-  StartChatModeResponseSchema,
   StartTaskModeResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
@@ -31,7 +30,10 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
@@ -174,6 +176,8 @@ function createRemoteGitProductFixture(
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({
       agentManifests: [manifest],
       dataRoot: coreDb.dataRoot,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
       providerRegistry,
       workspaceConfigs: configuredCanary
         ? [
@@ -181,6 +185,7 @@ function createRemoteGitProductFixture(
               config: {
                 schemaVersion: 1,
                 workspace: {
+                  name: 'Demo Workspace',
                   roots: [
                     {
                       access: 'read-write',
@@ -223,6 +228,8 @@ describe('SimulatedTurnExecutor', () => {
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
       providerRegistry: new ProviderRegistry([
         {
           defaultModel: 'openai/gpt-5.2',
@@ -334,6 +341,8 @@ describe('SimulatedTurnExecutor', () => {
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
       providerRegistry: new ProviderRegistry([
         {
           defaultModel: 'openai/gpt-5.2',
@@ -441,6 +450,8 @@ describe('SimulatedTurnExecutor', () => {
     const firstApp = createApp({
       agentManifests: [createTestAgentSetup({ imageRef: imageRefA }).manifest],
       coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
       providerRegistry,
       store,
       turnExecutor: executor,
@@ -448,6 +459,8 @@ describe('SimulatedTurnExecutor', () => {
     const secondApp = createApp({
       agentManifests: [createTestAgentSetup({ imageRef: imageRefB }).manifest],
       coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
       providerRegistry,
       store,
       turnExecutor: executor,
@@ -617,6 +630,8 @@ describe('SimulatedTurnExecutor', () => {
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
       providerRegistry: new ProviderRegistry([
         {
           defaultModel: 'openai/gpt-5.2',
@@ -675,7 +690,7 @@ describe('SimulatedTurnExecutor', () => {
       expect(bindResponse.status).toBe(200);
 
       const requestId = '0190f4c8-0000-7000-8000-000000000241';
-      const turnResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/chat', {
+      const turnResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -685,16 +700,8 @@ describe('SimulatedTurnExecutor', () => {
       });
       const turnBody = await turnResponse.json();
       expect(turnResponse.status, JSON.stringify(turnBody)).toBe(202);
-      const chat = StartChatModeResponseSchema.parse(turnBody);
-      expect(chat).toMatchObject({
-        outcome: 'task-handoff',
-        handoff: { targetMode: 'task' },
-      });
-      const workerTurns = store
-        .listThreadTurns('ws_demo', 'th_demo')
-        .filter((turn) => turn.id !== chat.turn.id);
-      expect(workerTurns).toHaveLength(1);
-      const workerTurn = workerTurns[0]!;
+      const task = StartTaskModeResponseSchema.parse(turnBody);
+      const workerTurn = store.getTurnById(task.turn.id);
       expect(workerTurn).toMatchObject({
         status: 'awaiting_human',
         humanGate: { kind: 'user-input' },
@@ -758,9 +765,6 @@ describe('SimulatedTurnExecutor', () => {
         )
       ) as Record<string, unknown>;
       expect(trace).toMatchObject({
-        knowledgeExclusions: [],
-        knowledgeSelectionInput: null,
-        knowledgeSelections: [],
         materialSelections: [
           expect.objectContaining({
             materialId: material.materialId,
@@ -954,6 +958,8 @@ describe('SimulatedTurnExecutor', () => {
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
       providerRegistry: new ProviderRegistry([
         {
           defaultModel: 'openai/gpt-5.2',

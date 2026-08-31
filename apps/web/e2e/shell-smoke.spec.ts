@@ -38,7 +38,7 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   await settings.focus();
   await expect(settings).toBeFocused();
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Settings sections' })).toBeVisible();
   await page.getByRole('button', { name: /^Debug$/ }).click();
   await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();

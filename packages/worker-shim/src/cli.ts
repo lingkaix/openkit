@@ -174,6 +174,8 @@ export interface WorkerShimRunOptions {
   integration?: SandboxIntegrationClient | undefined;
   /** AgentSession-private native state root retained across sequential Turns. */
   sessionStateRoot?: string | undefined;
+  /** Adapter already fixed by the owning Harness instance. */
+  expectedAdapterId?: string | undefined;
   /** Turn-private native output directory removed after collection. */
   nativeTurnDirectory?: string | undefined;
   /** Notification after the native child is supervised and Turn routes are bound. */
@@ -439,6 +441,9 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   rejectRetiredWorkerOverrides(packageManifest, environment);
   validateWorkerShimCommand(packageManifest);
   const adapterId = resolveWorkerAdapterId(packageManifest);
+  if (options.expectedAdapterId && adapterId !== options.expectedAdapterId) {
+    throw new Error('Worker package adapter does not match its owning Harness.');
+  }
   const adapter = WORKER_ADAPTERS[adapterId];
   if (!adapter) {
     throw new Error(`Unknown worker adapter: ${adapterId}`);

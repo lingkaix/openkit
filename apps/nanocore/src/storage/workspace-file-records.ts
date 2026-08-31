@@ -23,6 +23,7 @@ import {
   KnowledgeSourceSchema,
   MaterializedWorkspaceRootSchema,
 } from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   AgentSandboxSummarySchema,
   AgentSessionSchema,
@@ -34,8 +35,9 @@ import {
   TurnSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
+import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
-
+import { parseJsoncObject } from '../config/jsonc.js';
 import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT,
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
@@ -59,6 +61,10 @@ type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
 
 const CanonicalTimestampSchema = z.string().datetime();
+export const WorkspaceSystemRecordSchema = WorkspaceRecordSchema.omit({
+  name: true,
+  counts: true,
+}).strict();
 export const KnowledgeProposalRecordSchema = KnowledgeManagerDraftedProposalSchema.omit({
   status: true,
 })
@@ -801,13 +807,14 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
-  records: WorkspaceFileRecords
+  records: WorkspaceFileRecords,
+  updateWorkspaceConfigName = false
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
-  writeJsonAtomic(join(workspaceRoot, 'workspace.json'), records.workspace);
+  writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
   writeThreads(workspaceRoot, records);
   writeKnowledge(workspaceRoot, records);
   writeSources(workspaceRoot, records);
@@ -895,17 +902,32 @@ export function appendWorkspaceTurnEvent(workspaceRoot: string, event: SseEventE
  */
 function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFileRecords {
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
-  const workspacePath = join(workspaceRoot, 'workspace.json');
+  const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
+  const workspacePath = join(workspaceRoot, 'workspace-record.json');
+  const workspaceConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');
 
+  if (existsSync(retiredWorkspacePath)) {
+    throw new Error(`Unsupported canonical workspace file workspace.json: ${workspaceId}.`);
+  }
   if (!existsSync(workspacePath)) {
-    throw new Error(`Canonical workspace directory is missing workspace.json: ${workspaceId}.`);
+    throw new Error(
+      `Canonical workspace directory is missing workspace-record.json: ${workspaceId}.`
+    );
+  }
+  if (!existsSync(workspaceConfigPath)) {
+    throw new Error(
+      `Canonical workspace directory is missing config/workspace.jsonc: ${workspaceId}.`
+    );
   }
 
-  const workspace = WorkspaceRecordSchema.parse(readJson(workspacePath));
+  const workspaceRecord = WorkspaceSystemRecordSchema.parse(readJson(workspacePath));
+  const workspaceConfig = WorkspaceConfigSchema.parse(
+    parseJsoncObject(readCanonicalTextFile(workspaceConfigPath), workspaceConfigPath)
+  );
 
-  if (workspace.id !== workspaceId) {
+  if (workspaceRecord.id !== workspaceId) {
     throw new Error(
-      `Workspace record ${workspace.id} does not match its directory ${workspaceId}.`
+      `Workspace record ${workspaceRecord.id} does not match its directory ${workspaceId}.`
     );
   }
 
@@ -986,6 +1008,15 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
   );
   const knowledgeSources = loadKnowledgeSources(workspaceRoot, workspaceId, threadIds, turnsById);
   const agentSessions = loadAgentSessions(workspaceRoot, workspaceId, threadIds);
+  const workspace = WorkspaceRecordSchema.parse({
+    ...workspaceRecord,
+    name: workspaceConfig.workspace.name,
+    counts: {
+      threadCount: threads.length,
+      artifactCount: artifacts.length,
+      knowledgeEntryCount: knowledge.length,
+    },
+  });
   const history = parseCanonicalWorkspaceHistory({
     workspace,
     threads,
@@ -1015,6 +1046,70 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
       events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
     ]),
   };
+}
+
+/** Writes the system Workspace record and the field-preserving editable Workspace config. */
+function writeWorkspaceMetadata(
+  workspaceRoot: string,
+  workspace: WorkspaceRecord,
+  updateWorkspaceConfigName: boolean
+): void {
+  const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
+  const workspaceRecordPath = join(workspaceRoot, 'workspace-record.json');
+  const workspaceConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');
+
+  if (existsSync(retiredWorkspacePath)) {
+    throw new Error(`Unsupported canonical workspace file workspace.json: ${workspace.id}.`);
+  }
+
+  const configExists = existsSync(workspaceConfigPath);
+  if (existsSync(workspaceRecordPath) && !configExists) {
+    throw new Error(
+      `Canonical workspace directory is missing config/workspace.jsonc: ${workspace.id}.`
+    );
+  }
+
+  if (!configExists) {
+    writeJsonAtomic(workspaceConfigPath, {
+      schemaVersion: 1,
+      workspace: {
+        name: workspace.name,
+        defaultAgentId: null,
+      },
+    });
+  } else if (updateWorkspaceConfigName) {
+    const source = readCanonicalTextFile(workspaceConfigPath);
+    const config = WorkspaceConfigSchema.parse(parseJsoncObject(source, workspaceConfigPath));
+    if (config.workspace.name !== workspace.name) {
+      const updated = applyEdits(
+        source,
+        modify(source, ['workspace', 'name'], workspace.name, {
+          formattingOptions: { insertSpaces: true, tabSize: 2 },
+        })
+      );
+      WorkspaceConfigSchema.parse(parseJsoncObject(updated, workspaceConfigPath));
+      writeFileAtomic(workspaceConfigPath, updated);
+    }
+  }
+
+  writeJsonAtomic(workspaceRecordPath, projectWorkspaceSystemRecord(workspace));
+}
+
+/**
+ * Projects one public Workspace read model into its system-owned canonical record.
+ *
+ * @param workspace Joined public Workspace read model.
+ * @returns System-owned Workspace record without editable or derived fields.
+ */
+export function projectWorkspaceSystemRecord(workspace: WorkspaceRecord) {
+  return WorkspaceSystemRecordSchema.parse({
+    id: workspace.id,
+    kind: workspace.kind,
+    status: workspace.status,
+    importedFrom: workspace.importedFrom,
+    createdAt: workspace.createdAt,
+    updatedAt: workspace.updatedAt,
+  });
 }
 
 /**

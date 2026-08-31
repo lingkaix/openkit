@@ -1,10 +1,13 @@
 import { z } from 'zod';
 
 import { AuthoredAgentConfigSchema } from './agent.js';
+import { GatewayConfigSchema } from './gateway.js';
+import { InternalRoleProfilesConfigSchema } from './internal-role.js';
 import type { ConfigCatalogKind } from './policy.js';
 import { ProviderProfileSchema } from './provider.js';
 import { OpenKitConfigSchema } from './server.js';
 import { WorkspaceDataSourceCatalogSchema } from './source-catalog.js';
+import { UserConfigSchema } from './user.js';
 import { WorkspaceConfigSchema } from './workspace.js';
 
 /**
@@ -37,6 +40,16 @@ export function getConfigSchemaCatalog(): ConfigSchemaCatalogEntry[] {
       schema: z.toJSONSchema(ProviderProfileSchema) as Record<string, unknown>,
     },
     {
+      kind: 'gateway',
+      title: 'OpenKit Gateway config',
+      schema: z.toJSONSchema(GatewayConfigSchema) as Record<string, unknown>,
+    },
+    {
+      kind: 'internal-role',
+      title: 'OpenKit internal-role profiles',
+      schema: z.toJSONSchema(InternalRoleProfilesConfigSchema) as Record<string, unknown>,
+    },
+    {
       kind: 'agent',
       title: 'OpenKit agent config',
       schema: z.toJSONSchema(AuthoredAgentConfigSchema) as Record<string, unknown>,
@@ -50,6 +63,11 @@ export function getConfigSchemaCatalog(): ConfigSchemaCatalogEntry[] {
       kind: 'data-source',
       title: 'OpenKit workspace data source catalog',
       schema: z.toJSONSchema(WorkspaceDataSourceCatalogSchema) as Record<string, unknown>,
+    },
+    {
+      kind: 'user',
+      title: 'OpenKit User preference config',
+      schema: z.toJSONSchema(UserConfigSchema) as Record<string, unknown>,
     },
   ];
 }

@@ -2,6 +2,40 @@ import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { z } from 'zod';
+import { AuthoredAgentMcpEntrySchema, AuthoredAgentSandboxSchema } from './agent.js';
+
+/** Workspace grant bound to one reusable Agent credential requirement. */
+export const WorkspaceCredentialBindingSchema = z
+  .object({
+    requirementId: z.string().min(1),
+    vaultGrantId: z.string().min(1),
+  })
+  .strict();
+
+/** Workspace composition applied to one Server-supplied Agent Manifest. */
+export const WorkspaceAgentBindingSchema = z
+  .object({
+    agentId: z.string().min(1),
+    profileId: z.string().min(1).optional(),
+    preferredLogicalModelId: z.string().min(1).optional(),
+    allowedLogicalModelIds: z
+      .union([z.literal('all'), z.array(z.string().min(1)).min(1)])
+      .optional(),
+    credentialBindings: z.array(WorkspaceCredentialBindingSchema).default([]),
+    skills: z.array(z.object({ id: z.string().min(1) }).strict()).default([]),
+    mcp: z.array(AuthoredAgentMcpEntrySchema).default([]),
+    sandbox: AuthoredAgentSandboxSchema.optional(),
+  })
+  .strict();
+
+/** Workspace preference applied to one NanoCore internal role. */
+export const WorkspaceInternalRoleBindingSchema = z
+  .object({
+    roleId: z.string().min(1),
+    profileId: z.string().min(1).optional(),
+    preferredLogicalModelId: z.string().min(1).optional(),
+  })
+  .strict();
 
 /**
  * Workspace data root source kinds supported by V1.
@@ -53,6 +87,10 @@ export const WorkspaceRootSchema = z
  */
 export const WorkspaceConfigWorkspaceSchema = z
   .object({
+    name: z.string().trim().min(1),
+    defaultAgentId: z.string().min(1).nullable().optional(),
+    agents: z.array(WorkspaceAgentBindingSchema).default([]),
+    internalRoles: z.array(WorkspaceInternalRoleBindingSchema).default([]),
     assistant: z
       .object({
         repositoryInspection: z
@@ -90,14 +128,14 @@ export const WorkspaceConfigWorkspaceSchema = z
 export const WorkspaceConfigSchema = z
   .object({
     schemaVersion: z.literal(1).optional(),
-    workspace: WorkspaceConfigWorkspaceSchema.optional(),
+    workspace: WorkspaceConfigWorkspaceSchema,
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
     const ids = new Set<string>();
 
-    for (const [index, root] of (value.workspace?.roots ?? []).entries()) {
+    for (const [index, root] of value.workspace.roots.entries()) {
       if (ids.has(root.id)) {
         ctx.addIssue({
           code: 'custom',
@@ -108,7 +146,57 @@ export const WorkspaceConfigSchema = z
 
       ids.add(root.id);
     }
+    addDuplicateKeyIssues(value.workspace.agents, 'agentId', ctx, ['workspace', 'agents']);
+    addDuplicateKeyIssues(value.workspace.internalRoles, 'roleId', ctx, [
+      'workspace',
+      'internalRoles',
+    ]);
+    for (const [agentIndex, binding] of value.workspace.agents.entries()) {
+      addDuplicateKeyIssues(binding.credentialBindings, 'requirementId', ctx, [
+        'workspace',
+        'agents',
+        agentIndex,
+        'credentialBindings',
+      ]);
+      for (const [declarationIndex, declaration] of (
+        binding.sandbox?.credentialDeclarations ?? []
+      ).entries()) {
+        if ('vaultGrantId' in declaration) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Workspace Agent extensions must bind reusable credential requirements.',
+            path: [
+              'workspace',
+              'agents',
+              agentIndex,
+              'sandbox',
+              'credentialDeclarations',
+              declarationIndex,
+            ],
+          });
+        }
+      }
+    }
   });
+
+function addDuplicateKeyIssues<T extends Record<K, string>, K extends keyof T>(
+  values: readonly T[],
+  key: K,
+  ctx: z.RefinementCtx,
+  path: Array<string | number>
+): void {
+  const seen = new Set<string>();
+  for (const [index, value] of values.entries()) {
+    if (seen.has(value[key])) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `Duplicate ${String(key)}: ${value[key]}.`,
+        path: [...path, index, String(key)],
+      });
+    }
+    seen.add(value[key]);
+  }
+}
 
 /**
  * Authored workspace root source.
@@ -211,7 +299,7 @@ export function materializeWorkspaceRoots(
   const diagnostics: WorkspaceRootDiagnostic[] = [];
   const roots: MaterializedWorkspaceRoot[] = [];
 
-  for (const root of config.workspace?.roots ?? []) {
+  for (const root of config.workspace.roots) {
     const resolvedPath = resolve(workspaceRoot, root.path);
 
     if (!isInsideRoot(workspaceRoot, resolvedPath)) {

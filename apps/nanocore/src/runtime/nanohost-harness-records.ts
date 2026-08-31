@@ -20,6 +20,8 @@ export type NanoHostHarnessOperation = (typeof NANO_HOST_HARNESS_OPERATIONS)[num
 
 /** One private Harness command returned only on the exact pull route. */
 export interface NanoHostHarnessCommand {
+  readonly adapterId: 'codex' | 'opencode' | 'pi';
+  readonly harnessInstanceId: string;
   readonly schemaVersion: 1;
   readonly operationId: string;
   readonly sequence: number;
@@ -29,6 +31,7 @@ export interface NanoHostHarnessCommand {
 
 /** One exact private Harness operation result. */
 export interface NanoHostHarnessResult {
+  readonly harnessInstanceId: string;
   readonly schemaVersion: 1;
   readonly operationId: string;
   readonly sequence: number;
@@ -36,15 +39,17 @@ export interface NanoHostHarnessResult {
   readonly body: Readonly<Record<string, unknown>>;
 }
 
-/** Input for creating the first-slice one-Sandbox, one-Harness runtime projection. */
+/** Input for adding one Harness Instance to a Sandbox runtime projection. */
 export interface CreateNanoHostHarnessRuntimeInput {
-  readonly adapterId: 'codex';
+  readonly adapterId: 'codex' | 'opencode' | 'pi';
   readonly adapterVersion: string;
   readonly harnessBindingRef: string;
+  readonly harnessCompatibilityKey: string;
   readonly harnessInstanceId: string;
   readonly imageDigest: string;
   readonly sandboxBindingRef: string;
   readonly sandboxCompatibilityKey: string;
+  readonly sandboxIntegrationBindingRef: string;
   readonly sandboxRuntimeId: string;
   readonly runtimeTargetId: string;
   readonly timestamp: string;
@@ -72,15 +77,14 @@ export interface QueueNanoHostHarnessOperationInput {
 
 /** Input for dispatching the next exact Harness operation. */
 export interface DispatchNanoHostHarnessOperationInput {
-  readonly harnessBindingRef: string;
-  readonly nextExpectedSequence: number;
+  readonly sandboxIntegrationBindingRef: string;
   readonly now?: () => string;
   readonly routeToken?: () => string;
 }
 
 /** Input for settling one exact Harness result. */
 export interface SettleNanoHostHarnessOperationInput {
-  readonly harnessBindingRef: string;
+  readonly sandboxIntegrationBindingRef: string;
   readonly result: NanoHostHarnessResult;
   readonly timestamp: string;
 }
@@ -120,9 +124,15 @@ export interface NanoHostAgentSessionContinuityInspection {
 
 /** Derives the private native-continuity key from the owning SessionCompatibilityKey. */
 export function deriveNanoHostAgentSessionCompatibilityKey(input: {
+  readonly adapterId: string;
+  readonly adapterVersion: string;
+  readonly harnessCompatibilityKey: string;
   readonly sessionCompatibilityKey: string;
   readonly threadId: string;
 }): string {
+  requireIdentity(input.adapterId, 'Adapter');
+  requireIdentity(input.adapterVersion, 'Adapter version');
+  requireSha256(input.harnessCompatibilityKey, 'Harness compatibility key');
   if (!/^sha256:[0-9a-f]{64}$/.test(input.sessionCompatibilityKey)) {
     throw new Error('NanoHost SessionCompatibilityKey is invalid.');
   }
@@ -131,9 +141,10 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
     .update(
       JSON.stringify({
         nativeConversation: {
-          adapterId: 'codex',
-          adapterVersion: '0.144.1',
-          mode: 'session-continuity',
+          adapterId: input.adapterId,
+          adapterVersion: input.adapterVersion,
+          harnessCompatibilityKey: input.harnessCompatibilityKey,
+          mode: input.adapterId === 'codex' ? 'session-continuity' : 'bounded-turn',
         },
         sessionCompatibilityKey: input.sessionCompatibilityKey,
         threadId: input.threadId,
@@ -144,6 +155,8 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
 
 /** Raw durable Harness row used by checked transitions. */
 interface HarnessRow {
+  readonly adapter_id: 'codex' | 'opencode' | 'pi';
+  readonly adapter_version: string;
   readonly harness_instance_id: string;
   readonly harness_binding_ref: string;
   readonly max_open_sessions: number;
@@ -171,50 +184,93 @@ export function createNanoHostHarnessRuntime(
   requireIdentity(input.sandboxBindingRef, 'Sandbox binding');
   requireIdentity(input.harnessInstanceId, 'Harness');
   requireIdentity(input.harnessBindingRef, 'Harness binding');
+  requireSha256(input.harnessCompatibilityKey, 'Harness compatibility key');
+  requireIdentity(input.sandboxIntegrationBindingRef, 'Sandbox Integration binding');
   requireIdentity(input.adapterVersion, 'Adapter version');
   requireSha256(input.sandboxCompatibilityKey, 'Sandbox compatibility key');
   if (!/^sha256:[0-9a-f]{64}$/.test(input.imageDigest)) {
     throw new Error('NanoHost image digest is invalid.');
   }
-  if (input.sandboxBindingRef === input.harnessBindingRef) {
-    throw new Error('Sandbox and Harness bindings must be distinct.');
+  if (
+    new Set([input.sandboxBindingRef, input.sandboxIntegrationBindingRef, input.harnessBindingRef])
+      .size !== 3
+  ) {
+    throw new Error('Sandbox, Integration, and Harness bindings must be distinct.');
   }
 
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO sandbox_runtime_records (
-           sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
-           sandbox_compatibility_key, image_digest, environment_class, max_open_sessions,
-           max_active_turns, lifecycle_state, health_state, drain_state,
-           cleanup_state, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, 'codex-session-continuity', 8, 1, 'open', 'ready', 'accepting', 'clean', ?, ?)`
-      )
-      .run(
-        input.sandboxRuntimeId,
-        input.runtimeTargetId,
-        input.sandboxBindingRef,
-        input.sandboxCompatibilityKey,
-        input.imageDigest,
-        input.timestamp,
-        input.timestamp
-      );
+    const sandbox = coreDb.sqlite
+      .prepare('SELECT * FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
+      .get(input.sandboxRuntimeId) as
+      | {
+          readonly image_digest: string;
+          readonly max_harnesses: number;
+          readonly runtime_target_id: string;
+          readonly sandbox_binding_ref: string;
+          readonly sandbox_compatibility_key: string;
+          readonly sandbox_integration_binding_ref: string;
+        }
+      | undefined;
+    if (!sandbox) {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO sandbox_runtime_records (
+             sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
+             sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest,
+             environment_class, max_open_sessions, max_harnesses, max_active_turns,
+             lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'shared-worker', 64, 8, 1,
+             'open', 'ready', 'accepting', 'clean', ?, ?)`
+        )
+        .run(
+          input.sandboxRuntimeId,
+          input.runtimeTargetId,
+          input.sandboxBindingRef,
+          input.sandboxIntegrationBindingRef,
+          input.sandboxCompatibilityKey,
+          input.imageDigest,
+          input.timestamp,
+          input.timestamp
+        );
+    } else if (
+      sandbox.runtime_target_id !== input.runtimeTargetId ||
+      sandbox.sandbox_binding_ref !== input.sandboxBindingRef ||
+      sandbox.sandbox_integration_binding_ref !== input.sandboxIntegrationBindingRef ||
+      sandbox.sandbox_compatibility_key !== input.sandboxCompatibilityKey ||
+      sandbox.image_digest !== input.imageDigest
+    ) {
+      throw new Error('NanoHost retained Sandbox is incompatible with the requested Harness.');
+    } else {
+      const count = coreDb.sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM harness_instance_records WHERE sandbox_runtime_id = ?'
+        )
+        .get(input.sandboxRuntimeId) as { readonly count: number };
+      if (count.count >= sandbox.max_harnesses) {
+        throw new Error('NanoHost retained Sandbox has no Harness capacity.');
+      }
+    }
+    const mode = input.adapterId === 'codex' ? 'session-continuity' : 'bounded-turn';
     coreDb.sqlite
       .prepare(
         `INSERT INTO harness_instance_records (
-           harness_instance_id, sandbox_runtime_id, harness_binding_ref,
+           harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
            runtime_family, adapter_id, adapter_version, protocol_version,
            capabilities_json, max_open_sessions, max_active_turns,
            open_session_count, active_turn_count, lifecycle_state, drain_state,
            next_sequence, operation_state, created_at, updated_at
-         ) VALUES (?, ?, ?, 'codex', 'codex', ?, 1, '["session-continuity"]', 8, 1, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 8, 1, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?)`
       )
       .run(
         input.harnessInstanceId,
         input.sandboxRuntimeId,
         input.harnessBindingRef,
+        input.harnessCompatibilityKey,
+        input.adapterId,
+        input.adapterId,
         input.adapterVersion,
+        JSON.stringify([mode]),
         input.timestamp,
         input.timestamp
       );
@@ -226,7 +282,10 @@ export function createNanoHostHarnessRuntime(
 }
 
 /** Removes one fully deleted physical Sandbox projection and its cascading private bindings. */
-export function removeNanoHostHarnessRuntime(coreDb: CoreDb, harnessInstanceId: string): void {
+export function removeNanoHostSandboxRuntimeForHarness(
+  coreDb: CoreDb,
+  harnessInstanceId: string
+): void {
   requireIdentity(harnessInstanceId, 'Harness');
   const row = coreDb.sqlite
     .prepare(
@@ -324,10 +383,6 @@ export function inspectNanoHostAgentSessionContinuity(
       throw new Error('NanoHost AgentSession admission lease lineage changed concurrently.');
     }
   }
-  const expectedRuntimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
-    sessionCompatibilityKey: input.agentSessionCompatibilityKey,
-    threadId: input.threadId,
-  });
   const hasActiveLease = Boolean(
     coreDb.sqlite
       .prepare(
@@ -351,6 +406,9 @@ export function inspectNanoHostAgentSessionContinuity(
               b.cleanup_state AS bindingCleanupState,
               h.harness_instance_id AS harnessInstanceId,
               h.harness_binding_ref AS harnessBindingRef,
+              h.harness_compatibility_key AS harnessCompatibilityKey,
+              h.adapter_id AS adapterId,
+              h.adapter_version AS adapterVersion,
               h.lifecycle_state AS harnessLifecycleState,
               h.drain_state AS harnessDrainState,
               h.active_turn_count AS activeTurnCount,
@@ -367,6 +425,8 @@ export function inspectNanoHostAgentSessionContinuity(
     .get(input.agentSessionId) as
     | {
         readonly activeTurnCount: number;
+        readonly adapterId: string;
+        readonly adapterVersion: string;
         readonly agentSessionCompatibilityKey: string;
         readonly agentSessionRuntimeBindingId: string;
         readonly bindingCleanupState: string;
@@ -374,6 +434,7 @@ export function inspectNanoHostAgentSessionContinuity(
         readonly currentLeaseId: string | null;
         readonly currentTurnId: string | null;
         readonly harnessBindingRef: string;
+        readonly harnessCompatibilityKey: string;
         readonly harnessDrainState: string;
         readonly harnessInstanceId: string;
         readonly harnessLifecycleState: string;
@@ -394,6 +455,13 @@ export function inspectNanoHostAgentSessionContinuity(
     }
     return null;
   }
+  const expectedRuntimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
+    adapterId: row.adapterId,
+    adapterVersion: row.adapterVersion,
+    harnessCompatibilityKey: row.harnessCompatibilityKey,
+    sessionCompatibilityKey: input.agentSessionCompatibilityKey,
+    threadId: input.threadId,
+  });
   if (hasActiveLease) {
     throw new Error('NanoHost AgentSession still owns a live scheduler lease.');
   }
@@ -552,14 +620,25 @@ export function dispatchNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: DispatchNanoHostHarnessOperationInput
 ): NanoHostHarnessCommand | null {
-  requireSequence(input.nextExpectedSequence);
+  requireIdentity(input.sandboxIntegrationBindingRef, 'Sandbox Integration binding');
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
-    const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
-    if (input.nextExpectedSequence !== harness.next_sequence) {
-      throw new Error('NanoHost Harness poll sequence is stale or future.');
+    const integration = coreDb.sqlite
+      .prepare(
+        'SELECT sandbox_runtime_id AS sandboxRuntimeId FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?'
+      )
+      .get(input.sandboxIntegrationBindingRef) as { readonly sandboxRuntimeId: string } | undefined;
+    if (!integration) {
+      throw new Error('NanoHost Sandbox Integration binding is missing or stale.');
     }
-    if (harness.operation_state !== 'queued') {
+    const harness = coreDb.sqlite
+      .prepare(
+        `SELECT * FROM harness_instance_records
+         WHERE sandbox_runtime_id = ? AND operation_state = 'queued'
+         ORDER BY updated_at, harness_instance_id LIMIT 1`
+      )
+      .get(integration.sandboxRuntimeId) as HarnessRow | undefined;
+    if (!harness) {
       coreDb.sqlite.exec('COMMIT');
       return null;
     }
@@ -609,7 +688,7 @@ export function dispatchNanoHostHarnessOperation(
     const operationId = sha256(
       canonicalJson({
         body: durableBody,
-        harnessBindingRef: input.harnessBindingRef,
+        harnessBindingRef: harness.harness_binding_ref,
         operation: harness.operation,
         sequence: harness.next_sequence,
       })
@@ -637,7 +716,9 @@ export function dispatchNanoHostHarnessOperation(
     }
     coreDb.sqlite.exec('COMMIT');
     return {
+      adapterId: harness.adapter_id,
       body: wireBody,
+      harnessInstanceId: harness.harness_instance_id,
       operation: harness.operation,
       operationId,
       schemaVersion: 1,
@@ -657,7 +738,11 @@ export function settleNanoHostHarnessOperation(
   const resultJson = canonicalJson(input.result as unknown as Record<string, unknown>);
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
-    const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+    const harness = requireHarnessForIntegration(
+      coreDb,
+      input.sandboxIntegrationBindingRef,
+      input.result.harnessInstanceId
+    );
     if (harness.operation_state === 'settled') {
       if (
         harness.operation_id === input.result.operationId &&
@@ -980,7 +1065,10 @@ function requireHarnessOperationBody(
   }
   if (operation === 'session.open') {
     requireSha256(body.agentSessionCompatibilityKey, 'AgentSession compatibility key');
-    if (body.adapterId !== 'codex' || (body.effectiveSetupGeneration as number) < 1) {
+    if (
+      !['codex', 'opencode', 'pi'].includes(body.adapterId as string) ||
+      (body.effectiveSetupGeneration as number) < 1
+    ) {
       throw new Error('NanoHost Harness session.open adapter or setup generation is unsupported.');
     }
   }
@@ -993,7 +1081,7 @@ function requireHarnessResult(
 ): void {
   requireExactFields(
     result as unknown as Record<string, unknown>,
-    ['body', 'disposition', 'operationId', 'schemaVersion', 'sequence'],
+    ['body', 'disposition', 'harnessInstanceId', 'operationId', 'schemaVersion', 'sequence'],
     'Harness result'
   );
   if (
@@ -1005,6 +1093,7 @@ function requireHarnessResult(
     throw new Error('NanoHost Harness result envelope is invalid.');
   }
   requireSha256(result.operationId, 'Harness operation id');
+  requireIdentity(result.harnessInstanceId, 'Harness');
   if (result.disposition === 'unknown') {
     requireExactFields(result.body, ['reasonCode'], 'unknown result body');
     if (result.body.reasonCode !== 'outcome_unknown') {
@@ -1196,6 +1285,27 @@ function requireHarnessByBinding(coreDb: CoreDb, harnessBindingRef: string): Har
   return row;
 }
 
+/** Reads one NanoCore-selected Harness through its owning Sandbox Integration. */
+function requireHarnessForIntegration(
+  coreDb: CoreDb,
+  sandboxIntegrationBindingRef: string,
+  harnessInstanceId: string
+): HarnessRow {
+  requireIdentity(sandboxIntegrationBindingRef, 'Sandbox Integration binding');
+  requireIdentity(harnessInstanceId, 'Harness');
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT h.* FROM harness_instance_records h
+       JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+       WHERE s.sandbox_integration_binding_ref = ? AND h.harness_instance_id = ?`
+    )
+    .get(sandboxIntegrationBindingRef, harnessInstanceId) as HarnessRow | undefined;
+  if (!row) {
+    throw new Error('NanoHost Harness is not owned by the current Sandbox Integration.');
+  }
+  return row;
+}
+
 /** Requires an exact object field set. */
 function requireExactFields(
   value: Readonly<Record<string, unknown>>,
@@ -1253,13 +1363,6 @@ function requireSha256(value: unknown, label: string): string {
     throw new Error(`NanoHost ${label} is invalid.`);
   }
   return value;
-}
-
-/** Requires a non-negative safe operation sequence. */
-function requireSequence(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error('NanoHost Harness operation sequence is invalid.');
-  }
 }
 
 /** Requires one canonical 32-byte unpadded base64url route token. */

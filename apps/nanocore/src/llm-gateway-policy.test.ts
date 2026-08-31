@@ -8,22 +8,34 @@ import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 
-function createConfiguredProviderOptions(
-  gateway: { allowedProviderIds?: string[]; enabled?: boolean } = {}
-) {
+function createConfiguredProviderOptions(gateway: { enabled?: boolean } = {}) {
   return {
-    openKitConfig: {
-      defaults: { gatewayProviderId: 'ollama', gatewayModel: 'llama3.2' },
-      gateway: { openaiCompatible: gateway },
+    gatewayConfig: {
+      schemaVersion: 1 as const,
+      enabled: gateway.enabled ?? true,
+      defaultLogicalModelId: 'quick-chat',
+      logicalModels: [
+        {
+          id: 'quick-chat',
+          displayName: 'Quick Chat',
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'ollama',
+              providerModel: 'openai/gpt-5.2',
+            },
+          ],
+        },
+      ],
+      requiredFeatures: [],
     },
     providerRegistry: new ProviderRegistry([
       {
-        defaultModel: 'llama3.2',
+        defaultModel: 'openai/gpt-5.2',
         displayName: 'Ollama',
         id: 'ollama',
         kind: 'local',
-        models: ['llama3.2'],
-        vendor: 'ollama',
+        models: ['openai/gpt-5.2'],
       },
     ]),
   };
@@ -54,7 +66,7 @@ describe('LLM gateway policy controls', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'llama3.2',
+          model: 'quick-chat',
           messages: [{ role: 'user', content: 'Hello' }],
         }),
         headers: { 'content-type': 'application/json' },
@@ -68,43 +80,6 @@ describe('LLM gateway policy controls', () => {
         action: 'llm.gateway.chat_completions',
         enforcement_point: 'llm.gateway.policy',
         reason_code: 'gateway_disabled',
-        result: 'deny',
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('can restrict gateway routing to approved providers', async () => {
-    const coreDb = createTestCoreDb();
-    const app = createApp({
-      ...createConfiguredProviderOptions({ allowedProviderIds: ['openai'] }),
-      coreDb,
-      llmPiAiClient: {
-        createChatCompletion: async () => {
-          throw new Error('Policy should block before provider call');
-        },
-      } as unknown as PiAiGatewayClient,
-    });
-
-    try {
-      const res = await app.request('/v1/chat/completions', {
-        method: 'POST',
-        body: JSON.stringify({
-          model: 'llama3.2',
-          messages: [{ role: 'user', content: 'Hello' }],
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      expect(res.status).toBe(403);
-      await expect(res.json()).resolves.toMatchObject({
-        error: { code: 'gateway_provider_not_allowed' },
-      });
-      expect(latestPermissionDecision(coreDb)).toMatchObject({
-        action: 'llm.gateway.chat_completions',
-        enforcement_point: 'llm.gateway.policy',
-        reason_code: 'gateway_provider_not_allowed',
         result: 'deny',
       });
     } finally {
@@ -138,7 +113,7 @@ describe('LLM gateway policy controls', () => {
       const res = await app.request('/v1/chat/completions', {
         method: 'POST',
         body: JSON.stringify({
-          model: 'llama3.2',
+          model: 'quick-chat',
           messages: [{ role: 'user', content: 'Hello' }],
         }),
         headers: { 'content-type': 'application/json' },

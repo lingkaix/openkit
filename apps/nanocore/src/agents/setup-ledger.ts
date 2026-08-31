@@ -21,11 +21,15 @@ export interface RedactedResolvedAgentSetup {
       readonly network: NonNullable<ResolvedAgentSetup['manifest']['sandbox']>['network'];
     };
   };
-  /** Selected provider identity and model without secret references or values. */
-  readonly provider: Pick<
-    NonNullable<ResolvedAgentSetup['provider']>,
-    'model' | 'providerId'
-  > | null;
+  /** Exact logical model contract exposed to the selected worker. */
+  readonly logicalModels: {
+    readonly preferredLogicalModelId: string;
+    readonly allowed: Array<{
+      readonly id: string;
+      readonly capabilities: readonly string[];
+      readonly modelFamilyId: string;
+    }>;
+  };
 }
 
 /** Durable workspace-scoped resolved setup record. */
@@ -40,8 +44,8 @@ export interface ResolvedAgentSetupRecord {
   readonly requestId: string | null;
   /** Resolved agent id. */
   readonly agentId: string;
-  /** Resolved provider id, when configured. */
-  readonly providerId: string | null;
+  /** Preferred worker-visible logical model id. */
+  readonly logicalModelId: string;
   /** Runtime family. */
   readonly runtimeKind: string;
   /** Runtime adapter id. */
@@ -76,7 +80,7 @@ interface ResolvedAgentSetupRow {
   readonly turn_id: string | null;
   readonly request_id: string | null;
   readonly agent_id: string;
-  readonly provider_id: string | null;
+  readonly logical_model_id: string;
   readonly runtime_kind: string;
   readonly runtime_adapter: string;
   readonly required_features_json: string;
@@ -105,7 +109,7 @@ export function recordResolvedAgentSetup(
         turn_id,
         request_id,
         agent_id,
-        provider_id,
+        logical_model_id,
         runtime_kind,
         runtime_adapter,
         required_features_json,
@@ -119,7 +123,7 @@ export function recordResolvedAgentSetup(
       input.turnId ?? null,
       input.requestId ?? null,
       input.setup.manifest.id,
-      input.setup.provider?.providerId ?? null,
+      input.setup.logicalModels.preferredLogicalModelId,
       input.setup.manifest.runtime.kind,
       input.setup.manifest.runtime.adapter,
       JSON.stringify(input.setup.manifest.requiredFeatures),
@@ -151,7 +155,7 @@ export function requireResolvedAgentSetup(
         turn_id,
         request_id,
         agent_id,
-        provider_id,
+        logical_model_id,
         runtime_kind,
         runtime_adapter,
         required_features_json,
@@ -189,7 +193,7 @@ export function listExportableResolvedAgentSetups(
           turn_id,
           request_id,
           agent_id,
-          provider_id,
+          logical_model_id,
           runtime_kind,
           runtime_adapter,
           required_features_json,
@@ -220,7 +224,7 @@ export function importResolvedAgentSetups(
       turn_id,
       request_id,
       agent_id,
-      provider_id,
+      logical_model_id,
       runtime_kind,
       runtime_adapter,
       required_features_json,
@@ -236,7 +240,7 @@ export function importResolvedAgentSetups(
       record.turnId,
       record.requestId,
       record.agentId,
-      record.providerId,
+      record.logicalModelId,
       record.runtimeKind,
       record.runtimeAdapter,
       JSON.stringify(record.requiredFeatures),
@@ -261,7 +265,7 @@ function resolvedAgentSetupFromRow(row: ResolvedAgentSetupRow): ResolvedAgentSet
     turnId: row.turn_id,
     requestId: row.request_id,
     agentId: row.agent_id,
-    providerId: row.provider_id,
+    logicalModelId: row.logical_model_id,
     runtimeKind: row.runtime_kind,
     runtimeAdapter: row.runtime_adapter,
     requiredFeatures: JSON.parse(row.required_features_json) as string[],
@@ -309,6 +313,7 @@ function redactResolvedAgentSetup(
             if (declaration.visibility === 'sandbox-provider') {
               return {
                 id: declaration.id,
+                ...(declaration.requirementId ? { requirementId: declaration.requirementId } : {}),
                 provider: {
                   credentialKey: declaration.provider.credentialKey,
                   instanceId: declaration.provider.instanceId,
@@ -322,6 +327,7 @@ function redactResolvedAgentSetup(
             if (declaration.visibility === 'runtime-file') {
               return {
                 id: declaration.id,
+                ...(declaration.requirementId ? { requirementId: declaration.requirementId } : {}),
                 targetPath: declaration.targetPath,
                 vaultGrantId: declaration.vaultGrantId,
                 visibility: declaration.visibility,
@@ -329,6 +335,7 @@ function redactResolvedAgentSetup(
             }
             return {
               id: declaration.id,
+              ...(declaration.requirementId ? { requirementId: declaration.requirementId } : {}),
               targetEnvVarName: declaration.targetEnvVarName,
               vaultGrantId: declaration.vaultGrantId,
               visibility: declaration.visibility,
@@ -348,11 +355,13 @@ function redactResolvedAgentSetup(
         })),
       },
     },
-    provider: setup.provider
-      ? {
-          model: setup.provider.model,
-          providerId: setup.provider.providerId,
-        }
-      : null,
+    logicalModels: {
+      preferredLogicalModelId: setup.logicalModels.preferredLogicalModelId,
+      allowed: setup.logicalModels.allowed.map((model) => ({
+        id: model.id,
+        capabilities: [...model.capabilities],
+        modelFamilyId: model.modelFamilyId,
+      })),
+    },
   };
 }

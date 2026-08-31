@@ -5,15 +5,18 @@ import {
   parseWorkspaceDataSourceCatalog,
   parseWorkspaceExportManifest,
   WORKSPACE_EXPORT_FORMAT_VERSION,
+  WorkspaceConfigSchema,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import {
   artifactContentFileName,
   assertSafeWorkspacePathSegment,
   listUnresolvedUserInputRequestItemIds,
   parseCanonicalWorkspaceHistory,
+  projectWorkspaceSystemRecord,
   readCanonicalTextFile,
 } from './workspace-file-records.js';
 import {
@@ -279,6 +282,16 @@ export function writeWorkspaceExportTree(
     turnEvents: input.turnEvents,
   });
   const knowledge = input.knowledge.map((record) => KnowledgeEntrySchema.parse(record));
+  const portableFileState = input.portableFileState;
+  if (!portableFileState?.workspaceConfig) {
+    throw new Error('Workspace export requires config/workspace.jsonc.');
+  }
+  const workspaceConfig = WorkspaceConfigSchema.parse(
+    parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc')
+  );
+  if (workspaceConfig.workspace.name !== history.workspace.name) {
+    throw new Error('Workspace config name does not match the public Workspace projection.');
+  }
   const unresolvedUserInputRequestIds = listUnresolvedUserInputRequestItemIds(
     history.itemRevisions
   );
@@ -314,7 +327,10 @@ export function writeWorkspaceExportTree(
     const recordsRoot = join(input.exportRoot, 'records');
 
     mkdirSync(recordsRoot, { recursive: true });
-    writeJson(join(recordsRoot, 'workspace.json'), history.workspace);
+    writeJson(
+      join(recordsRoot, 'workspace-record.json'),
+      projectWorkspaceSystemRecord(history.workspace)
+    );
     writeJsonl(join(recordsRoot, 'threads.jsonl'), history.threads);
     writeJsonl(join(recordsRoot, 'turns.jsonl'), history.turns);
     writeJsonl(join(recordsRoot, 'knowledge.jsonl'), knowledge);
@@ -331,7 +347,7 @@ export function writeWorkspaceExportTree(
       join(recordsRoot, 'turn-events.jsonl'),
       history.turnEvents.flatMap(([, events]) => events)
     );
-    writeWorkspacePortableExportState(input.exportRoot, input.portableFileState);
+    writeWorkspacePortableExportState(input.exportRoot, portableFileState);
     for (const artifact of history.artifacts) {
       const artifactRoot = join(input.exportRoot, 'artifacts', artifact.id);
       const filesRoot = join(artifactRoot, 'files');
@@ -739,7 +755,7 @@ function toExportedResolvedAgentSetupRecord(value: unknown): unknown {
     turnId: record.turnId,
     requestId: record.requestId,
     agentId: record.agentId,
-    providerId: record.providerId,
+    logicalModelId: record.logicalModelId,
     runtimeKind: record.runtimeKind,
     runtimeAdapter: record.runtimeAdapter,
     setupRequiredFeatures: record.requiredFeatures,

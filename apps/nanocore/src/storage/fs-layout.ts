@@ -241,7 +241,7 @@ export function ensureConfigTemplateSurface(root: string): void {
     mkdirSync(path, { recursive: true });
   }
 
-  copyRootConfigTemplate(configRoot);
+  copyRootConfigTemplates(configRoot);
   copyConfigTemplates(providersRoot, 'providers', true);
   copyConfigTemplates(agentsRoot, 'agents', false);
 }
@@ -843,19 +843,16 @@ export function resolveDataRootPath(root: string, ...segments: string[]): string
 }
 
 /**
- * Copies the root server.jsonc template into the data root when missing.
+ * Copies Server-scoped root config templates into the data root when missing.
  *
  * @param configRoot Config directory under the data root.
  */
-function copyRootConfigTemplate(configRoot: string): void {
-  const sourcePath = findConfigTemplateFile('server.jsonc');
-  const targetPath = join(configRoot, 'server.jsonc');
-
-  if (!sourcePath || existsSync(targetPath)) {
-    return;
+function copyRootConfigTemplates(configRoot: string): void {
+  for (const fileName of ['server.jsonc', 'gateway.jsonc', 'internal-role-profiles.jsonc']) {
+    const sourcePath = findConfigTemplateFile(fileName);
+    const targetPath = join(configRoot, fileName);
+    if (sourcePath && !existsSync(targetPath)) copyFileSync(sourcePath, targetPath);
   }
-
-  copyFileSync(sourcePath, targetPath);
 }
 
 /**

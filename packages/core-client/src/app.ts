@@ -31,6 +31,8 @@ import {
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
   ConsumeOpenKitBootstrapTokenResponseSchema,
+  type ConversationTargetCatalog,
+  ConversationTargetCatalogSchema,
   type ConvertGoalSteeringToFollowUpRequest,
   ConvertGoalSteeringToFollowUpRequestSchema,
   type ConvertGoalSteeringToFollowUpResponse,
@@ -289,10 +291,6 @@ import {
   SetProviderApiKeyResponseSchema,
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
-  type StartChatModeRequest,
-  StartChatModeRequestSchema,
-  type StartChatModeResponse,
-  StartChatModeResponseSchema,
   type StartTaskModeRequest,
   StartTaskModeRequestSchema,
   type StartTaskModeResponse,
@@ -307,6 +305,10 @@ import {
   SubmitArtifactReviewDecisionRequestSchema,
   type SubmitArtifactReviewDecisionResponse,
   SubmitArtifactReviewDecisionResponseSchema,
+  type SubmitConversationRequest,
+  SubmitConversationRequestSchema,
+  type SubmitConversationResponse,
+  SubmitConversationResponseSchema,
   type SubmitGoalReviewDecisionRequest,
   SubmitGoalReviewDecisionRequestSchema,
   type SubmitGoalReviewDecisionResponse,
@@ -430,8 +432,8 @@ export type RetryInterruptedWorkerCheckpointInput =
   OptionalRequestId<RetryInterruptedWorkerCheckpointRequest>;
 /** Task Mode start input with optional caller-provided request id. */
 export type StartTaskModeInput = OptionalRequestId<StartTaskModeRequest>;
-/** Chat Mode start input with optional caller-provided request id. */
-export type StartChatModeInput = OptionalRequestId<StartChatModeRequest>;
+/** Structured conversation input with optional caller-provided request id. */
+export type SubmitConversationInput = OptionalRequestId<SubmitConversationRequest>;
 /** Goal Mode start input with optional caller-provided request id. */
 export type StartThreadGoalInput = OptionalRequestId<StartThreadGoalRequest>;
 /** Workspace Artifact import input with optional caller-provided request id. */
@@ -736,12 +738,17 @@ export interface AppApiClient {
     threadId: string,
     input: StartTaskModeInput
   ): Promise<StartTaskModeResponse>;
-  /** Starts one thread-scoped Chat Mode Assistant turn. */
-  startChatMode(
+  /** Lists context-sensitive targets available to the shared Composer. */
+  getConversationTargets(
+    workspaceId: string,
+    threadId?: string
+  ): Promise<ConversationTargetCatalog>;
+  /** Submits one message to a selected conversation target. */
+  submitConversation(
     workspaceId: string,
     threadId: string,
-    input: StartChatModeInput
-  ): Promise<StartChatModeResponse>;
+    input: SubmitConversationInput
+  ): Promise<SubmitConversationResponse>;
   /** Runs one bounded Knowledge Manager answer operation. */
   answerKnowledgeManager(
     workspaceId: string,
@@ -1367,15 +1374,20 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         StartTaskModeResponseSchema
       );
     },
-    startChatMode: (workspaceId, threadId, input) => {
+    submitConversation: (workspaceId, threadId, input) => {
       const request = { ...input, requestId: input.requestId ?? createRequestId() };
 
       return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/chat`,
-        StartChatModeRequestSchema.parse(request),
-        StartChatModeResponseSchema
+        `/api/app/workspaces/${workspaceId}/threads/${threadId}/conversation-turns`,
+        SubmitConversationRequestSchema.parse(request),
+        SubmitConversationResponseSchema
       );
     },
+    getConversationTargets: (workspaceId, threadId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/conversation-targets${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ''}`,
+        ConversationTargetCatalogSchema
+      ),
     answerKnowledgeManager: (workspaceId, input) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/knowledge/manager/answer`,

@@ -351,11 +351,35 @@ function authorRuntimeConfig(dataRoot, keyFilePath) {
     join(dataRoot, 'config', 'server.jsonc'),
     `${JSON.stringify(
       {
-        defaults: { gatewayModel: MODEL_ID, gatewayProviderId: PROVIDER_PROFILE_ID },
-        gateway: { openaiCompatible: { allowedProviderIds: [PROVIDER_PROFILE_ID], enabled: true } },
         mode: 'local',
         schemaVersion: 1,
         vault: { encryptedFile: { keyFilePath } },
+      },
+      null,
+      2
+    )}\n`,
+    { flag: 'wx', mode: 0o600 }
+  );
+  writeFileSync(
+    join(dataRoot, 'config', 'gateway.jsonc'),
+    `${JSON.stringify(
+      {
+        defaultLogicalModelId: MODEL_ID,
+        enabled: true,
+        logicalModels: [
+          {
+            displayName: MODEL_ID,
+            id: MODEL_ID,
+            routes: [
+              {
+                id: 'primary',
+                providerModel: MODEL_ID,
+                providerProfileId: PROVIDER_PROFILE_ID,
+              },
+            ],
+          },
+        ],
+        schemaVersion: 1,
       },
       null,
       2
@@ -637,8 +661,7 @@ export async function runPublicSequence(fetcher, port, streamFacts) {
         account?.accountSlotId === ACCOUNT_SLOT_ID
     ),
     diagnostics: {
-      model: diagnostics.json?.defaults?.gateway?.model ?? null,
-      providerId: diagnostics.json?.defaults?.gateway?.providerId ?? null,
+      model: diagnostics.json?.gateway?.defaultModelId ?? null,
       status: diagnostics.status,
     },
     finalStatus: { status: finalStatus.status, value: finalStatus.json?.status ?? null },
@@ -726,10 +749,8 @@ export function assertLifecycleOutcomes(observations) {
     'Prepared account did not report logged_in before inference.'
   );
   assert(
-    observations.diagnostics.status === 200 &&
-      observations.diagnostics.providerId === PROVIDER_PROFILE_ID &&
-      observations.diagnostics.model === MODEL_ID,
-    'Public diagnostics did not report the authored Gateway defaults.'
+    observations.diagnostics.status === 200 && observations.diagnostics.model === MODEL_ID,
+    'Public diagnostics did not report the authored logical-model default.'
   );
   assert(observations.inference.status === 200, 'Real Codex inference did not return HTTP 200.');
   assert(observations.inference.completed, 'Real Codex stream did not reach response.completed.');

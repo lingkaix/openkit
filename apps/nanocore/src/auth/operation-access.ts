@@ -499,7 +499,6 @@ registerOperations(
     'retryInterruptedWorkerCheckpoint',
     'retrySchedulerAdmission',
     'cancelSchedulerAdmission',
-    'startChatMode',
     'startTaskMode',
     'startThreadGoal',
     'submitThreadGoalSteering',
@@ -519,6 +518,18 @@ registerOperations(
     scope: 'workspace',
   }
 );
+registerOperations(catalog, ['submitConversation'], {
+  mutating: true,
+  policyOperation: 'turn.run',
+  resolver: 'workspace-child-lineage',
+  scope: 'workspace',
+});
+registerOperations(catalog, ['getConversationTargets'], {
+  mutating: false,
+  policyOperation: 'thread.read',
+  resolver: 'path-workspace',
+  scope: 'workspace',
+});
 registerOperations(
   catalog,
   [

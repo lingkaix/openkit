@@ -79,7 +79,7 @@ describe('workspace file-record write and load boundaries', () => {
     renameSync(canonicalRoot, ownerNestedRoot);
 
     expect(existsSync(canonicalRoot)).toBe(false);
-    expect(existsSync(join(ownerNestedRoot, 'workspace.json'))).toBe(true);
+    expect(existsSync(join(ownerNestedRoot, 'workspace-record.json'))).toBe(true);
 
     expect(() => new FsStore({ dataRoot })).toThrow(/owner-nested Workspace tree/);
   });

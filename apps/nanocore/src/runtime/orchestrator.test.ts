@@ -10,7 +10,10 @@ import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.js';
 import { startTurn } from './orchestrator.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
@@ -62,7 +65,7 @@ class RecordingTurnExecutor implements TurnExecutor {
  */
 function manifest(
   id: string,
-  options: Parameters<typeof createTestAgentSetup>[0] = { provider: null }
+  options: Parameters<typeof createTestAgentSetup>[0] = {}
 ): AgentManifest {
   const setup = createTestAgentSetup(options);
 
@@ -71,6 +74,40 @@ function manifest(
     displayName: id,
     id,
   };
+}
+
+/** Builds a valid logical Gateway catalog with caller-chosen public model ids. */
+function gatewayConfigFor(...logicalModelIds: string[]) {
+  return {
+    schemaVersion: 1 as const,
+    enabled: true,
+    defaultLogicalModelId: logicalModelIds[0] ?? null,
+    logicalModels: logicalModelIds.map((id) => ({
+      id,
+      displayName: id,
+      routes: [
+        {
+          id: `${id}-route`,
+          providerProfileId: 'agent-openrouter',
+          providerModel: 'openai/gpt-5.2',
+        },
+      ],
+    })),
+    requiredFeatures: [],
+  };
+}
+
+/** Provider supply paired with the standard logical Gateway test route. */
+function localProviderRegistry(): ProviderRegistry {
+  return new ProviderRegistry([
+    {
+      defaultModel: 'openai/gpt-5.2',
+      displayName: 'Test inference provider',
+      id: 'agent-openrouter',
+      kind: 'local',
+      models: ['openai/gpt-5.2'],
+    },
+  ]);
 }
 
 describe('startTurn orchestrator', () => {
@@ -82,11 +119,13 @@ describe('startTurn orchestrator', () => {
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest(agentId);
     const handle = await startTurn({
+      gatewayConfig: createTestGatewayConfig(),
+      defaultAgentId: 'agent_codex_host',
       triggerActor: { kind: 'user', id: 'user_local' },
       agentId,
       agentManifests: [configuredManifest],
       input: 'Run tests',
-      providerRegistry: new ProviderRegistry([]),
+      providerRegistry: localProviderRegistry(),
       store,
       threadId: 'th_demo',
       turnExecutor,
@@ -101,8 +140,10 @@ describe('startTurn orchestrator', () => {
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const handle = await startTurn({
+      gatewayConfig: createTestGatewayConfig(),
+      defaultAgentId: 'agent_codex_host',
       input: 'Run tests',
-      providerRegistry: new ProviderRegistry([]),
+      providerRegistry: localProviderRegistry(),
       store,
       threadId: 'th_demo',
       triggerActor: {
@@ -126,7 +167,10 @@ describe('startTurn orchestrator', () => {
     expect(turnExecutor.calls).toEqual([
       {
         context: {
-          agentSetup: { manifest: manifest('agent_codex_host'), provider: null },
+          agentSetup: expect.objectContaining({
+            manifest: manifest('agent_codex_host'),
+            profileId: 'default',
+          }),
           requestId: null,
           triggerActor: {
             kind: 'automation',
@@ -152,6 +196,8 @@ describe('startTurn orchestrator', () => {
 
     await expect(
       startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: 'agent_codex_host',
         triggerActor: { kind: 'user', id: 'user_local' },
         agentManifests: [
           {
@@ -160,7 +206,7 @@ describe('startTurn orchestrator', () => {
           },
         ],
         input: 'Run tests',
-        providerRegistry: new ProviderRegistry([]),
+        providerRegistry: localProviderRegistry(),
         store,
         threadId: 'th_demo',
         turnExecutor,
@@ -175,100 +221,14 @@ describe('startTurn orchestrator', () => {
     expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
   });
 
-  it('blocks missing provider credentials before creating a turn or starting the executor', async () => {
-    const store = createDemoStore();
-    const turnExecutor = new RecordingTurnExecutor();
-
-    await expect(
-      startTurn({
-        triggerActor: { kind: 'user', id: 'user_local' },
-        agentManifests: [manifest('agent_codex_host', {})],
-        dependencies: { providerCredentialResolver: () => null },
-        input: 'Run tests',
-        providerRegistry: new ProviderRegistry([
-          {
-            baseUrl: 'https://api.example.com/v1',
-            displayName: 'Hosted',
-            id: 'agent-openrouter',
-            kind: 'direct',
-            models: ['openai/gpt-5.2'],
-            secretRef: 'vault://provider_hosted',
-          },
-        ]),
-        store,
-        threadId: 'th_demo',
-        turnExecutor,
-        workspaceId: 'ws_demo',
-      })
-    ).rejects.toMatchObject({
-      code: 'agent_not_ready',
-      message: 'Agent agent_codex_host readiness is blocked.',
-      status: 409,
-    });
-    expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
-  });
-
-  it('admits deferred manifest-owned worker credential validation as degraded', async () => {
-    const store = createDemoStore();
-    const turnExecutor = new RecordingTurnExecutor();
-    const configuredManifest = manifest('agent_codex_host', {
-      credentialDeclarations: [
-        {
-          id: 'hosted_api_key',
-          targetEnvVarName: 'HOSTED_API_KEY',
-          vaultGrantId: 'grant_hosted_api_key',
-          visibility: 'runtime-env',
-        },
-      ],
-      network: [
-        {
-          access: 'read-write',
-          binaries: ['/usr/local/bin/codex'],
-          host: 'api.example.com',
-          id: 'hosted_api',
-          port: 443,
-          protocol: 'https',
-          purpose: 'Use the selected provider.',
-        },
-      ],
-    });
-    const handle = await startTurn({
-      triggerActor: { kind: 'user', id: 'user_local' },
-      agentManifests: [configuredManifest],
-      dependencies: { providerCredentialResolver: () => null },
-      input: 'Run tests',
-      providerRegistry: new ProviderRegistry([
-        {
-          baseUrl: 'https://api.example.com/v1',
-          displayName: 'Hosted',
-          id: 'agent-openrouter',
-          kind: 'direct',
-          models: ['openai/gpt-5.2'],
-          readiness: { status: 'ready' },
-        },
-      ]),
-      store,
-      threadId: 'th_demo',
-      turnExecutor,
-      workspaceId: 'ws_demo',
-    });
-
-    expect(handle.readiness).toEqual({
-      reasons: [
-        'Provider agent-openrouter defers manifest-owned worker credential validation to turn-scoped AEP resolution.',
-      ],
-      status: 'degraded',
-    });
-    expect(turnExecutor.calls).toHaveLength(1);
-  });
-
   it('rejects generic degraded readiness before creating a turn or starting the executor', async () => {
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
 
     await expect(
       startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: 'agent_codex_host',
         triggerActor: { kind: 'user', id: 'user_local' },
         agentManifests: [
           {
@@ -277,7 +237,7 @@ describe('startTurn orchestrator', () => {
           },
         ],
         input: 'Run tests',
-        providerRegistry: new ProviderRegistry([]),
+        providerRegistry: localProviderRegistry(),
         store,
         threadId: 'th_demo',
         turnExecutor,
@@ -292,34 +252,24 @@ describe('startTurn orchestrator', () => {
     expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
   });
 
-  it('uses a per-turn model override to select a compatible enabled agent', async () => {
+  it('applies a per-turn model override only to the explicitly selected Agent', async () => {
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
-    const providerRegistry = new ProviderRegistry([
-      {
-        displayName: 'Worker Models',
-        id: 'worker-models',
-        kind: 'local',
-        models: ['model_codex', 'model_opencode'],
+    const providerRegistry = localProviderRegistry();
+    const codexManifest = {
+      ...manifest('agent_codex_host'),
+      models: { preferredLogicalModelId: 'model_codex', allowedLogicalModelIds: ['model_codex'] },
+    };
+    const opencodeManifest = {
+      ...manifest('agent_opencode_host'),
+      models: {
+        preferredLogicalModelId: 'model_opencode',
+        allowedLogicalModelIds: ['model_opencode'],
       },
-    ]);
-    const codexManifest = manifest('agent_codex_host', {
-      provider: {
-        model: 'model_codex',
-        origin: 'server-providers',
-        providerId: 'worker-models',
-        secretRef: null,
-      },
-    });
-    const opencodeManifest = manifest('agent_opencode_host', {
-      provider: {
-        model: 'model_opencode',
-        origin: 'server-providers',
-        providerId: 'worker-models',
-        secretRef: null,
-      },
-    });
+    };
     const handle = await startTurn({
+      agentId: 'agent_opencode_host',
+      gatewayConfig: gatewayConfigFor('model_codex', 'model_opencode'),
       triggerActor: { kind: 'user', id: 'user_local' },
       input: 'Run tests',
       modelId: 'model_opencode',
@@ -334,103 +284,71 @@ describe('startTurn orchestrator', () => {
     expect(handle.modelId).toBe('model_opencode');
     expect(handle.agent.id).toBe('agent_opencode_host');
     expect(handle.turn.agentId).toBe('agent_opencode_host');
-    expect(turnExecutor.calls).toEqual([
-      {
-        context: {
-          agentSetup: {
-            manifest: opencodeManifest,
-            provider: {
-              model: 'model_opencode',
-              origin: 'server-providers',
-              providerId: 'worker-models',
-              secretRef: null,
-            },
-          },
-          requestId: null,
-          triggerActor: { kind: 'user', id: 'user_local' },
-          workspaceCwd: null,
-          workspaceRoots: [],
+    expect(turnExecutor.calls[0]).toMatchObject({
+      context: {
+        agentSetup: {
+          manifest: opencodeManifest,
+          profileId: 'default',
+          logicalModels: { preferredLogicalModelId: 'model_opencode' },
         },
-        input: 'Run tests',
-        turnId: handle.turn.id,
       },
-    ]);
+      input: 'Run tests',
+      turnId: handle.turn.id,
+    });
   });
 
-  it('skips a disabled default manifest when another manifest can launch the requested model', async () => {
+  it('does not use a model override to bypass a disabled default Agent', async () => {
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
-    const providerRegistry = new ProviderRegistry([
-      {
-        displayName: 'Worker Models',
-        id: 'worker-models',
-        kind: 'local',
-        models: ['model_shared'],
-      },
-    ]);
-    const provider = {
-      model: 'model_shared',
-      origin: 'server-providers' as const,
-      providerId: 'worker-models',
-      secretRef: null,
+    const providerRegistry = localProviderRegistry();
+    const models = {
+      preferredLogicalModelId: 'model_shared',
+      allowedLogicalModelIds: ['model_shared'],
     };
     const disabledDefault = {
-      ...manifest('agent_disabled_default', { provider }),
+      ...manifest('agent_disabled_default'),
+      models,
       readiness: { status: 'disabled' as const },
     };
-    const readyAlternative = manifest('agent_ready_alternative', { provider });
-    store.updateWorkspace('ws_demo', {
-      defaults: { defaultAgentId: disabledDefault.id },
-    });
-
-    const handle = await startTurn({
-      triggerActor: { kind: 'user', id: 'user_local' },
-      agentManifests: [disabledDefault, readyAlternative],
-      input: 'Run tests',
-      modelId: 'model_shared',
-      providerRegistry,
-      store,
-      threadId: 'th_demo',
-      turnExecutor,
-      workspaceId: 'ws_demo',
-    });
-
-    expect(handle.agent.id).toBe('agent_ready_alternative');
-    expect(handle.turn.agentId).toBe('agent_ready_alternative');
+    const readyAlternative = { ...manifest('agent_ready_alternative'), models };
+    await expect(
+      startTurn({
+        defaultAgentId: 'agent_disabled_default',
+        gatewayConfig: gatewayConfigFor('model_shared'),
+        triggerActor: { kind: 'user', id: 'user_local' },
+        agentManifests: [disabledDefault, readyAlternative],
+        input: 'Run tests',
+        modelId: 'model_shared',
+        providerRegistry,
+        store,
+        threadId: 'th_demo',
+        turnExecutor,
+        workspaceId: 'ws_demo',
+      })
+    ).rejects.toMatchObject({ code: 'agent_not_ready', status: 409 });
   });
 
   it('rejects an explicit agent whose manifest provider does not support the model override', async () => {
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
-    const providerRegistry = new ProviderRegistry([
-      {
-        displayName: 'Worker Models',
-        id: 'worker-models',
-        kind: 'local',
-        models: ['model_codex', 'model_opencode'],
-      },
-    ]);
+    const providerRegistry = localProviderRegistry();
     const configuredManifests = [
-      manifest('agent_codex_host', {
-        provider: {
-          model: 'model_codex',
-          origin: 'server-providers',
-          providerId: 'worker-models',
-          secretRef: null,
+      {
+        ...manifest('agent_codex_host'),
+        models: { preferredLogicalModelId: 'model_codex', allowedLogicalModelIds: ['model_codex'] },
+      },
+      {
+        ...manifest('agent_opencode_host'),
+        models: {
+          preferredLogicalModelId: 'model_opencode',
+          allowedLogicalModelIds: ['model_opencode'],
         },
-      }),
-      manifest('agent_opencode_host', {
-        provider: {
-          model: 'model_opencode',
-          origin: 'server-providers',
-          providerId: 'worker-models',
-          secretRef: null,
-        },
-      }),
+      },
     ];
 
     await expect(
       startTurn({
+        gatewayConfig: gatewayConfigFor('model_codex', 'model_opencode'),
         triggerActor: { kind: 'user', id: 'user_local' },
         agentId: 'agent_codex_host',
         agentManifests: configuredManifests,
@@ -443,106 +361,6 @@ describe('startTurn orchestrator', () => {
         workspaceId: 'ws_demo',
       })
     ).rejects.toThrow('Agent agent_codex_host does not support model override: model_opencode.');
-    expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
-  });
-
-  it('fails before creating a turn when the model override is unknown', async () => {
-    const store = createDemoStore();
-    const turnExecutor = new RecordingTurnExecutor();
-
-    await expect(
-      startTurn({
-        triggerActor: { kind: 'user', id: 'user_local' },
-        input: 'Run tests',
-        modelId: 'model_missing',
-        providerRegistry: new ProviderRegistry([]),
-        store,
-        threadId: 'th_demo',
-        turnExecutor,
-        agentManifests: [manifest('agent_codex_host')],
-        workspaceId: 'ws_demo',
-      })
-    ).rejects.toThrow('Model not found: model_missing.');
-    expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
-  });
-
-  it('fails before creating a turn when the model override is disabled', async () => {
-    const store = createDemoStore();
-    const turnExecutor = new RecordingTurnExecutor();
-    const providerRegistry = new ProviderRegistry([
-      {
-        displayName: 'Disabled Worker Models',
-        id: 'worker-models',
-        kind: 'local',
-        models: ['model_codex'],
-        readiness: { status: 'disabled' },
-      },
-    ]);
-
-    await expect(
-      startTurn({
-        triggerActor: { kind: 'user', id: 'user_local' },
-        input: 'Run tests',
-        modelId: 'model_codex',
-        providerRegistry,
-        store,
-        threadId: 'th_demo',
-        turnExecutor,
-        agentManifests: [
-          manifest('agent_codex_host', {
-            provider: {
-              model: 'model_codex',
-              origin: 'server-providers',
-              providerId: 'worker-models',
-              secretRef: null,
-            },
-          }),
-        ],
-        workspaceId: 'ws_demo',
-      })
-    ).rejects.toThrow('Model is disabled: model_codex.');
-    expect(turnExecutor.calls).toEqual([]);
-    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
-  });
-
-  it('fails before creating a turn when no enabled agent supports the model override', async () => {
-    const store = createDemoStore();
-    const turnExecutor = new RecordingTurnExecutor();
-    const providerRegistry = new ProviderRegistry([
-      {
-        displayName: 'Worker Models',
-        id: 'worker-models',
-        kind: 'local',
-        models: ['model_codex', 'model_opencode'],
-      },
-    ]);
-    const codexOnlyOptions = {
-      provider: {
-        model: 'model_codex',
-        origin: 'server-providers' as const,
-        providerId: 'worker-models',
-        secretRef: null,
-      },
-    };
-
-    await expect(
-      startTurn({
-        triggerActor: { kind: 'user', id: 'user_local' },
-        input: 'Run tests',
-        modelId: 'model_opencode',
-        providerRegistry,
-        store,
-        threadId: 'th_demo',
-        turnExecutor,
-        agentManifests: [
-          manifest('agent_codex_host', codexOnlyOptions),
-          manifest('agent_opencode_host', codexOnlyOptions),
-        ],
-        workspaceId: 'ws_demo',
-      })
-    ).rejects.toThrow('No enabled agent supports model: model_opencode.');
     expect(turnExecutor.calls).toEqual([]);
     expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
   });
@@ -579,17 +397,19 @@ describe('startTurn orchestrator', () => {
     })();
 
     await startTurn({
+      gatewayConfig: createTestGatewayConfig(),
+      defaultAgentId: 'agent_codex_host',
       triggerActor: { kind: 'user', id: 'user_local' },
       dependencies: {
         selectAgent: (defaults, override, manifests) => {
           sequence.push('selector.selectAgent');
-          expect(defaults).toEqual({ defaultAgentId: null });
+          expect(defaults).toEqual({ defaultAgentId: 'agent_codex_host' });
           expect(override).toEqual({});
           return manifests[0] ?? { error: { code: 'agent_not_configured', message: 'missing' } };
         },
       },
       input: 'Run tests',
-      providerRegistry: new ProviderRegistry([]),
+      providerRegistry: localProviderRegistry(),
       store,
       threadId: 'th_demo',
       turnExecutor,
@@ -606,10 +426,12 @@ describe('startTurn orchestrator', () => {
 
     await expect(
       startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: 'agent_codex_host',
         triggerActor: { kind: 'user', id: 'user_local' },
         agentId: 'agent_missing',
         input: 'Run tests',
-        providerRegistry: new ProviderRegistry([]),
+        providerRegistry: localProviderRegistry(),
         store,
         threadId: 'th_demo',
         turnExecutor,
@@ -625,18 +447,12 @@ describe('startTurn orchestrator', () => {
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest('agent_codex_host', {});
     const handle = await startTurn({
+      gatewayConfig: createTestGatewayConfig(),
+      defaultAgentId: 'agent_codex_host',
       triggerActor: { kind: 'user', id: 'user_local' },
       dependencies: { providerCredentialResolver: () => 'secret' },
       input: 'Run tests',
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          vendor: 'openai-compatible',
-          baseUrl: 'https://openrouter.ai/api/v1',
-          defaultModel: 'openai/gpt-5.2',
-          secretRef: 'env:OPENROUTER_API_KEY',
-        },
-      ]),
+      providerRegistry: localProviderRegistry(),
       store,
       threadId: 'th_demo',
       turnExecutor,
@@ -645,33 +461,14 @@ describe('startTurn orchestrator', () => {
     });
 
     expect(handle.agentSetup?.manifest).toEqual(configuredManifest);
-    expect(handle.agentSetup?.provider).toEqual({
-      model: 'openai/gpt-5.2',
-      origin: 'server-providers',
-      providerId: 'agent-openrouter',
-      secretRef: 'env:OPENROUTER_API_KEY',
-    });
-    expect(turnExecutor.calls).toEqual([
-      {
-        context: {
-          agentSetup: {
-            manifest: configuredManifest,
-            provider: {
-              model: 'openai/gpt-5.2',
-              origin: 'server-providers',
-              providerId: 'agent-openrouter',
-              secretRef: 'env:OPENROUTER_API_KEY',
-            },
-          },
-          requestId: null,
-          triggerActor: { kind: 'user', id: 'user_local' },
-          workspaceCwd: null,
-          workspaceRoots: [],
-        },
-        input: 'Run tests',
-        turnId: handle.turn.id,
+    expect(handle.agentSetup?.logicalModels.preferredLogicalModelId).toBe('openai/gpt-5.2');
+    expect(turnExecutor.calls[0]).toMatchObject({
+      context: {
+        agentSetup: { manifest: configuredManifest, profileId: 'default' },
       },
-    ]);
+      input: 'Run tests',
+      turnId: handle.turn.id,
+    });
   });
 
   it('records resolved setup when a workspace setup ledger is provided', async () => {
@@ -687,18 +484,12 @@ describe('startTurn orchestrator', () => {
 
     try {
       const handle = await startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: 'agent_codex_host',
         triggerActor: { kind: 'user', id: 'user_local' },
         dependencies: { providerCredentialResolver: () => 'secret' },
         input: 'Run tests',
-        providerRegistry: new ProviderRegistry([
-          {
-            id: 'agent-openrouter',
-            vendor: 'openai-compatible',
-            baseUrl: 'https://openrouter.ai/api/v1',
-            defaultModel: 'openai/gpt-5.2',
-            secretRef: 'env:OPENROUTER_API_KEY',
-          },
-        ]),
+        providerRegistry: localProviderRegistry(),
         store,
         threadId: 'th_demo',
         turnExecutor,
@@ -716,7 +507,7 @@ describe('startTurn orchestrator', () => {
         turnId: handle.turn.id,
         requestId: null,
         agentId: 'agent_codex_host',
-        providerId: 'agent-openrouter',
+        logicalModelId: 'openai/gpt-5.2',
       });
     } finally {
       workspaceDb.sqlite.close();
@@ -730,18 +521,12 @@ describe('startTurn orchestrator', () => {
       requiredCapabilities: ['dynamic-network-policy'],
     });
     const handle = await startTurn({
+      gatewayConfig: createTestGatewayConfig(),
+      defaultAgentId: 'agent_codex_host',
       triggerActor: { kind: 'user', id: 'user_local' },
       dependencies: { providerCredentialResolver: () => 'secret' },
       input: 'Run tests',
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          vendor: 'openai-compatible',
-          baseUrl: 'https://openrouter.ai/api/v1',
-          defaultModel: 'openai/gpt-5.2',
-          secretRef: 'env:OPENROUTER_API_KEY',
-        },
-      ]),
+      providerRegistry: localProviderRegistry(),
       store,
       threadId: 'th_demo',
       turnExecutor,
@@ -793,18 +578,12 @@ describe('startTurn orchestrator', () => {
     };
 
     const handle = await startTurn({
+      gatewayConfig: createTestGatewayConfig(),
+      defaultAgentId: 'agent_codex_host',
       triggerActor: { kind: 'user', id: 'user_local' },
       dependencies: { providerCredentialResolver: () => 'secret' },
       input: 'Run tests',
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          vendor: 'openai-compatible',
-          baseUrl: 'https://openrouter.ai/api/v1',
-          defaultModel: 'openai/gpt-5.2',
-          secretRef: 'env:OPENROUTER_API_KEY',
-        },
-      ]),
+      providerRegistry: localProviderRegistry(),
       store,
       threadId: 'th_demo',
       turnExecutor,
@@ -825,15 +604,7 @@ describe('startTurn orchestrator', () => {
     expect(turnExecutor.calls).toEqual([
       {
         context: {
-          agentSetup: {
-            manifest: config,
-            provider: {
-              model: 'openai/gpt-5.2',
-              origin: 'server-providers',
-              providerId: 'agent-openrouter',
-              secretRef: 'env:OPENROUTER_API_KEY',
-            },
-          },
+          agentSetup: expect.objectContaining({ manifest: config, profileId: 'default' }),
           requestId: null,
           triggerActor: { kind: 'user', id: 'user_local' },
           workspaceCwd: null,
@@ -873,18 +644,12 @@ describe('startTurn orchestrator', () => {
 
     await expect(
       startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: 'agent_codex_host',
         triggerActor: { kind: 'user', id: 'user_local' },
         dependencies: { providerCredentialResolver: () => 'secret' },
         input: 'Run tests',
-        providerRegistry: new ProviderRegistry([
-          {
-            id: 'agent-openrouter',
-            vendor: 'openai-compatible',
-            baseUrl: 'https://openrouter.ai/api/v1',
-            defaultModel: 'openai/gpt-5.2',
-            secretRef: 'env:OPENROUTER_API_KEY',
-          },
-        ]),
+        providerRegistry: localProviderRegistry(),
         store,
         threadId: 'th_demo',
         turnExecutor,
@@ -917,10 +682,12 @@ describe('startTurn orchestrator', () => {
     const store = createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const handle = await startTurn({
+      gatewayConfig: createTestGatewayConfig(),
+      defaultAgentId: 'agent_codex_host',
       triggerActor: { kind: 'user', id: 'user_local' },
       input: 'Run with lease binding',
       agentSessionId: 'as_orchestrator_1',
-      providerRegistry: new ProviderRegistry([]),
+      providerRegistry: localProviderRegistry(),
       sandboxBindingRef: 'lease-binding:orchestrator_1',
       store,
       threadId: 'th_demo',
@@ -933,7 +700,10 @@ describe('startTurn orchestrator', () => {
       {
         context: {
           agentSessionId: 'as_orchestrator_1',
-          agentSetup: { manifest: manifest('agent_codex_host'), provider: null },
+          agentSetup: expect.objectContaining({
+            manifest: manifest('agent_codex_host'),
+            profileId: 'default',
+          }),
           requestId: null,
           sandboxBindingRef: 'lease-binding:orchestrator_1',
           triggerActor: { kind: 'user', id: 'user_local' },

@@ -11,6 +11,8 @@ export const sandboxRuntimeRecords = sqliteTable(
     runtimeTargetId: text('runtime_target_id').notNull(),
     /** Opaque NanoHost Sandbox binding. */
     sandboxBindingRef: text('sandbox_binding_ref').notNull(),
+    /** Opaque private Sandbox Integration carriage binding. */
+    sandboxIntegrationBindingRef: text('sandbox_integration_binding_ref').notNull(),
     /** Immutable shared-Sandbox compatibility digest. */
     sandboxCompatibilityKey: text('sandbox_compatibility_key').notNull(),
     /** Exact immutable image digest used by the retained Sandbox. */
@@ -19,6 +21,8 @@ export const sandboxRuntimeRecords = sqliteTable(
     environmentClass: text('environment_class').notNull(),
     /** Aggregate open AgentSession capacity. */
     maxOpenSessions: integer('max_open_sessions').notNull(),
+    /** Aggregate Harness Instance capacity. */
+    maxHarnesses: integer('max_harnesses').notNull(),
     /** Aggregate active Turn capacity. */
     maxActiveTurns: integer('max_active_turns').notNull(),
     /** Private Sandbox lifecycle state. */
@@ -38,11 +42,14 @@ export const sandboxRuntimeRecords = sqliteTable(
   },
   (table) => [
     uniqueIndex('sandbox_runtime_records_binding_idx').on(table.sandboxBindingRef),
+    uniqueIndex('sandbox_runtime_records_integration_binding_idx').on(
+      table.sandboxIntegrationBindingRef
+    ),
     index('sandbox_runtime_records_target_idx').on(table.runtimeTargetId, table.lifecycleState),
   ]
 );
 
-/** Private one-Harness lifecycle, capacity, and current-operation projection. */
+/** Private lifecycle, capacity, and current-operation projection for one Harness Instance. */
 export const harnessInstanceRecords = sqliteTable(
   'harness_instance_records',
   {
@@ -52,6 +59,8 @@ export const harnessInstanceRecords = sqliteTable(
     sandboxRuntimeId: text('sandbox_runtime_id').notNull(),
     /** Static non-secret bridge binding. */
     harnessBindingRef: text('harness_binding_ref').notNull(),
+    /** Immutable Harness selection compatibility digest. */
+    harnessCompatibilityKey: text('harness_compatibility_key').notNull(),
     /** Pinned native runtime family. */
     runtimeFamily: text('runtime_family').notNull(),
     /** Selected worker adapter. */
@@ -98,7 +107,10 @@ export const harnessInstanceRecords = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => [
-    uniqueIndex('harness_instance_records_sandbox_idx').on(table.sandboxRuntimeId),
+    uniqueIndex('harness_instance_records_compatibility_idx').on(
+      table.sandboxRuntimeId,
+      table.harnessCompatibilityKey
+    ),
     uniqueIndex('harness_instance_records_binding_idx').on(table.harnessBindingRef),
   ]
 );

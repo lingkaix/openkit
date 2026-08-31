@@ -84,7 +84,7 @@ export function createDiagnosticsSnapshot(
     mode: input.mode,
     providers: input.providerRegistry.summarize(),
     agents: input.agentManifests.map((manifest) => {
-      const readiness = computeReadiness(manifest, input.providerRegistry);
+      const readiness = computeReadiness(manifest);
 
       return {
         displayName: manifest.displayName,

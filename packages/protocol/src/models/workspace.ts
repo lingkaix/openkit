@@ -19,15 +19,6 @@ export const WorkspaceKindSchema = z.enum([
 ]);
 
 /**
- * Default execution preferences attached to a workspace record.
- */
-export const WorkspaceDefaultsSchema = z.object({
-  defaultModelId: z.string().min(1).nullable(),
-  defaultAgentId: z.string().min(1).nullable(),
-  defaultSkillIds: z.array(z.string().min(1)),
-});
-
-/**
  * Aggregate counts exposed on workspace list/detail payloads.
  */
 export const WorkspaceCountsSchema = z.object({
@@ -49,17 +40,18 @@ export const WorkspaceImportedFromSchema = z.object({
 /**
  * Thin product-facing workspace record.
  */
-export const WorkspaceRecordSchema = z.object({
-  id: WorkspaceIdSchema,
-  name: z.string().min(1),
-  kind: WorkspaceKindSchema,
-  status: z.enum(['active', 'archived']),
-  defaults: WorkspaceDefaultsSchema.optional(),
-  counts: WorkspaceCountsSchema,
-  importedFrom: WorkspaceImportedFromSchema.optional(),
-  createdAt: TimestampSchema,
-  updatedAt: TimestampSchema,
-});
+export const WorkspaceRecordSchema = z
+  .object({
+    id: WorkspaceIdSchema,
+    name: z.string().min(1),
+    kind: WorkspaceKindSchema,
+    status: z.enum(['active', 'archived']),
+    counts: WorkspaceCountsSchema,
+    importedFrom: WorkspaceImportedFromSchema.optional(),
+    createdAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+  })
+  .strict();
 
 /**
  * Separately fetched workspace resources owned by a workspace.

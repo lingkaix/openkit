@@ -6,6 +6,7 @@ import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import {
   bindThreadMaterial,
@@ -59,6 +60,19 @@ function writeWorkspaceExportTree(input: WorkspaceExportTestInput) {
     threadMaterialBindings: [],
     workspaceMaterialRevisions: [],
     workspaceMaterials: [],
+    portableFileState: input.portableFileState ?? {
+      claims: new Map(),
+      conflicts: new Map(),
+      nativeKnowledgePages: new Map(),
+      observations: new Map(),
+      retrievalTraces: new Map(),
+      workerContextPackageFiles: new Map(),
+      workspaceConfig: JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: input.workspace.name, defaultAgentId: null },
+      }),
+      workspaceSchema: null,
+    },
     ...input,
   });
 }
@@ -98,7 +112,7 @@ function withoutUserInputResponses(text: string): string {
  * @returns Export root path.
  */
 function writeExportTree(
-  recordPath: string = 'records/workspace.json',
+  recordPath: string = 'records/workspace-record.json',
   recordText: string = '{"id":"ws_demo"}'
 ): string {
   const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-'));
@@ -146,15 +160,15 @@ describe('workspace export verifier', () => {
     const verified = verifyWorkspaceExportTree({ exportRoot: writeExportTree() });
 
     expect(verified.manifest.workspaceId).toBe('ws_demo');
-    expect(verified.checkedFiles).toEqual(['records/workspace.json']);
+    expect(verified.checkedFiles).toEqual(['records/workspace-record.json']);
   });
 
   it('rejects tampered or extra files', () => {
     const tamperedRoot = writeExportTree();
-    writeFileSync(join(tamperedRoot, 'records', 'workspace.json'), '{"id":"changed"}');
+    writeFileSync(join(tamperedRoot, 'records', 'workspace-record.json'), '{"id":"changed"}');
 
     expect(() => verifyWorkspaceExportTree({ exportRoot: tamperedRoot })).toThrow(
-      'Digest mismatch for export file records/workspace.json'
+      'Digest mismatch for export file records/workspace-record.json'
     );
 
     const extraRoot = writeExportTree();
@@ -202,7 +216,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 1 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -303,7 +316,8 @@ describe('workspace export verifier', () => {
       'records/workspace-material-revisions.jsonl',
       'records/workspace-materials.jsonl',
       'records/workspace-quarantine-records.jsonl',
-      'records/workspace.json',
+      'records/workspace-record.json',
+      'workspace-files/config/workspace.jsonc',
     ]);
     expect(
       JSON.parse(
@@ -314,11 +328,11 @@ describe('workspace export verifier', () => {
       JSON.parse(readFileSync(join(root, 'records', 'workspace-materials.jsonl'), 'utf8').trim())
     ).toEqual({ materialId: 'mat_demo', workspaceId: 'ws_demo' });
     expect(existsSync(join(root, 'records', 'workspace-sync-evidence-bundles.jsonl'))).toBe(false);
-    expect(JSON.parse(readFileSync(join(root, 'records', 'workspace.json'), 'utf8'))).toMatchObject(
-      {
-        id: 'ws_demo',
-      }
-    );
+    expect(
+      JSON.parse(readFileSync(join(root, 'records', 'workspace-record.json'), 'utf8'))
+    ).toMatchObject({
+      id: 'ws_demo',
+    });
     expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest.workspaceId).toBe('ws_demo');
   });
 
@@ -330,7 +344,6 @@ describe('workspace export verifier', () => {
       name: 'History workspace',
       kind: 'general',
       status: 'active',
-      defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
       counts: { threadCount: 1, artifactCount: 1, knowledgeEntryCount: 0 },
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -1096,7 +1109,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1126,7 +1138,7 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_imported_ws_demo',
       },
       verification: {
-        fileCount: 17,
+        fileCount: 18,
         checkedFiles: [
           'records/agent-sessions.jsonl',
           'records/artifact-reviews.jsonl',
@@ -1144,7 +1156,8 @@ describe('workspace export verifier', () => {
           'records/vault-injection-receipts.jsonl',
           'records/workspace-material-revisions.jsonl',
           'records/workspace-materials.jsonl',
-          'records/workspace.json',
+          'records/workspace-record.json',
+          'workspace-files/config/workspace.jsonc',
         ],
       },
     });
@@ -1162,7 +1175,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1176,7 +1188,7 @@ describe('workspace export verifier', () => {
       agentSessions: [],
       turnEvents: [],
     });
-    const workspacePath = join(root, 'records', 'workspace.json');
+    const workspacePath = join(root, 'records', 'workspace-record.json');
     const workspaceRecord = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
       string,
       unknown
@@ -1193,7 +1205,7 @@ describe('workspace export verifier', () => {
       contentInventory: Array<{ path: string; digest: string; bytes: number }>;
     };
     const workspaceEntry = manifest.contentInventory.find(
-      (entry) => entry.path === 'records/workspace.json'
+      (entry) => entry.path === 'records/workspace-record.json'
     );
     if (!workspaceEntry) {
       throw new Error('Expected workspace inventory entry.');
@@ -1206,7 +1218,7 @@ describe('workspace export verifier', () => {
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
     expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow(
-      'Unsupported requiredFeatures in records/workspace.json: workspace.record.future'
+      'Unsupported requiredFeatures in records/workspace-record.json: workspace.record.future'
     );
   });
 
@@ -1222,7 +1234,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1281,7 +1292,6 @@ describe('workspace export verifier', () => {
         name: 'Manifest owner',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1295,7 +1305,7 @@ describe('workspace export verifier', () => {
       agentSessions: [],
       turnEvents: [],
     });
-    const workspacePath = join(root, 'records', 'workspace.json');
+    const workspacePath = join(root, 'records', 'workspace-record.json');
     const workspaceRecord = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
       string,
       unknown
@@ -1312,7 +1322,7 @@ describe('workspace export verifier', () => {
       contentInventory: Array<{ path: string; digest: string; bytes: number }>;
     };
     const workspaceEntry = manifest.contentInventory.find(
-      (entry) => entry.path === 'records/workspace.json'
+      (entry) => entry.path === 'records/workspace-record.json'
     );
     if (!workspaceEntry) {
       throw new Error('Expected workspace inventory entry.');
@@ -1341,7 +1351,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1434,7 +1443,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1512,7 +1520,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1565,7 +1572,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1623,7 +1629,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1661,6 +1666,7 @@ describe('workspace export verifier', () => {
   });
 
   it('exports and imports redacted worker setup evidence rows', () => {
+    const agentSetup = createTestAgentSetup();
     const root = freshExportRoot('openkit-workspace-worker-evidence-');
     const workerThread = {
       id: 'th_1',
@@ -1712,7 +1718,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -1732,32 +1737,28 @@ describe('workspace export verifier', () => {
           turnId: 'turn_1',
           requestId: 'req_1',
           agentId: 'agent_codex_host',
-          providerId: 'openai_codex',
+          logicalModelId: agentSetup.logicalModels.preferredLogicalModelId,
           runtimeKind: 'codex',
           runtimeAdapter: 'codex-app-server',
           requiredFeatures: ['knowledge.read'],
           setup: {
-            agent: { displayName: 'Codex Agent', id: 'agent_codex_host' },
-            deployment: {
-              config: { args: ['app-server'], command: 'codex' },
-              mode: 'local',
-              origin: 'agent-config',
+            manifest: {
+              id: agentSetup.manifest.id,
+              requiredFeatures: ['knowledge.read'],
+              runtime: agentSetup.manifest.runtime,
+              sandbox: {
+                credentialDeclarations: agentSetup.manifest.sandbox.credentialDeclarations,
+                network: agentSetup.manifest.sandbox.network,
+              },
             },
-            origins: {
-              deployment: 'agent-config',
-              provider: 'server-providers',
-              runtime: 'agent-config',
-              transport: 'adapter-defaults',
+            logicalModels: {
+              preferredLogicalModelId: agentSetup.logicalModels.preferredLogicalModelId,
+              allowed: agentSetup.logicalModels.allowed.map((model) => ({
+                id: model.id,
+                capabilities: model.capabilities,
+                modelFamilyId: model.modelFamilyId,
+              })),
             },
-            provider: {
-              model: 'gpt-5',
-              origin: 'server-providers',
-              providerId: 'openai_codex',
-              secretRef: null,
-            },
-            requiredFeatures: ['knowledge.read'],
-            runtime: { adapter: 'codex-app-server', kind: 'codex', version: '0.130.0' },
-            transport: { kind: 'stdio', origin: 'adapter-defaults' },
           },
           createdAt: timestamp,
         },
@@ -1806,7 +1807,7 @@ describe('workspace export verifier', () => {
         workspaceId: 'ws_imported_demo',
         turnId: snapshot.turns[0]?.id,
         setup: expect.objectContaining({
-          agent: { displayName: 'Codex Agent', id: 'agent_codex_host' },
+          manifest: expect.objectContaining({ id: 'agent_codex_host' }),
         }),
       }),
     ]);
@@ -1840,7 +1841,6 @@ describe('workspace export verifier', () => {
         name: 'Demo workspace',
         kind: 'general',
         status: 'active',
-        defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
         counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
         createdAt: timestamp,
         updatedAt: timestamp,

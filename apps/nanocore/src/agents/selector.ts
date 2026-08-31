@@ -32,7 +32,7 @@ export interface AgentSelectionError {
 export type AgentSelectionResult = AgentManifest | { error: AgentSelectionError };
 
 /**
- * Selects an agent manifest from request override, workspace defaults, or first manifest.
+ * Selects an Agent manifest from an explicit request or resolved scope preference.
  *
  * @param defaults Workspace-level defaults.
  * @param override Per-request override.
@@ -44,13 +44,13 @@ export function selectAgent(
   override: AgentSelectionOverride,
   manifests: AgentManifest[]
 ): AgentSelectionResult {
-  const selectedAgentId = override.agentId ?? defaults.defaultAgentId ?? manifests[0]?.id;
+  const selectedAgentId = override.agentId ?? defaults.defaultAgentId;
 
   if (!selectedAgentId) {
     return {
       error: {
         code: 'agent_not_configured',
-        message: 'No agent manifests are configured.',
+        message: 'No Agent is selected by request, User, Workspace, or Server configuration.',
       },
     };
   }

@@ -65,6 +65,7 @@ export function registerSchedulerAdmissionRoutes({
         turnId: entry.turnId,
         requestedAgentId: entry.requestedAgentId,
         profileRef: entry.profileRef,
+        modelId: entry.modelId,
         priorityClass: entry.priorityClass,
         enqueuedAt: entry.enqueuedAt,
         effectivePriorityAt: entry.effectivePriorityAt,

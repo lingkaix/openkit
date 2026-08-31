@@ -11,13 +11,20 @@ import type {
   RuntimeConfigStatus,
 } from '@openkit/app-api-schemas';
 import {
+  type GatewayConfig,
+  GatewayConfigSchema,
+  type InternalRoleProfilesConfig,
+  InternalRoleProfilesConfigSchema,
   parseWorkspaceDataSourceCatalog,
+  type UserConfig,
+  UserConfigSchema,
   type WorkspaceConfig,
   WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
+import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
 
 import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
@@ -44,6 +51,9 @@ interface RuntimeConfigSnapshotConstructionInput {
   providerRegistry: ProviderRegistry;
   providerDiagnostics: ProviderDiagnosticsSnapshot;
   agentManifests: AgentManifest[];
+  gatewayConfig: GatewayConfig;
+  internalRoleProfiles: InternalRoleProfilesConfig;
+  userConfigs: LoadedUserConfig[];
   workspaceConfigs: LoadedWorkspaceConfig[];
   workspaceDataSourceCatalogs: LoadedWorkspaceDataSourceCatalog[];
   diagnostics: RuntimeConfigDiagnostic[];
@@ -56,8 +66,11 @@ interface RuntimeConfigSource {
   /** Source kind. */
   kind:
     | 'server-config'
+    | 'gateway-config'
+    | 'internal-role-profiles'
     | 'provider-profiles'
     | 'agent-configs'
+    | 'user-configs'
     | 'workspace-configs'
     | 'workspace-data-source-catalogs';
   /** Source path or glob-like description. */
@@ -74,6 +87,16 @@ interface LoadedWorkspaceConfig {
   path: string;
   /** Parsed workspace config. */
   config: WorkspaceConfig;
+}
+
+/** Parsed User preference config loaded from its canonical User path. */
+interface LoadedUserConfig {
+  /** User id that owns this config. */
+  userId: string;
+  /** Absolute source path loaded from disk. */
+  path: string;
+  /** Parsed User preference config. */
+  config: UserConfig;
 }
 
 /**
@@ -122,6 +145,12 @@ export interface RuntimeConfigSnapshot {
   providerDiagnostics: ProviderDiagnosticsSnapshot;
   /** Authored agent manifests. */
   agentManifests: AgentManifest[];
+  /** Server-scoped logical model and private route configuration. */
+  gatewayConfig: GatewayConfig;
+  /** Server-scoped Internal Role Execution Profiles. */
+  internalRoleProfiles: InternalRoleProfilesConfig;
+  /** Parsed personal preference configs discovered under DATA_ROOT/users. */
+  userConfigs: LoadedUserConfig[];
   /** Parsed workspace configs discovered under DATA_ROOT/workspaces. */
   workspaceConfigs: LoadedWorkspaceConfig[];
   /** Parsed workspace data source catalogs discovered under DATA_ROOT/workspaces. */
@@ -164,6 +193,9 @@ interface RuntimeConfigSnapshotInput {
   providerDiagnostics?: ProviderDiagnosticsSnapshot;
   /** Authored agent manifests. */
   agentManifests?: AgentManifest[];
+  gatewayConfig?: GatewayConfig;
+  internalRoleProfiles?: InternalRoleProfilesConfig;
+  userConfigs?: LoadedUserConfig[];
   /** Parsed workspace configs. */
   workspaceConfigs?: LoadedWorkspaceConfig[];
   /** Parsed workspace data source catalogs. */
@@ -184,13 +216,7 @@ export interface RuntimeConfigManager {
   status(): RuntimeConfigStatus;
 }
 
-const RESTART_REQUIRED_CONFIG_PATHS = [
-  'mode',
-  'auth',
-  'server',
-  'gateway.openaiCompatible.enabled',
-  'vault',
-] as const;
+const RESTART_REQUIRED_CONFIG_PATHS = ['mode', 'auth', 'server', 'vault'] as const;
 
 /**
  * Loads one runtime config snapshot from a data root.
@@ -204,10 +230,33 @@ export function loadRuntimeConfig(
   options: LoadRuntimeConfigOptions = {}
 ): RuntimeConfigSnapshot {
   const configLoadResult = loadOpenKitConfigWithDiagnostics(dataRoot);
-  const providerLoadResult = loadProviderRegistryFromDataRoot(dataRoot, configLoadResult.config);
+  const providerLoadResult = loadProviderRegistryFromDataRoot(dataRoot);
   const agentLoadResult = loadAgentManifests(dataRoot);
+  const gatewayConfig = loadServerScopedConfig(
+    join(dataRoot, 'config', 'gateway.jsonc'),
+    GatewayConfigSchema,
+    { schemaVersion: 1, enabled: true, logicalModels: [] }
+  );
+  const internalRoleProfiles = loadServerScopedConfig(
+    join(dataRoot, 'config', 'internal-role-profiles.jsonc'),
+    InternalRoleProfilesConfigSchema,
+    { schemaVersion: 1, profiles: [] }
+  );
+  const userConfigs = loadUserConfigs(dataRoot);
   const workspaceConfigs = loadWorkspaceConfigs(dataRoot);
   const workspaceDataSourceCatalogs = loadWorkspaceDataSourceCatalogs(dataRoot);
+  const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
+  try {
+    resolveLogicalModelCatalog(gatewayConfig, providerLoadResult.providerRegistry);
+  } catch (error) {
+    gatewayDiagnostics.push({
+      code: 'gateway.invalid_logical_model',
+      message:
+        error instanceof Error ? error.message : 'Gateway logical model configuration is invalid.',
+      severity: 'error',
+      source: 'DATA_ROOT/config/gateway.jsonc',
+    });
+  }
   const diagnostics: RuntimeConfigDiagnostic[] = [
     ...configLoadResult.diagnostics.map(configDiagnostic),
     ...providerLoadResult.providerDiagnostics.summaries.map((diagnostic) => ({
@@ -222,6 +271,7 @@ export function loadRuntimeConfig(
       severity: diagnostic.severity,
       source: redactSourcePath(diagnostic.path),
     })),
+    ...gatewayDiagnostics,
   ];
   const snapshot = createRuntimeConfigSnapshot({
     dataRoot,
@@ -229,6 +279,9 @@ export function loadRuntimeConfig(
     providerRegistry: providerLoadResult.providerRegistry,
     providerDiagnostics: providerLoadResult.providerDiagnostics,
     agentManifests: agentLoadResult.manifests,
+    gatewayConfig,
+    internalRoleProfiles,
+    userConfigs,
     workspaceConfigs,
     workspaceDataSourceCatalogs,
     version: options.version ?? 1,
@@ -240,6 +293,9 @@ export function loadRuntimeConfig(
       },
       { kind: 'provider-profiles', path: 'DATA_ROOT/config/providers/*.provider.jsonc' },
       { kind: 'agent-configs', path: 'DATA_ROOT/config/agents/*.agent.jsonc' },
+      { kind: 'gateway-config', path: 'DATA_ROOT/config/gateway.jsonc' },
+      { kind: 'internal-role-profiles', path: 'DATA_ROOT/config/internal-role-profiles.jsonc' },
+      { kind: 'user-configs', path: 'DATA_ROOT/users/*/config/user.jsonc' },
       { kind: 'workspace-configs', path: 'DATA_ROOT/workspaces/*/config/workspace.jsonc' },
       {
         kind: 'workspace-data-source-catalogs',
@@ -411,6 +467,9 @@ function applySafeRuntimeConfigReload(
         ? previous.providerDiagnostics
         : next.providerDiagnostics,
       agentManifests: restartPaths.has('agents') ? previous.agentManifests : next.agentManifests,
+      gatewayConfig: next.gatewayConfig,
+      internalRoleProfiles: next.internalRoleProfiles,
+      userConfigs: next.userConfigs,
       workspaceConfigs: next.workspaceConfigs,
       workspaceDataSourceCatalogs: next.workspaceDataSourceCatalogs,
       diagnostics: next.diagnostics,
@@ -537,7 +596,7 @@ export function createInMemoryRuntimeConfigSnapshot(
   const providerState =
     input.providerRegistry || !input.dataRoot
       ? null
-      : loadProviderRegistryFromDataRoot(input.dataRoot, input.openKitConfig ?? {});
+      : loadProviderRegistryFromDataRoot(input.dataRoot);
   const agentState =
     input.agentManifests || !input.dataRoot ? null : loadAgentManifests(input.dataRoot);
 
@@ -551,7 +610,19 @@ export function createInMemoryRuntimeConfigSnapshot(
       providerState?.providerDiagnostics ??
       createProviderDiagnostics({ profiles: [], diagnostics: [] }),
     agentManifests: input.agentManifests ?? agentState?.manifests ?? [],
-    workspaceConfigs: input.workspaceConfigs ?? [],
+    gatewayConfig:
+      input.gatewayConfig ?? GatewayConfigSchema.parse({ schemaVersion: 1, logicalModels: [] }),
+    internalRoleProfiles:
+      input.internalRoleProfiles ??
+      InternalRoleProfilesConfigSchema.parse({ schemaVersion: 1, profiles: [] }),
+    userConfigs: (input.userConfigs ?? []).map((entry) => ({
+      ...entry,
+      config: UserConfigSchema.parse(entry.config),
+    })),
+    workspaceConfigs: (input.workspaceConfigs ?? []).map((entry) => ({
+      ...entry,
+      config: WorkspaceConfigSchema.parse(entry.config),
+    })),
     workspaceDataSourceCatalogs: input.workspaceDataSourceCatalogs ?? [],
     version: input.version ?? 1,
     diagnostics: [],
@@ -588,25 +659,38 @@ export function diffRuntimeConfig(
   if (!equalSemantic(previous.openKitConfig.defaults ?? {}, next.openKitConfig.defaults ?? {})) {
     applied.push(change('defaults', 'hot-swappable', 'applied', 'Runtime defaults changed.'));
   }
-  if (!equalSemantic(gatewayHotSummary(previous), gatewayHotSummary(next))) {
+  if (!equalSemantic(previous.gatewayConfig, next.gatewayConfig)) {
     applied.push(
       change(
-        'gateway.openaiCompatible.allowedProviderIds',
+        'gateway',
         'hot-swappable',
         'applied',
-        'Gateway provider allowlist changed.'
+        'Gateway logical models or private routes changed.'
       )
     );
   }
   if (!equalSemantic(agentSummary(previous), agentSummary(next))) {
-    requiresRestart.push(
+    deferred.push(
       change(
         'agents',
-        'restart-required',
-        'requires-restart',
-        'Agent config changes require restart.'
+        'session-scoped',
+        'deferred',
+        'Agent config changed for later composed setups and Turns.'
       )
     );
+  }
+  if (!equalSemantic(previous.internalRoleProfiles, next.internalRoleProfiles)) {
+    deferred.push(
+      change(
+        'internalRoles',
+        'session-scoped',
+        'deferred',
+        'Internal-role profiles changed for later role executions.'
+      )
+    );
+  }
+  if (!equalSemantic(previous.userConfigs, next.userConfigs)) {
+    applied.push(change('users', 'hot-swappable', 'applied', 'User preferences changed.'));
   }
   if (!equalSemantic(workspaceConfigSummary(previous), workspaceConfigSummary(next))) {
     deferred.push(
@@ -678,6 +762,42 @@ export function findWorkspaceConfig(
   workspaceId: string
 ): LoadedWorkspaceConfig | null {
   return snapshot.workspaceConfigs.find((config) => config.workspaceId === workspaceId) ?? null;
+}
+
+/**
+ * Resolves the shared Workspace Agent preference and final Server fallback.
+ *
+ * @param snapshot Runtime config snapshot to inspect.
+ * @param workspaceId Workspace whose default Agent should be selected.
+ * @returns Selected Agent id, or null when neither scope selects one.
+ */
+export function resolveDefaultAgentId(
+  snapshot: RuntimeConfigSnapshot,
+  workspaceId: string,
+  userId?: string
+): string | null {
+  return (
+    findUserWorkspacePreference(snapshot, userId, workspaceId)?.agentId ??
+    findWorkspaceConfig(snapshot, workspaceId)?.config.workspace.defaultAgentId ??
+    snapshot.openKitConfig.defaults?.defaultAgentId ??
+    null
+  );
+}
+
+/** Finds one User's personal preference for a Workspace. */
+export function findUserWorkspacePreference(
+  snapshot: RuntimeConfigSnapshot,
+  userId: string | undefined,
+  workspaceId: string
+): UserConfig['workspaces'][number] | null {
+  if (!userId) {
+    return null;
+  }
+  return (
+    snapshot.userConfigs
+      .find((entry) => entry.userId === userId)
+      ?.config.workspaces.find((workspace) => workspace.workspaceId === workspaceId) ?? null
+  );
 }
 
 /**
@@ -842,14 +962,6 @@ function agentSummary(snapshot: RuntimeConfigSnapshot): unknown {
 /**
  * Returns gateway fields that are safe to apply to future requests.
  */
-function gatewayHotSummary(snapshot: RuntimeConfigSnapshot): unknown {
-  const gateway = snapshot.openKitConfig.gateway?.openaiCompatible;
-
-  return {
-    allowedProviderIds: gateway?.allowedProviderIds ?? [],
-  };
-}
-
 /**
  * Creates a semantic snapshot summary for hashing.
  */
@@ -858,11 +970,53 @@ function snapshotSemanticSummary(snapshot: Omit<RuntimeConfigSnapshot, 'contentH
     openKitConfig: redactSemanticSecrets(snapshot.openKitConfig),
     providers: providerSummary(snapshot as RuntimeConfigSnapshot),
     agentManifests: snapshot.agentManifests,
+    gatewayConfig: snapshot.gatewayConfig,
+    internalRoleProfiles: snapshot.internalRoleProfiles,
+    userConfigs: snapshot.userConfigs,
     workspaceConfigs: workspaceConfigSummary(snapshot as RuntimeConfigSnapshot),
     workspaceDataSourceCatalogs: workspaceDataSourceCatalogSummary(
       snapshot as RuntimeConfigSnapshot
     ),
   };
+}
+
+/** Loads one optional strict Server-scoped JSONC file or returns its schema-parsed empty value. */
+function loadServerScopedConfig<T>(path: string, schema: z.ZodType<T>, empty: unknown): T {
+  if (!existsSync(path)) {
+    return schema.parse(empty);
+  }
+  const result = schema.safeParse(parseJsoncObject(readFileSync(path, 'utf8'), path));
+  if (!result.success) {
+    throw new Error(`Invalid runtime config ${path}: ${z.prettifyError(result.error)}`);
+  }
+  return result.data;
+}
+
+/** Loads every personal User preference config under DATA_ROOT/users. */
+function loadUserConfigs(dataRoot: string): LoadedUserConfig[] {
+  const usersRoot = join(dataRoot, 'users');
+  if (!existsSync(usersRoot)) {
+    return [];
+  }
+
+  const configs: LoadedUserConfig[] = [];
+  for (const userEntry of readdirSync(usersRoot, { withFileTypes: true }).sort((left, right) =>
+    left.name.localeCompare(right.name)
+  )) {
+    if (!userEntry.isDirectory()) {
+      continue;
+    }
+    const path = join(usersRoot, userEntry.name, 'config', 'user.jsonc');
+    if (!existsSync(path)) {
+      continue;
+    }
+    const result = UserConfigSchema.safeParse(parseJsoncObject(readFileSync(path, 'utf8'), path));
+    if (!result.success) {
+      throw new Error(`Invalid User config ${path}: ${z.prettifyError(result.error)}`);
+    }
+    configs.push({ userId: userEntry.name, path, config: result.data });
+  }
+  return configs;
 }
 
 /**

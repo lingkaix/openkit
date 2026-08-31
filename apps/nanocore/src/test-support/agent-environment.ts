@@ -1,6 +1,7 @@
 import type {
   AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackage,
+  GatewayConfig,
   WorkerSandboxAccess,
 } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
@@ -14,7 +15,7 @@ import type { WorkspaceDb } from '../storage/db.js';
  * Creates one complete setup fixture for tests whose subject is not manifest resolution.
  *
  * @param options Explicit setup differences required by the owning test.
- * @returns Fresh manifest and resolved provider inputs.
+ * @returns Fresh manifest and resolved logical model inputs.
  */
 export function createTestAgentSetup(
   options: {
@@ -24,23 +25,20 @@ export function createTestAgentSetup(
     readonly displayName?: string;
     readonly filesystem?: WorkerSandboxAccess['filesystem'];
     readonly imageRef?: string;
+    readonly logicalModelId?: string;
     readonly mcpIds?: string[];
     readonly network?: WorkerSandboxAccess['network'];
-    readonly provider?: ResolvedAgentSetup['provider'];
+    readonly privateRoute?: { readonly providerProfileId: string; readonly providerModel: string };
     readonly requiredCapabilities?: AgentEnvironmentPackage['backend']['requiredCapabilities'];
     readonly skillIds?: string[];
   } = {}
 ): ResolvedAgentSetup {
   const adapter = options.adapter ?? 'codex';
-  const provider =
-    options.provider === undefined
-      ? {
-          model: 'openai/gpt-5.2',
-          origin: 'server-providers' as const,
-          providerId: 'agent-openrouter',
-          secretRef: null,
-        }
-      : options.provider;
+  const logicalModelId = options.logicalModelId ?? 'openai/gpt-5.2';
+  const privateRoute = options.privateRoute ?? {
+    providerProfileId: 'agent-openrouter',
+    providerModel: 'openai/gpt-5.2',
+  };
 
   return {
     manifest: {
@@ -48,16 +46,12 @@ export function createTestAgentSetup(
       displayName: options.displayName ?? 'Codex Agent',
       id: options.agentId ?? 'agent_codex_host',
       mcp: (options.mcpIds ?? []).map((id) => ({ id })),
-      ...(provider
-        ? {
-            provider: {
-              model: provider.model ?? 'openai/gpt-5.2',
-              ref: provider.providerId,
-            },
-          }
-        : {}),
+      models: {
+        preferredLogicalModelId: logicalModelId,
+        allowedLogicalModelIds: [logicalModelId],
+      },
       requiredFeatures: [],
-      profiles: [{ id: 'default', instructionsRef: adapter, skills: [] }],
+      profiles: [{ id: 'default', instructionsRef: adapter, skills: [], mcp: [] }],
       runtime: {
         adapter,
         binaries: [
@@ -86,7 +80,55 @@ export function createTestAgentSetup(
       schemaVersion: 1,
       skills: (options.skillIds ?? []).map((id) => ({ id })),
     },
-    provider,
+    profileId: 'default',
+    logicalModels: {
+      preferredLogicalModelId: logicalModelId,
+      allowed: [
+        {
+          id: logicalModelId,
+          displayName: logicalModelId,
+          capabilities: [
+            'attachment',
+            'chat-completions',
+            'input:image',
+            'input:text',
+            'output:text',
+            'reasoning',
+            'responses',
+            'tool-calling',
+          ],
+          modelFamilyId: 'gpt',
+          routes: [
+            {
+              id: 'test-route',
+              providerProfileId: privateRoute.providerProfileId,
+              providerModel: privateRoute.providerModel,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/** Creates the logical Gateway catalog paired with one test Agent setup. */
+export function createTestGatewayConfig(
+  options: Parameters<typeof createTestAgentSetup>[0] = {}
+): GatewayConfig {
+  const setup = createTestAgentSetup(options);
+  const logicalModel = setup.logicalModels.allowed[0]!;
+  return {
+    schemaVersion: 1,
+    enabled: true,
+    defaultLogicalModelId: logicalModel.id,
+    logicalModels: [
+      {
+        id: logicalModel.id,
+        displayName: logicalModel.displayName,
+        routes: logicalModel.routes.map((route) => ({ ...route })),
+      },
+    ],
+    requiredFeatures: [],
   };
 }
 

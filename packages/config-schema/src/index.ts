@@ -1,6 +1,8 @@
 export * from './agent.js';
 export * from './agent-environment.js';
 export * from './catalog.js';
+export * from './gateway.js';
+export * from './internal-role.js';
 export * from './policy.js';
 export * from './provider.js';
 export * from './provider-subscription.js';
@@ -8,5 +10,6 @@ export * from './schema-evolution.js';
 export * from './server.js';
 export * from './session-workspace.js';
 export * from './source-catalog.js';
+export * from './user.js';
 export * from './workspace.js';
 export * from './workspace-export.js';

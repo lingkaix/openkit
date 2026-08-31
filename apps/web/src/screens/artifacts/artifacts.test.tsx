@@ -90,7 +90,6 @@ function workspaceRecord(
     name,
     kind,
     status: 'active',
-    defaults: { defaultModelId: null, defaultAgentId: null, defaultSkillIds: [] },
     counts: { ...counts, knowledgeEntryCount: 0 },
     createdAt: TIMESTAMP,
     updatedAt: TIMESTAMP,

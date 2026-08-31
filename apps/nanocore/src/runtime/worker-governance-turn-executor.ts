@@ -43,6 +43,10 @@ import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuil
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import {
+  type CreateVaultInjectionReceiptInput,
+  createVaultInjectionReceipt,
+} from '../vault-injection-receipts.js';
 import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import {
   consumeQueuedThreadMaterialRevision,
@@ -1116,6 +1120,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const providerCredentials: ResolvedAgentEnvironmentProviderCredential[] = [];
       const runtimeEnvCredentials: ResolvedAgentEnvironmentRuntimeEnvCredential[] = [];
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
+      const credentialReceipts: CreateVaultInjectionReceiptInput[] = [];
       const resolvedEnvironmentPackage = resolveAgentEnvironmentPackage({
         agentSetup: context.agentSetup,
         agentSessionId: resolvedAgentSessionId,
@@ -1128,6 +1133,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
         providerCredentialSink: (credential) => providerCredentials.push(credential),
+        credentialReceiptSink: (receipt) => credentialReceipts.push(receipt),
         requestId,
         runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
         runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
@@ -1313,6 +1319,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
           : context.workspaceRoots,
       });
+      for (const receipt of credentialReceipts) {
+        createVaultInjectionReceipt(this.coreDb!, receipt);
+      }
       if (backendLifecycle.session) {
         backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
           fromState: 'materializing',

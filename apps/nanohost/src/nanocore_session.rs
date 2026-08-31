@@ -50,7 +50,7 @@ const SLOT_HEADER: &str = "x-openkit-slot";
 const RELATIVE_PATH_HEADER: &str = "x-openkit-relative-path";
 const SHA256_HEADER: &str = "x-openkit-sha256";
 const BYTE_LENGTH_HEADER: &str = "x-openkit-byte-length";
-const HARNESS_BINDING_HEADER: &str = "x-openkit-harness-binding";
+const SANDBOX_INTEGRATION_BINDING_HEADER: &str = "x-openkit-integration-binding";
 const HARNESS_POLL_PATH: &str = "/worker-control/harness/poll";
 const HARNESS_RESULT_PATH: &str = "/worker-control/harness/result";
 
@@ -102,7 +102,7 @@ impl OuterRouteProjection {
         family: RouteFamily,
         request: Request<h2::RecvStream>,
         mut respond: SendResponse<Bytes>,
-        harness_binding_ref: &str,
+        sandbox_integration_binding_ref: &str,
     ) -> Result<bool, &'static str> {
         let target = self
             .target
@@ -131,7 +131,9 @@ impl OuterRouteProjection {
         let private_harness_route = path == HARNESS_POLL_PATH || path == HARNESS_RESULT_PATH;
         if private_harness_route
             && (request.headers().contains_key(http::header::AUTHORIZATION)
-                || request.headers().contains_key(HARNESS_BINDING_HEADER))
+                || request
+                    .headers()
+                    .contains_key(SANDBOX_INTEGRATION_BINDING_HEADER))
         {
             send_nested_status(&mut respond, StatusCode::BAD_REQUEST)?;
             return Err("sandbox Harness route supplied a forbidden header");
@@ -164,9 +166,9 @@ impl OuterRouteProjection {
             builder = builder.header(name, value);
         }
         if private_harness_route {
-            let binding = http::HeaderValue::from_str(harness_binding_ref)
+            let binding = http::HeaderValue::from_str(sandbox_integration_binding_ref)
                 .map_err(|_| "Harness binding header invalid")?;
-            builder = builder.header(HARNESS_BINDING_HEADER, binding);
+            builder = builder.header(SANDBOX_INTEGRATION_BINDING_HEADER, binding);
         }
         let outer_request = builder
             .body(())
@@ -274,7 +276,7 @@ fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, bod
     if method != Method::POST
         || path != HARNESS_POLL_PATH
         || headers.contains_key(http::header::AUTHORIZATION)
-        || headers.contains_key(HARNESS_BINDING_HEADER)
+        || headers.contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
     {
         return false;
     }
@@ -1592,7 +1594,7 @@ pub async fn poll_effect_command(
     if kind == RuntimeEffectKind::OpenBridge {
         if object.len() != 2
             || !object
-                .get("harnessBindingRef")
+                .get("sandboxIntegrationBindingRef")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|value| {
                     !value.is_empty() && value.len() <= 512 && !value.contains(['\r', '\n', '\0'])
@@ -1600,7 +1602,7 @@ pub async fn poll_effect_command(
         {
             return Err(terminal("static Harness bridge command invalid"));
         }
-    } else if object.contains_key("harnessBindingRef") {
+    } else if object.contains_key("sandboxIntegrationBindingRef") {
         return Err(terminal(
             "Harness binding field rejected for non-bridge effect",
         ));
@@ -2451,8 +2453,8 @@ mod tests {
         assert!(!source.contains("attempt-session.cleanup"));
         assert!(!source.contains("/effects/{operation}"));
         for bridge_rule in [
-            "harnessBindingRef",
-            "x-openkit-harness-binding",
+            "sandboxIntegrationBindingRef",
+            "x-openkit-integration-binding",
             "/worker-control/harness/poll",
             "/worker-control/harness/result",
             "bridge.open",
@@ -2553,7 +2555,7 @@ mod tests {
         ));
         credential_headers.remove(http::header::AUTHORIZATION);
         credential_headers.insert(
-            "x-openkit-harness-binding",
+            "x-openkit-integration-binding",
             http::HeaderValue::from_static("client-forbidden"),
         );
         assert!(!is_initial_harness_poll(

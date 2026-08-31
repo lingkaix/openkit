@@ -24,7 +24,10 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -322,7 +325,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_revoked_dispatch',
         turnInput: 'Do not launch this stale admission',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
       });
@@ -335,6 +338,7 @@ describe('scheduler dispatch loop', () => {
         .run(timestamp, timestamp);
 
       const result = await runSchedulerDispatchLoop({
+        gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
         createAgentSessionId: () => 'as_revoked_dispatch',
@@ -346,7 +350,7 @@ describe('scheduler dispatch loop', () => {
         heartbeatTimeoutMs: 30_000,
         leaseDurationMs: 900_000,
         maxDispatches: 1,
-        providerRegistry: new ProviderRegistry([]),
+        providerRegistry: localProviderRegistry(),
         schedulerEpoch: 1,
         startupTimeoutMs: 120_000,
         store,
@@ -419,7 +423,7 @@ describe('scheduler dispatch loop', () => {
           turnId: 'turn_replacement_blocker',
           turnInput: 'Hold the Thread scheduler lease',
           requestedAgentId: 'agent_codex_host',
-          profileRef: 'profile_worker',
+          profileRef: null,
           priorityClass: 'interactive',
           requiredPoolConstraints: ['openshell.local'],
         });
@@ -454,7 +458,7 @@ describe('scheduler dispatch loop', () => {
           turnId: 'turn_replacement_prior_plan',
           turnInput: 'Create a prior placement plan',
           requestedAgentId: 'agent_codex_host',
-          profileRef: 'profile_worker',
+          profileRef: null,
           priorityClass: 'interactive',
           requiredPoolConstraints: ['openshell.local'],
         });
@@ -525,7 +529,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_replacement_candidate',
         turnInput: 'Use incompatible future static inputs',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
       });
@@ -533,6 +537,7 @@ describe('scheduler dispatch loop', () => {
       let observed: unknown;
       try {
         observed = await runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
           createAgentSessionId: () => 'as_replacement_successor',
@@ -594,13 +599,14 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_loop_1',
         turnInput: 'Run the scheduled worker',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:01.000Z',
       });
 
       const result = await runSchedulerDispatchLoop({
+        gatewayConfig: createTestGatewayConfig(),
         coreDb,
         createAgentSessionId: () => 'as_loop_1',
         createLeaseId: () => 'lease_loop_1',
@@ -674,7 +680,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_busy_active',
         turnInput: 'Hold the first Thread lease',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:00.000Z',
@@ -704,7 +710,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_busy_followup',
         turnInput: 'Stay queued while the Thread is busy',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:02.000Z',
@@ -718,7 +724,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_later_dispatchable',
         turnInput: 'Start the later dispatchable Thread',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:03.000Z',
@@ -728,6 +734,7 @@ describe('scheduler dispatch loop', () => {
       ).toEqual(['queue_busy_followup', 'queue_later_dispatchable']);
 
       const result = await runSchedulerDispatchLoop({
+        gatewayConfig: createTestGatewayConfig(),
         agentManifests: [agentManifest()],
         coreDb,
         createAgentSessionId: () => 'as_later_dispatchable',
@@ -796,7 +803,7 @@ describe('scheduler dispatch loop', () => {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         priorityClass: 'interactive',
-        profileRef: 'profile_worker',
+        profileRef: null,
         queueEntryId: 'queue_commit_failed',
         requestId: 'req_commit_failed',
         requestedAgentId: 'agent_codex_host',
@@ -810,6 +817,7 @@ describe('scheduler dispatch loop', () => {
 
       await expect(
         runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
           createAgentSessionId: () => 'as_commit_failed',
@@ -856,7 +864,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_continuity_live',
         turnInput: 'Run with continuity',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:01.000Z',
@@ -900,6 +908,7 @@ describe('scheduler dispatch loop', () => {
       });
 
       const result = await runSchedulerDispatchLoop({
+        gatewayConfig: createTestGatewayConfig(),
         agentManifests: [setup.manifest],
         coreDb,
         createAgentSessionId: () => 'as_fresh_continuity',
@@ -942,6 +951,7 @@ describe('scheduler dispatch loop', () => {
     const providerRegistry = localProviderRegistry();
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       agentManifests: [agentManifest()],
+      gatewayConfig: createTestGatewayConfig(),
       providerRegistry,
       version: 1,
     });
@@ -1004,7 +1014,10 @@ describe('scheduler dispatch loop', () => {
       const first = await startProductTurn({
         coreDb,
         input: {
+          agentId: 'agent_codex_host',
           input: 'Run the first sequential Turn',
+          modelId: 'openai/gpt-5.2',
+          profileId: 'default',
           requestId: '00000000-0000-4000-8000-00000000d211',
           threadId: 'th_demo',
           workspaceId: 'ws_demo',
@@ -1029,6 +1042,7 @@ describe('scheduler dispatch loop', () => {
       const second = await startProductTurn({
         coreDb,
         input: {
+          agentId: 'agent_codex_host',
           input: 'Run the second sequential Turn',
           requestId: '00000000-0000-4000-8000-00000000d212',
           threadId: 'th_demo',
@@ -1057,6 +1071,20 @@ describe('scheduler dispatch loop', () => {
 
       expect(second.turn.id).not.toBe(first.turn.id);
       expect(second.turn.agentSessionId).toBe(first.turn.agentSessionId);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['queued', 'admitted', 'denied'],
+        }).find((entry) => entry.requestId === '00000000-0000-4000-8000-00000000d211')
+      ).toMatchObject({
+        modelId: 'openai/gpt-5.2',
+        profileRef: 'default',
+        requestedAgentId: 'agent_codex_host',
+      });
+      expect(turnExecutor.calls[0]?.context?.agentSetup).toMatchObject({
+        profileId: 'default',
+        logicalModels: { preferredLogicalModelId: 'openai/gpt-5.2' },
+      });
       expect(leases).toHaveLength(2);
       expect(new Set(leases.map((lease) => lease.leaseId)).size).toBe(2);
       expect(new Set(leases.map((lease) => lease.turnId)).size).toBe(2);
@@ -1084,13 +1112,14 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_setup_ledger',
         turnInput: 'Run the scheduled worker',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:01.000Z',
       });
 
       const result = await runSchedulerDispatchLoop({
+        gatewayConfig: createTestGatewayConfig(),
         coreDb,
         createAgentSessionId: () => 'as_setup_ledger',
         createLeaseId: () => 'lease_setup_ledger',
@@ -1103,15 +1132,7 @@ describe('scheduler dispatch loop', () => {
         leaseDurationMs: 900_000,
         maxDispatches: 1,
         now: () => '2026-07-05T00:00:02.000Z',
-        providerRegistry: new ProviderRegistry([
-          {
-            id: 'agent-openrouter',
-            vendor: 'openai-compatible',
-            baseUrl: 'https://openrouter.ai/api/v1',
-            defaultModel: 'openai/gpt-5.2',
-            secretRef: 'env:OPENROUTER_API_KEY',
-          },
-        ]),
+        providerRegistry: localProviderRegistry(),
         schedulerEpoch: 1,
         startupTimeoutMs: 120_000,
         store,
@@ -1129,7 +1150,7 @@ describe('scheduler dispatch loop', () => {
           turnId: 'turn_setup_ledger',
           requestId: 'req_setup_ledger',
           agentId: 'agent_codex_host',
-          providerId: 'agent-openrouter',
+          logicalModelId: 'openai/gpt-5.2',
         });
         expect(turnExecutor.calls[0]?.context?.agentSetup?.manifest).toEqual(agentManifest());
       } finally {
@@ -1155,7 +1176,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_loop_failed',
         turnInput: 'Fail the scheduled worker',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:01.000Z',
@@ -1163,6 +1184,7 @@ describe('scheduler dispatch loop', () => {
 
       await expect(
         runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
           coreDb,
           createAgentSessionId: () => 'as_loop_failed',
           createLeaseId: () => 'lease_loop_failed',
@@ -1255,7 +1277,7 @@ describe('scheduler dispatch loop', () => {
       seedLocalSchedulerTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         priorityClass: 'interactive',
-        profileRef: 'profile_worker',
+        profileRef: null,
         queueEntryId: 'queue_cleanup_pending',
         requestId: 'req_cleanup_pending',
         requestedAgentId: 'agent_codex_host',
@@ -1269,6 +1291,7 @@ describe('scheduler dispatch loop', () => {
 
       await expect(
         runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
           agentManifests: [agentManifest()],
           coreDb,
           createAgentSessionId: () => 'as_cleanup_pending',
@@ -1399,7 +1422,7 @@ describe('scheduler dispatch loop', () => {
         turnId: 'turn_human_gate_fallback',
         turnInput: 'Ask for unavailable input',
         requestedAgentId: 'agent_codex_host',
-        profileRef: 'profile_worker',
+        profileRef: null,
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
         now: () => '2026-07-05T00:00:01.000Z',
@@ -1407,6 +1430,7 @@ describe('scheduler dispatch loop', () => {
 
       await expect(
         runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
           coreDb,
           createAgentSessionId: () => 'as_human_gate_fallback',
           createLeaseId: () => 'lease_human_gate_fallback',

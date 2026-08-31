@@ -7,27 +7,24 @@ import { WorkspaceKindSchema } from '../models/workspace.js';
 /**
  * Create workspace payload.
  */
-export const CreateWorkspaceRequestSchema = z.object({
-  requestId: RequestIdSchema,
-  name: z.string().min(1),
-});
+export const CreateWorkspaceRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    name: z.string().min(1),
+  })
+  .strict();
 
 /**
  * Partial workspace update payload.
  */
-export const UpdateWorkspaceRequestSchema = z.object({
-  requestId: RequestIdSchema,
-  name: z.string().min(1).optional(),
-  kind: WorkspaceKindSchema.optional(),
-  status: z.enum(['active', 'archived']).optional(),
-  defaults: z
-    .object({
-      defaultModelId: z.string().min(1).nullable().optional(),
-      defaultAgentId: z.string().min(1).nullable().optional(),
-      defaultSkillIds: z.array(z.string().min(1)).optional(),
-    })
-    .optional(),
-});
+export const UpdateWorkspaceRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    name: z.string().min(1).optional(),
+    kind: WorkspaceKindSchema.optional(),
+    status: z.enum(['active', 'archived']).optional(),
+  })
+  .strict();
 
 /**
  * Create workspace knowledge payload.
