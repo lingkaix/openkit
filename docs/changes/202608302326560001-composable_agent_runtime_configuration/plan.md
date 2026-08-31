@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 started: 2026-08-30
 branch: main
 ---
@@ -421,8 +421,10 @@ An independent Claude Code Agent will inspect this plan, current accepted owners
 - **Independent review state:** The first implementation FalseFire and repository-governance reviews returned `FAIL` and drove credential-sink, Pi-readiness, logical-model eligibility, Workspace-name ownership, independent selection, runtime-truth, local-guide, stale-comment, and fixture corrections. The second reviews found no remaining behavior defect but returned stale accepted projections and closeout records for correction. The final FalseFire verifier and repository-governance auditor each returned `PASS` on the corrected bytes with zero unresolved implementation, governance, or commit blockers.
 - **Verification state:** On Node 24.18.0, `pnpm run test:unit` passed every package test and 527 of 527 root Node tests; `pnpm run test:coverage` passed, including NanoCore 2465 passed with one declared skip and Web 856 of 856; `pnpm build` completed 11 of 11 build tasks; Nano E2E passed 20 of 20; both NanoCore and Web built-artifact smoke checks passed; Web Playwright E2E passed 14 of 14; `pnpm fmt`, `pnpm run check:repo`, `pnpm lint`, and `pnpm typecheck` passed; and `git diff --check` is clean. The independent reviewers additionally forced the package tests, static gates, 527 root tests, and Rust checks on their reviewed snapshot with zero failures.
 - **Documentation baseline:** Commit `d3fe95d3261a12153dc37ee4dbc8e857d14d4ceb` (`docs: define composable agent runtime configuration`) contains the authority-bearing documentation baseline, and commit `6d4dafbf` records its accepted gate before production implementation begins.
-- **Frontier:** Product behavior, generated projections, focused regressions, complete repository gates, corrected accepted projections, and both independent implementation reviews are accepted. The remaining work is to stage the coherent implementation, inspect the exact staged scope, commit it, then record the implementation commit identity and terminal close decision.
-- **Predicted Next Action:** Stage all intended implementation, test, generated, guide, manual, specification-projection, and change-record files, verify no unrelated or temporary file entered the index, and create the coherent implementation commit. Expected observable: the commit succeeds through the repository hook and its identity becomes the only missing closeout fact.
+- **Implementation commit:** Commit `3de4ac98` (`feat: implement composable agent runtime configuration`) contains the coherent 239-file implementation, regression, generated-projection, manual, local-guide, accepted-spec projection, findings, and pre-commit checkpoint slice. The staged Biome and Conventional Commit hooks passed.
+- **Close decision:** Verified. The accepted runnable slice is implemented, every finding is closed, the complete proportional gates pass, and independent FalseFire plus repository-governance reviews report zero unresolved blockers. Deferred worker-control version 2 envelopes, bounded concurrent active Turns, real two-runtime acceptance, relay-capable Pi dispatch, sandbox-provider credential materialization, direct-external AEP dispatch, broader internal-agent runtime fields, and generic schema-evolution adoption remain explicitly outside this close decision.
+- **Frontier:** No required implementation or verification work remains inside the accepted slice. Future work begins only from one of the explicitly deferred owners and does not reopen this plan implicitly.
+- **Predicted Next Action:** None for this closed lifecycle. A future engineer may start a new owned change for one deferred exclusion when a present product need authorizes it.
 
 ## Acceptance Observations
 
@@ -444,3 +446,15 @@ An independent Claude Code Agent will inspect this plan, current accepted owners
 - The shared Composer matches the supplied two-region visual hierarchy, grows from approximately two and one-half lines to a bounded maximum, and exposes Artifact or upload, Agent target, logical Model, and Send actions in the required bottom-row order.
 - The target selector can reach applicable internal roles, running Orchestrator, Workspace Knowledge Manager, pinned warm workers, running workers, and the new Task worker action while preserving Thread and AgentSession ownership and hiding Sandbox, Harness, process, provider-account, and route identifiers.
 - Composer-focused and end-to-end tests prove logical-model filtering, structured submission, Task Mode transition, Artifact or upload retention, unavailable-target behavior, exact failure retry, keyboard use, accessible naming, and no concrete Gateway route leakage.
+
+## Closeout Summary
+
+The accepted Server, Workspace, User, Gateway, Provider, internal-role, Agent, Sandbox, Harness, AgentSession, credential, and Composer configuration slice is implemented and verified. Documentation baseline commits `d3fe95d3261a12153dc37ee4dbc8e857d14d4ceb` and `6d4dafbf` preceded production work, and implementation commit `3de4ac98` contains the coherent runnable system, regression coverage, generated projections, manuals, local guides, accepted-spec truth updates, and resolved findings. Independent FalseFire verification and repository-governance audit each returned `PASS` with zero unresolved blockers. The explicitly deferred worker-control version 2 envelope, bounded concurrent active Turns, real two-runtime acceptance, relay-capable Pi dispatch, sandbox-provider credentials, direct-external AEP dispatch, broader internal-agent runtime fields, and generic schema-evolution adoption remain outside this closed lifecycle.
+
+## Verification Evidence
+
+- **Commit evidence:** Documentation authority and its pre-implementation gate are recorded in `d3fe95d3261a12153dc37ee4dbc8e857d14d4ceb` and `6d4dafbf`; implementation and its pre-commit checkpoint are recorded in `3de4ac98`.
+- **Test evidence:** `pnpm run test:unit` passed every package suite and 527 of 527 root tests; `pnpm run test:coverage` passed with NanoCore at 2465 passed and one declared skip and Web at 856 of 856; Nano E2E passed 20 of 20; and Web Playwright passed 14 of 14.
+- **Build and static evidence:** `pnpm build` completed 11 of 11 tasks; NanoCore and Web built-artifact smoke checks passed; and `pnpm fmt`, `pnpm run check:repo`, `pnpm lint`, `pnpm typecheck`, and `git diff --check` passed on the implementation bytes.
+- **Independent acceptance evidence:** The final independent FalseFire verifier and repository-governance auditor inspected the corrected implementation and owning documentation, repeated proportional tests and static checks, and each returned `PASS` with no unresolved implementation, authority, governance, or commit blocker.
+- **Runtime evidence:** The verified path resolves persistent Agent preference User to Workspace to Server after explicit or Orchestrator selection, keeps logical-model routes Gateway-private, materializes Workspace-bound credentials before receipt, supports multiple compatibility-keyed Harness Instances per Sandbox, preserves Thread-bound AgentSession continuity, and submits Composer selections through the structured conversation contract.
