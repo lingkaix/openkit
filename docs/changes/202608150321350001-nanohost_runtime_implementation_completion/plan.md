@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: verified
+status: in-progress
 date: 2026-08-15
 branch: feat/r001-nanohost-noninterference
 ---
@@ -841,13 +841,13 @@ Exact A1 image `openkit/app:a1-88ff4691-r7` passed smoke, deployed, and remained
 
 ### Current checkpoint
 
-- **Route status:** verified. Roadmap R001 and NHC-FND-120 are closed by retained no-reboot artifact digest `faa5f7d417ac643998895fc901a480203dd3e9609b080a4c6119a1c5af949072` and independent artifact audit `PASS`.
-- **Deciding evidence:** the artifact records F1, F2, F4, network conformance, normal lifecycle, terminal cleanup, and Aggregate all `PASS`; F1's exact invariant pre/post digests match while raw digests remain retained, and F2/F4 raw pre/post digests match.
+- **Route status:** blocked after rebase. NHC-FND-120 remains closed for the exact corrected oracle and product baseline `38a83058f900f3cfdc01ade13fd42fbcf11cbf91`, but Roadmap R001 is open under NHC-FND-121 until the rebased product receives fresh no-reboot A1 evidence.
+- **Deciding evidence:** retained artifact `faa5f7d417ac643998895fc901a480203dd3e9609b080a4c6119a1c5af949072` records F1, F2, F4, network conformance, normal lifecycle, terminal cleanup, and Aggregate all `PASS` for product commit `38a83058f900f3cfdc01ade13fd42fbcf11cbf91`; its runner digest still matches the rebased candidate, but upstream product changes directly affect runtime paths exercised by those scenarios, so the artifact is historical rather than deciding for the current candidate on `1557792`.
 - **Terminal state:** NanoHost is inactive, every configured credential and companion path is absent, NanoCore remains running, signup-disabled configuration is byte-identical at revision `sha256:b55bde1672d73599ad3e9ca2af691cb3c49bfabe0410702e8d3051b5bd56d055`, the disposable User is disabled, and A1 was not rebooted.
-- **Residual ownership:** NHC-FND-045, NHC-FND-049, NHC-FND-052, and NHC-FND-105 remain deferred outside this plan. NHC-FND-117 preserves Scenario 3 restart truthfulness for R005 and requires a separately accepted effect boundary; it does not reopen R001.
-- **Verification closeout:** the documentation model validates all 205 documents, the generated index is current, the combined host projection and runner suite passes 215/215, runner syntax and `git diff --check` pass, `pnpm check:repo` passes across 945 files, the complete build passes 11/11 tasks, and the complete typecheck passes 10/10 tasks. The broader default gates also exposed only unrelated existing-tree failures outside this diff: one unchanged Web test exceeds its fixed five-second timeout but passes unchanged with a command-local 15-second timeout, while three unchanged NanoCore filesystem synchronization tests fail identically with and without coverage; the coverage run otherwise passes 2,477/2,480 NanoCore tests. No host or Codex App Server restart was used for any check.
-- **Next action:** obtain independent closeout review of the final staged diff, then create the single authorized commit, push this feature branch, and open the authorized pull request with the broader-gate exceptions disclosed. No merge, release, deployment, or host lifecycle action is authorized.
-- **Remaining human-only decisions:** no current human decision blocks this verified plan. Any change to accepted NanoHost design, Scenario 3's effect boundary, credential disclosure, non-project host scope, merge, release publication, or important residual-risk acceptance remains human-owned.
+- **Residual ownership:** NHC-FND-121 is the sole current R001 blocker. NHC-FND-045, NHC-FND-049, NHC-FND-052, and NHC-FND-105 remain deferred outside this plan. NHC-FND-117 preserves Scenario 3 restart truthfulness for R005 and requires a separately accepted effect boundary.
+- **Verification closeout:** after rebase the documentation model validates 208 documents, the generated index is current, the combined host projection and runner suite passes 215/215, runner syntax and `git diff --check` pass, and `pnpm check:repo` passes across 952 files. The rebased full build completes 10/11 tasks and typecheck completes 9/10 tasks before the new upstream NanoCore model-catalog package subpath fails resolution; the pre-rebase candidate had passed 11/11 build and 10/10 typecheck. Earlier broader gates also exposed unrelated existing-tree failures outside this diff: one unchanged Web test exceeds its fixed five-second timeout but passes unchanged with a command-local 15-second timeout, while three unchanged NanoCore filesystem synchronization tests fail identically with and without coverage; the coverage run otherwise passes 2,477/2,480 NanoCore tests. No host or Codex App Server restart was used for any check.
+- **Next action:** publish only a draft pull request that discloses NHC-FND-121 and the upstream build/typecheck failure. Do not present R001 as merge-ready until the current product baseline builds, one fresh exact-candidate no-reboot A1 Aggregate passes, and an independent artifact audit accepts it. No merge, release, deployment, host reboot, Codex App Server restart, or host reset is authorized.
+- **Remaining human-only decisions:** any change to accepted NanoHost design, Scenario 3's effect boundary, credential disclosure, non-project host scope, merge, release publication, or important residual-risk acceptance remains human-owned; no such decision is being inferred by the draft PR.
 
 ### Historical pre-close checkpoint
 
