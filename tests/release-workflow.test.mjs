@@ -86,6 +86,55 @@ test('release workflow publishes and independently verifies the portable release
   assert.ok(verify.steps.indexOf(download) < verify.steps.indexOf(anonymous));
 });
 
+test('release workflow builds NanoHost natively and publishes one checksummed portable bundle', () => {
+  const nativeEntry = Object.entries(workflow.jobs).find(
+    ([, job]) => job['runs-on'] === 'ubuntu-24.04-arm'
+  );
+  assert.ok(nativeEntry, 'Missing native arm64 NanoHost build job');
+  const [nativeJobId, nativeJob] = nativeEntry;
+  assert.match(nativeJob.if, /refs\/tags/);
+  const nativeCommands = (nativeJob.steps ?? [])
+    .map((candidate) => candidate.run)
+    .filter(Boolean)
+    .join('\n');
+  assert.match(nativeCommands, /apps\/nanohost\/mise\.toml/);
+  assert.match(nativeCommands, /cargo build --locked --release/);
+  assert.match(nativeCommands, /nanohost --version/);
+  assert.ok(
+    nativeJob.steps.some((candidate) => candidate.uses?.startsWith('actions/upload-artifact@')),
+    'Native build must hand off the raw NanoHost binary'
+  );
+
+  const portable = workflow.jobs['package-release-assets'];
+  assert.ok(portable.needs.includes(nativeJobId));
+  assert.ok(
+    portable.steps.some((candidate) => candidate.uses?.startsWith('actions/download-artifact@')),
+    'Portable packaging must download the native binary'
+  );
+  const portableCommands = portable.steps
+    .map((candidate) => candidate.run)
+    .filter(Boolean)
+    .join('\n');
+  assert.match(portableCommands, /verify-nanohost-release\.mjs/);
+  assert.match(portableCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
+  assert.match(portableCommands, /sha256sum -c SHA256SUMS/);
+
+  const releaseCommands = workflow.jobs['github-release'].steps
+    .map((candidate) => candidate.run)
+    .filter(Boolean)
+    .join('\n');
+  assert.match(releaseCommands, /openkit-skill-.*\.tar\.gz/);
+  assert.match(releaseCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
+  assert.match(releaseCommands, /portable-assets\/SHA256SUMS/);
+
+  const verificationCommands = workflow.jobs['verify-release'].steps
+    .map((candidate) => candidate.run)
+    .filter(Boolean)
+    .join('\n');
+  assert.match(verificationCommands, /verify-nanohost-release\.mjs/);
+  assert.match(verificationCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
+});
+
 function step(job, name) {
   const found = job.steps.find((candidate) => candidate.name === name);
   assert.ok(found, `Missing workflow step: ${name}`);

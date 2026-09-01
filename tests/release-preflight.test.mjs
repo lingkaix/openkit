@@ -188,6 +188,29 @@ test('release preflight rejects a missing portable Skill input', () => {
   );
 });
 
+test('release preflight rejects a missing NanoHost distribution input', () => {
+  const repoRoot = makeReleaseFixture({ omitNanoHostInstaller: true });
+
+  assert.throws(
+    () => validateReleasePreflight({ repoRoot, tag: 'v0.0.1-rc.1' }),
+    /NanoHost release input does not exist: apps\/nanohost\/deploy\/install\.sh/
+  );
+});
+
+test('release preflight rejects duplicate or target-inconsistent OpenShell pin evidence', () => {
+  const duplicateRoot = makeReleaseFixture({ duplicateNanoHostPinEvidence: true });
+  const wrongTargetRoot = makeReleaseFixture({ nanoHostPinPlatform: 'linux/amd64' });
+
+  assert.throws(
+    () => validateReleasePreflight({ repoRoot: duplicateRoot, tag: 'v0.0.1-rc.1' }),
+    /exactly one.*OpenShell pin.*JSON|OpenShell pin.*exactly one/i
+  );
+  assert.throws(
+    () => validateReleasePreflight({ repoRoot: wrongTargetRoot, tag: 'v0.0.1-rc.1' }),
+    /linux\/arm64/
+  );
+});
+
 test('release preflight rejects deployment workers without a runtime', () => {
   const repoRoot = makeReleaseFixture({ omitWorkerRuntime: true });
 
@@ -273,6 +296,9 @@ test('release preflight rejects worker images without an explicit build target',
  * @param {boolean} [options.omitWorkerContract] Whether to omit the deployment workerContract.
  * @param {boolean} [options.omitWorkerRuntime] Whether to omit the deployment worker runtime.
  * @param {boolean} [options.omitWorkerTarget] Whether to omit the worker Docker target.
+ * @param {boolean} [options.omitNanoHostInstaller] Whether to omit the NanoHost installer.
+ * @param {boolean} [options.duplicateNanoHostPinEvidence] Whether to append a second pin JSON block.
+ * @param {string} [options.nanoHostPinPlatform] Platform projected by the Gateway pin entries.
  * @param {string} [options.workerBaseImage] Worker base image manifest value.
  * @param {unknown} [options.workerContract] Worker contract fixture value.
  * @param {unknown} [options.workerRuntime] Worker runtime fixture value.
@@ -304,6 +330,25 @@ function makeReleaseFixture(options = {}) {
   const cliPath = join(root, 'skills', 'openkit', 'scripts', 'openkit');
   writeFileSync(cliPath, '#!/usr/bin/env node\n');
   chmodSync(cliPath, 0o755);
+
+  mkdirSync(join(root, 'apps', 'nanohost', 'deploy'), { recursive: true });
+  mkdirSync(join(root, 'apps', 'nanohost', 'openshell-pin'), { recursive: true });
+  writeFileSync(
+    join(root, 'apps', 'nanohost', 'deploy', 'openkit-nanohost.service'),
+    '[Service]\nExecStart=/usr/lib/openkit/nanohost\n'
+  );
+  if (!options.omitNanoHostInstaller) {
+    const installer = join(root, 'apps', 'nanohost', 'deploy', 'install.sh');
+    writeFileSync(installer, '#!/bin/sh\nexit 0\n');
+    chmodSync(installer, 0o755);
+  }
+  const pin = JSON.stringify(makeNanoHostPin(options.nanoHostPinPlatform ?? 'linux/arm64'));
+  writeFileSync(
+    join(root, 'apps', 'nanohost', 'openshell-pin', 'manifest.md'),
+    `# OpenShell Pin Manifest\n\n\`\`\`json\n${pin}\n\`\`\`\n${
+      options.duplicateNanoHostPinEvidence ? `\n\`\`\`json\n${pin}\n\`\`\`\n` : ''
+    }`
+  );
 
   mkdirSync(join(root, 'apps', 'web'), { recursive: true });
   writeJson(join(root, 'apps', 'web', 'package.json'), {
@@ -391,6 +436,54 @@ function makeReleaseFixture(options = {}) {
   });
 
   return root;
+}
+
+function makeNanoHostPin(platform) {
+  const checksum = `sha256:${'0'.repeat(64)}`;
+  const commit = '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032';
+  return {
+    source: { tag: 'v0.0.99', commit },
+    artifacts: [
+      {
+        kind: 'gateway-executable',
+        name: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
+        representation: 'release-archive',
+        platform,
+        checksum,
+        tag: 'v0.0.99',
+        commit,
+      },
+      {
+        kind: 'gateway-executable',
+        name: 'openshell-gateway',
+        representation: 'extracted-executable',
+        platform,
+        checksum,
+        tag: 'v0.0.99',
+        commit,
+      },
+      {
+        kind: 'redistribution-license',
+        name: 'LICENSE',
+        representation: 'source-file',
+        sourcePath: 'LICENSE',
+        bundlePath: 'licenses/openshell-LICENSE',
+        checksum,
+        tag: 'v0.0.99',
+        commit,
+      },
+      {
+        kind: 'redistribution-notices',
+        name: 'THIRD-PARTY-NOTICES',
+        representation: 'source-file',
+        sourcePath: 'THIRD-PARTY-NOTICES',
+        bundlePath: 'licenses/openshell-THIRD-PARTY-NOTICES',
+        checksum,
+        tag: 'v0.0.99',
+        commit,
+      },
+    ],
+  };
 }
 
 /**
