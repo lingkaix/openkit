@@ -26,38 +26,7 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hostSupportRoot = join(repoRoot, 'tests/support/host');
-const manifestPath = join(repoRoot, 'tests/support/host/manifest.json');
-const expectedManifest = {
-  architecture: 'aarch64',
-  cgroupMode: 'unified-v2',
-  commands: {
-    bash: {
-      path: '/usr/bin/bash',
-      version: 'GNU bash, version 5.2.21(1)-release (aarch64-unknown-linux-gnu)',
-    },
-    curl: {
-      path: '/usr/bin/curl',
-      version:
-        'curl 8.5.0 (aarch64-unknown-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10',
-    },
-    docker: { path: '/usr/bin/docker', version: 'Docker version 29.6.1, build 8900f1d' },
-    node: { path: '/usr/bin/node', version: 'v24.18.0' },
-    sha256sum: { path: '/usr/bin/sha256sum', version: 'sha256sum (GNU coreutils) 9.4' },
-    slirp4netns: {
-      path: '/usr/bin/slirp4netns',
-      sha256: '4211dca7736aeb6fdd055350c8138d095d3dc5170f2ebf2a68fed5cdd4372f1c',
-      version: 'slirp4netns version 1.2.1',
-    },
-    sudo: { path: '/usr/bin/sudo', version: 'Sudo version 1.9.15p5' },
-    systemctl: { path: '/usr/bin/systemctl', version: 'systemd 255 (255.4-1ubuntu8.17)' },
-    tar: { path: '/usr/bin/tar', version: 'tar (GNU tar) 1.35' },
-    timeout: { path: '/usr/bin/timeout', version: 'timeout (GNU coreutils) 9.4' },
-  },
-  containerRuntime: 'docker',
-  initSystem: 'systemd',
-  kernelRelease: '6.17.0-1020-oracle',
-  schemaVersion: 1,
-};
+const manifestPath = join(repoRoot, 'apps/nanohost/deploy/host-manifest.json');
 const expectedManifestKeys = [
   'architecture',
   'cgroupMode',
@@ -128,21 +97,22 @@ function mismatchedScalar(value) {
   return `${value}-mismatch`;
 }
 
-test('the host manifest has the exact finite vocabulary', () => {
+test('the promoted host manifest has the exact finite vocabulary', () => {
   assert.ok(
     existsSync(manifestPath),
-    'missing H1-A product artifact tests/support/host/manifest.json'
+    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
   );
   const manifestBytes = readFileSync(manifestPath);
   const manifest = JSON.parse(manifestBytes.toString('utf8'));
 
-  assert.deepEqual(manifest, expectedManifest);
+  assert.deepEqual(Object.keys(manifest).sort(), expectedManifestKeys);
+  assert.deepEqual(Object.keys(manifest.commands).sort(), expectedCommandKeys);
 });
 
 test('fixture provisions twice and the shared assertion rejects every observation mismatch', async (t) => {
   assert.ok(
     existsSync(manifestPath),
-    'missing H1-A product artifact tests/support/host/manifest.json'
+    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
   );
   const manifestBytes = readFileSync(manifestPath);
   const manifest = JSON.parse(manifestBytes.toString('utf8'));
@@ -285,7 +255,7 @@ printf '%s\\n' "\${OPENKIT_SSH_STDOUT-}"
 test('Node provisioning fails closed on every frozen source and existing-target mismatch', async (t) => {
   assert.ok(
     existsSync(manifestPath),
-    'missing H1-A product artifact tests/support/host/manifest.json'
+    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
   );
   const manifestBytes = readFileSync(manifestPath);
   const cases = [

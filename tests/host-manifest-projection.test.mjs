@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -15,7 +16,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const manifestPath = join(repoRoot, 'tests/support/host/manifest.json');
+const manifestPath = join(repoRoot, 'apps/nanohost/deploy/host-manifest.json');
 const expectedRootScripts = {
   'host:assert': 'bash tests/support/host/assert.sh',
   'host:nanohost:bring-up': 'bash tests/support/host/nanohost-bring-up.sh',
@@ -28,13 +29,13 @@ const trackedPaths = [
   'docs/cookbooks/README.md',
   'docs/cookbooks/nanohost-real-use-host.md',
   'package.json',
+  'apps/nanohost/deploy/host-manifest.json',
   'tests/host-manifest-projection.test.mjs',
   'tests/host-manifest-runtime.test.mjs',
   'tests/host-manifest.test.mjs',
   'tests/support/host/README.md',
   'tests/support/host/assert.sh',
   'tests/support/host/fixture-runner.mjs',
-  'tests/support/host/manifest.json',
   'tests/support/host/nanohost-bring-up.sh',
   'tests/support/host/provision.sh',
   'tests/support/host/ssh-alias.sh',
@@ -58,19 +59,21 @@ function artifactDigest(root, paths) {
   return hash.digest('hex');
 }
 
-test('root exposes exactly the four host-manifest commands', () => {
+test('root exposes exactly the host-manifest commands', () => {
   const rootPackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
-  assert.deepEqual(
-    Object.fromEntries(
-      Object.entries(rootPackage.scripts)
-        .filter(([name]) => name.startsWith('host:'))
-        .sort(([left], [right]) => left.localeCompare(right))
-    ),
-    expectedRootScripts
+  const hostScripts = Object.fromEntries(
+    Object.entries(rootPackage.scripts)
+      .filter(([name]) => name.startsWith('host:'))
+      .sort(([left], [right]) => left.localeCompare(right))
   );
+  assert.deepEqual(hostScripts, expectedRootScripts);
 });
 
-test('the host artifacts have the exact sixteen-file identity', () => {
+test('the host artifacts use the sole promoted manifest identity', () => {
+  assert.ok(
+    existsSync(manifestPath),
+    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
+  );
   const manifestBytes = readFileSync(manifestPath);
 
   assert.equal(trackedPaths.length, 16);
@@ -103,4 +106,23 @@ test('the host artifacts have the exact sixteen-file identity', () => {
   } finally {
     rmSync(fixtureRoot, { force: true, recursive: true });
   }
+});
+
+test('active repository paths do not retain the retired host-manifest owner', () => {
+  const retiredPath = ['tests', 'support', 'host', 'manifest.json'].join('/');
+  assert.equal(existsSync(join(repoRoot, retiredPath)), false, `${retiredPath} still exists`);
+  const result = spawnSync(
+    'git',
+    [
+      'grep',
+      '-n',
+      retiredPath,
+      '--',
+      ':!docs/changes/**',
+      ':!temp/**',
+      ':!tests/host-manifest-projection.test.mjs',
+    ],
+    { cwd: repoRoot, encoding: 'utf8' }
+  );
+  assert.equal(result.status, 1, result.stdout || result.stderr);
 });

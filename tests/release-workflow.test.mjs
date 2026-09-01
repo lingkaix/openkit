@@ -118,6 +118,32 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
   assert.match(portableCommands, /verify-nanohost-release\.mjs/);
   assert.match(portableCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
   assert.match(portableCommands, /sha256sum -c SHA256SUMS/);
+  const pinStep = portable.steps.find(
+    (candidate) =>
+      candidate.id &&
+      /GITHUB_OUTPUT/u.test(candidate.run ?? '') &&
+      ['tag', 'commit', 'archive'].every((name) =>
+        new RegExp(`(?:^|[^A-Za-z0-9_])${name}=`, 'u').test(candidate.run)
+      )
+  );
+  assert.ok(pinStep, 'Portable packaging must parse the accepted OpenShell pin once');
+  assert.doesNotMatch(portableCommands, /v0\.0\.99|8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032/u);
+  assert.doesNotMatch(portableCommands, /openshell-gateway-aarch64-unknown-linux-gnu\.tar\.gz/u);
+  const pinConsumer = portable.steps.find((candidate) =>
+    /github\.com\/NVIDIA\/OpenShell\/releases\/download/u.test(candidate.run ?? '')
+  );
+  assert.ok(pinConsumer, 'Portable packaging must download the parsed OpenShell coordinates');
+  const releaseCoordinate = pinConsumer.run
+    .split('\n')
+    .find((line) => line.includes('github.com/NVIDIA/OpenShell/releases/download'));
+  const sourceCoordinate = pinConsumer.run
+    .split('\n')
+    .find((line) => line.includes('raw.githubusercontent.com/NVIDIA/OpenShell'));
+  assert.ok(releaseCoordinate, 'Missing OpenShell release download coordinate');
+  assert.ok(sourceCoordinate, 'Missing OpenShell source download coordinate');
+  assert.match(releaseCoordinate, outputReference(pinStep, pinConsumer, 'tag'));
+  assert.match(releaseCoordinate, outputReference(pinStep, pinConsumer, 'archive'));
+  assert.match(sourceCoordinate, outputReference(pinStep, pinConsumer, 'commit'));
 
   const releaseCommands = workflow.jobs['github-release'].steps
     .map((candidate) => candidate.run)
@@ -135,6 +161,28 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
   assert.match(verificationCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
 });
 
+test('release workflow runs the fixed-path NanoHost installer gate in one host job', () => {
+  const leaf = 'bash tests/support/nanohost-release-installer-live.sh';
+  const matches = Object.entries(workflow.jobs).filter(([, job]) =>
+    (job.steps ?? []).some((candidate) => candidate.run?.includes(leaf))
+  );
+  assert.equal(matches.length, 1, 'the NanoHost installer shell leaf must have one CI owner');
+  const [jobId, job] = matches[0];
+  assert.match(jobId, /nanohost.*installer|installer.*nanohost/u);
+  assert.equal(job.container, undefined, 'the Bubblewrap gate must not run in test-env');
+  assert.match(String(job['runs-on']), /^ubuntu-/u);
+  const commands = (job.steps ?? [])
+    .map((candidate) => candidate.run)
+    .filter(Boolean)
+    .join('\n');
+  assert.match(
+    commands,
+    /apt-get install(?:\s+-y)?\s+bubblewrap|apt-get install\s+[^\n]*bubblewrap/u
+  );
+  assert.match(commands, new RegExp(escapeRegExp(leaf), 'u'));
+  assert.doesNotMatch(commands, /pnpm .*nanohost.*installer|scripts\/test-env\.sh/u);
+});
+
 function step(job, name) {
   const found = job.steps.find((candidate) => candidate.name === name);
   assert.ok(found, `Missing workflow step: ${name}`);
@@ -144,4 +192,17 @@ function step(job, name) {
 /** Returns the serialized GitHub Actions expression parsed from workflow YAML. */
 function actionExpression(value) {
   return `\${{ ${value} }}`;
+}
+
+function outputReference(producer, consumer, name) {
+  const expression = actionExpression(`steps.${producer.id}.outputs.${name}`);
+  if (consumer.run.includes(expression)) return new RegExp(escapeRegExp(expression), 'u');
+  const environment = Object.entries(consumer.env ?? {}).find(([, value]) => value === expression);
+  assert.ok(environment, `OpenShell ${name} output does not reach its download consumer`);
+  const variable = escapeRegExp(environment[0]);
+  return new RegExp(`(?:\\$${variable}(?![A-Za-z0-9_])|\\$\\{${variable}\\})`, 'u');
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }

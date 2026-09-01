@@ -211,7 +211,7 @@ test('CI derives the test image build context and Dockerfile from the image mani
   );
 });
 
-test('every CI gate that runs repository checks runs inside the test execution image', () => {
+test('every any-placed CI gate runs inside the test execution image', () => {
   const gateJobs = ['pr-check', 'l0-l2', 'nano-core-e2e', 'web-e2e', 'smoke', 'release-preflight'];
 
   for (const job of gateJobs) {
@@ -224,3 +224,20 @@ test('every CI gate that runs repository checks runs inside the test execution i
     );
   }
 });
+
+test('the one NanoHost installer host gate runs outside the test image', () => {
+  const leaf = 'bash tests/support/nanohost-release-installer-live.sh';
+  const jobBlocks = [...ciWorkflow.matchAll(/\n {2}([a-z0-9-]+):\n((?: {4}.*\n|\n)+)/gu)].filter(
+    ([, , body]) => body.includes(leaf)
+  );
+  assert.equal(jobBlocks.length, 1, 'ci.yml must invoke the installer shell leaf in one job');
+  const [, jobName, body] = jobBlocks[0];
+  assert.match(jobName, /nanohost.*installer|installer.*nanohost/u);
+  assert.doesNotMatch(body, /^ {4}container:/mu);
+  assert.match(body, /apt-get install[^\n]*bubblewrap/u);
+  assert.match(body, new RegExp(`run:\\s*${escapeRegExp(leaf)}`, 'u'));
+});
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}

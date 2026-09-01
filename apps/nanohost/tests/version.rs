@@ -5,6 +5,7 @@ fn version_exits_before_runtime_environment_is_read() {
     let output = Command::new(env!("CARGO_BIN_EXE_nanohost"))
         .arg("--version")
         .env_clear()
+        .env("TOKIO_WORKER_THREADS", "0")
         .output()
         .expect("run nanohost --version");
 

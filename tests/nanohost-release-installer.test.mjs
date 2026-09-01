@@ -89,15 +89,30 @@ test('NanoHost installer contains staging writes and rejects corruption before i
     false,
     'symlink ancestor must not escape staging'
   );
+
+  for (const [label, options] of [
+    ['ET_REL', { type: 1 }],
+    ['truncated ELF64 header', { truncate: 63 }],
+  ]) {
+    const invalidElf = makeBundle(options);
+    const invalidStage = join(invalidElf.root, 'stage');
+    const result = runInstaller(
+      invalidElf.bundle,
+      invalidStage,
+      join(invalidElf.root, 'systemctl-called')
+    );
+    assert.notEqual(result.status, 0, `installer accepted ${label}`);
+    assert.equal(existsSync(invalidStage), false, `${label} failed after staging writes`);
+  }
 });
 
-function makeBundle() {
+function makeBundle(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-installer-'));
   const bundle = join(root, 'bundle');
   mkdirSync(join(bundle, 'licenses'), { recursive: true });
   copyFileSync(installerSource, join(bundle, 'install.sh'));
   chmodSync(join(bundle, 'install.sh'), 0o755);
-  writeElf(join(bundle, 'nanohost'));
+  writeElf(join(bundle, 'nanohost'), options);
   writeElf(join(bundle, 'openshell-gateway'));
   writeFileSync(
     join(bundle, 'openkit-nanohost.service'),
@@ -167,11 +182,12 @@ function runInstaller(bundle, destdir, systemctlMarker) {
   });
 }
 
-function writeElf(path) {
+function writeElf(path, options = {}) {
   const bytes = Buffer.alloc(64);
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
-  bytes.writeUInt16LE(2, 16);
+  bytes.writeUInt16LE(options.type ?? 2, 16);
   bytes.writeUInt16LE(183, 18);
   bytes.writeUInt32LE(1, 20);
-  writeFileSync(path, bytes, { mode: 0o755 });
+  bytes.writeUInt16LE(64, 52);
+  writeFileSync(path, bytes.subarray(0, options.truncate ?? bytes.length), { mode: 0o755 });
 }
