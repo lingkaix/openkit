@@ -1,7 +1,8 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 date: 2026-08-29
+updated: 2026-09-01
 ---
 # Release Management
 
@@ -39,7 +40,7 @@ date: 2026-08-29
 
 OpenKit releases are explicit, tag-triggered product bundles rather than package-manager releases.
 
-One lowercase semantic-version Git tag identifies the source commit, container images, end-user Skill archive, checksum, GitHub Release, and verification record.
+One lowercase semantic-version Git tag identifies the source commit, container images, end-user Skill archive, supported NanoHost distribution, checksum, GitHub Release, and verification record.
 
 An authorized agent prepares and verifies the release locally, receives explicit authorization for the named external publication, pushes the immutable tag, observes the workflow, resolves any first-publication visibility gate without changing artifact identity, and closes only after post-publication verification succeeds.
 
@@ -51,6 +52,7 @@ An authorized agent prepares and verifies the release locally, receives explicit
 - Keep every released byte traceable to one tag and source commit.
 - Make a same-tag workflow rerun reuse completed artifacts rather than overwrite them.
 - Publish the complete end-user Skill beside the release images.
+- Publish the NanoHost owner's supported distribution beside the Skill and release images.
 - Keep release failure and partial publication visible and recoverable without moving or deleting tags.
 
 ### Non-goals
@@ -58,7 +60,7 @@ An authorized agent prepares and verifies the release locally, receives explicit
 - Do not publish private workspace packages to npm.
 - Do not publish `test-env` or the internal dogfood image as product artifacts.
 - Do not add signing, mandatory SBOM generation, vulnerability blocking, or GitHub artifact attestations before their existing deferred decisions are activated.
-- Do not distribute NanoHost before its owner admits a release artifact.
+- Do not publish a NanoHost target, installer behavior, or artifact content that its owner has not admitted.
 - Do not add a release service, promotion database, custom registry, or compatibility channel.
 
 ## Decision
@@ -87,7 +89,8 @@ The current release bundle contains exactly these controlled assets:
 | --- | --- | --- |
 | Catalog entries with `release: true` | GHCR | Exact version tag, version without `v`, source-revision tag, digest, and stable-only `latest` |
 | End-user `openkit` Skill | GitHub Release attachment | `openkit-skill-<tag>.tar.gz` containing the complete `skills/openkit/` tree and repository license |
-| Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over the attached Skill archive |
+| NanoHost Distribution | GitHub Release attachment | `openkit-nanohost-<tag>-linux-arm64.tar.gz` satisfying the exact target, tree, pin, installer, license, and reproducibility contract owned by the NanoHost specification |
+| Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over the attached Skill and NanoHost archives |
 | Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, automatic gate result, manual-gate disposition, and portable-asset checksum |
 
 GitHub-generated source archives are convenience snapshots and are not controlled release artifacts or checksum authorities.
@@ -96,11 +99,11 @@ All root, app, and workspace package manifests remain private and produce no npm
 
 `test-env` remains an internal CI artifact, and the Codex-plus-Pi dogfood image remains an internal non-release artifact.
 
-The current release-candidate bundle does not contain a NanoHost binary, installer, service bundle, or OpenShell Gateway copy.
+The NanoHost owner admits exactly one distribution target, `linux/arm64`. Release composition MUST use that owner's exact archive without redefining its contents, destinations, prerequisites, installer semantics, or readiness; no `linux/amd64` NanoHost attachment exists until that owner admits it.
 
-The NanoHost owner records that the A1 noninterference gate has passed, but no NanoHost distribution artifact is admitted; until that artifact exists, a release MUST remain a prerelease and its notes MUST state that supported Worker Agent execution is unavailable from the released bundle.
+R001 remains open pending fresh exact-product no-host-reboot A1 evidence. Until that runtime gate closes, a release MUST remain a prerelease and its notes MUST state that the NanoHost archive is installable but supported Worker Agent execution is not yet release-ready.
 
-The first stable release requires that NanoHost condition to be closed or a later accepted product-scope decision to remove Worker Agent execution from that stable release.
+The first stable release requires both an accepted NanoHost distribution artifact and closure of the current R001 runtime gate, or a later accepted product-scope decision to remove Worker Agent execution from that stable release.
 
 ### Visibility And Access
 
@@ -172,15 +175,17 @@ For a newly promoted prerelease, the workflow MUST prove that it did not change 
 
 The workflow MUST log out of GHCR and inspect the exact `worker-common` digest without credentials.
 
-The workflow MUST download the GitHub Release attachments, verify `SHA256SUMS`, inspect the archive tree, and run the bundled CLI's local operation discovery under the supported Node runtime without a NanoCore connection.
+The workflow MUST download every controlled GitHub Release attachment and verify `SHA256SUMS`. It MUST inspect the Skill archive and run the bundled CLI's local operation discovery under the supported Node runtime without a NanoCore connection. It MUST run the same executable NanoHost release-asset verifier used before publication against the downloaded NanoHost archive, including exact tree, generated-manifest consistency, inner checksums, AArch64 ELF identity, and a newly created contained `DESTDIR` installation; an amd64 verification host reports staging only and makes no live NanoHost readiness claim.
 
-The GitHub Release prerelease state MUST agree with the tag, and its notes MUST name the source commit, workflow run, image digests, automatic gates, manual-gate disposition, visibility posture, current NanoHost exclusion, and portable-asset checksum.
+The GitHub Release prerelease state MUST agree with the tag, and its notes MUST name the source commit, workflow run, image digests, automatic gates, manual-gate disposition, visibility posture, NanoHost target and current R001 runtime status, and portable-asset checksum.
 
 ## Current Implementation Projection
 
 The existing `.github/workflows/ci.yml` already runs tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation.
 
 The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete Skill, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
+
+The native arm64 NanoHost build job, NanoHost archive packaging, combined portable checksum, shared NanoHost verifier, and NanoHost attachment and post-publication checks defined by this amendment are not yet implemented. Stable preflight remains blocked while R001 is open.
 
 The repository is currently private, no product release exists, and no visibility mutation or release publication occurs as part of this implementation change.
 
@@ -193,6 +198,10 @@ The repository is currently private, no product release exists, and no visibilit
 - The workflow pushes a digest candidate, smokes every declared platform before promotion, and reuses matching version and source-revision tags without mutation.
 - A prerelease GitHub Release is marked prerelease and not Latest; a stable release is marked stable.
 - The deterministic Skill packager produces an archive with the expected envelope, complete Skill directory, executable bundle, repository license, and matching SHA-256.
+- The tag-only native `ubuntu-24.04-arm` job reads the NanoHost Rust version from its existing app pin, performs a locked release build, runs the binary's side-effect-free `--version`, and hands only that AArch64 binary to portable packaging without A1, a self-hosted runner, or a cross-build framework.
+- The NanoHost packager consumes the specification-owned target and one accepted pin projection, verifies the Gateway and commit-bound OpenShell license bytes, rejects non-AArch64 inputs, and produces the exact archive twice with identical bytes.
+- One shared NanoHost release-asset verifier accepts the intact pre-publication and downloaded post-publication archive and rejects checksum corruption, wrong tree or architecture, generated-manifest inconsistency, and staging escape before writes.
+- Before R002 closes, the exact final candidate commit is built natively on A1, reports its version, packages the real pin-bound inputs, reports successful package and host prerequisites plus the expected nonzero `destination-conflict` for the earlier installed NanoHost bytes, proves all live destinations unchanged, and installs only beneath a newly created contained `DESTDIR`; any artifact-affecting change makes that result stale and requires a rerun, while no service lifecycle or current-deployment effect occurs.
 - The repository release gate passes without requiring Docker for ordinary checks; image publication behavior remains decided only by the tag workflow.
 - A completed real release satisfies every post-publication predicate above before its release change record becomes verified.
 
@@ -204,7 +213,7 @@ The repository is currently private, no product release exists, and no visibilit
 | A matrix failure leaves a partial release. | Version tags are immutable, GitHub Release creation waits for the full matrix, and retry reuses proved pairs while building only missing images. |
 | Two releases race on `latest`. | One workflow-level release concurrency group serializes tag releases. |
 | A private repository is mistaken for a public product release. | The release record states observed visibility, and visibility changes require separate authorization. |
-| NanoHost absence is hidden by publishing worker images. | Prerelease notes disclose the exclusion, and the first stable release remains blocked on the missing NanoHost distribution artifact. |
+| An installable NanoHost archive is mistaken for runtime readiness. | Prerelease notes disclose the open R001 runtime gate, stable preflight remains blocked, and staging verification makes no live readiness claim. |
 
 ## Open Questions
 
@@ -212,7 +221,7 @@ The repository is currently private, no product release exists, and no visibilit
 
 ## Deferred / Future Work
 
-- Publish a NanoHost artifact only after its owner accepts its distribution boundary; the A1 noninterference gate is already recorded as passed by that owner.
+- Publish another NanoHost platform only after its owner admits a real consumer, target, artifact, and acceptance evidence; source-level platform support does not create a release asset.
 - Add build provenance attestations, image signing, SBOM generation, or vulnerability gates only after an accepted verification and consumer policy activates the deferred image-packaging work.
 - Publish the internal dogfood image only after its existing design activation condition is met; it remains excluded from product release tags.
 - Add a protected GitHub release environment or tag rules only after repository publication or observed unauthorized-tag risk demonstrates the need.
