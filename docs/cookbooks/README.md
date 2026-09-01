@@ -9,7 +9,7 @@ Use this index to find the repository's reusable setup and operational guides be
 - [Release](./release.md): cut a semantic version tag from `main`, run the release gate, publish GHCR images, and verify GitHub Release notes
 - [Docker app image](./docker-app.md): build and run the single-container app image with Caddy, NanoCore, and web assets
 - [Test execution image](./docker-test-env.md): build, run, and troubleshoot the `test-env` image that every repository check executes inside
-- [NanoHost real-use host](./nanohost-real-use-host.md): use `pnpm host:provision a1`, `pnpm host:assert a1`, `pnpm host:nanohost:bring-up a1`, and `pnpm host:teardown a1` for the exact A1 host workflow, then retain the redacted result at `temp/state/nanohost/host-manifest/a1/result.json`
+- [NanoHost real-use host](./nanohost-real-use-host.md): use the ordinary A1 host commands for provisioning, assertion, bring-up, and teardown, or run the separately authorized `pnpm host:nanohost:unit-f` gate and retain its redacted result at `temp/changes/202608150321350001-nanohost_runtime_implementation_completion/r001-a1-unit-f-result.json`
 - [Python setup](./python-setup.md): add a Python app or package with `uv`, `ruff`, `mypy`, and `pytest`
 - [Go setup](./go-setup.md): add a Go app or package with Go modules, `gofmt`, `golangci-lint`, and `go test`
 - [Rust setup](./rust-setup.md): add a Rust app or package with `cargo`, `cargo fmt`, and `cargo clippy`

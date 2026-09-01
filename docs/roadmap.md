@@ -21,7 +21,6 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 
 ## Phase 1 — Establish a reliable product and release baseline
 
-- [ ] R001 — NanoHost runs real Worker workloads without interfering with unrelated host networking, containers, services, or user data.
 - [ ] R002 — NanoHost ships as an installable, verifiable distribution artifact that can be included in a tagged OpenKit release.
 - [ ] R003 — An operator can install, upgrade, and roll back a NanoCore deployment across product versions with data, schema, and credential integrity preserved.
 - [ ] R004 — Maintainers can prepare, publish, retry, and verify one complete tagged product release containing the App, Worker, NanoHost, and end-user `openkit` Skill assets.

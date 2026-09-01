@@ -12,6 +12,7 @@
   "scripts": {
     "host:assert": "bash tests/support/host/assert.sh",
     "host:nanohost:bring-up": "bash tests/support/host/nanohost-bring-up.sh",
+    "host:nanohost:unit-f": "node tests/support/host/nanohost-unit-f-runner.mjs",
     "host:provision": "bash tests/support/host/provision.sh",
     "host:teardown": "bash tests/support/host/teardown.sh",
     "build": "bash scripts/test-env.sh any bash -c 'turbo run build && esbuild skills/openkit-cli.mjs --bundle --platform=node --target=node24 --format=cjs --minify --outfile=skills/openkit/scripts/openkit'",

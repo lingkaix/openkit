@@ -1,44 +1,75 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
+import { isIPv4 } from 'node:net';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
-const scenarioIds = Object.freeze(['F1', 'F2', 'F3', 'F4']);
+const scenarioIds = Object.freeze(['F1', 'F2', 'F4']);
 const scenarioContracts = Object.freeze({
   F1: Object.freeze({
     action: 'successor-transport-fenced-and-reconnected',
     barrier: 'post-launch-worker-sequence-durable',
+    checkout: 'real-worker-public-git-checkout-complete',
     cleanup: 'same-lineage-finalized-without-replay',
     fault: 'nanocore-only-restarted',
   }),
   F2: Object.freeze({
     action: 'supervised-effect-domain-terminated',
     barrier: 'sandbox-create-accepted-and-blocked',
+    buildNetwork: 'system-docker-build-network-smoke-complete',
     cleanup: 'no-late-residue-and-fresh-empty-ready',
     fault: 'nanohost-sigkill-delivered',
-  }),
-  F3: Object.freeze({
-    action: 'sessions-interrupted-or-unknown-and-epoch-nonready',
-    barrier: 'nanohost-operation-live-or-in-flight',
-    cleanup: 'fresh-members-empty-and-images-reverified',
-    fault: 'execution-server-restarted',
   }),
   F4: Object.freeze({
     action: 'epoch-invalidated-siblings-terminated-without-member-restart',
     barrier: 'sandbox-operation-accepted',
+    buildNetwork: 'system-docker-build-network-smoke-complete',
     cleanup: 'sessions-interrupted-routes-capacity-fenced-and-fresh-epoch-ready',
     fault: 'effect-capable-member-killed',
   }),
 });
 const normalLifecycleContract = Object.freeze({
+  buildNetwork: 'system-docker-build-network-smoke-complete',
   finalFreshStart: 'final-fresh-start-all-three-ready',
   ordinaryStart: 'ordinary-start-all-three-ready',
   ordinaryStop: 'ordinary-stop-cgroup-and-private-network-namespace-absent',
   stoppedBaseline: 'service-stopped-baseline',
   systemDocker: 'system-docker-baseline-exact-equal',
 });
+const networkConformanceContract = Object.freeze({
+  businessContainerAttachments: 'business-container-attachments-preserved',
+  defaultRoute: 'private-default-route-ready',
+  dockerdDns: 'dockerd-fixed-dns-projected',
+  namespaceTopology: 'host-private-namespace-topology-exact',
+  privateNamespaceReachability: 'host-nanocore-and-loopback-sentinel-unreachable',
+  realWorkerCheckout: 'real-worker-public-git-checkout-complete',
+  serviceRoot: 'system-docker-socket-inaccessible',
+  slirp: 'exact-host-slirp-ready',
+  systemDockerBaseline: 'system-docker-baseline-preserved',
+  systemDockerBuildSmoke: 'system-docker-build-network-smoke-complete',
+  tap: 'private-tap-ready',
+});
+const fixedSlirpArguments = Object.freeze([
+  '--configure',
+  '--disable-host-loopback',
+  '--disable-dns',
+  '--enable-sandbox',
+  '--enable-seccomp',
+  '--ready-fd=3',
+  '--netns-type=path',
+  '/proc/self/fd/4',
+  'tap0',
+]);
+
+/** Returns whether an observed IPv4 host alias is usable unicast. */
+function isUnicastIpv4HostAlias(value) {
+  if (!isIPv4(value)) return false;
+  const firstOctet = Number(value.split('.', 1)[0]);
+  return firstOctet > 0 && firstOctet !== 127 && firstOctet < 224;
+}
 
 const hostRoot = dirname(fileURLToPath(import.meta.url));
 const hostManifestPath = resolve(hostRoot, 'manifest.json');
@@ -52,6 +83,26 @@ const failureEvidenceByError = new WeakMap();
 /** Hashes one private attempt value for retained correlation. */
 function digest(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/** Normalizes only the exact NanoCore host-network endpoint that Docker recreates on restart. */
+export function normalizeNanoCoreRestartBaseline(payload, nanoCoreContainer) {
+  const matches = payload?.containers?.filter(
+    (container) => container?.name === `/${nanoCoreContainer}`
+  );
+  if (matches?.length !== 1) {
+    throw new Error('Unit F baseline requires one exact NanoCore container.');
+  }
+  const networks = matches[0].networks;
+  if (
+    !networks ||
+    Object.keys(networks).length !== 1 ||
+    !/^[a-f0-9]{64}$/u.test(networks.host?.endpointId ?? '')
+  ) {
+    throw new Error('Unit F baseline requires the exact NanoCore host-network endpoint.');
+  }
+  networks.host.endpointId = 'nanocore-restart-endpoint';
+  return payload;
 }
 
 /** Projects one epoch into retained public hashes without exposing member identity. */
@@ -103,7 +154,7 @@ export function adjudicateNanoHostUnitFScenario(
       ? proof.successorGeneration === proof.priorGeneration + 1
       : Number.isSafeInteger(proof?.fenceGeneration) &&
         proof.fenceGeneration === proof.priorGeneration + 1 &&
-        proof.successorGeneration === proof.fenceGeneration + (id === 'F3' ? 1 : 2));
+        proof.successorGeneration === proof.fenceGeneration + 2);
   const proofComplete =
     [proof?.boot, proof?.faultTarget, proof?.instrument, proof?.invocation, proof?.members].every(
       (value) => digest64Pattern.test(value ?? '')
@@ -114,23 +165,39 @@ export function adjudicateNanoHostUnitFScenario(
       ? proof.effectRequest === null && proof.sandbox === null
       : digest64Pattern.test(proof?.effectRequest ?? '') &&
         digest64Pattern.test(proof?.sandbox ?? ''));
+  const preAdjudicatedBaseline =
+    id === 'F1' ? preBaseline?.nanoCoreRestartInvariantDigest : preBaseline?.digest;
+  const postAdjudicatedBaseline =
+    id === 'F1' ? postBaseline?.nanoCoreRestartInvariantDigest : postBaseline?.digest;
   const baselineComplete =
     digest64Pattern.test(preBaseline?.digest ?? '') &&
     digest64Pattern.test(postBaseline?.digest ?? '') &&
-    (id === 'F1' || id === 'F3' || preBaseline.digest === postBaseline.digest);
+    digest64Pattern.test(preAdjudicatedBaseline ?? '') &&
+    digest64Pattern.test(postAdjudicatedBaseline ?? '') &&
+    preAdjudicatedBaseline === postAdjudicatedBaseline;
   const complete =
     baselineComplete &&
     observedContractRow(evidence?.barrier, contract.barrier) &&
     observedContractRow(evidence?.fault, contract.fault) &&
     observedContractRow(evidence?.action, contract.action) &&
     observedContractRow(evidence?.cleanup, contract.cleanup) &&
+    (contract.checkout === undefined ||
+      observedContractRow(evidence?.checkout, contract.checkout)) &&
+    (contract.buildNetwork === undefined ||
+      observedContractRow(evidence?.buildNetwork, contract.buildNetwork)) &&
     lineageComplete &&
     proofComplete;
 
   return {
     baseline: {
-      post: postBaseline?.digest ?? null,
-      pre: preBaseline?.digest ?? null,
+      post: postAdjudicatedBaseline ?? null,
+      pre: preAdjudicatedBaseline ?? null,
+      ...(id === 'F1'
+        ? {
+            rawPost: postBaseline?.digest ?? null,
+            rawPre: preBaseline?.digest ?? null,
+          }
+        : {}),
     },
     id,
     lineage: {
@@ -157,6 +224,82 @@ export function adjudicateNanoHostUnitFScenario(
         }
       : null,
     status: complete ? 'PASS' : 'FAIL',
+  };
+}
+
+/** Adjudicates the fixed fresh-ready and existing lifecycle network observations. */
+function adjudicateNetworkConformance(evidence, scenarioEvidence, normalLifecycleEvidence) {
+  const topology = evidence?.namespaceTopology;
+  const members = topology?.members;
+  const resolvers = evidence?.dockerdDns?.resolvers;
+  const expectedDnsArguments = Array.isArray(resolvers)
+    ? resolvers.flatMap((resolver) => ['--dns', resolver])
+    : null;
+  const routeGateway = evidence?.defaultRoute?.gateway;
+  const directComplete =
+    digest64Pattern.test(topology?.collectorHost ?? '') &&
+    digest64Pattern.test(topology?.private ?? '') &&
+    topology.collectorHost !== topology.private &&
+    members?.nanohost === topology.collectorHost &&
+    members?.slirp === topology.collectorHost &&
+    members?.containerd === topology.private &&
+    members?.dockerd === topology.private &&
+    members?.gateway === topology.private &&
+    evidence?.slirp?.executable === '/usr/bin/slirp4netns' &&
+    evidence.slirp.namespace === topology.collectorHost &&
+    evidence.slirp.readyFdObserved === true &&
+    JSON.stringify(evidence.slirp.arguments) === JSON.stringify(fixedSlirpArguments) &&
+    evidence?.tap?.name === 'tap0' &&
+    evidence.tap.present === true &&
+    evidence?.defaultRoute?.device === 'tap0' &&
+    evidence.defaultRoute.present === true &&
+    isUnicastIpv4HostAlias(routeGateway ?? '') &&
+    Array.isArray(resolvers) &&
+    resolvers.length >= 1 &&
+    resolvers.length <= 3 &&
+    new Set(resolvers).size === resolvers.length &&
+    resolvers.every((resolver) => {
+      const firstOctet = Number(resolver.split('.', 1)[0]);
+      return (
+        isIPv4(resolver) &&
+        firstOctet !== 0 &&
+        firstOctet !== 127 &&
+        (firstOctet < 224 || firstOctet > 239) &&
+        resolver !== '255.255.255.255'
+      );
+    }) &&
+    JSON.stringify(evidence.dockerdDns.arguments) === JSON.stringify(expectedDnsArguments) &&
+    evidence?.privateNamespaceReachability?.privateLoopback?.hostNanoCore === false &&
+    evidence.privateNamespaceReachability.privateLoopback.sentinel === false &&
+    evidence.privateNamespaceReachability.defaultRouteGateway?.hostNanoCore === false &&
+    evidence.privateNamespaceReachability.defaultRouteGateway.sentinel === false &&
+    evidence?.serviceRoot?.systemDockerSocketOpen === false;
+  const scenarioById = Object.fromEntries(
+    scenarioEvidence.map((scenario) => [scenario.id, scenario])
+  );
+  const lifecycleComplete =
+    observedContractRow(scenarioById.F1?.evidence?.checkout, scenarioContracts.F1.checkout) &&
+    observedContractRow(
+      scenarioById.F2?.evidence?.buildNetwork,
+      scenarioContracts.F2.buildNetwork
+    ) &&
+    observedContractRow(
+      scenarioById.F4?.evidence?.buildNetwork,
+      scenarioContracts.F4.buildNetwork
+    ) &&
+    observedContractRow(
+      normalLifecycleEvidence?.buildNetwork,
+      normalLifecycleContract.buildNetwork
+    ) &&
+    observedContractRow(
+      normalLifecycleEvidence?.systemDocker,
+      normalLifecycleContract.systemDocker
+    ) &&
+    scenarioById.F2?.preBaseline?.digest === scenarioById.F2?.postBaseline?.digest &&
+    scenarioById.F4?.preBaseline?.digest === scenarioById.F4?.postBaseline?.digest;
+  return {
+    observations: { ...networkConformanceContract },
+    status: directComplete && lifecycleComplete ? 'PASS' : 'FAIL',
   };
 }
 
@@ -303,17 +446,7 @@ export function createNanoCoreTunnel(config, spawnChild = spawn) {
       await killChildAndWaitForClose(current, currentClosed, 'SSH forward');
     }
   };
-  const waitForDisconnect = async () => {
-    const current = child;
-    if (!current || current.exitCode !== null || current.signalCode !== null) return;
-    await Promise.race([
-      new Promise((resolvePromise) => current.once('close', resolvePromise)),
-      delay(60_000).then(() => {
-        throw new Error('Unit F SSH forward did not observe host reboot.');
-      }),
-    ]);
-  };
-  return { start, stop, waitForDisconnect };
+  return { start, stop };
 }
 
 /** Sends one bounded JSON request over the current HTTP/1.1 App SSH forward. */
@@ -443,6 +576,31 @@ function runSudo(execute, sshAlias, args, options = {}) {
   return runSsh(execute, sshAlias, ['/usr/bin/sudo', '-n', ...args], options);
 }
 
+/** Stops NanoHost and normalizes an already-failed systemd unit to inactive. */
+async function stopNanoHostService(config) {
+  await runSudo(config.execute, config.sshAlias, [
+    '/usr/bin/systemctl',
+    'stop',
+    'openkit-nanohost.service',
+  ]);
+  try {
+    await runSudo(config.execute, config.sshAlias, [
+      '/usr/bin/systemctl',
+      'reset-failed',
+      'openkit-nanohost.service',
+    ]);
+  } catch (error) {
+    const state = await runSudo(config.execute, config.sshAlias, [
+      '/usr/bin/systemctl',
+      'show',
+      'openkit-nanohost.service',
+      '--property=ActiveState',
+      '--value',
+    ]);
+    if (state.stdout.trim() !== 'inactive') throw error;
+  }
+}
+
 /** Captures the normalized system-Docker and host-network baseline on A1. */
 async function captureA1Baseline(config) {
   await assertHostManifest(config.sshAlias, config.hostManifestDigest, config.execute);
@@ -451,6 +609,7 @@ async function captureA1Baseline(config) {
   const script = String.raw`
     const { createHash } = require('node:crypto');
     const { spawnSync } = require('node:child_process');
+    const normalizeNanoCoreRestartBaseline = (${normalizeNanoCoreRestartBaseline.toString()});
     const run = (path, args, input) => {
       const result = spawnSync(path, args, { encoding: 'utf8', input });
       if (result.status !== 0) process.exit(1);
@@ -488,10 +647,18 @@ async function captureA1Baseline(config) {
     };
     const nft = stable(JSON.parse(run('/usr/sbin/nft', ['-j', 'list', 'ruleset'])));
     const payload = stable({ bridge, containers: projectedContainers, docker0, nft });
-    process.stdout.write(JSON.stringify({ digest: createHash('sha256').update(JSON.stringify(payload)).digest('hex') }));
+    const digest = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    const normalized = normalizeNanoCoreRestartBaseline(payload, process.argv[1]);
+    const nanoCoreRestartInvariantDigest = createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+    process.stdout.write(JSON.stringify({ digest, nanoCoreRestartInvariantDigest }));
   `;
   return parseCommandJson(
-    await runSudo(config.execute, config.sshAlias, ['/usr/bin/node', '-e', script])
+    await runSudo(config.execute, config.sshAlias, [
+      '/usr/bin/node',
+      '-e',
+      script,
+      config.nanoCoreContainer,
+    ])
   );
 }
 
@@ -858,12 +1025,400 @@ function selectEpochMember(epoch, role) {
       return member.exe.endsWith('/nanohost') && member.args[0] === member.exe;
     }
     if (role === 'gateway') return /openshell/u.test(command) && /gateway/u.test(command);
+    if (role === 'containerd')
+      return (
+        member.exe === '/usr/bin/containerd' &&
+        member.args.includes('--address') &&
+        member.args.some((argument) => argument.startsWith('/run/openkit/nanohost/'))
+      );
     if (role === 'dockerd')
       return /\/dockerd(?:\0|$)/u.test(command) && /openkit-nanohost/u.test(command);
+    if (role === 'slirp')
+      return (
+        member.exe === '/usr/bin/slirp4netns' &&
+        JSON.stringify(member.args.slice(1)) === JSON.stringify(fixedSlirpArguments)
+      );
     return false;
   });
   if (matches.length !== 1) throw new Error(`Unit F exact ${role} member is unavailable.`);
   return matches[0];
+}
+
+/** Collects the private namespace route and four negative reachability observations. */
+export async function collectPrivateNamespaceNetworkObservations(input, controls) {
+  const { connectSocket, readFile } = controls;
+  const { nanoCorePort, sentinelPort } = input;
+  if (
+    ![nanoCorePort, sentinelPort].every(
+      (port) => Number.isSafeInteger(port) && port > 0 && port <= 65_535
+    )
+  ) {
+    throw new Error('invalid private namespace probe port');
+  }
+  const connectTarget = (host, port) =>
+    new Promise((resolvePromise, reject) => {
+      const socket = connectSocket({ host, port });
+      let expired = false;
+      socket.setTimeout(2_000, () => {
+        expired = true;
+        socket.destroy();
+        reject(new Error('private namespace probe deadline expired'));
+      });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolvePromise(true);
+      });
+      socket.once('error', (error) => {
+        if (expired) reject(new Error('private namespace probe deadline expired'));
+        else if (error && ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error.code)) {
+          resolvePromise(false);
+        } else reject(error);
+      });
+    });
+  const devices = readFile('/proc/net/dev', 'utf8')
+    .split(/\r?\n/u)
+    .map((line) => line.split(':', 1)[0].trim());
+  const route = readFile('/proc/net/route', 'utf8')
+    .split(/\r?\n/u)
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/u));
+  const fields = route.find(
+    (candidate) =>
+      candidate.length >= 8 &&
+      candidate[0] === 'tap0' &&
+      candidate[1] === '00000000' &&
+      candidate[7] === '00000000' &&
+      (Number.parseInt(candidate[3], 16) & 3) === 3
+  );
+  if (!fields || !/^[A-Fa-f0-9]{8}$/u.test(fields[2])) {
+    throw new Error('private default route unavailable');
+  }
+  const gateway = [6, 4, 2, 0]
+    .map((offset) => Number.parseInt(fields[2].slice(offset, offset + 2), 16))
+    .join('.');
+  const firstOctet = Number(gateway.split('.', 1)[0]);
+  if (firstOctet === 0 || firstOctet === 127 || firstOctet >= 224) {
+    throw new Error('private default route gateway invalid');
+  }
+  const privateLoopback = {
+    hostNanoCore: await connectTarget('127.0.0.1', nanoCorePort),
+    sentinel: await connectTarget('127.0.0.1', sentinelPort),
+  };
+  const defaultRouteGateway = {
+    hostNanoCore: await connectTarget(gateway, nanoCorePort),
+    sentinel: await connectTarget(gateway, sentinelPort),
+  };
+  return {
+    defaultRoute: { gateway, present: true },
+    reachability: { defaultRouteGateway, privateLoopback },
+    tap: devices.includes('tap0'),
+  };
+}
+
+/** Runs the verification-only live network collector through injectable low-level controls. */
+export async function collectNanoHostNetworkObservations(input, controls) {
+  const {
+    clearTimer,
+    closeDescriptor,
+    connectSocket,
+    createSentinel,
+    digest: hash,
+    openDescriptor,
+    readFile,
+    readLink,
+    setTimer,
+    spawnChild,
+  } = controls;
+  const revalidate = (member) => {
+    const stat = readFile(`/proc/${member.pid}/stat`, 'utf8').split(' ');
+    const exe = readLink(`/proc/${member.pid}/exe`);
+    const netns = readLink(`/proc/${member.pid}/ns/net`);
+    const args = readFile(`/proc/${member.pid}/cmdline`).toString().split('\0').filter(Boolean);
+    if (
+      stat[21] !== member.starttime ||
+      exe !== member.exe ||
+      netns !== member.netns ||
+      JSON.stringify(args) !== JSON.stringify(member.args)
+    ) {
+      throw new Error('epoch member identity changed');
+    }
+  };
+  const listen = (server) =>
+    new Promise((resolvePromise, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolvePromise);
+    });
+  const close = (server) =>
+    new Promise((resolvePromise, reject) =>
+      server.close((error) => (error ? reject(error) : resolvePromise()))
+    );
+  const connect = (target, label) =>
+    new Promise((resolvePromise, reject) => {
+      const socket = connectSocket(target);
+      let expired = false;
+      socket.setTimeout(2_000, () => {
+        expired = true;
+        socket.destroy();
+        reject(new Error(`${label} deadline expired`));
+      });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolvePromise(true);
+      });
+      socket.once('error', (error) => {
+        if (expired) reject(new Error(`${label} deadline expired`));
+        else if (
+          error &&
+          ['EACCES', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOENT', 'ENOTDIR'].includes(
+            error.code
+          )
+        ) {
+          resolvePromise(false);
+        } else reject(error);
+      });
+    });
+  const runNamespaceProbe = (networkDescriptor, sentinelPort) =>
+    new Promise((resolvePromise, reject) => {
+      const childNetworkDescriptor = 3;
+      const child = spawnChild(
+        '/usr/bin/nsenter',
+        [
+          `-n/proc/self/fd/${childNetworkDescriptor}`,
+          '/usr/bin/node',
+          '-e',
+          input.probe,
+          String(input.nanoCorePort),
+          String(sentinelPort),
+        ],
+        { stdio: ['ignore', 'pipe', 'ignore', networkDescriptor] }
+      );
+      const output = [];
+      let expired = false;
+      let spawnError;
+      const timer = setTimer(() => {
+        expired = true;
+        child.kill('SIGKILL');
+      }, 10_000);
+      child.stdout.on('data', (chunk) => {
+        output.push(chunk);
+        if (Buffer.concat(output).length > 4_096) child.kill('SIGKILL');
+      });
+      child.once('error', (error) => {
+        clearTimer(timer);
+        spawnError ??= error;
+      });
+      child.once('close', (status) => {
+        clearTimer(timer);
+        if (spawnError) reject(spawnError);
+        else if (expired) reject(new Error('namespace probe deadline expired'));
+        else if (status !== 0) reject(new Error('namespace probe failed'));
+        else resolvePromise(JSON.parse(Buffer.concat(output).toString('utf8')));
+      });
+    });
+  const resolvers = [];
+  for (const raw of readFile('/run/systemd/resolve/resolv.conf', 'utf8').split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+    const fields = line.split(/\s+/u);
+    if (fields[0] !== 'nameserver') continue;
+    if (
+      fields.length !== 2 ||
+      !/^(?:\d{1,3}\.){3}\d{1,3}$/u.test(fields[1]) ||
+      resolvers.includes(fields[1])
+    ) {
+      throw new Error('resolver source invalid');
+    }
+    const octets = fields[1].split('.').map(Number);
+    if (
+      octets.some((octet) => octet > 255) ||
+      octets[0] === 0 ||
+      octets[0] === 127 ||
+      (octets[0] >= 224 && octets[0] <= 239) ||
+      fields[1] === '255.255.255.255'
+    ) {
+      throw new Error('resolver source invalid');
+    }
+    resolvers.push(fields[1]);
+  }
+  if (resolvers.length < 1 || resolvers.length > 3) {
+    throw new Error('resolver source invalid');
+  }
+
+  Object.values(input.roles).forEach(revalidate);
+  const { containerd, dockerd, gateway, nanohost, slirp } = input.roles;
+  const collectorHost = readLink('/proc/self/ns/net');
+  if (
+    nanohost.netns !== collectorHost ||
+    slirp.netns !== collectorHost ||
+    containerd.netns === collectorHost ||
+    containerd.netns !== gateway.netns ||
+    dockerd.netns !== gateway.netns
+  ) {
+    throw new Error('epoch namespace topology invalid');
+  }
+  const dnsArguments = [];
+  for (let index = 0; index < dockerd.args.length; index += 1) {
+    if (
+      dockerd.args[index].startsWith('--dns=') ||
+      (dockerd.args[index] === '--dns' && typeof dockerd.args[index + 1] !== 'string')
+    ) {
+      throw new Error('dockerd DNS projection invalid');
+    }
+    if (dockerd.args[index] === '--dns') dnsArguments.push('--dns', dockerd.args[++index]);
+  }
+  const sentinel = createSentinel();
+  await listen(sentinel);
+  let networkDescriptor;
+  let probe;
+  let serviceRootDescriptor;
+  let systemDockerSocketOpen;
+  let collectionError;
+  try {
+    const address = sentinel.address();
+    if (!address || typeof address === 'string') throw new Error('loopback sentinel unavailable');
+    networkDescriptor = openDescriptor(`/proc/${gateway.pid}/ns/net`);
+    serviceRootDescriptor = openDescriptor(`/proc/${nanohost.pid}/root`);
+    revalidate(gateway);
+    revalidate(nanohost);
+    if (readLink(`/proc/self/fd/${networkDescriptor}`) !== gateway.netns) {
+      throw new Error('pinned namespace identity changed');
+    }
+    systemDockerSocketOpen = await connect(
+      { path: `/proc/self/fd/${serviceRootDescriptor}/run/docker.sock` },
+      'service-root probe'
+    );
+    probe = await runNamespaceProbe(networkDescriptor, address.port);
+  } catch (error) {
+    collectionError = error;
+  }
+  let cleanupError;
+  for (const descriptor of [serviceRootDescriptor, networkDescriptor]) {
+    if (descriptor === undefined) continue;
+    try {
+      closeDescriptor(descriptor);
+    } catch (error) {
+      cleanupError ??= error;
+    }
+  }
+  try {
+    await close(sentinel);
+  } catch (error) {
+    cleanupError ??= error;
+  }
+  if (cleanupError) throw cleanupError;
+  if (collectionError) throw collectionError;
+  Object.values(input.roles).forEach(revalidate);
+  return {
+    defaultRoute: {
+      device: 'tap0',
+      gateway: probe.defaultRoute?.gateway,
+      present: probe.defaultRoute?.present === true,
+    },
+    dockerdDns: { arguments: dnsArguments, resolvers },
+    namespaceTopology: {
+      collectorHost: hash(collectorHost),
+      members: {
+        containerd: hash(containerd.netns),
+        dockerd: hash(dockerd.netns),
+        gateway: hash(gateway.netns),
+        nanohost: hash(nanohost.netns),
+        slirp: hash(slirp.netns),
+      },
+      private: hash(gateway.netns),
+    },
+    privateNamespaceReachability: probe.reachability,
+    serviceRoot: { systemDockerSocketOpen },
+    slirp: {
+      arguments: slirp.args.slice(1),
+      executable: slirp.exe,
+      namespace: hash(slirp.netns),
+    },
+    tap: { name: 'tap0', present: probe.tap === true },
+  };
+}
+
+/** Captures one fresh-ready epoch's closed network-conformance facts. */
+async function captureFreshReadyNetworkConformance(config) {
+  const targetBefore = await readRuntimeTarget(config);
+  if (
+    targetBefore.predecessorFenced !== true ||
+    targetBefore.ready !== true ||
+    targetBefore.freshEmpty !== true
+  ) {
+    throw new Error('Unit F network observation requires one fresh-ready RuntimeTarget.');
+  }
+  const epoch = await readEpochMembers(config);
+  const roles = Object.fromEntries(
+    ['nanohost', 'slirp', 'containerd', 'dockerd', 'gateway'].map((role) => [
+      role,
+      selectEpochMember(epoch, role),
+    ])
+  );
+  const namespaceProbe = `
+    const { readFileSync } = require('node:fs');
+    const { connect } = require('node:net');
+    const collect = (${collectPrivateNamespaceNetworkObservations.toString()});
+    const main = async () => {
+      const observation = await collect(
+        { nanoCorePort: Number(process.argv[1]), sentinelPort: Number(process.argv[2]) },
+        { connectSocket: connect, readFile: readFileSync }
+      );
+      process.stdout.write(JSON.stringify(observation));
+    };
+    main().catch(() => { process.exitCode = 1; });
+  `;
+  const payload = Buffer.from(
+    JSON.stringify({
+      collector: collectNanoHostNetworkObservations.toString(),
+      input: { nanoCorePort: config.remoteNanoCorePort, probe: namespaceProbe, roles },
+    })
+  ).toString('base64url');
+  const script = `
+    const { createHash } = require('node:crypto');
+    const { closeSync, openSync, readFileSync, readlinkSync } = require('node:fs');
+    const { connect, createServer } = require('node:net');
+    const { spawn } = require('node:child_process');
+    const { runInThisContext } = require('node:vm');
+    const envelope = JSON.parse(Buffer.from(process.argv[1], 'base64url').toString('utf8'));
+    const collect = runInThisContext('(' + envelope.collector + ')');
+    const main = async () => {
+      const observation = await collect(envelope.input, {
+        clearTimer: clearTimeout,
+        closeDescriptor: closeSync,
+        connectSocket: connect,
+        createSentinel: () => createServer(() => {}),
+        digest: (value) => createHash('sha256').update(value).digest('hex'),
+        openDescriptor: (path) => openSync(path, 'r'),
+        readFile: readFileSync,
+        readLink: readlinkSync,
+        setTimer: setTimeout,
+        spawnChild: spawn,
+      });
+      process.stdout.write(JSON.stringify(observation));
+    };
+    main().catch(() => { process.exitCode = 1; });
+  `;
+  const observation = parseCommandJson(
+    await runSudo(
+      config.execute,
+      config.sshAlias,
+      ['/usr/bin/timeout', '--signal=KILL', '25s', '/usr/bin/node', '-e', script, payload],
+      { timeoutMs: 30_000 }
+    )
+  );
+  const targetAfter = await readRuntimeTarget(config);
+  if (
+    targetAfter.connectionGeneration !== targetBefore.connectionGeneration ||
+    targetAfter.predecessorFenced !== true ||
+    targetAfter.ready !== true ||
+    targetAfter.freshEmpty !== true
+  ) {
+    throw new Error('Unit F RuntimeTarget changed during network observation.');
+  }
+  return {
+    ...observation,
+    slirp: { ...observation.slirp, readyFdObserved: true },
+  };
 }
 
 /** Signals one process only while its exact proc identity still matches. */
@@ -970,7 +1525,76 @@ function privateEpochRoots(oldEpoch) {
   if (roots.length !== 2) {
     throw new Error('Unit F cannot identify the exact private epoch state and runtime roots.');
   }
-  return roots;
+  const stateRoot = roots.find((path) => path.startsWith('/var/lib/'));
+  const runtimeRoot = roots.find((path) => path.startsWith('/run/'));
+  if (
+    !stateRoot ||
+    !runtimeRoot ||
+    stateRoot.slice('/var/lib/openkit/nanohost/'.length) !==
+      runtimeRoot.slice('/run/openkit/nanohost/'.length)
+  ) {
+    throw new Error('Unit F cannot identify one matching private epoch root pair.');
+  }
+  return [stateRoot, runtimeRoot];
+}
+
+/** Enumerates fixed-parent epoch roots without following changed filesystem shapes. */
+async function observeTerminalEpochRoots(config, roots) {
+  const payload = Buffer.from(JSON.stringify({ roots })).toString('base64url');
+  const script = `
+    const { lstatSync, readdirSync } = require('node:fs');
+    const input = JSON.parse(Buffer.from(process.argv[1], 'base64url').toString('utf8'));
+    const parents = ['/var/lib/openkit/nanohost', '/run/openkit/nanohost'];
+    if (!Array.isArray(input.roots) || input.roots.length !== 2) process.exit(2);
+    const name = /^\\/var\\/lib\\/openkit\\/nanohost\\/(epoch-[^/]+)$/u.exec(input.roots[0])?.[1];
+    const expected = parents.map((parent) => parent + '/' + name);
+    if (!name || input.roots.some((root, index) => root !== expected[index])) process.exit(2);
+    for (const parent of parents) {
+      const shape = lstatSync(parent);
+      if (!shape.isDirectory() || shape.isSymbolicLink()) process.exit(2);
+    }
+    const entries = parents.map((parent) => readdirSync(parent, { withFileTypes: true })
+      .filter((entry) => entry.name.startsWith('epoch-')));
+    if (entries.every((parentEntries) => parentEntries.length === 0)) {
+      process.stdout.write(JSON.stringify({ roots: [] }));
+    } else {
+      for (const [index, parentEntries] of entries.entries()) {
+        if (parentEntries.length !== 1 || parents[index] + '/' + parentEntries[0].name !== expected[index]) process.exit(2);
+        const shape = lstatSync(expected[index]);
+        if (!parentEntries[0].isDirectory() || parentEntries[0].isSymbolicLink() || !shape.isDirectory() || shape.isSymbolicLink()) process.exit(2);
+      }
+      process.stdout.write(JSON.stringify({ roots: expected }));
+    }
+  `;
+  return parseCommandJson(
+    await runSudo(config.execute, config.sshAlias, ['/usr/bin/node', '-e', script, payload])
+  ).roots;
+}
+
+/** Removes only one validated matching terminal epoch root pair. */
+async function removeTerminalEpochRoots(config, roots) {
+  const payload = Buffer.from(JSON.stringify({ roots })).toString('base64url');
+  const script = `
+    const { lstatSync, readdirSync, rmSync } = require('node:fs');
+    const input = JSON.parse(Buffer.from(process.argv[1], 'base64url').toString('utf8'));
+    const parents = ['/var/lib/openkit/nanohost', '/run/openkit/nanohost'];
+    if (!Array.isArray(input.roots) || input.roots.length !== 2) process.exit(2);
+    const name = /^\\/var\\/lib\\/openkit\\/nanohost\\/(epoch-[^/]+)$/u.exec(input.roots[0])?.[1];
+    const expected = parents.map((parent) => parent + '/' + name);
+    if (!name || input.roots.some((root, index) => root !== expected[index])) process.exit(2);
+    for (const parent of parents) {
+      const shape = lstatSync(parent);
+      if (!shape.isDirectory() || shape.isSymbolicLink()) process.exit(2);
+    }
+    for (const [index, parent] of parents.entries()) {
+      const entries = readdirSync(parent, { withFileTypes: true }).filter((entry) => entry.name.startsWith('epoch-'));
+      if (entries.length !== 1 || parent + '/' + entries[0].name !== expected[index]) process.exit(2);
+      const shape = lstatSync(expected[index]);
+      if (!entries[0].isDirectory() || entries[0].isSymbolicLink() || !shape.isDirectory() || shape.isSymbolicLink()) process.exit(2);
+    }
+    for (const root of expected) rmSync(root, { recursive: true });
+  `;
+  await runSudo(config.execute, config.sshAlias, ['/usr/bin/node', '-e', script, payload]);
 }
 
 /** Decides whether one old epoch has no live socket or same-boot namespace residue. */
@@ -1452,13 +2076,7 @@ async function proveSequencedPriorRootsRemoved(ports, oldEpoch) {
 }
 
 /** Starts and proves one exact fresh successor, including the accepted first-fence path. */
-async function recoverFreshEpochSequence(
-  ports,
-  priorGeneration,
-  oldEpoch,
-  faultLineage = null,
-  acceptDirectReady = false
-) {
+async function recoverFreshEpochSequence(ports, priorGeneration, oldEpoch, faultLineage = null) {
   await ports.startNanoHost();
   const startedEpoch = await ports.waitFor(() => ports.readEpoch().catch(() => null));
   let firstInvocationId =
@@ -1474,13 +2092,6 @@ async function recoverFreshEpochSequence(
       target.ready === true &&
       target.freshEmpty === true;
     if (directlyReady && !faultLineage) return { kind: 'ready', target };
-    if (directlyReady && acceptDirectReady) {
-      const owner = await ports.readOwnerSnapshot(faultLineage);
-      if (sequencedFaultTurnFenced(owner)) {
-        requireOwnerTuple(owner, faultLineage);
-        return { kind: 'ready', target };
-      }
-    }
     const epoch = await ports.readEpoch();
     if (epoch.activeState === 'active') {
       if (epoch.invocationId !== oldEpoch.invocationId) {
@@ -1585,16 +2196,11 @@ async function recoverFreshEpochSequence(
         }),
     });
     if (faultLineage) {
-      const released = await waitForSequencedOwnerSnapshot(
-        ports,
-        faultLineage,
-        sequencedFaultCapacityReleased
-      );
-      requireOwnerTuple(released, faultLineage);
       if (!postFenceEpoch) {
         throw new Error('Unit F post-fence proof successor epoch is unavailable.');
       }
-      if (target.ready === false && target.freshEmpty === false) {
+      const proofSuccessorRequired = target.ready === false && target.freshEmpty === false;
+      if (proofSuccessorRequired) {
         await proveSequencedEpochAbsent(ports, postFenceEpoch);
         const journal = await ports.readJournal({ invocationId: postFenceEpoch.invocationId });
         const terminal = journal.entries.filter(
@@ -1615,6 +2221,14 @@ async function recoverFreshEpochSequence(
             candidate.ready === true &&
             candidate.freshEmpty === true
         );
+      }
+      const released = await waitForSequencedOwnerSnapshot(
+        ports,
+        faultLineage,
+        sequencedFaultCapacityReleased
+      );
+      requireOwnerTuple(released, faultLineage);
+      if (proofSuccessorRequired) {
         await proveSequencedPriorRootsRemoved(ports, postFenceEpoch);
       }
     }
@@ -1806,9 +2420,9 @@ export async function sequenceNanoHostF1(ports) {
   return result;
 }
 
-/** Sequences one shared F2-F4 blocked-create fault from closed owner facts. */
+/** Sequences one shared F2/F4 blocked-create fault from closed owner facts. */
 export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
-  if (!['F2', 'F3', 'F4'].includes(scenarioId)) {
+  if (!['F2', 'F4'].includes(scenarioId)) {
     throw new Error('Unit F blocked-create scenario identity is invalid.');
   }
   const priorTarget = await waitForSequencedRuntimeTarget(
@@ -1899,74 +2513,18 @@ export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
       throw new Error('Unit F blocked-create barrier changed before fault delivery.');
     }
     requireSameBlockedCreateOwner(await ports.readOwnerSnapshot(lineage), lineage, owner);
-    const faultMember =
-      scenarioId === 'F2'
-        ? selectEpochMember(epoch, 'nanohost')
-        : scenarioId === 'F4'
-          ? gateway
-          : null;
-    const faultTarget = faultMember
-      ? digest(
-          JSON.stringify({
-            exe: faultMember.exe,
-            netns: faultMember.netns,
-            pid: faultMember.pid,
-            starttime: faultMember.starttime,
-          })
-        )
-      : digest(
-          JSON.stringify({
-            bootId: epoch.bootId,
-            container: ports.nanoCoreContainer,
-            target: 'execution-server',
-          })
-        );
-    if (scenarioId === 'F3') {
-      const container = await ports.readNanoCoreContainer();
-      if (container.restart !== 'no' || container.running !== true) {
-        throw new Error('Unit F F3 requires one running restart=no NanoCore container.');
-      }
-      await ports.rebootHost();
-    } else {
-      const killed = await ports.signalMember(faultMember, 'SIGKILL');
-      if (killed.signalled !== true) {
-        throw new Error(`Unit F ${scenarioId} exact fault signal was not delivered.`);
-      }
-    }
-    if (scenarioId === 'F3') {
-      await ports.waitTunnelDisconnect();
-      await ports.stopTunnel();
-      await ports.waitSsh();
-      const rebootedEpoch = await ports.readEpoch();
-      if (
-        rebootedEpoch.bootId === epoch.bootId ||
-        rebootedEpoch.activeState === 'active' ||
-        rebootedEpoch.members.length !== 0
-      ) {
-        throw new Error('Unit F F3 did not observe a fresh host boot with NanoHost stopped.');
-      }
-      const container = await ports.readNanoCoreContainer();
-      if (container.restart !== 'no' || container.running !== false) {
-        throw new Error('Unit F F3 NanoCore restarted without explicit recovery.');
-      }
-      await ports.startNanoCore();
-      await ports.startTunnel();
-      await waitForSequencedRuntimeTarget(
-        ports,
-        (target) =>
-          target.connectionGeneration >= priorTarget.connectionGeneration &&
-          target.predecessorFenced === true &&
-          target.ready === false &&
-          target.freshEmpty === false
-      );
-      const coreOnlyEpoch = await ports.readEpoch();
-      if (
-        coreOnlyEpoch.bootId !== rebootedEpoch.bootId ||
-        coreOnlyEpoch.activeState === 'active' ||
-        coreOnlyEpoch.members.length !== 0
-      ) {
-        throw new Error('Unit F F3 started NanoHost before the Core-only nonready proof.');
-      }
+    const faultMember = scenarioId === 'F2' ? selectEpochMember(epoch, 'nanohost') : gateway;
+    const faultTarget = digest(
+      JSON.stringify({
+        exe: faultMember.exe,
+        netns: faultMember.netns,
+        pid: faultMember.pid,
+        starttime: faultMember.starttime,
+      })
+    );
+    const killed = await ports.signalMember(faultMember, 'SIGKILL');
+    if (killed.signalled !== true) {
+      throw new Error(`Unit F ${scenarioId} exact fault signal was not delivered.`);
     }
     await proveSequencedEpochAbsent(ports, epoch);
     await waitForSequencedRuntimeTarget(
@@ -1984,13 +2542,12 @@ export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
       ports,
       priorTarget.connectionGeneration,
       epoch,
-      lineage,
-      scenarioId === 'F3'
+      lineage
     );
     await proveSequencedPriorRootsRemoved(ports, epoch);
     await ports.interruptTurn(lineage);
     await proveSequencedTurnCleanup(ports, lineage);
-    if (scenarioId === 'F2' || scenarioId === 'F4') await ports.runDockerSmoke();
+    await ports.runDockerSmoke();
     return {
       lineage: {
         agentSessionId: lineage.agentSessionId,
@@ -2111,16 +2668,6 @@ function bindNanoHostUnitFSequencePorts(config) {
       };
     },
     readJournalCursor: () => readJournalCursor(config),
-    readNanoCoreContainer: async () =>
-      parseCommandJson(
-        await runSudo(config.execute, config.sshAlias, [
-          '/usr/bin/docker',
-          'inspect',
-          '--format',
-          '{"restart":"{{.HostConfig.RestartPolicy.Name}}","running":{{.State.Running}}}',
-          config.nanoCoreContainer,
-        ])
-      ),
     readOwnerSnapshot: (lineage) => readNanoCoreOwnerSnapshot(config, lineage),
     readPriorRoots: async (epoch) => {
       await waitForPriorEpochRootsRemoved(config, epoch);
@@ -2134,10 +2681,6 @@ function bindNanoHostUnitFSequencePorts(config) {
         `/api/workspaces/${lineage.workspaceId}/threads/${lineage.threadId}/turns/${lineage.turnId}`,
         undefined,
         'product'
-      ),
-    rebootHost: () =>
-      runSudo(config.execute, config.sshAlias, ['/usr/bin/systemctl', 'reboot']).catch(
-        () => undefined
       ),
     resolveLineage: async (task) => {
       const lineage = await waitForTaskLineage(task);
@@ -2160,20 +2703,9 @@ function bindNanoHostUnitFSequencePorts(config) {
       ]),
     startTask: (scenarioId) => startRealTaskAttempt(config, scenarioId),
     startTunnel: () => config.tunnel.start(),
-    stopNanoHost: () =>
-      runSudo(config.execute, config.sshAlias, [
-        '/usr/bin/systemctl',
-        'stop',
-        'openkit-nanohost.service',
-      ]),
+    stopNanoHost: () => stopNanoHostService(config),
     stopTunnel: () => config.tunnel.stop(),
     waitFor: config.waitFor,
-    waitSsh: () =>
-      config.waitFor(
-        () => runSsh(config.execute, config.sshAlias, ['/usr/bin/true']).then(() => true),
-        300_000
-      ),
-    waitTunnelDisconnect: () => config.tunnel.waitForDisconnect(),
   };
 }
 
@@ -2182,7 +2714,7 @@ async function executeF1(config) {
   return sequenceNanoHostF1(bindNanoHostUnitFSequencePorts(config));
 }
 
-/** Runs one of F2-F4 from the same exact blocked-create fixture. */
+/** Runs F2 or F4 from the same exact blocked-create fixture. */
 async function executeBlockedCreateFault(config, scenarioId) {
   return sequenceNanoHostBlockedCreate(scenarioId, bindNanoHostUnitFSequencePorts(config));
 }
@@ -2196,8 +2728,8 @@ async function verifyA1NormalLifecycle(config) {
  * Creates the real A1 driver boundary.
  *
  * SSH targets remain explicit, host identity is delegated to `assert.sh`, and
- * every effect stays behind the existing Task/App API, systemd/cgroup, journal,
- * and built NanoCore accessor owners.
+ * every effect and readiness wait stays behind the existing Task/App API,
+ * systemd/cgroup, journal, and built NanoCore accessor owners.
  */
 export function createDefaultDriver(options) {
   const env = options.env ?? process.env;
@@ -2306,8 +2838,22 @@ export function createDefaultDriver(options) {
     failureWorkspaceId: null,
   };
   config.tunnel = options.tunnel ?? createNanoCoreTunnel(config);
+  const sequencePorts = bindNanoHostUnitFSequencePorts(config);
   return {
     captureBaseline: async () => captureA1Baseline(config),
+    captureTerminalEpoch: async () => readEpochMembers(config),
+    captureNetworkConformance: async () => {
+      try {
+        await config.tunnel.start();
+        return await captureFreshReadyNetworkConformance(config);
+      } finally {
+        await config.tunnel.stop();
+      }
+    },
+    decommissionNanoHost: async () => {
+      await config.tunnel.start();
+      return appRequest(config, 'POST', '/api/app/nanohost/decommission', {}, 'admin');
+    },
     executeScenarioEffect: async ({ scenarioId }) => {
       if (!scenarioIds.includes(scenarioId)) {
         throw new Error('Unit F default driver scenario identity is invalid.');
@@ -2341,17 +2887,89 @@ export function createDefaultDriver(options) {
         await config.tunnel.stop();
       }
     },
+    proveEpochResidueAbsent: async (epoch) => {
+      const finalEpoch = await readEpochMembers(config);
+      await waitForEpochEffectsAbsent(config, epoch);
+      return {
+        cgroupAbsent: finalEpoch.activeState === 'inactive' && finalEpoch.members.length === 0,
+        netnsAbsent: true,
+        socketsAbsent: true,
+      };
+    },
+    proveServiceInactive: async () => {
+      const state = await runSudo(config.execute, config.sshAlias, [
+        '/usr/bin/systemctl',
+        'show',
+        'openkit-nanohost.service',
+        '--property=ActiveState',
+        '--value',
+      ]);
+      return state.stdout.trim() === 'inactive';
+    },
+    observeTerminalEpochRoots: (roots) => observeTerminalEpochRoots(config, roots),
+    removeTerminalEpochRoots: (roots) => removeTerminalEpochRoots(config, roots),
+    runDockerSmoke: async () => {
+      await runSystemDockerBuildNetworkSmoke(config);
+      return true;
+    },
+    startNanoHost: async () => {
+      await sequencePorts.startNanoHost();
+      try {
+        await config.tunnel.start();
+        await waitForSequencedRuntimeTarget(
+          sequencePorts,
+          (target) =>
+            target.predecessorFenced === true && target.ready === true && target.freshEmpty === true
+        );
+      } finally {
+        await config.tunnel.stop();
+      }
+    },
+    stopNanoHost: () => stopNanoHostService(config),
+    stopTunnel: () => config.tunnel.stop(),
   };
 }
 
-/** Validates retained public identity, including the caller-asserted source commit. */
+/** Validates and normalizes retained public identity from raw IDs or their internal hashes. */
 function publicIdentity(options) {
   const runtimeIdentity = [
     options.nanoCoreImageId,
     options.nanoCoreImageRef,
     options.nanoHostExecutableSha256,
   ];
+  const rawNanoHostIdentity = [options.nanoHostIdentityId, options.nanoHostDeploymentId];
+  const projectedNanoHostIdentity = [options.nanoHostIdentityHash, options.nanoHostDeploymentHash];
+  const hasAttemptIdentity = [
+    options.gitCommit,
+    ...rawNanoHostIdentity,
+    ...projectedNanoHostIdentity,
+  ].some((value) => value !== undefined);
+  let attemptIdentity = {};
+  if (hasAttemptIdentity) {
+    const hasRawIdentity = rawNanoHostIdentity.some((value) => value !== undefined);
+    const hasProjectedIdentity = projectedNanoHostIdentity.some((value) => value !== undefined);
+    if (
+      !digest40Pattern.test(options.gitCommit ?? '') ||
+      hasRawIdentity === hasProjectedIdentity ||
+      (hasRawIdentity &&
+        !rawNanoHostIdentity.every((value) => typeof value === 'string' && value.length > 0)) ||
+      (hasProjectedIdentity &&
+        !projectedNanoHostIdentity.every((value) => digest64Pattern.test(value ?? '')))
+    ) {
+      throw new Error('Unit F attempt byte identity is incomplete or invalid.');
+    }
+    attemptIdentity = {
+      gitCommit: options.gitCommit,
+      nanoHostDeploymentHash: hasRawIdentity
+        ? digest(options.nanoHostDeploymentId)
+        : options.nanoHostDeploymentHash,
+      nanoHostIdentityHash: hasRawIdentity
+        ? digest(options.nanoHostIdentityId)
+        : options.nanoHostIdentityHash,
+    };
+  }
   const identity = {
+    ...attemptIdentity,
     hostManifestDigest: options.hostManifestDigest,
     productCommit: options.productCommit,
     sshAlias: options.sshAlias,
@@ -2397,6 +3015,7 @@ export function adjudicateNanoHostUnitFResult({
   attemptId,
   identity: identityInput,
   instrumentDigest,
+  networkConformanceEvidence,
   normalLifecycleEvidence,
   scenarioEvidence,
 }) {
@@ -2422,13 +3041,21 @@ export function adjudicateNanoHostUnitFResult({
     );
   });
   const normalLifecycle = adjudicateNormalLifecycle(normalLifecycleEvidence);
+  const networkConformance = adjudicateNetworkConformance(
+    networkConformanceEvidence,
+    scenarioEvidence,
+    normalLifecycleEvidence
+  );
   return {
     aggregate: {
       id: 'Aggregate',
+      networkConformance,
       normalLifecycle,
       scenarioIds: [...scenarioIds],
       status:
-        scenarios.every(({ status }) => status === 'PASS') && normalLifecycle.status === 'PASS'
+        scenarios.every(({ status }) => status === 'PASS') &&
+        networkConformance.status === 'PASS' &&
+        normalLifecycle.status === 'PASS'
           ? 'PASS'
           : 'FAIL',
     },
@@ -2438,16 +3065,25 @@ export function adjudicateNanoHostUnitFResult({
   };
 }
 
-/** Executes the fixed Unit F scenario order while retaining authority projections locally. */
-export async function executeNanoHostUnitFCoordinator(driver) {
+/** Executes the fixed Unit F phases with an optional cooperative boundary check. */
+export async function executeNanoHostUnitFCoordinator(driver, beforePhase = async () => {}) {
+  let networkConformanceEvidence;
   const scenarioEvidence = [];
   for (const id of scenarioIds) {
+    await beforePhase(id);
     const preBaseline = await driver.captureBaseline();
+    if (id === scenarioIds[0]) {
+      networkConformanceEvidence = await driver.captureNetworkConformance();
+    }
     const raw = await driver.executeScenarioEffect({ scenarioId: id });
     const contract = scenarioContracts[id];
     const evidence = {
       action: { code: contract.action, observed: true },
       barrier: { code: contract.barrier, observed: true },
+      ...(id === 'F1' ? { checkout: { code: contract.checkout, observed: true } } : {}),
+      ...(['F2', 'F4'].includes(id)
+        ? { buildNetwork: { code: contract.buildNetwork, observed: true } }
+        : {}),
       cleanup: { code: contract.cleanup, observed: true },
       fault: { code: contract.fault, observed: true },
       lineage: raw?.lineage,
@@ -2456,11 +3092,12 @@ export async function executeNanoHostUnitFCoordinator(driver) {
     const postBaseline = await driver.captureBaseline();
     scenarioEvidence.push({ evidence, id, postBaseline, preBaseline });
   }
+  await beforePhase('normal-lifecycle');
   await driver.verifyNormalLifecycleEffect();
   const normalLifecycleEvidence = Object.fromEntries(
     Object.entries(normalLifecycleContract).map(([name, code]) => [name, { code, observed: true }])
   );
-  return { normalLifecycleEvidence, scenarioEvidence };
+  return { networkConformanceEvidence, normalLifecycleEvidence, scenarioEvidence };
 }
 
 /** Runs the fixed real A1 driver and returns only independently adjudicated evidence. */
@@ -2479,15 +3116,294 @@ export async function runNanoHostUnitF(options = {}) {
   const instrumentDigest = digest(await readFile(fileURLToPath(import.meta.url)));
   const identity = publicIdentity(options);
   const driver = createDefaultDriver({ ...options, instrumentDigest });
-  const { normalLifecycleEvidence, scenarioEvidence } =
+  const { networkConformanceEvidence, normalLifecycleEvidence, scenarioEvidence } =
     await executeNanoHostUnitFCoordinator(driver);
   return adjudicateNanoHostUnitFResult({
     attemptId: options.attemptId,
     identity,
     instrumentDigest,
+    networkConformanceEvidence,
     normalLifecycleEvidence,
     scenarioEvidence,
   });
+}
+
+/** Cooperatively starts and runs one bounded Unit F gate and terminal finalizer. */
+export async function runNanoHostUnitFAttempt(options = {}, controls) {
+  if (!isAbsolute(options.outputPath ?? '')) {
+    throw new Error('Unit F requires an absolute retained output path.');
+  }
+  const outputExists =
+    controls?.outputExists ??
+    (async (path) => {
+      try {
+        await access(path);
+        return true;
+      } catch (error) {
+        if (error?.code === 'ENOENT') return false;
+        throw new Error('Unit F retained output preflight failed.');
+      }
+    });
+  if (await outputExists(options.outputPath)) {
+    throw new Error('Unit F retained output already exists.');
+  }
+  if (options.sshAlias !== 'a1') {
+    throw new Error('Unit F attempt requires SSH alias a1.');
+  }
+  if (options.ownerTimeoutMs !== 7_200_000) {
+    throw new Error('Unit F attempt owner timeout must be 7200000 milliseconds.');
+  }
+  const identity = publicIdentity(options);
+
+  let ports = controls;
+  if (!ports) {
+    const instrumentDigest = digest(await readFile(fileURLToPath(import.meta.url)));
+    const driver = createDefaultDriver({ ...options, instrumentDigest });
+    ports = {
+      captureBaseline: driver.captureBaseline,
+      captureTerminalEpoch: driver.captureTerminalEpoch,
+      clearTimer: clearTimeout,
+      decommissionNanoHost: driver.decommissionNanoHost,
+      observeTerminalEpochRoots: driver.observeTerminalEpochRoots,
+      proveEpochResidueAbsent: driver.proveEpochResidueAbsent,
+      proveServiceInactive: driver.proveServiceInactive,
+      readInterrupt: options.readInterrupt ?? (() => null),
+      removeTerminalEpochRoots: driver.removeTerminalEpochRoots,
+      runDockerSmoke: driver.runDockerSmoke,
+      runGate: async ({ beforePhase }) => {
+        const { networkConformanceEvidence, normalLifecycleEvidence, scenarioEvidence } =
+          await executeNanoHostUnitFCoordinator(driver, beforePhase);
+        return adjudicateNanoHostUnitFResult({
+          attemptId: options.attemptId,
+          identity,
+          instrumentDigest,
+          networkConformanceEvidence,
+          normalLifecycleEvidence,
+          scenarioEvidence,
+        });
+      },
+      setTimer: setTimeout,
+      startNanoHost: driver.startNanoHost,
+      stopNanoHost: driver.stopNanoHost,
+      stopTunnel: driver.stopTunnel,
+      writeOutput: writeFile,
+    };
+  }
+
+  let gateResult;
+  let primaryReason = ports.readInterrupt?.() ? 'interrupted' : null;
+  if (primaryReason === null) {
+    try {
+      await ports.startNanoHost();
+    } catch {
+      primaryReason = 'pre_attempt_start_failed';
+    }
+  }
+  if (primaryReason === null && ports.readInterrupt?.()) primaryReason = 'interrupted';
+  try {
+    if (primaryReason === null) {
+      await ports.runDockerSmoke();
+      await ports.captureBaseline();
+    }
+  } catch {
+    primaryReason = 'pre_attempt_baseline_failed';
+  }
+
+  if (primaryReason === null) {
+    const interrupted = new Error('Unit F attempt interrupted.');
+    const ownerTimedOut = new Error('Unit F attempt owner deadline expired.');
+    let expired = false;
+    const beforePhase = async () => {
+      if (expired) throw ownerTimedOut;
+      if (ports.readInterrupt?.()) throw interrupted;
+    };
+    const gate = Promise.resolve().then(() => ports.runGate({ beforePhase }));
+    const gateOutcome = gate.then(
+      (value) => ({ kind: 'settled', value }),
+      (error) => ({ error, kind: 'settled' })
+    );
+    let timer;
+    const timeoutOutcome = new Promise((resolvePromise) => {
+      timer = ports.setTimer(() => {
+        expired = true;
+        resolvePromise({ kind: 'timeout' });
+      }, options.ownerTimeoutMs);
+    });
+    let outcome = await Promise.race([gateOutcome, timeoutOutcome]);
+    if (outcome.kind === 'timeout') outcome = await gateOutcome;
+    ports.clearTimer(timer);
+    if (expired) {
+      primaryReason = 'owner_timeout';
+    } else if (outcome.error === interrupted || ports.readInterrupt?.()) {
+      primaryReason = 'interrupted';
+    } else if (outcome.error) {
+      primaryReason = outcome.error === ownerTimedOut ? 'owner_timeout' : 'gate_failed';
+      const failure = failureEvidenceByError.get(outcome.error) ?? null;
+      gateResult = failedRunResult(options, failure, identity);
+    } else {
+      gateResult = outcome.value;
+      if (!isDeepStrictEqual(gateResult?.identity, identity)) {
+        primaryReason = 'gate_identity_mismatch';
+        gateResult = failedRunResult(options, null, identity);
+      } else if (gateResult?.aggregate?.status !== 'PASS') primaryReason = 'gate_failed';
+    }
+  }
+
+  let finalization;
+  const finalize = () =>
+    (finalization ??= (async () => {
+      const cleanupReasons = [];
+      let terminalEpoch;
+      let terminalEpochCaptured = false;
+      let terminalReference;
+      try {
+        terminalReference = await ports.captureBaseline();
+      } catch {
+        cleanupReasons.push('terminal_reference_failed');
+      }
+      try {
+        terminalEpoch = await ports.captureTerminalEpoch();
+        terminalEpochCaptured = true;
+      } catch {
+        cleanupReasons.push('terminal_epoch_capture_failed');
+      }
+
+      try {
+        await ports.stopNanoHost();
+      } catch {
+        cleanupReasons.push('service_stop_failed');
+      }
+
+      let credentialsRemoved = false;
+      let decommissioned = false;
+      try {
+        const response = await ports.decommissionNanoHost();
+        if (response?.identityId !== options.nanoHostIdentityId) {
+          cleanupReasons.push('decommission_identity_mismatch');
+        } else if (
+          response.status !== 'decommissioned' ||
+          !Number.isSafeInteger(response.revokedTokenCount) ||
+          response.revokedTokenCount < 0
+        ) {
+          cleanupReasons.push('decommission_response_invalid');
+        } else {
+          credentialsRemoved = true;
+          decommissioned = true;
+        }
+      } catch {
+        cleanupReasons.push('decommission_failed');
+      }
+
+      try {
+        await ports.stopTunnel();
+      } catch {
+        cleanupReasons.push('tunnel_stop_failed');
+      }
+
+      let serviceStopped = false;
+      try {
+        serviceStopped = (await ports.proveServiceInactive()) === true;
+        if (!serviceStopped) cleanupReasons.push('service_still_active');
+      } catch {
+        cleanupReasons.push('service_state_unknown');
+      }
+
+      let liveEpochEffectsAbsent = false;
+      try {
+        const residue = await ports.proveEpochResidueAbsent(terminalEpoch);
+        if (terminalEpochCaptured) {
+          liveEpochEffectsAbsent =
+            residue?.cgroupAbsent === true &&
+            residue.netnsAbsent === true &&
+            residue.socketsAbsent === true;
+          if (!liveEpochEffectsAbsent) cleanupReasons.push('epoch_residue_present');
+        }
+      } catch {
+        cleanupReasons.push('epoch_residue_unknown');
+      }
+
+      let terminalRootsAbsent = false;
+      if (terminalEpochCaptured && serviceStopped && liveEpochEffectsAbsent) {
+        let roots;
+        try {
+          roots = privateEpochRoots(terminalEpoch);
+          const observed = await ports.observeTerminalEpochRoots(roots);
+          if (!isDeepStrictEqual(observed, roots)) {
+            cleanupReasons.push('terminal_epoch_roots_changed');
+          } else {
+            try {
+              await ports.removeTerminalEpochRoots(roots);
+            } catch {
+              cleanupReasons.push('terminal_epoch_root_removal_failed');
+            }
+            try {
+              terminalRootsAbsent = (await ports.observeTerminalEpochRoots(roots))?.length === 0;
+              if (!terminalRootsAbsent) cleanupReasons.push('terminal_epoch_roots_present');
+            } catch {
+              cleanupReasons.push('terminal_epoch_root_reobservation_failed');
+            }
+          }
+        } catch {
+          cleanupReasons.push('terminal_epoch_root_observation_failed');
+        }
+      }
+      const epochResidueAbsent = liveEpochEffectsAbsent && terminalRootsAbsent;
+
+      let baselinePreserved = false;
+      try {
+        const postCleanup = await ports.captureBaseline();
+        baselinePreserved =
+          digest64Pattern.test(terminalReference?.digest ?? '') &&
+          postCleanup?.digest === terminalReference.digest;
+        if (!baselinePreserved) cleanupReasons.push('terminal_baseline_changed');
+      } catch {
+        cleanupReasons.push('post_cleanup_baseline_failed');
+      }
+
+      let buildNetworkSmoke = false;
+      try {
+        buildNetworkSmoke = (await ports.runDockerSmoke()) === true;
+        if (!buildNetworkSmoke) cleanupReasons.push('build_network_smoke_failed');
+      } catch {
+        cleanupReasons.push('build_network_smoke_failed');
+      }
+
+      return {
+        baselinePreserved,
+        buildNetworkSmoke,
+        cleanupReasons,
+        credentialsRemoved,
+        decommissioned,
+        epochResidueAbsent,
+        primaryReason,
+        serviceStopped,
+      };
+    })());
+
+  const terminal = await finalize();
+  const retained = gateResult ?? failedRunResult(options, null, identity);
+  const terminalPassed =
+    retained.aggregate.status === 'PASS' &&
+    terminal.primaryReason === null &&
+    terminal.cleanupReasons.length === 0 &&
+    terminal.serviceStopped === true &&
+    terminal.decommissioned === true &&
+    terminal.credentialsRemoved === true &&
+    terminal.epochResidueAbsent === true &&
+    terminal.baselinePreserved === true &&
+    terminal.buildNetworkSmoke === true;
+  const result = {
+    ...retained,
+    aggregate: { ...retained.aggregate, status: terminalPassed ? 'PASS' : 'FAIL' },
+    terminal,
+  };
+  const bytes = `${JSON.stringify(result, null, 2)}\n`;
+  try {
+    await ports.writeOutput(options.outputPath, bytes, { flag: 'wx', mode: 0o600 });
+  } catch {
+    throw new Error('Unit F retained output write failed.');
+  }
+  return result;
 }
 
 /** Projects the explicit environment inputs required by the real A1 operator. */
@@ -2505,6 +3421,8 @@ function optionsFromEnvironment(env) {
     nanoHostDeploymentId: env.OPENKIT_HOST_NANOHOST_DEPLOYMENT_ID ?? '',
     nanoHostExecutableSha256: env.OPENKIT_NHC_UNIT_F_NANOHOST_EXECUTABLE_SHA256 ?? '',
     nanoHostIdentityId: env.OPENKIT_HOST_NANOHOST_IDENTITY_ID ?? '',
+    outputPath: env.OPENKIT_NHC_UNIT_F_OUTPUT_PATH ?? '',
+    ownerTimeoutMs: Number(env.OPENKIT_NHC_UNIT_F_OWNER_TIMEOUT_MS ?? ''),
     productCommit: env.OPENKIT_L6_TASK_PRODUCT_COMMIT ?? '',
     remoteNanoCorePort: env.OPENKIT_NHC_UNIT_F_NANOCORE_PORT ?? '',
     sessionCookie: env.OPENKIT_NANOCORE_SESSION_COOKIE,
@@ -2515,10 +3433,14 @@ function optionsFromEnvironment(env) {
 }
 
 /** Returns one redacted fail-closed result when the real driver cannot complete. */
-function failedRunResult(options, failure = null) {
+function failedRunResult(options, failure = null, identity = null) {
   return {
     aggregate: {
       id: 'Aggregate',
+      networkConformance: {
+        observations: { ...networkConformanceContract },
+        status: 'FAIL',
+      },
       normalLifecycle: {
         observations: { ...normalLifecycleContract },
         status: 'FAIL',
@@ -2531,39 +3453,37 @@ function failedRunResult(options, failure = null) {
         ? digest(options.attemptId)
         : null,
     failure,
-    identity: null,
+    identity,
     scenarios: [],
   };
 }
 
-/** Runs the real operator entrypoint and retains only redacted adjudicated JSON. */
+/** Runs the real operator entrypoint through the same terminal attempt owner. */
 async function runCli(env) {
-  const outputPath = env.OPENKIT_NHC_UNIT_F_OUTPUT_PATH ?? '';
-  if (!isAbsolute(outputPath)) {
-    process.stdout.write('aggregate=FAIL evidenceSha256=none\n');
-    process.exitCode = 1;
-    return;
-  }
-  const options = optionsFromEnvironment(env);
+  let interrupt = null;
+  const onSigint = () => {
+    interrupt ??= 'SIGINT';
+  };
+  const onSigterm = () => {
+    interrupt ??= 'SIGTERM';
+  };
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
   let result;
   try {
-    result = await runNanoHostUnitF(options);
-  } catch (error) {
-    const failure =
-      error !== null && (typeof error === 'object' || typeof error === 'function')
-        ? (failureEvidenceByError.get(error) ?? null)
-        : null;
-    result = failedRunResult(options, failure);
-  }
-  const bytes = `${JSON.stringify(result, null, 2)}\n`;
-  const evidenceSha256 = digest(bytes);
-  try {
-    await writeFile(outputPath, bytes, { flag: 'wx', mode: 0o600 });
+    result = await runNanoHostUnitFAttempt({
+      ...optionsFromEnvironment(env),
+      readInterrupt: () => interrupt,
+    });
   } catch {
     process.stdout.write('aggregate=FAIL evidenceSha256=none\n');
     process.exitCode = 1;
     return;
+  } finally {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
   }
+  const evidenceSha256 = digest(`${JSON.stringify(result, null, 2)}\n`);
   process.stdout.write(`aggregate=${result.aggregate.status} evidenceSha256=${evidenceSha256}\n`);
   if (result.aggregate.status !== 'PASS') process.exitCode = 1;
 }

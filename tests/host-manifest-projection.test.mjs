@@ -19,6 +19,7 @@ const manifestPath = join(repoRoot, 'tests/support/host/manifest.json');
 const expectedRootScripts = {
   'host:assert': 'bash tests/support/host/assert.sh',
   'host:nanohost:bring-up': 'bash tests/support/host/nanohost-bring-up.sh',
+  'host:nanohost:unit-f': 'node tests/support/host/nanohost-unit-f-runner.mjs',
   'host:provision': 'bash tests/support/host/provision.sh',
   'host:teardown': 'bash tests/support/host/teardown.sh',
 };
@@ -58,7 +59,7 @@ function artifactDigest(root, paths) {
   return hash.digest('hex');
 }
 
-test('root exposes exactly the four host-manifest commands', () => {
+test('root exposes exactly the five host-manifest commands', () => {
   const rootPackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
   assert.deepEqual(
     Object.fromEntries(
