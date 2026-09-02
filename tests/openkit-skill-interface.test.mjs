@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
@@ -6,8 +7,11 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -377,6 +381,12 @@ test('one catalog covers the checked App API and public Core projection', async 
     'credential.delete',
     'credential.store',
   ]);
+  assert.deepEqual(
+    idsWithAccess(
+      'implicit local actor; bundled CLI Workspace archive operations are local-mode only'
+    ),
+    ['workspace.archive-download', 'workspace.archive-import', 'workspace.archive-import-dry-run']
+  );
   assert.deepEqual(idsWithAccess('public metadata read; no authenticated actor'), [
     'connection.meta',
   ]);
@@ -591,6 +601,137 @@ test('catalog search is concise and describe returns one machine-readable input 
   assert.ok(!('handler' in description));
 });
 
+test('portable archive operations stream bytes and refuse local path replacement', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-skill-archive-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const bytes = Buffer.from([40, 181, 47, 253]);
+  const destinationPath = join(root, 'workspace.openkit-workspace.tar.zst');
+  const sourcePath = join(root, 'source.openkit-workspace.tar.zst');
+  const linkedSourcePath = join(root, 'linked.openkit-workspace.tar.zst');
+  const uploads = [];
+  const { operationCatalog } = await operations();
+  const download = operationCatalog.find((entry) => entry.id === 'workspace.archive-download');
+  const dryRun = operationCatalog.find((entry) => entry.id === 'workspace.archive-import-dry-run');
+  const importArchive = operationCatalog.find((entry) => entry.id === 'workspace.archive-import');
+  const client = {
+    app: {
+      downloadWorkspaceExportArchive() {
+        return Promise.resolve(new Response(bytes).body);
+      },
+      async dryRunWorkspaceArchiveImport(body) {
+        uploads.push(Buffer.from(await new Response(body).arrayBuffer()));
+        return { mode: 'dry-run' };
+      },
+      async importWorkspaceArchive(body, requestId) {
+        uploads.push(Buffer.from(await new Response(body).arrayBuffer()));
+        return { mode: 'imported', requestId };
+      },
+    },
+  };
+
+  await download.handler(
+    { client },
+    { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath }
+  );
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
+  await assert.rejects(
+    download.handler(
+      { client },
+      { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath }
+    ),
+    (error) => error.code === 'archive_destination_exists'
+  );
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+
+  for (const outcome of ['failure', 'success']) {
+    const raceDestination = join(root, `${outcome}-race.openkit-workspace.tar.zst`);
+    const movedDestination = `${raceDestination}.owned`;
+    const replacement = Buffer.from(`${outcome}-replacement`);
+    let pulled = false;
+    const raceClient = {
+      app: {
+        downloadWorkspaceExportArchive() {
+          return Promise.resolve(
+            new ReadableStream(
+              {
+                pull(controller) {
+                  if (pulled) return;
+                  pulled = true;
+                  controller.enqueue(bytes);
+                  renameSync(raceDestination, movedDestination);
+                  writeFileSync(raceDestination, replacement);
+                  if (outcome === 'failure') {
+                    controller.error(new Error('injected transfer failure'));
+                  } else {
+                    controller.close();
+                  }
+                },
+              },
+              { highWaterMark: 0 }
+            )
+          );
+        },
+      },
+    };
+
+    await assert.rejects(
+      download.handler(
+        { client: raceClient },
+        { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath: raceDestination }
+      ),
+      (error) => error.code === 'archive_download_failed'
+    );
+    assert.deepEqual(readFileSync(raceDestination), replacement);
+    assert.equal(existsSync(movedDestination), true);
+    if (outcome === 'success') assert.deepEqual(readFileSync(movedDestination), bytes);
+  }
+
+  const partialDestination = join(root, 'partial.openkit-workspace.tar.zst');
+  const partialClient = {
+    app: {
+      downloadWorkspaceExportArchive() {
+        return Promise.resolve(
+          new ReadableStream(
+            {
+              pull(controller) {
+                controller.error(new Error('injected transfer failure'));
+              },
+            },
+            { highWaterMark: 0 }
+          )
+        );
+      },
+    },
+  };
+  await assert.rejects(
+    download.handler(
+      { client: partialClient },
+      { workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath: partialDestination }
+    ),
+    (error) => error.code === 'archive_download_failed'
+  );
+  assert.equal(existsSync(partialDestination), true);
+  assert.equal(statSync(partialDestination).mode & 0o777, 0o600);
+
+  writeFileSync(sourcePath, bytes);
+  assert.deepEqual(await dryRun.handler({ client }, { sourcePath }), { mode: 'dry-run' });
+  assert.deepEqual(
+    await importArchive.handler(
+      { client },
+      { sourcePath, requestId: '00000000-0000-4000-8000-000000000001' }
+    ),
+    { mode: 'imported', requestId: '00000000-0000-4000-8000-000000000001' }
+  );
+  assert.deepEqual(uploads, [bytes, bytes]);
+
+  symlinkSync(sourcePath, linkedSourcePath);
+  await assert.rejects(
+    Promise.resolve().then(() => dryRun.handler({ client }, { sourcePath: linkedSourcePath })),
+    (error) => error.code === 'invalid_archive_source'
+  );
+});
+
 test('the encrypted-file Vault cutover removes only the obsolete NanoCore Keychain path', () => {
   const remoteCredentialStorePath = join(repoRoot, 'skills', 'openkit-secrets.mjs');
   assert.equal(existsSync(remoteCredentialStorePath), true);
@@ -792,6 +933,39 @@ test('the bundled CLI performs one typed call with fixed audit headers', async (
   );
   assert.equal(invalid.code, 2);
   assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
+});
+
+test('the bundled CLI downloads a portable archive only to a new exact destination', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-bundled-archive-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const destinationPath = join(root, 'workspace.openkit-workspace.tar.zst');
+  const bytes = Buffer.from([40, 181, 47, 253]);
+  const fetchStub = dataModule(`
+    globalThis.fetch = async (url, options) => {
+      if (url !== 'http://nanocore.example/api/app/workspaces/ws_demo/exports/wsexp_demo/archive') throw new Error('unexpected URL');
+      if (options.method !== 'GET') throw new Error('unexpected method');
+      return new Response(Uint8Array.from([40, 181, 47, 253]), {
+        headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+      });
+    };
+  `);
+  const args = ['ops', 'call', 'workspace.archive-download', '--input', '-'];
+  const env = {
+    OPENKIT_NANOCORE_URL: 'http://nanocore.example',
+    OPENKIT_NANOCORE_TOKEN: '',
+  };
+  const input = JSON.stringify({ workspaceId: 'ws_demo', exportId: 'wsexp_demo', destinationPath });
+
+  const downloaded = await runCli(args, env, input, [fetchStub]);
+  assert.equal(downloaded.code, 0);
+  assert.deepEqual(JSON.parse(downloaded.stdout).data, { downloaded: true });
+  assert.deepEqual(readFileSync(destinationPath), bytes);
+  assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
+
+  const refused = await runCli(args, env, input, [fetchStub]);
+  assert.equal(refused.code, 2);
+  assert.equal(JSON.parse(refused.stdout).error.code, 'archive_destination_exists');
+  assert.deepEqual(readFileSync(destinationPath), bytes);
 });
 
 test('the released Skill runs without repository sources or node_modules', async (t) => {

@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 import { postJson } from './_lib/http.js';
@@ -39,22 +39,16 @@ describe('nanocore e2e workspace portability', () => {
       { workspaceId }
     );
     const exportId = String(exported.exportId);
+    const archiveResponse = await fetch(
+      `${sourceHarness.baseUrl}/api/app/workspaces/${workspaceId}/exports/${exportId}/archive`
+    );
+    expect(archiveResponse.status).toBe(200);
+    expect(archiveResponse.headers.get('content-type')).toBe(
+      'application/vnd.openkit.workspace-export+tar.zstd'
+    );
+    const archive = Buffer.from(await archiveResponse.arrayBuffer());
+    const sourceArchiveDigest = createHash('sha256').update(archive).digest('hex');
     const targetDataRoot = await mkdtemp(join(tmpdir(), 'openkit-nanocore-portability-target-'));
-    const targetExportRoot = join(
-      targetDataRoot,
-      'server',
-      'exports',
-      'workspaces',
-      workspaceId,
-      exportId
-    );
-
-    await mkdir(dirname(targetExportRoot), { recursive: true });
-    await cp(
-      join(sourceHarness.dataRoot, 'server', 'exports', 'workspaces', workspaceId, exportId),
-      targetExportRoot,
-      { recursive: true }
-    );
 
     const targetHarness = await startNanoCoreHarness({
       dataRoot: targetDataRoot,
@@ -62,10 +56,10 @@ describe('nanocore e2e workspace portability', () => {
     });
     harnesses.push(targetHarness);
     await expectJson(
-      await postJson(`${targetHarness.baseUrl}/api/app/workspace-imports/dry-run`, {
-        exportId,
-        sourceWorkspaceId: workspaceId,
-      }),
+      await postArchive(
+        `${targetHarness.baseUrl}/api/app/workspace-archives/import-dry-run`,
+        archive
+      ),
       {
         collision: { status: 'collides', workspaceId },
         exportedWorkspaceId: workspaceId,
@@ -74,10 +68,8 @@ describe('nanocore e2e workspace portability', () => {
     );
 
     const imported = await expectJson(
-      await postJson(`${targetHarness.baseUrl}/api/app/workspace-imports`, {
-        exportId,
-        requestId: randomUUID(),
-        sourceWorkspaceId: workspaceId,
+      await postArchive(`${targetHarness.baseUrl}/api/app/workspace-archives/import`, archive, {
+        'x-openkit-request-id': randomUUID(),
       }),
       {
         collision: { status: 'collides', workspaceId },
@@ -95,6 +87,7 @@ describe('nanocore e2e workspace portability', () => {
       id: importedWorkspaceId,
       importedFrom: { sourceWorkspaceId: workspaceId },
     });
+    expect(createHash('sha256').update(archive).digest('hex')).toBe(sourceArchiveDigest);
     expect(knowledge.items?.some((entry) => entry.title === 'L3 portability knowledge')).toBe(true);
   });
 
@@ -192,6 +185,18 @@ describe('nanocore e2e workspace portability', () => {
     );
   });
 });
+
+/** Posts one exact portable archive body without JSON or base64 encoding. */
+function postArchive(url: string, archive: Buffer, headers: HeadersInit = {}): Promise<Response> {
+  return fetch(url, {
+    body: archive,
+    headers: {
+      'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+      ...Object.fromEntries(new Headers(headers)),
+    },
+    method: 'POST',
+  });
+}
 
 /**
  * Parses one JSON response and asserts a partial object match.

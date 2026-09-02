@@ -24,6 +24,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 - `../workspace-materials.ts` owns exactly the three app-local Material tables and their same-transaction command mutations; worker delivery, Artifact Review, and portable graph rewriting remain with their later S16 stages.
 - `../goal-steering-authority.ts` owns the Thread-unique pending input and immutable terminal outcome rows; callers own Item, Context Package, follow-up Turn, and body-free receipt effects around its exact transaction fences.
 - `workspace-export.ts` owns the V2 export tree, manifest, exact-byte inventory, and offline verification.
+- `workspace-archive.ts` owns strict USTAR path representability shared by export creation, offline verification, and archive production, plus bounded one-shot extraction into private request-local staging.
 - `workspace-import.ts` parses only verified bytes, validates and remints the import graph, and reconstructs importable records.
 - `workspace-portable-file-state.ts` owns portable Knowledge ledgers, workspace config and schema, native OKF pages, S61 retrieval traces, and retained S39 worker Context Package files.
 - Standalone Knowledge context traces and materializations are unsupported; worker delivery belongs only to the S39 Context Package owner.

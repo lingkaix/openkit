@@ -1003,6 +1003,15 @@ export interface AppApiClient {
   listServerPermissionDecisions(): Promise<ListServerPermissionDecisionsResponse>;
   /** Creates and verifies one workspace export tree. */
   exportWorkspace(workspaceId: string): Promise<WorkspaceExportResponse>;
+  /** Downloads one verified Workspace export as a raw archive stream. */
+  downloadWorkspaceExportArchive(
+    workspaceId: string,
+    exportId: string
+  ): Promise<ReadableStream<Uint8Array>>;
+  /** Verifies one raw Workspace archive stream without importing it. */
+  dryRunWorkspaceArchiveImport(body: BodyInit): Promise<WorkspaceImportDryRunResponse>;
+  /** Imports one raw Workspace archive stream with a caller-selected or generated request id. */
+  importWorkspaceArchive(body: BodyInit, requestId?: string): Promise<WorkspaceImportResponse>;
   /** Verifies a server-managed workspace export without importing it. */
   dryRunWorkspaceImport(
     input: WorkspaceImportDryRunRequest
@@ -1765,6 +1774,28 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/export`,
         {},
         WorkspaceExportResponseSchema
+      ),
+    downloadWorkspaceExportArchive: (workspaceId, exportId) =>
+      transport.getStream(
+        `/api/app/workspaces/${workspaceId}/exports/${exportId}/archive`,
+        'application/vnd.openkit.workspace-export+tar.zstd'
+      ),
+    dryRunWorkspaceArchiveImport: (body) =>
+      transport.postStream(
+        '/api/app/workspace-archives/import-dry-run',
+        body,
+        { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+        WorkspaceImportDryRunResponseSchema
+      ),
+    importWorkspaceArchive: (body, requestId) =>
+      transport.postStream(
+        '/api/app/workspace-archives/import',
+        body,
+        {
+          'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+          'x-openkit-request-id': requestId ?? createRequestId(),
+        },
+        WorkspaceImportResponseSchema
       ),
     dryRunWorkspaceImport: (input) =>
       transport.postJson(

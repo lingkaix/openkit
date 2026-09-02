@@ -1,3 +1,15 @@
+import {
+  closeSync,
+  constants,
+  createReadStream,
+  createWriteStream,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+} from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import * as appSchemas from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import * as protocol from '@openkit/protocol';
@@ -26,6 +38,10 @@ const DEPLOYMENT_ADMIN_ACCESS = Object.freeze({
 });
 const SERVER_ADMIN_TOKEN_ACCESS = Object.freeze({
   requiredAccess: 'server-admin bearer token in server mode',
+});
+const LOCAL_WORKSPACE_ARCHIVE_ACCESS = Object.freeze({
+  requiredAccess:
+    'implicit local actor; bundled CLI Workspace archive operations are local-mode only',
 });
 
 const workspaceScope = { workspaceId: protocol.WorkspaceIdSchema };
@@ -92,6 +108,78 @@ function bodyWithout(input, ...keys) {
  */
 function localError(code, message, cause) {
   return Object.assign(new Error(message), { code, ...(cause === undefined ? {} : { cause }) });
+}
+
+/**
+ * Opens one exact regular non-link archive and preserves its identity through stream acquisition.
+ *
+ * @param {string} sourcePath Caller-selected source path.
+ * @returns {ReadableStream<Uint8Array>} Owned archive stream.
+ */
+function openWorkspaceArchive(sourcePath) {
+  let fileDescriptor = null;
+  try {
+    const before = lstatSync(sourcePath);
+    if (before.isSymbolicLink() || !before.isFile()) {
+      throw new Error('not a regular file');
+    }
+    fileDescriptor = openSync(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = fstatSync(fileDescriptor);
+    if (before.dev !== opened.dev || before.ino !== opened.ino || !opened.isFile()) {
+      throw new Error('file identity changed');
+    }
+    const stream = createReadStream(sourcePath, { autoClose: true, fd: fileDescriptor });
+    fileDescriptor = null;
+    return Readable.toWeb(stream);
+  } catch (cause) {
+    if (fileDescriptor !== null) {
+      closeSync(fileDescriptor);
+    }
+    throw localError('invalid_archive_source', 'Workspace archive source is unavailable.', cause);
+  }
+}
+
+/**
+ * Writes one response stream to a newly owned exact destination without overwriting any path.
+ *
+ * @param {string} destinationPath Caller-selected destination path.
+ * @param {ReadableStream<Uint8Array>} stream Download response stream.
+ * @returns {Promise<void>}
+ */
+async function writeWorkspaceArchive(destinationPath, stream) {
+  let fileDescriptor = null;
+  let identity = null;
+  try {
+    fileDescriptor = openSync(
+      destinationPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+      0o600
+    );
+    fchmodSync(fileDescriptor, 0o600);
+    identity = fstatSync(fileDescriptor);
+    const output = createWriteStream(destinationPath, { autoClose: true, fd: fileDescriptor });
+    fileDescriptor = null;
+    await pipeline(Readable.fromWeb(stream), output);
+    const published = lstatSync(destinationPath, { throwIfNoEntry: false });
+    if (
+      !published ||
+      published.isSymbolicLink() ||
+      !published.isFile() ||
+      published.dev !== identity.dev ||
+      published.ino !== identity.ino
+    ) {
+      throw new Error('Workspace archive destination identity changed during download.');
+    }
+  } catch (cause) {
+    if (fileDescriptor !== null) {
+      closeSync(fileDescriptor);
+    }
+    const code =
+      cause?.code === 'EEXIST' || cause?.code === 'ELOOP'
+        ? 'archive_destination_exists'
+        : 'archive_download_failed';
+    throw localError(code, 'Workspace archive destination could not be created.', cause);
+  }
 }
 
 /**
@@ -1844,6 +1932,64 @@ export const operationCatalog = [
     mutating: true,
     inputSchema: strictScope(workspaceScope),
     handler: ({ client }, input) => client.app.exportWorkspace(input.workspaceId),
+  },
+  {
+    ...STANDARD,
+    ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
+    inputSensitivity: 'host-local path',
+    id: 'workspace.archive-download',
+    source: 'app-api',
+    appOperationId: 'downloadWorkspaceExportArchive',
+    clientMethod: 'app.downloadWorkspaceExportArchive',
+    group: 'workspace',
+    summary: 'Download one portable Workspace archive to a new local file.',
+    mutating: true,
+    inputSchema: strictScope({
+      ...workspaceScope,
+      exportId: IDENTIFIER,
+      destinationPath: z.string().min(1),
+    }),
+    async handler({ client }, input) {
+      const stream = await client.app.downloadWorkspaceExportArchive(
+        input.workspaceId,
+        input.exportId
+      );
+      await writeWorkspaceArchive(input.destinationPath, stream);
+      return { downloaded: true };
+    },
+  },
+  {
+    ...STANDARD,
+    ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
+    inputSensitivity: 'host-local path',
+    id: 'workspace.archive-import-dry-run',
+    source: 'app-api',
+    appOperationId: 'dryRunWorkspaceArchiveImport',
+    clientMethod: 'app.dryRunWorkspaceArchiveImport',
+    group: 'workspace',
+    summary: 'Verify one local portable Workspace archive without importing it.',
+    mutating: false,
+    inputSchema: strictScope({ sourcePath: z.string().min(1) }),
+    handler: ({ client }, input) =>
+      client.app.dryRunWorkspaceArchiveImport(openWorkspaceArchive(input.sourcePath)),
+  },
+  {
+    ...STANDARD,
+    ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
+    inputSensitivity: 'host-local path',
+    id: 'workspace.archive-import',
+    source: 'app-api',
+    appOperationId: 'importWorkspaceArchive',
+    clientMethod: 'app.importWorkspaceArchive',
+    group: 'workspace',
+    summary: 'Import one local portable Workspace archive.',
+    mutating: true,
+    inputSchema: strictScope({
+      sourcePath: z.string().min(1),
+      requestId: protocol.RequestIdSchema,
+    }),
+    handler: ({ client }, input) =>
+      client.app.importWorkspaceArchive(openWorkspaceArchive(input.sourcePath), input.requestId),
   },
   {
     ...STANDARD,

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProtocolValidationError } from './errors.js';
 import { type FetchLike, parseJsonResponse } from './http.js';
 
 /** Shared HTTP transport used by every sub-client. */
@@ -11,10 +12,19 @@ export interface ClientTransport {
   readonly headers?: HeadersInit | undefined;
   /** Fetches and validates a JSON response. */
   getJson<TSchema extends z.ZodType>(path: string, schema: TSchema): Promise<z.infer<TSchema>>;
+  /** Fetches one successful response body with an exact media type. */
+  getStream(path: string, mediaType: string): Promise<ReadableStream<Uint8Array>>;
   /** Posts a JSON body and validates a JSON response. */
   postJson<TInput, TSchema extends z.ZodType>(
     path: string,
     input: TInput,
+    schema: TSchema
+  ): Promise<z.infer<TSchema>>;
+  /** Posts one raw body and validates a JSON response. */
+  postStream<TSchema extends z.ZodType>(
+    path: string,
+    body: BodyInit,
+    headers: HeadersInit,
     schema: TSchema
   ): Promise<z.infer<TSchema>>;
   /** Puts a JSON body and validates a JSON response. */
@@ -77,6 +87,26 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return parseJsonResponse(response, schema);
   };
 
+  const getStream: ClientTransport['getStream'] = async (path, mediaType) => {
+    const response = await fetcher(url(path), {
+      credentials: 'include',
+      headers: mergeHeaders(),
+      method: 'GET',
+    });
+    if (!response.ok) {
+      await parseJsonResponse(response, z.never());
+      throw new Error('Unreachable response state.');
+    }
+    if (response.headers.get('content-type') !== mediaType || !response.body) {
+      throw new ProtocolValidationError({
+        path: [],
+        code: 'invalid_payload',
+        message: 'Response stream media type is incompatible.',
+      });
+    }
+    return response.body;
+  };
+
   const postJson: ClientTransport['postJson'] = async (path, input, schema) => {
     const response = await fetcher(url(path), {
       credentials: 'include',
@@ -85,6 +115,17 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
       body: JSON.stringify(input),
     });
 
+    return parseJsonResponse(response, schema);
+  };
+
+  const postStream: ClientTransport['postStream'] = async (path, body, headers, schema) => {
+    const response = await fetcher(url(path), {
+      body,
+      credentials: 'include',
+      duplex: 'half',
+      headers: mergeHeaders(headers),
+      method: 'POST',
+    } as RequestInit & { duplex: 'half' });
     return parseJsonResponse(response, schema);
   };
 
@@ -145,9 +186,11 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     deleteJson,
     fetch: fetcher,
     getJson,
+    getStream,
     headers: options.headers,
     patchJson,
     postJson,
+    postStream,
     putJson,
     url,
   };

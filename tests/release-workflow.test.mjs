@@ -189,6 +189,18 @@ test('release workflow runs the fixed-path NanoHost installer gate in one host j
   assert.doesNotMatch(commands, /pnpm .*nanohost.*installer|scripts\/test-env\.sh/u);
 });
 
+test('workspace portability uses two runners only behind release or manual gates', () => {
+  const source = workflow.jobs['workspace-portability-source'];
+  const target = workflow.jobs['workspace-portability-target'];
+
+  assert.equal(source.if, target.if);
+  assert.match(source.if, /github\.event_name == 'push'/u);
+  assert.match(source.if, /github\.event_name == 'workflow_dispatch'/u);
+  assert.doesNotMatch(source.if, /pull_request/u);
+  assert.ok(target.needs.includes('workspace-portability-source'));
+  assert.ok(workflow.jobs['package-release-assets'].needs.includes('workspace-portability-target'));
+});
+
 function step(job, name) {
   const found = job.steps.find((candidate) => candidate.name === name);
   assert.ok(found, `Missing workflow step: ${name}`);

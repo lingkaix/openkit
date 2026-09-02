@@ -56,6 +56,16 @@ function sseResponse(events: unknown[]): Response {
   });
 }
 
+/** Creates one reusable single-chunk byte stream. */
+function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
 /** Creates a client with a path-indexed fake fetch implementation. */
 function createFakeClient(routes: RouteMap): {
   client: CoreClient;
@@ -1533,6 +1543,69 @@ class FakeEventSource {
 }
 
 describe('createCoreClient', () => {
+  it('streams portable Workspace archive downloads and uploads without JSON encoding', async () => {
+    const archive = new Uint8Array([40, 181, 47, 253]);
+    const requests: Array<{ body: Uint8Array; headers: Headers; method: string; path: string }> =
+      [];
+    const client = createCoreClient({
+      baseUrl: 'https://nanocore.test',
+      fetch: async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        const body = init?.body
+          ? new Uint8Array(await new Response(init.body).arrayBuffer())
+          : new Uint8Array();
+        requests.push({
+          body,
+          headers: new Headers(init?.headers),
+          method: init?.method ?? 'GET',
+          path,
+        });
+        if (init?.method === 'GET') {
+          return new Response(archive, {
+            headers: {
+              'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+            },
+          });
+        }
+        return jsonResponse(
+          path.endsWith('import-dry-run')
+            ? workspaceImportDryRunResponse()
+            : workspaceImportResponse()
+        );
+      },
+    });
+
+    const downloaded = await client.app.downloadWorkspaceExportArchive('ws_demo', 'wsexp_demo');
+    expect(new Uint8Array(await new Response(downloaded).arrayBuffer())).toEqual(archive);
+    await expect(client.app.dryRunWorkspaceArchiveImport(byteStream(archive))).resolves.toEqual(
+      workspaceImportDryRunResponse()
+    );
+    await expect(
+      client.app.importWorkspaceArchive(byteStream(archive), requestId)
+    ).resolves.toEqual(workspaceImportResponse());
+    expect(requests).toMatchObject([
+      {
+        body: new Uint8Array(),
+        method: 'GET',
+        path: '/api/app/workspaces/ws_demo/exports/wsexp_demo/archive',
+      },
+      {
+        body: archive,
+        method: 'POST',
+        path: '/api/app/workspace-archives/import-dry-run',
+      },
+      {
+        body: archive,
+        method: 'POST',
+        path: '/api/app/workspace-archives/import',
+      },
+    ]);
+    expect(requests[1]?.headers.get('content-type')).toBe(
+      'application/vnd.openkit.workspace-export+tar.zstd'
+    );
+    expect(requests[2]?.headers.get('x-openkit-request-id')).toBe(requestId);
+  });
+
   it('exports only the ordinary product SSE envelope type', () => {
     // @ts-expect-error AgentSession events are internal and cannot inhabit the ordinary SSE type.
     const internalOnlyEvent: SseEventEnvelope = agentSessionEvent(1);

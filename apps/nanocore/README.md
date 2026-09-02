@@ -226,6 +226,8 @@ pnpm --filter @openkit/nanocore run test:e2e
 
 The e2e surface boots NanoCore as a process, uses fresh temporary data roots, covers empty boot, Goal planning, bounded restart read-model replay, configuration loading, migration idempotency, agent readiness diagnostics, secret redaction, and the skip-aware real Codex smoke spec.
 
+The fixed CI portability proof runs the bundled local-mode CLI in separate source and target jobs, transfers the original `.openkit-workspace.tar.zst` plus its SHA-256 and semantic oracle through one workflow artifact, verifies the archive SHA-256 across runners, compares remint-neutral Workspace semantics and complete seeded Turn history, explicitly rebinds repository and Vault references, exercises target behavior, and verifies a target re-export without treating the re-export digest as an equality oracle.
+
 Run the quick NanoCore e2e smoke subset with:
 
 ```bash

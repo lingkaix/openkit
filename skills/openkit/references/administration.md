@@ -40,4 +40,6 @@ Confirm repository identity, branch or target, and the requested Git effect befo
 
 For backup, export, import, or workspace portability, confirm the source, destination, workspace scope, overwrite behavior, and sensitive-data handling described by the operation. Verify the durable result after completion and report partial, rejected, or recovery-required outcomes without local repair.
 
+Use `workspace.archive-download`, `workspace.archive-import-dry-run`, and `workspace.archive-import` for the supported local-mode portable archive path. Download writes only a new exact destination and never overwrites a file or link; a failed transfer leaves that partial destination for explicit inspection or removal rather than racing pathname cleanup. Dry-run and import read one exact regular non-link source as a one-shot stream, so preserve the original archive and invoke a new operation for each retry.
+
 Use audit and usage reads to explain recorded effects and consumption. Do not treat those projections as permission to repeat an operation or as a substitute for the owning durable record.

@@ -290,6 +290,12 @@ const WORKSPACE_ID_PARAMETER = {
   required: true,
   schema: { $ref: '#/components/schemas/WorkspaceId' },
 } as const;
+const WORKSPACE_EXPORT_ID_PARAMETER = {
+  name: 'exportId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
 const INVITATION_ID_PARAMETER = {
   name: 'invitationId',
   in: 'path',
@@ -4290,6 +4296,109 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/WorkspaceExportResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
+        get: {
+          operationId: 'downloadWorkspaceExportArchive',
+          tags: ['storage'],
+          summary: 'Download one verified workspace export as a Zstandard-compressed tar stream.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [WORKSPACE_ID_PARAMETER, WORKSPACE_EXPORT_ID_PARAMETER],
+          responses: {
+            '200': {
+              description: 'Canonical portable Workspace archive stream.',
+              content: {
+                'application/vnd.openkit.workspace-export+tar.zstd': {
+                  schema: { type: 'string', format: 'binary' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspace-archives/import-dry-run': {
+        post: {
+          operationId: 'dryRunWorkspaceArchiveImport',
+          tags: ['storage'],
+          summary: 'Verify one streamed portable Workspace archive without importing it.',
+          security: SESSION_COOKIE_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              'application/vnd.openkit.workspace-export+tar.zstd': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Workspace archive import dry-run report.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceImportDryRunResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspace-archives/import': {
+        post: {
+          operationId: 'importWorkspaceArchive',
+          tags: ['storage'],
+          summary: 'Import one streamed portable Workspace archive.',
+          security: SESSION_COOKIE_SECURITY,
+          parameters: [
+            {
+              name: 'x-openkit-request-id',
+              in: 'header',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/vnd.openkit.workspace-export+tar.zstd': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Imported workspace and verification summary.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceImportResponse' },
                 },
               },
             },

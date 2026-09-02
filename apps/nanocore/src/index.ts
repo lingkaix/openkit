@@ -102,6 +102,7 @@ import {
 } from './storage/fs-layout.js';
 import { rebuildExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
+import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 
@@ -197,6 +198,7 @@ const bootResult = await runBootPhases({
       critical: true,
       run: () => {
         dataRootLock = acquireDataRootLock(dataRoot, { bootId });
+        cleanupWorkspaceArchiveRequestStaging(dataRoot);
         return { status: 'ok' };
       },
     },

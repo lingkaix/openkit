@@ -8034,6 +8034,170 @@
         }
       }
     },
+    "/api/app/workspaces/{workspaceId}/exports/{exportId}/archive": {
+      "get": {
+        "operationId": "downloadWorkspaceExportArchive",
+        "tags": [
+          "storage"
+        ],
+        "summary": "Download one verified workspace export as a Zstandard-compressed tar stream.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "exportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canonical portable Workspace archive stream.",
+            "content": {
+              "application/vnd.openkit.workspace-export+tar.zstd": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/workspace-archives/import-dry-run": {
+      "post": {
+        "operationId": "dryRunWorkspaceArchiveImport",
+        "tags": [
+          "storage"
+        ],
+        "summary": "Verify one streamed portable Workspace archive without importing it.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/vnd.openkit.workspace-export+tar.zstd": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workspace archive import dry-run report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceImportDryRunResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/workspace-archives/import": {
+      "post": {
+        "operationId": "importWorkspaceArchive",
+        "tags": [
+          "storage"
+        ],
+        "summary": "Import one streamed portable Workspace archive.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/vnd.openkit.workspace-export+tar.zstd": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Imported workspace and verification summary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceImportResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/workspace-imports/dry-run": {
       "post": {
         "operationId": "dryRunWorkspaceImport",
@@ -84864,5 +85028,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:aa8d22e069c1c3aeb5f1d4a86b59734336f68d3aa9408db65ff2d4e816693daa"
+  "x-openkit-source-digest": "sha256:6a6c593760a3542a088e4df50dce209e9f35de56ca18b5aca7a669029bf9f63f"
 }
