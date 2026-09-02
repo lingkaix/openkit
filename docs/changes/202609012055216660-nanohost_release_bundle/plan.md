@@ -114,6 +114,12 @@ branch: codex/phase1-release-baseline
 - **Local correction:** After requiring the fixed slirp command to succeed, normalize its output to the first line before comparing the manifest version; retain the independent exact executable SHA-256 comparison and add no alternate identity or compatibility path.
 - **Regression and effect boundary:** Make the existing isolated fixed-path fixture emit realistic multiline slirp version output while keeping its manifest on the normalized first line. The old installer produced 20 attributed failures, the local correction makes the complete gate pass, and the A1 live destination digests remain unchanged without any service, container, App Server, or host lifecycle operation.
 
+### Intent Epoch 16 — 2026-09-02 — Close R002 from exact-final-candidate A1 evidence
+
+- **Exact candidate and inputs:** Commit `1a5468bce556c14bb3dfc16550a9dc2f1c7adad5` was clean, built NanoHost `0.1.0` with SHA-256 `087a115f909301debb213237c21afb729043581136cbb12e09d8d0e28ab766c3`, and consumed the pin-matching Gateway archive SHA-256 `3a5d3092ae34356beb0ff2a920f9a87af4233c7a1086a53cd9429d48358f5c09` plus the pin-matching OpenShell license and notices.
+- **Artifact and host result:** The final NanoHost archive SHA-256 is `30e14af46ac59f36452c430ffcbce4d8b14445f6c3ab09d44e75f6318db5d08d`; both outer checks, the shared verifier, and byte-identical contained staging passed. Live `install.sh --check` returned the expected status `1` with `package=pass`, `host-prerequisites=pass`, and `destination=destination-conflict`, while the three live destination SHA-256 values remained unchanged.
+- **Closure:** The independent Verifier inspected the exact checkout, archive structure and metadata, pin-bound bytes, staged files and modes, reran the zero-write live check, and returned `ACCEPT` without a Docker daemon, container, service, App Server, host lifecycle, or publication effect. R002 is complete; R004 remains open for separately authorized tag publication and post-publication verification.
+
 ## Accepted Owners
 
 - `docs/specs/20260802-nanohost_runtime_and_transport.md` owns the fixed OpenShell version, supported runtime target, distribution artifact contents, fixed prerequisites, and minimal installer effect boundary.
@@ -218,6 +224,7 @@ Before implementation, add or extend focused Node tests with these expected fail
 - After the Epoch 13 correction, the same Reviewer returned `ACCEPT`. The Verifier required one exact `2^63` endpoint regression, then returned `ACCEPT` after inspecting the actual test path through the packager, shared verifier, and staging installer and independently observing 53/53 related tests, the isolated live gate, Biome, and diff checks pass without a lifecycle or publication effect.
 - After the Epoch 14 one-fact manifest correction, the same Verifier returned `ACCEPT` after directly matching the observed Docker version, inspecting the actual two-file diff, and independently observing 124/124 host-manifest tests, 48/48 release-focused tests, the isolated live gate, and diff checks pass without a lifecycle or publication effect.
 - After the Epoch 15 correction, the same Verifier returned `ACCEPT` after proving the real slirp full output mismatches, its normalized first line and binary SHA-256 match, the multiline fixture decides the corrected path, and 48/48 release-focused tests, the isolated live gate, syntax, preflight, and diff checks pass without a lifecycle or publication effect.
+- The final A1 artifact Verifier returned `ACCEPT` after inspecting exact artifact candidate `1a5468b`, every archive and pin identity, the contained stage, and unchanged live destination digests, and independently rerunning only the zero-write live check. That evidence closes R002 without a lifecycle or publication effect.
 - After implementation, a producer does not accept its own output. Independent review inspects the actual diff and named focused evidence; a fresh verifier is used if implementation changes the accepted design or leaves a material uncertainty.
 
 ## Commit And PR Boundary
@@ -229,8 +236,8 @@ Before implementation, add or extend focused Node tests with these expected fail
 
 ## Rewritable Checkpoint
 
-- **Facts:** Authority commit `5cf0804`, RED commit `03a6e0c`, implementation commit `f8cac29`, and host-identity commit `8552057` are complete. Intent Epoch 13 through Epoch 15 have independent acceptance. The fresh `8552057` package and contained staging checks passed, while live zero-write `--check` exposed the slirp multiline normalization mismatch and again left all three live destination digests unchanged. The existing isolated gate failed on the old installer and passes with the accepted Epoch 15 correction. R001 remains in a separate Draft PR, R002 remains open, R004 remains unpublished, and no host, service, container, App Server, Herdr, or machine lifecycle operation has run in this phase.
-- **Unknowns:** The accepted Epoch 15 correction needs a commit and a fresh exact-final-commit A1 artifact result.
-- **Method:** Commit the accepted implementation/test correction, then rerun only the authorized no-lifecycle A1 artifact gate.
-- **Frontier:** The slirp normalization correction is independently accepted; exact-final-commit evidence is next.
-- **Predicted Next Action:** Commit the accepted three-file correction without lifecycle or publication effects.
+- **Facts:** Authority commit `5cf0804`, RED commit `03a6e0c`, implementation commit `f8cac29`, host-identity commit `8552057`, and slirp-normalization commit `1a5468b` are complete. Intent Epoch 13 through Epoch 15 and the final A1 artifact evidence have independent acceptance. Exact artifact candidate `1a5468b` passed real pin-bound packaging, shared verification, contained staging, package and host prerequisites, the expected zero-write live destination conflict, and unchanged live destination digests. R001 remains in a separate Draft PR, R002 is complete, R004 remains unpublished, and no host, service, container, App Server, Herdr, or machine lifecycle operation has run in this phase.
+- **Unknowns:** R004 still requires separately authorized tag publication and post-publication verification; this change does not authorize it.
+- **Method:** Validate the mechanical R002 status projections, commit them without changing artifact-affecting paths, then prepare the branch for review.
+- **Frontier:** R002 is closed; the current change ends at PR review while R004 remains gated.
+- **Predicted Next Action:** Run focused documentation, roadmap, generated-index, lifecycle, preflight, and diff checks without lifecycle or publication effects.
