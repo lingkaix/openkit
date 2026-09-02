@@ -28,7 +28,7 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 - [ ] R005 — Worker execution preserves a truthful outcome across restart, reconnect, interruption, timeout, and cleanup failure.
 - [ ] R006 — Repository read, edit, commit, and push work executes inside the governed Sandbox rather than through a NanoCore host checkout.
 - [ ] R007 — Private repositories work through the same governed repository path without exposing credentials to Workers or product records.
-- [ ] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
+- [x] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
 - [ ] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
 - [ ] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
 
