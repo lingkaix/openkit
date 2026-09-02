@@ -24,6 +24,15 @@ on:
 permissions:
   contents: read
 
+# Image-placed jobs run as root against a checkout the runner user owns, so git refuses the
+# repository as dubiously owned. `actions/checkout` declares the exception only under a temporary
+# HOME its own steps use, which no later step reads. Declaring it here reaches every job's steps.
+# See the Test Execution Environment decision in docs/toolchain.md.
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+
 concurrency:
   group: ${{ startsWith(github.ref, 'refs/tags/v') && 'openkit-release' || format('openkit-ci-{0}', github.ref) }}
   cancel-in-progress: false

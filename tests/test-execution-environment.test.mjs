@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'yaml';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /**
@@ -20,6 +21,8 @@ const testImageSmoke = join(repoRoot, 'containers/test-env/smoke.sh');
 const smokeImageScript = join(repoRoot, 'scripts/docker/smoke-image.sh');
 const rootManifest = JSON.parse(read('package.json'));
 const webManifest = JSON.parse(read('apps/web/package.json'));
+const ciWorkflow = parse(read('.github/workflows/ci.yml'));
+const turboTasks = JSON.parse(read('turbo.json')).tasks;
 
 test('real-subscription entrypoint runs only the host runner after separate preflight', () => {
   assert.equal(
@@ -618,3 +621,85 @@ function prepareInImageFixture(digestFileContents) {
   );
   return { fixtureRoot, fixtureScript };
 }
+
+/**
+ * Resolves the git `safe.directory` values one merged workflow environment declares.
+ *
+ * @param {Record<string, unknown>} env - Merged workflow-level and job-level environment map.
+ * @returns {string[]} Declared `safe.directory` values in declaration order.
+ */
+const declaredGitSafeDirectories = (env) => {
+  const declared = [];
+  const count = Number(env.GIT_CONFIG_COUNT ?? 0);
+  for (let index = 0; index < count; index += 1) {
+    if (env[`GIT_CONFIG_KEY_${index}`] !== 'safe.directory') continue;
+    const value = env[`GIT_CONFIG_VALUE_${index}`];
+    if (typeof value === 'string' && value.length > 0) declared.push(value);
+  }
+  return declared;
+};
+
+/**
+ * Returns whether one declared `safe.directory` value covers the in-container checkout path.
+ *
+ * @param {string} value - Declared `safe.directory` value.
+ * @returns {boolean} Whether the value covers the container workspace.
+ */
+const coversContainerWorkspace = (value) => value === '*' || value.startsWith('/__w/');
+
+// The image runs as root while the bind-mounted checkout keeps the runner user's ownership, so
+// every gate placed in the image reaches a repository git refuses to read until the workspace is
+// declared safe. `actions/checkout` declares it only under a temporary HOME its own steps use.
+test('every image-placed CI gate can run git against the checked-out repository', () => {
+  const containerJobs = Object.entries(ciWorkflow.jobs).filter(([, job]) => job.container);
+
+  assert.ok(containerJobs.length > 0, 'no CI job is placed inside the test execution image');
+  assert.deepEqual(
+    Object.fromEntries(
+      containerJobs.map(([jobId, job]) => [
+        jobId,
+        declaredGitSafeDirectories({ ...(ciWorkflow.env ?? {}), ...(job.env ?? {}) }).some(
+          coversContainerWorkspace
+        ),
+      ])
+    ),
+    Object.fromEntries(containerJobs.map(([jobId]) => [jobId, true]))
+  );
+});
+
+// A workspace package publishes its types and entry through `dist`, which `.gitignore` excludes.
+// A gate that compiles or imports a dependent package therefore has to build the dependency graph
+// rather than the single package, or it resolves nothing on a clean checkout.
+test('gates that compile or import a workspace package build its dependencies first', () => {
+  assert.deepEqual(
+    Object.fromEntries(
+      ['typecheck', 'test'].map((taskName) => [
+        taskName,
+        (turboTasks[taskName]?.dependsOn ?? []).includes('^build'),
+      ])
+    ),
+    { test: true, typecheck: true }
+  );
+
+  const graphBuildingGates = ['test:e2e:nano', 'test:e2e:web', 'test:smoke'];
+  assert.deepEqual(
+    Object.fromEntries(
+      graphBuildingGates.map((scriptName) => {
+        const command = rootManifest.scripts[scriptName] ?? '';
+        return [
+          scriptName,
+          {
+            buildsThroughGraph: /\bturbo run build\b/u.test(command),
+            buildsOnePackageOnly: /\bpnpm\s+--filter\s+\S+\s+(?:run\s+)?build\b/u.test(command),
+          },
+        ];
+      })
+    ),
+    Object.fromEntries(
+      graphBuildingGates.map((scriptName) => [
+        scriptName,
+        { buildsOnePackageOnly: false, buildsThroughGraph: true },
+      ])
+    )
+  );
+});
