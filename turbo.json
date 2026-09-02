@@ -22,12 +22,12 @@
       "outputs": ["target/debug/nanohost", "target/debug/nanohost.d"]
     },
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "^test"],
       "inputs": ["$TURBO_DEFAULT$", "pnpm-lock.yaml", "tsconfig.base.json"],
       "outputs": ["coverage/**"]
     },
     "typecheck": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "^typecheck"],
       "inputs": ["$TURBO_DEFAULT$", "pnpm-lock.yaml", "tsconfig.base.json"],
       "outputs": []
     },

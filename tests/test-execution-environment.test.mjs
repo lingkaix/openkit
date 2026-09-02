@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -640,36 +648,105 @@ const declaredGitSafeDirectories = (env) => {
 };
 
 /**
- * Returns whether one declared `safe.directory` value covers the in-container checkout path.
+ * Reads the workspace dependency graph from every app and package manifest.
  *
- * @param {string} value - Declared `safe.directory` value.
- * @returns {boolean} Whether the value covers the container workspace.
+ * @returns {Map<string, string[]>} Package name to its declared workspace dependency names.
  */
-const coversContainerWorkspace = (value) => value === '*' || value.startsWith('/__w/');
+const readWorkspaceGraph = () => {
+  const graph = new Map();
+  for (const workspaceDir of ['apps', 'packages']) {
+    for (const entry of readdirSync(join(repoRoot, workspaceDir), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const manifestPath = join(repoRoot, workspaceDir, entry.name, 'package.json');
+      if (!existsSync(manifestPath)) continue;
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+      graph.set(
+        manifest.name,
+        Object.entries(declared)
+          .filter(([, range]) => typeof range === 'string' && range.startsWith('workspace:'))
+          .map(([name]) => name)
+      );
+    }
+  }
+  return graph;
+};
+
+/**
+ * Resolves the transitive workspace dependencies of one package, excluding the package itself.
+ *
+ * @param {Map<string, string[]>} graph - Workspace dependency graph.
+ * @param {string} packageName - Package whose dependencies are resolved.
+ * @returns {Set<string>} Transitive workspace dependency names.
+ */
+const workspaceDependencyClosure = (graph, packageName) => {
+  const resolved = new Set();
+  const pending = [...(graph.get(packageName) ?? [])];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (next === undefined || resolved.has(next)) continue;
+    resolved.add(next);
+    pending.push(...(graph.get(next) ?? []));
+  }
+  return resolved;
+};
+
+/**
+ * Asks Turbo which packages one build selection would build.
+ *
+ * @param {string[]} filters - Turbo `--filter` values taken from a root gate command.
+ * @returns {Set<string>} Package names Turbo selects for the build task.
+ */
+const turboBuildSelection = (filters) => {
+  const result = spawnSync(
+    join(repoRoot, 'node_modules/.bin/turbo'),
+    ['run', 'build', ...filters.map((filter) => `--filter=${filter}`), '--dry=json'],
+    { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  return new Set(
+    JSON.parse(result.stdout.slice(result.stdout.indexOf('{'))).tasks.map((task) => task.package)
+  );
+};
 
 // The image runs as root while the bind-mounted checkout keeps the runner user's ownership, so
-// every gate placed in the image reaches a repository git refuses to read until the workspace is
+// every gate placed in the image reaches a repository git refuses to read until the checkout is
 // declared safe. `actions/checkout` declares it only under a temporary HOME its own steps use.
+// The container checkout is `/__w/<repository>/<repository>`; no repository file names the GitHub
+// repository independently, so one shared same-segment path is the strongest available static
+// check. It rejects a wildcard, which would disable the ownership check for every repository, and
+// a prefix or mismatched pair, which would leave the checkout uncovered.
 test('every image-placed CI gate can run git against the checked-out repository', () => {
   const containerJobs = Object.entries(ciWorkflow.jobs).filter(([, job]) => job.container);
 
   assert.ok(containerJobs.length > 0, 'no CI job is placed inside the test execution image');
-  assert.deepEqual(
-    Object.fromEntries(
-      containerJobs.map(([jobId, job]) => [
-        jobId,
-        declaredGitSafeDirectories({ ...(ciWorkflow.env ?? {}), ...(job.env ?? {}) }).some(
-          coversContainerWorkspace
-        ),
-      ])
-    ),
-    Object.fromEntries(containerJobs.map(([jobId]) => [jobId, true]))
+
+  const declared = Object.fromEntries(
+    containerJobs.map(([jobId, job]) => [
+      jobId,
+      declaredGitSafeDirectories({ ...ciWorkflow.env, ...job.env }),
+    ])
   );
+  const distinct = new Set(Object.values(declared).flat());
+
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(declared).map(([jobId, values]) => [jobId, values.length])),
+    Object.fromEntries(Object.keys(declared).map((jobId) => [jobId, 1]))
+  );
+  assert.equal(
+    distinct.size,
+    1,
+    `image-placed jobs disagree on the safe checkout path: ${[...distinct]}`
+  );
+  assert.match([...distinct][0], /^\/__w\/([^/]+)\/\1$/u);
 });
 
-// A workspace package publishes its types and entry through `dist`, which `.gitignore` excludes.
-// A gate that compiles or imports a dependent package therefore has to build the dependency graph
-// rather than the single package, or it resolves nothing on a clean checkout.
+// A workspace package publishes its types and entry through `dist`, which `.gitignore` excludes, so
+// a gate that compiles or imports a dependent package must build the dependency graph rather than
+// the single package. The selection is read back from Turbo rather than from the command text,
+// because a filter that looks plausible can still select the wrong packages: `@openkit/protocol^...`
+// selects five packages although `@openkit/protocol` declares no workspace dependency at all.
 test('gates that compile or import a workspace package build its dependencies first', () => {
   assert.deepEqual(
     Object.fromEntries(
@@ -681,25 +758,26 @@ test('gates that compile or import a workspace package build its dependencies fi
     { test: true, typecheck: true }
   );
 
-  const graphBuildingGates = ['test:e2e:nano', 'test:e2e:web', 'test:smoke'];
+  const graph = readWorkspaceGraph();
+  const exercisedPackages = {
+    'test:e2e:nano': ['@openkit/nanocore'],
+    'test:e2e:web': ['@openkit/nanocore', '@openkit/web'],
+    'test:smoke': ['@openkit/nanocore', '@openkit/web'],
+  };
+  const unbuilt = Object.fromEntries(
+    Object.entries(exercisedPackages).map(([scriptName, packageNames]) => {
+      const command = rootManifest.scripts[scriptName] ?? '';
+      const filters = [...command.matchAll(/--filter=(\S+)/gu)].map((match) => match[1]);
+      const selected = filters.length === 0 ? new Set() : turboBuildSelection(filters);
+      const required = packageNames.flatMap((packageName) => [
+        ...workspaceDependencyClosure(graph, packageName),
+      ]);
+      return [scriptName, [...new Set(required)].filter((name) => !selected.has(name)).sort()];
+    })
+  );
+
   assert.deepEqual(
-    Object.fromEntries(
-      graphBuildingGates.map((scriptName) => {
-        const command = rootManifest.scripts[scriptName] ?? '';
-        return [
-          scriptName,
-          {
-            buildsThroughGraph: /\bturbo run build\b/u.test(command),
-            buildsOnePackageOnly: /\bpnpm\s+--filter\s+\S+\s+(?:run\s+)?build\b/u.test(command),
-          },
-        ];
-      })
-    ),
-    Object.fromEntries(
-      graphBuildingGates.map((scriptName) => [
-        scriptName,
-        { buildsOnePackageOnly: false, buildsThroughGraph: true },
-      ])
-    )
+    unbuilt,
+    Object.fromEntries(Object.keys(exercisedPackages).map((scriptName) => [scriptName, []]))
   );
 });
