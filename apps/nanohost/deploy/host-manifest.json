@@ -12,7 +12,7 @@
     },
     "docker": {
       "path": "/usr/bin/docker",
-      "version": "Docker version 29.6.1, build 8900f1d"
+      "version": "Docker version 29.7.2, build a7dcaa6"
     },
     "node": {
       "path": "/usr/bin/node",

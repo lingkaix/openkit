@@ -102,6 +102,12 @@ branch: codex/phase1-release-baseline
 - **Exact record padding:** The verifier checks every member's bytes between its declared size and rounded 512-byte record end, both zero end blocks, and all remaining record padding. A focused mutation changes exactly one member-padding byte while preserving headers, payloads, checksums, gzip metadata, and end padding.
 - **Direct live evidence:** The isolated live fixture sends `TERM` after the first adjacent temporary file is claimed and written and proves status `143`, incomplete output, invocation-owned temporary cleanup, and no destination publication. The lock wrapper first proves nonblocking acquisition fails on inherited FD 9 before publishing its contention marker and entering the blocking lock call.
 
+### Intent Epoch 14 — 2026-09-02 — Refresh the exact A1 Docker identity without lifecycle effects
+
+- **Reframe trigger:** The first exact-commit A1 artifact run accepted the package but stopped before destination inspection because the promoted manifest recorded Docker `29.6.1` build `8900f1d` while `/usr/bin/docker --version` reported `29.7.2` build `a7dcaa6`.
+- **Local correction:** Update only the unique promoted host manifest to the observed Docker identity. Do not downgrade, restart, stop, replace, or otherwise manage Docker, the App Server, or another host service, and add no compatibility identity.
+- **Evidence:** The failing `install.sh --check` is the lowest-sufficient regression: it returned nonzero after `package=pass`, reported the Docker identity mismatch, and left the NanoHost, Gateway, and service-unit live SHA-256 values unchanged. After the manifest correction, repeat focused projections, independent actual-diff acceptance, exact-final-commit packaging, the zero-write live check, and contained staging.
+
 ## Accepted Owners
 
 - `docs/specs/20260802-nanohost_runtime_and_transport.md` owns the fixed OpenShell version, supported runtime target, distribution artifact contents, fixed prerequisites, and minimal installer effect boundary.
@@ -204,6 +210,7 @@ Before implementation, add or extend focused Node tests with these expected fail
 - The first actual-diff Auditor returned `ACCEPT`. The fresh Verifier and Reviewer returned `REFRAME` and `BLOCK` after falsifying header-only ELF acceptance, tar trailing-padding acceptance, zero-status signal traps, an elapsed-time lock oracle, direct rustup provisioning, and stale CI guide projections; those findings produced Intent Epoch 12 without any lifecycle or publication effect.
 - After the Epoch 12 correction, the same Verifier and Reviewer returned `REFRAME` and `BLOCK` on ELF64 virtual-range overflow, unchecked member-record padding, divergent Node/shell numeric bounds, a pre-contention lock marker, and missing direct live-signal evidence; those findings produced Intent Epoch 13 without any lifecycle or publication effect.
 - After the Epoch 13 correction, the same Reviewer returned `ACCEPT`. The Verifier required one exact `2^63` endpoint regression, then returned `ACCEPT` after inspecting the actual test path through the packager, shared verifier, and staging installer and independently observing 53/53 related tests, the isolated live gate, Biome, and diff checks pass without a lifecycle or publication effect.
+- After the Epoch 14 one-fact manifest correction, the same Verifier returned `ACCEPT` after directly matching the observed Docker version, inspecting the actual two-file diff, and independently observing 124/124 host-manifest tests, 48/48 release-focused tests, the isolated live gate, and diff checks pass without a lifecycle or publication effect.
 - After implementation, a producer does not accept its own output. Independent review inspects the actual diff and named focused evidence; a fresh verifier is used if implementation changes the accepted design or leaves a material uncertainty.
 
 ## Commit And PR Boundary
@@ -215,8 +222,8 @@ Before implementation, add or extend focused Node tests with these expected fail
 
 ## Rewritable Checkpoint
 
-- **Facts:** Authority commit `5cf0804` and RED commit `03a6e0c` are complete. Intent Epoch 13 corrects every first- and second-round implementation finding, the corrected actual diff has independent Reviewer and Verifier acceptance, and the current bytes pass 48 release-focused Node tests, 124 host-manifest tests, 141 pin-manifest and Unit F tests, the Rust version regression, the isolated fixed-path Bubblewrap gate, Cargo formatting and Clippy, syntax, Biome, documentation-model, generated-index, test-governance, and diff checks. R001 remains in a separate Draft PR, R002 still requires exact-final-commit A1 real-artifact evidence, R004 remains unpublished, and no host, service, container, App Server, Herdr, or machine lifecycle operation has run in this phase.
-- **Unknowns:** Exact-final-commit A1 evidence cannot run until all accepted artifact-affecting bytes are committed.
-- **Method:** Commit the independently accepted implementation bytes, then run only the authorized no-lifecycle A1 real-artifact gate.
-- **Frontier:** Corrected-byte independent acceptance is complete; exact-final-commit A1 real-artifact evidence is next.
-- **Predicted Next Action:** Commit the accepted implementation without lifecycle or publication effects.
+- **Facts:** Authority commit `5cf0804`, RED commit `03a6e0c`, and implementation commit `f8cac29` are complete. Intent Epoch 13 has independent Reviewer and Verifier acceptance. The first exact-commit A1 package and staging checks passed, while the live zero-write check correctly rejected the stale promoted Docker identity and left all three live destination digests unchanged. The Epoch 14 one-fact correction now has focused green evidence and independent Verifier acceptance. R001 remains in a separate Draft PR, R002 remains open, R004 remains unpublished, and no host, service, container, App Server, Herdr, or machine lifecycle operation has run in this phase.
+- **Unknowns:** The accepted Epoch 14 correction needs a commit and a fresh exact-final-commit A1 artifact result.
+- **Method:** Commit the accepted manifest correction, then rerun only the authorized no-lifecycle A1 artifact gate.
+- **Frontier:** The current host identity is independently accepted; exact-final-commit evidence is next.
+- **Predicted Next Action:** Commit the accepted two-file correction without lifecycle or publication effects.
