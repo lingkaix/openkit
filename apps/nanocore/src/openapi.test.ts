@@ -76,6 +76,7 @@ const SESSION_COOKIE_ONLY_ROUTES = new Set([
   'PUT /api/app/auth/my-admin-tokens/default',
   'POST /api/app/workspace-archives/import',
   'POST /api/app/workspace-archives/import-dry-run',
+  'POST /api/app/workspace-deletions/{workspaceId}/recover',
 ]);
 const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../apps/web/src/',
@@ -3440,6 +3441,8 @@ describe('app api openapi projection', () => {
       'importWorkspaceArchive',
       'dryRunWorkspaceImport',
       'importWorkspace',
+      'deleteWorkspace',
+      'recoverDeletedWorkspace',
       'reloadRuntimeConfig',
       'listRuntimeConfigFiles',
       'getRuntimeConfigFile',

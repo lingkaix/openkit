@@ -12,6 +12,7 @@ import {
   createApp,
   createDefaultVaultUnlockState,
   createDefaultWorkerControlGateway,
+  restoreWorkspaceDeletionMutationAdmission,
 } from './app.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
 import {
@@ -105,6 +106,7 @@ import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
@@ -141,6 +143,7 @@ let runRecoveryMaintenance: (() => Promise<void>) | undefined;
 let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
+const workspaceMutationAdmission = new WorkspaceMutationAdmission();
 const nanoHostSessionDispatch = createNanoHostSessionDispatch({
   sessionAuthority: nanohostTransportSessionAuthority,
 });
@@ -284,6 +287,19 @@ const bootResult = await runBootPhases({
       },
     },
     {
+      name: 'workspace-deletion-fence-recovery',
+      subsystem: 'storage',
+      critical: true,
+      run: () => {
+        restoreWorkspaceDeletionMutationAdmission({
+          coreDb: requireBootValue(coreDb, 'Core database was not initialized.'),
+          dataRoot,
+          workspaceMutationAdmission,
+        });
+        return { status: 'ok' };
+      },
+    },
+    {
       name: 'scheduler-restart-recovery',
       subsystem: 'scheduler',
       critical: true,
@@ -303,6 +319,7 @@ const bootResult = await runBootPhases({
           vaultBackend: () =>
             requireBootValue(vaultUnlockState, 'Vault unlock state was not initialized.').backend(),
           workerControlGateway: bootWorkerControlGateway,
+          workspaceMutationAdmission,
         });
         const recoveryRuntime = workerLifecycleRuntime;
         const recoveryInput = {
@@ -478,6 +495,7 @@ const app = createApp({
   workerLifecycleRuntime: activeWorkerLifecycleRuntime,
   workerControlGateway,
   workerPlacement,
+  workspaceMutationAdmission,
 });
 const hostname = requireBootValue(bindHost, 'HTTP bind host was not resolved.');
 const port = requireBootValue(bindPort, 'HTTP bind port was not resolved.');

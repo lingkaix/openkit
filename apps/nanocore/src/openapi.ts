@@ -36,6 +36,7 @@ import {
   DataRootBackupVerifyResponseSchema,
   DeclineWorkspaceInvitationRequestSchema,
   DecommissionNanoHostResponseSchema,
+  DeleteWorkspaceRequestSchema,
   DisableUserRequestSchema,
   DisableUserResponseSchema,
   EnrollNanoHostRequestSchema,
@@ -131,6 +132,8 @@ import {
   RecordKnowledgeConflictResponseSchema,
   RecordKnowledgeObservationRequestSchema,
   RecordKnowledgeObservationResponseSchema,
+  RecoverDeletedWorkspaceRequestSchema,
+  RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
   RegisterKnowledgeSourceRequestSchema,
   RegisterKnowledgeSourceResponseSchema,
@@ -219,6 +222,7 @@ import {
   VaultAdminUnlockResponseSchema,
   WorkspaceAccessRecoveryResponseSchema,
   WorkspaceDashboardResponseSchema,
+  WorkspaceDeletionResponseSchema,
   WorkspaceExportResponseSchema,
   WorkspaceImportDryRunRequestSchema,
   WorkspaceImportDryRunResponseSchema,
@@ -693,6 +697,61 @@ export function createAppOpenApiDocument() {
           responseSchema: 'WorkspaceOwnershipMutationResponse',
           requestSchema: 'TransferWorkspaceOwnershipRequest',
           parameters: [WORKSPACE_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/delete': {
+        post: {
+          operationId: 'deleteWorkspace',
+          tags: ['workspace-sharing'],
+          summary: 'Permanently delete one owner-authorized Workspace.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/DeleteWorkspaceRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Workspace deletion reached a truthful product result.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceDeletionResponse' },
+                },
+              },
+            },
+            '202': {
+              description: 'Workspace deletion is durably fenced and waiting for quiescence.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceDeletionResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspace-deletions/{workspaceId}/recover': {
+        post: appJsonOperation({
+          operationId: 'recoverDeletedWorkspace',
+          tag: 'workspace-sharing',
+          summary: 'Recover one deleted Workspace through its original-owner tombstone.',
+          responseStatus: '200',
+          responseSchema: 'RecoverDeletedWorkspaceResponse',
+          requestSchema: 'RecoverDeletedWorkspaceRequest',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          security: SESSION_COOKIE_SECURITY,
         }),
       },
       '/api/app/workspaces/{workspaceId}/access-recovery': {
@@ -5133,6 +5192,7 @@ export function createAppOpenApiDocument() {
         ChangeWorkspaceMemberAccessRequest: toJsonSchema(ChangeWorkspaceMemberAccessRequestSchema),
         CreateWorkspaceInvitationRequest: toJsonSchema(CreateWorkspaceInvitationRequestSchema),
         DeclineWorkspaceInvitationRequest: toJsonSchema(DeclineWorkspaceInvitationRequestSchema),
+        DeleteWorkspaceRequest: toJsonSchema(DeleteWorkspaceRequestSchema),
         DisableUserRequest: toJsonSchema(DisableUserRequestSchema),
         DisableUserResponse: toJsonSchema(DisableUserResponseSchema),
         LeaveWorkspaceRequest: toJsonSchema(LeaveWorkspaceRequestSchema),
@@ -5140,10 +5200,13 @@ export function createAppOpenApiDocument() {
         ListWorkspaceInvitationsResponse: toJsonSchema(ListWorkspaceInvitationsResponseSchema),
         ListWorkspaceMembersResponse: toJsonSchema(ListWorkspaceMembersResponseSchema),
         RecoverWorkspaceAccessRequest: toJsonSchema(RecoverWorkspaceAccessRequestSchema),
+        RecoverDeletedWorkspaceRequest: toJsonSchema(RecoverDeletedWorkspaceRequestSchema),
+        RecoverDeletedWorkspaceResponse: toJsonSchema(RecoverDeletedWorkspaceResponseSchema),
         RemoveWorkspaceMemberRequest: toJsonSchema(RemoveWorkspaceMemberRequestSchema),
         RevokeWorkspaceInvitationRequest: toJsonSchema(RevokeWorkspaceInvitationRequestSchema),
         TransferWorkspaceOwnershipRequest: toJsonSchema(TransferWorkspaceOwnershipRequestSchema),
         WorkspaceAccessRecoveryResponse: toJsonSchema(WorkspaceAccessRecoveryResponseSchema),
+        WorkspaceDeletionResponse: toJsonSchema(WorkspaceDeletionResponseSchema),
         WorkspaceInvitationMutationResponse: toJsonSchema(
           WorkspaceInvitationMutationResponseSchema
         ),

@@ -32,6 +32,7 @@ const DATA_ROOT_TEXT_RECORD_EXTENSIONS = new Set([
 ]);
 const DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES = new Set([
   'data-root-backup',
+  'workspace-deletion-closure',
   'workspace-export',
 ]);
 

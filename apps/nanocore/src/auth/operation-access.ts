@@ -233,6 +233,12 @@ registerOperations(catalog, ['leaveWorkspace'], {
   policyOperation: 'workspace.leave',
   scope: 'user',
 });
+registerOperations(catalog, ['recoverDeletedWorkspace'], {
+  authentication: 'canonical-user',
+  mutating: true,
+  policyOperation: 'workspace.write',
+  scope: 'user',
+});
 registerOperations(catalog, ['importWorkspace', 'importWorkspaceArchive', 'POST /api/workspaces'], {
   authentication: 'canonical-user',
   mutating: true,
@@ -293,7 +299,7 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['transferWorkspaceOwnership'], {
+registerOperations(catalog, ['transferWorkspaceOwnership', 'deleteWorkspace'], {
   mutating: true,
   policyOperation: 'workspace.lifecycle',
   resolver: 'path-workspace',

@@ -670,6 +670,131 @@
         }
       }
     },
+    "/api/app/workspaces/{workspaceId}/delete": {
+      "post": {
+        "operationId": "deleteWorkspace",
+        "tags": [
+          "workspace-sharing"
+        ],
+        "summary": "Permanently delete one owner-authorized Workspace.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteWorkspaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workspace deletion reached a truthful product result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDeletionResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Workspace deletion is durably fenced and waiting for quiescence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDeletionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/workspace-deletions/{workspaceId}/recover": {
+      "post": {
+        "operationId": "recoverDeletedWorkspace",
+        "tags": [
+          "workspace-sharing"
+        ],
+        "summary": "Recover one deleted Workspace through its original-owner tombstone.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverDeletedWorkspaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recover one deleted Workspace through its original-owner tombstone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoverDeletedWorkspaceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/workspaces/{workspaceId}/access-recovery": {
       "get": {
         "operationId": "getWorkspaceAccessRecoveryState",
@@ -9691,6 +9816,32 @@
         ],
         "additionalProperties": false
       },
+      "DeleteWorkspaceRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expectedRegistryRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "confirmation": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "requestId",
+          "expectedRegistryRevision",
+          "confirmation"
+        ],
+        "additionalProperties": false
+      },
       "DisableUserRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -10631,6 +10782,436 @@
         ],
         "additionalProperties": false
       },
+      "RecoverDeletedWorkspaceRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "deletionRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "requestId",
+          "deletionRequestId"
+        ],
+        "additionalProperties": false
+      },
+      "RecoverDeletedWorkspaceResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "recovery": {
+            "type": "object",
+            "properties": {
+              "sourceWorkspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "deletionRequestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "recoveryExportId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "closureId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "import": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "const": "imported"
+                  },
+                  "requestId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "exportId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceWorkspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exportedWorkspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "importedWorkspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "manifest": {
+                    "type": "object",
+                    "properties": {
+                      "schemaVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "recordType": {
+                        "type": "string",
+                        "const": "workspace-export"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "ownerScope": {
+                        "type": "string",
+                        "const": "workspace"
+                      },
+                      "lineage": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "workspaceId"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                      },
+                      "updatedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                      },
+                      "contentDigest": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "redactionLevel": {
+                        "type": "string",
+                        "enum": [
+                          "metadata",
+                          "redacted",
+                          "full"
+                        ]
+                      },
+                      "sensitivity": {
+                        "type": "string",
+                        "enum": [
+                          "public",
+                          "internal",
+                          "restricted"
+                        ]
+                      },
+                      "requiredFeatures": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "extensions": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {}
+                      },
+                      "sourceDeploymentId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "workspaceId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "exportCreatedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                      },
+                      "exportFormatVersion": {
+                        "type": "number",
+                        "const": 2
+                      },
+                      "contentInventory": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "digest": {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
+                            },
+                            "bytes": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "path",
+                            "digest",
+                            "bytes"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "schemaVersion",
+                      "recordType",
+                      "id",
+                      "ownerScope",
+                      "lineage",
+                      "createdAt",
+                      "updatedAt",
+                      "contentDigest",
+                      "redactionLevel",
+                      "sensitivity",
+                      "requiredFeatures",
+                      "extensions",
+                      "sourceDeploymentId",
+                      "workspaceId",
+                      "exportCreatedAt",
+                      "exportFormatVersion",
+                      "contentInventory"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "verification": {
+                    "type": "object",
+                    "properties": {
+                      "fileCount": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "totalBytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "checkedFiles": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "required": [
+                      "fileCount",
+                      "totalBytes",
+                      "checkedFiles"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "collision": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "const": "available"
+                          },
+                          "workspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "workspaceId"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "const": "collides"
+                          },
+                          "workspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "suggestedWorkspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "workspaceId",
+                          "suggestedWorkspaceId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "workspace": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "code",
+                          "content",
+                          "personal-ops",
+                          "research",
+                          "operations",
+                          "general",
+                          "quick-chat"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "active",
+                          "archived"
+                        ]
+                      },
+                      "counts": {
+                        "type": "object",
+                        "properties": {
+                          "threadCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "artifactCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "knowledgeEntryCount": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "threadCount",
+                          "artifactCount",
+                          "knowledgeEntryCount"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "importedFrom": {
+                        "type": "object",
+                        "properties": {
+                          "sourceDeploymentId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "sourceWorkspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "exportCreatedAt": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "manifestDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "sourceDeploymentId",
+                          "sourceWorkspaceId",
+                          "exportCreatedAt",
+                          "manifestDigest"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "updatedAt": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "kind",
+                      "status",
+                      "counts",
+                      "createdAt",
+                      "updatedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "mode",
+                  "requestId",
+                  "exportId",
+                  "sourceWorkspaceId",
+                  "exportedWorkspaceId",
+                  "importedWorkspaceId",
+                  "manifest",
+                  "verification",
+                  "collision",
+                  "workspace"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "sourceWorkspaceId",
+              "deletionRequestId",
+              "recoveryExportId",
+              "closureId",
+              "import"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "recovery"
+        ],
+        "additionalProperties": false
+      },
       "RemoveWorkspaceMemberRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -10746,6 +11327,203 @@
         },
         "required": [
           "recovery"
+        ],
+        "additionalProperties": false
+      },
+      "WorkspaceDeletionResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "deletion": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "recoveryExportId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "closureId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "retainedStaging": {
+                    "type": "boolean"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "active"
+                  },
+                  "phase": {
+                    "type": "string",
+                    "enum": [
+                      "requested",
+                      "fenced",
+                      "blocked"
+                    ]
+                  }
+                },
+                "required": [
+                  "workspaceId",
+                  "requestId",
+                  "recoveryExportId",
+                  "closureId",
+                  "retainedStaging",
+                  "status",
+                  "phase"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "recoveryExportId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "closureId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "retainedStaging": {
+                    "type": "boolean"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "deleting"
+                  },
+                  "phase": {
+                    "type": "string",
+                    "enum": [
+                      "deleting",
+                      "exported",
+                      "closure-sealed",
+                      "staged"
+                    ]
+                  }
+                },
+                "required": [
+                  "workspaceId",
+                  "requestId",
+                  "recoveryExportId",
+                  "closureId",
+                  "retainedStaging",
+                  "status",
+                  "phase"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "recoveryExportId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "closureId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "retainedStaging": {
+                    "type": "boolean"
+                  },
+                  "status": {
+                    "type": "string",
+                    "const": "deleted"
+                  },
+                  "phase": {
+                    "type": "string",
+                    "enum": [
+                      "deleted",
+                      "cleaned"
+                    ]
+                  }
+                },
+                "required": [
+                  "workspaceId",
+                  "requestId",
+                  "recoveryExportId",
+                  "closureId",
+                  "retainedStaging",
+                  "status",
+                  "phase"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "deletion"
         ],
         "additionalProperties": false
       },
@@ -85028,5 +85806,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:6a6c593760a3542a088e4df50dce209e9f35de56ca18b5aca7a669029bf9f63f"
+  "x-openkit-source-digest": "sha256:cea1bf2f08eb403b7e1ee5c914da5fcafade5465138bddf12d66fe541691b59e"
 }

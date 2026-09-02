@@ -26,7 +26,7 @@ Use this intent map to choose search terms; do not treat it as the authoritative
 | Configure worker runtime | `runtime`, `configuration`, `session` | [administration.md](administration.md) |
 | Administer secrets and grants | `vault`, `grant`, `injection`, `rebind` | [administration.md](administration.md) |
 | Schedule recurring work | `automation`, `schedule`, `trigger` | [administration.md](administration.md) |
-| Move or protect workspace data | `backup`, `export`, `import`, `restore`, `portability` | [administration.md](administration.md) |
+| Move, delete, recover, or protect workspace data | `backup`, `export`, `import`, `restore`, `delete`, `recovery`, `portability` | [administration.md](administration.md) or [recovery.md](recovery.md) |
 | Manage Workspace access | `member`, `invitation`, `ownership`, `access recovery` | [administration.md](administration.md) |
 | Administer deployment access | `access token`, `user disable`, `credential` | [administration.md](administration.md) |
 | Administer the NanoHost execution host | `nanohost`, `transport token`, `enroll`, `decommission` | [administration.md](administration.md) |

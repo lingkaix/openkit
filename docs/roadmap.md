@@ -30,7 +30,7 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 - [ ] R007 — Private repositories work through the same governed repository path without exposing credentials to Workers or product records.
 - [x] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
 - [x] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
-- [ ] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
+- [x] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
 
 ## Phase 2 — Complete the end-to-end Agent work loop
 

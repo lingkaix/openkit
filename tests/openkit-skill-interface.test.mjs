@@ -387,6 +387,10 @@ test('one catalog covers the checked App API and public Core projection', async 
     ),
     ['workspace.archive-download', 'workspace.archive-import', 'workspace.archive-import-dry-run']
   );
+  assert.deepEqual(
+    idsWithAccess('implicit local actor; bundled CLI operation is local-mode only'),
+    ['workspace.deleted-recover']
+  );
   assert.deepEqual(idsWithAccess('public metadata read; no authenticated actor'), [
     'connection.meta',
   ]);
@@ -406,6 +410,8 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
       'getWorkspaceAccessRecoveryState',
       'app.getWorkspaceAccessRecoveryState',
     ],
+    'workspace.delete': ['deleteWorkspace', 'app.deleteWorkspace'],
+    'workspace.deleted-recover': ['recoverDeletedWorkspace', 'app.recoverDeletedWorkspace'],
     'workspace.invitation-create': ['createWorkspaceInvitation', 'app.createWorkspaceInvitation'],
     'workspace.invitation-list': ['listWorkspaceInvitations', 'app.listWorkspaceInvitations'],
     'workspace.invitation-revoke': ['revokeWorkspaceInvitation', 'app.revokeWorkspaceInvitation'],

@@ -428,7 +428,7 @@ function assertRequestedExportHandles(
  * @returns Existing export root.
  * @throws Error when a handle is unsafe or any owning directory is missing or linked.
  */
-function existingWorkspaceExportRoot(
+export function existingWorkspaceExportRoot(
   dataRoot: string,
   workspaceId: string,
   exportId: string
@@ -763,7 +763,7 @@ function publishImportedWorkspace(
  * @param input Verified bytes, target authorities, and request identity.
  * @returns Existing public Workspace import response.
  */
-function importVerifiedWorkspace({
+export function importVerifiedWorkspace({
   authorityUserId,
   coreDb,
   dataRoot,
@@ -841,6 +841,255 @@ function importVerifiedWorkspace({
   });
 }
 
+/** Creates and verifies one server-managed portable Workspace export. */
+export function createVerifiedWorkspaceExport({
+  authorityUserId,
+  coreDb,
+  dataRoot,
+  exportId = `wsexp_${randomUUID()}`,
+  repositoryWorkspaceDb,
+  store,
+  workspaceId,
+}: {
+  readonly authorityUserId: string;
+  readonly coreDb: CoreDb | undefined;
+  readonly dataRoot: string;
+  readonly exportId?: string;
+  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
+  readonly store: FsStore;
+  readonly workspaceId: string;
+}) {
+  const workspace = store.getWorkspace(workspaceId);
+  const threads = store.listThreads(workspaceId);
+  const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  assertCanonicalDirectory(workspaceRoot);
+  const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
+  const dataSourceCatalog = existsSync(dataSourceCatalogPath)
+    ? parseWorkspaceDataSourceCatalog(
+        parseJsoncObject(readFileSync(dataSourceCatalogPath, 'utf8'), dataSourceCatalogPath)
+      )
+    : null;
+  const workspaceRowFamilies = collectWorkspaceExportRows(
+    coreDb,
+    workspaceId,
+    repositoryWorkspaceDb
+  );
+  const workspaceVaultGrants = coreDb
+    ? listExportableWorkspaceVaultGrants(coreDb, workspaceId)
+    : [];
+  const workspaceVaultInjectionPlans = coreDb
+    ? listExportableVaultInjectionPlans(
+        coreDb,
+        workspaceVaultGrants.map((grant) => grant.grantId)
+      )
+    : [];
+  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+  assertSafeWorkspacePathSegment(exportId, 'Export id');
+  const exportsRoot = join(dataRoot, 'server', 'exports');
+  const workspacesRoot = join(exportsRoot, 'workspaces');
+  const workspaceExportsRoot = join(workspacesRoot, workspaceId);
+  assertCanonicalDirectory(exportsRoot);
+  for (const path of [workspacesRoot, workspaceExportsRoot]) {
+    if (!lstatSync(path, { throwIfNoEntry: false })) {
+      mkdirSync(path);
+    }
+    assertCanonicalDirectory(path);
+  }
+  const exportRoot = join(workspaceExportsRoot, exportId);
+  const runtimeProvenanceIndexes = new Map<string, string>();
+  for (const bundle of workspaceRowFamilies.evidenceBundles) {
+    if (bundle.sourceKind !== 'worker-runtime-provenance-index') {
+      continue;
+    }
+    assertSafeWorkspacePathSegment(bundle.id, 'Evidence bundle id');
+    const text = readFileSync(
+      join(workspaceRoot, 'evidence', 'bundles', bundle.id, 'runtime-origin-index.jsonl'),
+      'utf8'
+    );
+    const digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
+    if (bundle.contentDigests.length !== 1 || bundle.contentDigests[0] !== digest) {
+      throw new Error(`Runtime provenance index digest mismatch: ${bundle.id}`);
+    }
+    runtimeProvenanceIndexes.set(bundle.id, text);
+  }
+  const portableFileState = readWorkspacePortableFileState(
+    workspaceRoot,
+    turns.map(({ threadId, id }) => ({ threadId, turnId: id }))
+  );
+  const workerContextTraces = [...portableFileState.workerContextPackageFiles]
+    .filter(([path]) => path.endsWith('/context-package.json'))
+    .map(([path, text]) => [path, parseWorkerContextPackageTrace(JSON.parse(text))] as const);
+  const tracedTurnIds = new Set(workerContextTraces.map(([, trace]) => trace.turnId));
+  const workerBackedTurnIds = new Set(
+    turns.filter((turn) => turn.agentSessionId != null).map((turn) => turn.id)
+  );
+  if (
+    tracedTurnIds.size !== workerContextTraces.length ||
+    tracedTurnIds.size !== workerBackedTurnIds.size ||
+    [...tracedTurnIds].some((turnId) => !workerBackedTurnIds.has(turnId))
+  ) {
+    throw new Error('Worker Context Package coverage is incomplete.');
+  }
+  if (workerContextTraces.length > 0) {
+    if (!coreDb) {
+      throw new Error('Worker Context Package export requires durable authority.');
+    }
+    const workerContextDb = repositoryWorkspaceDb(workspaceId);
+    try {
+      const authorities = createWorkerContextPackageAuthorityReader({
+        coreDb,
+        store,
+        workspaceDb: workerContextDb,
+      });
+      for (const [, trace] of workerContextTraces) {
+        verifyPortableWorkerContextPackageTrace({
+          authorities,
+          trace,
+          workspaceRoot,
+        });
+      }
+    } finally {
+      workerContextDb.sqlite.close();
+    }
+  }
+  const exported = writeWorkspaceExportTree({
+    exportRoot,
+    exportId,
+    sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+    createdAt: new Date().toISOString(),
+    workspace,
+    threads,
+    turns,
+    knowledge: store.listKnowledge(workspaceId),
+    knowledgeSources: store.listKnowledgeSources(workspaceId),
+    knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
+    itemRevisions: store.listWorkspaceItemRevisions(workspaceId),
+    artifacts: store.listArtifacts(workspaceId),
+    artifactReviews: workspaceRowFamilies.artifactReviews,
+    threadMaterialBindings: workspaceRowFamilies.workspaceMaterialRows.bindings,
+    workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
+    workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
+    agentSessions: store.listWorkspaceAgentSessions(workspaceId),
+    turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
+    portableFileState,
+    ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
+    auditEvents: workspaceRowFamilies.auditEvents,
+    agentEnvironmentPackageSnapshots: workspaceRowFamilies.agentEnvironmentPackageSnapshots,
+    capabilityCalls: workspaceRowFamilies.capabilityCalls,
+    evidenceBundles: workspaceRowFamilies.evidenceBundles,
+    gitPushRecords: workspaceRowFamilies.gitPushRecords,
+    goalRecords: workspaceRowFamilies.goalRecords,
+    goalPlanRecords: workspaceRowFamilies.goalPlanRecords,
+    goalReviewRecords: workspaceRowFamilies.goalReviewRecords,
+    goalTasks: workspaceRowFamilies.goalTasks,
+    goalVerificationRecords: workspaceRowFamilies.goalVerificationRecords,
+    vaultInjectionPlans: workspaceVaultInjectionPlans,
+    vaultInjectionReceipts: coreDb
+      ? listExportableVaultInjectionReceipts(
+          coreDb,
+          workspaceVaultInjectionPlans.map((plan) => plan.planId)
+        )
+      : [],
+    mcpToolSchemaSnapshots: workspaceRowFamilies.mcpToolSchemaSnapshots,
+    permissionDecisions: workspaceRowFamilies.permissionDecisions,
+    resolvedAgentSetups: workspaceRowFamilies.resolvedAgentSetups,
+    runtimeEvidence: workspaceRowFamilies.runtimeEvidence,
+    runtimeProvenanceIndexes,
+    stagedWorkspaceReviews: workspaceRowFamilies.workspaceSyncRecords.stagedReviews,
+    usageRecords: workspaceRowFamilies.usageRecords,
+    vaultUseRecords: workspaceRowFamilies.vaultUseRecords,
+    workerCheckpoints: workspaceRowFamilies.workerCheckpoints,
+    workspaceApplyPlans: workspaceRowFamilies.workspaceApplyPlans,
+    workspaceApplyResults: workspaceRowFamilies.workspaceApplyResults,
+    workspaceReconciliationRecords: workspaceRowFamilies.workspaceReconciliationRecords,
+    workspaceQuarantineRecords: workspaceRowFamilies.workspaceQuarantineRecords,
+    backendWorkspaceHandles: workspaceRowFamilies.workspaceSyncRecords.backendWorkspaceHandles,
+    workerOutputManifests: workspaceRowFamilies.workspaceSyncRecords.workerOutputManifests,
+    workspaceChangeSets: workspaceRowFamilies.workspaceSyncRecords.changeSets,
+    workspaceInputSnapshots: workspaceRowFamilies.workspaceSyncRecords.inputSnapshots,
+    workspaceMaterializationRecords:
+      workspaceRowFamilies.workspaceSyncRecords.materializationRecords,
+    workspaceRepositories: workspaceRowFamilies.workspaceRepositories,
+    vaultGrants: workspaceVaultGrants,
+    vaultReferences: coreDb
+      ? listWorkspaceVaultReferences(coreDb, workspaceId).map((reference) => ({
+          sourceReferenceId: reference.referenceId,
+          displayName: reference.displayName,
+          secretKind: reference.secretKind,
+          backendKind: reference.backendKind,
+          createdAt: reference.createdAt,
+          updatedAt: reference.updatedAt,
+        }))
+      : [],
+  });
+  const fileCount = exported.checkedFiles.length;
+  const totalBytes = exported.manifest.contentInventory.reduce(
+    (total, entry) => total + entry.bytes,
+    0
+  );
+
+  if (coreDb) {
+    const workspaceDb = repositoryWorkspaceDb(workspaceId);
+    const now = new Date();
+
+    try {
+      const call = startCapabilityCall({
+        authorityActor: { kind: 'user', id: authorityUserId },
+        workspaceDb,
+        callId: `cap_storage_export_${exportId}`,
+        workspaceId,
+        family: 'storage',
+        operation: 'workspace.export.write',
+        capabilityId: 'storage.workspace_export',
+        providerRef: 'nanocore-storage',
+        serviceRef: 'workspace-export',
+        redactionClass: 'metadata-only',
+        summary: `Workspace export ${exportId}`,
+        now,
+      });
+      recordUsage({
+        workspaceDb,
+        call,
+        records: [
+          {
+            usageId: `use_storage_export_files_${exportId}`,
+            category: 'storage',
+            unit: 'files',
+            quantity: fileCount,
+            providerRef: 'nanocore-storage',
+            source: 'workspace-export-inventory',
+          },
+          {
+            usageId: `use_storage_export_bytes_${exportId}`,
+            category: 'storage',
+            unit: 'bytes',
+            quantity: totalBytes,
+            providerRef: 'nanocore-storage',
+            source: 'workspace-export-inventory',
+          },
+        ],
+        now,
+      });
+      finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded', now });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  }
+
+  return {
+    response: WorkspaceExportResponseSchema.parse({
+      exportId: exported.manifest.id,
+      workspaceId,
+      manifest: exported.manifest,
+      fileCount,
+      totalBytes,
+      checkedFiles: exported.checkedFiles,
+    }),
+    verified: exported,
+  };
+}
+
 /**
  * Registers the complete workspace export and import App API feature path.
  *
@@ -864,235 +1113,15 @@ export function registerWorkspaceTransferRoutes({
       return asApiError('Workspace export is unavailable.', 'workspace_export_unavailable', 503);
     }
 
-    const workspaceId = c.req.param('workspaceId');
-    const store = requestStore(c);
-    const workspace = store.getWorkspace(workspaceId);
-    const threads = store.listThreads(workspaceId);
-    const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
-    const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-    assertCanonicalDirectory(workspaceRoot);
-    const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');
-    const dataSourceCatalog = existsSync(dataSourceCatalogPath)
-      ? parseWorkspaceDataSourceCatalog(
-          parseJsoncObject(readFileSync(dataSourceCatalogPath, 'utf8'), dataSourceCatalogPath)
-        )
-      : null;
-    const workspaceRowFamilies = collectWorkspaceExportRows(
-      coreDb,
-      workspaceId,
-      repositoryWorkspaceDb
-    );
-    const workspaceVaultGrants = coreDb
-      ? listExportableWorkspaceVaultGrants(coreDb, workspaceId)
-      : [];
-    const workspaceVaultInjectionPlans = coreDb
-      ? listExportableVaultInjectionPlans(
-          coreDb,
-          workspaceVaultGrants.map((grant) => grant.grantId)
-        )
-      : [];
-    const exportId = `wsexp_${randomUUID()}`;
-    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-    const exportsRoot = join(dataRoot, 'server', 'exports');
-    const workspacesRoot = join(exportsRoot, 'workspaces');
-    const workspaceExportsRoot = join(workspacesRoot, workspaceId);
-    assertCanonicalDirectory(exportsRoot);
-    for (const path of [workspacesRoot, workspaceExportsRoot]) {
-      if (!lstatSync(path, { throwIfNoEntry: false })) {
-        mkdirSync(path);
-      }
-      assertCanonicalDirectory(path);
-    }
-    const exportRoot = join(workspaceExportsRoot, exportId);
-    const runtimeProvenanceIndexes = new Map<string, string>();
-    for (const bundle of workspaceRowFamilies.evidenceBundles) {
-      if (bundle.sourceKind !== 'worker-runtime-provenance-index') {
-        continue;
-      }
-      assertSafeWorkspacePathSegment(bundle.id, 'Evidence bundle id');
-      const text = readFileSync(
-        join(workspaceRoot, 'evidence', 'bundles', bundle.id, 'runtime-origin-index.jsonl'),
-        'utf8'
-      );
-      const digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
-      if (bundle.contentDigests.length !== 1 || bundle.contentDigests[0] !== digest) {
-        throw new Error(`Runtime provenance index digest mismatch: ${bundle.id}`);
-      }
-      runtimeProvenanceIndexes.set(bundle.id, text);
-    }
-    const portableFileState = readWorkspacePortableFileState(
-      workspaceRoot,
-      turns.map(({ threadId, id }) => ({ threadId, turnId: id }))
-    );
-    const workerContextTraces = [...portableFileState.workerContextPackageFiles]
-      .filter(([path]) => path.endsWith('/context-package.json'))
-      .map(([path, text]) => [path, parseWorkerContextPackageTrace(JSON.parse(text))] as const);
-    const tracedTurnIds = new Set(workerContextTraces.map(([, trace]) => trace.turnId));
-    const workerBackedTurnIds = new Set(
-      turns.filter((turn) => turn.agentSessionId != null).map((turn) => turn.id)
-    );
-    if (
-      tracedTurnIds.size !== workerContextTraces.length ||
-      tracedTurnIds.size !== workerBackedTurnIds.size ||
-      [...tracedTurnIds].some((turnId) => !workerBackedTurnIds.has(turnId))
-    ) {
-      throw new Error('Worker Context Package coverage is incomplete.');
-    }
-    if (workerContextTraces.length > 0) {
-      if (!coreDb) {
-        throw new Error('Worker Context Package export requires durable authority.');
-      }
-      const workerContextDb = repositoryWorkspaceDb(workspaceId);
-      try {
-        const authorities = createWorkerContextPackageAuthorityReader({
-          coreDb,
-          store,
-          workspaceDb: workerContextDb,
-        });
-        for (const [, trace] of workerContextTraces) {
-          verifyPortableWorkerContextPackageTrace({
-            authorities,
-            trace,
-            workspaceRoot,
-          });
-        }
-      } finally {
-        workerContextDb.sqlite.close();
-      }
-    }
-    const exported = writeWorkspaceExportTree({
-      exportRoot,
-      exportId,
-      sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
-      createdAt: new Date().toISOString(),
-      workspace,
-      threads,
-      turns,
-      knowledge: store.listKnowledge(workspaceId),
-      knowledgeSources: store.listKnowledgeSources(workspaceId),
-      knowledgeSourceMaterials: store.listKnowledgeSourceMaterials(workspaceId),
-      itemRevisions: store.listWorkspaceItemRevisions(workspaceId),
-      artifacts: store.listArtifacts(workspaceId),
-      artifactReviews: workspaceRowFamilies.artifactReviews,
-      threadMaterialBindings: workspaceRowFamilies.workspaceMaterialRows.bindings,
-      workspaceMaterialRevisions: workspaceRowFamilies.workspaceMaterialRows.revisions,
-      workspaceMaterials: workspaceRowFamilies.workspaceMaterialRows.materials,
-      agentSessions: store.listWorkspaceAgentSessions(workspaceId),
-      turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
-      portableFileState,
-      ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
-      auditEvents: workspaceRowFamilies.auditEvents,
-      agentEnvironmentPackageSnapshots: workspaceRowFamilies.agentEnvironmentPackageSnapshots,
-      capabilityCalls: workspaceRowFamilies.capabilityCalls,
-      evidenceBundles: workspaceRowFamilies.evidenceBundles,
-      gitPushRecords: workspaceRowFamilies.gitPushRecords,
-      goalRecords: workspaceRowFamilies.goalRecords,
-      goalPlanRecords: workspaceRowFamilies.goalPlanRecords,
-      goalReviewRecords: workspaceRowFamilies.goalReviewRecords,
-      goalTasks: workspaceRowFamilies.goalTasks,
-      goalVerificationRecords: workspaceRowFamilies.goalVerificationRecords,
-      vaultInjectionPlans: workspaceVaultInjectionPlans,
-      vaultInjectionReceipts: coreDb
-        ? listExportableVaultInjectionReceipts(
-            coreDb,
-            workspaceVaultInjectionPlans.map((plan) => plan.planId)
-          )
-        : [],
-      mcpToolSchemaSnapshots: workspaceRowFamilies.mcpToolSchemaSnapshots,
-      permissionDecisions: workspaceRowFamilies.permissionDecisions,
-      resolvedAgentSetups: workspaceRowFamilies.resolvedAgentSetups,
-      runtimeEvidence: workspaceRowFamilies.runtimeEvidence,
-      runtimeProvenanceIndexes,
-      stagedWorkspaceReviews: workspaceRowFamilies.workspaceSyncRecords.stagedReviews,
-      usageRecords: workspaceRowFamilies.usageRecords,
-      vaultUseRecords: workspaceRowFamilies.vaultUseRecords,
-      workerCheckpoints: workspaceRowFamilies.workerCheckpoints,
-      workspaceApplyPlans: workspaceRowFamilies.workspaceApplyPlans,
-      workspaceApplyResults: workspaceRowFamilies.workspaceApplyResults,
-      workspaceReconciliationRecords: workspaceRowFamilies.workspaceReconciliationRecords,
-      workspaceQuarantineRecords: workspaceRowFamilies.workspaceQuarantineRecords,
-      backendWorkspaceHandles: workspaceRowFamilies.workspaceSyncRecords.backendWorkspaceHandles,
-      workerOutputManifests: workspaceRowFamilies.workspaceSyncRecords.workerOutputManifests,
-      workspaceChangeSets: workspaceRowFamilies.workspaceSyncRecords.changeSets,
-      workspaceInputSnapshots: workspaceRowFamilies.workspaceSyncRecords.inputSnapshots,
-      workspaceMaterializationRecords:
-        workspaceRowFamilies.workspaceSyncRecords.materializationRecords,
-      workspaceRepositories: workspaceRowFamilies.workspaceRepositories,
-      vaultGrants: workspaceVaultGrants,
-      vaultReferences: coreDb
-        ? listWorkspaceVaultReferences(coreDb, workspaceId).map((reference) => ({
-            sourceReferenceId: reference.referenceId,
-            displayName: reference.displayName,
-            secretKind: reference.secretKind,
-            backendKind: reference.backendKind,
-            createdAt: reference.createdAt,
-            updatedAt: reference.updatedAt,
-          }))
-        : [],
-    });
-    const fileCount = exported.checkedFiles.length;
-    const totalBytes = exported.manifest.contentInventory.reduce(
-      (total, entry) => total + entry.bytes,
-      0
-    );
-
-    if (coreDb) {
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      const now = new Date();
-
-      try {
-        const call = startCapabilityCall({
-          authorityActor: { kind: 'user', id: c.get('actor').userId },
-          workspaceDb,
-          callId: `cap_storage_export_${exportId}`,
-          workspaceId,
-          family: 'storage',
-          operation: 'workspace.export.write',
-          capabilityId: 'storage.workspace_export',
-          providerRef: 'nanocore-storage',
-          serviceRef: 'workspace-export',
-          redactionClass: 'metadata-only',
-          summary: `Workspace export ${exportId}`,
-          now,
-        });
-        recordUsage({
-          workspaceDb,
-          call,
-          records: [
-            {
-              usageId: `use_storage_export_files_${exportId}`,
-              category: 'storage',
-              unit: 'files',
-              quantity: fileCount,
-              providerRef: 'nanocore-storage',
-              source: 'workspace-export-inventory',
-            },
-            {
-              usageId: `use_storage_export_bytes_${exportId}`,
-              category: 'storage',
-              unit: 'bytes',
-              quantity: totalBytes,
-              providerRef: 'nanocore-storage',
-              source: 'workspace-export-inventory',
-            },
-          ],
-          now,
-        });
-        finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded', now });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    }
-
     return c.json(
-      WorkspaceExportResponseSchema.parse({
-        exportId: exported.manifest.id,
-        workspaceId,
-        manifest: exported.manifest,
-        fileCount,
-        totalBytes,
-        checkedFiles: exported.checkedFiles,
-      })
+      createVerifiedWorkspaceExport({
+        authorityUserId: c.get('actor').userId,
+        coreDb,
+        dataRoot,
+        repositoryWorkspaceDb,
+        store: requestStore(c),
+        workspaceId: c.req.param('workspaceId'),
+      }).response
     );
   });
 

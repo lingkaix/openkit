@@ -52,6 +52,9 @@ const LOCAL_WORKSPACE_ARCHIVE_ACCESS = Object.freeze({
   requiredAccess:
     'implicit local actor; bundled CLI Workspace archive operations are local-mode only',
 });
+const LOCAL_CANONICAL_USER_ACCESS = Object.freeze({
+  requiredAccess: 'implicit local actor; bundled CLI operation is local-mode only',
+});
 
 const workspaceScope = { workspaceId: protocol.WorkspaceIdSchema };
 const threadScope = { ...workspaceScope, threadId: protocol.ThreadIdSchema };
@@ -1889,6 +1892,33 @@ export const operationCatalog = [
     inputSchema: flatRequest(appSchemas.RecoverWorkspaceAccessRequestSchema, workspaceScope),
     handler: ({ client }, input) =>
       client.app.recoverWorkspaceAccess(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    id: 'workspace.delete',
+    source: 'app-api',
+    appOperationId: 'deleteWorkspace',
+    clientMethod: 'app.deleteWorkspace',
+    group: 'workspace',
+    summary: 'Permanently delete one owner-authorized Workspace with recovery artifacts.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.DeleteWorkspaceRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.deleteWorkspace(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    ...LOCAL_CANONICAL_USER_ACCESS,
+    id: 'workspace.deleted-recover',
+    source: 'app-api',
+    appOperationId: 'recoverDeletedWorkspace',
+    clientMethod: 'app.recoverDeletedWorkspace',
+    group: 'workspace',
+    summary: 'Recover one deleted Workspace into a reminted identity.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RecoverDeletedWorkspaceRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.recoverDeletedWorkspace(input.workspaceId, bodyWithout(input, 'workspaceId')),
   },
   {
     ...STANDARD,

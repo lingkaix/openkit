@@ -55,6 +55,7 @@ import {
   type QueuedThreadMaterialSelection,
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   type PreparedWorkerContextPackage,
@@ -578,6 +579,8 @@ export interface WorkerGovernanceTurnExecutorOptions {
   vaultBackend?: (() => VaultBackend) | undefined;
   /** Optional shared worker-control gateway used to enqueue live-session interrupts. */
   workerControlGateway?: WorkerControlGateway | undefined;
+  /** Optional shared Workspace deletion fence for late transcript publication. */
+  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined;
 }
 
 /**
@@ -617,6 +620,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly runtimeProvenanceImporter: typeof importWorkerRuntimeProvenance;
   private readonly vaultBackend: (() => VaultBackend) | null;
   private readonly workerControlGateway: WorkerControlGateway | null;
+  private readonly workspaceMutationAdmission: WorkspaceMutationAdmission | null;
 
   /**
    * Creates the governance-backed turn executor.
@@ -641,6 +645,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       options.runtimeProvenanceImporter ?? importWorkerRuntimeProvenance;
     this.vaultBackend = options.vaultBackend ?? null;
     this.workerControlGateway = options.workerControlGateway ?? null;
+    this.workspaceMutationAdmission = options.workspaceMutationAdmission ?? null;
   }
 
   /** Previews reusable continuity or replacement without Store or backend effects. */
@@ -1803,129 +1808,146 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): Promise<void> {
     await this.backend.collectEvidence(environmentPackage.snapshotId);
     const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId, true);
-    let acceptedContextPackageTrace = contextPackageTrace;
-    if (
-      !acceptedContextPackageTrace &&
-      this.coreDb &&
-      workspaceDb &&
-      workerTranscriptHasMaterialProposal(transcript) &&
-      environmentPackage.workspace.inputs.some(
-        (input) =>
-          input.id === `context_${environmentPackage.scope.turnId}` &&
-          input.kind === 'generated' &&
-          input.target === '/openkit/context'
-      )
-    ) {
-      acceptedContextPackageTrace = readWorkerContextPackageTrace({
-        authorities: createWorkerContextPackageAuthorityReader({
-          coreDb: this.coreDb,
-          store,
-          workspaceDb,
-        }),
-        threadId: environmentPackage.scope.threadId,
-        turnId: environmentPackage.scope.turnId,
-        workspaceId: environmentPackage.scope.workspaceId,
-        workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
-      });
-    }
-    if (environmentPackage.control.transcript?.runtimeProvenance) {
-      if (!workspaceDb) {
-        throw new Error('Runtime provenance collection requires durable workspace storage.');
-      }
-      const collection = transcript.runtimeProvenance;
-      const provenance = await this.runtimeProvenanceImporter({
-        backend: {
-          kind: backendCapabilities.kind,
-          placement: 'local',
-          version: backendCapabilities.version ?? null,
-        },
-        capture: {
-          nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
-          rawStreamPaths: collection?.rawStreamPaths ?? {},
-          streamManifestPath: collection?.manifestPath ?? null,
-        },
-        collectedAt: this.now(),
-        environmentPackage,
-        workspaceDb,
-        workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
-      });
-      if (!provenance.complete) {
-        throw new Error('Required worker runtime provenance verification failed.');
-      }
-    }
-    const acceptedLiveEvents = this.coreDb
-      ? listWorkerControlAcceptedEvents(this.coreDb, {
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          packageSnapshotId: environmentPackage.snapshotId,
-          requestId: environmentPackage.scope.requestId,
-          threadId: environmentPackage.scope.threadId,
-          turnId: environmentPackage.scope.turnId,
-          workspaceId: environmentPackage.scope.workspaceId,
-        })
-      : [];
-    const workspaceChanges = await this.backend.collectWorkspaceChanges(
-      environmentPackage.snapshotId,
-      true
+    const releaseMutation = this.workspaceMutationAdmission?.enterLatePublisher(
+      environmentPackage.scope.workspaceId,
+      'worker-turn-closeout'
     );
-    const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
-    const publishesArtifacts = Boolean(
-      transcript.artifactsJsonl?.trim() ||
-        transcript.artifactFiles?.length ||
-        workspaceChanges.length
-    );
-    if (
-      this.coreDb &&
-      ((publishesWorkspaceContent &&
-        !currentWorkspaceAuthority(
-          this.coreDb,
-          environmentPackage.scope.workspaceId,
-          environmentPackage.scope.triggerActor,
-          'workspace.write',
-          true
-        )) ||
-        (publishesArtifacts &&
-          !currentWorkspaceAuthority(
-            this.coreDb,
-            environmentPackage.scope.workspaceId,
-            environmentPackage.scope.triggerActor,
-            'artifact.write',
-            true
-          )))
-    ) {
+    if (this.workspaceMutationAdmission && !releaseMutation) {
       throw new TurnStartValidationError(
         'workspace_access_denied',
         'Workspace access denied.',
         403
       );
     }
-    const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
-      acceptedLiveEvents,
-      ...(acceptedContextPackageTrace ? { contextPackageTrace: acceptedContextPackageTrace } : {}),
-      recordedAt,
-      ...(workspaceDb ? { workspaceDb } : {}),
-    });
-    if (
-      importResult.rejectedEventSequences.length > 0 ||
-      importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
-    ) {
-      throw new Error('Worker transcript event reconciliation failed.');
+    try {
+      let acceptedContextPackageTrace = contextPackageTrace;
+      if (
+        !acceptedContextPackageTrace &&
+        this.coreDb &&
+        workspaceDb &&
+        workerTranscriptHasMaterialProposal(transcript) &&
+        environmentPackage.workspace.inputs.some(
+          (input) =>
+            input.id === `context_${environmentPackage.scope.turnId}` &&
+            input.kind === 'generated' &&
+            input.target === '/openkit/context'
+        )
+      ) {
+        acceptedContextPackageTrace = readWorkerContextPackageTrace({
+          authorities: createWorkerContextPackageAuthorityReader({
+            coreDb: this.coreDb,
+            store,
+            workspaceDb,
+          }),
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          workspaceId: environmentPackage.scope.workspaceId,
+          workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
+        });
+      }
+      if (environmentPackage.control.transcript?.runtimeProvenance) {
+        if (!workspaceDb) {
+          throw new Error('Runtime provenance collection requires durable workspace storage.');
+        }
+        const collection = transcript.runtimeProvenance;
+        const provenance = await this.runtimeProvenanceImporter({
+          backend: {
+            kind: backendCapabilities.kind,
+            placement: 'local',
+            version: backendCapabilities.version ?? null,
+          },
+          capture: {
+            nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
+            rawStreamPaths: collection?.rawStreamPaths ?? {},
+            streamManifestPath: collection?.manifestPath ?? null,
+          },
+          collectedAt: this.now(),
+          environmentPackage,
+          workspaceDb,
+          workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
+        });
+        if (!provenance.complete) {
+          throw new Error('Required worker runtime provenance verification failed.');
+        }
+      }
+      const acceptedLiveEvents = this.coreDb
+        ? listWorkerControlAcceptedEvents(this.coreDb, {
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            requestId: environmentPackage.scope.requestId,
+            threadId: environmentPackage.scope.threadId,
+            turnId: environmentPackage.scope.turnId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          })
+        : [];
+      const workspaceChanges = await this.backend.collectWorkspaceChanges(
+        environmentPackage.snapshotId,
+        true
+      );
+      const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
+      const publishesArtifacts = Boolean(
+        transcript.artifactsJsonl?.trim() ||
+          transcript.artifactFiles?.length ||
+          workspaceChanges.length
+      );
+      if (
+        this.coreDb &&
+        ((publishesWorkspaceContent &&
+          !currentWorkspaceAuthority(
+            this.coreDb,
+            environmentPackage.scope.workspaceId,
+            environmentPackage.scope.triggerActor,
+            'workspace.write',
+            true
+          )) ||
+          (publishesArtifacts &&
+            !currentWorkspaceAuthority(
+              this.coreDb,
+              environmentPackage.scope.workspaceId,
+              environmentPackage.scope.triggerActor,
+              'artifact.write',
+              true
+            )))
+      ) {
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      }
+      const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
+        acceptedLiveEvents,
+        ...(acceptedContextPackageTrace
+          ? { contextPackageTrace: acceptedContextPackageTrace }
+          : {}),
+        recordedAt,
+        ...(workspaceDb ? { workspaceDb } : {}),
+      });
+      if (
+        importResult.rejectedEventSequences.length > 0 ||
+        importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
+      ) {
+        throw new Error('Worker transcript event reconciliation failed.');
+      }
+      await this.createWorkspaceChangeArtifacts(
+        store,
+        environmentPackage,
+        workspaceChanges,
+        workspaceDb,
+        inputSnapshots,
+        materializationRecords,
+        recordedAt
+      );
+      await this.cleanupBackendLifecycle(
+        backendLifecycle,
+        workspaceDb,
+        environmentPackage,
+        backendCapabilities
+      );
+      this.emitImportedRecords(store, environmentPackage, requestId, importResult);
+    } finally {
+      releaseMutation?.();
     }
-    await this.createWorkspaceChangeArtifacts(
-      store,
-      environmentPackage,
-      workspaceChanges,
-      workspaceDb,
-      inputSnapshots,
-      materializationRecords,
-      recordedAt
-    );
-    await this.cleanupBackendLifecycle(
-      backendLifecycle,
-      workspaceDb,
-      environmentPackage,
-      backendCapabilities
-    );
-    this.emitImportedRecords(store, environmentPackage, requestId, importResult);
   }
 
   /**

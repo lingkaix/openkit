@@ -145,8 +145,16 @@ import { registerTurnEventRoutes } from './turn-event-routes.js';
 import { registerTurnRoutes } from './turn-routes.js';
 import { registerVaultAdminRoutes } from './vault/vault-admin-routes.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
+import {
+  isTerminalWorkspaceDeletionRequest,
+  listAllWorkspaceDeletionRequests,
+  writeWorkspaceDeletionRequest,
+} from './workspace-deletion-request.js';
+import { registerWorkspaceDeletionRoutes } from './workspace-deletion-routes.js';
 import { ensureUserQuickChatWorkspace, resolveWorkspaceRole } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { registerWorkspaceRoutes } from './workspace-routes.js';
+import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 import { registerWorkspaceSharingRoutes } from './workspace-sharing-routes.js';
 
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
@@ -328,6 +336,8 @@ export interface CreateAppOptions {
   coreDb?: CoreDb;
   dataRoot?: string;
   store?: FsStore;
+  /** Process-local gate coordinating ordinary Workspace mutation with deletion. */
+  workspaceMutationAdmission?: WorkspaceMutationAdmission;
   turnExecutor?: TurnExecutor;
   /** Optional Pi AI client override for tests and embedded deployments. */
   llmPiAiClient?: PiAiGatewayClient;
@@ -523,6 +533,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const dataRoot = options.dataRoot ?? null;
   const sharedStore =
     options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
+  const workspaceMutationAdmission =
+    options.workspaceMutationAdmission ?? new WorkspaceMutationAdmission();
+  if (dataRoot) {
+    restoreWorkspaceDeletionMutationAdmission({
+      dataRoot,
+      workspaceMutationAdmission,
+      ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    });
+  }
   if (mode === 'local') {
     if (options.coreDb) {
       ensureLocalUser(options.coreDb);
@@ -724,11 +743,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
           nanoHostSessionDispatch,
           workerControlGateway,
+          workspaceMutationAdmission,
         }));
   const turnExecutor =
     options.turnExecutor ??
     configuredWorkerRuntime?.turnExecutor ??
-    createConfiguredTurnExecutor({ coreDb: options.coreDb, workerControlGateway });
+    createConfiguredTurnExecutor({
+      coreDb: options.coreDb,
+      workerControlGateway,
+      workspaceMutationAdmission,
+    });
   const workerPlacement = options.workerPlacement ?? 'local';
   app.use(async (c, next) => {
     if (
@@ -1048,6 +1072,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       coreDb: options.coreDb,
       quickChatWorkspaceIdForUser,
       store: sharedStore,
+      workspaceMutationAdmission,
     });
   }
 
@@ -1169,6 +1194,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     dataRoot,
+    repositoryWorkspaceDb,
+    requestStore,
+  });
+  registerWorkspaceDeletionRoutes({
+    app,
+    coreDb: options.coreDb,
+    dataRoot,
+    mutationAdmission: workspaceMutationAdmission,
     repositoryWorkspaceDb,
     requestStore,
   });
@@ -1314,6 +1347,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     inflightCommands,
     requestStore,
+    workspaceMutationAdmission,
+    ...(dataRoot
+      ? {
+          afterUserDisabled: (userId) =>
+            reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled({
+              dataRoot,
+              workspaceMutationAdmission,
+              ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+              userId,
+            }),
+        }
+      : {}),
   });
 
   registerKnowledgeRoutes({
@@ -1374,4 +1419,78 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerTurnEventRoutes({ app, requestStore });
 
   return app;
+}
+
+/** Rebuilds deletion fences from durable requests before any process-owned mutation recovery. */
+export function restoreWorkspaceDeletionMutationAdmission(input: {
+  coreDb?: CoreDb;
+  dataRoot: string;
+  workspaceMutationAdmission: WorkspaceMutationAdmission;
+}): void {
+  if (input.coreDb) {
+    const lifecycleRows = input.coreDb.sqlite
+      .prepare(
+        `SELECT workspace_id AS workspaceId
+         FROM workspace_registry
+         WHERE status IN ('deleting', 'deleted')`
+      )
+      .all() as Array<{ workspaceId: string }>;
+    for (const { workspaceId } of lifecycleRows) {
+      input.workspaceMutationAdmission.restoreClosed(workspaceId);
+    }
+  }
+  const requestsByWorkspace = new Map<
+    string,
+    ReturnType<typeof listAllWorkspaceDeletionRequests>
+  >();
+  for (const request of listAllWorkspaceDeletionRequests(input.dataRoot)) {
+    const requests = requestsByWorkspace.get(request.workspaceId) ?? [];
+    requests.push(request);
+    requestsByWorkspace.set(request.workspaceId, requests);
+  }
+  for (const [workspaceId, requests] of requestsByWorkspace) {
+    const nonterminal = requests.filter((request) => !isTerminalWorkspaceDeletionRequest(request));
+    if (nonterminal.length === 0) {
+      continue;
+    }
+    input.workspaceMutationAdmission.restoreClosed(workspaceId);
+    if (!input.coreDb || nonterminal.length !== 1) {
+      continue;
+    }
+    const [request] = nonterminal;
+    const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, workspaceId);
+    if (
+      request &&
+      ['requested', 'fenced'].includes(request.phase) &&
+      registry?.status === 'active' &&
+      registry.ownerUserId === request.originalOwnerUserId &&
+      registry.registryRevision === request.expectedRegistryRevision &&
+      !isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)
+    ) {
+      writeWorkspaceDeletionRequest(input.dataRoot, { ...request, phase: 'blocked' });
+      input.workspaceMutationAdmission.reopen(workspaceId);
+    }
+  }
+}
+
+/** Drains affected gates before a durable user disable blocks and reopens pre-transition requests. */
+async function reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled(input: {
+  coreDb?: CoreDb;
+  dataRoot: string;
+  userId: string;
+  workspaceMutationAdmission: WorkspaceMutationAdmission;
+}): Promise<void> {
+  const workspaceIds = new Set(
+    listAllWorkspaceDeletionRequests(input.dataRoot)
+      .filter(
+        (request) =>
+          request.originalOwnerUserId === input.userId &&
+          ['requested', 'fenced'].includes(request.phase)
+      )
+      .map((request) => request.workspaceId)
+  );
+  await Promise.all(
+    [...workspaceIds].map((workspaceId) => input.workspaceMutationAdmission.close(workspaceId))
+  );
+  restoreWorkspaceDeletionMutationAdmission(input);
 }

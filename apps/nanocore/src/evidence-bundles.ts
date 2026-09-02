@@ -268,7 +268,8 @@ export function listWorkspaceEvidenceBundles(
   );
 }
 
-function listStoredWorkspaceEvidenceBundles(
+/** Lists complete stored Workspace evidence manifests without product redaction. */
+export function listStoredWorkspaceEvidenceBundles(
   workspaceDb: WorkspaceDb,
   workspaceId: string
 ): EvidenceBundleRecord[] {
