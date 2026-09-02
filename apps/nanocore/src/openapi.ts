@@ -36,6 +36,7 @@ import {
   DataRootBackupVerifyResponseSchema,
   DeclineWorkspaceInvitationRequestSchema,
   DecommissionNanoHostResponseSchema,
+  DeleteWorkspaceRequestSchema,
   DisableUserRequestSchema,
   DisableUserResponseSchema,
   EnrollNanoHostRequestSchema,
@@ -131,6 +132,8 @@ import {
   RecordKnowledgeConflictResponseSchema,
   RecordKnowledgeObservationRequestSchema,
   RecordKnowledgeObservationResponseSchema,
+  RecoverDeletedWorkspaceRequestSchema,
+  RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
   RegisterKnowledgeSourceRequestSchema,
   RegisterKnowledgeSourceResponseSchema,
@@ -219,6 +222,7 @@ import {
   VaultAdminUnlockResponseSchema,
   WorkspaceAccessRecoveryResponseSchema,
   WorkspaceDashboardResponseSchema,
+  WorkspaceDeletionResponseSchema,
   WorkspaceExportResponseSchema,
   WorkspaceImportDryRunRequestSchema,
   WorkspaceImportDryRunResponseSchema,
@@ -289,6 +293,12 @@ const WORKSPACE_ID_PARAMETER = {
   in: 'path',
   required: true,
   schema: { $ref: '#/components/schemas/WorkspaceId' },
+} as const;
+const WORKSPACE_EXPORT_ID_PARAMETER = {
+  name: 'exportId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
 } as const;
 const INVITATION_ID_PARAMETER = {
   name: 'invitationId',
@@ -687,6 +697,61 @@ export function createAppOpenApiDocument() {
           responseSchema: 'WorkspaceOwnershipMutationResponse',
           requestSchema: 'TransferWorkspaceOwnershipRequest',
           parameters: [WORKSPACE_ID_PARAMETER],
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/delete': {
+        post: {
+          operationId: 'deleteWorkspace',
+          tags: ['workspace-sharing'],
+          summary: 'Permanently delete one owner-authorized Workspace.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/DeleteWorkspaceRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Workspace deletion reached a truthful product result.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceDeletionResponse' },
+                },
+              },
+            },
+            '202': {
+              description: 'Workspace deletion is durably fenced and waiting for quiescence.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceDeletionResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspace-deletions/{workspaceId}/recover': {
+        post: appJsonOperation({
+          operationId: 'recoverDeletedWorkspace',
+          tag: 'workspace-sharing',
+          summary: 'Recover one deleted Workspace through its original-owner tombstone.',
+          responseStatus: '200',
+          responseSchema: 'RecoverDeletedWorkspaceResponse',
+          requestSchema: 'RecoverDeletedWorkspaceRequest',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          security: SESSION_COOKIE_SECURITY,
         }),
       },
       '/api/app/workspaces/{workspaceId}/access-recovery': {
@@ -4304,6 +4369,109 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
+        get: {
+          operationId: 'downloadWorkspaceExportArchive',
+          tags: ['storage'],
+          summary: 'Download one verified workspace export as a Zstandard-compressed tar stream.',
+          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
+          parameters: [WORKSPACE_ID_PARAMETER, WORKSPACE_EXPORT_ID_PARAMETER],
+          responses: {
+            '200': {
+              description: 'Canonical portable Workspace archive stream.',
+              content: {
+                'application/vnd.openkit.workspace-export+tar.zstd': {
+                  schema: { type: 'string', format: 'binary' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspace-archives/import-dry-run': {
+        post: {
+          operationId: 'dryRunWorkspaceArchiveImport',
+          tags: ['storage'],
+          summary: 'Verify one streamed portable Workspace archive without importing it.',
+          security: SESSION_COOKIE_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              'application/vnd.openkit.workspace-export+tar.zstd': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Workspace archive import dry-run report.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceImportDryRunResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/workspace-archives/import': {
+        post: {
+          operationId: 'importWorkspaceArchive',
+          tags: ['storage'],
+          summary: 'Import one streamed portable Workspace archive.',
+          security: SESSION_COOKIE_SECURITY,
+          parameters: [
+            {
+              name: 'x-openkit-request-id',
+              in: 'header',
+              required: true,
+              schema: { type: 'string', minLength: 1 },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/vnd.openkit.workspace-export+tar.zstd': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Imported workspace and verification summary.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/WorkspaceImportResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/app/workspace-imports/dry-run': {
         post: {
           operationId: 'dryRunWorkspaceImport',
@@ -5024,6 +5192,7 @@ export function createAppOpenApiDocument() {
         ChangeWorkspaceMemberAccessRequest: toJsonSchema(ChangeWorkspaceMemberAccessRequestSchema),
         CreateWorkspaceInvitationRequest: toJsonSchema(CreateWorkspaceInvitationRequestSchema),
         DeclineWorkspaceInvitationRequest: toJsonSchema(DeclineWorkspaceInvitationRequestSchema),
+        DeleteWorkspaceRequest: toJsonSchema(DeleteWorkspaceRequestSchema),
         DisableUserRequest: toJsonSchema(DisableUserRequestSchema),
         DisableUserResponse: toJsonSchema(DisableUserResponseSchema),
         LeaveWorkspaceRequest: toJsonSchema(LeaveWorkspaceRequestSchema),
@@ -5031,10 +5200,13 @@ export function createAppOpenApiDocument() {
         ListWorkspaceInvitationsResponse: toJsonSchema(ListWorkspaceInvitationsResponseSchema),
         ListWorkspaceMembersResponse: toJsonSchema(ListWorkspaceMembersResponseSchema),
         RecoverWorkspaceAccessRequest: toJsonSchema(RecoverWorkspaceAccessRequestSchema),
+        RecoverDeletedWorkspaceRequest: toJsonSchema(RecoverDeletedWorkspaceRequestSchema),
+        RecoverDeletedWorkspaceResponse: toJsonSchema(RecoverDeletedWorkspaceResponseSchema),
         RemoveWorkspaceMemberRequest: toJsonSchema(RemoveWorkspaceMemberRequestSchema),
         RevokeWorkspaceInvitationRequest: toJsonSchema(RevokeWorkspaceInvitationRequestSchema),
         TransferWorkspaceOwnershipRequest: toJsonSchema(TransferWorkspaceOwnershipRequestSchema),
         WorkspaceAccessRecoveryResponse: toJsonSchema(WorkspaceAccessRecoveryResponseSchema),
+        WorkspaceDeletionResponse: toJsonSchema(WorkspaceDeletionResponseSchema),
         WorkspaceInvitationMutationResponse: toJsonSchema(
           WorkspaceInvitationMutationResponseSchema
         ),

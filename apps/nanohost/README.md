@@ -7,6 +7,7 @@ NanoHost is the OpenKit execution-host service: one Rust binary crate that owns 
 - One binary crate named `nanohost` under `apps/nanohost`
 - App-local Rust toolchain pin `1.97.1` via `mise.toml`
 - OpenShell pin evidence and protobuf snapshot under `openshell-pin/` (owned separately from this scaffold)
+- One controlled `linux/arm64` distribution with a verified installer that never manages service lifecycle
 
 ## Internal roles
 
@@ -47,6 +48,14 @@ The two data effects use one fixed file-data stream on the same authoritative ou
 After accepted byte-free build metadata, NanoHost fetches the exact 1-through-268,435,456-byte inline Dockerfile once on fixed `POST /api/nanohost/transport/effects/image.build/input` as the third use of that file-data reservation, matches request identity, both lengths, digest, complete UTF-8 body, and at-most-64-KiB releases before any build effect, while pre-verification failure and post-admission reconnect retain only the correlated unchanged result and never refetch or replay input bytes.
 
 Private epoch invalidation evidence is appended under `/var/lib/openkit/nanohost-evidence` before every initiated fence. One bounded worker isolates each report write from the fence, which proceeds after at most two seconds without waiting for slow filesystem work. Reports and observable-state prior-epoch disposition notes are redacted, bounded to 8 MiB, mode `0600` under a mode-`0700` root, and pruned to the newest 20 owned artifacts. Startup records one disposition note before fresh epoch creation when residual epoch roots prove NanoHost-absent recovery. Reports and notes remain forensic output only: recovery, readiness, and capacity never read them. A separate temporary prior-fence timestamp carries the 90-second target and inclusive 300-second hard-limit measurement across one process restart, is consumed after successful readiness, and is absent on a true fresh start.
+
+## Distribution
+
+Tagged releases include `openkit-nanohost-<tag>-linux-arm64.tar.gz` and the shared `SHA256SUMS`. The archive contains the NanoHost binary, the exact pinned stock OpenShell Gateway and license files, the service unit, generated manifest, inner checksums, and `install.sh`.
+
+After verifying the outer checksum and extracting the archive, run `./install.sh --check` to verify package bytes, the exact promoted host prerequisites, and one of `installable`, `already-installed`, `resumable`, or nonzero `destination-conflict` without writing or invoking `systemctl`. Run `DESTDIR=/new/canonical/path ./install.sh` for a contained staging installation. A live `./install.sh` writes only the two binaries and service unit, reports the remaining configuration, enrollment, image, and service-start work, and never starts, stops, restarts, enables, or reloads a service.
+
+`nanohost --version` prints the Cargo-owned version before Tokio runtime construction or configuration and runtime effects. The unique execution-host identity bytes consumed by host assertion and release packaging live at `deploy/host-manifest.json`.
 
 ## Native service
 

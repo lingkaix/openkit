@@ -10,6 +10,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type Actor, ensureLocalUser } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
@@ -97,6 +98,7 @@ function createFixture() {
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'user_local' },
   };
+  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const app = new Hono<{ Variables: AuthVariables }>();
   let threadDashboardHandlerReads = 0;
 
@@ -111,10 +113,12 @@ function createFixture() {
     quickChatWorkspaceIdForUser: (userId) =>
       userId === 'user_local' ? quickChatWorkspace.id : 'ws_missing_quick_chat',
     store,
+    workspaceMutationAdmission,
   });
 
   app.post('/api/app/quick-chat', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.get('/api/app/automations', (c) => c.json(c.get('workspaceAccess') ?? null));
+  app.get('/api/app/workspaces', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.post('/api/app/automations', async (c) =>
     c.json({
       body: await c.req.json(),
@@ -146,6 +150,7 @@ function createFixture() {
     threadDashboardHandlerReads: () => threadDashboardHandlerReads,
     turn,
     workspace,
+    workspaceMutationAdmission,
   };
 }
 
@@ -487,6 +492,33 @@ describe('central Workspace operation authorizer', () => {
 
     expect(read.status).toBe(200);
     expect(mutation.status).toBe(403);
+    await expect(mutation.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+  });
+
+  it('fences ordinary Workspace routes during deletion', async () => {
+    await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+
+    const collection = await fixture.app.request('/api/app/workspaces');
+    const read = await fixture.app.request(`/api/app/workspaces/${fixture.workspace.id}/dashboard`);
+    const mutation = await fixture.app.request('/api/app/automations', {
+      body: JSON.stringify({
+        cron: '0 9 * * *',
+        name: 'Fenced mutation',
+        prompt: 'Do not create this.',
+        workspaceId: fixture.workspace.id,
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+
+    expect(collection.status).toBe(200);
+    await expect(collection.json()).resolves.toMatchObject({
+      kind: 'workspace-set',
+      workspaceIds: expect.not.arrayContaining([fixture.workspace.id]),
+    });
+    expect(read.status).toBe(403);
+    expect(mutation.status).toBe(403);
+    await expect(read.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
     await expect(mutation.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
   });
 

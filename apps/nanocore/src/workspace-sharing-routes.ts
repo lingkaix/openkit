@@ -48,6 +48,7 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import type { CoreDb } from './storage/db.js';
+import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
   acceptWorkspaceInvitation,
   type CreateWorkspaceInvitationResult,
@@ -106,6 +107,10 @@ export interface RegisterWorkspaceSharingRoutesInput {
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   /** Resolves the process-local shared Workspace store for one request. */
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
+  /** Process-local owner that fences ordinary Workspace access during deletion. */
+  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
+  /** Reconciles deletion fences after the canonical disable transition is durable. */
+  readonly afterUserDisabled?: (userId: string) => Promise<void> | void;
 }
 
 /**
@@ -247,6 +252,8 @@ export function registerWorkspaceSharingRoutes(input: RegisterWorkspaceSharingRo
           items: listMyWorkspaceInvitations(
             requireCoreDb(input.coreDb),
             requireActor(context).userId
+          ).filter(
+            (invitation) => !input.workspaceMutationAdmission.isClosed(invitation.workspaceId)
           ),
         })
       );
@@ -677,6 +684,7 @@ export function registerWorkspaceSharingRoutes(input: RegisterWorkspaceSharingRo
         scope: { ...CORE_RECEIPT_OWNER, actorId, targetUserId },
         store,
       });
+      await input.afterUserDisabled?.(targetUserId);
       return context.json(DisableUserResponseSchema.parse({ user }));
     } catch (error) {
       return sharingErrorResponse(error);

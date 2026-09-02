@@ -19,6 +19,7 @@ import {
   resolveWorkspaceRole,
   type WorkspaceRole,
 } from '../workspace-membership.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { Actor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import {
@@ -76,6 +77,8 @@ export interface RegisterOperationAccessGuardsInput {
   readonly quickChatWorkspaceIdForUser: (userId: string) => string;
   /** Existing Workspace record owner used for opaque child lineage. */
   readonly store: FsStore;
+  /** Process-local owner that fences ordinary Workspace mutations during deletion. */
+  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
 }
 
 /** One exact method and Hono path owned by a catalog operation. */
@@ -128,9 +131,51 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
       if (denied) {
         return denied;
       }
-      await next();
+      const workspaceId = operationWorkspaceId(context, route, input);
+      if (route.operationKey === 'deleteWorkspace' || !workspaceId) {
+        await next();
+        return;
+      }
+      if (input.workspaceMutationAdmission.isClosed(workspaceId)) {
+        return workspaceAccessDenied();
+      }
+      if (!route.access.mutating) {
+        await next();
+        return;
+      }
+      const release = input.workspaceMutationAdmission.enter(workspaceId);
+      if (!release) {
+        return workspaceAccessDenied();
+      }
+      try {
+        await next();
+      } finally {
+        release();
+      }
     });
   }
+}
+
+/** Resolves the existing Workspace mutated by routes whose authorization scope is not Workspace. */
+function operationWorkspaceId(
+  context: Context<{ Variables: AuthVariables }>,
+  route: OperationRoute,
+  input: RegisterOperationAccessGuardsInput
+): string | null {
+  const access = context.get('workspaceAccess');
+  if (access?.kind === 'workspace') {
+    return access.workspaceId;
+  }
+  if (['leaveWorkspace', 'recoverWorkspaceAccess'].includes(route.operationKey)) {
+    return context.req.param('workspaceId') || null;
+  }
+  if (['acceptWorkspaceInvitation', 'declineWorkspaceInvitation'].includes(route.operationKey)) {
+    const row = input.coreDb.sqlite
+      .prepare('SELECT workspace_id FROM workspace_invitations WHERE invitation_id = ?')
+      .get(context.req.param('invitationId')) as { workspace_id: string } | undefined;
+    return row?.workspace_id ?? null;
+  }
+  return null;
 }
 
 /**
@@ -291,7 +336,9 @@ async function authorizeWorkspaceOperation(
       return workspaceAccessDenied();
     }
     const workspaceIds = listActiveWorkspaceIdsForActor(input.coreDb, actor.userId).filter(
-      (workspaceId) => authorizeWorkspace(input.coreDb, actor, workspaceId, route.access) !== null
+      (workspaceId) =>
+        !input.workspaceMutationAdmission.isClosed(workspaceId) &&
+        authorizeWorkspace(input.coreDb, actor, workspaceId, route.access) !== null
     );
     context.set('workspaceAccess', {
       kind: 'workspace-set',
@@ -307,6 +354,13 @@ async function authorizeWorkspaceOperation(
   }
   const authorized = authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
   if (
+    !authorized &&
+    route.operationKey === 'deleteWorkspace' &&
+    hasWorkspaceDeletionRetryAuthority(input.coreDb, actor, workspaceId)
+  ) {
+    return null;
+  }
+  if (
     !authorized ||
     (route.access.resolver === 'actor-quick-chat-workspace' && authorized.effectiveRole !== 'owner')
   ) {
@@ -318,6 +372,35 @@ async function authorizeWorkspaceOperation(
     policyOperation: route.access.policyOperation,
   });
   return null;
+}
+
+/** Checks the narrow original-owner authority that may only resume one deletion route. */
+function hasWorkspaceDeletionRetryAuthority(
+  coreDb: CoreDb,
+  actor: Actor,
+  workspaceId: string
+): boolean {
+  if (
+    actor.kind === 'token' &&
+    (actor.tokenScope !== 'workspace' || !actor.tokenWorkspaceIds?.includes(workspaceId))
+  ) {
+    return false;
+  }
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT registry.owner_user_id AS ownerUserId, registry.status, users.status AS userStatus
+       FROM workspace_registry AS registry
+       INNER JOIN users ON users.id = registry.owner_user_id
+       WHERE registry.workspace_id = ?`
+    )
+    .get(workspaceId) as
+    | { ownerUserId: string; status: 'active' | 'deleting' | 'deleted'; userStatus: string }
+    | undefined;
+  return (
+    row?.ownerUserId === actor.userId &&
+    row.userStatus === 'active' &&
+    (row.status === 'deleting' || row.status === 'deleted')
+  );
 }
 
 /**

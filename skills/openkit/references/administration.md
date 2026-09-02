@@ -22,6 +22,8 @@ Use Workspace access recovery or user disable only with explicit deployment-admi
 
 Pass secret input through stdin or a platform credential mechanism, and keep it out of arguments and agent-visible output. Never request raw provider credentials, vault contents, injection payloads, process handles, or private runtime records through the operation catalog.
 
+For a locked-out server deployment, a human operator runs the local `openkit-operator admin recovery-users` and `admin recover-access` commands only while NanoCore is stopped. The operator chooses one listed active User, an expiry no later than 24 hours, a new private output path, and the exact confirmation shown by the command contract. Never stop NanoCore on the user's behalf, copy the recovery envelope into conversation, or inspect its Token. Pass the complete envelope directly through stdin to `credential.store`; the operation stores only its `token` field. A same-path retry is valid only for the exact owner, expiry, and confirmation; report `recovery_required` for every contradiction and do not overwrite, delete, or repair the output.
+
 Use access-token listing or revocation only when required. Do not work around the intentional absence of generic token creation or rotation, and do not overwrite the endpoint administration credential with an unnamed token.
 
 Ask for explicit deployment-administrator direction before enrolling, issuing, rotating, aborting rotation, revoking, or decommissioning NanoHost transport credentials. Those operations write secrets only to the named execution-host slot and return redacted inventory; they do not return raw tokens through the CLI. Re-read the token list after each mutation and do not invent a second delivery path.
@@ -39,5 +41,7 @@ Read an automation's current definition and status before creating, changing, or
 Confirm repository identity, branch or target, and the requested Git effect before a write or push. Treat repository diagnostics and approvals as gates, not suggestions.
 
 For backup, export, import, or workspace portability, confirm the source, destination, workspace scope, overwrite behavior, and sensitive-data handling described by the operation. Verify the durable result after completion and report partial, rejected, or recovery-required outcomes without local repair.
+
+Use `workspace.archive-download`, `workspace.archive-import-dry-run`, and `workspace.archive-import` for the supported local-mode portable archive path. Download writes only a new exact destination and never overwrites a file or link; a failed transfer leaves that partial destination for explicit inspection or removal rather than racing pathname cleanup. Dry-run and import read one exact regular non-link source as a one-shot stream, so preserve the original archive and invoke a new operation for each retry.
 
 Use audit and usage reads to explain recorded effects and consumption. Do not treat those projections as permission to repeat an operation or as a substitute for the owning durable record.

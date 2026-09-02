@@ -6,12 +6,15 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
@@ -20,7 +23,12 @@ import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
+import {
+  cleanupWorkspaceArchiveRequestStaging,
+  stageWorkspaceArchive,
+} from './workspace-archive.js';
 import {
   verifyWorkspaceExportTree,
   WORKSPACE_EXPORT_MANIFEST_FILE,
@@ -121,6 +129,117 @@ function createBoundaryStore(dataRoot: string): FsStore {
     turnEvents: [],
   });
   return store;
+}
+
+/** Parses regular-file bytes from one canonical tar archive. */
+function readTarRegularFiles(archive: Buffer): ReadonlyMap<string, Buffer> {
+  const files = new Map<string, Buffer>();
+  let offset = 0;
+
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      if (
+        offset + 1024 > archive.length ||
+        !archive.subarray(offset, offset + 1024).every((byte) => byte === 0) ||
+        !archive.subarray(offset + 1024).every((byte) => byte === 0)
+      ) {
+        throw new Error('Tar archive has an invalid end marker.');
+      }
+      return files;
+    }
+
+    const readText = (start: number, length: number) => {
+      const field = header.subarray(start, start + length);
+      const terminator = field.indexOf(0);
+      return field.subarray(0, terminator === -1 ? field.length : terminator).toString('utf8');
+    };
+    const readOctal = (start: number, length: number) => {
+      const text = readText(start, length).trim();
+      return text ? Number.parseInt(text, 8) : 0;
+    };
+    const name = readText(0, 100);
+    const prefix = readText(345, 155);
+    const path = prefix ? `${prefix}/${name}` : name;
+    const sizeText = readText(124, 12).trim();
+    const size = sizeText ? Number.parseInt(sizeText, 8) : 0;
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error(`Tar entry has an invalid size: ${path}`);
+    }
+    const type = header[156];
+    const expectedMode = type === 53 ? 0o755 : 0o644;
+    if (
+      readOctal(100, 8) !== expectedMode ||
+      readOctal(108, 8) !== 0 ||
+      readOctal(116, 8) !== 0 ||
+      readOctal(136, 12) !== 0 ||
+      readText(265, 32) !== '' ||
+      readText(297, 32) !== ''
+    ) {
+      throw new Error(`Tar entry metadata is not canonical: ${path}`);
+    }
+    const contentStart = offset + 512;
+    const contentEnd = contentStart + size;
+    if (contentEnd > archive.length) {
+      throw new Error(`Tar entry is truncated: ${path}`);
+    }
+    if (type === 0 || type === 48) {
+      if (files.has(path)) {
+        throw new Error(`Tar archive repeats a regular file: ${path}`);
+      }
+      files.set(path, Buffer.from(archive.subarray(contentStart, contentEnd)));
+    } else if (type !== 53) {
+      throw new Error(`Tar archive contains an unsupported entry type: ${path}`);
+    }
+    offset = contentStart + Math.ceil(size / 512) * 512;
+  }
+
+  throw new Error('Tar archive has no end marker.');
+}
+
+/** Returns open descriptors still owned by one archive-request staging namespace. */
+function openArchiveStagingDescriptors(dataRoot: string): string[] {
+  const stagingRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
+  return readdirSync('/proc/self/fd').flatMap((descriptor) => {
+    try {
+      const target = readlinkSync(join('/proc/self/fd', descriptor));
+      return target.includes(stagingRoot) ? [target] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Rewrites one regular-file header to keep its staging descriptor open after a partial body. */
+function tarHeaderWithDeclaredSize(header: Buffer, size: number): Buffer {
+  const rewritten = Buffer.from(header);
+  rewritten.fill(0, 124, 136);
+  rewritten.write(`${size.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+  rewritten.fill(32, 148, 156);
+  let checksum = 0;
+  for (const byte of rewritten) checksum += byte;
+  rewritten.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  return rewritten;
+}
+
+/** Creates one compressed tar fixture without touching a filesystem. */
+async function archiveWithEntry(
+  header: { name: string; type: 'file' | 'symlink'; linkname?: string },
+  content = Buffer.alloc(0)
+): Promise<Buffer> {
+  const rawHeader = Buffer.alloc(512);
+  rawHeader.write(header.name, 0, 100, 'utf8');
+  rawHeader.write('0000644\0', 100, 8, 'ascii');
+  rawHeader.write('0000000\0', 108, 8, 'ascii');
+  rawHeader.write('0000000\0', 116, 8, 'ascii');
+  rawHeader.write('00000000000\0', 136, 12, 'ascii');
+  rawHeader[156] = header.type === 'symlink' ? 50 : 48;
+  if (header.linkname) rawHeader.write(header.linkname, 157, 100, 'utf8');
+  rawHeader.write('ustar\0', 257, 6, 'ascii');
+  rawHeader.write('00', 263, 2, 'ascii');
+  const canonicalHeader = tarHeaderWithDeclaredSize(rawHeader, content.byteLength);
+  const padding = Buffer.alloc((512 - (content.byteLength % 512)) % 512);
+  return zstdCompressSync(Buffer.concat([canonicalHeader, content, padding, Buffer.alloc(1024)]));
 }
 
 describe('workspace export filesystem boundaries', () => {
@@ -231,6 +350,53 @@ describe('workspace export filesystem boundaries', () => {
     expect(existsSync(exportRoot)).toBe(false);
   });
 
+  it('rejects a basename that cannot fit strict USTAR before accepting the export', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-export-ustar-path-'));
+    const exportRoot = join(parent, 'export');
+    const input = minimalExportInput(exportRoot);
+
+    expect(() =>
+      writeWorkspaceExportTree({
+        ...input,
+        portableFileState: {
+          ...input.portableFileState!,
+          nativeKnowledgePages: new Map([
+            [
+              `knowledge/pages/${'a'.repeat(101)}.md`,
+              '---\ntype: "RepoConvention"\ntitle: "Too long for USTAR"\n---\nPortable.\n',
+            ],
+          ]),
+        },
+      })
+    ).toThrow(/POSIX USTAR/);
+    expect(existsSync(exportRoot)).toBe(false);
+  });
+
+  it('rejects an existing verified tree whose basename cannot fit strict USTAR', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-verify-ustar-path-'));
+    const exportRoot = join(parent, 'export');
+    writeWorkspaceExportTree(minimalExportInput(exportRoot));
+    const originalPath = 'workspace-files/config/workspace.jsonc';
+    const longPath = `workspace-files/knowledge/pages/${'a'.repeat(101)}.md`;
+    mkdirSync(dirname(join(exportRoot, longPath)), { recursive: true });
+    renameSync(join(exportRoot, originalPath), join(exportRoot, longPath));
+    const manifestPath = join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      contentDigest: string;
+      contentInventory: Array<{ path: string; digest: string; bytes: number }>;
+    };
+    const entry = manifest.contentInventory.find((candidate) => candidate.path === originalPath);
+    if (!entry) throw new Error('Expected workspace config inventory entry.');
+    entry.path = longPath;
+    manifest.contentInventory.sort((left, right) => left.path.localeCompare(right.path));
+    manifest.contentDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(manifest.contentInventory))
+      .digest('hex')}`;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    expect(() => verifyWorkspaceExportTree({ exportRoot })).toThrow(/POSIX USTAR/);
+  });
+
   it('rejects symlink and non-directory verifier roots before reading a manifest', () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-export-verify-root-'));
     const exportRoot = join(parent, 'export');
@@ -296,6 +462,93 @@ describe('workspace export filesystem boundaries', () => {
 });
 
 describe('workspace export route boundaries', () => {
+  it('streams one zstd workspace archive from the verified export', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-archive-'));
+    const store = createBoundaryStore(dataRoot);
+    const app = createApp({ dataRoot, store });
+    const exportResponse = await app.request('/api/app/workspaces/ws_demo/export', {
+      method: 'POST',
+    });
+    const exported = (await exportResponse.json()) as { exportId: string };
+    const exportRoot = join(
+      dataRoot,
+      'server',
+      'exports',
+      'workspaces',
+      'ws_demo',
+      exported.exportId
+    );
+    const verified = verifyWorkspaceExportTree({ exportRoot });
+    const expectedFiles = new Map<string, Buffer>([
+      [
+        WORKSPACE_EXPORT_MANIFEST_FILE,
+        readFileSync(join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE)),
+      ],
+      ...[...verified.fileContents].map(([path, text]) => [path, Buffer.from(text)] as const),
+    ]);
+
+    const response = await app.request(
+      `/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+    );
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(response.headers.get('content-type')).toBe(
+      'application/vnd.openkit.workspace-export+tar.zstd'
+    );
+    const archivedFiles = readTarRegularFiles(
+      zstdDecompressSync(Buffer.from(await response.arrayBuffer()))
+    );
+    expect([...archivedFiles.keys()]).toEqual(
+      [...expectedFiles.keys()].sort((left, right) =>
+        Buffer.compare(Buffer.from(left), Buffer.from(right))
+      )
+    );
+    for (const [path, expected] of expectedFiles) {
+      expect(archivedFiles.get(path), path).toEqual(expected);
+    }
+  });
+
+  it('round-trips Unicode and USTAR prefix paths through the strict archive importer', async () => {
+    const sourceDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-unicode-source-'));
+    const sourceStore = createBoundaryStore(sourceDataRoot);
+    const exportId = 'wsexp_unicode';
+    const exportRoot = join(sourceDataRoot, 'server', 'exports', 'workspaces', 'ws_demo', exportId);
+    mkdirSync(dirname(exportRoot), { recursive: true });
+    const input = minimalExportInput(exportRoot, 'ws_demo', exportId);
+    const pagePath = `knowledge/pages/分类/${'a'.repeat(90)}.md`;
+    writeWorkspaceExportTree({
+      ...input,
+      sourceDeploymentId: readDataRootLayoutMarker(sourceDataRoot).deploymentId,
+      portableFileState: {
+        ...input.portableFileState!,
+        nativeKnowledgePages: new Map([
+          [pagePath, '---\ntype: "RepoConvention"\ntitle: "Unicode archive"\n---\nPortable.\n'],
+        ]),
+      },
+    });
+    const archiveResponse = await createApp({
+      dataRoot: sourceDataRoot,
+      store: sourceStore,
+    }).request(`/api/app/workspaces/ws_demo/exports/${exportId}/archive`);
+    expect(archiveResponse.status, await archiveResponse.clone().text()).toBe(200);
+    const archive = Buffer.from(await archiveResponse.arrayBuffer());
+    expect(
+      readTarRegularFiles(zstdDecompressSync(archive)).has(`workspace-files/${pagePath}`)
+    ).toBe(true);
+
+    const targetDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-unicode-target-'));
+    const targetResponse = await createApp({
+      dataRoot: targetDataRoot,
+      store: createBoundaryStore(targetDataRoot),
+    }).request('/api/app/workspace-archives/import-dry-run', {
+      body: archive,
+      headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+      method: 'POST',
+    });
+
+    expect(targetResponse.status, await targetResponse.clone().text()).toBe(200);
+  });
+
   it('fails closed when a worker-backed Turn has no S39 trace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-s39-'));
     const store = createBoundaryStore(dataRoot);
@@ -326,6 +579,44 @@ describe('workspace export route boundaries', () => {
 });
 
 describe('workspace import route handles', () => {
+  it.each([
+    'dry-run',
+    'import',
+  ] as const)('rejects an unrelated-deployment server-managed handle on %s', async (route) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-foreign-handle-'));
+    const store = createBoundaryStore(dataRoot);
+    const exportRoot = join(
+      dataRoot,
+      'server',
+      'exports',
+      'workspaces',
+      'ws_demo',
+      'wsexp_foreign'
+    );
+    mkdirSync(dirname(exportRoot), { recursive: true });
+    writeWorkspaceExportTree(minimalExportInput(exportRoot, 'ws_demo', 'wsexp_foreign'));
+    const app = createApp({ dataRoot, store });
+    const beforeWorkspaceIds = store.listWorkspaces().map((workspace) => workspace.id);
+    const collisionRoot = join(dataRoot, 'workspaces', 'ws_imported_ws_demo');
+
+    const response = await app.request(
+      route === 'dry-run' ? '/api/app/workspace-imports/dry-run' : '/api/app/workspace-imports',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sourceWorkspaceId: 'ws_demo',
+          exportId: 'wsexp_foreign',
+        }),
+      }
+    );
+
+    expect.soft(response.status).toBe(403);
+    expect.soft(await response.json()).toMatchObject({ code: 'workspace_import_forbidden' });
+    expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual(beforeWorkspaceIds);
+    expect(existsSync(collisionRoot)).toBe(false);
+  });
+
   it.each([
     ['dry-run', 'sourceWorkspaceId'],
     ['dry-run', 'exportId'],
@@ -457,6 +748,182 @@ describe('workspace import route handles', () => {
   });
 });
 
+describe('workspace archive import boundaries', () => {
+  it('uses private staging modes and removes only the owned request directory', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-staging-'));
+    const store = createBoundaryStore(dataRoot);
+    const app = createApp({ dataRoot, store });
+    const exportResponse = await app.request('/api/app/workspaces/ws_demo/export', {
+      method: 'POST',
+    });
+    const exported = (await exportResponse.json()) as { exportId: string };
+    const archiveResponse = await app.request(
+      `/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+    );
+    const archive = new Uint8Array(await archiveResponse.arrayBuffer());
+    let closeBody = () => {};
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(archive);
+        closeBody = () => controller.close();
+      },
+    });
+    const request = new Request('http://openkit.test/api/app/workspace-archives/import-dry-run', {
+      body,
+      duplex: 'half',
+      headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+      method: 'POST',
+    } as RequestInit & { duplex: 'half' });
+    const stagedPromise = stageWorkspaceArchive(request, dataRoot);
+    const requestsRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
+    const requestEntries = readdirSync(requestsRoot);
+
+    expect(requestEntries).toHaveLength(1);
+    expect(statSync(join(requestsRoot, requestEntries[0]!)).mode & 0o777).toBe(0o700);
+    closeBody();
+    const staged = await stagedPromise;
+    expect(statSync(staged.exportRoot).mode & 0o777).toBe(0o700);
+    expect(statSync(join(staged.exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE)).mode & 0o777).toBe(
+      0o600
+    );
+    staged.remove();
+    expect(readdirSync(requestsRoot)).toEqual([]);
+  });
+
+  it('removes abandoned request staging only during explicit boot cleanup', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-cleanup-'));
+    createBoundaryStore(dataRoot);
+    const requestsRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
+    mkdirSync(join(requestsRoot, 'request-abandoned'), { recursive: true });
+    writeFileSync(join(requestsRoot, 'request-abandoned', 'partial'), 'partial');
+
+    cleanupWorkspaceArchiveRequestStaging(dataRoot);
+
+    expect(existsSync(requestsRoot)).toBe(false);
+  });
+
+  it.each([
+    ['unsafe path', { name: '../outside.txt', type: 'file' }],
+    ['symbolic link', { name: 'linked', type: 'symlink', linkname: 'outside' }],
+  ] as const)('rejects a tar %s and removes request staging', async (_label, header) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-malicious-'));
+    const store = createBoundaryStore(dataRoot);
+    const app = createApp({ dataRoot, store });
+    const archive = await archiveWithEntry(
+      header,
+      header.type === 'file' ? Buffer.from('bad') : undefined
+    );
+
+    const response = await app.request('/api/app/workspace-archives/import-dry-run', {
+      body: archive,
+      headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(400);
+    expect(existsSync(join(dataRoot, 'outside.txt'))).toBe(false);
+    expect(readdirSync(join(dataRoot, 'server', 'files', 'workspace-archive-requests'))).toEqual(
+      []
+    );
+  });
+
+  it('rejects a declared compressed body above the fixed ceiling before staging', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-limit-'));
+    const app = createApp({ dataRoot, store: createBoundaryStore(dataRoot) });
+
+    const response = await app.request('/api/app/workspace-archives/import-dry-run', {
+      body: new Uint8Array([1]),
+      headers: {
+        'content-length': '8589934593',
+        'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+      },
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(400);
+    expect(existsSync(join(dataRoot, 'server', 'files', 'workspace-archive-requests'))).toBe(false);
+  });
+
+  it('rejects non-block-aligned bytes after the tar end marker', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-tail-'));
+    const store = createBoundaryStore(dataRoot);
+    const app = createApp({ dataRoot, store });
+    const exportResponse = await app.request('/api/app/workspaces/ws_demo/export', {
+      method: 'POST',
+    });
+    const exported = (await exportResponse.json()) as { exportId: string };
+    const archiveResponse = await app.request(
+      `/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+    );
+    const malformed = zstdCompressSync(
+      Buffer.concat([
+        zstdDecompressSync(Buffer.from(await archiveResponse.arrayBuffer())),
+        Buffer.from([0]),
+      ])
+    );
+
+    const response = await app.request('/api/app/workspace-archives/import-dry-run', {
+      body: malformed,
+      headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(400);
+    expect(readdirSync(join(dataRoot, 'server', 'files', 'workspace-archive-requests'))).toEqual(
+      []
+    );
+  });
+
+  it('closes a staging file when the compressed body aborts upstream', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-abort-'));
+    createBoundaryStore(dataRoot);
+    const complete = zstdDecompressSync(
+      await archiveWithEntry({ name: 'partial.bin', type: 'file' }, Buffer.alloc(1024, 1))
+    );
+    const partial = zstdCompressSync(
+      Buffer.concat([
+        tarHeaderWithDeclaredSize(complete.subarray(0, 512), 1_048_576),
+        Buffer.alloc(512, 1),
+      ])
+    );
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(partial);
+        setTimeout(() => controller.error(new Error('injected upstream abort')), 10);
+      },
+    });
+    const request = new Request('http://openkit.test/api/app/workspace-archives/import-dry-run', {
+      body,
+      duplex: 'half',
+      headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+      method: 'POST',
+    } as RequestInit & { duplex: 'half' });
+
+    expect(openArchiveStagingDescriptors(dataRoot)).toEqual([]);
+    await expect(stageWorkspaceArchive(request, dataRoot)).rejects.toThrow(
+      'injected upstream abort'
+    );
+    expect(openArchiveStagingDescriptors(dataRoot)).toEqual([]);
+  });
+
+  it('requires a mutating request id before staging the archive body', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-request-id-'));
+    const store = createBoundaryStore(dataRoot);
+    const app = createApp({ dataRoot, store });
+    const beforeWorkspaceIds = store.listWorkspaces().map((workspace) => workspace.id);
+
+    const response = await app.request('/api/app/workspace-archives/import', {
+      body: new Uint8Array([1]),
+      headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+      method: 'POST',
+    });
+
+    expect(response.status).toBe(400);
+    expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual(beforeWorkspaceIds);
+    expect(existsSync(join(dataRoot, 'server', 'files', 'workspace-archive-requests'))).toBe(false);
+  });
+});
+
 describe('workspace portable authority boundaries', () => {
   it('imports only target ownership while source authority remains non-authorizing history', async () => {
     const sourceDataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-authority-source-'));
@@ -569,24 +1036,31 @@ describe('workspace portable authority boundaries', () => {
       );
       expect(exportResponse.status, await exportResponse.clone().text()).toBe(200);
       const exported = (await exportResponse.json()) as { exportId: string };
-      const sourceExportRoot = join(
-        sourceDataRoot,
-        'server',
-        'exports',
-        'workspaces',
-        sourceWorkspace.id,
-        exported.exportId
+      const sourceEditorApp = createApp({
+        auth: authForUser('user_source_active'),
+        coreDb: sourceCoreDb,
+        dataRoot: sourceDataRoot,
+        mode: 'server',
+        store: sourceStore,
+      });
+      const forbiddenDownload = await sourceEditorApp.request(
+        `/api/app/workspaces/${sourceWorkspace.id}/exports/${exported.exportId}/archive`
       );
-      const targetExportRoot = join(
-        targetDataRoot,
-        'server',
-        'exports',
-        'workspaces',
-        sourceWorkspace.id,
-        exported.exportId
+      expect(forbiddenDownload.status).toBe(403);
+      const archiveResponse = await sourceApp.request(
+        `/api/app/workspaces/${sourceWorkspace.id}/exports/${exported.exportId}/archive`
       );
-      mkdirSync(dirname(targetExportRoot), { recursive: true });
-      renameSync(sourceExportRoot, targetExportRoot);
+      expect(archiveResponse.status, await archiveResponse.clone().text()).toBe(200);
+      const archiveBytes = await archiveResponse.arrayBuffer();
+      const forbiddenSameDeploymentImport = await sourceEditorApp.request(
+        '/api/app/workspace-archives/import-dry-run',
+        {
+          body: archiveBytes.slice(0),
+          headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+          method: 'POST',
+        }
+      );
+      expect(forbiddenSameDeploymentImport.status).toBe(403);
 
       const targetStore = new FsStore({ dataRoot: targetDataRoot });
       const targetApp = createApp({
@@ -596,17 +1070,40 @@ describe('workspace portable authority boundaries', () => {
         mode: 'server',
         store: targetStore,
       });
-      const importResponse = await targetApp.request('/api/app/workspace-imports', {
-        body: JSON.stringify({
-          exportId: exported.exportId,
-          requestId: '00000000-0000-4000-8000-000000000008',
-          sourceWorkspaceId: sourceWorkspace.id,
-        }),
-        headers: { 'content-type': 'application/json' },
+      const dryRunResponses = await Promise.all(
+        [0, 1].map(() =>
+          targetApp.request('/api/app/workspace-archives/import-dry-run', {
+            body: archiveBytes.slice(0),
+            headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+            method: 'POST',
+          })
+        )
+      );
+      for (const response of dryRunResponses) {
+        expect(response.status, await response.clone().text()).toBe(200);
+      }
+      expect(await dryRunResponses[0]!.json()).toMatchObject({
+        collision: { status: 'available', workspaceId: sourceWorkspace.id },
+        sourceWorkspaceId: sourceWorkspace.id,
+      });
+      expect(targetStore.listWorkspaces()).toEqual([]);
+      expect(
+        readdirSync(join(targetDataRoot, 'server', 'files', 'workspace-archive-requests'))
+      ).toEqual([]);
+
+      const importResponse = await targetApp.request('/api/app/workspace-archives/import', {
+        body: archiveBytes,
+        headers: {
+          'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+          'x-openkit-request-id': '00000000-0000-4000-8000-000000000008',
+        },
         method: 'POST',
       });
       expect(importResponse.status, await importResponse.clone().text()).toBe(200);
       const imported = (await importResponse.json()) as { importedWorkspaceId: string };
+      expect(
+        readdirSync(join(targetDataRoot, 'server', 'files', 'workspace-archive-requests'))
+      ).toEqual([]);
 
       expect(
         targetCoreDb.sqlite

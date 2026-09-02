@@ -187,6 +187,7 @@ export type CommandRequestName =
   | 'workspace.leave'
   | 'workspace.ownership.transfer'
   | 'workspace.access.recover'
+  | 'workspace.delete'
   | 'user.disable'
   | 'knowledge.create'
   | 'knowledge.update'
@@ -242,6 +243,7 @@ export type CommandRequestResponseKind =
   | 'workspace_invitation'
   | 'workspace_member'
   | 'workspace_recovery'
+  | 'workspace_deletion'
   | 'user'
   | 'knowledge'
   | 'knowledge_source'
@@ -1776,11 +1778,6 @@ export class FsStore {
    */
   public rollbackImportedWorkspace(workspaceId: string): void {
     this.getWorkspace(workspaceId);
-    const turnIds = new Set(
-      [...this.turns.values()]
-        .filter((turn) => turn.workspaceId === workspaceId)
-        .map((turn) => turn.id)
-    );
 
     if (this.dataRoot) {
       const root = this.workspaceRootPath(workspaceId);
@@ -1789,6 +1786,17 @@ export class FsStore {
         rmSync(root, { recursive: true });
       }
     }
+
+    this.evictWorkspace(workspaceId);
+  }
+
+  /** Removes one Workspace from process-local read models without touching its filesystem root. */
+  public evictWorkspace(workspaceId: string): void {
+    const turnIds = new Set(
+      [...this.turns.values()]
+        .filter((turn) => turn.workspaceId === workspaceId)
+        .map((turn) => turn.id)
+    );
 
     this.workspaces.delete(workspaceId);
     this.workspaceResources.delete(workspaceId);

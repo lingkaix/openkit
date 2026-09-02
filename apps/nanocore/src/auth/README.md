@@ -22,6 +22,7 @@ This directory owns NanoCore authentication middleware, Better Auth browser sess
 - `middleware.ts` owns actor authentication and request variables, including fail-closed rejection of `nanohost-transport` on product App API paths.
 - `better-auth.ts` and `server-flow.ts` own browser authentication and server-mode flows.
 - `access-token.ts` / `access-token-store.ts` / `access-token-routes.ts` own human bearer credential lifecycle and validation.
+- `admin-recovery.ts` owns the stopped-server active-User discovery and file-first administrator credential recovery command while reusing the existing data-root lock, Token store, and Audit owner.
 - `nanohost-transport-token.ts` / `nanohost-transport-token-store.ts` / `nanohost-transport-routes.ts` own the dedicated NanoHost transport Token class, hash-only Core store, server-admin enrollment/lifecycle routes, and the configured RuntimeTarget readiness observation. Enrollment inserts only a lineage-free configured identity or reactivates the exact retained decommissioned identity/deployment pair with one fresh Token; retained Token history without its identity row and every active, missing, duplicate, or cross-bound lineage fail closed.
 - `nanohost-transport-sink.ts` owns NanoCore-side safe-sink delivery to the configured A/B credential files (raw `okt_` + companion metadata at mode `0600`), including direct rejection of relative, aliased, or symlinked targets. Enrollment exclusively creates one empty slot without overwrite and conditionally clears only the exact attempted Token after a later transaction failure; issue and opposite-slot rotation explicitly replace their named slot without exposing raw `okt_`; unconditional slot clear remains limited to cutover, abort, and decommission cleanup.
 - `nanohost-transport-session.ts` owns process-local NanoHost transport session authority (connection-generation admission, predecessor fencing, `mayCarryWork`, authoritative fence, pending-successor discard) and resolves the configured dedicated listener with its non-loopback TLS requirement. `createApp` installs the store; `index.ts` starts that listener separately from the App HTTP/1.1 listener.
@@ -32,7 +33,7 @@ This directory owns NanoCore authentication middleware, Better Auth browser sess
 
 ## Verification
 
-Run authentication middleware, server flow, access-token, bootstrap, membership, and Server route tests relevant to the change, followed by NanoCore typecheck, lint, and build. Server-mode tests must cover unauthenticated, wrong-scope, removed-membership, read-only, and server-admin cases where applicable.
+Run authentication middleware, server flow, access-token, bootstrap, administrator-recovery, membership, and Server route tests relevant to the change, followed by NanoCore typecheck, lint, and build. Administrator-recovery tests use only temporary data roots and process-local lock probes; they must not start, stop, or restart NanoCore. Server-mode tests must cover unauthenticated, wrong-scope, removed-membership, read-only, and server-admin cases where applicable.
 
 ## Related Design
 

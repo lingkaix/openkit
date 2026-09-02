@@ -41,7 +41,7 @@ const normalLifecycleContract = Object.freeze({
 });
 
 const hostRoot = dirname(fileURLToPath(import.meta.url));
-const hostManifestPath = resolve(hostRoot, 'manifest.json');
+const hostManifestPath = resolve(hostRoot, '../../../apps/nanohost/deploy/host-manifest.json');
 const hostAssertPath = resolve(hostRoot, 'assert.sh');
 const sshAliasPattern = /^[a-z][a-z0-9-]{0,62}$/;
 const digest40Pattern = /^[a-f0-9]{40}$/;

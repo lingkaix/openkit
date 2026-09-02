@@ -3,10 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "openkit-operator": "dist/openkit-operator.js"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "operator": "tsx src/openkit-operator.ts",
     "data-root:restore": "tsx scripts/restore-data-root.ts",
     "workspace-storage:migrate": "tsx scripts/migrate-workspace-storage.ts",
     "openapi:generate": "tsx scripts/generate-openapi.ts",

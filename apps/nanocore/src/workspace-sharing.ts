@@ -4,6 +4,7 @@ import type {
   WorkspaceAccessRecoveryState,
   WorkspaceInvitation,
   WorkspaceMember,
+  WorkspaceRegistryStatus,
 } from '@openkit/app-api-schemas';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { CoreDb } from './storage/db.js';
@@ -19,6 +20,12 @@ export interface WorkspaceRegistryFact {
   ownerUserId: string;
   /** Positive registry compare-and-set revision. */
   registryRevision: number;
+}
+
+/** Core-only Workspace registry lifecycle facts, including deletion tombstones. */
+export interface WorkspaceRegistryLifecycleFact extends WorkspaceRegistryFact {
+  /** Registry lifecycle status that gates every ordinary Workspace authorization. */
+  status: WorkspaceRegistryStatus;
 }
 
 /** Registry and membership facts needed to project one authorized Workspace. */
@@ -116,6 +123,22 @@ export interface RecoverWorkspaceAccessInput extends WorkspaceMutationInput {
   /** Active canonical user represented by the administrator credential. */
   administratorUserId: string;
   /** Current registry revision supplied by the caller. */
+  expectedRegistryRevision: number;
+}
+
+/** Input for the active-to-deleting Workspace registry transition. */
+export interface BeginWorkspaceDeletionInput extends WorkspaceMutationInput {
+  /** Exact active owner that created the deletion request. */
+  originalOwnerUserId: string;
+  /** Exact active registry revision bound by the deletion request. */
+  expectedRegistryRevision: number;
+}
+
+/** Input for the deleting-to-deleted terminal Workspace transition. */
+export interface CompleteWorkspaceDeletionInput extends WorkspaceMutationInput {
+  /** Exact original owner retained by the permanent registry tombstone. */
+  originalOwnerUserId: string;
+  /** Exact deleting registry revision established by the same request. */
   expectedRegistryRevision: number;
 }
 
@@ -293,9 +316,12 @@ export function listMyWorkspaceInvitations(
   return (
     coreDb.sqlite
       .prepare(
-        `SELECT * FROM workspace_invitations
-         WHERE invitee_user_id = ?
-         ORDER BY created_at DESC, invitation_id DESC`
+        `SELECT invitation.*
+         FROM workspace_invitations AS invitation
+         INNER JOIN workspace_registry AS registry
+           ON registry.workspace_id = invitation.workspace_id
+         WHERE invitation.invitee_user_id = ? AND registry.status = 'active'
+         ORDER BY invitation.created_at DESC, invitation.invitation_id DESC`
       )
       .all(userId) as WorkspaceInvitationRow[]
   ).map((row) => projectInvitation(row, now));
@@ -796,6 +822,117 @@ function fenceRegistry(coreDb: CoreDb, workspaceId: string, expectedRevision: nu
       )
       .run(workspaceId, expectedRevision).changes === 1
   );
+}
+
+/** Moves one exact active owner registry into the deleting state. */
+export function beginWorkspaceDeletion(
+  input: BeginWorkspaceDeletionInput
+): WorkspaceRegistryLifecycleFact {
+  requireOuterTransaction(input.coreDb);
+  const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+  if (
+    !registry ||
+    registry.status !== 'active' ||
+    registry.ownerUserId !== input.originalOwnerUserId ||
+    registry.registryRevision !== input.expectedRegistryRevision ||
+    !isCanonicalUserActive(input.coreDb, input.originalOwnerUserId) ||
+    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.originalOwnerUserId) !== 'owner'
+  ) {
+    throw new Error('Workspace deletion active-owner predicate failed.');
+  }
+  const nowIso = (input.now ?? new Date()).toISOString();
+  const changed = input.coreDb.sqlite
+    .prepare(
+      `UPDATE workspace_registry
+       SET status = 'deleting', revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND owner_user_id = ? AND status = 'active' AND revision = ?`
+    )
+    .run(nowIso, input.workspaceId, input.originalOwnerUserId, input.expectedRegistryRevision);
+  if (changed.changes !== 1) {
+    throw new Error('Workspace deletion registry transition was contradicted.');
+  }
+  return requireWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+}
+
+/** Completes one exact deleting registry and its Core membership and invitation tombstones. */
+export function completeWorkspaceDeletion(
+  input: CompleteWorkspaceDeletionInput
+): WorkspaceRegistryLifecycleFact {
+  requireOuterTransaction(input.coreDb);
+  const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+  if (
+    !registry ||
+    registry.status !== 'deleting' ||
+    registry.ownerUserId !== input.originalOwnerUserId ||
+    registry.registryRevision !== input.expectedRegistryRevision
+  ) {
+    throw new Error('Workspace deletion terminal registry predicate failed.');
+  }
+  const nowIso = (input.now ?? new Date()).toISOString();
+  input.coreDb.sqlite
+    .prepare(
+      `UPDATE workspace_members
+       SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND user_id <> ? AND status = 'active'`
+    )
+    .run(nowIso, nowIso, input.workspaceId, input.originalOwnerUserId);
+  input.coreDb.sqlite
+    .prepare(
+      `UPDATE workspace_invitations
+       SET status = 'revoked', revoked_at = ?, revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND status = 'pending'`
+    )
+    .run(nowIso, nowIso, input.workspaceId);
+  const changed = input.coreDb.sqlite
+    .prepare(
+      `UPDATE workspace_registry
+       SET status = 'deleted', revision = revision + 1, updated_at = ?
+       WHERE workspace_id = ? AND owner_user_id = ? AND status = 'deleting' AND revision = ?`
+    )
+    .run(nowIso, input.workspaceId, input.originalOwnerUserId, input.expectedRegistryRevision);
+  if (changed.changes !== 1) {
+    throw new Error('Workspace deletion terminal registry transition was contradicted.');
+  }
+  return requireWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+}
+
+/** Reads one Workspace registry row in any current lifecycle state. */
+export function getWorkspaceRegistryLifecycleFact(
+  coreDb: CoreDb,
+  workspaceId: string
+): WorkspaceRegistryLifecycleFact | null {
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT workspace_id, owner_user_id, status, revision
+       FROM workspace_registry WHERE workspace_id = ?`
+    )
+    .get(workspaceId) as
+    | {
+        owner_user_id: string;
+        revision: number;
+        status: WorkspaceRegistryStatus;
+        workspace_id: string;
+      }
+    | undefined;
+  return row
+    ? {
+        workspaceId: row.workspace_id,
+        ownerUserId: row.owner_user_id,
+        registryRevision: row.revision,
+        status: row.status,
+      }
+    : null;
+}
+
+function requireWorkspaceRegistryLifecycleFact(
+  coreDb: CoreDb,
+  workspaceId: string
+): WorkspaceRegistryLifecycleFact {
+  const registry = getWorkspaceRegistryLifecycleFact(coreDb, workspaceId);
+  if (!registry) {
+    throw new Error('Workspace registry transition lost its lifecycle row.');
+  }
+  return registry;
 }
 
 /**

@@ -22,15 +22,15 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 ## Phase 1 — Establish a reliable product and release baseline
 
 - [ ] R001 — NanoHost runs real Worker workloads without interfering with unrelated host networking, containers, services, or user data.
-- [ ] R002 — NanoHost ships as an installable, verifiable distribution artifact that can be included in a tagged OpenKit release.
+- [x] R002 — NanoHost ships as an installable, verifiable distribution artifact that can be included in a tagged OpenKit release.
 - [ ] R003 — An operator can install, upgrade, and roll back a NanoCore deployment across product versions with data, schema, and credential integrity preserved.
 - [ ] R004 — Maintainers can prepare, publish, retry, and verify one complete tagged product release containing the App, Worker, NanoHost, and end-user `openkit` Skill assets.
 - [ ] R005 — Worker execution preserves a truthful outcome across restart, reconnect, interruption, timeout, and cleanup failure.
 - [ ] R006 — Repository read, edit, commit, and push work executes inside the governed Sandbox rather than through a NanoCore host checkout.
 - [ ] R007 — Private repositories work through the same governed repository path without exposing credentials to Workers or product records.
-- [ ] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
-- [ ] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
-- [ ] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
+- [x] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
+- [x] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
+- [x] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
 
 ## Phase 2 — Complete the end-to-end Agent work loop
 

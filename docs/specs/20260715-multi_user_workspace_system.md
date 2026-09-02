@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 date: 2026-07-15
+updated: 2026-09-02
 ---
 # Single-Deployment Multi-User Workspace System
 
@@ -12,6 +13,7 @@ date: 2026-07-15
 - The owner-independent canonical workspace storage root and the one-way migration from user-nested workspace roots.
 - Central per-request workspace access resolution and the fixed product-role projection into the existing NGAC-aligned policy kernel.
 - Actor attribution, shared-write concurrency, human-decision authority, token intersection, import/export membership behavior, and multi-user acceptance criteria.
+- Owner-authorized Workspace deletion, its single-process mutation-admission fence, file-backed intermediate request lifecycle, registry tombstone, and same-deployment recovery authority.
 
 ## Does Not Own
 
@@ -25,6 +27,7 @@ date: 2026-07-15
 - Long-lived compatibility for App API, Core Client, CLI, Skill, or Web projections.
 - Outbound email delivery or pre-account invitation onboarding.
 - Runtime Epoch lifecycle, sandbox termination, cleanup, and runtime transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- Portable archive bytes and import verification, owned by `docs/specs/20260704-workspace_backup_export_import.md`, and deletion-closure bytes and retention, owned by `docs/specs/20260703-audit_usage_evidence_records.md`.
 
 ## Core References
 
@@ -52,7 +55,7 @@ The creator becomes the default owner. The owner relationship is stored once in 
 
 Canonical workspace data moves to `DATA_ROOT/workspaces/<workspaceId>`. `DATA_ROOT/users/<userId>` remains the home for genuinely personal preferences and user-local state. Sharing never creates a copy, a `share/` directory, a reference file, or a filesystem link.
 
-The smallest complete V1 supports registered-user invitations, owner/editor/viewer access, owner transfer, removal and leave, disable-safe user lifecycle, actor attribution, narrow optimistic concurrency for explicitly named mutable shared records, durable first-writer human decisions, and risk-sufficient verification at the lowest layer that proves each invariant plus one representative agent-first story.
+The smallest complete V1 supports registered-user invitations, owner/editor/viewer access, owner transfer, removal and leave, disable-safe user lifecycle, owner-authorized deletion and tombstone recovery, actor attribution, narrow optimistic concurrency for explicitly named mutable shared records, durable first-writer human decisions, and risk-sufficient verification at the lowest layer that proves each invariant plus one representative agent-first story.
 
 ## Goals
 
@@ -114,6 +117,7 @@ OpenKit will implement a Core-owned shared Workspace model with these fixed prop
 8. The policy kernel is the only policy-evaluation owner; S56 owns the product mapping, durable `PermissionDecision`, approval linkage, and enforcement behavior.
 9. Canonical Workspace storage is independent of every user root.
 10. Shared mutable records use narrow compare-and-swap semantics, while immutable logs remain append-only.
+11. Workspace deletion terminates ordinary authority through the registry, records resumable intermediate phases in one file-backed request owner, and permits recovery only to the deleted tombstone's original active owner.
 
 ## Trust And Scope Model
 
@@ -155,6 +159,8 @@ A fresh disable request for an already disabled user is a successful no-op: it w
 - `updated_at`
 
 The Workspace record remains the owner of product status such as active or archived. Registry status coordinates identity and destructive storage lifecycle and must not become a second product status model.
+
+Registry status is the sole authority for the coarse destructive lifecycle. `active` permits ordinary central authorization unless a deletion mutation fence is already closed; `deleting` denies every ordinary Workspace read, mutation, admission, decision, and governed effect and permits only the exact deletion request to advance; `deleted` is a permanent tombstone, denies ordinary authority, reserves the original Workspace ID, and is the sole recovery-actor authority. No route, closure, filesystem tree, membership, command receipt, or deletion-request phase may reinterpret those three states.
 
 ### Workspace Membership
 
@@ -459,7 +465,7 @@ SET ..., revision = revision + 1
 WHERE id = ? AND revision = ?;
 ```
 
-Zero changed rows produce the typed outcome defined by the owning transition and return only its current safe summary. The V1 families introduced here are invitation lifecycle, membership access and removal, ownership transfer, and administrator recovery. Existing Workspace create, import, metadata update, archive, delete, Artifact Review, Material revision, Workspace apply, and append-only owners retain their current transaction, first-writer, expected-base, or idempotency contracts; this specification neither moves them into the sharing transaction nor adds a generic revision framework or new mutable Artifact or Knowledge metadata commands.
+Zero changed rows produce the typed outcome defined by the owning transition and return only its current safe summary. The V1 families introduced here are invitation lifecycle, membership access and removal, ownership transfer, administrator recovery, and the two registry transitions of owner-authorized Workspace deletion. Existing Workspace create, import, metadata update, archive, Artifact Review, Material revision, Workspace apply, and append-only owners retain their current transaction, first-writer, expected-base, or idempotency contracts; this specification neither moves them into the sharing transaction nor adds a generic revision framework or new mutable Artifact or Knowledge metadata commands.
 
 The durable semantic is expected-revision compare-and-swap. A release-coupled HTTP projection may use a body field, ETag/If-Match, or another exact-release representation.
 
@@ -479,9 +485,17 @@ Approval claims must be durable before any projection or delivery. Stage 6 finis
 
 ### Lifecycle Command Transaction Boundary
 
-Invitation, membership, ownership-transfer, administrator-recovery, and user-disable mutations introduced here are Core-owned. Each accepted state-changing lifecycle command writes its conditional authority mutation, immutable Core-owned lifecycle `AuditEvent`, and the existing command-idempotency receipt in one `core.sqlite` transaction. A successful already-disabled no-op writes only its new receipt. Existing Workspace create, import, metadata update, archive, and delete commands retain their owning contracts. No lifecycle command writes a second authoritative Workspace audit row or requires cross-database atomicity.
+Invitation, membership, ownership-transfer, administrator-recovery, user-disable, and the terminal registry part of Workspace deletion are Core-owned. Each ordinary accepted state-changing lifecycle command writes its conditional authority mutation, immutable Core-owned lifecycle `AuditEvent`, and the existing command-idempotency receipt in one `core.sqlite` transaction. A successful already-disabled no-op writes only its new receipt. Workspace deletion uses the dedicated multi-effect lifecycle below because its verified export, closure, canonical root, Core tombstone, and cleanup cannot share one transaction. Existing Workspace create, import, metadata update, and archive commands retain their owning contracts. No lifecycle command writes a second authoritative Workspace audit row or claims cross-database or filesystem-to-SQLite atomicity.
 
 These commands reuse the C07 central idempotency contract and one existing ledger primitive: a matching receipt replays by projecting the stored resource identifier through its current owner; changed input under the same request ID returns `idempotency_key_conflict`; an exact request-owned effect without its receipt returns `recovery_required`. Replay does not reconstruct a byte-identical response, and missing-receipt handling does not infer a winner, synthesize a receipt, repeat a side effect, or create a settlement or repair workflow.
+
+### Workspace Deletion Mutation Fence
+
+NanoCore has one concrete in-process mutation-admission fence per Workspace, not a distributed lock, durable lease, queue, or general workflow. Every App API operation catalogued as a Workspace mutation enters that Workspace's fence before its first handler-specific mutable read, proves the gate open and registry `active`, increments one admitted counter, and decrements it in `finally`. Every runtime, worker, synchronization, review, Artifact, Knowledge, file, and other late canonical Workspace publication enters the same fence at publication and repeats the current-authority predicate before writing. A coverage guard MUST fail when a new catalogued Workspace mutation or registered late publisher does not name this admission path.
+
+Deletion closes the exact Workspace gate and waits for admitted counters to reach zero. It also requires the existing named nonterminal AgentSessions, scheduler leases, Worker Backend Sessions, pending Workspace apply owners, and other already-registered runtime publication owners for that Workspace to reach their existing terminal or quiescent state. It does not stop NanoCore, cancel a worker, terminate a host service, invent a runtime state, or claim recall of an external effect already submitted. Runtime owners may finish their own non-content terminal cleanup, but the closed gate and publication-time authority check reject new canonical Workspace output.
+
+The file-backed deletion request is created before a closed gate may outlive the initiating HTTP request. Listener-preflight boot reads exact nonterminal requests and rebuilds their closed gates before accepting traffic; it also closes every Workspace whose registry is `deleting` or `deleted`. Boot does not advance a deletion phase, rename or remove a Workspace root, create an export or closure, synthesize a receipt, or reopen a gate. Only the same owner-authorized deletion request may resume a nonterminal phase.
 
 ### Workspace File Apply
 
@@ -544,7 +558,32 @@ Foreign keys from owner, membership, invitation, and durable actor references mu
 
 ### Delete Workspace
 
-Only the current owner may delete a Workspace. An administrator without membership must first use explicit recovery to become owner, then invoke the ordinary owner-authorized deletion command. Deletion follows the storage owner's export, audit-closure, staged deletion, and recovery contract; no administrator-delete bypass exists.
+Only the current active owner may create a Workspace deletion request. An administrator without membership must first use explicit recovery to become owner, then invoke the ordinary owner-authorized deletion command; neither `server-admin` nor a closure is a delete bypass. The command requires one `requestId`, the exact positive current `expectedRegistryRevision`, and exact `confirmation` value `permanently-delete-workspace:<workspaceId>:<expectedRegistryRevision>` so the irreversible target and consequence receive a distinct explicit confirmation.
+
+Before any deletion-request, registry, export, closure, or staging mutation, the command validates confirmation and runs the legal-hold preflight owned by `docs/specs/20260703-audit_usage_evidence_records.md`. Under exclusive per-Workspace deletion admission it parses every strict deletion request for that Workspace and applies this fixed order: any structurally contradictory durable record or more than one nonterminal record returns `recovery_required`; an existing incoming `requestId` with changed Workspace, original owner, expected revision, or confirmation returns `idempotency_key_conflict`; the same valid `requestId` and inputs replay or continue only that record; a different single nonterminal request returns `workspace_deletion_in_progress`; and zero nonterminal records plus an unused incoming `requestId` permits creation, regardless of other request ids in terminal `blocked` or `cleaned` records. Creation writes `server/exports/workspace-deletions/<workspaceId>/<requestId>/request.json` once under a private `0700` request root with a `0600` regular file. The strict record binds schema version, request and Workspace ids, original owner User id, expected registry revision, exact confirmation, creation time, phase, and nullable exact recovery export, closure, staging-relative-path, terminal audit, command receipt, and cleanup facts. It contains no secret or absolute path. Updates write and `fsync` a same-directory temporary file, atomically replace `request.json`, and `fsync` the directory.
+
+The fixed phases are `requested`, `fenced`, `blocked`, `deleting`, `exported`, `closure-sealed`, `staged`, `deleted`, and `cleaned`. Only `blocked` and `cleaned` are terminal; `deleted` is the terminal product outcome but remains nonterminal for the single permitted cleanup transition into `cleaned`. The one nonterminal request file is the unique intermediate-phase and retry owner for its Workspace. It is not Workspace lifecycle status, recovery authority, an archive registry, a generic command journal, or a repair catalog.
+
+The exact forward lifecycle is:
+
+1. After initial legal-hold and owner/revision preflight, create the `requested` record, close the mutation gate, and atomically record `fenced`.
+2. Drain admitted mutations and wait for every named runtime owner to become quiescent. While one remains active, return `202` with the safe `fenced` projection and keep the gate closed; the same request may retry. Recheck legal hold and the original owner's active User status after drain. A newly observed hold or disabled original owner atomically records terminal `blocked`, reopens the still-`active` Workspace gate, and returns the typed blocked result with no registry, export, closure, or staging effect; listener-preflight reconstruction may perform only this same non-destructive disabled-owner resolution before admission, and a later deletion requires a new owner-authorized request.
+3. In one Core transaction recheck the original owner is active and CAS the exact registry `active` revision to `deleting`, then increment revision once and record phase `deleting`. If Core committed but the file update did not, retry proves the exact original request and deleting registry facts before advancing the file; any other deleting Workspace without that proof is `recovery_required`.
+4. Through internal deletion-request authority, create and verify the portable recovery export, bind its exact export id and manifest digest, and record `exported`. Ordinary Workspace authority remains denied.
+5. Create and verify the independent pre-terminal closure owned by the audit specification, bind its exact id and digest, and record `closure-sealed`.
+6. Rename the canonical Workspace root to the request's same-filesystem deletion-staging path, verify its identity, and record `staged`. No copy, trash service, or guessed alternate root is allowed.
+7. In one Core transaction CAS the exact registry from `deleting` to `deleted`, increment revision once, retain the original owner's `active` `editor` membership as non-authorizing historical lineage, mark every other active membership removed, revoke every pending invitation, append the terminal deletion `AuditEvent`, and write the terminal command receipt. The registry row and its original `owner_user_id` remain as the permanent tombstone. Registry status remains the sole authorization gate, so the retained owner membership cannot grant ordinary access, deletion retry, or recovery by itself. Then bind the terminal identities and record `deleted`.
+8. Remove only the exact request-owned staging tree. Success records `cleaned`; failure keeps phase `deleted`, returns `deleted_with_retained_staging`, and permits the same request to retry only that exact cleanup.
+
+A caught failure before the deleting Core transaction removes only an unsealed owned export or closure root as their owners allow; it never removes another request or canonical Workspace. After registry `deleting`, a retry derives no fact from directory discovery: request phase, registry state, exact export and closure verification, canonical-versus-staging identity, terminal audit, and receipt must agree. Any contradiction, missing request for a non-active registry, unexpected root, digest mismatch, different request, or unproved transaction result returns `recovery_required` and performs no further destructive action.
+
+Once the registry is `deleting` or `deleted`, ordinary Workspace-role authorization remains denied. Only a currently active canonical User whose id equals both the request's original owner and the registry `owner_user_id` may inspect or advance the exact matching request through a narrow non-content deletion-retry authorization; it grants no Workspace read, membership, export, closure, or recovery authority outside that request. A different, missing, or disabled actor, including an original owner disabled after the `deleting` transition, receives terminal `recovery_required`; the request phase and closed gate remain unchanged and Phase 1 performs no automatic authority substitution or further destructive action.
+
+The registry status owns only `active`, `deleting`, and `deleted`; the deletion request owns only intermediate phase and retry; the deleted registry tombstone is the unique recovery authority; the closure is non-authorizing evidence. `deleted` permanently reserves the original Workspace ID. The terminal Core AuditEvent and tombstones remain deployment-local, while the closure and its referenced recovery export are retained under their own owners.
+
+`recoverDeletedWorkspace` is a canonical-session or implicit-local-user operation, not a `server-admin` or Workspace-token operation. It requires the caller to be the exact active canonical User in the deleted registry tombstone's `owner_user_id`, the exact deletion request to be `deleted` or `cleaned`, and the referenced closure and recovery export to verify and agree. Disabled, different, missing, or contradictory actors fail without content disclosure.
+
+Recovery invokes the existing portable importer with the tombstone authority only after those checks. The permanent deleted registry row creates an ID collision, so the accepted import rule remints a new Workspace ID and records the caller as its only active owner/member; repository and Vault references remain unbound. The original tombstone, deletion request, closure, export, and terminal audit remain immutable. Recovery never reactivates or overwrites the deleted ID, repairs bytes in place, grants administrator content access, or treats portable actor lineage as authority.
 
 User deletion never triggers Workspace deletion.
 
@@ -617,7 +656,7 @@ The following foundation is already implemented:
 - candidate-first authorized Workspace collections, idempotent local-boot or active-session provisioning plus actor-derived owner-only Quick Chat resolution, and uniform non-enumerating Workspace access denial
 - handler-owned child-lineage checks that retain global not-found only when an existing owner can prove it, otherwise collapsing scoped missing and mismatch to the documented access denial
 - explicit denial of `server-admin` credentials on ordinary Workspace content operations and exact same-deployment source-membership checks before portable import collision or content reads
-- the fifteen-operation App API sharing surface, including authenticated invitee discovery and decisions, owner invitation/member management, non-owner leave, ordinary owner transfer, content-free administrator recovery, and one-way user disable
+- the seventeen-operation App API sharing and deletion surface, including authenticated invitee discovery and decisions, owner invitation/member management, non-owner leave, ordinary owner transfer, content-free administrator recovery, one-way user disable, owner deletion, and tombstone recovery
 - one Core transaction for each accepted lifecycle authority mutation, immutable actor/subject/revision audit, and pointer-only command receipt, with receipt-only exact no-ops and `recovery_required` for a request-proven effect lacking its receipt
 - direct invitation, membership, ownership-transfer, and administrator-recovery conditional writes with the exact terminal, stale, missing, disabled-user, inactive-Workspace, re-invitation, Quick Chat, and recovery/invitation interleaving semantics above
 - next-request session and token rejection for disabled users through stock Better Auth hooks and the shared canonical active-user predicate
@@ -632,12 +671,14 @@ The following foundation is already implemented:
 - current-authority-first Workspace list and search candidates plus request-time Action Center and dashboard eligibility for policy Approval, exact-responsible-user input, Artifact Review, Goal Review, Knowledge Review, and Workspace Synchronization Review rows without a new assignment or notification owner
 - owner-only Workspace Vault reference metadata and rebind access under `vault.admin`, redacted VaultUse history under `audit.read`, and use-time enforcement of the exact current target-issued grant plus `vault.use`
 - portable import that treats source users, owners, memberships, invitations, tokens, grants, and actor lineage as non-authorizing and installs only the importing user as target owner/member, while full same-deployment backup preserves the complete Core relationship graph
-- all fifteen sharing operations in the Core Client with the same App API schemas and typed conflicts, plus the eleven bearer-reachable operations in the transport-neutral catalog, bundled CLI, and unified Skill
+- all seventeen sharing and deletion operations in the Core Client with the same App API schemas and typed conflicts, plus the bearer-reachable subset and the local/session tombstone-recovery operation in the transport-neutral catalog, bundled CLI, and unified Skill
 - the four session-capable own-invitation list, accept, decline, and exact own-receipt leave operations retained as the explicit CLI/Skill known-partial above instead of adding a second credential system
+
+Owner-authorized Workspace deletion, ordinary-route and late-publication admission fencing, the strict durable deletion request, verified recovery export, independently sealed audit closure, terminal Core tombstone, cleanup reconciliation, and new-ID tombstone recovery are implemented through the two resulting operations. The process-local fence does not claim cross-process or distributed exclusion; boot restores fences but never advances destructive phases; only exact-request retry advances nonterminal work; cleanup failure retains truthful staging state; and V1 adds no automatic repair, original-ID recovery, deployment-administrator content bypass, or temporary Web deletion UI.
 
 The rebuilt multi-user Web projection is intentionally deferred to S10. Shared schema and App API changes receive the minimum existing-Web compilation and runtime alignment required for same-release correctness, but this specification's implemented kernel, public contract, Core Client, CLI, and Skill scope adds no temporary multi-user UX or browser acceptance obligation.
 
-The existing non-Web multi-user responsibility is implemented: owner-independent storage and migration, centralized request-time authorization, sharing and user lifecycle, bounded attribution and first-writer closure, governed-effect reauthorization, authorized read projections, Vault and portability boundaries, the `workspace-record.json` plus `config/workspace.jsonc` split with joined public name projection, and the exact-release Core Client plus bearer-reachable CLI/Skill projection. The four named session-only CLI/Skill omissions remain an accepted bounded projection compromise, and the rebuilt Web remains separately owned by S10.
+The existing non-Web multi-user responsibility is implemented: owner-independent storage and migration, centralized request-time authorization, sharing and user lifecycle, bounded attribution and first-writer closure, governed-effect reauthorization, authorized read projections, Vault and portability boundaries, the deletion and tombstone-recovery lifecycle above, the `workspace-record.json` plus `config/workspace.jsonc` split with joined public name projection, and the exact-release Core Client plus CLI/Skill projection. The four named session-only CLI/Skill omissions remain an accepted bounded projection compromise, and the rebuilt Web remains separately owned by S10.
 
 ## Impacted Implementation Surfaces
 
@@ -646,13 +687,13 @@ The existing non-Web multi-user responsibility is implemented: owner-independent
 | `packages/protocol` | Add the smallest durable actor and responsible-user attribution needed by user Items, Turn triggers, decisions, and audit. |
 | `packages/app-api-schemas` | Add release-coupled member, invitation, transfer, leave, expected-revision, and authorized Workspace read models. |
 | `packages/policy-kernel` and policy mapping | Reuse the kernel; add fixed role fact and product-operation mappings without a second engine. |
-| NanoCore Core DB | Migrate registry and membership constraints; add invitations, access levels, revisions, and lifecycle indexes. |
+| NanoCore Core DB | Retain the existing registry statuses and owner-membership invariant; add no deletion schema migration; transactionally apply the two deletion status transitions, retain the non-authorizing original-owner membership, remove non-owner memberships, revoke pending invitations, and write the terminal audit and receipt. |
 | NanoCore storage | Move canonical roots and Workspace databases to top-level Workspace scope; remove user-owned routing. |
-| NanoCore auth and routes | Replace path/body heuristics and request-user stores with centralized operation and resource resolution. |
+| NanoCore auth and routes | Retain centralized operation and resource resolution; add owner-only deletion, tombstone-only recovery, and one process-local Workspace mutation fence covering catalogued mutations and registered late publishers. |
 | Scheduler, AEP, worker control, Gateway | Keep AEP `triggerActor` as the sole runtime actor authority, derive responsible-user authority independently from owner-free storage resolution, and reauthorize only the implemented governed effects named above. |
 | Audit, permission, approval, Action Center | Persist actor attribution, eligible principals, and atomic terminal claims. |
 | Search and Quick Chat | Derive shared visibility from membership and keep Quick Chat owner-only; automation replacement remains with the recurring-trigger specification. |
-| Export, import, backup, restore | Exclude deployment-local membership, invitation, token, and user access authority from portable export; preserve reminted Vault and effect rows only as non-authorizing history; assign the import owner; preserve full-backup identity state; and migrate paths. |
+| Export, import, backup, restore | Exclude deployment-local access authority from portable export; create the verified deletion recovery export and independent closure; recover through tombstone authority and existing import collision handling; preserve full-backup identity state. |
 | Core Client, operation catalog, CLI, Skill | Project the complete same-release sharing lifecycle and typed conflicts without creating stable cross-release API promises. |
 | Existing Web baseline and rebuilt Web | Keep the existing baseline compiling and consuming changed shared schemas correctly in the same release; add member and invitation management, role visibility, actor labels, conflict UX, and owner-transfer safeguards only in the post-program S10 rebuild. |
 
@@ -715,6 +756,8 @@ The exact routes and payloads are release-coupled, but the supported behavior mu
 - transfer ownership with expected registry revision
 - perform explicit administrator recovery without implicit content access
 - disable one exact user through deployment-admin authority while preserving identity and history
+- delete one exact Workspace through current owner authority with truthful pending and retained-staging projections
+- recover one deleted Workspace through its original-owner tombstone into the existing portable import collision rule
 - return typed access, invitation, terminal-state, and revision conflicts
 
 The Core Client, operation catalog, bundled CLI, and unified Skill project the same operation owners and error semantics in the current program. The rebuilt Web projection must consume those owners in S10 before its release; no temporary Solid implementation is required.
@@ -729,11 +772,15 @@ Every sharing mutation carries `requestId`. Invitation acceptance, decline, and 
 
 Explicit deployment recovery has exactly two current actions: `add-self-as-editor` and `transfer-ownership-to-self`. Both carry `requestId` and positive `expectedRegistryRevision`; the authenticated administrator user is the target and cannot name another target user. Transfer-to-self atomically creates or reactivates the administrator's editor membership when necessary before changing registry ownership. This is an audited recovery operation, not ordinary content access, a hidden administrator role, or a general recovery workflow.
 
+Workspace deletion carries exactly `requestId`, positive `expectedRegistryRevision`, and the exact confirmation literal defined above. `WorkspaceDeletionState` contains exactly `workspaceId`, `requestId`, registry `status`, deletion `phase`, nullable `recoveryExportId`, nullable `closureId`, and `retainedStaging`. A nonterminal `fenced` result uses HTTP `202`; `blocked`, `deleted`, and `cleaned` use their truthful product result, while `deleted` permits only the exact cleanup transition and a contradiction uses the protocol-wide `recovery_required` error rather than a synthetic state. No response exposes an absolute path, file name, membership list, Workspace content, secret, or digest.
+
+Deleted-Workspace recovery carries exactly `requestId` and `deletionRequestId`. Its safe result contains `sourceWorkspaceId`, `deletionRequestId`, `recoveryExportId`, `closureId`, and the existing portable import response whose `importedWorkspaceId` is collision-reminted. The route authenticates only the canonical session or implicit local User against the registry tombstone before reading deletion artifacts; it accepts no Workspace bearer token or deployment administrator authority.
+
 `WorkspaceAccessRecoveryState` is the only administrator-safe read model for this operation and contains exactly `workspaceId`, `ownerUserId`, nullable `administratorRole`, and positive `registryRevision`. `administratorRole` is the authenticated administrator user's current effective `owner`, `editor`, or `viewer` role, or `null` when they have no active membership. It exposes no Workspace record or content projection.
 
 Invitation mutations return `{ invitation }`; membership mutations return `{ member }`; ownership transfer returns `{ workspace }`; explicit recovery reads and mutations return `{ recovery }`; user disable returns `{ user }` with exactly `userId`, `status=disabled`, and `disabledAt`. Authorized Workspace, member, owner-visible invitation, and authenticated-user invitation collection responses contain only `items`. Callers may re-read the applicable collection after a successful mutation; the response need not reconstruct an earlier byte-identical HTTP body beyond the central idempotency contract.
 
-The domain-specific release-coupled sharing error codes are exactly `workspace_access_denied`, `invitee_unavailable`, `invitation_not_pending`, `revision_conflict`, `quick_chat_not_shareable`, and `owner_transfer_required`. They reuse the protocol `ApiError` envelope and remain additional to C07's protocol-wide `idempotency_key_conflict` and `recovery_required` outcomes. Access denial, unavailable invitee, Quick Chat rejection, and owner-transfer-required errors expose no target details. `invitation_not_pending` carries the current safe invitation projection. `revision_conflict` carries a discriminator for `workspace`, `membership`, `invitation`, or `workspace_recovery` plus the matching current safe summary; `workspace_recovery` returns only `WorkspaceAccessRecoveryState`. No generic cross-record conflict framework or broader recovery payload is introduced.
+The domain-specific release-coupled sharing error codes are exactly `workspace_access_denied`, `invitee_unavailable`, `invitation_not_pending`, `revision_conflict`, `quick_chat_not_shareable`, `owner_transfer_required`, `workspace_deletion_blocked`, and `workspace_deletion_in_progress`. They reuse the protocol `ApiError` envelope and remain additional to C07's protocol-wide `idempotency_key_conflict` and `recovery_required` outcomes. Access denial, unavailable invitee, Quick Chat rejection, owner-transfer-required, deletion-blocked, and deletion-in-progress errors expose no target content or storage facts. `workspace_deletion_blocked` may identify only the non-authorizing hold record ids needed for the owner to resolve policy; `workspace_deletion_in_progress` carries only `WorkspaceDeletionState`. `invitation_not_pending` carries the current safe invitation projection. `revision_conflict` carries a discriminator for `workspace`, `membership`, `invitation`, or `workspace_recovery` plus the matching current safe summary; `workspace_recovery` returns only `WorkspaceAccessRecoveryState`. No generic cross-record conflict framework or broader recovery payload is introduced.
 
 The exact V1 operation surface is closed as follows:
 
@@ -754,8 +801,10 @@ The exact V1 operation surface is closed as follows:
 | `getWorkspaceAccessRecoveryState` | `GET /api/app/workspaces/{workspaceId}/access-recovery` | deployment administrator; `deployment.recover` | `{ recovery }` |
 | `recoverWorkspaceAccess` | `POST /api/app/workspaces/{workspaceId}/access-recovery` | deployment administrator; `deployment.recover` | `{ recovery }` |
 | `disableUser` | `POST /api/app/users/{userId}/disable` | deployment administrator; `api.call` | `{ user }` |
+| `deleteWorkspace` | `POST /api/app/workspaces/{workspaceId}/delete` | current owner for creation; exact original-owner non-content retry authority after `deleting`; `workspace.lifecycle` | `200/202 { deletion }` |
+| `recoverDeletedWorkspace` | `POST /api/app/workspace-deletions/{workspaceId}/recover` | original active owner from deleted registry tombstone; canonical session or implicit local user | `{ recovery }` |
 
-The App API and Core Client expose all fifteen operations. The existing bearer-token-only CLI and unified Skill project only the operations reachable through their current credential contract. `listMyWorkspaceInvitations`, `acceptWorkspaceInvitation`, `declineWorkspaceInvitation`, and the exact own-receipt form of `leaveWorkspace` remain session-capable App API and Core Client operations in the current projection and are an explicit known-partial for the CLI and Skill; the current baseline does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close that presentation gap.
+The App API and Core Client expose all seventeen operations. The existing bearer-token-only CLI and unified Skill project only the operations reachable through their current credential contract, while local mode may project both deletion operations through its implicit canonical user. `listMyWorkspaceInvitations`, `acceptWorkspaceInvitation`, `declineWorkspaceInvitation`, the exact own-receipt form of `leaveWorkspace`, and deleted-Workspace recovery remain session-capable App API and Core Client operations in server mode and are an explicit known-partial for the bearer-only CLI and Skill; the current baseline does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close that presentation gap.
 
 ## Testing Strategy And Acceptance Criteria
 
@@ -775,6 +824,8 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 - Token, membership, role downgrade, removal, and server-admin separation.
 - Actor attribution and AEP schema version `2` tests accept the exact tagged `ActorRef`, reject legacy scope identity fields, and prove responsible-user derivation without storage ownership.
 - Registry, membership, and invitation compare-and-swap success, stale conflict, retry, and zero-row handling.
+- Workspace deletion tests cover missing or mismatched confirmation, one blocking `EvidenceBundle` and one blocking `WorkspaceQuarantineRecord`, mutation-fence admission and `finally`, one late publication race, natural runtime quiescence pending, same-request replay, same-request changed-input idempotency conflict, a new request after unrelated terminal history, different-request in-progress, multiple-nonterminal or structurally contradictory durable-record recovery failure, each fixed request phase, registry CAS, exact original-owner retry after `deleting`, owner disable before and after that transition, request/registry/path/digest contradiction, the retained original-owner `active` `editor` membership, removed non-owner memberships, revoked pending invitations, `resolveWorkspaceRole = null`, exclusion from `listActiveWorkspaceIdsForActor`, retained staging, cleanup retry, and boot-time fence reconstruction without destructive auto-resume.
+- Deleted-Workspace recovery tests prove only the exact active original owner in the registry tombstone can proceed, a closure or `server-admin` credential grants nothing, the original ID remains occupied, import remints a new ID, the caller is its only owner/member, and repository and Vault references remain unbound.
 - Durable first-writer approval and invitation transitions under concurrent requests.
 - Quick Chat non-shareability and the absence of any executable current automation effect path.
 - One table covers the exact current-authority predicate and six Stage 7 boundary mappings without multiplying user, role, effect, restart, or backend combinations.
@@ -786,6 +837,7 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 - A two-user fixture proves one canonical Workspace root and identical durable history.
 - One table-driven owner/editor/viewer policy matrix covers the supported operation families without repeating it at higher layers.
 - Portable export excludes access relationships and import creates only the target owner membership.
+- Deletion contract tests bind the two public operations, `WorkspaceDeletionState`, request inputs, safe `202` pending result, typed hold and in-progress errors, server-mode credential exclusions, and Core Client/local-mode catalog projections without exposing paths or content.
 - Actor and responsible-user lineage survives export/import without becoming authority.
 
 ### L3 NanoCore Black-Box Tests
@@ -802,6 +854,7 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 - The stopped-process migration fixture proves V1 human and automation AEP transformation, digest-valid V2 records, top-level publication, V2-only readers, and reviewed external-backup/report evidence; built NanoCore smoke separately proves the packaged server starts and serves public operations on the current layout.
 - Generated OpenAPI, Core Client, operation catalog, CLI, and Skill artifacts share one exact contract identity.
 - Focused portable export/import artifact coverage proves new target ownership and no imported memberships or invitations; it is not coupled to the process lifecycle story.
+- A focused temporary-data-root process smoke proves listener-preflight fence reconstruction and exact same-request continuation without starting, stopping, or replacing any existing deployment process or service.
 
 ### L6 Agentic Story Acceptance
 

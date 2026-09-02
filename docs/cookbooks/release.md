@@ -8,7 +8,7 @@ The owning contract is [`docs/specs/20260829-release_management.md`](../specs/20
 
 The first formal release path starts at `v0.1.0-rc.1`.
 
-The tag workflow currently rejects stable tags because NanoHost has no admitted distribution artifact.
+The tag workflow currently rejects stable tags because the exact-product R001 NanoHost runtime gate remains open; the controlled `linux/arm64` distribution itself is implemented.
 
 Do not change the release preflight CLI's prerelease-only default until an accepted owner closes that stable-release blocker.
 
@@ -22,12 +22,13 @@ One lowercase semantic-version tag identifies the complete product bundle:
 
 - every `release: true` image in `containers/images.json`,
 - `openkit-skill-<tag>.tar.gz`, containing `LICENSE` and the complete `skills/openkit/` tree,
-- `SHA256SUMS` for the Skill archive,
+- `openkit-nanohost-<tag>-linux-arm64.tar.gz`, containing the verified NanoHost binary, pin-bound Gateway, service unit, installer, manifests, checksums, and licenses,
+- `SHA256SUMS` for both portable archives,
 - one GitHub Release with image digests and gate evidence.
 
 Private workspace packages are not npm release assets, and their `package.json` versions do not follow the product tag.
 
-`test-env`, the internal dogfood image, NanoHost, and GitHub-generated source archives are not controlled product release assets.
+`test-env`, the internal dogfood image, and GitHub-generated source archives are not controlled product release assets.
 
 ## Prepare The Release
 
@@ -52,7 +53,7 @@ Do not mass-update package versions.
 pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 ```
 
-Preflight validates lowercase tag syntax, portable Skill inputs, the release image catalog, smoke paths, the unique public worker base, and digest-pinned bases for every release image.
+Preflight validates lowercase tag syntax, portable Skill and NanoHost inputs, the promoted host manifest, the accepted OpenShell pin, the release image catalog, smoke paths, the unique public worker base, and digest-pinned bases for every release image.
 
 5. Build the portable assets from the commit that would be released and inspect them.
 
@@ -62,7 +63,7 @@ pnpm release:package -- --tag "${OPENKIT_RELEASE_TAG}"
 tar -tzf "dist/release/openkit-skill-${OPENKIT_RELEASE_TAG}.tar.gz"
 ```
 
-The packager uses `git archive`, so uncommitted files are intentionally excluded.
+The Skill packager uses `git archive`, and NanoHost packaging reads its checkout-owned files from the selected Git revision, so uncommitted files are intentionally excluded. The tag workflow obtains the NanoHost binary from its native arm64 build job and downloads the Gateway and source-license bytes from the pin-derived coordinates before invoking the same packager and verifier.
 
 6. Run the automatic release gate locally.
 
@@ -124,13 +125,14 @@ The workflow then:
 
 - proves that the tagged commit belongs to `main`,
 - reruns L0-L3 and L5,
-- builds the portable Skill assets,
+- runs the isolated fixed-path NanoHost installer gate without service lifecycle,
+- builds the portable Skill and native arm64 NanoHost assets,
 - derives the image matrix from `containers/images.json`,
 - pushes digest-only multi-platform image candidates,
 - smokes each exact candidate digest on every declared platform,
 - promotes the passed digest to immutable version and source-revision tags,
 - preserves `latest` for prereleases,
-- creates the GitHub prerelease with its two portable attachments,
+- creates the GitHub prerelease with the two portable archives and their shared checksum attachment,
 - downloads and independently verifies the final assets and image digests,
 - logs out of GHCR and verifies the exact `worker-common` digest anonymously.
 
@@ -162,7 +164,7 @@ gh release view "${OPENKIT_RELEASE_TAG}" --json tagName,isDraft,isPrerelease,ass
 gh run view <run-id>
 ```
 
-Close the release change record only when the workflow is green, the GitHub Release is published with exactly the two expected attachments, and `worker-common` is anonymously inspectable by digest.
+Close the release change record only when the workflow is green, the GitHub Release is published with exactly the two archives plus `SHA256SUMS`, the downloaded NanoHost archive passes the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
 
 ## Failure And Retry
 

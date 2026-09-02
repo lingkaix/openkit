@@ -6,7 +6,7 @@
 #     Runs directly in the current permitted environment. Set OPENKIT_TEST_USE_IMAGE=1 on a host for an explicit image second opinion.
 #
 #   scripts/test-env.sh host <command> [args...]
-#     Runs the command on the host and refuses to run inside the image. Reserved for commands that require host-only Docker or real-runtime access.
+#     Runs the command on the host and refuses to run inside the image. Reserved for commands that require host-only Docker, real-runtime access, or the isolated fixed-path installer gate.
 #
 # Owned by the Test Execution Environment decision in docs/toolchain.md.
 
@@ -33,7 +33,7 @@ inside_test_image() {
 run_host_placement() {
   if inside_test_image; then
     cat >&2 <<'MESSAGE'
-This command requires host-only Docker or real-runtime access and must run on the host, not inside the test-env test execution image. Run it from a host shell.
+This command requires host-only Docker, real-runtime access, or the isolated fixed-path installer gate and must run on the host, not inside the test-env test execution image. Run it from a host shell.
 MESSAGE
     exit 2
   fi

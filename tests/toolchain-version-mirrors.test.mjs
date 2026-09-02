@@ -124,10 +124,10 @@ test('the generic test execution image does not provision Codex', () => {
   );
 });
 
-test('CI provisions no runtime of its own and takes it from the test execution image', () => {
-  // docs/toolchain.md Test Execution Environment: the image is the single
-  // declared capability and runtime set, so a second CI-side provisioning step
-  // would reintroduce the mirror this decision removed.
+test('CI keeps Node and pnpm in test-env and uses the app-owned Rust setup path', () => {
+  // docs/toolchain.md Test Execution Environment: any-placed Node and pnpm gates
+  // take those runtimes from test-env, while the native NanoHost job follows its
+  // app-scoped mise Rust owner instead of adding a rustup mirror.
   assert.doesNotMatch(
     ciWorkflow,
     /uses:\s*pnpm\/action-setup@/u,
@@ -137,6 +137,11 @@ test('CI provisions no runtime of its own and takes it from the test execution i
     ciWorkflow,
     /uses:\s*actions\/setup-node@/u,
     'ci.yml provisions Node directly; the test execution image already pins it'
+  );
+  assert.doesNotMatch(
+    ciWorkflow,
+    /\brustup(?:\s|$)/u,
+    'ci.yml bypasses the NanoHost-scoped mise Rust pin with rustup'
   );
 });
 
@@ -211,7 +216,7 @@ test('CI derives the test image build context and Dockerfile from the image mani
   );
 });
 
-test('every CI gate that runs repository checks runs inside the test execution image', () => {
+test('every any-placed CI gate runs inside the test execution image', () => {
   const gateJobs = ['pr-check', 'l0-l2', 'nano-core-e2e', 'web-e2e', 'smoke', 'release-preflight'];
 
   for (const job of gateJobs) {
@@ -224,3 +229,22 @@ test('every CI gate that runs repository checks runs inside the test execution i
     );
   }
 });
+
+test('the one NanoHost installer host gate runs outside the test image', () => {
+  const leaf = 'bash tests/support/nanohost-release-installer-live.sh';
+  const jobBlocks = [...ciWorkflow.matchAll(/\n {2}([a-z0-9-]+):\n((?: {4}.*\n|\n)+)/gu)].filter(
+    ([, , body]) => body.includes(leaf)
+  );
+  assert.equal(jobBlocks.length, 1, 'ci.yml must invoke the installer shell leaf in one job');
+  const [, jobName, body] = jobBlocks[0];
+  assert.match(jobName, /nanohost.*installer|installer.*nanohost/u);
+  assert.doesNotMatch(body, /^ {4}container:/mu);
+  assert.match(body, /apt-get install[^\n]*bubblewrap[^\n]*slirp4netns/u);
+  assert.match(body, /sysctl -w kernel\.unprivileged_userns_clone=1/u);
+  assert.match(body, /sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0/u);
+  assert.match(body, new RegExp(`run:\\s*${escapeRegExp(leaf)}`, 'u'));
+});
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
