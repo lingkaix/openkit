@@ -227,7 +227,8 @@ case "$slirp_sha" in *[!0-9a-f]*|'') fail 'host-manifest=slirp4netns-invalid' ;;
 [ "${#slirp_sha}" -eq 64 ] || fail 'host-manifest=slirp4netns-invalid'
 observed_docker=$(/usr/bin/docker --version 2>/dev/null) || fail 'host-prerequisite=docker-identity'
 [ "$observed_docker" = "$docker_version" ] || fail 'host-prerequisite=docker-identity'
-observed_slirp=$(/usr/bin/slirp4netns --version 2>/dev/null) || fail 'host-prerequisite=slirp4netns-identity'
+observed_slirp_output=$(/usr/bin/slirp4netns --version 2>/dev/null) || fail 'host-prerequisite=slirp4netns-identity'
+observed_slirp=$(printf '%s\n' "$observed_slirp_output" | awk 'NR == 1 { print; exit }')
 [ "$observed_slirp" = "$slirp_version" ] || fail 'host-prerequisite=slirp4netns-identity'
 observed_slirp_sha=$(/usr/bin/sha256sum /usr/bin/slirp4netns | awk '{print $1}')
 [ "$observed_slirp_sha" = "$slirp_sha" ] || fail 'host-prerequisite=slirp4netns-identity'

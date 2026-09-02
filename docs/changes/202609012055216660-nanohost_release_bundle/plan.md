@@ -108,6 +108,12 @@ branch: codex/phase1-release-baseline
 - **Local correction:** Update only the unique promoted host manifest to the observed Docker identity. Do not downgrade, restart, stop, replace, or otherwise manage Docker, the App Server, or another host service, and add no compatibility identity.
 - **Evidence:** The failing `install.sh --check` is the lowest-sufficient regression: it returned nonzero after `package=pass`, reported the Docker identity mismatch, and left the NanoHost, Gateway, and service-unit live SHA-256 values unchanged. After the manifest correction, repeat focused projections, independent actual-diff acceptance, exact-final-commit packaging, the zero-write live check, and contained staging.
 
+### Intent Epoch 15 — 2026-09-02 — Normalize the slirp version projection at the installer boundary
+
+- **Reframe trigger:** The fresh exact-commit package and staging checks passed after Epoch 14, but live `--check` stopped at the slirp identity because host assertion and the promoted manifest use the first `slirp4netns --version` line while the installer compared the command's complete multiline diagnostic output.
+- **Local correction:** After requiring the fixed slirp command to succeed, normalize its output to the first line before comparing the manifest version; retain the independent exact executable SHA-256 comparison and add no alternate identity or compatibility path.
+- **Regression and effect boundary:** Make the existing isolated fixed-path fixture emit realistic multiline slirp version output while keeping its manifest on the normalized first line. The old installer produced 20 attributed failures, the local correction makes the complete gate pass, and the A1 live destination digests remain unchanged without any service, container, App Server, or host lifecycle operation.
+
 ## Accepted Owners
 
 - `docs/specs/20260802-nanohost_runtime_and_transport.md` owns the fixed OpenShell version, supported runtime target, distribution artifact contents, fixed prerequisites, and minimal installer effect boundary.
@@ -211,6 +217,7 @@ Before implementation, add or extend focused Node tests with these expected fail
 - After the Epoch 12 correction, the same Verifier and Reviewer returned `REFRAME` and `BLOCK` on ELF64 virtual-range overflow, unchecked member-record padding, divergent Node/shell numeric bounds, a pre-contention lock marker, and missing direct live-signal evidence; those findings produced Intent Epoch 13 without any lifecycle or publication effect.
 - After the Epoch 13 correction, the same Reviewer returned `ACCEPT`. The Verifier required one exact `2^63` endpoint regression, then returned `ACCEPT` after inspecting the actual test path through the packager, shared verifier, and staging installer and independently observing 53/53 related tests, the isolated live gate, Biome, and diff checks pass without a lifecycle or publication effect.
 - After the Epoch 14 one-fact manifest correction, the same Verifier returned `ACCEPT` after directly matching the observed Docker version, inspecting the actual two-file diff, and independently observing 124/124 host-manifest tests, 48/48 release-focused tests, the isolated live gate, and diff checks pass without a lifecycle or publication effect.
+- After the Epoch 15 correction, the same Verifier returned `ACCEPT` after proving the real slirp full output mismatches, its normalized first line and binary SHA-256 match, the multiline fixture decides the corrected path, and 48/48 release-focused tests, the isolated live gate, syntax, preflight, and diff checks pass without a lifecycle or publication effect.
 - After implementation, a producer does not accept its own output. Independent review inspects the actual diff and named focused evidence; a fresh verifier is used if implementation changes the accepted design or leaves a material uncertainty.
 
 ## Commit And PR Boundary
@@ -222,8 +229,8 @@ Before implementation, add or extend focused Node tests with these expected fail
 
 ## Rewritable Checkpoint
 
-- **Facts:** Authority commit `5cf0804`, RED commit `03a6e0c`, and implementation commit `f8cac29` are complete. Intent Epoch 13 has independent Reviewer and Verifier acceptance. The first exact-commit A1 package and staging checks passed, while the live zero-write check correctly rejected the stale promoted Docker identity and left all three live destination digests unchanged. The Epoch 14 one-fact correction now has focused green evidence and independent Verifier acceptance. R001 remains in a separate Draft PR, R002 remains open, R004 remains unpublished, and no host, service, container, App Server, Herdr, or machine lifecycle operation has run in this phase.
-- **Unknowns:** The accepted Epoch 14 correction needs a commit and a fresh exact-final-commit A1 artifact result.
-- **Method:** Commit the accepted manifest correction, then rerun only the authorized no-lifecycle A1 artifact gate.
-- **Frontier:** The current host identity is independently accepted; exact-final-commit evidence is next.
-- **Predicted Next Action:** Commit the accepted two-file correction without lifecycle or publication effects.
+- **Facts:** Authority commit `5cf0804`, RED commit `03a6e0c`, implementation commit `f8cac29`, and host-identity commit `8552057` are complete. Intent Epoch 13 through Epoch 15 have independent acceptance. The fresh `8552057` package and contained staging checks passed, while live zero-write `--check` exposed the slirp multiline normalization mismatch and again left all three live destination digests unchanged. The existing isolated gate failed on the old installer and passes with the accepted Epoch 15 correction. R001 remains in a separate Draft PR, R002 remains open, R004 remains unpublished, and no host, service, container, App Server, Herdr, or machine lifecycle operation has run in this phase.
+- **Unknowns:** The accepted Epoch 15 correction needs a commit and a fresh exact-final-commit A1 artifact result.
+- **Method:** Commit the accepted implementation/test correction, then rerun only the authorized no-lifecycle A1 artifact gate.
+- **Frontier:** The slirp normalization correction is independently accepted; exact-final-commit evidence is next.
+- **Predicted Next Action:** Commit the accepted three-file correction without lifecycle or publication effects.

@@ -138,7 +138,7 @@ new_case() {
     chmod 0755 "$STUBS/$command"
   done
   printf '#!/bin/sh\nprintf "Docker fixture version\\n"\n' >"$STUBS/docker"
-  printf '#!/bin/sh\nprintf "slirp4netns fixture version\\n"\n' >"$STUBS/slirp4netns"
+  printf '#!/bin/sh\nprintf "slirp4netns fixture version\\ncommit: fixture\\nlibslirp: fixture\\n"\n' >"$STUBS/slirp4netns"
   printf '#!/bin/sh\nprintf "aarch64\\n"\n' >"$STUBS/uname"
   chmod 0755 "$STUBS/docker" "$STUBS/slirp4netns" "$STUBS/uname"
   local slirp_sha
