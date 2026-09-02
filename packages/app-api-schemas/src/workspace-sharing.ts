@@ -6,6 +6,7 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { WorkspaceImportResponseSchema } from './storage.js';
 
 /** Workspace access level granted by one active membership. */
 export const WorkspaceAccessLevelSchema = z.enum(['editor', 'viewer']);
@@ -237,6 +238,103 @@ export const RecoverWorkspaceAccessRequestSchema = z
 /** Request that disables one exact canonical user. */
 export const DisableUserRequestSchema = z.object({ requestId: RequestIdSchema }).strict();
 
+/** Registry lifecycle state exposed by Workspace deletion. */
+export const WorkspaceRegistryStatusSchema = z.enum(['active', 'deleting', 'deleted']);
+
+/** Durable phase of one Workspace deletion request. */
+export const WorkspaceDeletionPhaseSchema = z.enum([
+  'requested',
+  'fenced',
+  'blocked',
+  'deleting',
+  'exported',
+  'closure-sealed',
+  'staged',
+  'deleted',
+  'cleaned',
+]);
+
+/** Safe progress projection for one Workspace deletion request. */
+const WorkspaceDeletionStateBaseSchema = z.object({
+  workspaceId: WorkspaceIdSchema,
+  requestId: RequestIdSchema,
+  recoveryExportId: z.string().min(1).nullable(),
+  closureId: z.string().min(1).nullable(),
+  retainedStaging: z.boolean(),
+});
+
+/** Safe progress projection for one Workspace deletion request. */
+export const WorkspaceDeletionStateSchema = z.discriminatedUnion('status', [
+  WorkspaceDeletionStateBaseSchema.extend({
+    status: z.literal('active'),
+    phase: z.enum(['requested', 'fenced', 'blocked']),
+  }).strict(),
+  WorkspaceDeletionStateBaseSchema.extend({
+    status: z.literal('deleting'),
+    phase: z.enum(['deleting', 'exported', 'closure-sealed', 'staged']),
+  }).strict(),
+  WorkspaceDeletionStateBaseSchema.extend({
+    status: z.literal('deleted'),
+    phase: z.enum(['deleted', 'cleaned']),
+  }).strict(),
+]);
+
+/** Owner-confirmed request that permanently deletes one Workspace. */
+export const DeleteWorkspaceRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    expectedRegistryRevision: WorkspaceRevisionSchema,
+    confirmation: z.string().min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const prefix = 'permanently-delete-workspace:';
+    const suffix = `:${value.expectedRegistryRevision}`;
+    if (
+      !value.confirmation.startsWith(prefix) ||
+      !value.confirmation.endsWith(suffix) ||
+      value.confirmation.length <= prefix.length + suffix.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Confirmation must bind a Workspace and the expected registry revision.',
+        path: ['confirmation'],
+      });
+    }
+  });
+
+/** Request that imports the recovery export for one deleted Workspace. */
+export const RecoverDeletedWorkspaceRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    deletionRequestId: RequestIdSchema,
+  })
+  .strict();
+
+/** Safe result of recovering one deleted Workspace into a reminted identity. */
+export const DeletedWorkspaceRecoveryStateSchema = z
+  .object({
+    sourceWorkspaceId: WorkspaceIdSchema,
+    deletionRequestId: RequestIdSchema,
+    recoveryExportId: z.string().min(1),
+    closureId: z.string().min(1),
+    import: WorkspaceImportResponseSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.sourceWorkspaceId === value.import.sourceWorkspaceId &&
+      value.sourceWorkspaceId === value.import.exportedWorkspaceId &&
+      value.sourceWorkspaceId === value.import.manifest.workspaceId &&
+      value.recoveryExportId === value.import.exportId &&
+      value.recoveryExportId === value.import.manifest.id &&
+      value.import.collision.status === 'collides' &&
+      value.import.collision.workspaceId === value.sourceWorkspaceId &&
+      value.import.importedWorkspaceId !== value.sourceWorkspaceId &&
+      value.import.workspace.id === value.import.importedWorkspaceId,
+    { message: 'Recovery import must match the deleted Workspace and remint its identity.' }
+  );
+
 /** Response listing every Workspace authorized for the current caller. */
 export const ListAuthorizedWorkspacesResponseSchema = z
   .object({ items: z.array(AuthorizedWorkspaceSummarySchema) })
@@ -274,6 +372,16 @@ export const WorkspaceAccessRecoveryResponseSchema = z
 
 /** Response returned after one canonical user is disabled. */
 export const DisableUserResponseSchema = z.object({ user: UserLifecycleSummarySchema }).strict();
+
+/** Response returned while or after one Workspace deletion advances. */
+export const WorkspaceDeletionResponseSchema = z
+  .object({ deletion: WorkspaceDeletionStateSchema })
+  .strict();
+
+/** Response returned after recovering one deleted Workspace. */
+export const RecoverDeletedWorkspaceResponseSchema = z
+  .object({ recovery: DeletedWorkspaceRecoveryStateSchema })
+  .strict();
 
 /** Safe current record returned by one Workspace sharing revision conflict. */
 export const WorkspaceRevisionConflictDetailsSchema = z.discriminatedUnion('resource', [
@@ -313,11 +421,25 @@ const WorkspaceRevisionConflictErrorSchema = ApiErrorSchema.extend({
   details: WorkspaceRevisionConflictDetailsSchema,
 }).strict();
 
+/** Failure returned when retention policy blocks Workspace deletion. */
+const WorkspaceDeletionBlockedErrorSchema = ApiErrorSchema.extend({
+  code: z.literal('workspace_deletion_blocked'),
+  details: z.object({ holdRecordIds: z.array(z.string().min(1)) }).strict(),
+}).strict();
+
+/** Failure returned when another request already owns Workspace deletion. */
+const WorkspaceDeletionInProgressErrorSchema = ApiErrorSchema.extend({
+  code: z.literal('workspace_deletion_in_progress'),
+  details: WorkspaceDeletionStateSchema,
+}).strict();
+
 /** Closed typed error family for Workspace sharing operations. */
 export const WorkspaceSharingErrorSchema = z.union([
   WorkspaceSharingErrorWithoutDetailsSchema,
   WorkspaceInvitationNotPendingErrorSchema,
   WorkspaceRevisionConflictErrorSchema,
+  WorkspaceDeletionBlockedErrorSchema,
+  WorkspaceDeletionInProgressErrorSchema,
 ]);
 
 /** Workspace access level granted by one active membership. */
@@ -372,6 +494,18 @@ export type TransferWorkspaceOwnershipRequest = z.infer<
 export type RecoverWorkspaceAccessRequest = z.infer<typeof RecoverWorkspaceAccessRequestSchema>;
 /** Request that disables one exact canonical user. */
 export type DisableUserRequest = z.infer<typeof DisableUserRequestSchema>;
+/** Registry lifecycle state exposed by Workspace deletion. */
+export type WorkspaceRegistryStatus = z.infer<typeof WorkspaceRegistryStatusSchema>;
+/** Durable phase of one Workspace deletion request. */
+export type WorkspaceDeletionPhase = z.infer<typeof WorkspaceDeletionPhaseSchema>;
+/** Safe progress projection for one Workspace deletion request. */
+export type WorkspaceDeletionState = z.infer<typeof WorkspaceDeletionStateSchema>;
+/** Owner-confirmed request that permanently deletes one Workspace. */
+export type DeleteWorkspaceRequest = z.infer<typeof DeleteWorkspaceRequestSchema>;
+/** Request that imports the recovery export for one deleted Workspace. */
+export type RecoverDeletedWorkspaceRequest = z.infer<typeof RecoverDeletedWorkspaceRequestSchema>;
+/** Safe result of recovering one deleted Workspace into a reminted identity. */
+export type DeletedWorkspaceRecoveryState = z.infer<typeof DeletedWorkspaceRecoveryStateSchema>;
 /** Response listing every Workspace authorized for the current caller. */
 export type ListAuthorizedWorkspacesResponse = z.infer<
   typeof ListAuthorizedWorkspacesResponseSchema
@@ -396,6 +530,10 @@ export type WorkspaceOwnershipMutationResponse = z.infer<
 export type WorkspaceAccessRecoveryResponse = z.infer<typeof WorkspaceAccessRecoveryResponseSchema>;
 /** Response returned after one canonical user is disabled. */
 export type DisableUserResponse = z.infer<typeof DisableUserResponseSchema>;
+/** Response returned while or after one Workspace deletion advances. */
+export type WorkspaceDeletionResponse = z.infer<typeof WorkspaceDeletionResponseSchema>;
+/** Response returned after recovering one deleted Workspace. */
+export type RecoverDeletedWorkspaceResponse = z.infer<typeof RecoverDeletedWorkspaceResponseSchema>;
 /** Safe current record returned by one Workspace sharing revision conflict. */
 export type WorkspaceRevisionConflictDetails = z.infer<
   typeof WorkspaceRevisionConflictDetailsSchema

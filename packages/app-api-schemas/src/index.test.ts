@@ -6435,6 +6435,15 @@ describe('WP5 Workspace sharing schemas', () => {
     administratorRole: null,
     registryRevision: 4,
   } as const;
+  const workspaceDeletion = {
+    workspaceId: workspace.id,
+    requestId,
+    status: 'active',
+    phase: 'fenced',
+    recoveryExportId: null,
+    closureId: null,
+    retainedStaging: false,
+  } as const;
 
   it('accepts the exact Workspace sharing read and mutation projections', () => {
     expect(
@@ -6560,6 +6569,119 @@ describe('WP5 Workspace sharing schemas', () => {
           expectedRegistryRevision: 4,
         }).success
       ).toBe(true);
+    }
+  });
+
+  it('accepts only the bounded Workspace deletion and recovery contracts', () => {
+    const deletedWorkspaceRecovery = {
+      sourceWorkspaceId: workspace.id,
+      deletionRequestId: '00000000-0000-4000-8000-000000000002',
+      recoveryExportId: 'wsexp_recovery',
+      closureId: 'closure_recovery',
+      import: {
+        mode: 'imported',
+        requestId,
+        exportId: 'wsexp_recovery',
+        sourceWorkspaceId: workspace.id,
+        exportedWorkspaceId: workspace.id,
+        importedWorkspaceId: 'ws_recovered',
+        manifest: {
+          schemaVersion: 1,
+          recordType: 'workspace-export',
+          id: 'wsexp_recovery',
+          ownerScope: 'workspace',
+          lineage: { workspaceId: workspace.id },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          contentDigest: 'sha256:manifest',
+          redactionLevel: 'metadata',
+          sensitivity: 'internal',
+          requiredFeatures: [],
+          extensions: {},
+          sourceDeploymentId: 'dep_local',
+          workspaceId: workspace.id,
+          exportCreatedAt: timestamp,
+          exportFormatVersion: 2,
+          contentInventory: [],
+        },
+        workspace: {
+          ...workspace,
+          id: 'ws_recovered',
+          name: 'Recovered Workspace',
+          counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        },
+        verification: { fileCount: 0, totalBytes: 0, checkedFiles: [] },
+        collision: {
+          status: 'collides',
+          workspaceId: workspace.id,
+          suggestedWorkspaceId: 'ws_recovered',
+        },
+      },
+    } as const;
+
+    expect(
+      appApiSchemas.DeleteWorkspaceRequestSchema.parse({
+        requestId,
+        expectedRegistryRevision: 4,
+        confirmation: `permanently-delete-workspace:${workspace.id}:4`,
+      }).expectedRegistryRevision
+    ).toBe(4);
+    for (const confirmation of ['yes', `permanently-delete-workspace:${workspace.id}:3`]) {
+      expect(
+        appApiSchemas.DeleteWorkspaceRequestSchema.safeParse({
+          requestId,
+          expectedRegistryRevision: 4,
+          confirmation,
+        }).success
+      ).toBe(false);
+    }
+    expect(
+      appApiSchemas.WorkspaceDeletionResponseSchema.parse({ deletion: workspaceDeletion }).deletion
+    ).toEqual(workspaceDeletion);
+    expect(
+      appApiSchemas.RecoverDeletedWorkspaceRequestSchema.parse({
+        requestId,
+        deletionRequestId: '00000000-0000-4000-8000-000000000002',
+      }).deletionRequestId
+    ).toBe('00000000-0000-4000-8000-000000000002');
+    expect(
+      appApiSchemas.RecoverDeletedWorkspaceResponseSchema.parse({
+        recovery: deletedWorkspaceRecovery,
+      }).recovery.import.importedWorkspaceId
+    ).toBe('ws_recovered');
+    for (const invalidDeletion of [
+      { ...workspaceDeletion, path: '/private/workspace' },
+      { ...workspaceDeletion, status: 'deleted' },
+      { ...workspaceDeletion, phase: 'cleaned' },
+    ]) {
+      expect(appApiSchemas.WorkspaceDeletionStateSchema.safeParse(invalidDeletion).success).toBe(
+        false
+      );
+    }
+    for (const invalidRecovery of [
+      { ...deletedWorkspaceRecovery, sourceWorkspaceId: 'ws_other' },
+      { ...deletedWorkspaceRecovery, recoveryExportId: 'wsexp_other' },
+      {
+        ...deletedWorkspaceRecovery,
+        import: {
+          ...deletedWorkspaceRecovery.import,
+          collision: { status: 'available', workspaceId: workspace.id },
+        },
+      },
+      {
+        ...deletedWorkspaceRecovery,
+        import: {
+          ...deletedWorkspaceRecovery.import,
+          importedWorkspaceId: workspace.id,
+          workspace,
+        },
+      },
+    ]) {
+      expect(
+        appApiSchemas.RecoverDeletedWorkspaceResponseSchema.safeParse({
+          recovery: invalidRecovery,
+        }).success
+      ).toBe(false);
     }
   });
 
@@ -6694,6 +6816,33 @@ describe('WP5 Workspace sharing schemas', () => {
           resource: 'workspace_recovery',
           current: { ...accessRecovery, workspace },
         },
+        requestId,
+      }).success
+    ).toBe(false);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'workspace_deletion_blocked',
+        message: 'Workspace deletion is blocked by retention policy.',
+        details: { holdRecordIds: ['bundle_legal_hold'] },
+        requestId,
+      }).success
+    ).toBe(true);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'workspace_deletion_in_progress',
+        message: 'Another Workspace deletion request is in progress.',
+        details: workspaceDeletion,
+        requestId,
+      }).success
+    ).toBe(true);
+    expect(
+      appApiSchemas.WorkspaceSharingErrorSchema.safeParse({
+        protocolVersion: '0.4.0',
+        code: 'workspace_deletion_in_progress',
+        message: 'Another Workspace deletion request is in progress.',
+        details: { ...workspaceDeletion, path: '/private/workspace' },
         requestId,
       }).success
     ).toBe(false);
