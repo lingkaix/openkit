@@ -17,6 +17,15 @@ import { z } from 'zod';
 
 const EMPTY_INPUT = z.object({}).strict();
 const IDENTIFIER = z.string().min(1);
+const OPENKIT_ACCESS_TOKEN = z.string().regex(/^okt_[A-Za-z0-9_-]+$/);
+const ADMIN_RECOVERY_CREDENTIAL = strictScope({
+  kind: z.literal('openkit-admin-recovery'),
+  requestId: z.string().uuid(),
+  tokenId: z.string().uuid(),
+  ownerUserId: IDENTIFIER,
+  expiresAt: z.string().datetime(),
+  token: OPENKIT_ACCESS_TOKEN,
+});
 const SUBSCRIPTION_PROVIDER_ID = appSchemas.SubscriptionProviderIdSchema;
 const STANDARD = Object.freeze({
   inputSensitivity: 'standard',
@@ -2840,7 +2849,7 @@ export const operationCatalog = [
     group: 'credential',
     summary: 'Store one endpoint credential from stdin.',
     mutating: true,
-    inputSchema: strictScope({ token: z.string().regex(/^okt_[A-Za-z0-9._~-]+$/) }),
+    inputSchema: z.union([strictScope({ token: OPENKIT_ACCESS_TOKEN }), ADMIN_RECOVERY_CREDENTIAL]),
     handler: ({ credentialStore, endpoint }, input) => {
       if (typeof credentialStore?.writeToken !== 'function' || !endpoint) {
         throw localError(

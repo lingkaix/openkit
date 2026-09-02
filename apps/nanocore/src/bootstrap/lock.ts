@@ -1,7 +1,6 @@
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { join } from 'node:path';
-import { ensureLayout } from '../storage/fs-layout.js';
+import { resolveDataRootPath } from '../storage/fs-layout.js';
 
 const LOCK_FILE_NAME = 'nanocore.lock';
 const HEARTBEAT_MS = 5_000;
@@ -71,7 +70,7 @@ export class DataRootLockError extends Error {
  * @returns Absolute or relative lockfile path.
  */
 export function dataRootLockPath(dataRoot: string): string {
-  return join(ensureLayout(dataRoot).serverRuntime, LOCK_FILE_NAME);
+  return resolveDataRootPath(dataRoot, 'server', 'runtime', LOCK_FILE_NAME);
 }
 
 /**

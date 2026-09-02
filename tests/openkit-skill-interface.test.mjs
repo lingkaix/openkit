@@ -581,6 +581,42 @@ test('restricted Material content operations fail before content-bearing transpo
   assert.deepEqual(contentCalls, []);
 });
 
+test('credential.store accepts one token or one complete recovery envelope and stores only token', async () => {
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'credential.store');
+  const token = `okt_${'a'.repeat(43)}`;
+  const envelope = {
+    kind: 'openkit-admin-recovery',
+    requestId: '07a6f7d1-7375-5cf7-8705-270d269c22c9',
+    tokenId: '019957ff-2000-7000-8000-000000000001',
+    ownerUserId: 'user_active',
+    expiresAt: '2026-09-02T12:00:00.000Z',
+    token,
+  };
+
+  assert.equal(operation.inputSchema.safeParse({ token }).success, true);
+  assert.equal(operation.inputSchema.safeParse(envelope).success, true);
+  assert.equal(operation.inputSchema.safeParse({ ...envelope, tokenId: undefined }).success, false);
+  assert.equal(operation.inputSchema.safeParse({ ...envelope, extra: true }).success, false);
+
+  const writes = [];
+  const result = operation.handler(
+    {
+      credentialStore: {
+        writeToken(input) {
+          writes.push(input);
+          return 'encrypted-file';
+        },
+      },
+      endpoint: 'https://openkit.example.test',
+    },
+    envelope
+  );
+  assert.deepEqual(writes, [{ baseUrl: 'https://openkit.example.test', token }]);
+  assert.deepEqual(result, { credentialStorageBackend: 'encrypted-file' });
+  assert.doesNotMatch(JSON.stringify(result), /requestId|tokenId|ownerUserId|expiresAt|okt_/u);
+});
+
 test('catalog search is concise and describe returns one machine-readable input contract', async () => {
   const { describeOperation, searchOperations } = await operations();
   const results = searchOperations('workspace');
