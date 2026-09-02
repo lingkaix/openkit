@@ -30,7 +30,7 @@ The `CI` workflow exposes these manual `gate` choices:
 - `l0-l2`: static, unit, and contract verification.
 - `nano-core-e2e`: L3 NanoCore black-box e2e.
 - `web-e2e`: L4 Web browser e2e.
-- `smoke`: L5 built-artifact smoke tests.
+- `smoke`: L5 built-artifact smoke tests plus the disposable app-image stopped-server recovery probe on a separate runner using the root Node pin.
 - `release-gate`: tag-release gate equivalent.
 - `full`: explicit full manual validation, including L4.
 

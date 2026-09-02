@@ -414,6 +414,29 @@ jobs:
       - name: Run built-artifact smoke tests
         run: pnpm -w test:smoke
 
+  app-image-admin-recovery:
+    name: L5 app-image stopped-server recovery
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up the pinned root Node toolchain
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          install_args: node
+
+      - name: Build the disposable app image
+        run: scripts/docker/build-image.sh app
+
+      - name: Run the stopped-server recovery image smoke
+        env:
+          OPENKIT_TEST_APP_IMAGE_RECOVERY: "1"
+        run: bash scripts/test-env.sh host node --test scripts/docker/app-admin-recovery-smoke.test.mjs
+
   build-nanohost-arm64:
     name: Build NanoHost natively on arm64
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')

@@ -201,6 +201,32 @@ test('workspace portability uses two runners only behind release or manual gates
   assert.ok(workflow.jobs['package-release-assets'].needs.includes('workspace-portability-target'));
 });
 
+test('app-image recovery smoke is manual, host-placed, opted in, and root-Node pinned', () => {
+  const job = workflow.jobs['app-image-admin-recovery'];
+  assert.equal(
+    job.if,
+    `github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","release-gate","full"]'), inputs.gate)`
+  );
+  assert.doesNotMatch(job.if, /pull_request|github\.event_name == 'push'/u);
+  assert.equal(job.container, undefined);
+  assert.match(String(job['runs-on']), /^ubuntu-/u);
+
+  const setup = step(job, 'Set up the pinned root Node toolchain');
+  assert.match(setup.uses, /^jdx\/mise-action@[a-f0-9]{40}$/u);
+  assert.deepEqual(setup.with, { install_args: 'node' });
+  assert.equal(
+    step(job, 'Build the disposable app image').run,
+    'scripts/docker/build-image.sh app'
+  );
+
+  const smoke = step(job, 'Run the stopped-server recovery image smoke');
+  assert.deepEqual(smoke.env, { OPENKIT_TEST_APP_IMAGE_RECOVERY: '1' });
+  assert.equal(
+    smoke.run,
+    'bash scripts/test-env.sh host node --test scripts/docker/app-admin-recovery-smoke.test.mjs'
+  );
+});
+
 function step(job, name) {
   const found = job.steps.find((candidate) => candidate.name === name);
   assert.ok(found, `Missing workflow step: ${name}`);
