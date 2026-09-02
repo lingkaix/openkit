@@ -26,12 +26,12 @@ require() {
 
 require "$BWRAP" 'Bubblewrap is required for the NanoHost fixed-path installer gate.'
 [[ -x "$INSTALLER" ]] || { printf 'FAIL: NanoHost installer is missing or not executable.\n' >&2; exit 1; }
-"$BWRAP" --unshare-all --share-net --die-with-parent --new-session --ro-bind / / --proc /proc --dev /dev -- /bin/true || {
+"$BWRAP" --unshare-all --die-with-parent --new-session --ro-bind / / --proc /proc --dev /dev -- /bin/true || {
   printf 'FAIL: Bubblewrap minimal namespace self-check failed.\n' >&2
   exit 1
 }
 set +e
-"$BWRAP" --unshare-all --share-net --die-with-parent --new-session --ro-bind / / --proc /proc --dev /dev -- /bin/sh -c 'exit 23'
+"$BWRAP" --unshare-all --die-with-parent --new-session --ro-bind / / --proc /proc --dev /dev -- /bin/sh -c 'exit 23'
 SELF_CHECK_FAILURE=$?
 set -e
 [[ "$SELF_CHECK_FAILURE" -eq 23 ]] || {
@@ -151,7 +151,7 @@ namespace_command() {
   local extra_stub=${1:-}
   shift || true
   local args=(
-    --unshare-all --share-net --die-with-parent --new-session
+    --unshare-all --die-with-parent --new-session
     --ro-bind / /
     --proc /proc --dev /dev
     --tmpfs /usr/lib
