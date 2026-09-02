@@ -198,6 +198,21 @@ function disabledUser() {
   };
 }
 
+/** Returns one safe in-progress Workspace deletion projection. */
+function workspaceDeletionResponse() {
+  return {
+    deletion: {
+      closureId: null,
+      phase: 'fenced',
+      recoveryExportId: null,
+      requestId,
+      retainedStaging: false,
+      status: 'active',
+      workspaceId: 'ws_demo',
+    },
+  };
+}
+
 /** Returns one valid thread record. */
 function thread() {
   return {
@@ -1349,6 +1364,19 @@ function workspaceImportResponse() {
       counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
       createdAt: timestamp,
       updatedAt: timestamp,
+    },
+  };
+}
+
+/** Returns one safe deleted-Workspace recovery projection. */
+function deletedWorkspaceRecoveryResponse() {
+  return {
+    recovery: {
+      closureId: 'closure_demo',
+      deletionRequestId: '00000000-0000-4000-8000-000000000002',
+      import: workspaceImportResponse(),
+      recoveryExportId: 'wsexp_demo',
+      sourceWorkspaceId: 'ws_demo',
     },
   };
 }
@@ -2575,6 +2603,35 @@ describe('createCoreClient', () => {
         invoke: (client) => client.app.disableUser('user_2', { requestId }),
         methodPath: 'POST /api/app/users/user_2/disable',
         response: { user },
+      },
+      {
+        body: {
+          confirmation: 'permanently-delete-workspace:ws_demo:1',
+          expectedRegistryRevision: 1,
+          requestId,
+        },
+        invoke: (client) =>
+          client.app.deleteWorkspace('ws_demo', {
+            confirmation: 'permanently-delete-workspace:ws_demo:1',
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspaces/ws_demo/delete',
+        response: workspaceDeletionResponse(),
+        status: 202,
+      },
+      {
+        body: {
+          deletionRequestId: '00000000-0000-4000-8000-000000000002',
+          requestId,
+        },
+        invoke: (client) =>
+          client.app.recoverDeletedWorkspace('ws_demo', {
+            deletionRequestId: '00000000-0000-4000-8000-000000000002',
+            requestId,
+          }),
+        methodPath: 'POST /api/app/workspace-deletions/ws_demo/recover',
+        response: deletedWorkspaceRecoveryResponse(),
       },
     ];
     const routes = Object.fromEntries(

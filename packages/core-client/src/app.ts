@@ -61,6 +61,8 @@ import {
   DeclineWorkspaceInvitationRequestSchema,
   type DecommissionNanoHostResponse,
   DecommissionNanoHostResponseSchema,
+  type DeleteWorkspaceRequest,
+  DeleteWorkspaceRequestSchema,
   type DisableUserRequest,
   DisableUserRequestSchema,
   type DisableUserResponse,
@@ -223,6 +225,10 @@ import {
   RecordKnowledgeObservationRequestSchema,
   type RecordKnowledgeObservationResponse,
   RecordKnowledgeObservationResponseSchema,
+  type RecoverDeletedWorkspaceRequest,
+  RecoverDeletedWorkspaceRequestSchema,
+  type RecoverDeletedWorkspaceResponse,
+  RecoverDeletedWorkspaceResponseSchema,
   type RecoverWorkspaceAccessRequest,
   RecoverWorkspaceAccessRequestSchema,
   type RegisterKnowledgeSourceRequest,
@@ -367,6 +373,8 @@ import {
   WorkspaceAccessRecoveryResponseSchema,
   type WorkspaceDashboardResponse,
   WorkspaceDashboardResponseSchema,
+  type WorkspaceDeletionResponse,
+  WorkspaceDeletionResponseSchema,
   type WorkspaceExportResponse,
   WorkspaceExportResponseSchema,
   type WorkspaceImportDryRunRequest,
@@ -420,6 +428,10 @@ export type TransferWorkspaceOwnershipInput = OptionalRequestId<TransferWorkspac
 export type RecoverWorkspaceAccessInput = OptionalRequestId<RecoverWorkspaceAccessRequest>;
 /** Canonical user-disable input with an optional caller-provided request id. */
 export type DisableUserInput = OptionalRequestId<DisableUserRequest>;
+/** Workspace deletion input with an optional caller-provided request id. */
+export type DeleteWorkspaceInput = OptionalRequestId<DeleteWorkspaceRequest>;
+/** Deleted-Workspace recovery input with an optional caller-provided request id. */
+export type RecoverDeletedWorkspaceInput = OptionalRequestId<RecoverDeletedWorkspaceRequest>;
 
 /** Goal Mode real worker step input with optional caller-provided request id. */
 export type RunThreadGoalStepInput = OptionalRequestId<RunThreadGoalStepRequest>;
@@ -601,6 +613,16 @@ export interface AppApiClient {
   ): Promise<WorkspaceAccessRecoveryResponse>;
   /** Disables one canonical user. */
   disableUser(userId: string, input: DisableUserInput): Promise<DisableUserResponse>;
+  /** Permanently deletes one owner-confirmed Workspace. */
+  deleteWorkspace(
+    workspaceId: string,
+    input: DeleteWorkspaceInput
+  ): Promise<WorkspaceDeletionResponse>;
+  /** Recovers one deleted Workspace into a reminted identity. */
+  recoverDeletedWorkspace(
+    workspaceId: string,
+    input: RecoverDeletedWorkspaceInput
+  ): Promise<RecoverDeletedWorkspaceResponse>;
   /** Imports one immutable Workspace Artifact version. */
   importWorkspaceArtifact(
     workspaceId: string,
@@ -1192,6 +1214,24 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/users/${userId}/disable`,
         DisableUserRequestSchema.parse(request),
         DisableUserResponseSchema
+      );
+    },
+    deleteWorkspace: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/delete`,
+        DeleteWorkspaceRequestSchema.parse(request),
+        WorkspaceDeletionResponseSchema
+      );
+    },
+    recoverDeletedWorkspace: (workspaceId, input) => {
+      const request = withRequestId(input);
+
+      return transport.postJson(
+        `/api/app/workspace-deletions/${workspaceId}/recover`,
+        RecoverDeletedWorkspaceRequestSchema.parse(request),
+        RecoverDeletedWorkspaceResponseSchema
       );
     },
     importWorkspaceArtifact: (workspaceId, input) => {
