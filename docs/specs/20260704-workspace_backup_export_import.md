@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+updated: 2026-09-02
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V2
@@ -10,6 +11,7 @@ Workspace export format: V2
 - The workspace export format: export tree layout, root manifest shape, content inventory, and offline verifiability rules.
 - Content inclusion, exclusion, and redaction rules for workspace exports.
 - Import validation, exact-byte verification, required-feature enforcement, coordinated publication, and rollback behavior.
+- The canonical `.openkit-workspace.tar.zst` archive transport, binary App API boundary, request staging, and local-mode bundled CLI projection.
 - Workspace id collision handling, subordinate identity reminting, and `importedFrom` lineage rules on import.
 - Portable row and reference rewriting for Workspace Material identity, immutable inline revisions, Thread bindings, and version-keyed Artifact Review history.
 - Portable-export exclusion and import reconstruction rules for Workspace ownership, membership, invitations, and actor lineage.
@@ -26,6 +28,7 @@ Workspace export format: V2
 - Audit, usage, and evidence record schemas or retention class definitions. `docs/specs/20260703-audit_usage_evidence_records.md` owns those.
 - Boot-time layout verification, index rebuild, and recovery sequencing. `docs/specs/20260704-nanocore_bootstrap_readiness.md` owns those.
 - Workspace membership, invitation, owner-transfer, role, and user-lifecycle semantics. `docs/specs/20260715-multi_user_workspace_system.md` owns those.
+- Canonical-user terminal authentication for server mode. Better Auth owns the current session surface; this specification does not grant a `server-admin` bearer credential Workspace content authority or create another user credential.
 - Multi-deployment live synchronization or replication, which are deferred.
 
 ## Core References
@@ -69,14 +72,14 @@ The primary export unit is one workspace. Workspace export format V2 is a self-d
 
 ## Decision
 
-The export unit is one workspace, serialized as a plain V2 directory tree with an envelope-wrapped manifest and per-file digests. SQLite never travels inside an export: portable source-of-truth rows are dumped as line-oriented records, and derived indexes are omitted so their existing owner can rebuild them at boot or on demand. Import is manifest-verified, fail-closed on unknown required features or incomplete lineage, and coordinated through same-filesystem staging, one Core transaction, and synchronous compensating rollback. This does not create a transaction spanning the filesystem and SQLite across a process crash. V1 is intentionally incompatible and rejected rather than migrated. Backup operates on the whole data root, cold by default, hot with an ordered file-tree-then-SQLite-snapshot procedure. Data-root migration is supported by repointing server config and letting boot verification validate the moved tree.
+The export unit is one workspace, serialized as a plain V2 directory tree with an envelope-wrapped manifest and per-file digests. The canonical transported form is that exact tree streamed as `.openkit-workspace.tar.zst`; transport introduces no second manifest or server archive registry. SQLite never travels inside an export: portable source-of-truth rows are dumped as line-oriented records, and derived indexes are omitted so their existing owner can rebuild them at boot or on demand. Import is manifest-verified, fail-closed on unknown required features or incomplete lineage, and coordinated through same-filesystem staging, one Core transaction, and synchronous compensating rollback. This does not create a transaction spanning the filesystem and SQLite across a process crash. V1 is intentionally incompatible and rejected rather than migrated. Backup operates on the whole data root, cold by default, hot with an ordered file-tree-then-SQLite-snapshot procedure. Data-root migration is supported by repointing server config and letting boot verification validate the moved tree.
 
 ## Contract / Expected Behavior
 
 ### Export Unit And V2 Manifest
 
 - The primary export unit MUST be one workspace. Exports of other scopes are not defined by this spec.
-- An export MUST be a directory tree. Implementations MAY additionally package that tree as a single tar archive; the archived form MUST contain the identical tree.
+- An export MUST be a directory tree. Its canonical transported form MUST be one Zstandard-compressed POSIX tar archive with extension `.openkit-workspace.tar.zst` and media type `application/vnd.openkit.workspace-export+tar.zstd`; the archived form contains the identical tree and no wrapping directory, second manifest, or transport record.
 - The export root MUST contain `openkit-workspace-export.json`, carrying the common record envelope with `recordType: workspace-export`, workspace ownership and lineage, source deployment id, workspace id, export timestamp, `requiredFeatures`, and the content inventory.
 - The manifest MUST declare `exportFormatVersion: 2`. Importers MUST reject V1 and every other version; no compatibility adapter or in-place upgrade is defined.
 - The content inventory MUST list every non-manifest file exactly once with its relative path, byte length, and SHA-256 digest. The manifest `contentDigest` MUST be the SHA-256 digest of the exact JSON serialization of that inventory.
@@ -142,7 +145,7 @@ Future evaluation or worker-Skill mechanisms do not enter export scope merely be
 
 - Verification MUST validate the manifest envelope and `requiredFeatures` before creating any target state.
 - The verifier MUST read each inventoried file once and return those verified bytes. Dry-run and mutating import MUST parse only that verified byte set and MUST NOT reopen export content after verification.
-- A server-managed export whose `sourceDeploymentId` matches the current deployment or its recorded predecessor MUST remain private to an actor who can currently read the source workspace and has active membership. An export from an unrelated deployment is portable input and does not require a local source membership edge.
+- Every server-managed export handle, regardless of its recorded deployment lineage, MUST remain private to the current source Workspace owner with `workspace.export` authority. An unrelated-deployment handle is rejected rather than treated as portable input; foreign portable input enters only as the one-shot streamed archive body defined below and never becomes a readable server handle.
 - The importer MUST reject unsupported `requiredFeatures` declared by the manifest or any imported record, and the diagnostic MUST name the unsupported identifier.
 - The importer MUST validate both the source canonical history graph and the reminted graph before creating target state. Duplicate identities, stale turn projections, non-contiguous events, invalid event targets, and dangling lineage MUST fail import.
 - When the workspace id does not collide anywhere in the target deployment, the importer MUST preserve it. The deployment-wide Workspace registry, final owner-independent Workspace path, and any staged import participate in collision detection; when any target state already claims the id, the importer MUST mint a new Workspace id.
@@ -165,9 +168,22 @@ Future evaluation or worker-Skill mechanisms do not enter export scope merely be
 - Import MUST provide coordinated all-or-clean behavior for synchronous request failures: it stages workspace files and the workspace database on the target filesystem, wraps publication and Core-row replay in one Core transaction, rolls back Core rows on error, and removes staged or already published imported files and live-store state when an error is caught. Filesystem publication and SQLite commit are not one crash-atomic transaction; a process crash between them remains an explicit recovery window.
 - Import request failures MUST return stable product-safe messages and MUST NOT expose the data-root path, export storage path, database error, or other deployment internals.
 
+### Portable Archive Transport
+
+- Archive download MUST reverify the existing server-managed export tree before sending a response, traverse the verified inventory in canonical path order, and stream tar then Zstandard output without buffering the complete archive or creating a second server-side archive. Tar directories use mode `0755`; regular files use mode `0644`; uid, gid, uname, gname, and mtime are zero or empty canonical values. Import treats tar metadata as non-authorizing and always creates private target staging with the fixed modes below.
+- Archive download requires the current source owner and the `workspace.export` product operation. `workspace.read` alone is insufficient. A foreign-deployment export handle is never a readable or enumerable public server object, and a `server-admin` credential never bypasses source Workspace authority.
+- Archive dry-run and mutating import MUST accept one streamed request body and MUST NOT publish it as a durable export handle, archive registry row, reusable upload, or server content address. The authenticated importer is target authority; foreign deployment and source actor identifiers remain lineage only.
+- The current archive ceilings are exactly 8,589,934,592 compressed request bytes, 34,359,738,368 expanded tar bytes, 200,000 total tar entries including directories, and 2,147,483,648 bytes for one regular-file entry. A declared content length above the compressed ceiling fails before body consumption; missing or legal chunked length remains allowed, but observed bytes enforce every ceiling during streaming. These are fixed Phase 1 trust-boundary constants, not operator configuration.
+- Request staging lives only under the dedicated server archive-request staging namespace. Each request owns one newly created `0700` directory and `0600` regular files created with exclusive no-link semantics. Extraction rejects absolute, empty, non-UTF-8, backslash, dot, dot-dot, noncanonical, duplicate, case-colliding, or NUL/control paths and every symlink, hard link, device, FIFO, socket, sparse entry, unsupported extension entry, extra file, missing file, size mismatch, and verifier failure.
+- Dry-run parses only the verified staged bytes, returns the existing collision and verification report, and removes its staging in request `finally`. Mutating import consumes the same verified bytes through the existing coordinated import owner and removes its staging after success or caught failure. A running request removes only its own directory; listener-preflight boot cleanup may remove the complete dedicated request-staging namespace because no request can then be active. No ordinary operation scans or removes another request's staging.
+- A same-deployment archive still requires the current source owner and `workspace.export` authority before dry-run or import. A foreign archive has no target source membership to check. Both preserve the source Workspace ID when the accepted collision predicate reports it available and use the existing deterministic remint rule otherwise.
+- A process crash may leave non-authorizing request staging, and a process crash inside the existing filesystem-to-Core import publication window retains that owner's explicit recovery gap. Staging presence never authorizes import, repair, replay, or Workspace publication.
+
 ### Public Portability Surfaces
 
-- NanoCore exposes server-managed export, dry-run import, and mutating import handles through the App API; `@openkit/core-client`, the transport-neutral operation catalog, the bundled CLI, and the unified Skill project `backup.create`, `backup.verify`, `workspace.export`, `workspace.import-dry-run`, and `workspace.import` without revealing server filesystem paths.
+- NanoCore retains the server-managed JSON export, dry-run import, and mutating import handles and adds `GET /api/app/workspaces/:workspaceId/exports/:exportId/archive`, `POST /api/app/workspace-archives/import-dry-run`, and `POST /api/app/workspace-archives/import`. The two POST routes require the exact archive media type; mutating import additionally requires one non-empty `x-openkit-request-id` header and returns the existing JSON import result only after the body is fully verified and consumed.
+- `@openkit/core-client` exposes stream-oriented archive download, dry-run, and import methods. The transport-neutral operation catalog, bundled CLI, and unified Skill project `workspace.archive-download`, `workspace.archive-import-dry-run`, and `workspace.archive-import`; they never base64-encode archive bytes or expose a server filesystem path.
+- The supported bundled CLI archive path is local mode with its implicit canonical user. Download creates the caller's exact destination as a non-link regular file with `O_CREAT|O_EXCL` and mode `0600`; it refuses overwrite. Dry-run and import open the caller's exact source as one regular non-link file and verify that identity remains stable through stream acquisition. Server-mode users retain Better Auth session surfaces; this change adds no cookie jar, user-login command, canonical-user bearer token, or `server-admin` content bypass.
 - Workspace vault-reference discovery and re-binding accept secret material only as input, store it in the active target vault backend, and return only redacted reference metadata.
 - The Web portability surface supports repository and vault-reference re-binding after import or migration without retaining secret material in rendered state.
 
@@ -252,10 +268,12 @@ The required acceptance path maps to the L0-L6 model in `docs/specs/20260529-tes
 - L2 Context Package fixtures require every reminted Material and Revision reference and package path to change coherently and every dependent digest to be recomputed; restricted Material selection, stale or missing revisions, and any portable-byte or owner tamper fail closed. One valid imported-history fixture contains zero target scheduler admissions, leases, and Worker Backend Sessions; the strict verifier rejects its reserved trace even when matching runtime lookalikes are injected, the history verifier accepts only the complete portable graph, and re-export plus re-import preserves the historical classification.
 - L2 imported unresolved Artifact Review fixtures prove that a current target actor may accept or apply from the exact current Artifact bytes, verified historical same-Turn tuple, current target Material base, and fresh target request proof regardless of historical Agent availability. Refinement or redo additionally requires a currently enabled target Agent whose id exactly equals historical `sourceAgentId`; absence returns `stale` with zero writes and no substitution, while presence may reserve a new target Turn only when later execution obtains fresh target-local admission, AgentSession, lease, backend handoff, and strict S39 trace. Every imported AgentSession is terminal `closed`, carries no target runtime binding, and imported runtime history never authorizes execution.
 - L2 also requires fixtures proving memberships, invitations, credentials, and personal state are absent; historical actor references remain lineage only; and import creates exactly one target owner membership.
-- L3 requires NanoCore process-level coverage for collision reminting, cross-data-root import, fault-injected synchronous rollback, boot or on-demand index rebuild, concurrent-write hot-backup restore, and deployment-lineage validation.
+- L2 archive fixtures require exact media type, rejection of unrelated-deployment server-managed handles, fixed streaming ceilings, private exclusive staging for archive dry-run and import, malicious tar metadata and path rejection, request-local cleanup, concurrent request isolation, CLI no-overwrite behavior, and the same preserve-or-remint collision result as server-managed import.
+- L3 requires NanoCore process-level coverage for owner-only archive download, local-mode CLI cross-data-root import, collision reminting, fault-injected synchronous rollback, boot or on-demand index rebuild, concurrent-write hot-backup restore, and deployment-lineage validation.
 - L4 requires browser-level repository and Vault re-binding coverage without retaining rendered secret material.
 - L5 requires the packaged NanoCore server to boot with a disposable data root, serve successful JSON from the health and API-readiness endpoints, and exit cleanly after `SIGTERM`.
-- L6 requires cross-machine continuation with representative full history and authoritative knowledge state after target-side resource re-binding.
+- L6 remains the agent-first story acceptance layer for cross-machine continuation with representative full history and authoritative knowledge state after target-side resource re-binding; a fixed mechanical transfer is not classified as L6.
+- A fixed two-job GitHub Actions proof runs the real local-mode bundled CLI against one fresh source data root and one fresh target data root. The jobs transfer the original archive through the workflow artifact owner and compare its SHA-256 before and after transport, then compare the specification-defined semantic graph, complete history, authoritative knowledge, explicit repository and Vault re-binding, and target behavior after import and re-export. Re-export archive and manifest digests are not equality oracles because deployment, export, and lineage metadata truthfully change. This proof is L3 public-process coverage plus L5 artifact-transport smoke.
 
 Current implemented evidence is narrower than that full acceptance path:
 
@@ -263,7 +281,7 @@ Current implemented evidence is narrower than that full acceptance path:
 - L3 black-box tests currently cover collision reminting during export, dry-run, and import into a second fresh data root and process with preserved knowledge and `importedFrom` lineage, plus unsupported-feature and tamper rejection without partial workspace creation. They do not yet cover every fault stage, concurrent-write hot-backup restore, or deployment moves.
 - Web component tests cover repository and Vault re-binding, but browser-level L4 acceptance remains open.
 - The L5 built-artifact smoke covers packaged NanoCore boot, successful JSON health and API-readiness responses, and orderly shutdown.
-- The deterministic L6 runner currently uses two same-host temporary deployments and covers accepted knowledge plus repository re-binding. It does not prove cross-machine continuation, full-history equivalence, or Vault-seeded continuation.
+- The deterministic runner currently uses two same-host temporary deployments and covers accepted knowledge plus repository re-binding. It does not yet execute the accepted two-runner CLI proof, prove cross-machine continuation, compare the complete semantic graph, or cover Vault-seeded continuation.
 
 Current V2 acceptance requires deterministic round-trip equivalence, exact-byte tamper detection, exact manifest file-set enforcement, required remint and stable-id integrity, fail-closed V1 and feature handling, synchronous coordinated rollback, unbound Vault enforcement for the implemented families, and the Material, version-keyed Artifact Review, and S39 criteria above. No export may contain a SQLite file or system-managed Vault, provider, or runtime secret material. Concurrent-write hot-backup restore, browser L4, and cross-machine L6 remain release-hardening acceptance work.
 
@@ -278,7 +296,7 @@ Current V2 acceptance requires deterministic round-trip equivalence, exact-byte 
 
 ## Resolved Decisions
 
-The accepted workspace export version is V2. The canonical archived extension remains `.openkit-workspace.tar.zst` with a product-registered OpenKit workspace export media type. Dry-run performs the same exact-byte verification and collision preview as mutating import without staging or mutation.
+The accepted workspace export version is V2. The canonical archived extension remains `.openkit-workspace.tar.zst` with a product-registered OpenKit workspace export media type. Existing server-managed-tree dry-run performs exact-byte verification and collision preview without additional staging or target mutation; archive dry-run performs the same preview from non-authoritative request-local staging and removes that staging without target mutation.
 
 ## Deferred / Future Work
 
@@ -289,7 +307,7 @@ The accepted workspace export version is V2. The canonical archived extension re
 - Web UI surfaces for export and import progress.
 - Durable recovery for a process crash inside the workspace-filesystem-to-Core publication window.
 - Concurrent-write hot-backup restore validation and any cross-authority reconciliation it proves necessary.
-- Browser-level portability acceptance and true cross-machine full-history continuation.
+- Browser-level portability acceptance and optional agent-first L6 continuation beyond the fixed two-runner mechanical proof.
 
 ## Links
 
