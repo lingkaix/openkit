@@ -239,7 +239,7 @@ test('the one NanoHost installer host gate runs outside the test image', () => {
   const [, jobName, body] = jobBlocks[0];
   assert.match(jobName, /nanohost.*installer|installer.*nanohost/u);
   assert.doesNotMatch(body, /^ {4}container:/mu);
-  assert.match(body, /apt-get install[^\n]*bubblewrap/u);
+  assert.match(body, /apt-get install[^\n]*bubblewrap[^\n]*slirp4netns/u);
   assert.match(body, /sysctl -w kernel\.unprivileged_userns_clone=1/u);
   assert.match(body, /sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0/u);
   assert.match(body, new RegExp(`run:\\s*${escapeRegExp(leaf)}`, 'u'));
