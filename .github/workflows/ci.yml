@@ -29,10 +29,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Every gate below runs inside this image. The image is authoritative: when a
-  # permitted environment disagrees, the CI result decides. The tag is a digest
-  # of the image build inputs, so a tree cannot be tested against an image built
-  # from a different Dockerfile.
+  # Every any-placed gate below runs inside this image. Admitted host leaves use
+  # their named non-container jobs. The image is authoritative for any placement;
+  # its tag is a digest of the build inputs, so a tree cannot be tested against an
+  # image built from a different Dockerfile.
   # See the Test Execution Environment decision in docs/toolchain.md.
   test-image:
     name: Test execution image
@@ -155,6 +155,22 @@ jobs:
 
       - name: Run lightweight repository check
         run: pnpm -w check:repo
+
+  nanohost-installer:
+    name: NanoHost installer fixed-path gate
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Run the isolated fixed-path installer gate
+        run: bash tests/support/nanohost-release-installer-live.sh
 
   release-preflight:
     name: Release preflight
@@ -317,6 +333,40 @@ jobs:
       - name: Run built-artifact smoke tests
         run: pnpm -w test:smoke
 
+  build-nanohost-arm64:
+    name: Build NanoHost natively on arm64
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - release-preflight
+      - nanohost-installer
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up the pinned NanoHost toolchain
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          working_directory: apps/nanohost
+          install_args: rust
+
+      - name: Build and inspect the pinned NanoHost binary
+        run: |
+          cd apps/nanohost
+          cargo build --locked --release
+          ./target/release/nanohost --version
+          mkdir -p ../../nanohost-native
+          cp target/release/nanohost ../../nanohost-native/nanohost
+
+      - name: Upload native NanoHost binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanohost-native-arm64
+          path: nanohost-native/nanohost
+          if-no-files-found: error
+
   package-release-assets:
     name: Package portable release assets
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -326,6 +376,7 @@ jobs:
       - l0-l2
       - nano-core-e2e
       - smoke
+      - build-nanohost-arm64
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -339,13 +390,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Package and verify the end-user Skill
+      - name: Download native NanoHost binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nanohost-native-arm64
+          path: nanohost-native
+
+      - name: Resolve accepted OpenShell inputs
+        id: openshell
         run: |
-          pnpm release:package -- --tag "${GITHUB_REF_NAME}"
+          node --input-type=module <<'NODE' >> "${GITHUB_OUTPUT}"
+          import { readFileSync } from 'node:fs';
+          import { parseNanoHostPin } from './scripts/release-preflight.mjs';
+          const pin = parseNanoHostPin(readFileSync('apps/nanohost/openshell-pin/manifest.md', 'utf8'));
+          const archive = pin.artifacts.find(
+            (artifact) => artifact.kind === 'gateway-executable' && artifact.representation === 'release-archive'
+          );
+          process.stdout.write(`tag=${pin.source.tag}\n`);
+          process.stdout.write(`commit=${pin.source.commit}\n`);
+          process.stdout.write(`archive=${archive.name}\n`);
+          NODE
+
+      - name: Package and verify portable release assets
+        env:
+          OPENSHELL_ARCHIVE: ${{ steps.openshell.outputs.archive }}
+          OPENSHELL_COMMIT: ${{ steps.openshell.outputs.commit }}
+          OPENSHELL_TAG: ${{ steps.openshell.outputs.tag }}
+        run: |
+          mkdir -p nanohost-input
+          curl --fail --location --output "nanohost-input/${OPENSHELL_ARCHIVE}" \
+            "https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_TAG}/${OPENSHELL_ARCHIVE}"
+          curl --fail --location --output nanohost-input/openshell-LICENSE \
+            "https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_COMMIT}/LICENSE"
+          curl --fail --location --output nanohost-input/openshell-THIRD-PARTY-NOTICES \
+            "https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_COMMIT}/THIRD-PARTY-NOTICES"
+          node scripts/package-release-assets.mjs \
+            --tag "${GITHUB_REF_NAME}" \
+            --nanohost-binary nanohost-native/nanohost \
+            --openshell-gateway-archive "nanohost-input/${OPENSHELL_ARCHIVE}" \
+            --openshell-license nanohost-input/openshell-LICENSE \
+            --openshell-notices nanohost-input/openshell-THIRD-PARTY-NOTICES
           cd dist/release
           sha256sum -c SHA256SUMS
           tar -tzf "openkit-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-skill-${GITHUB_REF_NAME}/skills/openkit/SKILL.md"
           tar -tzf "openkit-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-skill-${GITHUB_REF_NAME}/skills/openkit/scripts/openkit"
+          verification_parent="$(mktemp -d)"
+          node ../../scripts/verify-nanohost-release.mjs \
+            --archive "openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
+            --checksum-file SHA256SUMS \
+            --destdir "${verification_parent}/stage" \
+            --repo-root ../..
 
       - name: Upload portable release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -667,14 +761,15 @@ jobs:
         run: |
           visibility=public
           if [ "${REPOSITORY_PRIVATE}" = "true" ]; then visibility=private; fi
-          checksum="$(cut -d ' ' -f1 portable-assets/SHA256SUMS)"
+          checksum="$(sha256sum portable-assets/SHA256SUMS | cut -d ' ' -f1)"
           {
             echo "# OpenKit ${GITHUB_REF_NAME}"
             echo ""
             echo "- Source commit: \`${GITHUB_SHA}\`"
             echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo "- Repository visibility at publication: \`${visibility}\`"
-            echo "- Portable Skill SHA-256: \`${checksum}\`"
+            echo "- Portable asset checksum-file SHA-256: \`${checksum}\`"
+            echo "- NanoHost target: \`linux/arm64\`"
             echo ""
             echo "## Images"
             echo ""
@@ -687,7 +782,7 @@ jobs:
             echo "- L5 built-artifact smoke passed."
             echo "- Every release image platform passed smoke before tag promotion."
             echo "- Public worker-common anonymous exact-digest inspection passed."
-            echo "- The portable Skill archive and checksum passed local verification."
+            echo "- The Skill and NanoHost archives and their shared checksum passed local verification."
             echo ""
             echo "## Manual Gates"
             echo ""
@@ -695,7 +790,7 @@ jobs:
             echo ""
             echo "## Current Limitation"
             echo ""
-            echo "- NanoHost is not distributed in this release candidate, so supported Worker Agent execution is unavailable from this bundle."
+            echo "- linux/arm64 archive is installable; R001 exact-product no-host-reboot runtime gate remains open."
           } > release-notes.md
 
       - name: Create immutable GitHub Release
@@ -716,6 +811,7 @@ jobs:
           fi
           gh release create "${GITHUB_REF_NAME}" \
             "portable-assets/openkit-skill-${GITHUB_REF_NAME}.tar.gz" \
+            "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
             portable-assets/SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" \
             "${release_flags[@]}"
@@ -732,6 +828,9 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -781,14 +880,18 @@ jobs:
           release_json="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease,assets,body)"
           mkdir release-download
           gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir release-download
-          checksum="$(cut -d ' ' -f1 release-download/SHA256SUMS)"
+          checksum="$(sha256sum release-download/SHA256SUMS | cut -d ' ' -f1)"
           CHECKSUM="${checksum}" RELEASE_JSON="${release_json}" node <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
           const release = JSON.parse(process.env.RELEASE_JSON);
           const expectedPrerelease = process.env.GITHUB_REF_NAME.includes('-');
           const names = release.assets.map((asset) => asset.name).sort();
-          const expected = ['SHA256SUMS', `openkit-skill-${process.env.GITHUB_REF_NAME}.tar.gz`].sort();
+          const expected = [
+            'SHA256SUMS',
+            `openkit-skill-${process.env.GITHUB_REF_NAME}.tar.gz`,
+            `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-arm64.tar.gz`,
+          ].sort();
           if (release.tagName !== process.env.GITHUB_REF_NAME || release.isDraft || release.isPrerelease !== expectedPrerelease) {
             throw new Error('GitHub Release identity or state does not match the tag.');
           }
@@ -799,10 +902,10 @@ jobs:
             process.env.GITHUB_SHA,
             '/actions/runs/',
             'Repository visibility at publication:',
-            `Portable Skill SHA-256: \`${process.env.CHECKSUM}\``,
+            `Portable asset checksum-file SHA-256: \`${process.env.CHECKSUM}\``,
             '## Automatic Gates',
             '## Manual Gates',
-            'NanoHost is not distributed',
+            'linux/arm64 archive is installable; R001 exact-product no-host-reboot runtime gate remains open',
           ];
           for (const name of fs.readdirSync('release-records').filter((name) => name.endsWith('.json'))) {
             required.push(JSON.parse(fs.readFileSync(path.join('release-records', name), 'utf8')).digest);
@@ -823,6 +926,12 @@ jobs:
             --volume "${PWD}/release-extract:/release:ro" \
             "${TEST_IMAGE}" \
             node "/release/${prefix}/skills/openkit/scripts/openkit" ops search workspace
+          verification_parent="$(mktemp -d)"
+          node scripts/verify-nanohost-release.mjs \
+            --archive "release-download/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
+            --checksum-file release-download/SHA256SUMS \
+            --destdir "${verification_parent}/stage" \
+            --repo-root .
 
       - name: Verify public worker base without registry credentials
         run: |

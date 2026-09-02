@@ -58,11 +58,21 @@ LOADER_NAME="$(basename "$(readlink -f "$(ldd /bin/sh | awk '/ld-linux/{print $1
 
 write_elf() {
   local path=$1
-  dd if=/dev/zero of="$path" bs=64 count=1 status=none
+  dd if=/dev/zero of="$path" bs=132 count=1 status=none
   printf '\177ELF\002\001\001' | dd of="$path" conv=notrunc status=none
   printf '\002\000' | dd of="$path" bs=1 seek=16 conv=notrunc status=none
   printf '\267\000\001\000\000\000' | dd of="$path" bs=1 seek=18 conv=notrunc status=none
+  printf '\170\000\100\000\000\000\000\000' | dd of="$path" bs=1 seek=24 conv=notrunc status=none
+  printf '\100\000\000\000\000\000\000\000' | dd of="$path" bs=1 seek=32 conv=notrunc status=none
   printf '\100\000' | dd of="$path" bs=1 seek=52 conv=notrunc status=none
+  printf '\070\000\001\000' | dd of="$path" bs=1 seek=54 conv=notrunc status=none
+  printf '\001\000\000\000\005\000\000\000' | dd of="$path" bs=1 seek=64 conv=notrunc status=none
+  printf '\000\000\100\000\000\000\000\000' | dd of="$path" bs=1 seek=80 conv=notrunc status=none
+  printf '\000\000\100\000\000\000\000\000' | dd of="$path" bs=1 seek=88 conv=notrunc status=none
+  printf '\204\000\000\000\000\000\000\000' | dd of="$path" bs=1 seek=96 conv=notrunc status=none
+  printf '\204\000\000\000\000\000\000\000' | dd of="$path" bs=1 seek=104 conv=notrunc status=none
+  printf '\000\020\000\000\000\000\000\000' | dd of="$path" bs=1 seek=112 conv=notrunc status=none
+  printf '\250\013\200\322\000\000\200\322\001\000\000\324' | dd of="$path" bs=1 seek=120 conv=notrunc status=none
   chmod 0755 "$path"
 }
 
@@ -330,24 +340,57 @@ test_interrupted_resume_and_symlink_rejection() {
   [[ "$(cat "$CASE_ROOT/outside")" == outside ]] || fail 'temporary symlink target was changed'
 }
 
+test_live_signal_cleanup() {
+  new_case
+  local interrupted="${CASE_ROOT}/interrupted-bin"
+  cp -a "$STUBS" "$interrupted"
+  cat >"$interrupted/install" <<'EOF'
+#!/usr/bin/env bash
+target=${@: -1}
+/usr/bin/install "$@" || exit
+if [[ "$target" == /usr/lib/openkit/.nanohost.openkit-install ]]; then
+  kill -TERM "$PPID"
+fi
+EOF
+  chmod 0755 "$interrupted/install"
+  run_case live-term "$interrupted"
+  [[ "$RESULT" -eq 143 ]] || fail "caught live TERM returned status $RESULT instead of 143; stderr=$ERROR"
+  [[ ! -e "$LIVE/usr/lib/openkit/.nanohost.openkit-install" ]] || fail 'caught live TERM left its invocation-owned temporary file'
+  [[ ! -e "$LIVE/usr/lib/openkit/nanohost" ]] || fail 'caught live TERM published a destination'
+  grep -q '^installation=incomplete$' "$CASE_ROOT/live-term.err" || fail "caught live TERM omitted incomplete output; stderr=$ERROR"
+}
+
 test_fixed_lock_serialization() {
   new_case
-  local lock_fd process status
+  local lock_fd process status deadline
+  local locked="${CASE_ROOT}/locked-bin"
+  cp -a "$STUBS" "$locked"
+  cat >"$locked/flock" <<'EOF'
+#!/usr/bin/env bash
+if /usr/bin/flock -n -x 9; then
+  : >"$OPENKIT_INSTALLER_CONTROL/lock-unexpectedly-free"
+  exit 98
+fi
+: >"$OPENKIT_INSTALLER_CONTROL/lock-contended"
+exec /usr/bin/flock "$@"
+EOF
+  chmod 0755 "$locked/flock"
   exec {lock_fd}<"$LIVE/etc/systemd/system"
   flock -x "$lock_fd"
   set +e
-  namespace_command '' --check >"$CASE_ROOT/locked.out" 2>"$CASE_ROOT/locked.err" &
+  namespace_command "$locked" --check >"$CASE_ROOT/locked.out" 2>"$CASE_ROOT/locked.err" &
   process=$!
   set -e
-  sleep 0.2
-  if ! kill -0 "$process" 2>/dev/null; then
+  deadline=$((SECONDS + 10))
+  while [[ ! -e "$CONTROL/lock-contended" && ! -e "$CONTROL/lock-unexpectedly-free" && "$SECONDS" -lt "$deadline" ]]; do sleep 0.01; done
+  if [[ -e "$CONTROL/lock-unexpectedly-free" ]] || [[ ! -e "$CONTROL/lock-contended" ]] || ! kill -0 "$process" 2>/dev/null; then
     set +e
     wait "$process"
     status=$?
     set -e
     flock -u "$lock_fd"
     exec {lock_fd}<&-
-    fail "installer did not block on the mapped /etc/systemd/system inode: status $status"
+    fail "installer did not attempt the mapped /etc/systemd/system lock: status $status"
     return
   fi
   printf 'non-cooperating winner\n' >"$LIVE/usr/lib/openkit/nanohost"
@@ -405,6 +448,7 @@ test_other_host_prerequisites_and_ancestors
 test_live_completion_output
 test_partial_cleanup
 test_interrupted_resume_and_symlink_rejection
+test_live_signal_cleanup
 test_fixed_lock_serialization
 test_noncooperating_publication_race
 finish

@@ -50,7 +50,7 @@ expected_manifest=$(node -e '
   const { createHash } = require("node:crypto");
   const { readFileSync } = require("node:fs");
   process.stdout.write(`manifestDigest=${createHash("sha256").update(readFileSync(process.argv[1])).digest("hex")}`);
-' "$script_root/manifest.json")
+' "$script_root/../../../apps/nanohost/deploy/host-manifest.json")
 [[ "$asserted_manifest" == "$expected_manifest" ]] || exit 66
 ssh "$ssh_alias" /usr/bin/sudo -n /usr/bin/systemctl start openkit-nanohost.service
 

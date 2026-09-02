@@ -93,6 +93,16 @@ test('NanoHost installer contains staging writes and rejects corruption before i
   for (const [label, options] of [
     ['ET_REL', { type: 1 }],
     ['truncated ELF64 header', { truncate: 63 }],
+    ['missing program headers', { programHeaders: 0 }],
+    ['missing PT_LOAD', { segmentType: 0 }],
+    ['oversized PT_LOAD memory', { memorySize: 0x1_0000_0000n }],
+    [
+      'PT_LOAD crossing the signed address ceiling',
+      {
+        entry: 0x7fff_ffff_ffff_fff8n,
+        virtualAddress: 0x7fff_ffff_ffff_fff0n,
+      },
+    ],
   ]) {
     const invalidElf = makeBundle(options);
     const invalidStage = join(invalidElf.root, 'stage');
@@ -104,6 +114,19 @@ test('NanoHost installer contains staging writes and rejects corruption before i
     assert.notEqual(result.status, 0, `installer accepted ${label}`);
     assert.equal(existsSync(invalidStage), false, `${label} failed after staging writes`);
   }
+
+  const interrupted = makeBundle();
+  const interruptedStage = join(interrupted.root, 'interrupted-stage');
+  const interruptingMkdir = join(interrupted.fakeBin, 'mkdir');
+  writeFileSync(interruptingMkdir, '#!/bin/sh\n/usr/bin/mkdir "$@" || exit\n/bin/sleep 1\n');
+  chmodSync(interruptingMkdir, 0o755);
+  const interruptedResult = runInterruptedInstaller(
+    interrupted.bundle,
+    interruptedStage,
+    join(interrupted.root, 'systemctl-called')
+  );
+  assert.notEqual(interruptedResult.status, 0, 'caught TERM was reported as success');
+  assert.equal(existsSync(interruptedStage), false, 'caught TERM left the claimed staging root');
 });
 
 function makeBundle(options = {}) {
@@ -182,12 +205,48 @@ function runInstaller(bundle, destdir, systemctlMarker) {
   });
 }
 
+function runInterruptedInstaller(bundle, destdir, systemctlMarker) {
+  return spawnSync(
+    'sh',
+    [
+      '-c',
+      '(while [ ! -d "$1" ]; do :; done; kill -TERM $$) & exec sh "$2"',
+      'nanohost-interrupt',
+      destdir,
+      join(bundle, 'install.sh'),
+    ],
+    {
+      cwd: bundle,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DESTDIR: destdir,
+        PATH: `${join(bundle, '..', 'fake-bin')}:${process.env.PATH}`,
+        SYSTEMCTL_MARKER: systemctlMarker,
+      },
+    }
+  );
+}
+
 function writeElf(path, options = {}) {
-  const bytes = Buffer.alloc(64);
+  const bytes = Buffer.alloc(132);
+  const base = options.virtualAddress ?? (options.type === 3 ? 0n : 0x400000n);
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
   bytes.writeUInt16LE(options.type ?? 2, 16);
   bytes.writeUInt16LE(183, 18);
   bytes.writeUInt32LE(1, 20);
+  bytes.writeBigUInt64LE(options.entry ?? base + 120n, 24);
+  bytes.writeBigUInt64LE(64n, 32);
   bytes.writeUInt16LE(64, 52);
+  bytes.writeUInt16LE(56, 54);
+  bytes.writeUInt16LE(options.programHeaders ?? 1, 56);
+  bytes.writeUInt32LE(options.segmentType ?? 1, 64);
+  bytes.writeUInt32LE(5, 68);
+  bytes.writeBigUInt64LE(base, 80);
+  bytes.writeBigUInt64LE(base, 88);
+  bytes.writeBigUInt64LE(BigInt(bytes.length), 96);
+  bytes.writeBigUInt64LE(options.memorySize ?? BigInt(bytes.length), 104);
+  bytes.writeBigUInt64LE(0x1000n, 112);
+  bytes.set([0xa8, 0x0b, 0x80, 0xd2, 0x00, 0x00, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4], 120);
   writeFileSync(path, bytes.subarray(0, options.truncate ?? bytes.length), { mode: 0o755 });
 }

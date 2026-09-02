@@ -1192,13 +1192,26 @@ async fn run() -> Result<(), NanoHostRunFailure> {
     }
 }
 
-/// Starts the fixed NanoHost V1 Runtime Epoch and exits nonzero on failure.
-#[tokio::main]
-async fn main() {
+/// Reports the binary version or starts the fixed NanoHost V1 Runtime Epoch.
+fn main() {
+    let mut args = std::env::args();
+    let _program = args.next();
+    let argument = args.next();
+    let extra = args.next();
+    if argument.as_deref() == Some("--version") && extra.is_none() {
+        println!(env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if argument.is_some() {
+        eprintln!("nanohost arguments invalid");
+        std::process::exit(1);
+    }
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("nanohost TLS provider installation failed");
-    if let Err(message) = run().await {
+    let runtime =
+        tokio::runtime::Runtime::new().expect("nanohost Tokio runtime construction failed");
+    if let Err(message) = runtime.block_on(run()) {
         eprintln!("{message}");
         std::process::exit(1);
     }

@@ -15,6 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { gunzipSync } from 'node:zlib';
 
 import { packageReleaseAssets } from '../scripts/package-release-assets.mjs';
 
@@ -243,6 +244,37 @@ test('release packager and shared verifier prove the reproducible NanoHost arm64
   );
 });
 
+test('NanoHost ELF checks accept a load segment ending exactly at the signed address ceiling', () => {
+  const fixture = makeNanoHostReleaseFixture();
+  const bytes = readFileSync(fixture.nanohostPath);
+  const addressLimit = 1n << 63n;
+  bytes.writeBigUInt64LE(addressLimit - BigInt(bytes.length), 80);
+  bytes.writeBigUInt64LE(addressLimit - BigInt(bytes.length), 88);
+  bytes.writeBigUInt64LE(addressLimit - 1n, 24);
+  bytes.writeBigUInt64LE(1n, 112);
+  writeFileSync(fixture.nanohostPath, bytes, { mode: 0o755 });
+
+  const outputDir = join(fixture.repoRoot, 'dist', 'signed-address-endpoint');
+  packageReleaseAssets({
+    nanohost: nanoHostInput(fixture),
+    outputDir,
+    ref: 'HEAD',
+    repoRoot: fixture.repoRoot,
+    tag: 'v0.1.0-rc.1',
+  });
+  const archiveName = 'openkit-nanohost-v0.1.0-rc.1-linux-arm64.tar.gz';
+  const verified = runVerifierWithFreshChecksum(
+    join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs'),
+    join(outputDir, archiveName),
+    archiveName,
+    fixture.repoRoot,
+    join(fixture.repoRoot, 'stage-signed-address-endpoint')
+  );
+
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.match(verified.stdout, /package=pass[\s\S]*staged-only/u);
+});
+
 test('NanoHost packager projects the promoted Docker and slirp4netns identities', () => {
   const packaged = packageNanoHostFixture();
   const extractedRoot = extractArchive(packaged.archive, packaged.prefix);
@@ -284,7 +316,7 @@ test('NanoHost packager projects the promoted Docker and slirp4netns identities'
   assert.match(result.stderr, /host manifest|prerequisite|identity/i);
 });
 
-test('NanoHost packager rejects incomplete and non-executable ELF64 AArch64 headers', () => {
+test('NanoHost packager rejects incomplete and non-loadable ELF64 AArch64 executables', () => {
   const fixture = makeNanoHostReleaseFixture();
   const input = nanoHostInput(fixture);
   const cases = [
@@ -293,6 +325,36 @@ test('NanoHost packager rejects incomplete and non-executable ELF64 AArch64 head
     ['invalid ELF identity version', (bytes) => withByte(bytes, 6, 0)],
     ['invalid ELF version', (bytes) => withUInt32(bytes, 20, 0)],
     ['invalid ELF header size', (bytes) => withUInt16(bytes, 52, 0)],
+    ['missing program headers', (bytes) => withUInt16(bytes, 56, 0)],
+    ['truncated program header table', (bytes) => bytes.subarray(0, 100)],
+    ['missing PT_LOAD', (bytes) => withUInt32(bytes, 64, 0)],
+    ['oversized PT_LOAD memory', (bytes) => withBigUInt64(bytes, 104, 0x1_0000_0000n)],
+    [
+      'overflowing PT_LOAD address range',
+      (bytes) =>
+        withBigUInt64(
+          withBigUInt64(
+            withBigUInt64(bytes, 80, 0xffff_ffff_ffff_fff0n),
+            88,
+            0xffff_ffff_ffff_fff0n
+          ),
+          24,
+          0xffff_ffff_ffff_fff8n
+        ),
+    ],
+    [
+      'PT_LOAD crossing the signed address ceiling',
+      (bytes) =>
+        withBigUInt64(
+          withBigUInt64(
+            withBigUInt64(bytes, 80, 0x7fff_ffff_ffff_fff0n),
+            88,
+            0x7fff_ffff_ffff_fff0n
+          ),
+          24,
+          0x7fff_ffff_ffff_fff8n
+        ),
+    ],
   ];
   for (const [label, mutate] of cases) {
     const malformed = join(fixture.repoRoot, `malformed-${label.replaceAll(' ', '-')}`);
@@ -327,6 +389,16 @@ test('shared NanoHost verifier rejects noncanonical tar and gzip metadata', () =
     ],
     ['gzip header', { gzipOs: 0 }, (archive) => assert.equal(readFileSync(archive)[9], 0)],
     [
+      'trailing tar padding',
+      { trailingByte: 0x58 },
+      (archive) => assert.equal(gunzipSync(readFileSync(archive)).at(-1), 0x58),
+    ],
+    [
+      'member tar padding',
+      { memberPaddingByte: 0x58 },
+      (archive) => assert.equal(firstMemberPaddingByte(archive), 0x58),
+    ],
+    [
       'directory mode',
       { mutateRoot: (root) => chmodSync(join(root, 'licenses'), 0o700) },
       (archive) => assert.equal(archiveMode(archive, packaged.prefix, 'licenses'), 0o700),
@@ -359,7 +431,7 @@ test('shared NanoHost verifier rejects noncanonical tar and gzip metadata', () =
   }
 });
 
-test('shared NanoHost verifier rejects a malformed packaged executable', () => {
+test('shared NanoHost verifier rejects a packaged executable without program headers', () => {
   const packaged = packageNanoHostFixture();
   const mutationDir = join(packaged.fixture.repoRoot, 'dist', 'malformed-verifier');
   mkdirSync(mutationDir);
@@ -367,12 +439,12 @@ test('shared NanoHost verifier rejects a malformed packaged executable', () => {
   rewriteArchive(packaged.archive, mutatedArchive, packaged.prefix, {
     mutateRoot(root) {
       const path = join(root, 'nanohost');
-      writeFileSync(path, withUInt16(readFileSync(path), 16, 1), { mode: 0o755 });
+      writeFileSync(path, withUInt16(readFileSync(path), 56, 0), { mode: 0o755 });
       refreshInnerChecksums(root);
     },
   });
   const extracted = extractArchive(mutatedArchive, packaged.prefix);
-  assert.equal(readFileSync(join(extracted, 'nanohost')).readUInt16LE(16), 1);
+  assert.equal(readFileSync(join(extracted, 'nanohost')).readUInt16LE(56), 0);
   rmSync(dirname(extracted), { force: true, recursive: true });
   const result = runVerifierWithFreshChecksum(
     join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs'),
@@ -381,8 +453,8 @@ test('shared NanoHost verifier rejects a malformed packaged executable', () => {
     packaged.fixture.repoRoot,
     join(packaged.fixture.repoRoot, 'stage-malformed-verifier')
   );
-  assert.notEqual(result.status, 0, 'verifier accepted an ET_REL NanoHost payload');
-  assert.match(result.stderr, /ELF|executable|ET_EXEC|ET_DYN/i);
+  assert.notEqual(result.status, 0, 'verifier accepted a NanoHost payload without program headers');
+  assert.match(result.stderr, /ELF|executable|program|PT_LOAD/i);
 });
 
 test('shared NanoHost verifier rejects substituted checkout-owned bytes', () => {
@@ -576,12 +648,25 @@ function makeNanoHostReleaseFixture() {
 }
 
 function writeElf(path, machine, options = {}) {
-  const bytes = Buffer.alloc(64);
+  const bytes = Buffer.alloc(132);
+  const base = options.type === 3 ? 0 : 0x400000;
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
   bytes.writeUInt16LE(options.type ?? 2, 16);
   bytes.writeUInt16LE(machine, 18);
   bytes.writeUInt32LE(1, 20);
+  bytes.writeBigUInt64LE(BigInt(base + 120), 24);
+  bytes.writeBigUInt64LE(64n, 32);
   bytes.writeUInt16LE(64, 52);
+  bytes.writeUInt16LE(56, 54);
+  bytes.writeUInt16LE(1, 56);
+  bytes.writeUInt32LE(1, 64);
+  bytes.writeUInt32LE(5, 68);
+  bytes.writeBigUInt64LE(BigInt(base), 80);
+  bytes.writeBigUInt64LE(BigInt(base), 88);
+  bytes.writeBigUInt64LE(BigInt(bytes.length), 96);
+  bytes.writeBigUInt64LE(BigInt(bytes.length), 104);
+  bytes.writeBigUInt64LE(0x1000n, 112);
+  bytes.set([0xa8, 0x0b, 0x80, 0xd2, 0x00, 0x00, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4], 120);
   writeFileSync(path, bytes, { mode: 0o755 });
 }
 
@@ -635,6 +720,32 @@ function rewriteArchive(sourceArchive, targetArchive, prefix, options = {}) {
       { cwd: temporary, encoding: 'utf8' }
     );
     assert.equal(archived.status, 0, archived.stderr);
+    if (options.trailingByte !== undefined) {
+      const bytes = readFileSync(tarPath);
+      bytes[bytes.length - 1] = options.trailingByte;
+      writeFileSync(tarPath, bytes);
+    }
+    if (options.memberPaddingByte !== undefined) {
+      const bytes = readFileSync(tarPath);
+      for (let offset = 0; offset + 512 <= bytes.length; ) {
+        const size = Number.parseInt(
+          bytes
+            .subarray(offset + 124, offset + 136)
+            .toString('ascii')
+            .replaceAll('\0', '')
+            .trim(),
+          8
+        );
+        const dataEnd = offset + 512 + size;
+        const recordEnd = offset + 512 + Math.ceil(size / 512) * 512;
+        if (dataEnd < recordEnd) {
+          bytes[dataEnd] = options.memberPaddingByte;
+          break;
+        }
+        offset = recordEnd;
+      }
+      writeFileSync(tarPath, bytes);
+    }
     const compressed = spawnSync('gzip', ['-n', '-9', '-c', tarPath], { encoding: null });
     assert.equal(compressed.status, 0, compressed.stderr?.toString());
     const bytes = Buffer.from(compressed.stdout);
@@ -684,6 +795,25 @@ function archiveMode(archive, prefix, member) {
   }
 }
 
+function firstMemberPaddingByte(archive) {
+  const bytes = gunzipSync(readFileSync(archive));
+  for (let offset = 0; offset + 512 <= bytes.length; ) {
+    const size = Number.parseInt(
+      bytes
+        .subarray(offset + 124, offset + 136)
+        .toString('ascii')
+        .replaceAll('\0', '')
+        .trim(),
+      8
+    );
+    const dataEnd = offset + 512 + size;
+    const recordEnd = offset + 512 + Math.ceil(size / 512) * 512;
+    if (dataEnd < recordEnd) return bytes[dataEnd];
+    offset = recordEnd;
+  }
+  return undefined;
+}
+
 function runVerifierWithFreshChecksum(verifier, archive, archiveName, repoRoot, destdir) {
   const checksumFile = `${archive}.SHA256SUMS`;
   writeFileSync(
@@ -722,6 +852,12 @@ function withUInt16(bytes, offset, value) {
 function withUInt32(bytes, offset, value) {
   const copy = Buffer.from(bytes);
   copy.writeUInt32LE(value, offset);
+  return copy;
+}
+
+function withBigUInt64(bytes, offset, value) {
+  const copy = Buffer.from(bytes);
+  copy.writeBigUInt64LE(value, offset);
   return copy;
 }
 

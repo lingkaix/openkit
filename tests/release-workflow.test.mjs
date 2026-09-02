@@ -93,13 +93,19 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
   assert.ok(nativeEntry, 'Missing native arm64 NanoHost build job');
   const [nativeJobId, nativeJob] = nativeEntry;
   assert.match(nativeJob.if, /refs\/tags/);
+  const toolchain = nativeJob.steps.find((candidate) =>
+    candidate.uses?.startsWith('jdx/mise-action@')
+  );
+  assert.ok(toolchain, 'Native build must provision the app-owned Rust pin through mise');
+  assert.equal(toolchain.with?.working_directory, 'apps/nanohost');
+  assert.equal(toolchain.with?.install_args, 'rust');
   const nativeCommands = (nativeJob.steps ?? [])
     .map((candidate) => candidate.run)
     .filter(Boolean)
     .join('\n');
-  assert.match(nativeCommands, /apps\/nanohost\/mise\.toml/);
   assert.match(nativeCommands, /cargo build --locked --release/);
   assert.match(nativeCommands, /nanohost --version/);
+  assert.doesNotMatch(nativeCommands, /rustup|mise (?:exec|run)/u);
   assert.ok(
     nativeJob.steps.some((candidate) => candidate.uses?.startsWith('actions/upload-artifact@')),
     'Native build must hand off the raw NanoHost binary'

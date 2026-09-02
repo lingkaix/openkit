@@ -185,7 +185,7 @@ The existing `.github/workflows/ci.yml` already runs tag preflight, L0-L3, L5, a
 
 The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete Skill, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
 
-The native arm64 NanoHost build job, NanoHost archive packaging, combined portable checksum, shared NanoHost verifier, and NanoHost attachment and post-publication checks defined by this amendment are not yet implemented. Stable preflight remains blocked while R001 is open.
+The native arm64 NanoHost build job, NanoHost archive packaging, combined portable checksum, shared NanoHost verifier, isolated fixed-path installer job, and NanoHost attachment and post-publication checks defined by this amendment are implemented and pass their focused local regressions. R002 remains open until the exact final candidate completes its A1 real-artifact gate, R004 remains open until a separately authorized tag is published and verified, and stable preflight remains blocked while R001 is open.
 
 The repository is currently private, no product release exists, and no visibility mutation or release publication occurs as part of this implementation change.
 

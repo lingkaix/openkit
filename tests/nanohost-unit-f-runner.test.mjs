@@ -1972,7 +1972,9 @@ function defaultDriverOptions(overrides = {}) {
     attemptId: privateAttemptId,
     gitCommit: 'd'.repeat(40),
     gitUrl: 'https://github.com/openkit/openkit.git',
-    hostManifestDigest: digest(readFileSync(join('tests', 'support', 'host', 'manifest.json'))),
+    hostManifestDigest: digest(
+      readFileSync(join('apps', 'nanohost', 'deploy', 'host-manifest.json'))
+    ),
     instrumentDigest,
     localPort: 17_893,
     nanoCoreContainer: 'openkit-nanocore-unit-f',
@@ -2100,7 +2102,9 @@ test('failure evidence reads one fresh Workspace and filters the exact Turn when
 test('top-level Unit F uses the same default-driver baseline boundary before scenario coordination', async () => {
   const directCalls = [];
   const topLevelCalls = [];
-  const manifestDigest = digest(readFileSync(join('tests', 'support', 'host', 'manifest.json')));
+  const manifestDigest = digest(
+    readFileSync(join('apps', 'nanohost', 'deploy', 'host-manifest.json'))
+  );
   const stopAfterManifest = (calls, message) => async (command, args) => {
     calls.push({ args, command });
     if (calls.length === 1) {

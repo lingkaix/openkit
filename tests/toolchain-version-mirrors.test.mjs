@@ -124,10 +124,10 @@ test('the generic test execution image does not provision Codex', () => {
   );
 });
 
-test('CI provisions no runtime of its own and takes it from the test execution image', () => {
-  // docs/toolchain.md Test Execution Environment: the image is the single
-  // declared capability and runtime set, so a second CI-side provisioning step
-  // would reintroduce the mirror this decision removed.
+test('CI keeps Node and pnpm in test-env and uses the app-owned Rust setup path', () => {
+  // docs/toolchain.md Test Execution Environment: any-placed Node and pnpm gates
+  // take those runtimes from test-env, while the native NanoHost job follows its
+  // app-scoped mise Rust owner instead of adding a rustup mirror.
   assert.doesNotMatch(
     ciWorkflow,
     /uses:\s*pnpm\/action-setup@/u,
@@ -137,6 +137,11 @@ test('CI provisions no runtime of its own and takes it from the test execution i
     ciWorkflow,
     /uses:\s*actions\/setup-node@/u,
     'ci.yml provisions Node directly; the test execution image already pins it'
+  );
+  assert.doesNotMatch(
+    ciWorkflow,
+    /\brustup(?:\s|$)/u,
+    'ci.yml bypasses the NanoHost-scoped mise Rust pin with rustup'
   );
 });
 
