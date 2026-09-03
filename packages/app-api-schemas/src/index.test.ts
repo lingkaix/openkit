@@ -2368,6 +2368,12 @@ describe('app api schemas', () => {
         ],
       })
     ).toThrow();
+    expect(() =>
+      CapabilityUsageResponseSchema.parse({
+        ...parsed,
+        capabilityCalls: [{ ...parsed.capabilityCalls[0], completedAt: null }],
+      })
+    ).toThrow();
   });
 
   it('accepts read-only evidence bundle list models', () => {

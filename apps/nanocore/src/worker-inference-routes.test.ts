@@ -857,7 +857,7 @@ describe('worker inference routes', () => {
     });
   });
 
-  it('cancels worker inference streams once and preserves one cancelled ledger outcome', async () => {
+  it('cancels worker inference streams once and preserves its terminal evidence', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     fixture.dispatcher.shouldHoldResponsesStream = true;
     const request = new Request('http://localhost/api/worker-inference/v1/responses', {
@@ -889,7 +889,7 @@ describe('worker inference routes', () => {
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
       expect.objectContaining({
         errorCode: 'worker_inference_cancelled',
-        status: 'cancelled',
+        status: 'aborted',
       }),
     ]);
     expect(() =>
@@ -1011,7 +1011,7 @@ describe('worker inference routes', () => {
       expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
         expect.objectContaining({
           errorCode: 'worker_inference_cancelled',
-          status: 'cancelled',
+          status: 'aborted',
         }),
       ]);
     } finally {
@@ -1029,7 +1029,7 @@ describe('worker inference routes', () => {
       expectedCode: 'worker_inference_cancelled',
       expectedLedgerCode: 'worker_inference_cancelled',
       expectedStatus: 499,
-      expectedLedgerStatus: 'cancelled',
+      expectedLedgerStatus: 'aborted',
     },
     {
       caseName: 'independent provider failure after request abort',

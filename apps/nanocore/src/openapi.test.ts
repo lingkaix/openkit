@@ -14,6 +14,7 @@ import {
   TurnIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -1749,6 +1750,40 @@ describe('app api openapi projection', () => {
     expect(document.components.schemas.CapabilityUsageResponse).toEqual(
       z.toJSONSchema(CapabilityUsageResponseSchema)
     );
+    const capabilityUsage = CapabilityUsageResponseSchema.parse({
+      capabilityCalls: [
+        {
+          agentSessionId: null,
+          capabilityId: 'llm.responses',
+          completedAt: '2026-07-05T00:00:02.000Z',
+          errorCode: null,
+          family: 'llm',
+          id: 'cap_openapi',
+          operation: 'responses.create',
+          redactionClass: 'metadata-only',
+          startedAt: '2026-07-05T00:00:01.000Z',
+          status: 'succeeded',
+          summary: null,
+          threadId: null,
+          turnId: null,
+          workspaceId: 'ws_demo',
+        },
+      ],
+      usageRecords: [],
+      workspaceId: 'ws_demo',
+    });
+    const ajv = new Ajv2020({ allErrors: true, strict: false });
+    ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu);
+    const validateCapabilityUsage = ajv.compile(
+      document.components.schemas.CapabilityUsageResponse
+    );
+    expect(validateCapabilityUsage(capabilityUsage)).toBe(true);
+    expect(
+      validateCapabilityUsage({
+        ...capabilityUsage,
+        capabilityCalls: [{ ...capabilityUsage.capabilityCalls[0], completedAt: null }],
+      })
+    ).toBe(false);
     expect(document.paths['/api/app/workspaces/{workspaceId}/audit/events']?.get).toMatchObject({
       operationId: 'listWorkspaceAuditEvents',
       tags: ['diagnostics'],

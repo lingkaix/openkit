@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
 
-import { AuditEventSchema, PROTOCOL_VERSION } from './index.js';
+import { AuditEventSchema, CapabilityCallSchema, PROTOCOL_VERSION } from './index.js';
 
 const eventSchemaUrl = new URL('../generated/json-schema/event.schema.json', import.meta.url);
 const actorRefSchemaUrl = new URL(
@@ -12,6 +12,10 @@ const actorRefSchemaUrl = new URL(
 );
 const auditEventSchemaUrl = new URL(
   '../generated/json-schema/audit-event.schema.json',
+  import.meta.url
+);
+const capabilityCallSchemaUrl = new URL(
+  '../generated/json-schema/capability-call.schema.json',
   import.meta.url
 );
 const stopReasonSchemaUrl = new URL(
@@ -235,5 +239,50 @@ describe('generated JSON Schema event parity', () => {
     expect(validate('ask_user')).toBe(true);
     expect(validate('budget_exhausted')).toBe(true);
     expect(validate('unknown')).toBe(false);
+  });
+
+  it('preserves representable CapabilityCall timestamp lifecycle constraints', () => {
+    const validate = createValidator(capabilityCallSchemaUrl);
+    const terminal = CapabilityCallSchema.parse({
+      agentSessionId: null,
+      capabilityId: 'llm.responses',
+      completedAt: '2026-07-05T00:00:02.000Z',
+      errorCode: null,
+      id: 'cap_demo',
+      startedAt: '2026-07-05T00:00:01.000Z',
+      status: 'succeeded',
+      summary: null,
+      threadId: null,
+      turnId: null,
+      workspaceId: 'ws_demo',
+    });
+
+    expect(validate(terminal)).toBe(true);
+    expect(validate({ ...terminal, completedAt: null })).toBe(false);
+    expect(validate({ ...terminal, completedAt: null, startedAt: null, status: 'queued' })).toBe(
+      true
+    );
+    expect(validate({ ...terminal, completedAt: null, startedAt: null, status: 'running' })).toBe(
+      false
+    );
+    expect(
+      validate({
+        ...terminal,
+        completedAt: '2026-07-05T00:00:02.000Z',
+        startedAt: null,
+        status: 'running',
+      })
+    ).toBe(false);
+
+    const reversedInstants = {
+      ...terminal,
+      completedAt: '2026-07-05T01:30:00.000+01:00',
+      startedAt: '2026-07-05T01:00:00.000Z',
+    };
+    expect(CapabilityCallSchema.safeParse(reversedInstants).success).toBe(false);
+    expect(validate(reversedInstants)).toBe(true);
+    expect(loadJsonSchema(capabilityCallSchemaUrl)).toMatchObject({
+      description: expect.stringContaining('JSON Schema cannot compare sibling date-time values'),
+    });
   });
 });

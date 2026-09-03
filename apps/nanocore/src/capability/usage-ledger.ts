@@ -149,8 +149,8 @@ export interface FinishCapabilityCallInput {
   /** Durable call id. */
   callId: string;
   /** Terminal status. */
-  status: Extract<CapabilityCall['status'], 'succeeded' | 'failed' | 'cancelled'>;
-  /** Stable error code for failed or cancelled calls. */
+  status: Exclude<CapabilityCall['status'], 'queued' | 'running'>;
+  /** Stable error code for non-success terminal calls. */
   errorCode?: string | null;
   /** Completion time. */
   now?: Date;
@@ -437,43 +437,52 @@ function hasEquivalentUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord):
 export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
   const now = input.now ?? new Date();
   const completedAt = now.toISOString();
-  const call = findCapabilityCallById(input.workspaceDb, input.callId);
 
-  if (!call || call.completed_at) {
-    return;
-  }
+  input.workspaceDb.sqlite
+    .transaction(() => {
+      const call = findCapabilityCallById(input.workspaceDb, input.callId);
+      if (!call || call.completed_at) {
+        return;
+      }
+      capabilityCallFromRow({
+        ...call,
+        completed_at: completedAt,
+        error_code: input.errorCode ?? null,
+        status: input.status,
+      });
+      const result = input.workspaceDb.sqlite
+        .prepare(
+          `UPDATE capability_calls
+           SET status = ?, error_code = ?, completed_at = ?
+           WHERE call_id = ? AND completed_at IS NULL`
+        )
+        .run(input.status, input.errorCode ?? null, completedAt, input.callId);
+      if (result.changes !== 1) {
+        throw new Error(`Capability call changed concurrently: ${input.callId}`);
+      }
 
-  const result = input.workspaceDb.sqlite
-    .prepare(
-      `UPDATE capability_calls
-       SET status = ?, error_code = ?, completed_at = ?
-       WHERE call_id = ? AND completed_at IS NULL`
-    )
-    .run(input.status, input.errorCode ?? null, completedAt, input.callId);
-
-  if (result.changes === 0) {
-    return;
-  }
-
-  recordWorkspaceAuditEvent({
-    action: 'capability.finish',
-    agentId: call.agent_id,
-    agentSessionId: call.agent_session_id,
-    capabilityCallId: call.call_id,
-    category: 'capability',
-    errorCode: input.errorCode ?? null,
-    itemId: call.item_id,
-    now,
-    outcome: input.status,
-    requestId: call.request_id,
-    resource: `capability:${call.capability_id}`,
-    severity: capabilityAuditSeverity(input.status),
-    summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null),
-    threadId: call.thread_id,
-    turnId: call.turn_id,
-    workspaceDb: input.workspaceDb,
-    workspaceId: call.workspace_id,
-  });
+      recordWorkspaceAuditEvent({
+        action: 'capability.finish',
+        agentId: call.agent_id,
+        agentSessionId: call.agent_session_id,
+        capabilityCallId: call.call_id,
+        category: 'capability',
+        errorCode: input.errorCode ?? null,
+        itemId: call.item_id,
+        now,
+        occurredAt: now,
+        outcome: capabilityAuditOutcome(input.status),
+        requestId: call.request_id,
+        resource: `capability:${call.capability_id}`,
+        severity: capabilityAuditSeverity(input.status),
+        summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null),
+        threadId: call.thread_id,
+        turnId: call.turn_id,
+        workspaceDb: input.workspaceDb,
+        workspaceId: call.workspace_id,
+      });
+    })
+    .immediate();
 }
 
 /**
@@ -493,7 +502,7 @@ export function recoverRunningCapabilityCalls(input: RecoverRunningCapabilityCal
       callId: call.call_id,
       errorCode: 'capability_call_recovered_after_restart',
       now,
-      status: 'cancelled',
+      status: 'unknown',
       workspaceDb: input.workspaceDb,
     });
   }
@@ -797,7 +806,20 @@ function capabilityAuditSeverity(
     return 'info';
   }
 
-  return status === 'cancelled' ? 'warning' : 'error';
+  return status === 'failed' || status === 'timed-out' ? 'error' : 'warning';
+}
+
+/** Maps the Core terminal status into the independently owned audit outcome. */
+function capabilityAuditOutcome(
+  status: FinishCapabilityCallInput['status']
+): Parameters<typeof recordWorkspaceAuditEvent>[0]['outcome'] {
+  if (status === 'succeeded' || status === 'denied' || status === 'unknown') {
+    return status;
+  }
+  if (status === 'failed' || status === 'timed-out') {
+    return 'failed';
+  }
+  return 'cancelled';
 }
 
 /**
@@ -817,11 +839,7 @@ function capabilityAuditSummary(
     return `Capability call succeeded: ${call.summary ?? call.capability_id}`;
   }
 
-  if (status === 'cancelled') {
-    return `Capability call cancelled: ${errorCode ?? call.capability_id}`;
-  }
-
-  return `Capability call failed: ${errorCode ?? call.capability_id}`;
+  return `Capability call ${status}: ${errorCode ?? call.capability_id}`;
 }
 
 /**

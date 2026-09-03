@@ -8,7 +8,7 @@ export const CapabilityUsageCallSchema = CapabilityCallSchema.extend({
   providerRef: z.string().min(1).nullable().default(null),
   serviceRef: z.string().min(1).nullable().default(null),
   redactionClass: z.string().min(1),
-});
+}).meta({ ...CapabilityCallSchema.meta() });
 
 /** Read-only capability usage evidence for one workspace. */
 export const CapabilityUsageResponseSchema = z

@@ -1,7 +1,16 @@
 import { index, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable capability call status stored by the shared usage ledger. */
-export type CapabilityCallLedgerStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type CapabilityCallLedgerStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'denied'
+  | 'aborted'
+  | 'timed-out'
+  | 'interrupted'
+  | 'unknown';
 
 /** Capability families supported by the shared usage ledger. */
 export type CapabilityCallFamily =

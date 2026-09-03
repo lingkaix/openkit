@@ -448,7 +448,7 @@ process.kill(process.pid, 'SIGKILL');`,
 
       expect(row).toEqual({
         error_code: 'capability_call_recovered_after_restart',
-        status: 'cancelled',
+        status: 'unknown',
       });
     } finally {
       restartedDb.sqlite.close();

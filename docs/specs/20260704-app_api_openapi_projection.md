@@ -77,6 +77,7 @@ What remains valuable from the OpenAPI ecosystem is the document itself — as a
 ### Source-of-truth direction
 
 - Zod schemas in the shared packages MUST remain the canonical App API payload contracts. The OpenAPI document MUST be fully derivable from the canonical operation catalog plus those schemas.
+- Generated JSON Schema and OpenAPI components MUST retain every representable structural constraint from their canonical schemas. A cross-field comparison that standard JSON Schema cannot express remains authoritative only in the canonical Zod schema, and the generated component MUST describe that exact receiver boundary instead of implying semantic parity.
 - The OpenAPI document MUST NOT be hand-edited. Every change to it MUST originate from a shared-schema or canonical-catalog change.
 - First-party TypeScript packages MUST NOT consume the OpenAPI document for types, validation, or client generation. `@openkit/core-client` imports schemas from the shared packages directly, as it does today.
 - The document MAY be consumed by same-release L2 contract fixtures, API documentation surfaces, release diagnostics, and developer inspection. Any experimental external use is pinned to the exact OpenKit version and carries no compatibility promise.

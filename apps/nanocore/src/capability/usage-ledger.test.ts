@@ -496,6 +496,7 @@ describe('capability usage ledger', () => {
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
+        now: new Date('2026-07-05T00:00:01.000Z'),
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000006',
         workspaceDb,
@@ -521,6 +522,71 @@ describe('capability usage ledger', () => {
     }
   });
 
+  it('atomically terminalizes calls and recovers uncertain effects as unknown', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-terminal-truth-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+    try {
+      applyScopedMigrations(workspaceDb);
+      const rejected = startCapabilityCall({
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        callId: 'cap_rejected_audit',
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses.create',
+        now: new Date('2026-07-05T00:00:03.000Z'),
+        redactionClass: 'metadata-only',
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+      workspaceDb.sqlite.exec(
+        `CREATE TRIGGER reject_capability_finish_audit
+         BEFORE INSERT ON audit_events
+         WHEN NEW.capability_call_id = '${rejected.id}'
+         BEGIN
+           SELECT RAISE(ABORT, 'injected audit failure');
+         END`
+      );
+
+      expect(() =>
+        finishCapabilityCall({
+          callId: rejected.id,
+          errorCode: 'provider_failed',
+          status: 'failed',
+          workspaceDb,
+        })
+      ).toThrow('injected audit failure');
+      expect(capabilityCallRow(workspaceDb, rejected.id)).toMatchObject({
+        completed_at: null,
+        status: 'running',
+      });
+      expect(auditRows(workspaceDb, rejected.id)).toEqual([]);
+
+      workspaceDb.sqlite.exec('DROP TRIGGER reject_capability_finish_audit');
+      const uncertain = startCapabilityCall({
+        authorityActor: { kind: 'user', id: 'user_ledger' },
+        callId: 'cap_uncertain_restart',
+        capabilityId: 'mcp.probe.echo',
+        family: 'mcp',
+        operation: 'mcp.call_tool',
+        redactionClass: 'metadata-only',
+        workspaceDb,
+        workspaceId: 'ws_demo',
+      });
+
+      expect(recoverRunningCapabilityCalls({ workspaceDb })).toBe(2);
+      expect(capabilityCallRow(workspaceDb, uncertain.id)).toMatchObject({
+        error_code: 'capability_call_recovered_after_restart',
+        status: 'unknown',
+      });
+      expect(auditRows(workspaceDb, uncertain.id)).toEqual([
+        expect.objectContaining({ outcome: 'unknown', severity: 'warning' }),
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('records terminal audit events when running calls are recovered', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capability-ledger-audit-recovery-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -533,6 +599,7 @@ describe('capability usage ledger', () => {
         capabilityId: 'llm.responses',
         family: 'llm',
         operation: 'responses.create',
+        now: new Date('2026-07-05T00:00:03.000Z'),
         redactionClass: 'metadata-only',
         requestId: '00000000-0000-4000-8000-000000000007',
         workspaceDb,
@@ -552,7 +619,7 @@ describe('capability usage ledger', () => {
           category: 'capability',
           created_at: '2026-07-05T00:00:04.000Z',
           error_code: 'capability_call_recovered_after_restart',
-          outcome: 'cancelled',
+          outcome: 'unknown',
           severity: 'warning',
           workspace_id: 'ws_demo',
         }),

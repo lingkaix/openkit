@@ -265,11 +265,11 @@ function recordLlmGatewayUsage(input: {
  *
  * @param durableCall Started durable call, when any.
  * @param status Terminal status.
- * @param errorCode Stable error code for failed or cancelled calls.
+ * @param errorCode Stable error code for non-success calls.
  */
 function finishDurableLlmGatewayCall(
   durableCall: DurableLlmGatewayCall | null,
-  status: 'succeeded' | 'failed' | 'cancelled',
+  status: 'succeeded' | 'failed' | 'aborted' | 'timed-out',
   errorCode?: string
 ): void {
   if (!durableCall || durableCall.finished) {
@@ -298,7 +298,7 @@ function finishDurableLlmGatewayCall(
  */
 function finishDurableLlmGatewayStreamCall(
   durableCall: DurableLlmGatewayCall | null,
-  status: 'succeeded' | 'failed' | 'cancelled',
+  status: 'succeeded' | 'failed' | 'aborted' | 'timed-out',
   errorCode?: string
 ): void {
   try {
@@ -1120,7 +1120,7 @@ function normalizeGatewayTerminalStream(
         try {
           finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
-            'cancelled',
+            'aborted',
             options.cancellationCode ?? 'llm_gateway_cancelled'
           );
         } finally {
@@ -1154,7 +1154,7 @@ function normalizeGatewayTerminalStream(
         try {
           finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
-            cancelled ? 'cancelled' : 'failed',
+            cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
             cancelled
               ? (options.cancellationCode ?? 'llm_gateway_cancelled')
               : (options.failureCode ?? 'llm_gateway_stream_failed')
@@ -1213,10 +1213,6 @@ function normalizeGatewayTerminalStream(
  * @returns True when the failure represents cancellation.
  */
 function isGatewayCancellation(error: unknown, signal?: AbortSignal): boolean {
-  if (error instanceof Error && error.name === 'AbortError') {
-    return true;
-  }
-
   return Boolean(signal?.aborted && error === signal.reason);
 }
 
@@ -1240,10 +1236,19 @@ function finishDurableLlmGatewayFailure(
   const cancelled = isGatewayCancellation(error, signal);
   finishDurableLlmGatewayCall(
     durableCall,
-    cancelled ? 'cancelled' : 'failed',
+    cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
     cancelled ? cancellationCode : failureCode
   );
   return cancelled;
+}
+
+/** Returns whether the provider failure proves a timeout rather than a generic failure. */
+function isGatewayTimeout(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'TimeoutError') ||
+    (error instanceof OpenAICompatibleProviderError &&
+      (error.status === 408 || error.status === 504))
+  );
 }
 
 /**

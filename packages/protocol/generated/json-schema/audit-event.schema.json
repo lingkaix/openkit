@@ -308,7 +308,8 @@
         "succeeded",
         "failed",
         "denied",
-        "cancelled"
+        "cancelled",
+        "unknown"
       ]
     },
     "severity": {
