@@ -3,13 +3,62 @@ status: Accepted
 ---
 # Product Roadmap
 
-This document is the ordered completion path from the current implementation to the Product Vision. Work proceeds from top to bottom because later phases depend on the product behavior, operational confidence, and real usage established above them.
+This document is the completion inventory from the current implementation to the Product Vision, plus the current execution order over it.
 
-Each checkbox is one outcome-sized issue that can be delivered through one change plan, one pull request, independent review, and merge. An item is complete only when the capability works through its supported product surfaces, has proportionate regression and real-use evidence, and leaves its owning architecture and documentation current.
+The Phases below are a **dependency map**, not a work queue. A Phase states what a capability family rests on; it does not claim that every item above must finish first. **Execution order comes from the Execution Pathway**, which is ordered by value arrival and revised as evidence changes. Two axes decide an item's position: what it unblocks for someone using the product now, and what depends on it. An item that has only a dependency argument and no present-value argument goes later, however early its Phase.
 
-The list contains unfinished outcomes only. Completed foundations remain recorded by their Core documents, specifications, Git history, and verification evidence rather than by checked historical entries here. The architecture and current implementation decide how an issue is delivered; the Roadmap does not prescribe which specification, Core document, package, schema, or internal mechanism a team must change.
+Each checkbox is one outcome-sized issue that can be delivered through one change plan, one pull request, independent review, and merge. Where an item is too large for that contract, split it before starting rather than recording partial status inside its outcome sentence. An item is complete only when the capability works through its supported product surfaces, has proportionate regression and real-use evidence, and leaves its owning architecture and documentation current.
+
+A completed item keeps its entry and is marked complete. Item IDs are cited from tests, specifications, cookbooks, and change records, so removing a completed entry orphans live references. The architecture and current implementation decide how an issue is delivered; the Roadmap does not prescribe which specification, Core document, package, schema, or internal mechanism a team must change.
 
 Roadmap completion is finite: it means the Product Vision and the concrete supported capability families below are complete. It does not require native adapters for every CMS, CRM, BI, analytics, messaging, Git, model, file, or domain system. Newly accepted product scope creates new roadmap work; it does not make this checklist an unlimited connector or feature backlog.
+## Execution Pathway
+
+This is the current execution order and the only authority for what runs next. It draws items from several Phases because value arrival, not dependency depth, decides sequence. The engineer owns this order; an agent may propose a revision from evidence but MUST NOT reorder it silently.
+
+The governing stage decision: OpenKit is in internal developer preview with a small number of known users. Assurance, operational completeness, and governance breadth are deliberately underweighted in favour of capability a user can perceive and use. The standing constraints below are exempt from that trade.
+
+**A Blocker is a stop, not a note.** Where a step names a blocking design artifact, an agent MUST NOT begin that step's items until that artifact exists at the stated status. It MUST NOT infer, draft, or assume the missing decision, MUST NOT substitute an adjacent specification, and MUST NOT proceed on a partial or Draft artifact. It stops and reports the blocker to the engineer. Blocking artifacts are prepared ahead of the step that needs them.
+
+| # | Outcome | Items | Blocker | Why here |
+|---|---|---|---|---|
+| 0 | Close the in-flight Workspace-recovery cluster, make the host requirement honest, let an Agent stand up a deployment, and prove truthful interrupted outcomes | R008, R009, R010, R005, R110, R109 | **B1** for R110 and R109 only; R008, R009, R010, R005 are unblocked | R008 and R009 are complete in unmerged work and R010 is in flight; finishing costs less than parking. Merging MUST carry the owner amendments that work makes to `docs/specs/20260704-remote_auth_credential_bootstrap.md` and `docs/specs/20260704-workspace_backup_export_import.md`, because on `main` neither the locked-out recovery procedure nor the damaged-Workspace recovery lifecycle has a complete owner. R110 and R109 remove the single-host bottleneck that stalled this Phase. R005 is correctness rather than assurance and shares R110's one reboot campaign. |
+| 1 | Recurring work runs on a schedule with current authority checked before every run | R092 | **B2** | Small, and its value accrues with elapsed time rather than at delivery: the earlier it lands, the more unattended real-use hours it generates. |
+| 2 | Workers can use supported third-party MCP servers through the Gateway | R058 | None | Best value per unit cost on the list: one governed path imports an existing tool ecosystem, and its owner is already Accepted. Scope is the Workspace-declared catalog its owner defines; marketplace or registry discovery stays deferred. Run this while B1 and B2 are being prepared. |
+| 3 | Structured data and generative presentation for real analysis, viewing, and form work | R096, R097, R098 | **B3** | Strongest external pull. Acceptance is one real customer completing an analysis-and-edit journey end to end. |
+| 4 | A built-in operator Agent replaces hand-edited configuration files | R035 (reduced scope: create and manage Workspaces, model providers, and Worker Agent configuration through conversation; explain and repair configuration errors) | **B4** | Configuration is currently file-only, so no non-author can adopt the product regardless of what else ships. |
+| 5 | The remaining shared-work surface: the rebuilt multi-user Web projection | R049 | None | The non-Web multi-user responsibility is already implemented under its Accepted owner; only the Web projection that owner deferred is missing. Surface work over settled behavior. |
+| 6 | Skill import, version management, and per-Worker assignment through the App | R108, R076 | **B5** | Makes Worker capability configurable by a user rather than by editing repository files. |
+| 7 | Capture real-use Knowledge with source lineage from first use | R071, R072 | R071 none; **B6** for R072 | Retroactive capture is impossible, so the recording half cannot wait. The improvement loop can. |
+
+### Blockers
+
+Each entry names the artifact, its required end state, and the decisions it must settle. None may be satisfied by an agent's own judgement during implementation.
+
+- **B1 — Deployment host requirements and installation ownership.** A new specification. No Accepted document owns this: `docs/specs/20260802-nanohost_runtime_and_transport.md` explicitly disowns operator installation, and `docs/specs/20260829-release_management.md` disowns deployment automation. Must settle the machine-checkable requirement set NanoHost actually depends on, expressed as capability and version floor rather than as an installed machine's identity; the verification instrument's verdict contract and where cookbook provisioning ends and an executable verdict begins; and the binding of every acceptance result to an exact product commit plus machine identity. Blocks R110 and R109, and governs the condition that reopens R001.
+- **B2 — `docs/specs/20260711-scheduler_recurring_event_triggers.md` reaches Accepted.** Currently `Draft` / `Not Started`. Must settle recurrence definition and lifecycle, the authority re-check before every run and the behavior when authority has lapsed, missed-run and overlap semantics across restart, and the observable acceptance predicates. Blocks R092.
+- **B3 — Generative Kernel specification.** A new specification is the blocker. `docs/core/architecture.md:67` reserves the boundary and states that it "does not authorize a current implementation"; that withholds authorization from the Core clause itself rather than prohibiting an owning specification from supplying it, because `docs/core/architecture.md:87` states that unsupported operations remain unsupported "until an owning contract is accepted and implemented". Three prohibitions in that same sentence stay binding on whatever specification is written: no universal data model, no generated application framework, and no independent policy and storage plane. The new specification must own schema declaration and validation, version lineage, Policy binding, secret handling, Audit, export and backup, and the external-system boundary. Amending `docs/core/architecture.md:67` to retire the reservation keeps Core current and is an engineer decision, but it is not a precondition for the specification. R098 additionally requires the published-surface decision in `docs/specs/20260628-web_product_surface_projection.md`, which currently records Generative UI as an unpublished internal render shell; the rendering stack itself is already decided in `docs/specs/20260710-web_ui_rebuild_stack.md`. Blocks R096, R097, R098.
+- **B4 — Built-in administration role.** A Core amendment plus a new specification. The `Internal Core Roles` table in `docs/core/architecture.md` has no administration row, and no specification owns the role, while the repository's pattern is one specification per internal role. Must settle the four action classes R035 names — automatic, proposal, approval, and prohibited — the configuration surfaces the role may mutate, its approval bindings, and its boundary against the R048 deployment-admin Web surface. Blocks R035.
+- **B5 — `docs/specs/20260711-skill_catalog_versioning_pinning.md` reaches Accepted.** Currently `Draft` / `Not Started`. Must settle immutable version identity, current-version selection, Workspace pinning, reviewed promotion, delivery verification, rollback, and per-Worker assignment. R108 additionally requires new operations in `docs/specs/20260704-app_api_openapi_projection.md` and a screen disposition in `docs/specs/20260628-web_product_surface_projection.md`. Blocks R076 and R108.
+- **B6 — Generated Knowledge maintenance authorization.** An amendment to `docs/specs/20260702-knowledge_store_governance_rules.md`. Its line 198 states that "Generated update, replacement, merge, split, patch, supersede, archive, and delete operations are not authorized by this contract and remain deferred", while R072 requires generated Knowledge to be updated, merged, superseded, and archived. Reversal alone is already owned. Must settle page revision or tombstone identity, the application owner, and what an accepted proposal may do to an existing page. Blocks R072 only; R071 is unblocked and is the half that cannot wait.
+
+Steps 2 and 5 carry no blocker, and so does R071 in step 7. Their owners are Accepted and cover those items: `docs/specs/20260704-worker_mcp_tool_supply.md`; `docs/specs/20260715-multi_user_workspace_system.md` with the two Web specifications; and `docs/core/knowledge.md` with the Knowledge Store specifications, which already require that generated learning never promotes itself.
+
+### Standing constraints
+
+Reversible shortcuts are accepted at this stage. These are not reversible, and none is exempted for compliance reasons.
+
+- **Generative Kernel durability (R096).** Thin means a thin interface and thin operations, never thin durability. Declared schema, version lineage, export, and backup are in scope from the first implementation, because once customer forms and inter-system glue data live in OpenKit, OpenKit is their authoritative store. Shortcuts elsewhere produce defects; shortcuts here produce unrecoverable customer data loss.
+- **Actor attribution.** `docs/core/communication.md` already requires the authenticated human who supplied an accepted input to be the actor of its Item or command, preserved through every projection, and resolves contradictory human intent by serialization with no consensus, priority, or veto semantics. That is an existing Core MUST to honour and prove, not a decision to retake, and step 7 depends on it because feedback must bind to the person who gave it.
+- **Workspace authority is settled.** The fixed owner, editor, and viewer projection in `docs/specs/20260715-multi_user_workspace_system.md` is retained; its non-Web responsibility is already implemented. No item, plan, or implementation may assert flat Workspace authority, and no gate-takeover workflow is authorized. A sensitive approval admits every subject granted `approval.respond` for its kind and resource, so work stopping when no eligible member approves is the intended protection rather than a gap.
+
+### Deliberately deferred, with the condition that reopens each
+
+- **R001** is carried as a known risk while NanoHost non-interference is proved only on a declared internal host. **This risk may not be carried on a user's own machine.** The first deployment onto a host OpenKit does not own makes R001 mandatory again.
+- **R003, R004** wait for a second product version and a user holding data worth preserving. Until then, one install path a second person can follow is sufficient, and R109 supplies it.
+- **R082, R083, R084, R085, R086** — the Knowledge and Skill improvement loops — wait for accumulated real outcomes. Step 7 exists to make sure the raw material is recorded before then.
+- **R087, R088, R089, R090, R091** — external channels — expand reach rather than capability, and wait until the work they would reach is worth reaching.
+- **Phase 3 in its entirety** — Telemetry, Policy breadth, and secret-authority surfaces — waits for real multi-user usage to define which paths matter. Credential handling, Vault behavior, and the Safety Kernel remain in force meanwhile; deferring the governance surface does not defer the safety rules.
 
 ## Product boundaries
 
@@ -31,6 +80,8 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 - [ ] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
 - [ ] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
 - [ ] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
+- [ ] R109 — An Agent can install and configure a complete OpenKit deployment on a fresh host from repository guidance, and can state which host requirements the target does not meet.
+- [ ] R110 — The real-host acceptance gate is repeatable on any host meeting a declared, machine-checkable requirement set, with every result bound to an exact product commit and an exact machine identity rather than to one named machine.
 
 ## Phase 2 — Complete the end-to-end Agent work loop
 
@@ -115,6 +166,7 @@ Roadmap completion is finite: it means the Product Vision and the concrete suppo
 - [ ] R074 — The Workflow Coordinator improves Worker, Skill, context, Agent configuration, and handoff selection from accumulated real outcomes.
 - [ ] R075 — A real Worker Skill is delivered as a verified versioned package and consumed by a supported Worker path.
 - [ ] R076 — Skill versions support immutable identity, a current version, Workspace pinning, reviewed promotion, verified delivery, and safe rollback without a marketplace.
+- [ ] R108 — Users can import, install, update, and pin Skill versions and assign them to specific Worker Agents through the App surface, without editing repository or runtime files.
 - [ ] R077 — The first BWM Skill packages its theory, domain vocabulary, source mappings, reasoning guidance, operations, provenance, freshness, and conflict behavior outside OpenKit Core.
 - [ ] R078 — A Meta-Skill creates a reviewable candidate BWM Skill from authorized Workspace information through an ordinary governed Task or Goal.
 - [ ] R079 — A Worker receives and uses the exact Workspace-pinned BWM Skill version with complete input, execution, output, evidence, and review lineage.

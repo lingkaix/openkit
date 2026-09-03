@@ -6,11 +6,11 @@ implementation: Partial
 
 ## Owns
 
-This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the `gateway.jsonc` logical-model catalog, model discovery, derived logical-model capabilities and model family, ordered private route selection, bounded pre-output fallback, optional public cache-scope input, and public Gateway error behavior. It also owns the routing rule that one route member references one Provider profile and that a subscription-backed Provider profile binds one explicit provider-subscription account slot.
+This spec owns the NanoCore LLM Gateway HTTP surface for OpenAI-compatible Chat Completions and Responses requests, the `gateway.jsonc` logical-model catalog, placement and Gateway projection of each logical model's context-management policy, model discovery, derived logical-model capabilities and model family, ordered private route selection, bounded pre-output fallback, optional public cache-scope input, and the common public Gateway error envelope, redaction, and transport behavior. It also owns the routing rule that one route member references one Provider profile and that a subscription-backed Provider profile binds one explicit provider-subscription account slot.
 
 ## Does Not Own
 
-This spec does not own provider transport, request, response, streaming, usage, cache, credential-input, or provider-error mapping, which belongs to `docs/specs/20260708-pi_ai_unified_llm_backend.md`; subscription account creation, login, refresh, logout, status, quota, or Vault persistence, which belongs to `docs/specs/20260721-provider_subscription_accounts.md`; durable capability and usage records; worker-side capability records; worker-runtime provenance; authenticated worker-inference identity binding; runtime cache-lineage specialization; policy evaluation; or `packages/protocol` schemas.
+This spec does not own provider transport, request, response, streaming, usage, cache, credential-input, or provider-error mapping, which belongs to `docs/specs/20260708-pi_ai_unified_llm_backend.md`; subscription account creation, login, refresh, logout, status, quota, or Vault persistence, which belongs to `docs/specs/20260721-provider_subscription_accounts.md`; context-compaction authority, lifecycle, item semantics, or quality gates, which belong to `docs/specs/20260902-agent_runtime_context_compaction.md`; durable capability and usage records; worker-side capability records; worker-runtime provenance; authenticated worker-inference identity binding; runtime cache-lineage specialization; policy evaluation; or `packages/protocol` schemas.
 
 ## Core References
 
@@ -30,6 +30,7 @@ Related specs:
 - `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
+- `docs/specs/20260902-agent_runtime_context_compaction.md`
 
 ## Summary
 
@@ -73,6 +74,8 @@ Streaming uses OpenAI-compatible SSE chunks and terminates with `[DONE]`. If a p
 
 The route accepts OpenAI-compatible Responses requests with `model`, `input`, optional `stream`, and supported passthrough fields. It returns native Responses payloads when the selected provider capability is `native`, or a converted Responses payload only when the provider is chat-native and the request is bridgeable under this spec.
 
+The route consumes the exact `context_management: [{ type: "compaction", compact_threshold }]` control under `docs/specs/20260902-agent_runtime_context_compaction.md`. The authenticated execution policy is authoritative: the Gateway injects an omitted control for OpenKit compaction authority, rejects a supplied mismatch or any control under runtime-native authority before Provider dispatch, and never blindly forwards this OpenKit-owned operation to a Provider. A caller-supplied `compaction_trigger` input item or another Provider-native compaction control is rejected rather than passed through. A completed OpenKit compaction item remains in the Responses output and may be round-tripped as later input under that owner.
+
 `openai-codex` is Responses-native through the unified pi-ai backend. It must not use the current Chat Completions bridge or a dedicated OpenKit Codex transport after migration.
 
 ### `GET /v1/models`
@@ -85,7 +88,7 @@ Server-mode authentication is required because model supply and sibling inferenc
 
 ### Excluded Routes
 
-`POST /v1/completions` and the historical `/internal/v1/chat/completions` facade remain absent. The provider-subscription App API is separate from `/v1/*` and follows `docs/specs/20260721-provider_subscription_accounts.md`.
+`POST /v1/completions`, `POST /v1/responses/compact`, and the historical `/internal/v1/chat/completions` facade remain absent. Automatic context management on `POST /v1/responses` is the only accepted compaction route; a standalone compact operation requires a later accepted caller and contract. The provider-subscription App API is separate from `/v1/*` and follows `docs/specs/20260721-provider_subscription_accounts.md`.
 
 ## Authentication, Authorization, And Attribution
 
@@ -105,6 +108,10 @@ Each logical model contains:
 interface LogicalModelConfig {
   id: string;
   displayName: string;
+  contextManagement: Array<{
+    type: "compaction";
+    compactThreshold: number;
+  }>;
   routes: Array<{
     id: string;
     providerProfileId: string;
@@ -113,7 +120,7 @@ interface LogicalModelConfig {
 }
 ```
 
-IDs are stable and unique within their owning collection. Capability and family values are not free-form Gateway configuration. When the snapshot loads, NanoCore joins each route member to the pinned `@openkit/models-dev-catalog` snapshot and the Provider endpoint-capability matrix, derives one closed capability set and `modelFamilyId` per member, requires every member of a logical model to have the same derived `modelFamilyId`, and publishes the intersection of their capabilities as the logical model's effective capability set. A missing catalog match, mismatched family, or unrepresentable endpoint rejects the snapshot rather than accepting an authored assertion or silently weakening a later call.
+IDs are stable and unique within their owning collection. V1 requires exactly one context-management entry with the shape above; `docs/specs/20260902-agent_runtime_context_compaction.md` owns its threshold validation, immutable execution projection, and separation from catalog-derived physical limits. Capability and family values are not free-form Gateway configuration. When the snapshot loads, NanoCore joins each route member to the pinned `@openkit/models-dev-catalog` snapshot and the Provider endpoint-capability matrix, derives one closed capability set and `modelFamilyId` per member, requires every member of a logical model to have the same derived `modelFamilyId`, and publishes the intersection of their capabilities as the logical model's effective capability set. A missing catalog match, mismatched family, invalid context-management policy, or unrepresentable endpoint rejects the snapshot rather than accepting an authored assertion or silently weakening a later call.
 
 The `@openkit/models-dev-catalog` snapshot version is pinned by that package and changes only with an explicit repository dependency snapshot update, not through runtime-config reload. Startup and test validation recompute every derived logical-model contract against that pinned version. A refreshed catalog that changes a logical model's effective capabilities or `modelFamilyId` changes the composed setup and enters only a later immutable AEP or internal-role run; it never mutates an admitted Turn or silently crosses the previously accepted logical contract.
 
@@ -213,6 +220,8 @@ The route supplies resolved cache input to the unified backend; it does not deci
 
 ## Error Contract
 
+This section owns the shared public envelope, redaction, fallback interaction, and pre-start versus post-start transport rules. A narrower accepted capability specification may author a domain-specific condition, HTTP status, type, stable code, and fixed message under that envelope; `docs/specs/20260902-agent_runtime_context_compaction.md` does so for context management.
+
 Gateway policy failures, missing logical defaults, unknown or unavailable logical models, exhausted route members, invalid account bindings, authentication failures, rate limits, quota exhaustion, context overflow, unsupported features, Provider failures, and cancellation use OpenAI-compatible error envelopes with stable OpenKit codes and fixed generic messages.
 
 Upstream message text, provider-native codes and types, response bodies, pi-ai vocabulary, credential data, account identifiers, and stack traces never cross public JSON or SSE. Provider classification may inspect internal details only to select the stable public class.
@@ -243,6 +252,8 @@ The legacy `oauth.openaiCodexAccounts` diagnostics field is removed rather than 
 
 NanoCore implements `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and `/health` with server authentication, Gateway policy, `gateway.jsonc` logical-model loading, private Provider route resolution, ordered pre-output fallback, durable route attribution, prompt-cache resolution, stable errors, streaming, usage projection, and no retired internal facade. Public discovery and requests expose logical model IDs rather than Provider profiles or Provider-native model authority.
 
+The current logical-model schema does not yet contain `contextManagement`, and the Responses route does not yet inject the control, execute the OpenKit compactor, or parse an OpenKit compaction item. Those are explicit implementation gaps under `docs/specs/20260902-agent_runtime_context_compaction.md`; the existing `/v1/responses` route is not evidence that automatic context management is implemented.
+
 Provider resolution now accepts only the provider-neutral `extensions.openkit.subscriptionAccount` binding for recognized subscription profiles, validates the exact slot and local credential before dispatch, and sends both Codex and xAI subscription requests through the unified pi-ai dispatcher. Codex Responses is native through stock pi-ai, xAI uses its reviewed model capability, subscription-provider and account-slot identity participate in the hashed cache scope, and stable pre-dispatch and post-start errors expose no provider-private data.
 
 Logical discovery and dispatch share one resolver, private Provider identities remain hidden, and ordered fallback is attributed per attempt. This specification remains `Partial` only for acceptance evidence or Provider capability cases still named by its owning test strategy, not for the retired concrete-model dispatch shape.
@@ -259,14 +270,14 @@ The removed Gateway and account dependencies do not remove or rename `/api/app/v
 
 ## Testing Strategy / Acceptance Criteria
 
-- L1 route and resolution tests prove authentication order, logical-model validation, catalog-derived capability intersection and family equality, ordered member eligibility, provider-neutral slot binding, no default-slot guess, bounded pre-output failover, no post-output retry, exact subscription pre-dispatch errors, stable cache priority, and absence of a Provider-specific backend branch.
+- L1 route and resolution tests prove authentication order, logical-model and context-management validation, catalog-derived capability intersection and family equality, ordered member eligibility, provider-neutral slot binding, no default-slot guess, bounded pre-output failover, no post-output retry, exact subscription pre-dispatch errors, stable cache priority, and absence of a Provider-specific backend branch.
 - L1 bridge tests prove the accepted mappings and fail every unrepresentable shape before provider effects.
 - L2 contract tests prove public Chat Completions, Responses, logical models, SSE, error, usage, route-attempt attribution, and redaction behavior across API-key and subscription-backed profiles, including non-`2xx` JSON rather than SSE for every pre-start terminal failure.
 - L3 black-box tests prove two logical models can dispatch through different Provider profiles on the same `/v1/*` routes, one logical model can advance across two subscription-account profiles on an admitted pre-output failure, discovery advertises only dispatchable logical IDs, and overlapping account slots remain isolated.
 - L3 opt-in real-provider evidence proves one authenticated public Codex Gateway request per run, accepted streaming behavior, stable public envelopes, and redaction.
 - L5 smoke proves NanoCore serves the Gateway without Codex app-server, `CODEX_HOME`, `auth.json`, or ambient credentials.
 
-Acceptance requires the fixed route surface, exact logical-model authority, catalog-derived capability and model-family preservation, stable public envelopes, explicit generic account binding, bounded ordered pre-output failover, native Codex Responses through pi-ai, xAI subscription inference through pi-ai, hashed route-aware cache scope, Provider-reported cache evidence, no concrete Provider or account leakage, and no Provider-specific backend branch.
+Acceptance requires the fixed route surface, exact logical-model authority, validated context-management placement and Responses projection under its separate owner, catalog-derived capability and model-family preservation, stable public envelopes, explicit generic account binding, bounded ordered pre-output failover, native Codex Responses through pi-ai, xAI subscription inference through pi-ai, hashed route-aware cache scope, Provider-reported cache evidence, no concrete Provider or account leakage, and no Provider-specific backend branch.
 
 ## Risks & Mitigations
 
@@ -283,3 +294,4 @@ Acceptance requires the fixed route surface, exact logical-model authority, cata
 - `docs/specs/20260721-provider_subscription_accounts.md`
 - `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
+- `docs/specs/20260902-agent_runtime_context_compaction.md`

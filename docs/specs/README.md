@@ -86,6 +86,8 @@ Workflow, human attention, and verification:
 - [`20260704-workflow_coordinator_internal_agent.md`](./20260704-workflow_coordinator_internal_agent.md)
 - [`20260709-quick_chat_workspace.md`](./20260709-quick_chat_workspace.md)
 - [`20260704-knowledge_manager_internal_agent_runtime.md`](./20260704-knowledge_manager_internal_agent_runtime.md)
+- [`20260813-internal_agent_runtime.md`](./20260813-internal_agent_runtime.md)
+- [`20260902-agent_runtime_context_compaction.md`](./20260902-agent_runtime_context_compaction.md)
 - [`20260531-worker_turn_reliability_envelope.md`](./20260531-worker_turn_reliability_envelope.md)
 - [`20260531-human_attention_intervention_model.md`](./20260531-human_attention_intervention_model.md)
 - [`20260713-work_resource_interaction_model.md`](./20260713-work_resource_interaction_model.md)

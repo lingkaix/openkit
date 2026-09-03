@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-31
+updated: 2026-09-02
 ---
 # Agent Environment Package And Worker Governance Backends
 
@@ -56,6 +56,7 @@ Those contracts remain with their narrow Core and specification owners. An AEP c
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
+- `docs/specs/20260902-agent_runtime_context_compaction.md`
 
 ## Definition And Exclusions
 
@@ -147,7 +148,7 @@ The top-level sections have these responsibilities:
 | `credentials` | Carries declarations and references only, never credential values. |
 | `vault` | Carries non-secret Vault references and grants owned by the Vault contracts. |
 | `policy` | Carries the exact filesystem, process, network, and secret policy intent to materialize. |
-| `llm` | Carries one resolved sandbox-local `/inference/*` semantic binding, distinct token reference and authority mode, one preferred logical model ID, and the exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no concrete Provider or route identity, and trusted relay packages omit `workerBaseUrl` and every native URL. |
+| `llm` | Carries one resolved sandbox-local `/inference/*` semantic binding, distinct token reference and authority mode, one preferred logical model ID, and the exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no concrete Provider or route identity, and trusted relay packages omit `workerBaseUrl` and every native URL. The current strict version 4 shape has no context-management field; adding the resolved policy owned by `docs/specs/20260902-agent_runtime_context_compaction.md` requires the next coordinated package version rather than an `extensions` workaround. |
 | `resources` | Carries worker resource intent without creating a second scheduler. |
 | `observability` | Carries required audit and evidence expectations. |
 | `backend` | Carries the preferred backend, allowed kinds, and required capability set. |
@@ -261,6 +262,8 @@ The current production worker lifecycle selects only a `nanohost` RuntimeTarget.
 The current package projects the fixed generic worker shim, one adapter selected from the static Codex, OpenCode, and Pi registry by `control.adapter.targetRuntime`, transcript evidence, the preferred and allowed logical-model contract with one or more Gateway-private inference routes, workspace roots and context, static Skill and MCP supply, credential requirements and Vault bindings without a Provider section, policy, resources, observability, backend requirements, and the three sandbox-local Integration bindings for capability, worker-control, and inference with distinct Token references. It projects no concrete Provider identity, direct NanoCore endpoint, or raw Token. The exact generated Context Package inventory maps to fixed imports after package-config, path-only outputs map to NanoHost-produced and NanoCore-verified exports, the fixed unary two-token NanoHost bootstrap retains its response monitor, and lease-owned distinct hash-only worker-control and inference bindings restore on restart. Adapter-specific native commands, output parsing, image contents, and enabled capability behavior remain with their narrow specifications.
 
 The version 4 package and setup resolver implement the composed preferred and allowed logical-model contract without retaining a concrete Provider summary or Provider-native route. Gateway-private route selection remains outside the AEP, and earlier package versions are rejected rather than adapted.
+
+The current version 4 `llm` section does not project the logical model's resolved context-management policy. Worker-wide central threshold control is therefore not implemented, and a Worker Harness's native compaction defaults remain runtime-local behavior until the next coordinated AEP version and the selected adapter satisfy `docs/specs/20260902-agent_runtime_context_compaction.md`.
 
 Current packages project worker capabilities as disabled with no routes. Static Skill or MCP supply does not grant a worker capability, direct MCP connection, or alternate control plane.
 

@@ -37,6 +37,8 @@ implementation: Partial
 - `docs/specs/20260704-goal_mode_coordination.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`
 - `docs/specs/20260704-git_write_workflow.md`
+- `docs/specs/20260813-internal_agent_runtime.md`
+- `docs/specs/20260902-agent_runtime_context_compaction.md`
 
 ## Intent
 
@@ -109,7 +111,7 @@ Quick Chat MUST allow clarification gates and ordinary Action Center projections
 
 Quick Chat MUST allow Knowledge Store creation, update, retrieval, and Knowledge Manager answer/context operations that use workspace knowledge.
 
-Quick Chat MAY use provider-backed inference through the same Core Assistant and LLM Gateway paths as other Chat Mode requests.
+Quick Chat MUST use provider-backed inference through the same Core Assistant, shared Internal Agent Loop, logical-model context policy, and LLM Gateway paths as other internal model-using roles. Its lightweight capability boundary does not authorize a separate direct Provider runtime.
 
 ### Refused Behavior
 
@@ -185,7 +187,7 @@ Add a small NanoCore helper that reads the workspace and rejects project-only op
 
 Use that helper in repository setup, Task Mode startup, Goal Mode startup, Git push write routes, and direct worker-turn startup.
 
-Keep Chat Mode and Knowledge Store routes available in Quick Chat. For a Chat Mode Task or Goal handoff, keep the Quick Chat guard authoritative while the Assistant resolves or creates the separate executing Workspace through the combined confirmation; emit an exact durable missing-authorization refusal only when that transition cannot be authorized.
+Keep Chat Mode and Knowledge Store routes available in Quick Chat. Route model-backed Chat Mode work through the shared Internal Agent Loop even though ordinary short conversations will not reach its compaction threshold. For a Chat Mode Task or Goal handoff, keep the Quick Chat guard authoritative while the Assistant resolves or creates the separate executing Workspace through the combined confirmation; emit an exact durable missing-authorization refusal only when that transition cannot be authorized.
 
 ## Current Implementation Projection
 
@@ -196,6 +198,8 @@ Keep Chat Mode and Knowledge Store routes available in Quick Chat. For a Chat Mo
 Each active local or server user receives one deterministic top-level Quick Chat Workspace and canonical owner membership before product use; the shared process store no longer uses user-scoped physical ownership. The complete sharing lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery, and portable source-authority reuse for Quick Chat, while the centralized guard rejects repository setup, Task Mode, Goal Mode, Git push, and direct worker-Turn entry. The specification remains Partial only because the rebuilt Web must still project Quick Chat's project-only affordance boundary under S10; the kernel and App API ownership contract is implemented.
 
 `apps/nanocore/src/app.ts` owns repository setup, Task Mode, Goal Mode, Chat Mode, and worker-turn routes.
+
+`apps/nanocore/src/mode-entry-routes.ts` still owns a direct `callQuickChatProvider` function, and `apps/nanocore/src/quick-chat.test.ts` currently asserts that no Internal Agent Runner is used. Those bytes are implementation divergence from the accepted shared-loop design and must be replaced rather than preserved when the Internal Agent Loop implementation reaches Quick Chat.
 
 `apps/web/src/App.tsx` already selects the first returned workspace when no route or stored workspace id is valid.
 
@@ -237,6 +241,7 @@ The implementation adds a domain-specific special case, but it is centralized as
 - Chat Mode tests prove one confirmation resolves or creates a separate executing Workspace and creates exactly one Task or Goal handoff, while missing Workspace authority produces one exact durable refusal and no downstream owner.
 - Multi-user route tests prove every invitation, membership, and owner-transfer operation rejects Quick Chat before mutation.
 - Existing Chat Mode and knowledge tests continue to pass for ordinary workspace-scoped behavior.
+- Provider-backed Quick Chat tests prove the same Internal Agent Loop and logical-model context policy used by other internal roles, while a below-threshold request performs no compaction pass.
 - Focused Web tests prove an authorized current selection remains authoritative and an absent or stale selection prefers Quick Chat even when a project Workspace is returned first.
 - Focused package tests and typecheck pass for touched packages.
 

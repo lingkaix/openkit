@@ -6,11 +6,11 @@ implementation: Partial
 
 ## Owns
 
-This spec owns the implementation-facing reliability envelope for the direct Quick Chat provider call and worker-turn execution, including stop reasons, terminal stream behavior, item-to-LLM projection, runtime checkpoints, delivery of an already accepted worker request, restart-safe terminal handoff after exact same-worker adoption, and deferred context-compaction boundaries.
+This spec owns the implementation-facing reliability envelope for internal-role Provider calls and worker-turn execution, including stop reasons, terminal stream behavior, item-to-LLM projection, runtime checkpoints, delivery of an already accepted worker request, and restart-safe terminal handoff after exact same-worker adoption.
 
 ## Does Not Own
 
-This spec does not own stable core workflow vocabulary, user-facing work labels, worker selection, semantic worker-request composition, user-input delivery semantics, worker-control wire commands or reconnect authorization, workspace synchronization, runtime lease adoption, agent manifest resolution, Agent Environment Package schemas, or UI recovery layouts. S15 owns worker selection and semantic request composition; S16 owns accepted active-Goal user input and its delivery proof.
+This spec does not own stable core workflow vocabulary, user-facing work labels, worker selection, semantic worker-request composition, user-input delivery semantics, worker-control wire commands or reconnect authorization, workspace synchronization, runtime lease adoption, agent manifest resolution, Agent Environment Package schemas, context-management policy or compaction algorithms, or UI recovery layouts. S15 owns worker selection and semantic request composition; S16 owns accepted active-Goal user input and its delivery proof; `docs/specs/20260902-agent_runtime_context_compaction.md` owns context-management policy and compaction authority.
 
 ## Core References
 
@@ -23,9 +23,9 @@ This spec does not own stable core workflow vocabulary, user-facing work labels,
 
 ## Summary
 
-OpenKit should harden worker execution and the direct Quick Chat provider call without growing a second agent runtime.
+OpenKit should harden worker execution and internal-role Provider calls without growing a second agent runtime.
 
-Quick Chat uses one direct bounded call with timeout, cancellation, schema validation, redacted errors, and no private workflow state. Worker turns retain stable stop reasons, explicit item-to-LLM projection, exact accepted-request delivery, runtime checkpoints, and the deferred context-compaction boundary defined below.
+Quick Chat uses the shared Internal Agent Loop owned by `docs/specs/20260813-internal_agent_runtime.md`, while this specification preserves its bounded timeout, cancellation, schema-validation, redacted-error, and no-private-workflow-state reliability requirements. Worker turns retain stable stop reasons, explicit item-to-LLM projection, exact accepted-request delivery, and runtime checkpoints; context compaction follows its separate accepted owner.
 
 The first implementation should stay app-local in `apps/nanocore`, except for the stable stop-reason enum and terminal stream contract, which should be promoted into `packages/protocol` and `docs/core/protocol.md`.
 
@@ -36,27 +36,27 @@ This spec refines the earlier lightweight-agent and Sustained Mode specs by defi
 Goals:
 
 - Preserve the stable `Workspace -> Thread -> Turn -> Item[]` Core model.
-- Keep the current Quick Chat provider call direct, bounded, and owned by that concrete role.
+- Keep Quick Chat bounded through the shared Internal Agent Loop while preserving its concrete role contract.
 - Define stable stop reasons for provider, worker, and gateway streams.
 - Introduce a `convertToLlm` boundary so durable item history and provider-visible context are separate.
 - Add only the worker-turn reliability primitives required to deliver one accepted Coordinator request, observe one bounded execution, checkpoint it, and recover its terminal handoff.
-- Defer autonomous context compaction until OpenKit has real long-running sessions and enough history to compact.
+- Preserve one reliability boundary while delegating context-management policy and compaction execution to its accepted owner.
 
 Non-goals:
 
 - Do not introduce `AgentRun`, `TaskRun`, or a task graph as stable Core concepts.
-- Do not introduce a generic internal-agent runner, registry, private event vocabulary, hook framework, tool allowlist, or unused streaming surface.
+- Do not introduce a second internal-agent runner, registry, private event vocabulary, hook framework, tool allowlist, or unused streaming surface beside the accepted shared Internal Agent Loop.
 - Do not expose NanoCore Internal Core Role implementation details as protocol records.
 - Do not require low-level provider clients to never throw.
 - Do not force every stream failure to appear as assistant prose.
-- Do not implement background context compaction or autonomous Knowledge Store editing in this design slice.
+- Do not implement context compaction or autonomous Knowledge Store editing inside this reliability envelope.
 - Do not add new Internal Core Roles as part of the envelope.
 
 ## Background
 
 OpenKit already has the right foundation: the protocol remains a work log of workspaces, threads, turns, and items, while NanoCore can own app-local runtime state.
 
-The current product needs only direct non-streaming Quick Chat provider calls. Workflow Coordinator is a deterministic Internal Core Role and does not use a provider runner. A generic loop, registry, hook system, event protocol, and private streaming facade therefore add unowned capability rather than reliability.
+The original implementation slice needed only a direct non-streaming Quick Chat Provider call, while Workflow Coordinator was deterministic. The later accepted Internal Agent Runtime now owns one shared bounded loop for every model-using internal role, including Quick Chat; this reliability specification neither creates a competing loop nor preserves the direct call as design authority.
 
 ## Decision
 
@@ -64,7 +64,7 @@ OpenKit will introduce a worker-turn reliability envelope with app-local runtime
 
 The protocol promotion is limited to a stable `StopReason` enum and a rule that once a stream has started, failures must be encoded as terminal events or terminal items rather than escaping as transport errors.
 
-All other pieces begin in `apps/nanocore`: the direct Quick Chat provider call, runtime checkpoints, context package projection, accepted-request delivery, and worker-turn stop policy.
+All other pieces begin in `apps/nanocore`: the shared Internal Agent Loop's Provider-call reliability, runtime checkpoints, context package projection, accepted-request delivery, and worker-turn stop policy.
 
 Because this repository is still in internal development, implementation may break app-local shapes where that gives a cleaner design.
 
@@ -98,7 +98,7 @@ Worker adapters own runtime-native details such as Codex session ids, OpenCode s
 
 The shared `StopReason` protocol and initial worker-turn envelope are implemented, but this specification remains Partial. The active restart slice reuses the existing checkpoint and terminal handoff for the surviving worker rather than adding a recovery workflow. Terminal `turn.completed` events carry `stopReason` on the event envelope, not on the durable `Turn` record.
 
-NanoCore has deleted the generic internal-agent runner, registry, event loop, hooks, tool allowlists, diagnostics ledger, and unused private streaming path. Standalone Quick Chat and the Assistant branch of `conversation.submit` share one concrete role function inside the existing mode service. That function resolves the authorized logical model through the existing resolver, dispatches through the existing Gateway dispatcher, projects the fixed system instruction plus one user prompt, propagates caller cancellation, races the call against the 30-second role timeout, validates non-empty assistant text, and returns no private durable state or event lifecycle.
+NanoCore has deleted the former generic internal-agent runner, registry, event loop, hooks, tool allowlists, diagnostics ledger, and unused private streaming path. Standalone Quick Chat and the Assistant branch of `conversation.submit` currently share one concrete direct Provider function inside the existing mode service. That function resolves the authorized logical model through the existing resolver, dispatches through the existing Gateway dispatcher, projects the fixed system instruction plus one user prompt, propagates caller cancellation, races the call against the 30-second role timeout, validates non-empty assistant text, and returns no private durable state or event lifecycle. The accepted target now routes that role function through the shared Internal Agent Loop; preserving the direct call is not an acceptance requirement of this reliability envelope.
 
 The direct call boundary maps Provider rate limits, other typed Provider errors, role timeout, caller abort, invalid content, and unexpected executor failure to the exact redacted codes and statuses below. Focused tests prove the exact message projection, a timeout against a Provider that ignores cancellation, caller abort, invalid content, redaction, usage lineage, cache scope, credential resolution, and replay without reviving the deleted runtime. This closes the C03 generic-runtime defect, while immutable Context Package delivery proof and broader recovery remain independently incomplete.
 
@@ -353,7 +353,7 @@ The generic direct-Turn path has no later-delivery owner and MUST return `409 th
 
 ### Context Compaction
 
-Autonomous context compaction is not authorized by this reliability contract. It requires a separately accepted design with an exact source, output, provenance, failure, replay, and user-visibility owner.
+This reliability contract does not authorize or prohibit context compaction. `docs/specs/20260902-agent_runtime_context_compaction.md` separately owns its exact source, output, provenance, failure, replay, restart, user visibility, and selection of one compaction authority per execution.
 
 ## Data And Protocol Changes
 
@@ -366,8 +366,8 @@ Protocol changes:
 
 NanoCore app-local changes:
 
-- Keep one direct, stateless Quick Chat executor over the existing provider resolver and dispatcher.
-- Remove the unused generic internal-agent runner, registry, private event loop, hook framework, tool allowlists, streaming facade, and diagnostics branch.
+- Route Quick Chat through the shared Internal Agent Loop while keeping its role service stateless and preserving the existing Provider resolver and dispatcher boundaries.
+- Keep the former unused registry, private event loop, hook framework, global tool allowlists, streaming facade, and diagnostics branch deleted; the accepted shared loop adds none of them.
 - Add app-local checkpoint storage for worker turns.
 - Reuse the app-local runtime checkpoint and terminal evidence records directly for restart adoption and terminal handoff; add no restart coordinator or closeout workflow.
 - Add context package projection records for worker turns.
@@ -376,7 +376,7 @@ NanoCore app-local changes:
 
 ## Alternatives Considered
 
-Alternative: retain the generic internal-agent runner, registry, event loop, hooks, and private streaming facade. Rejected because they have no product consumer, duplicate provider/runtime responsibilities, and authorize a second execution framework for two aggregate calls.
+Alternative: retain the former generic internal-agent runner, registry, event loop, hooks, and private streaming facade beside the accepted shared Internal Agent Loop. Rejected because they duplicate provider/runtime responsibilities and authorize a second execution framework.
 
 Alternative: require low-level provider stream functions to never throw.
 
@@ -386,13 +386,13 @@ Alternative: encode every error as a final assistant message.
 
 This is too narrow for OpenKit because the thread log has authoritative items and terminal events that do not need to pretend to be assistant prose.
 
-Alternative: implement autonomous context compaction now.
+Alternative: define autonomous context compaction inside this reliability envelope.
 
-This would mix context-compaction and Knowledge Store policy with worker reliability before there are enough long sessions to validate the compaction behavior.
+Rejected because context management now has a separately accepted owner that defines its authority, lifecycle, and quality gates without mixing runtime continuity with Knowledge Store policy.
 
 ## Consequences
 
-Quick Chat retains bounded provider invocation, validation, timeout, cancellation, usage attribution, and redacted failure behavior without a private runtime or diagnostics ledger.
+Quick Chat retains bounded provider invocation, validation, timeout, cancellation, usage attribution, and redacted failure behavior through the shared Internal Agent Loop without a separate runtime or diagnostics ledger.
 
 Worker and provider terminal semantics remain consistent through the shared stop-reason contract rather than a shared execution framework.
 
@@ -430,7 +430,7 @@ Mitigation: require an accepted public contract and reuse the owning provider or
 
 - `StopReason` belongs on the terminal `turn.completed` event envelope, not on the durable `Turn` record.
 - Context package traces are file-system-first workspace records with digests and manifests; SQLite or read-model rows may index or attach them but must not become the only source of truth.
-- Quick Chat remains one concrete direct provider function; Workflow Coordinator remains deterministic until an accepted design and real need authorize a provider-backed implementation.
+- Quick Chat and every other model-using internal role use the shared Internal Agent Loop; the current concrete direct Provider function is implementation divergence, while a role that remains deterministic does not invoke the loop unnecessarily.
 - The minimum interrupted-worker recovery surface is an Item-backed or App API read-model row with checkpoint id, Turn id, stage, context digest, stop reason when known, redacted diagnostics, and only inspect, request-bound retry-after-interruption, review-partial-Artifacts, or request-guidance actions defined by existing owners. Adapter-native resume and a generic recovery abort are not user actions; exact surviving-worker adoption remains automatic under its scheduler and worker-control owners.
 - Runtime checkpoints belong to the NanoCore worker-turn loop first; the OpenShell/Codex worker-governance path is the first exercised governed backend, and OpenCode should conform through the same envelope later.
 - Restart adoption reuses the existing runtime checkpoint and terminal-handoff owners directly, never replays worker launch, and never creates a replacement session while exact reconnect remains pending. It adds no settlement row.
@@ -438,7 +438,7 @@ Mitigation: require an accepted public contract and reuse the owning provider or
 ## Deferred Work
 
 - Define the full file-backed worker context package materialization and replay flow in `docs/specs/20260703-worker_context_package.md`.
-- Define autonomous context compaction only after long-running sessions create enough evidence to validate compaction quality and governance.
+- Project the accepted central context-management policy into Worker packages and adapters under `docs/specs/20260902-agent_runtime_context_compaction.md`; this reliability envelope adds no parallel compaction design.
 
 ## Links
 
@@ -446,3 +446,4 @@ Mitigation: require an accepted public contract and reuse the owning provider or
 - [Core Protocol](../core/protocol.md)
 - [Git Write Workflow](./20260704-git_write_workflow.md)
 - [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)
+- [Agent Runtime Context Management And Compaction](./20260902-agent_runtime_context_compaction.md)
