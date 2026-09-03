@@ -46,6 +46,9 @@ import {
   type WorkspaceDataSource,
   type WorkspaceDataSourceCatalog,
   WorkspaceDataSourceCatalogSchema,
+  type WorkspaceMcpServer,
+  type WorkspaceMcpServerCatalog,
+  WorkspaceMcpServerCatalogSchema,
 } from '@openkit/config-schema';
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
@@ -59,6 +62,17 @@ import {
 const CONFIG_ROOT = 'config';
 const VALID_FILE_NAME = /^[A-Za-z0-9._-]+$/;
 const DATA_SOURCE_AUTHORITY_FIELDS = ['kind', 'access', 'sensitivity', 'vaultGrantRef'] as const;
+const MCP_SERVER_AUTHORITY_FIELDS = [
+  'enabled',
+  'transport',
+  'credentialBindings',
+  'allowedTools',
+  'deniedTools',
+  'approvalRequiredTools',
+  'timeoutMs',
+  'schemaPolicy',
+  'pinnedSchemaSnapshotId',
+] as const;
 
 /** Authority-bearing data source catalog change emitted after a successful file write. */
 export interface RuntimeConfigDataSourceAuthorityChange {
@@ -66,6 +80,16 @@ export interface RuntimeConfigDataSourceAuthorityChange {
   workspaceId: string;
   /** Source id whose authority fields changed. */
   sourceId: string;
+  /** Authority-bearing fields that changed. */
+  fields: string[];
+}
+
+/** Authority-bearing MCP server catalog change emitted after a successful file write. */
+export interface RuntimeConfigMcpServerAuthorityChange {
+  /** Workspace that owns the catalog file. */
+  workspaceId: string;
+  /** MCP server id whose authority fields changed. */
+  serverId: string;
   /** Authority-bearing fields that changed. */
   fields: string[];
 }
@@ -86,6 +110,8 @@ export interface RuntimeConfigFileServiceOptions {
   readRuntimeConfigStatus: () => RuntimeConfigStatus;
   /** Optional hook for durable audit of authority-bearing catalog edits. */
   onDataSourceAuthorityChange?: (change: RuntimeConfigDataSourceAuthorityChange) => void;
+  /** Optional hook for durable audit of authority-bearing MCP catalog edits. */
+  onMcpServerAuthorityChange?: (change: RuntimeConfigMcpServerAuthorityChange) => void;
 }
 
 /**
@@ -137,6 +163,9 @@ export class RuntimeConfigFileService {
   private readonly onDataSourceAuthorityChange:
     | ((change: RuntimeConfigDataSourceAuthorityChange) => void)
     | undefined;
+  private readonly onMcpServerAuthorityChange:
+    | ((change: RuntimeConfigMcpServerAuthorityChange) => void)
+    | undefined;
 
   /**
    * Creates a runtime config file service.
@@ -158,6 +187,7 @@ export class RuntimeConfigFileService {
     this.runtimeConfigManager = options.runtimeConfigManager;
     this.readRuntimeConfigStatus = options.readRuntimeConfigStatus;
     this.onDataSourceAuthorityChange = options.onDataSourceAuthorityChange;
+    this.onMcpServerAuthorityChange = options.onMcpServerAuthorityChange;
   }
 
   /**
@@ -247,7 +277,7 @@ export class RuntimeConfigFileService {
     }
 
     this.writeFileAtomically(spec, content);
-    this.auditDataSourceAuthorityChanges(spec, null, content);
+    this.auditCatalogAuthorityChanges(spec, null, content);
 
     return RuntimeConfigFileWriteResponseSchema.parse({
       file: this.summaryForSpec(spec),
@@ -294,7 +324,7 @@ export class RuntimeConfigFileService {
       : null;
 
     this.writeFileAtomically(spec, input.content);
-    this.auditDataSourceAuthorityChanges(spec, currentContent, input.content);
+    this.auditCatalogAuthorityChanges(spec, currentContent, input.content);
 
     return RuntimeConfigFileWriteResponseSchema.parse({
       file: this.summaryForSpec(spec),
@@ -380,6 +410,7 @@ export class RuntimeConfigFileService {
             'agent',
             'workspace',
             'data-source',
+            'mcp-server',
             'user',
           ].includes(entry.kind)
         ),
@@ -397,6 +428,7 @@ export class RuntimeConfigFileService {
       .flatMap((workspaceId) => [
         this.summaryForSpec(this.resolveFileSpec(`workspaces/${workspaceId}/workspace.jsonc`)),
         this.summaryForSpec(this.resolveFileSpec(`workspaces/${workspaceId}/data-sources.jsonc`)),
+        this.summaryForSpec(this.resolveFileSpec(`workspaces/${workspaceId}/mcp-servers.jsonc`)),
       ])
       .filter((file) => file.exists);
   }
@@ -586,6 +618,14 @@ export class RuntimeConfigFileService {
         mkdirSync(dirname(targetPath), { recursive: true });
         cpSync(catalogSourcePath, targetPath);
       }
+
+      const mcpCatalogSourcePath = this.workspaceConfigPath(workspaceId, 'mcp-server');
+
+      if (existsSync(mcpCatalogSourcePath)) {
+        const targetPath = join(tempRoot, 'workspaces', workspaceId, 'config', 'mcp-servers.jsonc');
+        mkdirSync(dirname(targetPath), { recursive: true });
+        cpSync(mcpCatalogSourcePath, targetPath);
+      }
     }
 
     const sourceUserConfigPath = this.userConfigPath(this.userId);
@@ -603,7 +643,11 @@ export class RuntimeConfigFileService {
             'workspaces',
             spec.workspaceId ?? '',
             'config',
-            spec.kind === 'data-source' ? 'data-sources.jsonc' : 'workspace.jsonc'
+            spec.kind === 'data-source'
+              ? 'data-sources.jsonc'
+              : spec.kind === 'mcp-server'
+                ? 'mcp-servers.jsonc'
+                : 'workspace.jsonc'
           )
         : spec.kind === 'user'
           ? join(tempRoot, 'users', spec.userId ?? '', 'config', 'user.jsonc')
@@ -661,21 +705,31 @@ export class RuntimeConfigFileService {
    * @param previousContent Previous file content, or null when creating.
    * @param nextContent Written file content.
    */
-  private auditDataSourceAuthorityChanges(
+  private auditCatalogAuthorityChanges(
     spec: RuntimeConfigFileSpec,
     previousContent: string | null,
     nextContent: string
   ): void {
-    if (!this.onDataSourceAuthorityChange || spec.kind !== 'data-source' || !spec.workspaceId) {
+    if (!spec.workspaceId) {
       return;
     }
-
-    for (const change of dataSourceAuthorityChanges(
-      spec.workspaceId,
-      previousContent,
-      nextContent
-    )) {
-      this.onDataSourceAuthorityChange(change);
+    if (spec.kind === 'data-source' && this.onDataSourceAuthorityChange) {
+      for (const change of dataSourceAuthorityChanges(
+        spec.workspaceId,
+        previousContent,
+        nextContent
+      )) {
+        this.onDataSourceAuthorityChange(change);
+      }
+    }
+    if (spec.kind === 'mcp-server' && this.onMcpServerAuthorityChange) {
+      for (const change of mcpServerAuthorityChanges(
+        spec.workspaceId,
+        previousContent,
+        nextContent
+      )) {
+        this.onMcpServerAuthorityChange(change);
+      }
     }
   }
 
@@ -708,6 +762,14 @@ export class RuntimeConfigFileService {
   "schemaVersion": 1,
   "sources": [],
   "extensions": {}
+}
+`;
+    }
+
+    if (spec.kind === 'mcp-server') {
+      return `{
+  "schemaVersion": 1,
+  "servers": []
 }
 `;
     }
@@ -892,13 +954,20 @@ export class RuntimeConfigFileService {
    * @param workspaceId Workspace id to resolve.
    * @returns Workspace config path.
    */
-  private workspaceConfigPath(workspaceId: string, kind: 'workspace' | 'data-source'): string {
+  private workspaceConfigPath(
+    workspaceId: string,
+    kind: 'workspace' | 'data-source' | 'mcp-server'
+  ): string {
     return join(
       this.dataRoot,
       'workspaces',
       workspaceId,
       'config',
-      kind === 'data-source' ? 'data-sources.jsonc' : 'workspace.jsonc'
+      kind === 'data-source'
+        ? 'data-sources.jsonc'
+        : kind === 'mcp-server'
+          ? 'mcp-servers.jsonc'
+          : 'workspace.jsonc'
     );
   }
 
@@ -1071,13 +1140,20 @@ function parseFileId(id: string): Omit<RuntimeConfigFileSpec, 'absolutePath'> {
   if (
     parts.length === 3 &&
     parts[0] === 'workspaces' &&
-    (parts[2] === 'workspace.jsonc' || parts[2] === 'data-sources.jsonc') &&
+    (parts[2] === 'workspace.jsonc' ||
+      parts[2] === 'data-sources.jsonc' ||
+      parts[2] === 'mcp-servers.jsonc') &&
     parts[1] &&
     VALID_FILE_NAME.test(parts[1]) &&
     !parts[1].includes('..')
   ) {
     return {
-      kind: parts[2] === 'data-sources.jsonc' ? 'data-source' : 'workspace',
+      kind:
+        parts[2] === 'data-sources.jsonc'
+          ? 'data-source'
+          : parts[2] === 'mcp-servers.jsonc'
+            ? 'mcp-server'
+            : 'workspace',
       relativePath: id,
       workspaceId: parts[1],
     };
@@ -1174,6 +1250,10 @@ function schemaForKind(kind: RuntimeConfigFileKind): z.ZodType {
     return WorkspaceDataSourceCatalogSchema;
   }
 
+  if (kind === 'mcp-server') {
+    return WorkspaceMcpServerCatalogSchema;
+  }
+
   return WorkspaceConfigSchema;
 }
 
@@ -1183,8 +1263,10 @@ function schemaForKind(kind: RuntimeConfigFileKind): z.ZodType {
  * @param kind Runtime config file kind.
  * @returns True when the kind is workspace-scoped.
  */
-function isWorkspaceScopedKind(kind: RuntimeConfigFileKind): kind is 'workspace' | 'data-source' {
-  return kind === 'workspace' || kind === 'data-source';
+function isWorkspaceScopedKind(
+  kind: RuntimeConfigFileKind
+): kind is 'workspace' | 'data-source' | 'mcp-server' {
+  return kind === 'workspace' || kind === 'data-source' || kind === 'mcp-server';
 }
 
 /**
@@ -1254,6 +1336,48 @@ function parseWorkspaceDataSourceCatalogForAudit(
  */
 function sourceMap(catalog: WorkspaceDataSourceCatalog | null): Map<string, WorkspaceDataSource> {
   return new Map(catalog?.sources.map((source) => [source.id, source]) ?? []);
+}
+
+/** Lists authority-bearing field changes between two MCP server catalogs. */
+function mcpServerAuthorityChanges(
+  workspaceId: string,
+  previousContent: string | null,
+  nextContent: string
+): RuntimeConfigMcpServerAuthorityChange[] {
+  const previous = parseWorkspaceMcpServerCatalogForAudit(previousContent);
+  const next = parseWorkspaceMcpServerCatalogForAudit(nextContent);
+  if (!next) return [];
+  const previousServers = mcpServerMap(previous);
+  const nextServers = mcpServerMap(next);
+  const serverIds = [...new Set([...previousServers.keys(), ...nextServers.keys()])].sort();
+
+  return serverIds.flatMap((serverId) => {
+    const previousServer = previousServers.get(serverId) ?? null;
+    const nextServer = nextServers.get(serverId) ?? null;
+    const fields = MCP_SERVER_AUTHORITY_FIELDS.filter(
+      (field) =>
+        JSON.stringify(previousServer?.[field] ?? null) !==
+        JSON.stringify(nextServer?.[field] ?? null)
+    );
+    return fields.length > 0 ? [{ fields: [...fields], serverId, workspaceId }] : [];
+  });
+}
+
+/** Parses one MCP server catalog for audit diffing. */
+function parseWorkspaceMcpServerCatalogForAudit(
+  content: string | null
+): WorkspaceMcpServerCatalog | null {
+  if (!content) return null;
+  const errors: ParseError[] = [];
+  const parsed = parse(content, errors, { allowTrailingComma: true, disallowComments: false });
+  if (errors.length > 0) return null;
+  const result = WorkspaceMcpServerCatalogSchema.safeParse(parsed);
+  return result.success ? result.data : null;
+}
+
+/** Indexes MCP catalog entries by id. */
+function mcpServerMap(catalog: WorkspaceMcpServerCatalog | null): Map<string, WorkspaceMcpServer> {
+  return new Map(catalog?.servers.map((server) => [server.id, server]) ?? []);
 }
 
 /**

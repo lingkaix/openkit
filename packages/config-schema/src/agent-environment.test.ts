@@ -124,41 +124,12 @@ function openshellPackageFixture(): unknown {
       mcpServers: [
         {
           id: 'github',
-          version: '1.0.0',
-          sourceRef: 'server:mcp/github',
+          catalogDigest: `sha256:${'a'.repeat(64)}`,
           allowedTools: ['repos.get', 'issues.list'],
+          deniedTools: [],
           approvalRequiredTools: ['issues.list'],
-          toolSchemas: [
-            {
-              inputSchema: {
-                additionalProperties: false,
-                properties: {
-                  owner: { type: 'string' },
-                  repo: { type: 'string' },
-                },
-                required: ['owner', 'repo'],
-                type: 'object',
-              },
-              name: 'repos.get',
-            },
-            {
-              inputSchema: {
-                additionalProperties: false,
-                properties: {
-                  owner: { type: 'string' },
-                  repo: { type: 'string' },
-                },
-                required: ['owner', 'repo'],
-                type: 'object',
-              },
-              name: 'issues.list',
-            },
-          ],
-          allowedPrompts: [],
-          allowedRuntimeAdapters: ['codex'],
-          allowedWorkspaceScopes: ['workspace'],
-          integrity: { sha256: 'sha256-github-mcp-v1' },
-          reviewStatus: 'approved',
+          schemaPolicy: 'tracking',
+          pinnedSchemaSnapshotId: null,
         },
       ],
       services: [],
@@ -897,21 +868,8 @@ describe('agent environment package schema', () => {
       id: 'github',
       allowedTools: ['repos.get', 'issues.list'],
       approvalRequiredTools: ['issues.list'],
-      reviewStatus: 'approved',
-      toolSchemas: [
-        {
-          name: 'repos.get',
-          inputSchema: {
-            required: ['owner', 'repo'],
-          },
-        },
-        {
-          name: 'issues.list',
-          inputSchema: {
-            required: ['owner', 'repo'],
-          },
-        },
-      ],
+      catalogDigest: `sha256:${'a'.repeat(64)}`,
+      schemaPolicy: 'tracking',
     });
     expect(parsed.capabilities).toEqual({
       mode: 'disabled',

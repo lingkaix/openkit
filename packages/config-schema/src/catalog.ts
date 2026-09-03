@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from './agent.js';
 import { GatewayConfigSchema } from './gateway.js';
 import { InternalRoleProfilesConfigSchema } from './internal-role.js';
+import { WorkspaceMcpServerCatalogSchema } from './mcp-catalog.js';
 import type { ConfigCatalogKind } from './policy.js';
 import { ProviderProfileSchema } from './provider.js';
 import { OpenKitConfigSchema } from './server.js';
@@ -63,6 +64,11 @@ export function getConfigSchemaCatalog(): ConfigSchemaCatalogEntry[] {
       kind: 'data-source',
       title: 'OpenKit workspace data source catalog',
       schema: z.toJSONSchema(WorkspaceDataSourceCatalogSchema) as Record<string, unknown>,
+    },
+    {
+      kind: 'mcp-server',
+      title: 'OpenKit workspace MCP server catalog',
+      schema: z.toJSONSchema(WorkspaceMcpServerCatalogSchema) as Record<string, unknown>,
     },
     {
       kind: 'user',

@@ -1,5 +1,9 @@
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
-import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
+import type {
+  AgentEnvironmentPackage,
+  WorkspaceDataSourceCatalog,
+  WorkspaceMcpServerCatalog,
+} from '@openkit/config-schema';
 import type {
   ActorRef,
   AgentSchema,
@@ -190,6 +194,8 @@ export interface PrepareAgentSessionForTurnInput {
   readonly workspaceRoots: MaterializedWorkspaceRoot[];
   /** Optional data-source catalog for sourceRef-backed roots. */
   readonly workspaceDataSourceCatalog?: WorkspaceDataSourceCatalog;
+  /** Optional MCP server catalog captured for the selected Agent. */
+  readonly workspaceMcpServerCatalog?: WorkspaceMcpServerCatalog;
   /** Optional sourceRef bindings captured by admission. */
   readonly workspaceSourceRefs?: Record<string, string>;
 }
@@ -321,6 +327,8 @@ export interface TurnStartRuntimeContext {
   workspaceRoots: MaterializedWorkspaceRoot[];
   /** Optional workspace data source catalog captured for sourceRef-backed roots. */
   workspaceDataSourceCatalog?: WorkspaceDataSourceCatalog;
+  /** Optional Workspace MCP server catalog captured for the selected Agent. */
+  workspaceMcpServerCatalog?: WorkspaceMcpServerCatalog;
   /** Optional root-id to sourceRef bindings captured for sourceRef-backed roots. */
   workspaceSourceRefs?: Record<string, string>;
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */

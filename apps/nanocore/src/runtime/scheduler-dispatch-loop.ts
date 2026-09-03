@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { GatewayConfig, UserConfig, WorkspaceConfig } from '@openkit/config-schema';
+import type {
+  GatewayConfig,
+  UserConfig,
+  WorkspaceConfig,
+  WorkspaceDataSourceCatalog,
+  WorkspaceMcpServerCatalog,
+} from '@openkit/config-schema';
 import { TurnSchema } from '@openkit/protocol';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
@@ -26,6 +32,7 @@ import {
   startTurn,
   type TurnHandle,
   TurnStartValidationError,
+  workspaceSourceRefsFromAgentManifest,
 } from './orchestrator.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
@@ -82,14 +89,16 @@ export interface RunSchedulerDispatchLoopInput {
   turnExecutor: TurnExecutor;
   /** Runtime config snapshot version captured for started turns. */
   configVersion?: number | null;
-  /** Materialized workspace roots captured for started turns. */
-  workspaceRoots?: Parameters<typeof startTurn>[0]['workspaceRoots'];
-  /** Optional workspace data source catalog captured for sourceRef-backed roots. */
-  workspaceDataSourceCatalog?: Parameters<typeof startTurn>[0]['workspaceDataSourceCatalog'];
-  /** Optional root-id to sourceRef bindings captured for sourceRef-backed roots. */
-  workspaceSourceRefs?: Parameters<typeof startTurn>[0]['workspaceSourceRefs'];
-  /** Host-local working directory selected for started workers. */
-  workspaceCwd?: string | null;
+  /** Workspace data source catalogs available for queued turns. */
+  workspaceDataSourceCatalogs?: readonly {
+    readonly workspaceId: string;
+    readonly catalog: WorkspaceDataSourceCatalog;
+  }[];
+  /** Workspace MCP server catalogs available for queued turns. */
+  workspaceMcpServerCatalogs?: readonly {
+    readonly workspaceId: string;
+    readonly catalog: WorkspaceMcpServerCatalog;
+  }[];
 }
 
 /** One turn started by a scheduler dispatch loop run. */
@@ -182,8 +191,17 @@ export async function runSchedulerDispatchLoop(
       workspaceConfig,
       userConfig
     );
-    const workspaceRoots =
-      entry.workspaceRoots.length > 0 ? entry.workspaceRoots : (input.workspaceRoots ?? []);
+    const workspaceRoots = entry.workspaceRoots;
+    const workspaceDataSourceCatalog = input.workspaceDataSourceCatalogs?.find(
+      (candidate) => candidate.workspaceId === entry.workspaceId
+    )?.catalog;
+    const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
+      (candidate) => candidate.workspaceId === entry.workspaceId
+    )?.catalog;
+    const workspaceSourceRefs = workspaceSourceRefsFromAgentManifest(
+      setup.manifest,
+      workspaceRoots
+    );
     const futureTurn = TurnSchema.parse({
       completedAt: null,
       configVersion: input.configVersion ?? null,
@@ -204,12 +222,11 @@ export async function runSchedulerDispatchLoop(
       requestId: entry.requestId,
       turn: futureTurn,
       turnInput: entry.turnInput,
-      workspaceCwd: entry.workspaceCwd ?? input.workspaceCwd ?? null,
+      workspaceCwd: entry.workspaceCwd,
       workspaceRoots,
-      ...(input.workspaceDataSourceCatalog
-        ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
-        : {}),
-      ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+      ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
+      ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
+      ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
     };
     const preparedAgentSession = input.turnExecutor.prepareAgentSessionForTurn
       ? await input.turnExecutor.prepareAgentSessionForTurn(input.store, prepareInput)
@@ -286,18 +303,14 @@ export async function runSchedulerDispatchLoop(
           triggerActor: dispatch.entry.triggerActor,
           turnExecutor: input.turnExecutor,
           turnId: dispatch.entry.turnId,
-          workspaceCwd: dispatch.entry.workspaceCwd ?? input.workspaceCwd ?? null,
+          workspaceCwd: dispatch.entry.workspaceCwd,
           workspaceId: dispatch.entry.workspaceId,
           ...(workspaceConfig ? { workspaceConfig } : {}),
           ...(userConfig ? { userConfig } : {}),
-          workspaceRoots:
-            dispatch.entry.workspaceRoots.length > 0
-              ? dispatch.entry.workspaceRoots
-              : (input.workspaceRoots ?? []),
-          ...(input.workspaceDataSourceCatalog
-            ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
-            : {}),
-          ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+          workspaceRoots: dispatch.entry.workspaceRoots,
+          ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
+          ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
+          ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
           ...(input.configVersion !== undefined ? { configVersion: input.configVersion } : {}),
           ...(input.dependencies ? { dependencies: input.dependencies } : {}),
         });
@@ -480,6 +493,9 @@ function prepareFreshAgentSessionWithoutRuntimeOwner(
       workspaceRoots: preparation.workspaceRoots,
       ...(preparation.workspaceDataSourceCatalog
         ? { workspaceDataSourceCatalog: preparation.workspaceDataSourceCatalog }
+        : {}),
+      ...(preparation.workspaceMcpServerCatalog
+        ? { workspaceMcpServerCatalog: preparation.workspaceMcpServerCatalog }
         : {}),
       ...(preparation.workspaceSourceRefs
         ? { workspaceSourceRefs: preparation.workspaceSourceRefs }

@@ -44,7 +44,7 @@ export function recordMcpToolSchemaSnapshot(input: {
   schemaSnapshotId: string;
   serverVersion?: string | null | undefined;
   serverId: string;
-  source?: 'aep' | 'live' | undefined;
+  source: 'live';
   tools: z.infer<typeof WorkerCapabilityMcpToolSchema>[];
   workspaceDb: WorkspaceDb;
   workspaceId: string;
@@ -62,8 +62,7 @@ export function recordMcpToolSchemaSnapshot(input: {
   }
 
   const toolsJson = JSON.stringify(input.tools);
-  const contentDigest =
-    input.contentDigest ?? server.integrity?.sha256 ?? mcpToolSchemaContentDigest(input.tools);
+  const contentDigest = input.contentDigest ?? mcpToolSchemaContentDigest(input.tools);
 
   input.workspaceDb.sqlite
     .prepare(
@@ -83,11 +82,11 @@ export function recordMcpToolSchemaSnapshot(input: {
       input.schemaSnapshotId,
       input.workspaceId,
       server.id,
-      server.sourceRef,
-      input.serverVersion ?? server.version,
+      null,
+      input.serverVersion ?? null,
       contentDigest,
       toolsJson,
-      input.source ?? 'aep',
+      input.source,
       new Date().toISOString()
     );
 }

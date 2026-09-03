@@ -3397,7 +3397,7 @@ describe('app api schemas', () => {
     );
   });
 
-  it('accepts workspace data source runtime config file metadata', () => {
+  it('accepts Workspace catalog runtime config file metadata', () => {
     expect(
       RuntimeConfigFileListResponseSchema.parse({
         files: [
@@ -3424,6 +3424,13 @@ describe('app api schemas', () => {
         schemas: [{ kind: 'data-source', title: 'Workspace data sources', schema: {} }],
       }).schemas[0]?.kind
     ).toBe('data-source');
+    expect(
+      RuntimeConfigFileWriteRequestSchema.parse({
+        id: 'workspaces/ws_demo/mcp-servers.jsonc',
+        kind: 'mcp-server',
+        content: '{"schemaVersion":1,"servers":[]}',
+      }).kind
+    ).toBe('mcp-server');
   });
 
   it('accepts owner-derived Task Mode state without exposing the launch decision', () => {

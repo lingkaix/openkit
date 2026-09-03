@@ -34992,7 +34992,8 @@
                     "agent",
                     "user",
                     "workspace",
-                    "data-source"
+                    "data-source",
+                    "mcp-server"
                   ]
                 },
                 "path": {
@@ -35063,7 +35064,8 @@
                   "agent",
                   "user",
                   "workspace",
-                  "data-source"
+                  "data-source",
+                  "mcp-server"
                 ]
               },
               "path": {
@@ -35134,7 +35136,8 @@
               "agent",
               "user",
               "workspace",
-              "data-source"
+              "data-source",
+              "mcp-server"
             ]
           },
           "content": {
@@ -35179,7 +35182,8 @@
                   "agent",
                   "user",
                   "workspace",
-                  "data-source"
+                  "data-source",
+                  "mcp-server"
                 ]
               },
               "path": {
@@ -35793,7 +35797,8 @@
                     "agent",
                     "user",
                     "workspace",
-                    "data-source"
+                    "data-source",
+                    "mcp-server"
                   ]
                 },
                 "title": {
@@ -85901,5 +85906,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:b9efb905ea7790863323ab4dc5b928ccf0ba5737b18496316912a266962dcc61"
+  "x-openkit-source-digest": "sha256:4c39d3070cf4eae0aca900273212089e74a9f67086568231012e679274f68e7c"
 }

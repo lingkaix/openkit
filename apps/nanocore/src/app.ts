@@ -958,6 +958,23 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 workspaceDb.sqlite.close();
               }
             },
+            onMcpServerAuthorityChange: (change) => {
+              const workspaceDb = repositoryWorkspaceDb(change.workspaceId);
+              try {
+                recordWorkspaceAuditEvent({
+                  workspaceDb,
+                  workspaceId: change.workspaceId,
+                  category: 'system',
+                  action: 'mcp_server_catalog.authority.update',
+                  resource: `mcp-server-catalog:${change.serverId}`,
+                  outcome: 'succeeded',
+                  severity: 'info',
+                  summary: `Workspace MCP server catalog authority changed for ${change.serverId}: ${change.fields.join(', ')}.`,
+                });
+              } finally {
+                workspaceDb.sqlite.close();
+              }
+            },
           }
         : {}),
     });

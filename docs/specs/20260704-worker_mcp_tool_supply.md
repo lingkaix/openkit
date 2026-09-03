@@ -156,7 +156,7 @@ The gateway will grow an MCP subsystem beside the inference dispatcher: a catalo
 
 The executable plane is not implemented. Current AEPs declare `capabilities.mode: disabled` with no routes; NanoCore exposes no MCP capability handlers, Sandbox Integration does not expose `capability.local` or `/capabilities/mcp/*`, and `@openkit/worker-shim` has no capability client. The removed route tests and built-artifact worker MCP smoke therefore provide no current acceptance evidence.
 
-The remaining substrate is partial: AEP supply and snapshot schemas can retain approved MCP catalog inputs, and the L6 story remains a future acceptance target. Those static records do not start servers, expose tools, authorize calls, produce usage, or grant worker access. Implementation must rebuild the thin capability client, NanoCore gateway, schema retention, policy and approval binding, vault injection, route tests, and artifact smoke from this contract.
+The remaining substrate is partial: NanoCore loads the strict Workspace-owned `mcp-servers.jsonc` catalog through the deployment-admin runtime-config surface, selects it by the actual dequeued Turn's Workspace at scheduler dispatch, and projects only selected server ids, catalog digests, tool rules, approval marks, and schema policy into AEP supply. Capability mode remains disabled, so these static records do not start servers, expose tools, authorize calls, produce usage, or grant worker access. Implementation must still rebuild the thin capability client, NanoCore gateway, schema retention, policy and approval binding, vault injection, route tests, and artifact smoke from this contract.
 
 ## Alternatives Considered
 

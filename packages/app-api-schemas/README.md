@@ -20,6 +20,8 @@ Workspace materialization records and backend workspace handles carry AEP packag
 
 Capability usage read models extend the canonical protocol `CapabilityCall` while preserving its runtime lifecycle refinement and generated JSON Schema projection metadata.
 
+Runtime configuration file metadata includes the deployment-admin-only Workspace MCP catalog kind; the App API carries its source text and JSON Schema but does not project server topology into worker or ordinary product read models.
+
 Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views expose immutable revision identity without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
 
 Do not add stable Core protocol records here. Core records, commands, events, errors, and conformance fixtures belong in `@openkit/protocol`.

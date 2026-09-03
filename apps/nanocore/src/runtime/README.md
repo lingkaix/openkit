@@ -6,7 +6,7 @@ This directory owns accepted-turn execution, scheduler dispatch integration, wor
 
 - Scheduler records and capacity transitions live in `../scheduler-records.ts`; runtime code consumes that owner instead of duplicating lease state.
 - Product turn HTTP ownership lives in `../turn-routes.ts`; `product-turn-start.ts` owns scheduler admission and dispatch after route validation.
-- Workspace-root and source-context preparation lives in `turn-workspace-context.ts`; after Agent selection it resolves one credential-free HTTPS Git source and exact commit from the Workspace catalog before any configured-root filesystem mutation or scheduler admission, projects no NanoCore host path, and binds the same source lineage into the AEP.
+- Workspace-root preparation lives in `turn-workspace-context.ts`; after Agent selection it resolves one credential-free HTTPS Git source and exact commit before scheduler admission. `scheduler-dispatch-loop.ts` selects the data-source and MCP catalogs by the dequeued entry's Workspace, derives its authored source references, projects no NanoCore host path or MCP topology into the AEP, and binds that exact context through preparation and launch.
 - `agent-environment.ts` owns NanoCore-to-AEP projection. NanoHost is the sole production runtime target and consumes that immutable package through the fixed image, sandbox, bridge, import, and export effect vocabulary instead of a direct OpenShell CLI path. After sandbox creation, NanoCore strictly reparses and canonically serializes the AEP as the first `package-config/package.json` import, then serially imports the sorted generated Context Package before bridge bootstrap.
 - Explicit `worker.runtime-provenance.v1` requirements project bounded raw-stream, manifest, and native-origin-index transcript outputs. NanoCore requests declared path-only exports only after accepted terminal status; NanoHost independently proves process-group absence before returning verified staged bytes to the existing canonical storage owners.
 - Worker backends must make their declared `TurnExecutor.capabilities` truthful and reject unsupported operations before store mutation.
@@ -27,6 +27,7 @@ This directory owns accepted-turn execution, scheduler dispatch integration, wor
 - `goal-*.ts` and `worker-recovery*.ts` own long-running work and recovery lifecycles.
 - `idempotent-command.ts` owns process-local duplicate collapse and delegates durable command records to storage.
 - `agent-environment.ts` owns the metadata-only pre-lease SessionCompatibilityKey projection and the full effect-owning AEP construction; scheduler and runtime owners revalidate that one key before launch.
+- MCP catalog supply remains non-executable while the capability plane is disabled; transport topology and Vault grant bindings never enter the AEP.
 
 ## Verification
 

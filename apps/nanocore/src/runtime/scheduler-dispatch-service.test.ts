@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
 import {
@@ -18,7 +19,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { runSchedulerDispatchRetryOnce } from './scheduler-dispatch-service';
+import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
 
 class RecordingTurnExecutor implements TurnExecutor {
@@ -113,7 +114,7 @@ function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb
 }
 
 describe('scheduler dispatch service', () => {
-  it('starts queued turns through the shared Workspace store', async () => {
+  it('reads the current runtime snapshot before retrying a queued turn', async () => {
     const coreDb = createMigratedCoreDb();
     const store = new FsStore();
     const workspace = store.createWorkspace('Background dispatch workspace');
@@ -132,6 +133,23 @@ describe('scheduler dispatch service', () => {
       stdio: 'ignore',
     });
     const providerCredentialResolver = vi.fn(() => null);
+    const manifest = createTestAgentSetup({ mcpIds: ['echo'] }).manifest;
+    const gatewayConfig = createTestGatewayConfig();
+    const providerRegistry = new ProviderRegistry([
+      {
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        displayName: 'Background provider',
+        id: 'agent-openrouter',
+        kind: 'local',
+        models: ['openai/gpt-5.2'],
+      },
+    ]);
+    let currentSnapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [manifest],
+      dataRoot: null,
+      gatewayConfig,
+      providerRegistry,
+    });
 
     try {
       coreDb.sqlite
@@ -171,9 +189,9 @@ describe('scheduler dispatch service', () => {
         now: () => '2026-07-05T00:00:01.000Z',
       });
 
-      const result = await runSchedulerDispatchRetryOnce({
-        gatewayConfig: createTestGatewayConfig(),
-        agentManifests: [createTestAgentSetup().manifest],
+      const errors: unknown[] = [];
+      const service = startSchedulerDispatchRetryService({
+        clearInterval: () => {},
         coreDb,
         createAgentSessionId: () => 'as_background',
         createLeaseId: () => 'lease_background',
@@ -183,22 +201,55 @@ describe('scheduler dispatch service', () => {
         expectedDataPlaneMode: 'openshell-files',
         heartbeatIntervalMs: 10_000,
         heartbeatTimeoutMs: 30_000,
+        intervalMs: 60_000,
         leaseDurationMs: 900_000,
         maxDispatches: 1,
-        providerRegistry: new ProviderRegistry([
-          {
-            baseUrl: 'http://127.0.0.1:11434/v1',
-            displayName: 'Background provider',
-            id: 'agent-openrouter',
-            kind: 'local',
-            models: ['openai/gpt-5.2'],
-          },
-        ]),
+        onError: (error) => errors.push(error),
+        runtimeConfigSnapshot: () => currentSnapshot,
         schedulerEpoch: 1,
+        setInterval: () => ({ timer: 'test' }),
         startupTimeoutMs: 120_000,
         store,
         turnExecutor,
       });
+      await vi.waitFor(() => expect(errors).toHaveLength(1));
+
+      currentSnapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: null,
+        gatewayConfig,
+        providerRegistry,
+        workspaceMcpServerCatalogs: [
+          {
+            catalog: {
+              schemaVersion: 1,
+              servers: [
+                {
+                  allowedTools: ['echo'],
+                  approvalRequiredTools: [],
+                  credentialBindings: [],
+                  deniedTools: [],
+                  enabled: true,
+                  id: 'echo',
+                  pinnedSchemaSnapshotId: null,
+                  schemaPolicy: 'tracking',
+                  timeoutMs: 60_000,
+                  transport: {
+                    args: [],
+                    command: 'node',
+                    environment: {},
+                    kind: 'stdio',
+                  },
+                },
+              ],
+            },
+            path: `workspaces/${workspace.id}/config/mcp-servers.jsonc`,
+            workspaceId: workspace.id,
+          },
+        ],
+      });
+      const result = await service.runOnce();
+      service.stop();
 
       expect(result?.startedTurns).toHaveLength(1);
       expect(providerCredentialResolver).not.toHaveBeenCalled();
@@ -208,7 +259,7 @@ describe('scheduler dispatch service', () => {
       expect(turnExecutor.calls[0]?.store).toBe(store);
       expect(turnExecutor.calls[0]?.context).toMatchObject({
         agentSetup: {
-          manifest: createTestAgentSetup().manifest,
+          manifest,
           profileId: 'default',
           logicalModels: expect.objectContaining({
             preferredLogicalModelId: 'openai/gpt-5.2',
@@ -224,6 +275,9 @@ describe('scheduler dispatch service', () => {
             workerPath: '/workspace/background',
           },
         ],
+        workspaceMcpServerCatalog: expect.objectContaining({
+          servers: [expect.objectContaining({ id: 'echo' })],
+        }),
       });
     } finally {
       coreDb.sqlite.close();

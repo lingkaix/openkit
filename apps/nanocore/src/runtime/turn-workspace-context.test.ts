@@ -9,10 +9,7 @@ import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
-import {
-  materializeWorkspaceRootsForTurn,
-  workspaceSourceContextForTurn,
-} from './turn-workspace-context.js';
+import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 
 const REMOTE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const REMOTE_URL = 'https://git.example.test/openkit/repository.git';
@@ -37,12 +34,10 @@ describe('turn workspace context', () => {
     });
 
     const workspaceRoots = materializeWorkspaceRootsForTurn(snapshot, store, 'ws_demo', manifest);
-    const sourceContext = workspaceSourceContextForTurn(
-      snapshot,
-      'ws_demo',
-      workspaceRoots,
-      manifest
-    );
+    const sourceContext = {
+      workspaceDataSourceCatalog: catalog,
+      workspaceSourceRefs: { repo_remote: 'main-repo' },
+    };
     const turn = store.createTurn('ws_demo', 'th_demo', 'Use the remote repository', {
       kind: 'user',
       id: 'user_local',

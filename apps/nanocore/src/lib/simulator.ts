@@ -190,6 +190,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         ...(input.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
           : {}),
+        ...(input.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
+          : {}),
         ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
       });
     if (!current) {
@@ -279,6 +282,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         workspaceRoots: preparation.workspaceRoots,
         ...(preparation.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: preparation.workspaceDataSourceCatalog }
+          : {}),
+        ...(preparation.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: preparation.workspaceMcpServerCatalog }
           : {}),
         ...(preparation.workspaceSourceRefs
           ? { workspaceSourceRefs: preparation.workspaceSourceRefs }
@@ -460,6 +466,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         ...(context.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
           : {}),
+        ...(context.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
+          : {}),
         ...(context.workspaceSourceRefs
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
@@ -519,6 +528,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
             workspaceRoots: context.workspaceRoots,
             ...(context.workspaceDataSourceCatalog
               ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+              : {}),
+            ...(context.workspaceMcpServerCatalog
+              ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
               : {}),
             ...(context.workspaceSourceRefs
               ? { workspaceSourceRefs: context.workspaceSourceRefs }

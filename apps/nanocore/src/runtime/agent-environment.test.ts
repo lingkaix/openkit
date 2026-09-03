@@ -430,7 +430,7 @@ describe('agent environment package resolver', () => {
     );
   });
 
-  it('keeps approved Skill and MCP supply static and non-executable', () => {
+  it('resolves selected MCP supply without exposing its server topology', () => {
     const turn = createTurnFixture('Use static supply');
     const resolved = resolveAgentEnvironmentPackage({
       agentSetup: createTestSetup({
@@ -447,14 +447,47 @@ describe('agent environment package resolver', () => {
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceCwd: '/workspace/repo',
       workspaceRoots: [],
+      workspaceMcpServerCatalog: {
+        schemaVersion: 1,
+        servers: [
+          {
+            allowedTools: ['echo'],
+            approvalRequiredTools: [],
+            credentialBindings: [],
+            deniedTools: [],
+            enabled: true,
+            id: 'github',
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking',
+            timeoutMs: 60_000,
+            transport: {
+              args: ['fixtures/echo.mjs'],
+              command: 'node',
+              environment: {},
+              kind: 'stdio',
+            },
+          },
+        ],
+      },
     });
 
     expect(resolved.supply.skills).toEqual([expect.objectContaining({ id: 'repo-guidelines' })]);
-    expect(resolved.supply.mcpServers).toEqual([expect.objectContaining({ id: 'github' })]);
+    expect(resolved.supply.mcpServers).toEqual([
+      expect.objectContaining({
+        allowedTools: ['echo'],
+        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        id: 'github',
+        schemaPolicy: 'tracking',
+      }),
+    ]);
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('command');
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');
-    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('materialization');
-    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('providerInstanceIds');
+    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('credentialBindings');
+    expect(resolved.capabilities).toEqual({
+      mode: 'disabled',
+      protocol: 'openkit-worker-capability-v1',
+      routes: [],
+    });
     expect(resolved).not.toHaveProperty('providers');
   });
 

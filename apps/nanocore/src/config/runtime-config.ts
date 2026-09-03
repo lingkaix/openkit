@@ -16,11 +16,13 @@ import {
   type InternalRoleProfilesConfig,
   InternalRoleProfilesConfigSchema,
   parseWorkspaceDataSourceCatalog,
+  parseWorkspaceMcpServerCatalog,
   type UserConfig,
   UserConfigSchema,
   type WorkspaceConfig,
   WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
+  type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
@@ -56,6 +58,7 @@ interface RuntimeConfigSnapshotConstructionInput {
   userConfigs: LoadedUserConfig[];
   workspaceConfigs: LoadedWorkspaceConfig[];
   workspaceDataSourceCatalogs: LoadedWorkspaceDataSourceCatalog[];
+  workspaceMcpServerCatalogs: LoadedWorkspaceMcpServerCatalog[];
   diagnostics: RuntimeConfigDiagnostic[];
 }
 
@@ -72,7 +75,8 @@ interface RuntimeConfigSource {
     | 'agent-configs'
     | 'user-configs'
     | 'workspace-configs'
-    | 'workspace-data-source-catalogs';
+    | 'workspace-data-source-catalogs'
+    | 'workspace-mcp-server-catalogs';
   /** Source path or glob-like description. */
   path: string;
 }
@@ -109,6 +113,16 @@ interface LoadedWorkspaceDataSourceCatalog {
   path: string;
   /** Parsed workspace data source catalog. */
   catalog: WorkspaceDataSourceCatalog;
+}
+
+/** Parsed Workspace MCP server catalog loaded from its canonical Workspace path. */
+interface LoadedWorkspaceMcpServerCatalog {
+  /** Workspace id that owns this catalog. */
+  workspaceId: string;
+  /** Absolute source path loaded from disk. */
+  path: string;
+  /** Parsed Workspace MCP server catalog. */
+  catalog: WorkspaceMcpServerCatalog;
 }
 
 /**
@@ -155,6 +169,8 @@ export interface RuntimeConfigSnapshot {
   workspaceConfigs: LoadedWorkspaceConfig[];
   /** Parsed workspace data source catalogs discovered under DATA_ROOT/workspaces. */
   workspaceDataSourceCatalogs: LoadedWorkspaceDataSourceCatalog[];
+  /** Parsed MCP server catalogs discovered under DATA_ROOT/workspaces. */
+  workspaceMcpServerCatalogs: LoadedWorkspaceMcpServerCatalog[];
   /** Runtime config diagnostics. */
   diagnostics: RuntimeConfigDiagnostic[];
 }
@@ -200,6 +216,8 @@ interface RuntimeConfigSnapshotInput {
   workspaceConfigs?: LoadedWorkspaceConfig[];
   /** Parsed workspace data source catalogs. */
   workspaceDataSourceCatalogs?: LoadedWorkspaceDataSourceCatalog[];
+  /** Parsed Workspace MCP server catalogs. */
+  workspaceMcpServerCatalogs?: LoadedWorkspaceMcpServerCatalog[];
   /** Snapshot version. */
   version?: number;
 }
@@ -245,6 +263,7 @@ export function loadRuntimeConfig(
   const userConfigs = loadUserConfigs(dataRoot);
   const workspaceConfigs = loadWorkspaceConfigs(dataRoot);
   const workspaceDataSourceCatalogs = loadWorkspaceDataSourceCatalogs(dataRoot);
+  const workspaceMcpServerCatalogs = loadWorkspaceMcpServerCatalogs(dataRoot);
   const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
   try {
     resolveLogicalModelCatalog(gatewayConfig, providerLoadResult.providerRegistry);
@@ -284,6 +303,7 @@ export function loadRuntimeConfig(
     userConfigs,
     workspaceConfigs,
     workspaceDataSourceCatalogs,
+    workspaceMcpServerCatalogs,
     version: options.version ?? 1,
     diagnostics,
     sources: [
@@ -300,6 +320,10 @@ export function loadRuntimeConfig(
       {
         kind: 'workspace-data-source-catalogs',
         path: 'DATA_ROOT/workspaces/*/config/data-sources.jsonc',
+      },
+      {
+        kind: 'workspace-mcp-server-catalogs',
+        path: 'DATA_ROOT/workspaces/*/config/mcp-servers.jsonc',
       },
     ],
     ...(options.loadedAt ? { loadedAt: options.loadedAt } : {}),
@@ -472,6 +496,7 @@ function applySafeRuntimeConfigReload(
       userConfigs: next.userConfigs,
       workspaceConfigs: next.workspaceConfigs,
       workspaceDataSourceCatalogs: next.workspaceDataSourceCatalogs,
+      workspaceMcpServerCatalogs: next.workspaceMcpServerCatalogs,
       diagnostics: next.diagnostics,
     })
   );
@@ -624,6 +649,7 @@ export function createInMemoryRuntimeConfigSnapshot(
       config: WorkspaceConfigSchema.parse(entry.config),
     })),
     workspaceDataSourceCatalogs: input.workspaceDataSourceCatalogs ?? [],
+    workspaceMcpServerCatalogs: input.workspaceMcpServerCatalogs ?? [],
     version: input.version ?? 1,
     diagnostics: [],
     sources: [],
@@ -714,6 +740,21 @@ export function diffRuntimeConfig(
         'session-scoped',
         'deferred',
         'Workspace data source catalog changed for future sessions.'
+      )
+    );
+  }
+  if (
+    !equalSemantic(
+      workspaceMcpServerCatalogSummary(previous),
+      workspaceMcpServerCatalogSummary(next)
+    )
+  ) {
+    deferred.push(
+      change(
+        'workspaceMcpServers',
+        'session-scoped',
+        'deferred',
+        'Workspace MCP server catalog changed for future sessions.'
       )
     );
   }
@@ -977,6 +1018,7 @@ function snapshotSemanticSummary(snapshot: Omit<RuntimeConfigSnapshot, 'contentH
     workspaceDataSourceCatalogs: workspaceDataSourceCatalogSummary(
       snapshot as RuntimeConfigSnapshot
     ),
+    workspaceMcpServerCatalogs: workspaceMcpServerCatalogSummary(snapshot as RuntimeConfigSnapshot),
   };
 }
 
@@ -1104,6 +1146,28 @@ function loadWorkspaceDataSourceCatalogs(dataRoot: string): LoadedWorkspaceDataS
   return catalogs;
 }
 
+/** Loads every Workspace MCP server catalog under DATA_ROOT/workspaces. */
+function loadWorkspaceMcpServerCatalogs(dataRoot: string): LoadedWorkspaceMcpServerCatalog[] {
+  const workspacesRoot = join(dataRoot, 'workspaces');
+  if (!existsSync(workspacesRoot)) return [];
+  const catalogs: LoadedWorkspaceMcpServerCatalog[] = [];
+  for (const workspaceEntry of readdirSync(workspacesRoot, { withFileTypes: true }).sort(
+    (left, right) => left.name.localeCompare(right.name)
+  )) {
+    if (!workspaceEntry.isDirectory()) continue;
+    const catalogPath = join(workspacesRoot, workspaceEntry.name, 'config', 'mcp-servers.jsonc');
+    if (!existsSync(catalogPath)) continue;
+    catalogs.push({
+      workspaceId: workspaceEntry.name,
+      path: catalogPath,
+      catalog: parseWorkspaceMcpServerCatalog(
+        parseJsoncObject(readFileSync(catalogPath, 'utf8'), catalogPath)
+      ),
+    });
+  }
+  return catalogs;
+}
+
 /**
  * Returns stable workspace config semantics for diffing and hashing.
  */
@@ -1119,6 +1183,14 @@ function workspaceConfigSummary(snapshot: RuntimeConfigSnapshot): unknown {
  */
 function workspaceDataSourceCatalogSummary(snapshot: RuntimeConfigSnapshot): unknown {
   return snapshot.workspaceDataSourceCatalogs.map((entry) => ({
+    workspaceId: entry.workspaceId,
+    catalog: entry.catalog,
+  }));
+}
+
+/** Returns stable Workspace MCP catalog semantics for diffing and hashing. */
+function workspaceMcpServerCatalogSummary(snapshot: RuntimeConfigSnapshot): unknown {
+  return snapshot.workspaceMcpServerCatalogs.map((entry) => ({
     workspaceId: entry.workspaceId,
     catalog: entry.catalog,
   }));

@@ -53,6 +53,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
+  parseWorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import {
   MetaResponseSchema,
@@ -13005,6 +13006,70 @@ describe('nanocore server', () => {
           workerPath: '/workspace/openkit',
         },
       ]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('selects the Workspace MCP catalog for product-turn worker startup', async () => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const agentManifest = createTestAgentSetup({ mcpIds: ['echo'] }).manifest;
+    const catalog = parseWorkspaceMcpServerCatalog({
+      schemaVersion: 1,
+      servers: [
+        {
+          allowedTools: ['echo'],
+          enabled: true,
+          id: 'echo',
+          schemaPolicy: 'tracking',
+          transport: { command: 'node', kind: 'stdio' },
+        },
+      ],
+    });
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot: coreDb.dataRoot,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [agentManifest],
+        dataRoot: coreDb.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        openKitConfig: { defaults: { defaultAgentId: agentManifest.id } },
+        providerRegistry: testProviderRegistry(),
+        workspaceMcpServerCatalogs: [
+          {
+            catalog,
+            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'mcp-servers.jsonc'),
+            workspaceId: 'ws_demo',
+          },
+        ],
+      }),
+    });
+
+    try {
+      const app = createApp({
+        coreDb,
+        dataRoot: coreDb.dataRoot,
+        runtimeConfigManager,
+        schedulerEpoch: 12,
+        store,
+        turnExecutor: executor,
+      });
+      const turnRes = await app.request('/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({
+          input: 'Use the Workspace MCP server',
+          requestId: '0190f4c8-0000-7000-8000-000000000214',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(turnRes.status).toBe(202);
+      expect(executor.startContexts[0]?.workspaceMcpServerCatalog).toMatchObject({
+        servers: [expect.objectContaining({ id: 'echo' })],
+      });
     } finally {
       coreDb.sqlite.close();
     }

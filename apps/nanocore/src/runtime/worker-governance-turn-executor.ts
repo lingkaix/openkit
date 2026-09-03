@@ -996,6 +996,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       ...(input.workspaceDataSourceCatalog
         ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
         : {}),
+      ...(input.workspaceMcpServerCatalog
+        ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
+        : {}),
       ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
     });
   }
@@ -1069,6 +1072,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           workspaceRoots: context.workspaceRoots,
           ...(context.workspaceDataSourceCatalog
             ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+            : {}),
+          ...(context.workspaceMcpServerCatalog
+            ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
             : {}),
           ...(context.workspaceSourceRefs
             ? { workspaceSourceRefs: context.workspaceSourceRefs }
@@ -1148,6 +1154,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ...(this.vaultBackend ? { vaultBackend: this.vaultBackend } : {}),
         ...(context.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+          : {}),
+        ...(context.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
           : {}),
         workspaceCwd: workerVisibleWorkspaceCwd(context, { kind: 'openshell' }),
         workspaceRoots: context.workspaceRoots,

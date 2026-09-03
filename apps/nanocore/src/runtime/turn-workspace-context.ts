@@ -10,7 +10,6 @@ import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runti
 import type { FsStore } from '../lib/store.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import type { TurnStartRuntimeContext } from './types.js';
 
 const REMOTE_GIT_WORKER_ROOT = '/workspace/openkit';
 
@@ -96,41 +95,6 @@ export function materializeWorkspaceRootsForTurn(
 
   const configuredRoots = materializeConfiguredWorkspaceRoots(snapshot, store, workspaceId);
   return remoteRoot ? [remoteRoot, ...configuredRoots] : configuredRoots;
-}
-
-/**
- * Builds immutable sourceRef context for the selected remote Git root.
- *
- * @param snapshot Runtime config snapshot captured for the Turn.
- * @param workspaceId Workspace id that owns the Turn.
- * @param workspaceRoots Worker roots captured for the Turn.
- * @param selectedManifest Explicit Agent selected before workspace resolution.
- * @returns Optional AEP catalog and sourceRef context.
- */
-export function workspaceSourceContextForTurn(
-  snapshot: RuntimeConfigSnapshot,
-  workspaceId: string,
-  workspaceRoots: MaterializedWorkspaceRoot[],
-  selectedManifest: AgentManifest
-): Pick<TurnStartRuntimeContext, 'workspaceDataSourceCatalog' | 'workspaceSourceRefs'> {
-  const catalog = workspaceDataSourceCatalog(snapshot, workspaceId);
-  const remoteRootIds = new Set(
-    workspaceRoots.filter((root) => root.sourceKind === 'remote-git').map((root) => root.id)
-  );
-  const workspaceSourceRefs = Object.fromEntries(
-    (selectedManifest.workspace?.inputs ?? []).flatMap((input) =>
-      typeof input.id === 'string' &&
-      typeof input.sourceRef === 'string' &&
-      remoteRootIds.has(input.id)
-        ? [[input.id, input.sourceRef]]
-        : []
-    )
-  );
-
-  return {
-    ...(catalog ? { workspaceDataSourceCatalog: catalog } : {}),
-    ...(Object.keys(workspaceSourceRefs).length > 0 ? { workspaceSourceRefs } : {}),
-  };
 }
 
 /** Resolves bounded host-local roots owned by Workspace configuration. */

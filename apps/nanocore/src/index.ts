@@ -576,9 +576,6 @@ const nanoHostServer = nanoHostListener
   : null;
 
 schedulerDispatchRetry = startSchedulerDispatchRetryService({
-  agentManifests: runtimeConfigManager.current().agentManifests,
-  gatewayConfig: runtimeConfigManager.current().gatewayConfig,
-  configVersion: runtimeConfigManager.current().version,
   coreDb,
   dependencies: { providerCredentialResolver: schedulerProviderCredentialResolver },
   expectedControlMode: 'poll',
@@ -588,9 +585,7 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   intervalMs: SCHEDULER_DISPATCH_RETRY_INTERVAL_MS,
   leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
   maxDispatches: SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES,
-  providerRegistry: runtimeConfigManager.current().providerRegistry,
-  userConfigs: runtimeConfigManager.current().userConfigs,
-  workspaceConfigs: runtimeConfigManager.current().workspaceConfigs,
+  runtimeConfigSnapshot: () => runtimeConfigManager.current(),
   schedulerEpoch,
   startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
   store,

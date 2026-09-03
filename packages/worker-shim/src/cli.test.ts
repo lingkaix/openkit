@@ -2727,11 +2727,13 @@ describe('worker shim CLI parsing', () => {
           ],
           mcpServers: [
             {
-              id: 'github',
-              version: '1.0.0',
-              sourceRef: 'server:mcp/github',
               allowedTools: ['repos.get'],
-              reviewStatus: 'approved',
+              approvalRequiredTools: [],
+              catalogDigest: `sha256:${'a'.repeat(64)}`,
+              deniedTools: [],
+              id: 'github',
+              pinnedSchemaSnapshotId: null,
+              schemaPolicy: 'tracking',
             },
           ],
         },
