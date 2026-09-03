@@ -6,6 +6,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { ensureLocalUser } from '../../apps/nanocore/dist/auth/identity.js';
+import { FsStore } from '../../apps/nanocore/dist/lib/store.js';
+import { openCoreDb } from '../../apps/nanocore/dist/storage/db.js';
+import { applyMigrations } from '../../apps/nanocore/dist/storage/migrate.js';
+import { createWorkspaceDeletionRequest } from '../../apps/nanocore/dist/workspace-deletion-request.js';
+import { recordWorkspaceOwnerMembership } from '../../apps/nanocore/dist/workspace-membership.js';
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
@@ -17,6 +24,7 @@ async function main() {
   const appPort = await findOpenPort();
   const nanoHostPort = await findOpenPort();
   const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-nano-smoke-'));
+  const deletion = seedWorkspaceDeletionRequest(dataRoot);
   await writeNanoHostConfig(dataRoot, nanoHostPort);
   const child = spawn(process.execPath, [join(repoRoot, 'apps/nanocore/dist/index.js')], {
     cwd: join(repoRoot, 'apps/nanocore'),
@@ -39,6 +47,31 @@ async function main() {
     await waitForHttp(`${baseUrl}/api/health`, child, output);
     await assertOkJson(`${baseUrl}/api/health`, 'health');
     await assertOkJson(`${baseUrl}/api/meta`, 'meta');
+    const fencedRead = await fetch(
+      `${baseUrl}/api/app/workspaces/${deletion.workspaceId}/dashboard`
+    );
+    if (fencedRead.status !== 403) {
+      throw new Error(`Recovered deletion fence allowed a read with ${fencedRead.status}.`);
+    }
+    const continuedDeletion = await fetch(
+      `${baseUrl}/api/app/workspaces/${deletion.workspaceId}/delete`,
+      {
+        body: JSON.stringify(deletion.request),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      }
+    );
+    const continuedDeletionBody = await continuedDeletion.json();
+    if (
+      continuedDeletion.status !== 200 ||
+      continuedDeletionBody.deletion?.phase !== 'cleaned' ||
+      continuedDeletionBody.deletion?.requestId !== deletion.request.requestId ||
+      continuedDeletionBody.deletion?.status !== 'deleted'
+    ) {
+      throw new Error(
+        `Same-request deletion continuation failed with ${continuedDeletion.status}: ${JSON.stringify(continuedDeletionBody)}`
+      );
+    }
     const privateOnApp = await fetch(`${baseUrl}/api/nanohost/transport/session/admit`, {
       body: '{}',
       headers: { 'content-type': 'application/json' },
@@ -84,7 +117,7 @@ async function main() {
     nanoHostClient.close();
     nanoHostClient = undefined;
     await stopProcess(child);
-    console.log('OpenKit NanoCore dual-listener built-artifact smoke PASS');
+    console.log('OpenKit NanoCore dual-listener and deletion-recovery built-artifact smoke PASS');
   } finally {
     nanoHostClient?.destroy();
     if (child.exitCode === null && child.signalCode === null) {
@@ -94,6 +127,36 @@ async function main() {
       });
     }
     await rm(dataRoot, { force: true, recursive: true });
+  }
+}
+
+/** Seeds one active Workspace and pre-listener deletion request in the disposable data root. */
+function seedWorkspaceDeletionRequest(dataRoot) {
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Deletion recovery smoke');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    const request = {
+      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+      expectedRegistryRevision: 1,
+      requestId: '00000000-0000-4000-8000-000000000001',
+    };
+    createWorkspaceDeletionRequest(dataRoot, {
+      ...request,
+      createdAt: new Date().toISOString(),
+      originalOwnerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+    return { request, workspaceId: workspace.id };
+  } finally {
+    coreDb.sqlite.close();
   }
 }
 

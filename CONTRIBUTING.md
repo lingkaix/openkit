@@ -46,6 +46,8 @@ pnpm host:nanohost:bring-up a1
 pnpm host:teardown a1
 ```
 
+These commands are an explicitly authorized real-use lifecycle, not the release-installer test path. Use `pnpm test:nanohost-installer-live` for the isolated fixed-path installer regression; it binds every live path to a new temporary Bubblewrap fixture and does not start, stop, restart, or reload a service.
+
 Follow [`docs/cookbooks/nanohost-real-use-host.md`](./docs/cookbooks/nanohost-real-use-host.md), keep credentials outside repository artifacts, and retain only the redacted result at `temp/state/nanohost/host-manifest/a1/result.json`.
 
 ### 1. Setup Development Environment

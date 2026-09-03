@@ -11,6 +11,7 @@ import {
 import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   artifactContentFileName,
   assertSafeWorkspacePathSegment,
@@ -108,6 +109,8 @@ export interface VerifyWorkspaceExportTreeInput {
 export interface VerifiedWorkspaceExportTree {
   /** Parsed export manifest. */
   manifest: WorkspaceExportManifest;
+  /** Exact manifest text parsed by this verification. */
+  manifestText: string;
   /** Inventory files whose bytes and digests were checked. */
   checkedFiles: string[];
   /** Exact inventory file contents consumed by import after this verification. */
@@ -577,6 +580,7 @@ export function writeWorkspaceExportTree(
     const contentInventory = listRegularExportFiles(input.exportRoot)
       .filter((path) => path !== WORKSPACE_EXPORT_MANIFEST_FILE)
       .map((path) => {
+        assertWorkspaceArchiveFilePath(path);
         const filePath = join(input.exportRoot, path);
         const text = readCanonicalTextFile(filePath);
         return {
@@ -698,6 +702,12 @@ export function verifyWorkspaceExportTree(
   const actual = listRegularExportFiles(input.exportRoot).filter(
     (path) => path !== WORKSPACE_EXPORT_MANIFEST_FILE
   );
+  for (const entry of manifest.contentInventory) {
+    assertWorkspaceArchiveFilePath(entry.path);
+  }
+  for (const path of actual) {
+    assertWorkspaceArchiveFilePath(path);
+  }
 
   for (const path of actual) {
     if (!expected.has(path)) {
@@ -734,6 +744,7 @@ export function verifyWorkspaceExportTree(
 
   return {
     manifest,
+    manifestText,
     checkedFiles: manifest.contentInventory.map((entry) => entry.path).sort(),
     fileContents,
     manifestDigest: digestText(manifestText),

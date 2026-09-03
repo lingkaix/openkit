@@ -22,7 +22,7 @@ The governing stage decision: OpenKit is in internal developer preview with a sm
 
 | # | Outcome | Items | Blocker | Why here |
 |---|---|---|---|---|
-| 0 | Close the in-flight Workspace-recovery cluster, make the host requirement honest, let an Agent stand up a deployment, and prove truthful interrupted outcomes | R008, R009, R010, R005, R110, R109 | **B1** for R110 and R109 only; R008, R009, R010, R005 are unblocked | R008 and R009 are complete in unmerged work and R010 is in flight; finishing costs less than parking. Merging MUST carry the owner amendments that work makes to `docs/specs/20260704-remote_auth_credential_bootstrap.md` and `docs/specs/20260704-workspace_backup_export_import.md`, because on `main` neither the locked-out recovery procedure nor the damaged-Workspace recovery lifecycle has a complete owner. R110 and R109 remove the single-host bottleneck that stalled this Phase. R005 is correctness rather than assurance and shares R110's one reboot campaign. |
+| 0 | Preserve the completed Workspace-recovery cluster, make the host requirement honest, let an Agent stand up a deployment, and prove truthful interrupted outcomes | R008, R009, R010, R005, R110, R109 | **B1** for R110 and R109 only; R008, R009, and R010 are complete; R005 is unblocked | R008, R009, and R010 are complete and remain recorded in this pathway. R110 and R109 remove the single-host bottleneck that stalled this Phase. R005 is correctness rather than assurance and shares R110's one reboot campaign. |
 | 1 | Recurring work runs on a schedule with current authority checked before every run | R092 | **B2** | Small, and its value accrues with elapsed time rather than at delivery: the earlier it lands, the more unattended real-use hours it generates. |
 | 2 | Workers can use supported third-party MCP servers through the Gateway | R058 | None | Best value per unit cost on the list: one governed path imports an existing tool ecosystem, and its owner is already Accepted. Scope is the Workspace-declared catalog its owner defines; marketplace or registry discovery stays deferred. Run this while B1 and B2 are being prepared. |
 | 3 | Structured data and generative presentation for real analysis, viewing, and form work | R096, R097, R098 | **B3** | Strongest external pull. Acceptance is one real customer completing an analysis-and-edit journey end to end. |
@@ -71,15 +71,15 @@ Reversible shortcuts are accepted at this stage. These are not reversible, and n
 ## Phase 1 — Establish a reliable product and release baseline
 
 - [ ] R001 — NanoHost runs real Worker workloads without interfering with unrelated host networking, containers, services, or user data.
-- [ ] R002 — NanoHost ships as an installable, verifiable distribution artifact that can be included in a tagged OpenKit release.
+- [x] R002 — NanoHost ships as an installable, verifiable distribution artifact that can be included in a tagged OpenKit release.
 - [ ] R003 — An operator can install, upgrade, and roll back a NanoCore deployment across product versions with data, schema, and credential integrity preserved.
 - [ ] R004 — Maintainers can prepare, publish, retry, and verify one complete tagged product release containing the App, Worker, NanoHost, and end-user `openkit` Skill assets.
 - [ ] R005 — Worker execution preserves a truthful outcome across restart, reconnect, interruption, timeout, and cleanup failure.
 - [ ] R006 — Repository read, edit, commit, and push work executes inside the governed Sandbox rather than through a NanoCore host checkout.
 - [ ] R007 — Private repositories work through the same governed repository path without exposing credentials to Workers or product records.
-- [ ] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
-- [ ] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
-- [ ] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
+- [x] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved.
+- [x] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
+- [x] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
 - [ ] R109 — An Agent can install and configure a complete OpenKit deployment on a fresh host from repository guidance, and can state which host requirements the target does not meet.
 - [ ] R110 — The real-host acceptance gate is repeatable on any host meeting a declared, machine-checkable requirement set, with every result bound to an exact product commit and an exact machine identity rather than to one named machine.
 

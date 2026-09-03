@@ -15,6 +15,7 @@ import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { registerWorkspaceSharingRoutes } from './workspace-sharing-routes.js';
 
 const openDatabases: CoreDb[] = [];
@@ -52,6 +53,8 @@ interface RouteFixture {
   coreDb: CoreDb;
   /** Canonical shared Workspace store. */
   store: FsStore;
+  /** Process-local deletion admission used by the route fixture. */
+  workspaceMutationAdmission: WorkspaceMutationAdmission;
   /** Primary shared Workspace id. */
   workspaceId: string;
   /** Second Workspace used for lineage denial. */
@@ -119,6 +122,7 @@ function createFixture(): RouteFixture {
   insertMember(coreDb, workspaceId, 'user_viewer', 'viewer');
 
   const actorState: ActorState = { current: { kind: 'session', userId: 'user_owner' } };
+  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use('*', async (context, next) => {
     context.set('actor', actorState.current);
@@ -144,9 +148,18 @@ function createFixture(): RouteFixture {
     coreDb,
     inflightCommands: new WeakMap(),
     requestStore: () => store,
+    workspaceMutationAdmission,
   });
 
-  return { app, actorState, coreDb, foreignWorkspaceId, store, workspaceId };
+  return {
+    app,
+    actorState,
+    coreDb,
+    foreignWorkspaceId,
+    store,
+    workspaceId,
+    workspaceMutationAdmission,
+  };
 }
 
 /** Sends one JSON request to a route fixture. */
@@ -207,6 +220,38 @@ describe('Workspace sharing routes', () => {
       body: { items: [{ effectiveRole: 'owner', workspace: { id: fixture.workspaceId } }] },
       status: 200,
     });
+  });
+
+  it('hides own invitations for fenced and deleting Workspaces', async () => {
+    const fixture = createFixture();
+    const now = '2026-07-19T00:00:00.000Z';
+    for (const [invitationId, workspaceId] of [
+      ['inv_fenced', fixture.workspaceId],
+      ['inv_deleting', fixture.foreignWorkspaceId],
+    ] as const) {
+      fixture.coreDb.sqlite
+        .prepare(
+          `INSERT INTO workspace_invitations (
+            invitation_id, workspace_id, invitee_user_id, proposed_access_level, inviter_user_id,
+            status, expires_at, accepted_at, declined_at, revoked_at, revision, created_at, updated_at
+          ) VALUES (?, ?, 'user_invitee', 'viewer', 'user_owner', 'pending', ?, NULL, NULL, NULL, 1, ?, ?)`
+        )
+        .run(invitationId, workspaceId, '2026-07-26T00:00:00.000Z', now, now);
+    }
+    await fixture.workspaceMutationAdmission.close(fixture.workspaceId);
+    fixture.coreDb.sqlite
+      .prepare(
+        `UPDATE workspace_registry
+         SET status = 'deleting', revision = revision + 1, updated_at = ?
+         WHERE workspace_id = ?`
+      )
+      .run(now, fixture.foreignWorkspaceId);
+    fixture.actorState.current = { kind: 'session', userId: 'user_invitee' };
+
+    const response = await fixture.app.request('/api/app/workspace-invitations');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ items: [] });
   });
 
   it('commits one lifecycle audit and pointer receipt, replays, and rejects changed input', async () => {

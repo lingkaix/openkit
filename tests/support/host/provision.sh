@@ -42,11 +42,12 @@ elif [[ $# -eq 3 && $1 == remote ]]; then
     "$($source_path --version)"
 else
   script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  manifest_path="$script_root/../../../apps/nanohost/deploy/host-manifest.json"
   source "$script_root/ssh-alias.sh"
   require_ssh_alias "$@" || exit $?
   mode=remote
   {
-    node -e 'const m=require(process.argv[1]); console.log(m.commands.node.path); console.log(m.commands.node.version)' "$script_root/manifest.json"
+    node -e 'const m=require(process.argv[1]); console.log(m.commands.node.path); console.log(m.commands.node.version)' "$manifest_path"
     sed -n '1,$p' "$0"
   } | ssh "$ssh_alias" "/usr/bin/bash -c 'IFS= read -r target; IFS= read -r version; /usr/bin/bash -s -- remote \"\$target\" \"\$version\"'"
 fi

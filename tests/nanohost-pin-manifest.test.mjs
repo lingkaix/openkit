@@ -23,6 +23,20 @@ const checksumPattern = /^sha256:[0-9a-f]{64}$/iu;
 const jsonBlockPattern = /^[ \t]*```json[^\S\r\n]*\r?\n([\s\S]*?)\r?\n[ \t]*```[ \t]*$/gimu;
 const placeholderPattern = /\b(?:todo|tbd|unknown|placeholder|unobserved|pending)\b/iu;
 const requiredArtifactKinds = ['gateway-executable', 'supervisor-image', 'cli'];
+const requiredSourceArtifacts = [
+  {
+    bundlePath: 'licenses/openshell-LICENSE',
+    checksum: 'sha256:b967d1c87b93b7d61ebcf4f8737e6ad79e5433e743e49dff395a36fb3c327047',
+    kind: 'redistribution-license',
+    sourcePath: 'LICENSE',
+  },
+  {
+    bundlePath: 'licenses/openshell-THIRD-PARTY-NOTICES',
+    checksum: 'sha256:8c35aead093cbdfb3e11345d88cf2cb179f86391e859e4a7bc11539a0cc601f8',
+    kind: 'redistribution-notices',
+    sourcePath: 'THIRD-PARTY-NOTICES',
+  },
+];
 const requiredRpcNames = [
   'CreateSandbox',
   'GetSandbox',
@@ -397,6 +411,9 @@ test('the NanoHost OpenShell pin manifest preserves one exact consumed boundary'
       }
 
       for (const [index, artifact] of manifest.artifacts.entries()) {
+        if (artifact.representation === 'source-file') {
+          continue;
+        }
         await t.test(artifact.name || `entry ${index}`, () => {
           if (artifact.derivedFrom !== undefined) {
             assert.ok(
@@ -427,6 +444,42 @@ test('the NanoHost OpenShell pin manifest preserves one exact consumed boundary'
           );
         });
       }
+    }
+  );
+
+  await t.test(
+    'binds redistributed source files to the accepted pin and fixed bundle paths',
+    () => {
+      const sourceArtifacts = manifest.artifacts.filter(
+        (artifact) => artifact?.representation === 'source-file'
+      );
+      assert.equal(
+        sourceArtifacts.length,
+        requiredSourceArtifacts.length,
+        'source-file obligation failed: expected exactly the two redistributed source files'
+      );
+
+      for (const expected of requiredSourceArtifacts) {
+        const matches = sourceArtifacts.filter((artifact) => artifact?.kind === expected.kind);
+        assert.equal(
+          matches.length,
+          1,
+          `source-file obligation failed: ${expected.kind} must appear exactly once`
+        );
+        const artifact = matches[0];
+        assert.equal(artifact.sourcePath, expected.sourcePath);
+        assert.equal(artifact.bundlePath, expected.bundlePath);
+        assert.equal(artifact.publisherChecksumFile, undefined);
+        assert.match(artifact.checksum, checksumPattern);
+        assert.equal(artifact.checksum, expected.checksum);
+        assertPinnedToSource(artifact, source, expected.kind);
+      }
+
+      assert.equal(
+        new Set(sourceArtifacts.map((artifact) => artifact.bundlePath)).size,
+        sourceArtifacts.length,
+        'source-file obligation failed: redistributed bundle paths must be distinct'
+      );
     }
   );
 

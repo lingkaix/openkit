@@ -197,7 +197,7 @@ registerOperations(catalog, ['disableUser'], {
   scope: 'server',
 });
 
-registerOperations(catalog, ['dryRunWorkspaceImport'], {
+registerOperations(catalog, ['dryRunWorkspaceImport', 'dryRunWorkspaceArchiveImport'], {
   authentication: 'canonical-user',
   mutating: false,
   policyOperation: 'workspace.write',
@@ -233,7 +233,13 @@ registerOperations(catalog, ['leaveWorkspace'], {
   policyOperation: 'workspace.leave',
   scope: 'user',
 });
-registerOperations(catalog, ['importWorkspace', 'POST /api/workspaces'], {
+registerOperations(catalog, ['recoverDeletedWorkspace'], {
+  authentication: 'canonical-user',
+  mutating: true,
+  policyOperation: 'workspace.write',
+  scope: 'user',
+});
+registerOperations(catalog, ['importWorkspace', 'importWorkspaceArchive', 'POST /api/workspaces'], {
   authentication: 'canonical-user',
   mutating: true,
   policyOperation: 'workspace.write',
@@ -293,7 +299,7 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['transferWorkspaceOwnership'], {
+registerOperations(catalog, ['transferWorkspaceOwnership', 'deleteWorkspace'], {
   mutating: true,
   policyOperation: 'workspace.lifecycle',
   resolver: 'path-workspace',
@@ -443,6 +449,12 @@ registerOperations(
 );
 registerOperations(catalog, ['exportWorkspace'], {
   mutating: true,
+  policyOperation: 'workspace.export',
+  resolver: 'path-workspace',
+  scope: 'workspace',
+});
+registerOperations(catalog, ['downloadWorkspaceExportArchive'], {
+  mutating: false,
   policyOperation: 'workspace.export',
   resolver: 'path-workspace',
   scope: 'workspace',

@@ -91,6 +91,11 @@ test('ordinary root scripts use any placement rather than image', () => {
     ),
     Object.fromEntries(ordinaryHostPlacedScripts.map((scriptName) => [scriptName, true]))
   );
+  const installerEntries = Object.entries(rootManifest.scripts).filter(([, command]) =>
+    command.endsWith('bash tests/support/nanohost-release-installer-live.sh')
+  );
+  assert.equal(installerEntries.length, 1, 'root must expose one NanoHost installer host command');
+  assert.match(installerEntries[0][1], /^bash scripts\/test-env\.sh host\b/u);
   const placedRootScripts = Object.entries(rootManifest.scripts)
     .filter(
       ([, command]) => typeof command === 'string' && /\bscripts\/test-env\.sh\b/u.test(command)

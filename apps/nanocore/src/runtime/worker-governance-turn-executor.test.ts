@@ -80,6 +80,10 @@ import {
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import {
+  WORKSPACE_MUTATION_LATE_PUBLISHERS,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './goal-store.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -1483,6 +1487,51 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects worker output after the Workspace deletion fence closes', async () => {
+    expect(WORKSPACE_MUTATION_LATE_PUBLISHERS).toEqual(['worker-turn-closeout']);
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-deletion-fence-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Do not publish fenced output');
+    const backend = new FakeWorkerGovernanceBackend();
+    backend.artifactOutput = { bytes: Buffer.from('# Fenced output\n', 'utf8') };
+    const mutationAdmission = new WorkspaceMutationAdmission();
+    const collectTranscript = backend.collectTranscript.bind(backend);
+    vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
+      const transcript = await collectTranscript();
+      await mutationAdmission.close(turn.workspaceId);
+      return transcript;
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      createAgentSessionId: () => 'as_governance_deletion_fence_1',
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+      workspaceMutationAdmission: mutationAdmission,
+    });
+
+    try {
+      await expect(
+        executor.startTurn(store, turn.id, 'Do not publish fenced output', {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000236',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+      expect(store.listArtifacts(turn.workspaceId)).toEqual([]);
+      expect(store.getTurnById(turn.id)).toMatchObject({
+        error: { code: 'workspace_access_denied' },
+        status: 'interrupted',
+      });
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
     }
   });
 

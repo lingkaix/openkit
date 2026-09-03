@@ -56,6 +56,14 @@ scripts/docker/smoke-image.sh app
 
 The smoke command reports Node, pnpm, and Caddy versions as required app tools.
 
+The stopped-server recovery packaging probe uses only disposable bind mounts and never starts NanoCore or Caddy:
+
+```bash
+OPENKIT_TEST_APP_IMAGE_RECOVERY=1 pnpm run test:app-image-admin-recovery
+```
+
+Build `openkit/app:dev` first. Do not point this probe at an active or persistent deployment.
+
 ## Persistence Smoke
 
 Run the host-side persistence smoke after building the app image:

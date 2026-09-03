@@ -18,9 +18,20 @@ import { requireSuccess, runHostScript } from './support/host/fixture-runner.mjs
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hostRoot = join(repoRoot, 'tests/support/host');
-const manifestPath = join(hostRoot, 'manifest.json');
-const manifestDigest = createHash('sha256').update(readFileSync(manifestPath)).digest('hex');
+const manifestPath = join(repoRoot, 'apps/nanohost/deploy/host-manifest.json');
 const testAdminToken = 'test-server-admin-token';
+
+function promotedManifestBytes() {
+  assert.ok(
+    existsSync(manifestPath),
+    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
+  );
+  return readFileSync(manifestPath);
+}
+
+function promotedManifestDigest() {
+  return createHash('sha256').update(promotedManifestBytes()).digest('hex');
+}
 
 /**
  * Runs one A1 host lifecycle script against local call-recording command stubs.
@@ -119,7 +130,7 @@ fi
           OPENKIT_HOST_NANOHOST_IDENTITY_ID: 'identity-test',
           OPENKIT_HOST_SERVER_ADMIN_TOKEN: testAdminToken,
           OPENKIT_HOST_STUB_ACTIVE_EXIT: String(options.activeExit ?? 1),
-          OPENKIT_HOST_STUB_ASSERT_DIGEST: options.assertDigest ?? manifestDigest,
+          OPENKIT_HOST_STUB_ASSERT_DIGEST: options.assertDigest ?? promotedManifestDigest(),
           OPENKIT_HOST_STUB_ASSERT_EXIT: String(options.assertExit ?? 0),
           OPENKIT_HOST_STUB_BLOCK_MARKER: `${eventLogPath}.blocking`,
           OPENKIT_HOST_STUB_CURL_LOG: curlLogPath,
@@ -207,9 +218,9 @@ for (const [label, aliasArguments] of [
 test('authenticated-readiness success and failure both clean attempt-local product state', () => {
   assert.ok(
     existsSync(manifestPath),
-    'missing H1-A product artifact tests/support/host/manifest.json'
+    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
   );
-  const manifestBytes = readFileSync(manifestPath);
+  const manifestBytes = promotedManifestBytes();
   for (const readinessExit of [0, 1]) {
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-host-bring-up-'));
     try {

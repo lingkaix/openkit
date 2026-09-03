@@ -31,6 +31,7 @@ export function validateReleasePreflight(input) {
   }
 
   validatePortableReleaseInputs(repoRoot);
+  validateNanoHostReleaseInputs(repoRoot);
   const releaseImages = validateImageManifest(repoRoot, Boolean(input.requireReleaseImageDigests));
 
   return { version, releaseImages };
@@ -72,6 +73,134 @@ function validatePortableReleaseInputs(repoRoot) {
   if ((statSync(join(repoRoot, 'skills/openkit/scripts/openkit')).mode & 0o111) === 0) {
     throw new Error('Bundled Skill CLI must be executable: skills/openkit/scripts/openkit');
   }
+}
+
+/**
+ * Reads and validates the unique specification-owned OpenShell pin projection.
+ *
+ * @param {string} source Markdown source.
+ * @returns {Record<string, unknown>} Validated pin projection.
+ */
+export function parseNanoHostPin(source) {
+  const blocks = [...source.matchAll(/```json\s*\n([\s\S]*?)\n```/g)];
+  if (blocks.length !== 1) {
+    throw new Error('OpenShell pin manifest must contain exactly one fenced JSON block.');
+  }
+  const pin = JSON.parse(blocks[0][1]);
+  const sourceIdentity = pin.source;
+  if (
+    typeof sourceIdentity?.tag !== 'string' ||
+    !/^v\d+\.\d+\.\d+$/.test(sourceIdentity.tag) ||
+    typeof sourceIdentity?.commit !== 'string' ||
+    !/^[a-f0-9]{40}$/.test(sourceIdentity.commit) ||
+    !Array.isArray(pin.artifacts)
+  ) {
+    throw new Error('OpenShell pin source identity is invalid.');
+  }
+  if (
+    sourceIdentity.tag !== 'v0.0.99' ||
+    sourceIdentity.commit !== '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032'
+  ) {
+    throw new Error('OpenShell pin must identify the accepted v0.0.99 source commit.');
+  }
+  const selectors = [
+    ['gateway-executable', 'release-archive'],
+    ['gateway-executable', 'extracted-executable'],
+    ['redistribution-license', 'source-file'],
+    ['redistribution-notices', 'source-file'],
+  ];
+  const selected = selectors.map(([kind, representation]) => {
+    const matches = pin.artifacts.filter(
+      (artifact) => artifact.kind === kind && artifact.representation === representation
+    );
+    if (matches.length !== 1) {
+      throw new Error(`OpenShell pin must contain exactly one ${kind} ${representation} artifact.`);
+    }
+    return matches[0];
+  });
+  for (const artifact of selected) {
+    if (
+      artifact.tag !== sourceIdentity.tag ||
+      artifact.commit !== sourceIdentity.commit ||
+      typeof artifact.checksum !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/.test(artifact.checksum)
+    ) {
+      throw new Error('OpenShell pin artifact identity is invalid.');
+    }
+  }
+  for (const artifact of selected.slice(0, 2)) {
+    if (artifact.platform !== 'linux/arm64') {
+      throw new Error('OpenShell Gateway pin artifacts must target linux/arm64.');
+    }
+  }
+  const bundlePaths = selected.slice(2).map((artifact) => artifact.bundlePath);
+  if (
+    selected[0].name !== 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' ||
+    selected[1].name !== 'openshell-gateway'
+  ) {
+    throw new Error('OpenShell pin Gateway archive identity is invalid.');
+  }
+  if (
+    selected[2].sourcePath !== 'LICENSE' ||
+    selected[3].sourcePath !== 'THIRD-PARTY-NOTICES' ||
+    bundlePaths[0] !== 'licenses/openshell-LICENSE' ||
+    bundlePaths[1] !== 'licenses/openshell-THIRD-PARTY-NOTICES' ||
+    new Set(bundlePaths).size !== bundlePaths.length
+  ) {
+    throw new Error('OpenShell redistribution license bundle paths must be distinct and fixed.');
+  }
+  return pin;
+}
+
+/** Parses the promoted execution-host manifest fields consumed by the release bundle. */
+export function parseNanoHostHostManifest(source) {
+  const manifest = JSON.parse(source);
+  const docker = manifest.commands?.docker;
+  const slirp4netns = manifest.commands?.slirp4netns;
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.architecture !== 'aarch64' ||
+    manifest.containerRuntime !== 'docker' ||
+    manifest.initSystem !== 'systemd' ||
+    docker?.path !== '/usr/bin/docker' ||
+    typeof docker.version !== 'string' ||
+    docker.version.length === 0 ||
+    slirp4netns?.path !== '/usr/bin/slirp4netns' ||
+    typeof slirp4netns.version !== 'string' ||
+    slirp4netns.version.length === 0 ||
+    typeof slirp4netns.sha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(slirp4netns.sha256)
+  ) {
+    throw new Error('NanoHost promoted host manifest is invalid.');
+  }
+  return manifest;
+}
+
+/** Validates the fixed NanoHost installer, unit, and pin inputs. */
+function validateNanoHostReleaseInputs(repoRoot) {
+  for (const path of [
+    'apps/nanohost/deploy/install.sh',
+    'apps/nanohost/deploy/openkit-nanohost.service',
+    'apps/nanohost/deploy/host-manifest.json',
+    'apps/nanohost/openshell-pin/manifest.md',
+  ]) {
+    assertRelativeExistingPath(repoRoot, path, 'NanoHost release input');
+  }
+  const installer = join(repoRoot, 'apps/nanohost/deploy/install.sh');
+  if ((statSync(installer).mode & 0o111) === 0) {
+    throw new Error('NanoHost release installer must be executable.');
+  }
+  const unit = readFileSync(
+    join(repoRoot, 'apps/nanohost/deploy/openkit-nanohost.service'),
+    'utf8'
+  );
+  if (!unit.includes('ExecStart=/usr/lib/openkit/nanohost')) {
+    throw new Error('NanoHost service unit must use the fixed NanoHost destination.');
+  }
+  parseNanoHostHostManifest(
+    readFileSync(join(repoRoot, 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
+  );
+  parseNanoHostPin(readFileSync(join(repoRoot, 'apps/nanohost/openshell-pin/manifest.md'), 'utf8'));
 }
 
 /**

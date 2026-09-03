@@ -8,6 +8,8 @@ The four interface-definition digests below were calculated from the vendored re
 
 The release-archive and extracted-payload digests were observed on the declared A1 Linux aarch64 execution host, where SHA-256 was recomputed from the downloaded bytes, each archive digest was verified against its publisher-supplied `*-checksums-sha256.txt` entry, and the extracted `openshell` and `openshell-gateway` executables each self-reported version `0.0.99`. The Supervisor is instead the exact published OCI index plus its two platform manifests recorded below; the pinned source verifies that each selected image's `/openshell-sandbox` payload is static musl.
 
+The NanoHost Distribution also consumes `LICENSE` and `THIRD-PARTY-NOTICES` from that same clean pinned checkout. Their retained SHA-256 values were recomputed from both the checkout bytes and the commit-bound upstream downloads before their fixed bundle paths were admitted.
+
 ```json
 {
   "source": {
@@ -65,6 +67,7 @@ The release-archive and extracted-payload digests were observed on the declared 
       "kind": "gateway-executable",
       "name": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
       "representation": "release-archive",
+      "platform": "linux/arm64",
       "publisherChecksumFile": "openshell-gateway-checksums-sha256.txt",
       "checksum": "sha256:3a5d3092ae34356beb0ff2a920f9a87af4233c7a1086a53cd9429d48358f5c09",
       "tag": "v0.0.99",
@@ -74,8 +77,29 @@ The release-archive and extracted-payload digests were observed on the declared 
       "kind": "gateway-executable",
       "name": "openshell-gateway",
       "representation": "extracted-executable",
+      "platform": "linux/arm64",
       "derivedFrom": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
       "checksum": "sha256:35c1e1be9c8766de2bfd457e54918d6b2019c16da815ec4c45ce9ebb45aaa571",
+      "tag": "v0.0.99",
+      "commit": "8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032"
+    },
+    {
+      "kind": "redistribution-license",
+      "name": "LICENSE",
+      "representation": "source-file",
+      "sourcePath": "LICENSE",
+      "bundlePath": "licenses/openshell-LICENSE",
+      "checksum": "sha256:b967d1c87b93b7d61ebcf4f8737e6ad79e5433e743e49dff395a36fb3c327047",
+      "tag": "v0.0.99",
+      "commit": "8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032"
+    },
+    {
+      "kind": "redistribution-notices",
+      "name": "THIRD-PARTY-NOTICES",
+      "representation": "source-file",
+      "sourcePath": "THIRD-PARTY-NOTICES",
+      "bundlePath": "licenses/openshell-THIRD-PARTY-NOTICES",
+      "checksum": "sha256:8c35aead093cbdfb3e11345d88cf2cb179f86391e859e4a7bc11539a0cc601f8",
       "tag": "v0.0.99",
       "commit": "8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032"
     },

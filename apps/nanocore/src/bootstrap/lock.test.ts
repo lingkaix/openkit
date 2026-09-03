@@ -4,11 +4,14 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { ensureLayout } from '../storage/fs-layout.js';
 import { acquireDataRootLock, DataRootLockError, dataRootLockPath } from './lock.js';
 
 /** Creates an isolated data root for lock tests. */
 function createDataRoot(): string {
-  return mkdtempSync(join(tmpdir(), 'openkit-data-root-lock-'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-lock-'));
+  ensureLayout(dataRoot);
+  return dataRoot;
 }
 
 /**

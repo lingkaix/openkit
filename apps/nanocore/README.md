@@ -22,7 +22,7 @@
 - the selectable NanoHost foundation supports one long-lived Harness, fixed private Harness operations, multiple AgentSessions for distinct Threads, restricted Codex handles, and shared-Sandbox retention
 - product admission computes the exact static SessionCompatibilityKey before a scheduler lease, reuses the Thread's sole compatible idle AgentSession, and closes or fences an incompatible predecessor before selecting one internal successor; the Store and Harness projections reject duplicate current bindings, and ordinary App API read models expose no AgentSession identity or action
 - restart Phase 8 performs only durable classification, fencing, read-only restoration, and result-only expectation registration; after the ordinary listener is available, the existing single-flight lease-maintenance service drains effect-owning cleanup and fail-closed accepted-final-status recovery
-- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, registered-user Workspace invitation and membership lifecycle, owner transfer, explicit administrator access recovery, one-way user disable, Artifact inventory, content, direct import, idle-Thread introduction, version-owned Artifact Review decisions, Workspace Material revision, binding, proposal apply, and portable history, durable Workspace Sync Review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, provider-subscription login coordination, and dual-entry LLM Gateway routing
+- current capabilities: turn execution, streaming assistant text, approval bridging, user-input questions, interruption, registered-user Workspace invitation and membership lifecycle, owner transfer, explicit administrator access recovery, owner-authorized Workspace deletion and verified new-ID recovery, one-way user disable, Artifact inventory, content, direct import, idle-Thread introduction, version-owned Artifact Review decisions, Workspace Material revision, binding, proposal apply, and portable history, durable Workspace Sync Review decisions, workspace configuration, workspace knowledge editing, repository linking, Goal Mode start and plan approval, actionable Goal Review, stored verification evidence, terminal summaries, unified Human Attention Action Center projection, provider-subscription login coordination, and dual-entry LLM Gateway routing
 - current non-goals: remote agents, full Sustained Mode automation, Task Evaluator loops, and an independent final-verifier completion gate
 
 ## Prerequisites
@@ -98,6 +98,21 @@ pnpm --filter @openkit/nanocore run data-root:restore -- \
 ```
 
 The restore command refuses to run when `server/runtime/nanocore.lock` exists, verifies the backup manifest first, replaces the target data root through the storage restore helper, and prints a path-free JSON summary.
+
+Locked-out server administrators use the separate stopped-server operator. Keep NanoCore stopped, list active canonical Users, then issue one recovery credential with an exact owner-and-expiry confirmation:
+
+```bash
+pnpm --filter @openkit/nanocore run operator -- admin recovery-users \
+  --data-root /absolute/path/to/openkit-data
+pnpm --filter @openkit/nanocore run operator -- admin recover-access \
+  --data-root /absolute/path/to/openkit-data \
+  --owner-user-id user_example \
+  --expires-at 2026-09-02T12:00:00.000Z \
+  --output /absolute/private/path/admin-recovery.json \
+  --confirm issue-server-admin-token:user_example:2026-09-02T12:00:00.000Z
+```
+
+Both commands acquire the ordinary data-root lock and never stop a running process. Recovery creates the output once at mode `0600`, commits one matching `server-admin` Token and redacted AuditEvent, and resumes only an exact same-path attempt. Store the complete envelope directly through `credential.store`; that operation retains only its `token` field in the configured endpoint credential store.
 
 The provider-subscription App API is available under `/api/app/provider-subscriptions/*` for `openai-codex` and `xai`. Every account, status, login, cancel, logout, and quota action is scoped to an explicit provider and account-slot pair; strict non-secret metadata lives under `DATA_ROOT/server/files/provider-subscriptions/<provider>/accounts/<slot>/account.json`, credential material remains behind encrypted-file Vault references, and public payloads are sanitized. This server-owned surface accepts the implicit local actor, a presented `server-admin` Token, or a Better Auth session with currently resolved Token-derived deployment-admin authority.
 
@@ -225,6 +240,8 @@ pnpm --filter @openkit/nanocore run test:e2e
 ```
 
 The e2e surface boots NanoCore as a process, uses fresh temporary data roots, covers empty boot, Goal planning, bounded restart read-model replay, configuration loading, migration idempotency, agent readiness diagnostics, secret redaction, and the skip-aware real Codex smoke spec.
+
+The fixed CI portability proof runs the bundled local-mode CLI in separate source and target jobs, transfers the original `.openkit-workspace.tar.zst` plus its SHA-256 and semantic oracle through one workflow artifact, verifies the archive SHA-256 across runners, compares remint-neutral Workspace semantics and complete seeded Turn history, explicitly rebinds repository and Vault references, exercises target behavior, and verifies a target re-export without treating the re-export digest as an equality oracle.
 
 Run the quick NanoCore e2e smoke subset with:
 

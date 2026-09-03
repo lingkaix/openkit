@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-13
+updated: 2026-09-02
 ---
 # Audit, Usage, And Evidence Records
 
@@ -20,6 +20,7 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 - Product visibility and redaction rules for audit-visible, item-visible, diagnostics-only, and restricted evidence layers.
 - Current protocol and NanoCore implementation projection for audit, usage, capability-call, verification, checkpoint, workspace-sync, and runtime evidence records.
 - Producer obligations for recording or explicitly omitting audit, usage, and evidence at stable boundaries.
+- The server-owned Workspace deletion closure contents, exact seal, pre-terminal cutoff, redaction, retention, and legal-hold preflight.
 
 ## Does Not Own
 
@@ -30,6 +31,7 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 - Vault secret storage.
 - Artifact file semantics or workspace synchronization protocol semantics.
 - Raw backend-native log formats.
+- Workspace registry status, deletion-request phases, mutation admission, owner authorization, and recovery authorization. `docs/specs/20260715-multi_user_workspace_system.md` owns those lifecycle decisions.
 
 ## Core References
 
@@ -113,7 +115,37 @@ When one event spans scopes, the primary row homes at the responsibility subject
 
 Cross-scope linkage uses ids and digests only. Correctness MUST NOT depend on cross-database foreign keys or joins; read models MAY aggregate across scopes.
 
-Workspace deletion MUST produce a sealed, server-owned audit closure export under `server/exports/` before removal. The export is envelope-wrapped and contains the workspace's audit events, permission decisions, vault-use rows, usage aggregates, and evidence manifest digests; restricted raw evidence is included only when its retention class requires it. Records under `legal-hold` retention block deletion until the hold is released. After deletion, the closure export is the only remaining record of the workspace and is governed by retention classes like any other server-owned record.
+Workspace deletion MUST produce a sealed, server-owned audit closure under `server/exports/` before removal. The closure is distinct from and references one verified portable recovery export; it does not modify that export tree or reuse its manifest. Records under `legal-hold` retention block deletion before a new recovery export or closure is created. After deletion, the closure and its exact referenced recovery export are the only remaining Workspace content and evidence records; the Core registry tombstone, non-authorizing retained original-owner membership, removed non-owner membership rows, revoked invitation rows, deletion request, terminal deletion AuditEvent, and command receipt remain deployment-local governance records under their own owners.
+
+## Workspace Deletion Closure
+
+The closure root is `server/exports/workspace-closures/<workspaceId>/<closureId>/`, created privately as a previously absent `0700` directory whose regular files use mode `0600`. It has this closed V1 shape:
+
+```text
+workspace-closure.json
+records/core-workspace-registry.jsonl
+records/core-workspace-memberships.jsonl
+records/core-workspace-invitations.jsonl
+records/core-audit-events.jsonl
+records/workspace-audit-events.jsonl
+records/permission-decisions.jsonl
+records/vault-use.jsonl
+records/usage-aggregates.jsonl
+records/evidence-manifests.jsonl
+evidence/<bundleId>/<retained files when required by the bundle retention owner>
+```
+
+All record paths are present even when their family is empty. The Core registry file contains the exact pre-terminal registry projection, membership and invitation files retain active and terminal projections, and the two audit files preserve their distinct authority homes. The permission, Vault-use, usage, and evidence files contain the complete Workspace-governance set at the closure cutoff; usage is a deterministic aggregate over retained rows and never replaces those rows before deletion. Restricted raw bytes enter `evidence/` only when their current retention owner requires them to survive deletion, and the manifest names that retention class and exact evidence digest without widening product visibility.
+
+`workspace-closure.json` is an envelope-wrapped record with `recordType: workspace-deletion-closure`, `closureVersion: 1`, source deployment and Workspace ids, deletion request id, original owner User id, source registry revision, closure id, cutoff timestamp, exact literal `cutoff: pre-terminal-deletion`, referenced recovery export id and manifest digest, required features, and one canonical content inventory. The inventory lists every non-manifest file exactly once with relative path, byte length, and SHA-256 digest; `contentDigest` is SHA-256 over the exact canonical inventory serialization. The deletion request separately binds the SHA-256 digest of the exact `workspace-closure.json` file bytes, including their terminal newline, so a manifest-only byte change is detectable without an impossible self-inventory entry. The manifest contains no credential, secret, backend locator, host path, raw authorization header, password, Token hash, or plaintext Token.
+
+The deletion owner checks every concrete legal-hold record owner before creating the recovery export or changing registry state. The first predicate queries every Workspace `EvidenceBundle` whose `retentionClass` is `legal-hold` and parses every durable `WorkspaceQuarantineRecord` whose strict payload may carry the same value; one blocking regression is required for each owner, and a coverage check MUST fail when a later durable schema can carry `legal-hold` but the deletion predicate does not classify it. A hold grants no read, recovery, deletion, or membership authority and returns a product-safe blocked result with zero export, closure, registry, or staging mutation.
+
+Closure capture occurs only after the Workspace mutation fence is exclusive and the registry has transactionally moved from `active` to `deleting`, and before canonical-root rename or the terminal deletion transaction. That point is the pre-terminal cutoff. The terminal deletion AuditEvent, retained original-owner membership, removed non-owner membership rows, revoked invitation rows, and terminal command receipt are intentionally absent from the closure and remain authoritative in Core; pre-terminal Core history and the exact deleting registry projection are present.
+
+Creation owns a previously absent closure root, writes and `fsync`s retained files, writes the manifest last, `fsync`s the directory, and verifies the exact inventory, envelope, and manifest-file digest before the deletion request may advance. A caught failure removes only that owned unsealed root. Once the exact manifest-file digest is bound into the deletion request, a closure is immutable; an exact retry reverifies it, and any missing, extra, changed, or contradictory byte returns `recovery_required` without resealing, repair, authority change, or deletion continuation.
+
+The closure is non-authorizing historical evidence. It cannot grant membership, select a recovery actor, make a portable actor current, authorize import, reopen a deleted Workspace, or replace the registry tombstone. Recovery authorization comes only from the deleted registry tombstone under the multi-user specification; the closure supplies verified evidence and the recovery-export reference after that authorization succeeds.
 
 ## Schema Evolution
 
@@ -447,6 +479,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - For the bounded Approval projection, the terminal `PermissionDecision` is the decision authority and its same-transaction linked Workspace `AuditEvent` is the sole actor and winning-request projection. The terminal row is complete only when it matches the originating `require_approval` row's Workspace, approval id, action, resource summary, subject summary, and approval kind, `PermissionDecision.auditEventId` equals that AuditEvent id, and `AuditEvent.permissionDecisionId` equals the terminal decision id. `PermissionDecision` does not duplicate `ActorRef`; a missing or contradictory source tuple or audit link makes the claim incomplete and fail closed.
 - Spanning events home at the responsibility subject; server-side copies are derived aggregates, never a second source of truth.
 - Workspace deletion produces a sealed server-owned audit closure export before removal; `legal-hold` blocks deletion.
+- The closure has a pre-terminal cutoff and is non-authorizing. The registry tombstone and terminal deletion AuditEvent remain in Core, while the closure independently seals the deployment-local governance snapshot and exact portable recovery-export reference.
 - The first OpenShell evidence normalization pass should keep product-safe launch, policy, upload/download, transcript, artifact, workspace-change, control, capability, outcome, and redacted error summaries while leaving raw backend-native payloads as restricted evidence.
 
 ## Deferred / Future Work
@@ -458,7 +491,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Add credential-channel context and broader producer linkage outside the exact current actor-attribution and usage producer families only when an owning specification requires it. The current usage projection owns the single UsageRecord responsible-user projection and current implemented governed-effect paths above; automation execution remains with the recurring-trigger specification, and broader usage coverage remains future work.
 - Extend retention compaction beyond explicit ephemeral-diagnostic and restricted-provenance expiry into scheduled maintenance, workspace policy configuration, and broader retention classes.
 - Normalize broader OpenShell evidence fields beyond the first terminal-checkpoint and materialization-readiness runtime evidence slices.
-- Implement the ownership-scope homing and workspace deletion closure export defined in Storage Scope Homing.
+- Implement the remaining ownership-scope homing gaps outside the now-implemented Workspace deletion closure.
 - Extend schema evolution fixtures beyond the current unsupported required-feature, evidence-bundle/runtime-evidence/usage-ledger/Git-push unknown-field stripping, and evidence-kind quarantine slices to cover broader authority-bearing fail-closed cases.
 
 ## Testing Strategy
@@ -472,6 +505,7 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 - Retention tests for raw evidence and compacted usage.
 - Schema evolution tests proving optional fields are tolerated while unsupported responsibility, policy, vault, retention, redaction, and evidence-promotion semantics fail closed.
 - Contract tests proving manual evidence-bundle creation is absent from App API, OpenAPI, Core Client, and the Agent Skill Interface while automatic producers and read-only bundle access remain available.
+- Closure tests proving legal hold blocks before export, every closed record path and exact retained byte is sealed, the cutoff excludes the terminal deletion event while retaining the deleting registry projection, restricted evidence visibility does not widen, manifest or inventory tamper fails, retry reverifies immutable bytes, and neither closure nor portable actor lineage authorizes recovery.
 
 ## Risks & Mitigations
 

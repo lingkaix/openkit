@@ -11,6 +11,7 @@ import {
   ensureUserLayout,
   ensureWorkspaceLayout,
   ensureWorkspaceLayoutRoot,
+  readDataRootLayoutMarker,
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
@@ -93,6 +94,27 @@ export function openCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
   ensureLayout(dataRoot);
   assertSqliteIntegrity(coreDbPath(dataRoot));
   return openCoreDb(dataRoot);
+}
+
+/**
+ * Opens an existing Core database after validating its authoritative file.
+ *
+ * @param dataRoot Data root that already contains server/db/core.sqlite.
+ * @returns Open Core database.
+ * @throws When the authoritative database is missing or fails SQLite integrity validation.
+ */
+export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
+  readDataRootLayoutMarker(dataRoot);
+  const path = coreDbPath(dataRoot);
+  assertSqliteIntegrity(path);
+  const sqlite = new Database(path, { fileMustExist: true });
+
+  return {
+    scope: 'core',
+    sqlite,
+    db: drizzle(sqlite, { schema }),
+    dataRoot,
+  };
 }
 
 /**

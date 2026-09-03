@@ -39,7 +39,7 @@ Read the [Product Vision](./docs/product-vision.md) for the long-term direction,
 
 ## Current Status
 
-OpenKit is in internal developer preview. The implemented product centers on NanoCore local and server foundations, durable Workspace history, Goal Mode, the Action Center, artifacts, evidence, Knowledge foundations, one end-user `openkit` Skill with its bundled CLI, and bounded worker execution through NanoCore-managed coordination.
+OpenKit is in internal developer preview. The implemented product centers on NanoCore local and server foundations, durable Workspace history, Goal Mode, the Action Center, artifacts, evidence, Knowledge foundations, one end-user `openkit` Skill with its bundled CLI, bounded worker execution through NanoCore-managed coordination, and a controlled verifiable `linux/arm64` NanoHost distribution. NanoHost runtime release readiness remains gated by the separate exact-product A1 noninterference proof.
 
 The NanoCore App API is the current stabilization boundary. The Web UI remains part of the product direction and follows stable NanoCore capabilities instead of defining Core behavior.
 

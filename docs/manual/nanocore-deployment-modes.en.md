@@ -57,6 +57,27 @@ Use `PORT` to select the NanoCore HTTP port. Use `OPENKIT_BIND_HOST` only when t
 
 When running the release app image, mount the persistent data root at `/data/openkit` and keep Worker images separate.
 
+For stopped-server administrator recovery from the release image, first stop the deployment through its normal operator workflow and confirm that no NanoCore process uses the mounted data root. Then run a one-shot container with the app entrypoint replaced by `openkit-operator`, the same data root mounted read-write at `/data/openkit`, and a private host output directory mounted at `/recovery`:
+
+```bash
+docker run --rm --entrypoint openkit-operator \
+  --mount type=bind,src=/absolute/path/to/openkit-data,dst=/data/openkit \
+  openkit/app:<exact-version> \
+  admin recovery-users --data-root /data/openkit
+
+docker run --rm --entrypoint openkit-operator \
+  --mount type=bind,src=/absolute/path/to/openkit-data,dst=/data/openkit \
+  --mount type=bind,src=/absolute/private/recovery,dst=/recovery \
+  openkit/app:<exact-version> \
+  admin recover-access --data-root /data/openkit \
+  --owner-user-id user_example \
+  --expires-at 2026-09-02T12:00:00.000Z \
+  --output /recovery/admin-recovery.json \
+  --confirm issue-server-admin-token:user_example:2026-09-02T12:00:00.000Z
+```
+
+Use the deployment's named volume instead of the first bind mount when it owns `/data/openkit`. The command refuses a held data-root lock and never stops NanoCore. Do not run it against a live mount, print or inspect the recovery envelope, or reuse an output path for a different owner or expiry. Pass the complete `0600` envelope directly through stdin to the bundled Skill's `credential.store`; only its Token enters endpoint credential storage.
+
 ## Vault Startup
 
 Local and server modes use the encrypted-file Vault under `DATA_ROOT/server/vault/`. The raw 32-byte master key remains in an exact-`0600` file outside the Data Root and is configured through `vault.encryptedFile.keyFilePath`.

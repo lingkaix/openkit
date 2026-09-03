@@ -71,10 +71,11 @@ elif [[ $# -eq 2 && $1 == remote ]]; then
   assert_facts /usr/bin/node "$manifest_base64" "$(collect_remote_facts)"
 else
   script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  manifest_path="$script_root/../../../apps/nanohost/deploy/host-manifest.json"
   source "$script_root/ssh-alias.sh"
   require_ssh_alias "$@" || exit $?
   {
-    node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]).toString("base64") + "\n")' "$script_root/manifest.json"
+    node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]).toString("base64") + "\n")' "$manifest_path"
     sed -n '1,$p' "$0"
   } | ssh "$ssh_alias" "/usr/bin/bash -c 'IFS= read -r manifest; /usr/bin/bash -s -- remote \"\$manifest\"'"
 fi

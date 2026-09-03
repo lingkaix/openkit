@@ -19,6 +19,7 @@ import { requireSchedulerSessionLeaseAdmissionContext } from '../scheduler-recor
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   createNanoHostHarnessRuntime,
@@ -119,6 +120,8 @@ export interface CreateConfiguredTurnExecutorOptions {
   store?: FsStore | undefined;
   /** Authoritative fixed-effect dispatcher shared with the native NanoHost session. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch | undefined;
+  /** Shared Workspace deletion fence for late worker publication. */
+  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined;
 }
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
@@ -185,7 +188,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.nanoHostSessionDispatch,
     options.workerControlGateway,
     options.vaultBackend,
-    options.store
+    options.store,
+    options.workspaceMutationAdmission
   );
 }
 
@@ -206,7 +210,8 @@ function createNanoHostWorkerLifecycleRuntime(
   nanoHostSessionDispatch?: NanoHostSessionDispatch | undefined,
   workerControlGateway?: WorkerControlGateway | undefined,
   vaultBackend?: (() => VaultBackend) | undefined,
-  sharedStore?: FsStore | undefined
+  sharedStore?: FsStore | undefined,
+  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined
 ): ConfiguredWorkerLifecycleRuntime {
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
@@ -233,6 +238,7 @@ function createNanoHostWorkerLifecycleRuntime(
           coreDb,
           ...(vaultBackend ? { vaultBackend } : {}),
           ...(workerControlGateway ? { workerControlGateway } : {}),
+          ...(workspaceMutationAdmission ? { workspaceMutationAdmission } : {}),
         });
 
   /** Restores the existing immutable package and read-only backend handle. */
