@@ -320,6 +320,8 @@ describe('capability usage ledger', () => {
         .prepare('SELECT COUNT(*) AS count FROM capability_calls')
         .get() as { count: number };
 
+      expect(first.inserted).toBe(true);
+      expect(second.inserted).toBe(false);
       expect(second.id).toBe(first.id);
       expect(count.count).toBe(1);
     } finally {

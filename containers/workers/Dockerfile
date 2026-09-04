@@ -186,7 +186,7 @@ LABEL org.openkit.image="worker-common"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-common-base-smoke"
 
 ENTRYPOINT ["tini", "-g", "--"]
-CMD ["openkit-worker-shim", "--package", "/openkit/config/package.json"]
+CMD ["openkit-worker-shim"]
 
 USER sandbox
 

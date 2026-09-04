@@ -18,7 +18,8 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  *
  * @returns Open database, app, store, turn, and stable gate ids.
  */
-function createPolicyApprovalFixture() {
+function createPolicyApprovalFixture(action: 'repo.push' | 'tool.use' = 'repo.push') {
+  const actionSlug = action.replace('.', '_');
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-approval-route-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -28,22 +29,23 @@ function createPolicyApprovalFixture() {
     ownerUserId: 'user_local',
     workspaceId: 'ws_demo',
   });
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Approve repo.push', {
+  const turn = store.createTurn('ws_demo', 'th_demo', `Approve ${action}`, {
     kind: 'user',
     id: 'user_local',
   });
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
   const gate = createPolicyApprovalGate({
-    approvalId: 'ap_repo_push',
-    approvalItemId: 'it_repo_push',
-    decisionId: 'pd_repo_push_required',
-    description: 'Approve repo.push.',
-    reasonCode: 'repo_push_approval_required',
-    resourceSummary: { action: 'repo.push' },
+    action,
+    approvalId: `ap_${actionSlug}`,
+    approvalItemId: `it_${actionSlug}`,
+    decisionId: `pd_${actionSlug}_required`,
+    description: `Approve ${action}.`,
+    reasonCode: `${actionSlug}_approval_required`,
+    resourceSummary: { action },
     store,
     subjectSummary: { kind: 'test' },
-    title: 'Approve repo.push',
+    title: `Approve ${action}`,
     turnId: turn.id,
     workspaceDb,
     workspaceId: 'ws_demo',
@@ -90,6 +92,38 @@ afterEach(() => {
 });
 
 describe('approval response routes', () => {
+  it('rejects tool.use without the exact worker owner tuple', async () => {
+    const fixture = createPolicyApprovalFixture('tool.use');
+
+    try {
+      const response = await respondToPolicyApproval(
+        fixture,
+        '00000000-0000-4000-8000-000000000114'
+      );
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
+
+      const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, 'ws_demo');
+      try {
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              `SELECT action, result
+               FROM permission_decisions
+               WHERE approval_id = ?
+               ORDER BY created_at, decision_id`
+            )
+            .all(fixture.gate.approvalId)
+        ).toEqual([{ action: 'tool.use', result: 'require_approval' }]);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it('finishes deterministic policy approval projections when the winning receipt is missing', async () => {
     const fixture = createPolicyApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000101';

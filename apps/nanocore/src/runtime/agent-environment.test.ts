@@ -236,7 +236,7 @@ describe('agent environment package resolver', () => {
 
     expect(resolved.runtime).toMatchObject({
       binaries: setupResult.setup.manifest.runtime.binaries,
-      command: { argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'] },
+      command: { argv: ['openkit-worker-shim'] },
       image: {
         kind: 'reference',
         pullPolicy: 'never',
@@ -484,9 +484,9 @@ describe('agent environment package resolver', () => {
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('credentialBindings');
     expect(resolved.capabilities).toEqual({
-      mode: 'disabled',
+      mode: 'enabled',
       protocol: 'openkit-worker-capability-v1',
-      routes: [],
+      routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
     });
     expect(resolved).not.toHaveProperty('providers');
   });

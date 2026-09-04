@@ -66,13 +66,13 @@ The missing design is the first complete non-LLM worker agent capability contrac
 
 ## Current Implementation Projection
 
-The worker capability plane is not currently implemented. `packages/config-schema` and NanoCore emit `capabilities: { protocol: "openkit-worker-capability-v1", mode: "disabled", routes: [] }`; `packages/worker-shim` has no capability client; NanoCore exposes no `/api/worker-capabilities/*` routes and has no worker MCP gateway. Static Skill and MCP supply does not grant a callable route.
+The current worker capability plane implements only the three selected-MCP operations `mcp.list_servers`, `mcp.list_tools`, and `mcp.call_tool`. Packages with selected MCP supply emit those exact enabled routes; packages without it retain `capabilities: { protocol: "openkit-worker-capability-v1", mode: "disabled", routes: [] }`. Sandbox Integration carries the separately authenticated capability family, the selected adapter projects only fixed loopback MCP URLs, and NanoCore owns the MCP gateway, policy, schema, usage, and audit path. Static Skill supply and unselected MCP catalog entries grant no callable route.
 
-The protocol and storage foundations remain: `packages/worker-protocol` defines `WorkerCapabilityCallSummary` as a transcript/import summary schema, `packages/protocol` defines product-level `CapabilityCall`, `UsageRecord`, and `AuditEvent`, and the shared usage ledger supports implemented LLM producers. A worker-reported summary is evidence for import and does not prove that NanoCore offered or executed a capability call.
+The protocol and storage foundations remain: `packages/worker-protocol` defines `WorkerCapabilityCallSummary` as a transcript/import summary schema, `packages/protocol` defines product-level `CapabilityCall`, `UsageRecord`, and `AuditEvent`, and the shared usage ledger supports LLM and MCP producers. A worker-reported summary is evidence for import and does not prove that NanoCore offered or executed a capability call; only the NanoCore-owned gateway records do.
 
-The generic public LLM gateway and the legacy direct worker-inference path are independent of this disabled capability plane. Runtime provenance remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; its historical production proof does not implement the accepted `inference.local` transport, the `capability.local` plane, or the RelayStream plus nested standard HTTP/2 precondition.
+The generic public LLM gateway and the worker-inference path are independent of this narrowly enabled MCP capability plane. Runtime provenance remains governed by `docs/specs/20260711-worker_runtime_subagent_provenance.md`; its historical production proof does not by itself prove the MCP capability path.
 
-Network egress, external API routing, generic future credential classes, the full Capability Catalog, baseline rate-limit and budget enforcement, transformer-pipeline routing, Knowledge and artifact routes, diagnostics, and MCP tool supply all remain future implementation work under this accepted contract.
+Network egress, external API routing, generic future credential classes, the full Capability Catalog, baseline rate-limit and budget enforcement, transformer-pipeline routing, Knowledge and artifact routes, and broader diagnostics remain future implementation work under this accepted contract.
 
 Server capability flags exposed through NanoCore metadata and consumed by `packages/core-client/src/capabilities.ts` are feature discovery flags. They are not worker agent capability declarations.
 
@@ -175,7 +175,7 @@ Raw provider payloads should not be stored by default.
 
 ## MCP Gateway
 
-Under the accepted target, worker-side MCP access will use NanoCore as the mediator. This section does not describe a currently callable route.
+The current selected-MCP slice uses NanoCore as the mediator. It exposes only `mcp.list_servers`, `mcp.list_tools`, and `mcp.call_tool` through the separately authenticated fixed Integration capability route for packages whose immutable AEP contains selected MCP supply; every other capability remains non-callable.
 
 MCP catalog entries may represent:
 
@@ -217,7 +217,7 @@ Raw MCP request or response payloads should not be durable by default. If a task
 
 ## Knowledge Gateway
 
-Under the accepted target, Knowledge capability calls are retrieval and read operations, not direct notebook access. Current Workflow Coordinator paths can record selected Knowledge references in delegation metadata, but they do not automatically bind those references or material into the AEP or worker turn. Workers cannot call these operations while the capability plane is disabled.
+Under the accepted target, Knowledge capability calls are retrieval and read operations, not direct notebook access. Current Workflow Coordinator paths can record selected Knowledge references in delegation metadata, but they do not automatically bind those references or material into the AEP or worker turn. The current narrowly enabled MCP capability plane does not expose Knowledge operations.
 
 `knowledge.search` returns ranked, redacted candidates with source references and reasons.
 

@@ -220,7 +220,7 @@ The shared foundation owns:
 
 ```text
 worker or gateway client
-  -> AEP-resolved inference route (current) or capability.local route (future)
+  -> AEP-resolved inference route or selected-MCP capability.local route
   -> resolve GatewayCallContext
   -> start CapabilityCall
   -> feature adapter
@@ -251,14 +251,14 @@ NanoCore should keep this as a small service used directly by the existing route
 - Keep process-local `gateway-usage` diagnostics as a derived consumer of the same normalized data.
 - Verify failed and aborted pi-ai-routed calls record partial usage when pi-ai reports it.
 
-### Phase 3: Worker MCP usage producer (pending)
+### Phase 3: Worker MCP usage producer (implemented)
 
 - Wire `mcp.call_tool` to the same recorder.
 - Record tool-call usage rows and schema snapshot ids.
 - Record no usage for list operations.
 - Verify MCP policy denials produce denied capability calls with no usage.
 
-### Phase 4: Cross-producer conformance (pending)
+### Phase 4: Cross-producer conformance (partial)
 
 - Add one shared conformance test fixture set covering success, denied, failed, timed out, and aborted calls for both `llm` and `mcp`.
 - Add a leak check that scans public responses, protocol records, usage rows, audit rows, and diagnostics for pi-ai-native names, MCP-native stack traces, canary secrets, and raw payloads.
@@ -275,9 +275,9 @@ Current relevant code is split:
 - Workspace-scoped databases now own `capability_calls` and `usage_records` tables through `workspace_0013_capability_usage_ledger`.
 - QuickChatAgent LLM calls now use the same recorder when NanoCore has a Core database. The producer writes one workspace-scoped `CapabilityCall` with family `llm` and one linked `UsageRecord` using provider-reported total tokens when available, falling back to one request-count row when token usage is absent.
 - Public `/v1/chat/completions` and `/v1/responses` calls routed through pi-ai now use the same recorder when the request carries `metadata.openkit.workspaceId`. NanoCore starts a workspace-scoped `CapabilityCall` with family `llm`, observes raw pi-ai terminal usage exactly once before public normalization, records positive input, output, cache-read, and cache-write token rows plus one positive estimated-USD row when available, and marks started calls failed when dispatch, stream consumption, or usage recording fails. The same observation feeds process-local diagnostics while retaining provider-reported cache-read and cache-write semantics. Public calls without workspace attribution remain process-local diagnostics only, and public responses never expose raw usage, cost objects, or prompt-cache keys.
-- Worker Knowledge and MCP capability producers are not implemented because the AEP capability plane is disabled, NanoCore exposes no `/api/worker-capabilities/*` routes, and the shim has no capability client.
+- The selected Worker MCP producer uses the same recorder: list operations create terminal metadata-only CapabilityCalls with no usage, an upstream-contacting `mcp.call_tool` records exactly one `category: "tool"`, `unit: "tool_calls"` usage row, and pre-effect denial records no usage. Worker Knowledge and other capability producers remain absent.
 
-The shared recorder and workspace-attributed internal and public LLM producers are implemented. Cross-producer MCP conformance remains a future acceptance gate, not current evidence. Pi dispatcher coverage proves successful, provider-error, and aborted terminal usage is observed once, public Pi streams omit raw cache-write, cost, and cache-key data, and Codex non-streaming and streaming usage retain the existing public-payload accounting path. Public pi-ai stream route coverage proves attributed client cancellation becomes `aborted`, a proved timeout becomes `timed-out`, other provider failures become `failed`, partial usage remains when upstream usage exists, public SSE errors disclose no provider secret, and no terminal path leaves abandoned `running` ledger state.
+The shared recorder, workspace-attributed internal and public LLM producers, and selected Worker MCP producer are implemented. Focused MCP conformance proves successful, denied, failed, timed-out, interrupted, and uncertain terminal handling, no usage before upstream contact, exactly one tool-call usage row after contact, schema-snapshot attribution, linked terminal audit, and restart conversion of abandoned `running` calls to `unknown`. Broader cross-producer fixture unification remains deferred because the existing feature-owned checks exercise the shared recorder directly. Pi dispatcher coverage proves successful, provider-error, and aborted terminal usage is observed once, public Pi streams omit raw cache-write, cost, and cache-key data, and Codex non-streaming and streaming usage retain the existing public-payload accounting path. Public pi-ai stream route coverage proves attributed client cancellation becomes `aborted`, a proved timeout becomes `timed-out`, other provider failures become `failed`, partial usage remains when upstream usage exists, public SSE errors disclose no provider secret, and no terminal path leaves abandoned `running` ledger state.
 
 ## Alternatives Considered
 
@@ -291,7 +291,7 @@ The shared recorder and workspace-attributed internal and public LLM producers a
 
 ## Consequences
 
-- pi-ai LLM usage and future worker MCP usage will be comparable because both attach to `CapabilityCall`.
+- pi-ai LLM usage and worker MCP usage are comparable because both attach to `CapabilityCall`.
 - Future budget and rate-limit work gets one ledger instead of two feature logs.
 - The first implementation must touch shared NanoCore storage before either producer is fully useful.
 - Synchronous recording is intentionally simple; high-throughput optimization is deferred until measured.

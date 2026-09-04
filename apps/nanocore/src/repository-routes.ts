@@ -283,6 +283,7 @@ export function registerRepositoryRoutes({
               }
 
               const gate = createPolicyApprovalGate({
+                action: 'repo.push',
                 workspaceDb,
                 store,
                 workspaceId,

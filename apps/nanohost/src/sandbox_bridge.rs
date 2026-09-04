@@ -79,7 +79,7 @@ pub enum RouteFamily {
     WorkerControl,
     /// Existing inference protocol traffic.
     Inference,
-    /// Present but non-callable capability traffic.
+    /// Worker capability traffic.
     Capabilities,
 }
 
@@ -107,7 +107,7 @@ pub const fn route_stream_limit(family: RouteFamily) -> usize {
             WORKER_CONTROL_IN_FLIGHT_BYTES / PER_STREAM_RECEIVE_WINDOW_BYTES
         }
         RouteFamily::Inference => INFERENCE_IN_FLIGHT_BYTES / PER_STREAM_RECEIVE_WINDOW_BYTES,
-        RouteFamily::Capabilities => 0,
+        RouteFamily::Capabilities => CAPABILITY_IN_FLIGHT_BYTES / PER_STREAM_RECEIVE_WINDOW_BYTES,
     }
 }
 
@@ -364,9 +364,9 @@ impl Drop for OpenSandboxBridge {
 
 /// Serves one bounded standard HTTP/2 session on the stock bridge.
 ///
-/// The handler receives only worker-control and inference requests. Capability,
-/// CONNECT, absolute-origin, saturated-family, and unknown routes fail closed
-/// before semantic dispatch.
+/// The handler receives only worker-control, inference, and capability requests.
+/// CONNECT, absolute-origin, saturated-family, and unknown routes fail closed before semantic
+/// dispatch.
 ///
 /// # Errors
 ///
@@ -394,6 +394,9 @@ where
         RouteFamily::WorkerControl,
     )));
     let inference = Arc::new(Semaphore::new(route_stream_limit(RouteFamily::Inference)));
+    let capabilities = Arc::new(Semaphore::new(route_stream_limit(
+        RouteFamily::Capabilities,
+    )));
 
     while let Some(incoming) = connection.accept().await {
         let (request, mut respond) = incoming?;
@@ -406,10 +409,6 @@ where
             continue;
         }
         let family = match route_family(request.uri().path()) {
-            Ok(RouteFamily::Capabilities) => {
-                send_empty_response(&mut respond, StatusCode::FORBIDDEN)?;
-                continue;
-            }
             Ok(family) => family,
             Err(_) => {
                 send_empty_response(&mut respond, StatusCode::NOT_FOUND)?;
@@ -419,7 +418,7 @@ where
         let semaphore = match family {
             RouteFamily::WorkerControl => Arc::clone(&worker_control),
             RouteFamily::Inference => Arc::clone(&inference),
-            RouteFamily::Capabilities => unreachable!("capability is fail-closed above"),
+            RouteFamily::Capabilities => Arc::clone(&capabilities),
         };
         let Ok(permit) = semaphore.try_acquire_owned() else {
             send_empty_response(&mut respond, StatusCode::TOO_MANY_REQUESTS)?;
@@ -985,7 +984,7 @@ mod tests {
         assert!(!HTTP2_PRIORITY_ENABLED);
         assert_eq!(route_stream_limit(RouteFamily::WorkerControl), 4);
         assert_eq!(route_stream_limit(RouteFamily::Inference), 8);
-        assert_eq!(route_stream_limit(RouteFamily::Capabilities), 0);
+        assert_eq!(route_stream_limit(RouteFamily::Capabilities), 2);
         assert_eq!(
             route_family("/worker-control/heartbeat"),
             Ok(RouteFamily::WorkerControl)
@@ -1109,6 +1108,29 @@ mod tests {
             Some((
                 RouteFamily::WorkerControl,
                 "http://sandbox-integration:80/worker-control/heartbeat".into()
+            ))
+        );
+
+        let capability = Request::builder()
+            .method(Method::POST)
+            .uri("http://sandbox-integration:80/capabilities/mcp/echo")
+            .body(())
+            .expect("fixed capability request must build");
+        let (capability, _) = client
+            .send_request(capability, true)
+            .expect("fixed capability request must be sent");
+        assert_eq!(
+            capability
+                .await
+                .expect("fixed capability response")
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            handled_rx.recv().await,
+            Some((
+                RouteFamily::Capabilities,
+                "http://sandbox-integration:80/capabilities/mcp/echo".into()
             ))
         );
 

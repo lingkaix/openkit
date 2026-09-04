@@ -249,7 +249,7 @@ describe('worker shim CLI parsing', () => {
         llm: { routes: [workerLlmRoute()] },
         runtime: {
           command: {
-            argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+            argv: ['openkit-worker-shim'],
             workingDirectory: sessionDir,
           },
         },
@@ -376,7 +376,7 @@ describe('worker shim CLI parsing', () => {
         llm: { mode: 'gateway', routes: [workerLlmRoute()] },
         runtime: {
           command: {
-            argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+            argv: ['openkit-worker-shim'],
             workingDirectory: sessionDir,
           },
           image: { ref: 'ghcr.io/openkit/codex-worker:test' },
@@ -3341,7 +3341,7 @@ function writeFileSync(path: string, data: string | Buffer, encoding?: BufferEnc
         runtime: {
           ...(parsed.runtime as Record<string, unknown>),
           command: {
-            argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+            argv: ['openkit-worker-shim'],
             ...command,
           },
         },

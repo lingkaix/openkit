@@ -121,7 +121,7 @@ The `@openkit/mcp` package, `openkit-mcp` binary, stdio JSON-RPC transport, MCP 
 
 No compatibility server, proxy, alias, redirect, deprecated package, or second operation surface is retained.
 
-The accepted future worker-side MCP capability plane remains governed by `docs/specs/20260704-worker_mcp_tool_supply.md` and is unaffected. Current worker AEPs expose no capability routes.
+The separately authenticated worker-side MCP capability plane remains governed by `docs/specs/20260704-worker_mcp_tool_supply.md` and is unaffected. Selected Codex Worker AEPs may expose its exact three private capability operations, but they do not recreate a user-facing MCP server, CLI operation family, or compatibility surface.
 
 ## Contract / Expected Behavior
 

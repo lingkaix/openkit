@@ -68,6 +68,7 @@ const CORE_RECEIPT_OWNER = { coreId: 'server' } as const;
 /** Registers owner deletion and tombstone-authorized recovery routes. */
 export function registerWorkspaceDeletionRoutes(input: {
   app: Hono<{ Variables: AuthVariables }>;
+  closeWorkspaceMcpSessions: (workspaceId: string) => Promise<void>;
   coreDb: CoreDb | undefined;
   dataRoot: string | null;
   mutationAdmission: WorkspaceMutationAdmission;
@@ -110,6 +111,7 @@ export function registerWorkspaceDeletionRoutes(input: {
       return await input.mutationAdmission.runDeletionExclusive(workspaceId, async () => {
         const result = await advanceWorkspaceDeletion({
           actorId: actor.userId,
+          closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions,
           coreDb,
           dataRoot,
           mutationAdmission: input.mutationAdmission,
@@ -214,6 +216,7 @@ export function registerWorkspaceDeletionRoutes(input: {
 
 async function advanceWorkspaceDeletion(input: {
   actorId: string;
+  closeWorkspaceMcpSessions: (workspaceId: string) => Promise<void>;
   coreDb: CoreDb;
   dataRoot: string;
   mutationAdmission: WorkspaceMutationAdmission;
@@ -234,6 +237,7 @@ async function advanceWorkspaceDeletion(input: {
     return { body: deletionResponse(request), status: 200 };
   }
   await input.mutationAdmission.close(input.workspaceId);
+  await input.closeWorkspaceMcpSessions(input.workspaceId);
   if (!isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)) {
     if (['requested', 'fenced'].includes(request.phase)) {
       request = persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });

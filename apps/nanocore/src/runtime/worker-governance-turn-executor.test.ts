@@ -2178,6 +2178,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const sandboxBindingRef = 'lease-binding:provenance-blackbox-1';
     const workerControlToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
     const workerInferenceToken = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+    const workerCapabilityToken = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
     const workerControlGateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
     });
@@ -2223,6 +2224,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     vi.spyOn(backend, 'materialize').mockImplementation(async (environmentPackage, context) => {
       workerControlGateway.registerSession(environmentPackage, {
         sandboxBindingRef,
+        workerCapabilityToken,
         workerControlToken,
         workerInferenceToken,
       });
@@ -5263,6 +5265,28 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }),
         requestId: '00000000-0000-4000-8000-000000000215',
         triggerActor: turn.triggerActor,
+        workspaceMcpServerCatalog: {
+          schemaVersion: 1,
+          servers: [
+            {
+              allowedTools: ['*'],
+              approvalRequiredTools: [],
+              credentialBindings: [],
+              deniedTools: [],
+              enabled: true,
+              id: 'github',
+              pinnedSchemaSnapshotId: null,
+              schemaPolicy: 'tracking',
+              timeoutMs: 60_000,
+              transport: {
+                args: ['fixtures/github.mjs'],
+                command: 'node',
+                environment: {},
+                kind: 'stdio',
+              },
+            },
+          ],
+        },
         workspaceRoots: [],
       });
 

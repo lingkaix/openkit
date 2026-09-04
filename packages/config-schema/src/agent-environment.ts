@@ -277,11 +277,7 @@ export const AgentEnvironmentRuntimeImageSchema = z
  */
 export const AgentEnvironmentRuntimeCommandSchema = z
   .object({
-    argv: z.tuple([
-      z.literal('openkit-worker-shim'),
-      z.literal('--package'),
-      z.literal('/openkit/config/package.json'),
-    ]),
+    argv: z.tuple([z.literal('openkit-worker-shim')]),
     workingDirectory: z.string().min(1),
     stdin: z.enum(['pipe', 'inherit', 'ignore']).optional(),
     stdout: z.enum(['pipe', 'inherit', 'ignore']).optional(),
@@ -601,13 +597,26 @@ export const AgentEnvironmentControlSchema = z
 /**
  * Worker capability plane declaration.
  */
-export const AgentEnvironmentCapabilitiesSchema = z
-  .object({
-    protocol: z.literal('openkit-worker-capability-v1'),
-    mode: z.literal('disabled'),
-    routes: z.tuple([]).default([]),
-  })
-  .strict();
+export const AgentEnvironmentCapabilitiesSchema = z.discriminatedUnion('mode', [
+  z
+    .object({
+      protocol: z.literal('openkit-worker-capability-v1'),
+      mode: z.literal('disabled'),
+      routes: z.tuple([]).default([]),
+    })
+    .strict(),
+  z
+    .object({
+      protocol: z.literal('openkit-worker-capability-v1'),
+      mode: z.literal('enabled'),
+      routes: z.tuple([
+        z.literal('mcp.list_servers'),
+        z.literal('mcp.list_tools'),
+        z.literal('mcp.call_tool'),
+      ]),
+    })
+    .strict(),
+]);
 
 /**
  * Worker credential declaration visibility classes resolved before launch.
@@ -1040,6 +1049,14 @@ export const AgentEnvironmentPackageSchema = z
   .strict()
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);
+
+    if (value.capabilities.mode === 'enabled' && value.supply.mcpServers.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Enabled MCP capabilities require selected MCP server supply.',
+        path: ['supply', 'mcpServers'],
+      });
+    }
 
     const runtimeBinaryPaths = new Set(value.runtime.binaries.map((binary) => binary.path));
     for (const [ruleIndex, rule] of (value.policy.network?.rules ?? []).entries()) {

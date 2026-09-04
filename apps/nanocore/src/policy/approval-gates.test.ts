@@ -26,6 +26,7 @@ describe('policy approval gates', () => {
       applyScopedMigrations(workspaceDb);
 
       const gate = createPolicyApprovalGate({
+        action: 'repo.push',
         approvalId: 'ap_policy_gate',
         approvalItemId: 'it_policy_gate',
         decisionId: 'pd_policy_gate',
@@ -79,6 +80,7 @@ describe('policy approval gates', () => {
 
       expect(() =>
         createPolicyApprovalGate({
+          action: 'repo.push',
           approvalId: 'ap_duplicate_policy_gate',
           approvalItemId: 'it_duplicate_policy_gate',
           decisionId: 'pd_duplicate_policy_gate',
@@ -92,7 +94,7 @@ describe('policy approval gates', () => {
           workspaceDb,
           workspaceId: 'ws_demo',
         })
-      ).toThrow('Git push approval requires one exact running Turn owner.');
+      ).toThrow('Policy approval requires one exact running Turn owner.');
       expect(permissionDecision(workspaceDb, 'pd_duplicate_policy_gate')).toBeUndefined();
 
       const reservedTurn = store.createTurn(
@@ -103,6 +105,7 @@ describe('policy approval gates', () => {
       );
       expect(() =>
         createPolicyApprovalGate({
+          action: 'repo.push',
           approvalId: 'apr_imported_ws_demo_1',
           approvalItemId: 'it_reserved_policy_gate',
           decisionId: 'pd_reserved_policy_gate',

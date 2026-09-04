@@ -125,14 +125,19 @@ describe('shared Worker Harness', () => {
     const outputPath = join(sandboxRoot, 'session');
     mkdirSync(join(sandboxRoot, 'config'), { recursive: true });
     mkdirSync(contextPath, { recursive: true });
-    const writePackage = (turn: number, requestId?: unknown) =>
+    const writePackage = (turn: number, requestId?: unknown, agentSessionId = 'as-a') =>
       writeFileSync(
         packagePath,
         JSON.stringify({
+          capabilities: {
+            mode: 'enabled',
+            protocol: 'openkit-worker-capability-v1',
+            routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+          },
           scope: {
-            agentSessionId: 'as-a',
+            agentSessionId,
             ...(requestId === undefined ? {} : { requestId }),
-            threadId: 'thread-as-a',
+            threadId: `thread-${agentSessionId}`,
             turnId: `turn-${turn}`,
             workspaceId: 'workspace-one',
           },
@@ -172,23 +177,37 @@ describe('shared Worker Harness', () => {
           },
           runtime: {
             command: {
-              argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+              argv: ['openkit-worker-shim'],
               workingDirectory: sandboxRoot,
             },
           },
+          supply: { mcpServers: [{ id: 'echo' }] },
         }),
         'utf8'
       );
     writePackage(1);
     const threadId = '019f0000-0000-7000-8000-000000000001';
     const launches: string[][] = [];
-    const boundTokens: Array<{ controlToken: string; inferenceToken: string }> = [];
-    const finalStatuses: Array<{ lineage: Record<string, unknown> }> = [];
+    const boundTokens: Array<{
+      capabilityToken?: string;
+      controlToken: string;
+      inferenceToken: string;
+    }> = [];
+    const finalStatuses: Array<{
+      body: { status: string; stopReason: string };
+      lineage: Record<string, unknown>;
+    }> = [];
+    let holdNextRun = false;
+    let nativeAbortCount = 0;
     const harnessEnvironment: { OPENKIT_REQUEST_ID?: string } = {
       OPENKIT_REQUEST_ID: 'request-harness',
     };
     const integration = {
-      bindTurnRouteTokens(tokens: { controlToken: string; inferenceToken: string }) {
+      bindTurnRouteTokens(tokens: {
+        capabilityToken?: string;
+        controlToken: string;
+        inferenceToken: string;
+      }) {
         boundTokens.push(tokens);
       },
       clearTurnRouteTokens() {},
@@ -217,6 +236,8 @@ describe('shared Worker Harness', () => {
       rootDirectory: join(root, 'private'),
       runner: {
         async run(input) {
+          const holdUntilInterrupted = holdNextRun;
+          holdNextRun = false;
           launches.push(input.argv);
           input.onStart?.();
           const codexHome = input.env.CODEX_HOME as string;
@@ -247,6 +268,24 @@ describe('shared Worker Harness', () => {
           await input.writeStdout?.(
             Buffer.from(`${JSON.stringify({ thread_id: threadId, type: 'thread.started' })}\n`)
           );
+          if (holdUntilInterrupted) {
+            await new Promise<void>((resolve) => {
+              if (input.signal.aborted) {
+                nativeAbortCount += 1;
+                resolve();
+                return;
+              }
+              input.signal.addEventListener(
+                'abort',
+                () => {
+                  nativeAbortCount += 1;
+                  resolve();
+                },
+                { once: true }
+              );
+            });
+            return { exitCode: null, signal: 'SIGTERM', stderr: '', stdout: '' };
+          }
           return { exitCode: 0, signal: null, stderr: '', stdout: '' };
         },
       },
@@ -255,20 +294,28 @@ describe('shared Worker Harness', () => {
     });
     await harness.handle(command('session.open', 0, openBody('binding-a', 'as-a')));
 
-    const startBody = (turn: number) => ({
+    const token = (value: number) =>
+      (value < 10 ? String(value) : String.fromCharCode(87 + value)).repeat(43);
+    const startBody = (
+      turn: number,
+      agentSessionId = 'as-a',
+      bindingId = 'binding-a',
+      turnSequence = turn - 1
+    ) => ({
       aepRef: packagePath,
-      agentSessionId: 'as-a',
-      agentSessionRuntimeBindingId: 'binding-a',
+      agentSessionId,
+      agentSessionRuntimeBindingId: bindingId,
       contextPackageId: `context-${turn}`,
       contextRef: contextPath,
       deadline: '2026-08-21T01:00:00.000Z',
-      inferenceToken: String(turn).repeat(43),
+      capabilityToken: token(turn + 4),
+      inferenceToken: token(turn),
       leaseId: `lease-${turn}`,
       packageSnapshotId: `package-${turn}`,
-      threadId: 'thread-as-a',
+      threadId: `thread-${agentSessionId}`,
       turnId: `turn-${turn}`,
-      turnSequence: turn - 1,
-      workerControlToken: String(turn + 2).repeat(43),
+      turnSequence,
+      workerControlToken: token(turn + 2),
       workspaceId: 'workspace-one',
     });
     await expect(harness.handle(command('turn.start', 1, startBody(1)))).resolves.toMatchObject({
@@ -298,8 +345,16 @@ describe('shared Worker Harness', () => {
     expect(launches[1]).toContain('resume');
     expect(launches[1]?.at(-2)).toBe(threadId);
     expect(boundTokens).toEqual([
-      { controlToken: '3'.repeat(43), inferenceToken: '1'.repeat(43) },
-      { controlToken: '4'.repeat(43), inferenceToken: '2'.repeat(43) },
+      {
+        capabilityToken: '5'.repeat(43),
+        controlToken: '3'.repeat(43),
+        inferenceToken: '1'.repeat(43),
+      },
+      {
+        capabilityToken: '6'.repeat(43),
+        controlToken: '4'.repeat(43),
+        inferenceToken: '2'.repeat(43),
+      },
     ]);
     expect(finalStatuses.map((status) => status.lineage)).toEqual([
       {
@@ -349,6 +404,72 @@ describe('shared Worker Harness', () => {
       ).toHaveLength(launchesBeforeRejection);
       expect(result).toMatchObject({ disposition: 'refused' });
     }
+
+    writePackage(8);
+    holdNextRun = true;
+    await expect(
+      harness.handle(command('turn.start', 20, startBody(8, 'as-a', 'binding-a', 3)))
+    ).resolves.toMatchObject({
+      disposition: 'succeeded',
+    });
+    const interruptBody = {
+      agentSessionId: 'as-a',
+      agentSessionRuntimeBindingId: 'binding-a',
+      leaseId: 'lease-8',
+      turnId: 'turn-8',
+    };
+    for (const invalidBody of [
+      interruptBody,
+      { ...interruptBody, purpose: 'unknown' },
+      { ...interruptBody, extra: 'forbidden', purpose: 'interrupt' },
+    ]) {
+      await expect(
+        harness.handle(command('turn.interrupt', 21, invalidBody))
+      ).resolves.toMatchObject({ disposition: 'refused' });
+      expect(nativeAbortCount).toBe(0);
+    }
+    await expect(
+      harness.handle(command('turn.interrupt', 21, { ...interruptBody, purpose: 'interrupt' }))
+    ).resolves.toMatchObject({
+      body: { childState: 'absent', state: 'interrupted' },
+      disposition: 'succeeded',
+    });
+    await vi.waitFor(() => expect(finalStatuses).toHaveLength(4));
+    expect(finalStatuses.at(-1)).toMatchObject({
+      body: { status: 'interrupted', stopReason: 'aborted' },
+    });
+
+    await expect(
+      harness.handle(
+        command('session.close', 22, {
+          agentSessionId: 'as-a',
+          agentSessionRuntimeBindingId: 'binding-a',
+        })
+      )
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    await expect(
+      harness.handle(command('session.open', 23, openBody('binding-b', 'as-b')))
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    writePackage(9, undefined, 'as-b');
+    holdNextRun = true;
+    await expect(
+      harness.handle(command('turn.start', 24, startBody(9, 'as-b', 'binding-b', 0)))
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    await expect(
+      harness.handle(
+        command('turn.interrupt', 25, {
+          agentSessionId: 'as-b',
+          agentSessionRuntimeBindingId: 'binding-b',
+          leaseId: 'lease-9',
+          purpose: 'human-gate',
+          turnId: 'turn-9',
+        })
+      )
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    await vi.waitFor(() => expect(finalStatuses).toHaveLength(5));
+    expect(finalStatuses.at(-1)).toMatchObject({
+      body: { status: 'blocked', stopReason: 'ask_user' },
+    });
   });
 
   it('keeps two Codex Sessions isolated and closes only the exact named private root', async () => {
@@ -464,6 +585,7 @@ describe('shared Worker Harness', () => {
           contextPackageId: 'context-a',
           contextRef: join(root, 'context'),
           deadline: '2026-08-21T01:00:00.000Z',
+          capabilityToken: 'p'.repeat(43),
           inferenceToken: 'i'.repeat(43),
           leaseId: 'lease-a',
           packageSnapshotId: 'package-a',

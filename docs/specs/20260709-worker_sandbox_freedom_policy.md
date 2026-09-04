@@ -59,7 +59,7 @@ For process execution, the worker should be able to use the normal tools install
 
 For filesystem access, the worker may read the image-provided runtime directories that are safe to expose, may write to sandbox workspace and temporary directories, and may access user-declared workspace roots according to explicit read-only or read-write grants.
 
-For network access, the worker may only connect to endpoints declared in the immutable AEP, including its exact worker-control and selected inference routes. The disabled capability plane contributes no endpoint.
+For network access, the worker may only connect to endpoints declared in the immutable AEP, including its exact worker-control and selected inference routes. Exact selected MCP supply may add only the fixed loopback Integration capability route; it adds no upstream MCP endpoint or direct egress.
 
 For credentials, users may provide arbitrary secrets for a worker session through explicit injection declarations, but the injection must carry a target path or environment key, visibility class, intended consumer, scope, lifetime, and redaction policy.
 
@@ -179,7 +179,7 @@ If a backend cannot enforce a declared filesystem, network, or secret-injection 
 
 The current OpenShell backend compiles base network policy only from the immutable AEP. It has no built-in Codex or DeepWiki endpoints, backend network option, or deployment environment variable that can append a rule. The 2026-07-21 refinement adds bounded authored `GET` or `POST` REST rules and the built-in development grants while preserving the same no-hidden-authority invariant. It also rejects non-transient backend provider credentials before provider or sandbox effects because the current AEP does not carry the exact Providers v2 endpoint and binary policy; the internally generated trusted-inference profile remains limited to the AEP's exact inference authority.
 
-The correction preserves the unmodified stock OpenShell `0.0.80` boundary. It does not enable the disabled `capability.local` plane or executable worker MCP supply, and neither future plane authorizes direct undeclared egress.
+The correction preserves the unmodified stock OpenShell `0.0.80` boundary. The selected MCP `capability.local` slice uses only the existing fixed loopback Integration path and separately authenticated Gateway mediation; it authorizes no direct undeclared egress, upstream endpoint, or worker-visible credential.
 
 Acceptance materializes one AEP through the governance backend and compares the normalized network rules exactly; regressions prove that a backend-shaped extra endpoint is ignored rather than merged and that a non-transient provider credential fails before provider upsert or sandbox creation.
 

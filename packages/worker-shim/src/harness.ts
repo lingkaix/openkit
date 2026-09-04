@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { WORKER_ADAPTERS, type WorkerAdapter } from './adapter-registry.js';
 import {
   runWorkerShim,
+  WORKER_HUMAN_GATE_STOP,
   type WorkerProcessRunner,
   type WorkerShimEnvironment,
   type WorkerShimRunResult,
@@ -241,6 +242,7 @@ export class WorkerHarness {
       'turnSequence',
       'workerControlToken',
       'inferenceToken',
+      'capabilityToken',
     ]);
     const session = this.requireSession(body);
     if (this.draining || session.activeTurn || this.activeTurnCount() >= 1) {
@@ -259,10 +261,11 @@ export class WorkerHarness {
     requireIdentity(body.contextPackageId);
     requireSandboxReference(body.contextRef, this.sandboxRoot);
     const packagePath = requireSandboxReference(body.aepRef, this.sandboxRoot);
+    const capabilityToken = requireToken(body.capabilityToken);
     const controlToken = requireToken(body.workerControlToken);
     const inferenceToken = requireToken(body.inferenceToken);
     if (
-      controlToken === inferenceToken ||
+      new Set([capabilityToken, controlToken, inferenceToken]).size !== 3 ||
       Number.isNaN(Date.parse(requireIdentity(body.deadline)))
     ) {
       throw harnessError('stale');
@@ -293,6 +296,7 @@ export class WorkerHarness {
         OPENKIT_PACKAGE_SNAPSHOT_ID: packageSnapshotId,
         OPENKIT_THREAD_ID: session.threadId,
         OPENKIT_TURN_ID: turnId,
+        OPENKIT_WORKER_CAPABILITY_TOKEN: capabilityToken,
         OPENKIT_WORKER_INFERENCE_TOKEN: inferenceToken,
         OPENKIT_WORKSPACE_ID: session.workspaceId,
       },
@@ -337,7 +341,11 @@ export class WorkerHarness {
       'agentSessionRuntimeBindingId',
       'turnId',
       'leaseId',
+      'purpose',
     ]);
+    if (body.purpose !== 'interrupt' && body.purpose !== 'human-gate') {
+      throw harnessError('unsupported');
+    }
     const session = this.requireSession(body);
     const active = session.activeTurn;
     if (
@@ -348,7 +356,9 @@ export class WorkerHarness {
     ) {
       throw harnessError('stale');
     }
-    active.abort.abort(new Error('Harness turn.interrupt'));
+    active.abort.abort(
+      body.purpose === 'human-gate' ? WORKER_HUMAN_GATE_STOP : new Error('Harness turn.interrupt')
+    );
     await active.promise.catch(() => undefined);
     return { childState: 'absent', state: 'interrupted' };
   }

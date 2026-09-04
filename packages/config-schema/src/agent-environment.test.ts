@@ -62,9 +62,9 @@ function openshellPackageFixture(): unknown {
         { id: 'git', path: '/usr/bin/git' },
       ],
       command: {
-        argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+        argv: ['openkit-worker-shim'],
         workingDirectory: '/workspace/repo',
-        stdin: 'pipe',
+        stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
       },
@@ -926,7 +926,7 @@ describe('agent environment package schema', () => {
 
   it('accepts only the fixed generic shim command', () => {
     const command = {
-      argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+      argv: ['openkit-worker-shim'],
       workingDirectory: '/workspace/repo',
     };
 
@@ -1214,6 +1214,38 @@ describe('agent environment package schema', () => {
         AgentEnvironmentPackageSchema.parse({ ...fixture, capabilities: invalidCapability })
       ).toThrow();
     }
+  });
+
+  it('accepts only the exact enabled MCP route set with selected server supply', () => {
+    const fixture = openshellPackageFixture();
+    const enabled = {
+      mode: 'enabled',
+      protocol: 'openkit-worker-capability-v1',
+      routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+    };
+
+    expect(
+      AgentEnvironmentPackageSchema.parse({ ...fixture, capabilities: enabled }).capabilities
+    ).toEqual(enabled);
+    for (const routes of [
+      [],
+      ['mcp.list_servers', 'mcp.call_tool'],
+      ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool', 'knowledge.read'],
+    ]) {
+      expect(() =>
+        AgentEnvironmentPackageSchema.parse({
+          ...fixture,
+          capabilities: { ...enabled, routes },
+        })
+      ).toThrow();
+    }
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        capabilities: enabled,
+        supply: { ...fixture.supply, mcpServers: [] },
+      })
+    ).toThrow();
   });
 
   it('accepts manifest-authored network grants with a placeholder-backed trusted inference route', () => {
@@ -1642,7 +1674,7 @@ describe('agent environment package schema', () => {
       runtime: {
         ...(openshellPackageFixture() as { runtime: Record<string, unknown> }).runtime,
         command: {
-          argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+          argv: ['openkit-worker-shim'],
           workingDirectory: '/Users/m5pro/Documents/AI/openkit',
         },
       },

@@ -37,9 +37,9 @@ use crate::credential_slots::{
 };
 use crate::epoch_coordinator::RuntimeEffectKind;
 use crate::sandbox_bridge::{
-    CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
-    PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult, RouteFamily,
-    WORKER_CONTROL_IN_FLIGHT_BYTES,
+    CAPABILITY_IN_FLIGHT_BYTES, CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES,
+    OUTER_MAX_CONCURRENT_STREAMS, PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult,
+    RouteFamily, WORKER_CONTROL_IN_FLIGHT_BYTES,
 };
 
 const FILE_DATA_BODY_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -94,7 +94,7 @@ impl OuterRouteProjection {
     ///
     /// # Errors
     ///
-    /// Rejects a non-POST request, capability traffic, an oversized body, outer
+    /// Rejects a non-POST request, an oversized body, outer
     /// connection failure, or response delivery failure. The returned boolean is
     /// true only for an exact sequence-zero `starting` heartbeat accepted by NanoCore.
     pub async fn forward(
@@ -110,7 +110,7 @@ impl OuterRouteProjection {
             .await
             .clone()
             .ok_or("outer route connection unavailable")?;
-        if request.method() != Method::POST || family == RouteFamily::Capabilities {
+        if request.method() != Method::POST {
             send_nested_status(&mut respond, StatusCode::METHOD_NOT_ALLOWED)?;
             return Err("sandbox route method rejected");
         }
@@ -122,7 +122,7 @@ impl OuterRouteProjection {
         let expected_prefix = match family {
             RouteFamily::WorkerControl => "/worker-control/",
             RouteFamily::Inference => "/inference/",
-            RouteFamily::Capabilities => unreachable!("capability rejected above"),
+            RouteFamily::Capabilities => "/capabilities/",
         };
         if !path.starts_with(expected_prefix) || path.starts_with("//") {
             send_nested_status(&mut respond, StatusCode::NOT_FOUND)?;
@@ -141,7 +141,7 @@ impl OuterRouteProjection {
         let body_limit = match family {
             RouteFamily::WorkerControl => WORKER_CONTROL_IN_FLIGHT_BYTES,
             RouteFamily::Inference => INFERENCE_IN_FLIGHT_BYTES,
-            RouteFamily::Capabilities => unreachable!("capability rejected above"),
+            RouteFamily::Capabilities => CAPABILITY_IN_FLIGHT_BYTES,
         };
         let (parts, mut nested_body) = request.into_parts();
         let mut body = BytesMut::new();
@@ -2604,7 +2604,7 @@ mod tests {
                 .expect("accepted nested request");
             projection_for_route
                 .forward(
-                    RouteFamily::WorkerControl,
+                    RouteFamily::Capabilities,
                     request,
                     respond,
                     "harness-binding",
@@ -2617,7 +2617,7 @@ mod tests {
         tokio::spawn(nested_connection);
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/worker-control/harness/poll")
+            .uri("/capabilities/mcp/echo")
             .header("content-type", "application/json")
             .body(())
             .expect("nested request");

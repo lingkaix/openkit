@@ -15169,6 +15169,18 @@
                     }
                   ]
                 },
+                "schemaSnapshotId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "runtimeOriginRef": {
                   "default": null,
                   "anyOf": [
@@ -15329,6 +15341,7 @@
                 "agentId",
                 "agentSessionId",
                 "packageSnapshotId",
+                "schemaSnapshotId",
                 "runtimeOriginRef",
                 "runtimeCacheLineageRef",
                 "requestId",
@@ -85906,5 +85919,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4c39d3070cf4eae0aca900273212089e74a9f67086568231012e679274f68e7c"
+  "x-openkit-source-digest": "sha256:f0d1b501580affa991294ff066abc05957d53c6287d8d0671c8cae61a3c31655"
 }

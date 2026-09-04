@@ -446,9 +446,9 @@ function resolveOpenShellAgentEnvironmentPackage(
       image: resolveRuntimeImage(manifest.runtime.image),
       binaries: manifest.runtime.binaries,
       command: {
-        argv: ['openkit-worker-shim', '--package', workerPackagePath],
+        argv: ['openkit-worker-shim'],
         workingDirectory,
-        stdin: 'pipe',
+        stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
       },
@@ -543,8 +543,16 @@ function resolveOpenShellAgentEnvironmentPackage(
     },
     capabilities: {
       protocol: 'openkit-worker-capability-v1',
-      mode: 'disabled',
-      routes: [],
+      ...(workerMcpServers.length > 0
+        ? {
+            mode: 'enabled' as const,
+            routes: [
+              'mcp.list_servers' as const,
+              'mcp.list_tools' as const,
+              'mcp.call_tool' as const,
+            ],
+          }
+        : { mode: 'disabled' as const, routes: [] as const }),
     },
     credentials: {
       declarations: [...credentialArtifacts.declarations],

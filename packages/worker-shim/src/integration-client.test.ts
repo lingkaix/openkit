@@ -59,7 +59,7 @@ describe('Sandbox Integration', () => {
     expect(writeOwner).not.toContain('stream.end(body)');
 
     const nativeResponseOwner = production
-      .split('private async handleNativeInference(')
+      .split('private async handleNativeRoute(')
       .at(1)
       ?.split('/** Closes both listeners')
       .at(0);
@@ -91,6 +91,7 @@ describe('Sandbox Integration', () => {
   });
 
   it('carries only bounded credential-separated origin-form requests on one accepted H2 socket', async () => {
+    const capabilityToken = 'capability-token';
     const controlToken = 'control-token';
     const inferenceToken = 'inference-token';
     const requests: Array<{ authorization: string | undefined; path: string }> = [];
@@ -170,7 +171,7 @@ describe('Sandbox Integration', () => {
           method: 'POST',
         })
       ).rejects.toThrow('credential-free');
-      integration.bindTurnRouteTokens({ controlToken, inferenceToken });
+      integration.bindTurnRouteTokens({ capabilityToken, controlToken, inferenceToken });
 
       const control = await integration.workerControlFetch('/worker-control/heartbeat', {
         body: '{}',
@@ -188,6 +189,16 @@ describe('Sandbox Integration', () => {
         inferenceBody += Buffer.from(chunk).toString('utf8');
       }
       expect(inferenceBody).toBe('/inference/v1/responses');
+      const capability = await integration.request('/capabilities/mcp/echo', {
+        body: '{}',
+        headers: { authorization: `Bearer ${capabilityToken}` },
+        method: 'POST',
+      });
+      let capabilityBody = '';
+      for await (const chunk of capability.body) {
+        capabilityBody += Buffer.from(chunk).toString('utf8');
+      }
+      expect(capabilityBody).toBe('/capabilities/mcp/echo');
       const aggregateInference = await integration.request('/inference/v1/responses', {
         body: Buffer.alloc(2 * 1024 * 1024 + 1),
         headers: { authorization: `Bearer ${inferenceToken}` },
@@ -202,6 +213,7 @@ describe('Sandbox Integration', () => {
         { authorization: 'undefined', path: '/worker-control/harness/poll' },
         { authorization: `Bearer ${controlToken}`, path: '/worker-control/heartbeat' },
         { authorization: `Bearer ${inferenceToken}`, path: '/inference/v1/responses' },
+        { authorization: `Bearer ${capabilityToken}`, path: '/capabilities/mcp/echo' },
         { authorization: `Bearer ${inferenceToken}`, path: '/inference/v1/responses' },
       ]);
 
@@ -213,7 +225,7 @@ describe('Sandbox Integration', () => {
           method: 'POST',
         })
       ).rejects.toThrow('not bound');
-      integration.bindTurnRouteTokens({ controlToken, inferenceToken });
+      integration.bindTurnRouteTokens({ capabilityToken, controlToken, inferenceToken });
 
       const rejectedBeforeStream = requests.length;
       await expect(
@@ -228,11 +240,13 @@ describe('Sandbox Integration', () => {
           method: 'POST',
         })
       ).rejects.toThrow('route token');
-      for (const path of [
-        '/capabilities/call',
-        '/fourth/route',
-        'https://nanocore.local/worker-control/heartbeat',
-      ]) {
+      await expect(
+        integration.request('/capabilities/mcp/echo', {
+          headers: { authorization: `Bearer ${inferenceToken}` },
+          method: 'POST',
+        })
+      ).rejects.toThrow('route token');
+      for (const path of ['/fourth/route', 'https://nanocore.local/worker-control/heartbeat']) {
         await expect(
           integration.request(path, {
             headers: { authorization: `Bearer ${controlToken}` },
@@ -319,7 +333,8 @@ describe('Sandbox Integration', () => {
     ).resolves.toBeDefined();
   });
 
-  it('relays only bounded authenticated native inference over the ready H2 session', async () => {
+  it('relays only bounded authenticated native inference and MCP over the ready H2 session', async () => {
+    const capabilityToken = 'native-capability-token';
     const controlToken = 'native-control-token';
     const inferenceToken = 'native-inference-token';
     const requests: Array<{
@@ -460,7 +475,7 @@ describe('Sandbox Integration', () => {
       });
 
     try {
-      integration.bindTurnRouteTokens({ controlToken, inferenceToken });
+      integration.bindTurnRouteTokens({ capabilityToken, controlToken, inferenceToken });
       const unavailable = await nativeRequest(nativeTarget, {
         authorization: `Bearer ${inferenceToken}`,
         body: Buffer.alloc(16 * 1024 * 1024),
@@ -486,6 +501,18 @@ describe('Sandbox Integration', () => {
       });
       expect(exactLimit.status).toBe(202);
       expect(requests.at(-1)?.bodyBytes).toBe(16 * 1024 * 1024);
+      const capability = await nativeRequest(nativeTarget, {
+        authorization: `Bearer ${capabilityToken}`,
+        body: '{}',
+        method: 'POST',
+        path: '/capabilities/mcp/echo',
+      });
+      expect(capability.status).toBe(202);
+      expect(capability.body).toBe('{"accepted":true}');
+      expect(requests.at(-1)).toMatchObject({
+        authorization: `Bearer ${capabilityToken}`,
+        path: '/capabilities/mcp/echo',
+      });
       const beforeOversized = requests.length;
       const oversized = await nativeRequest(nativeTarget, {
         authorization: `Bearer ${inferenceToken}`,
@@ -616,6 +643,11 @@ describe('Sandbox Integration', () => {
           authorization: `Bearer ${inferenceToken}`,
           method: 'POST',
           path: '/capabilities/call',
+        },
+        {
+          authorization: `Bearer ${capabilityToken}`,
+          method: 'POST',
+          path: '/inference/v1/responses',
         },
         {
           authorization: `Bearer ${inferenceToken}`,

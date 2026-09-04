@@ -62,6 +62,7 @@ function createWorkerControlFixture(): {
 
 const WORKER_CONTROL_TOKEN = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const WORKER_INFERENCE_TOKEN = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+const WORKER_CAPABILITY_TOKEN = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
 
 /** Registers one accepted session with a non-secret binding and distinct raw route tokens. */
 function registerAcceptedWorkerSession(
@@ -71,6 +72,7 @@ function registerAcceptedWorkerSession(
 ) {
   return gateway.registerSession(environmentPackage, {
     sandboxBindingRef,
+    workerCapabilityToken: WORKER_CAPABILITY_TOKEN,
     workerControlToken: WORKER_CONTROL_TOKEN,
     workerInferenceToken: WORKER_INFERENCE_TOKEN,
   });
@@ -691,12 +693,28 @@ describe('WorkerControlGateway', () => {
     expect(gateway.authenticatePackageToken(`Bearer ${registration.token}`)).toEqual(
       environmentPackage
     );
+    expect(
+      gateway.authenticatePackageToken(`Bearer ${registration.workerCapabilityToken}`, {
+        tokenFamily: 'capability',
+      })
+    ).toEqual(environmentPackage);
+    expect(() =>
+      gateway.authenticatePackageToken(`Bearer ${registration.workerInferenceToken}`, {
+        tokenFamily: 'capability',
+      })
+    ).toThrowError(expect.objectContaining({ code: 'worker_control_unauthorized' }) as Error);
     expect(resolvedBindings).toEqual([
       {
         lineage,
         sandboxBindingRef: 'lease-binding:inference_1',
         token: WORKER_CONTROL_TOKEN,
         tokenFamily: 'worker-control',
+      },
+      {
+        lineage,
+        sandboxBindingRef: 'lease-binding:inference_1',
+        token: WORKER_CAPABILITY_TOKEN,
+        tokenFamily: 'capability',
       },
     ]);
   });
@@ -712,6 +730,7 @@ describe('WorkerControlGateway', () => {
       lineage,
       registeredAt: '2026-06-16T00:00:01.000Z',
       sandboxBindingRef: 'lease-binding:restored_inference_1',
+      workerCapabilityTokenHash: hashWorkerRouteToken(WORKER_CAPABILITY_TOKEN),
       workerControlTokenHash: hashWorkerRouteToken(WORKER_CONTROL_TOKEN),
       workerInferenceTokenHash: hashWorkerRouteToken(WORKER_INFERENCE_TOKEN),
     });
@@ -731,6 +750,7 @@ describe('WorkerControlGateway', () => {
       lineage,
       registeredAt: '2026-06-16T00:00:01.000Z',
       sandboxBindingRef: 'lease-binding:restored_without_package_1',
+      workerCapabilityTokenHash: hashWorkerRouteToken(WORKER_CAPABILITY_TOKEN),
       workerControlTokenHash: hashWorkerRouteToken(WORKER_CONTROL_TOKEN),
       workerInferenceTokenHash: hashWorkerRouteToken(WORKER_INFERENCE_TOKEN),
     });
@@ -778,6 +798,7 @@ describe('WorkerControlGateway', () => {
         lineage: { ...lineage, requestId: 'req_other' },
         registeredAt: '2026-06-16T00:00:01.000Z',
         sandboxBindingRef: 'lease-binding:restore_mismatch_1',
+        workerCapabilityTokenHash: hashWorkerRouteToken(WORKER_CAPABILITY_TOKEN),
         workerControlTokenHash: hashWorkerRouteToken(WORKER_CONTROL_TOKEN),
         workerInferenceTokenHash: hashWorkerRouteToken(WORKER_INFERENCE_TOKEN),
       })

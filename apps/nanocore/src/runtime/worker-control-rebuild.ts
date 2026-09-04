@@ -53,7 +53,8 @@ export function rebuildWorkerControlGatewaySessions(
     if (
       !lease.sandboxBindingRef ||
       !lease.workerControlTokenHash ||
-      !lease.workerInferenceTokenHash
+      !lease.workerInferenceTokenHash ||
+      !lease.workerCapabilityTokenHash
     ) {
       continue;
     }
@@ -92,6 +93,7 @@ export function rebuildWorkerControlGatewaySessions(
       sandboxBindingRef: lease.sandboxBindingRef,
       workerControlTokenHash: lease.workerControlTokenHash,
       workerInferenceTokenHash: lease.workerInferenceTokenHash,
+      workerCapabilityTokenHash: lease.workerCapabilityTokenHash,
     });
   }
 }

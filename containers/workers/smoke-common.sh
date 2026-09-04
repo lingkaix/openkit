@@ -81,6 +81,11 @@ for path in \
 done
 
 command -v openkit-worker-shim >/dev/null
+bash -n /usr/local/bin/openkit-worker-shim
+if openkit-worker-shim --help >/dev/null 2>&1; then
+  echo "Worker Harness accepted a bootstrap argument." >&2
+  exit 1
+fi
 test -x /usr/local/bin/openkit-file-effect
 node --input-type=module -e "import('/usr/local/lib/openkit/worker-shim/dist/index.js').then(({ SANDBOX_INTEGRATION_TARGET }) => { if (!/^127[.]0[.]0[.]1:[1-9][0-9]*$/.test(SANDBOX_INTEGRATION_TARGET)) process.exit(1); })"
 

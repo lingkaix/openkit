@@ -263,7 +263,7 @@ Worker images must not:
 - store vault secrets as durable image files,
 - assume host filesystem paths,
 - publish product API endpoints,
-- advertise or execute worker capability or MCP routes while the capability plane remains disabled,
+- advertise or execute a worker capability or MCP route absent exact selected AEP supply and the separately authenticated governed Gateway path,
 - make final authorization decisions,
 - push, tag, deploy, or mutate protected branches without NanoCore-approved review and apply gates,
 - treat OpenShell-native ids or logs as canonical product state.

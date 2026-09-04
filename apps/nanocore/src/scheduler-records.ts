@@ -182,6 +182,8 @@ export interface SchedulerSessionLeaseRecord {
   readonly workerControlTokenHash: string | null;
   /** Lowercase SHA-256 projection of the live-memory worker-inference token. */
   readonly workerInferenceTokenHash: string | null;
+  /** Lowercase SHA-256 projection of the live-memory worker-capability token. */
+  readonly workerCapabilityTokenHash: string | null;
 }
 
 /** Durable scheduler orphan-worker evidence record. */
@@ -403,6 +405,7 @@ interface SchedulerSessionLeaseRow {
   readonly worker_process_key_hash: string | null;
   readonly worker_control_token_hash: string | null;
   readonly worker_inference_token_hash: string | null;
+  readonly worker_capability_token_hash: string | null;
   readonly backend_anchor_state: 'unanchored' | 'anchored';
 }
 
@@ -839,7 +842,7 @@ export interface SchedulerLeaseTokenBindingLineage {
 }
 
 /** Route-token families bound independently to one scheduler lease. */
-export type SchedulerLeaseRouteTokenFamily = 'worker-control' | 'inference';
+export type SchedulerLeaseRouteTokenFamily = 'capability' | 'worker-control' | 'inference';
 
 /** Input used to resolve a durable scheduler lease token binding. */
 export interface ResolveSchedulerLeaseTokenBindingInput {
@@ -855,7 +858,7 @@ export interface ResolveSchedulerLeaseTokenBindingInput {
   readonly now?: () => string;
 }
 
-/** Input used to bind the two route-token hashes to one live scheduler lease. */
+/** Input used to bind the three route-token hashes to one live scheduler lease. */
 export interface BindSchedulerLeaseRouteTokenHashesInput {
   /** Stable session lease id. */
   readonly leaseId: string;
@@ -865,6 +868,8 @@ export interface BindSchedulerLeaseRouteTokenHashesInput {
   readonly workerControlTokenHash: string;
   /** Lowercase SHA-256 projection of the independently generated inference token. */
   readonly workerInferenceTokenHash: string;
+  /** Lowercase SHA-256 projection of the independently generated capability token. */
+  readonly workerCapabilityTokenHash: string;
   /** Optional deterministic clock used for lease liveness checks. */
   readonly now?: () => string;
 }
@@ -1934,7 +1939,7 @@ export function renewSchedulerSessionLease(
 }
 
 /**
- * Binds the two independently generated route-token hashes to one live lease.
+ * Binds the three independently generated route-token hashes to one live lease.
  *
  * @param coreDb Open Core database handle.
  * @param input Exact lease, sandbox binding, and hash-only token projections.
@@ -1947,9 +1952,16 @@ export function bindSchedulerLeaseRouteTokenHashes(
 ): SchedulerSessionLeaseRecord {
   assertLowercaseSha256(input.workerControlTokenHash, 'Worker-control token hash');
   assertLowercaseSha256(input.workerInferenceTokenHash, 'Worker-inference token hash');
+  assertLowercaseSha256(input.workerCapabilityTokenHash, 'Worker-capability token hash');
 
-  if (input.workerControlTokenHash === input.workerInferenceTokenHash) {
-    throw new Error('Worker-control and worker-inference token hashes must be distinct.');
+  if (
+    new Set([
+      input.workerControlTokenHash,
+      input.workerInferenceTokenHash,
+      input.workerCapabilityTokenHash,
+    ]).size !== 3
+  ) {
+    throw new Error('Worker route-token hashes must be distinct.');
   }
 
   const lease = requireSchedulerSessionLease(coreDb, input.leaseId);
@@ -1967,10 +1979,15 @@ export function bindSchedulerLeaseRouteTokenHashes(
     throw new Error(`Scheduler lease cannot bind route tokens: ${input.leaseId}`);
   }
 
-  if (lease.workerControlTokenHash || lease.workerInferenceTokenHash) {
+  if (
+    lease.workerControlTokenHash ||
+    lease.workerInferenceTokenHash ||
+    lease.workerCapabilityTokenHash
+  ) {
     if (
       lease.workerControlTokenHash === input.workerControlTokenHash &&
-      lease.workerInferenceTokenHash === input.workerInferenceTokenHash
+      lease.workerInferenceTokenHash === input.workerInferenceTokenHash &&
+      lease.workerCapabilityTokenHash === input.workerCapabilityTokenHash
     ) {
       return lease;
     }
@@ -1982,7 +1999,8 @@ export function bindSchedulerLeaseRouteTokenHashes(
     .prepare(
       `UPDATE scheduler_session_leases
        SET worker_control_token_hash = ?,
-           worker_inference_token_hash = ?
+           worker_inference_token_hash = ?,
+           worker_capability_token_hash = ?
        WHERE lease_id = ?
          AND sandbox_binding_ref = ?
          AND status IN ('acquired', 'starting', 'active', 'idle')
@@ -1992,11 +2010,13 @@ export function bindSchedulerLeaseRouteTokenHashes(
                ELSE heartbeat_deadline
              END > ?
          AND worker_control_token_hash IS NULL
-         AND worker_inference_token_hash IS NULL`
+         AND worker_inference_token_hash IS NULL
+         AND worker_capability_token_hash IS NULL`
     )
     .run(
       input.workerControlTokenHash,
       input.workerInferenceTokenHash,
+      input.workerCapabilityTokenHash,
       input.leaseId,
       input.sandboxBindingRef,
       timestamp,
@@ -2044,7 +2064,9 @@ export function resolveSchedulerLeaseTokenBinding(
     const expectedHash =
       input.tokenFamily === 'worker-control'
         ? lease.workerControlTokenHash
-        : lease.workerInferenceTokenHash;
+        : input.tokenFamily === 'inference'
+          ? lease.workerInferenceTokenHash
+          : lease.workerCapabilityTokenHash;
 
     if (!expectedHash || !matchesRouteTokenHash(input.token, expectedHash)) {
       return { status: 'rejected', reason: 'binding-not-found' };
@@ -2099,6 +2121,7 @@ export function listRestorableSchedulerSessionLeases(
         AND sandbox_binding_ref IS NOT NULL
         AND worker_control_token_hash IS NOT NULL
         AND worker_inference_token_hash IS NOT NULL
+        AND worker_capability_token_hash IS NOT NULL
       ORDER BY acquired_at ASC, lease_id ASC`
     )
     .all() as SchedulerSessionLeaseRow[];
@@ -3456,6 +3479,7 @@ function schedulerSessionLeaseSelectSql(): string {
     worker_process_key_hash,
     worker_control_token_hash,
     worker_inference_token_hash,
+    worker_capability_token_hash,
     backend_anchor_state
   FROM scheduler_session_leases`;
 }
@@ -3669,6 +3693,7 @@ function mapSchedulerSessionLeaseRow(row: SchedulerSessionLeaseRow): SchedulerSe
     workerProcessKeyHash: row.worker_process_key_hash,
     workerControlTokenHash: row.worker_control_token_hash,
     workerInferenceTokenHash: row.worker_inference_token_hash,
+    workerCapabilityTokenHash: row.worker_capability_token_hash,
   };
 }
 

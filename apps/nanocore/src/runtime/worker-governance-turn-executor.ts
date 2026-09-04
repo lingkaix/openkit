@@ -1540,7 +1540,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
 
     if (
       workerFinalStatus &&
-      canonicalStopReasonForAcceptedWorkerFinalStatus(workerFinalStatus) === 'ask_user'
+      canonicalStopReasonForAcceptedWorkerFinalStatus(workerFinalStatus) === 'ask_user' &&
+      store.getTurnById(turn.id).status !== 'awaiting_human'
     ) {
       throw new TurnStartValidationError(
         'recovery_required',
@@ -1691,6 +1692,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (stopReason === 'ask_user') {
         const recoveredTurn = store.getTurnById(environmentPackage.scope.turnId);
         const recoveredSession = store.getAgentSession(environmentPackage.scope.agentSessionId);
+        if (
+          recoveredTurn.status === 'awaiting_human' &&
+          recoveredTurn.humanGate !== null &&
+          recoveredSession.status === 'suspended'
+        ) {
+          return recoveredStatus;
+        }
         if (
           recoveredTurn.workspaceId !== environmentPackage.scope.workspaceId ||
           recoveredTurn.threadId !== environmentPackage.scope.threadId ||
@@ -2461,6 +2469,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): void {
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
     if (stopReason === 'ask_user') {
+      const turn = store.getTurnById(turnScope.id);
+      const session = store.getAgentSession(agentSessionId);
+      if (
+        turn.workspaceId === turnScope.workspaceId &&
+        turn.threadId === turnScope.threadId &&
+        turn.agentSessionId === agentSessionId &&
+        turn.status === 'awaiting_human' &&
+        turn.humanGate !== null &&
+        session.workspaceId === turnScope.workspaceId &&
+        session.threadId === turnScope.threadId &&
+        ['busy', 'degraded', 'suspended'].includes(session.status)
+      ) {
+        store.updateAgentSession(agentSessionId, {
+          message: null,
+          status: 'suspended',
+          updatedAt: this.now(),
+        });
+        return;
+      }
       terminalizeGovernedWorkerTurn({
         agentSessionId,
         completedAt: this.now(),

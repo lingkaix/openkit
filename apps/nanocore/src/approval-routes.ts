@@ -11,6 +11,7 @@ import { apiErrorPayload, asCommandError, asInvalidRequestError } from './api-er
 import type { AuthVariables } from './auth/middleware.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
+import { isExactMcpApprovalSourceDecision } from './policy/approval-gates.js';
 import {
   listPolicyApprovalSourceDecisions,
   type PolicyApprovalSourceDecision,
@@ -154,8 +155,11 @@ export function registerApprovalRoutes({
               throw taskGateRecoveryError('The policy approval winner has no exact source.');
             }
           }
-          if (policyApproval && policyApproval.action !== 'repo.push') {
+          if (policyApproval && !isSupportedPolicyApprovalAction(policyApproval.action)) {
             throw taskGateRecoveryError('The policy approval action is not supported.');
+          }
+          if (policyApproval?.action === 'tool.use' && workerLeases.length !== 1) {
+            throw taskGateRecoveryError('The worker tool approval has no exact active lease.');
           }
           const closedWorkerGate =
             workerLeases.length === 1
@@ -363,7 +367,19 @@ function claimPolicyApprovalOutcome(
   }
 
   const approval = store.getApproval(input.approvalRequestId);
-  if (source.action !== 'repo.push' || source.requiredApprovalKind !== approval.kind) {
+  if (
+    !isSupportedPolicyApprovalAction(source.action) ||
+    source.requiredApprovalKind !== approval.kind ||
+    (source.action === 'tool.use' &&
+      !isExactMcpApprovalSourceDecision({
+        approvalCreatedAt: approval.createdAt,
+        source,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        workspaceDb,
+        workspaceId: input.workspaceId,
+      }))
+  ) {
     throw taskGateRecoveryError('The policy approval source tuple is not exact.');
   }
   const sourceContext = source.contextSummary;
@@ -395,7 +411,7 @@ function claimPolicyApprovalOutcome(
     try {
       recordProductPermissionDecision({
         workspaceDb,
-        decisionId: `pd_repo_push_${input.decision}_${input.approvalRequestId}`,
+        decisionId: `pd_${policyActionSlug(source.action)}_${input.decision}_${input.approvalRequestId}`,
         ownerScope: 'workspace',
         workspaceId: input.workspaceId,
         policyEngineVersion: 'nanocore-approval-policy:v1',
@@ -408,8 +424,8 @@ function claimPolicyApprovalOutcome(
           requestId: input.requestId,
         },
         result: input.decision === 'granted' ? 'allow' : 'deny',
-        reasonCode: input.decision === 'granted' ? 'repo_push_approved' : 'repo_push_denied',
-        enforcementPoint: 'repo.push.approval_response',
+        reasonCode: `${policyActionSlug(source.action)}_${input.decision === 'granted' ? 'approved' : 'denied'}`,
+        enforcementPoint: `${source.action}.approval_response`,
         requiredApprovalKind: source.requiredApprovalKind,
         approvalId: input.approvalRequestId,
         auditActor: actor,
@@ -453,6 +469,16 @@ function claimPolicyApprovalOutcome(
   }
 
   return winner;
+}
+
+/** Returns whether the current response route owns this policy action. */
+function isSupportedPolicyApprovalAction(action: string): action is 'repo.push' | 'tool.use' {
+  return action === 'repo.push' || action === 'tool.use';
+}
+
+/** Produces the existing identifier-safe action segment. */
+function policyActionSlug(action: 'repo.push' | 'tool.use'): string {
+  return action.replace('.', '_');
 }
 
 /**
@@ -761,12 +787,12 @@ function closeWorkerApprovalGate(
     completedAt: timestamp,
   });
   store.updateAgentSession(checkpoint.workerSessionId, {
-    status: input.decision === 'denied' ? 'interrupted' : 'idle',
+    status: input.decision === 'denied' ? 'interrupted' : 'closed',
     updatedAt: timestamp,
   });
   const expectedStopReason = input.decision === 'denied' ? 'aborted' : 'completed';
   const closedTurn = store.updateTurn(input.turnId, {
-    status: input.decision === 'denied' ? 'cancelled' : 'completed',
+    status: input.decision === 'denied' ? 'interrupted' : 'completed',
     humanGate: null,
     completedAt: timestamp,
   });

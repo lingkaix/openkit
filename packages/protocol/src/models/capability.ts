@@ -76,6 +76,7 @@ export const CapabilityCallSchema = z
     agentId: AgentIdSchema.nullable().default(null),
     agentSessionId: AgentSessionIdSchema.nullable(),
     packageSnapshotId: z.string().min(1).nullable().default(null),
+    schemaSnapshotId: z.string().min(1).nullable().default(null),
     runtimeOriginRef: z
       .string()
       .regex(/^rto_[a-f0-9]{24}$/)

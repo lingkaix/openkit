@@ -5,6 +5,7 @@ const MCP_SERVER_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const MCP_SLOT_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const SDK_MANAGED_HTTP_HEADERS = new Set(['accept', 'content-type']);
 const RAW_SECRET =
   /(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]+|hf_[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_-]+|okt_[A-Za-z0-9_-]+)/;
 
@@ -12,12 +13,27 @@ const RAW_SECRET =
 export const WorkspaceMcpServerIdSchema = z.string().regex(MCP_SERVER_ID);
 
 /** Canonical MCP tool name selected by Workspace policy. */
-export const WorkspaceMcpToolNameSchema = z.string().trim().min(1).max(256);
+export const WorkspaceMcpToolNameSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => value === value.trim(), 'MCP tool names must not have outer whitespace.');
 
 /** Vault credential sink owned by an MCP transport. */
 export const WorkspaceMcpCredentialSinkSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('env'), name: z.string().regex(ENVIRONMENT_NAME) }).strict(),
-  z.object({ kind: z.literal('header'), name: z.string().regex(HTTP_HEADER_NAME) }).strict(),
+  z
+    .object({
+      kind: z.literal('header'),
+      name: z
+        .string()
+        .regex(HTTP_HEADER_NAME)
+        .refine(
+          (name) => !SDK_MANAGED_HTTP_HEADERS.has(name.toLowerCase()),
+          'MCP SDK-owned HTTP headers cannot be credential sinks.'
+        ),
+    })
+    .strict(),
   z.object({ kind: z.literal('query'), name: z.string().min(1).max(128) }).strict(),
 ]);
 
@@ -75,17 +91,38 @@ export const WorkspaceMcpServerSchema = z
     allowedTools: z.array(WorkspaceMcpToolNameSchema).min(1),
     deniedTools: z.array(WorkspaceMcpToolNameSchema).default([]),
     approvalRequiredTools: z.array(WorkspaceMcpToolNameSchema).default([]),
-    timeoutMs: z.number().int().positive().default(60_000),
+    timeoutMs: z.number().int().positive().max(2_147_483_647).default(60_000),
     schemaPolicy: z.enum(['pinned', 'tracking']),
     pinnedSchemaSnapshotId: z.string().min(1).nullable().default(null),
   })
   .strict()
   .superRefine((server, context) => {
+    if (
+      server.transport.kind === 'http' &&
+      server.credentialBindings.length > 0 &&
+      new URL(server.transport.endpoint).protocol === 'http:' &&
+      !['localhost', '127.0.0.1', '[::1]'].includes(new URL(server.transport.endpoint).hostname)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Credential-bearing remote MCP endpoints must use HTTPS.',
+        path: ['transport', 'endpoint'],
+      });
+    }
     addDuplicateIssues(server.allowedTools, context, ['allowedTools']);
     addDuplicateIssues(server.deniedTools, context, ['deniedTools']);
     addDuplicateIssues(server.approvalRequiredTools, context, ['approvalRequiredTools']);
     addDuplicateIssues(
       server.credentialBindings.map((binding) => binding.slot),
+      context,
+      ['credentialBindings']
+    );
+    addDuplicateIssues(
+      server.credentialBindings.map((binding) =>
+        binding.sink.kind === 'header'
+          ? `header:${binding.sink.name.toLowerCase()}`
+          : `${binding.sink.kind}:${binding.sink.name}`
+      ),
       context,
       ['credentialBindings']
     );
@@ -232,7 +269,7 @@ function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object') {
     return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
       .join(',')}}`;
   }

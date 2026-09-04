@@ -325,10 +325,8 @@ describe('governed worker image contracts', () => {
     }
   });
 
-  it('uses one sanitized launcher for static Harness and bounded-turn modes', () => {
+  it('uses one sanitized zero-argument Harness launcher', () => {
     const launcher = readFileSync(launcherPath, 'utf8');
-    const workerControlToken = 'A'.repeat(43);
-    const workerInferenceToken = 'B'.repeat(43);
     const environmentLauncher = launcher.replace(
       /exec env -i "\$\{runtime_env\[@\]\}" node .*$/gm,
       `exec env -i "\${runtime_env[@]}" /usr/bin/env`
@@ -340,21 +338,15 @@ describe('governed worker image contracts', () => {
       PATH: '/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin',
       no_proxy: 'localhost,127.0.0.1',
     };
-    const output = execFileSync(
-      '/bin/bash',
-      [
-        '-c',
-        environmentLauncher,
-        'openkit-worker-shim',
-        '--package',
-        '/openkit/config/package.json',
-      ],
-      {
-        encoding: 'utf8',
-        env: inherited,
-        input: `${workerControlToken}\n${workerInferenceToken}\n`,
-      }
-    );
+    const output = execFileSync('/bin/bash', ['-c', environmentLauncher], {
+      encoding: 'utf8',
+      env: {
+        ...inherited,
+        OPENKIT_AGENT_SESSION_ID: 'must-not-cross-static-bootstrap',
+        OPENKIT_WORKER_CAPABILITY_TOKEN: 'must-not-cross-static-bootstrap',
+        OPENKIT_WORKER_INFERENCE_TOKEN: 'must-not-cross-static-bootstrap',
+      },
+    });
     const environment = Object.fromEntries(
       output
         .trim()
@@ -369,110 +361,32 @@ describe('governed worker image contracts', () => {
     expect(environment.NO_PROXY).toBe(inherited.NO_PROXY);
     expect(environment.no_proxy).toBe(inherited.no_proxy);
     expect(environment.VIRTUAL_ENV).toBe('/sandbox/.venv');
+    expect(environment).not.toHaveProperty('OPENKIT_AGENT_SESSION_ID');
     expect(environment).not.toHaveProperty('OPENKIT_CONTROL_TOKEN');
+    expect(environment).not.toHaveProperty('OPENKIT_CONTROL_TOKEN_FD');
+    expect(environment).not.toHaveProperty('OPENKIT_WORKER_CAPABILITY_TOKEN');
+    expect(environment).not.toHaveProperty('OPENKIT_WORKER_INFERENCE_TOKEN');
     expect(environment).not.toHaveProperty('ANTHROPIC_API_KEY');
-    expect(environment.OPENKIT_WORKER_INFERENCE_TOKEN).toBe(workerInferenceToken);
-
-    const harnessOutput = execFileSync('/bin/bash', ['-c', environmentLauncher], {
-      encoding: 'utf8',
-      env: {
-        ...inherited,
-        OPENKIT_AGENT_SESSION_ID: 'must-not-cross-static-bootstrap',
-        OPENKIT_WORKER_INFERENCE_TOKEN: workerInferenceToken,
-      },
-    });
-    const harnessEnvironment = Object.fromEntries(
-      harnessOutput
-        .trim()
-        .split('\n')
-        .map((line) => {
-          const separator = line.indexOf('=');
-          return [line.slice(0, separator), line.slice(separator + 1)];
-        })
-    );
-    expect(harnessEnvironment).not.toHaveProperty('OPENKIT_AGENT_SESSION_ID');
-    expect(harnessEnvironment).not.toHaveProperty('OPENKIT_CONTROL_TOKEN_FD');
-    expect(harnessEnvironment).not.toHaveProperty('OPENKIT_WORKER_INFERENCE_TOKEN');
 
     const childLaunchMarker = 'OPENKIT_CHILD_LAUNCHED';
     const rejectionLauncher = launcher.replace(
       /exec env -i "\$\{runtime_env\[@\]\}" node .*$/gm,
       `/usr/bin/printf '%s\\n' '${childLaunchMarker}'`
     );
-    for (const rejection of [
-      {
-        diagnostic: 'Worker bootstrap input is missing.',
-        input: `${workerControlToken}\n`,
-        privateValues: [workerControlToken],
-      },
-      {
-        diagnostic: 'Worker bootstrap input is invalid.',
-        input: `${workerControlToken}\nmalformed-private-slot\n`,
-        privateValues: [workerControlToken, 'malformed-private-slot'],
-      },
-      {
-        diagnostic: 'Worker bootstrap input is invalid.',
-        input: `${workerControlToken}\n${'C'.repeat(44)}\n`,
-        privateValues: [workerControlToken, 'C'.repeat(44)],
-      },
-      {
-        diagnostic: 'Worker bootstrap input is invalid.',
-        input: `${workerControlToken}\n${workerControlToken}\n`,
-        privateValues: [workerControlToken],
-      },
-      {
-        diagnostic: 'Worker bootstrap input has trailing data.',
-        input: `${workerControlToken}\n${workerInferenceToken}\nprivate-extra-slot\n`,
-        privateValues: [workerControlToken, workerInferenceToken, 'private-extra-slot'],
-      },
-      {
-        diagnostic: 'Worker bootstrap input has trailing data.',
-        input: `${workerControlToken}\n${workerInferenceToken}\nprivate-trailing-slot`,
-        privateValues: [workerControlToken, workerInferenceToken, 'private-trailing-slot'],
-      },
-    ]) {
-      const rejected = spawnSync(
-        '/bin/bash',
-        [
-          '-c',
-          rejectionLauncher,
-          'openkit-worker-shim',
-          '--package',
-          '/openkit/config/package.json',
-        ],
-        {
-          encoding: 'utf8',
-          env: inherited,
-          input: rejection.input,
-        }
-      );
-      const outputAndError = `${rejected.stdout}${rejected.stderr}`;
+    const rejected = spawnSync('/bin/bash', ['-c', rejectionLauncher, 'openkit-worker-shim', 'x'], {
+      encoding: 'utf8',
+      env: inherited,
+    });
 
-      expect(rejected.error).toBeUndefined();
-      expect(rejected.status).toBe(64);
-      expect(rejected.stdout).toBe('');
-      expect(rejected.stderr).toBe(`${rejection.diagnostic}\n`);
-      expect(outputAndError).not.toContain(childLaunchMarker);
-      for (const privateValue of rejection.privateValues) {
-        expect(outputAndError).not.toContain(privateValue);
-      }
-    }
-
+    expect(rejected.error).toBeUndefined();
+    expect(rejected.status).toBe(64);
+    expect(rejected.stdout).toBe('');
+    expect(rejected.stderr).toBe('Worker Harness accepts no arguments.\n');
+    expect(`${rejected.stdout}${rejected.stderr}`).not.toContain(childLaunchMarker);
     expect(launcher).toContain('NODE_USE_ENV_PROXY=1');
-    expect(launcher).toContain('OPENKIT_CONTROL_TOKEN_FD=3');
-    expect(launcher).toContain(`exec 3<<<"\${worker_control_token}"`);
-    expect(launcher).toContain('read -r worker_control_token');
-    expect(launcher).toContain('read -r worker_inference_token');
-    expect(launcher).toContain('trailing_input');
     expect(launcher).not.toContain(`\${OPENKIT_CONTROL_TOKEN:-}`);
     expect(launcher).not.toContain(`\${OPENKIT_WORKER_INFERENCE_TOKEN:-}`);
-    for (const fixedDiagnostic of [
-      'Worker bootstrap input is missing.',
-      'Worker bootstrap input is invalid.',
-      'Worker bootstrap input has trailing data.',
-    ]) {
-      expect(launcher).toContain(fixedDiagnostic);
-    }
+    expect(launcher).not.toContain(`\${OPENKIT_WORKER_CAPABILITY_TOKEN:-}`);
   });
 
   it('smokes the complete common tool, version, writable-path, and policy boundary', () => {

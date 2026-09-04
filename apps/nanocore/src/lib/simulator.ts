@@ -53,6 +53,7 @@ import {
   buildWorkspaceMaterializationRecords,
 } from '../runtime/workspace-materializer.js';
 import { recordWorkspaceBackendHandoff } from '../runtime/workspace-sync-records.js';
+import { markSchedulerSessionLeaseReleasing } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -752,6 +753,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
           recordKey: '1',
           sequence: 1,
+        });
+        markSchedulerSessionLeaseReleasing(this.coreDb, {
+          leaseId: backendSession.leaseId,
+          now: () => timestamp,
+          releaseReason: 'worker-final-status',
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'materialized',

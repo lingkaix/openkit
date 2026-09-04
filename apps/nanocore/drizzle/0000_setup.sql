@@ -312,7 +312,7 @@ CREATE TABLE `scheduler_session_leases` (
 	`recovery_state` text,
 	`recovery_deadline` text,
 	`worker_process_key_hash` text
-, `session_compatibility_key` text, `worker_control_token_hash` text, `worker_inference_token_hash` text);
+, `session_compatibility_key` text, `worker_control_token_hash` text, `worker_inference_token_hash` text, `worker_capability_token_hash` text);
 
 CREATE TABLE `scheduler_supply_refresh_declarations` (
   `workspace_id` text NOT NULL,
@@ -986,7 +986,7 @@ CREATE TABLE `capability_calls` (
 	`error_code` text,
 	`started_at` text,
 	`completed_at` text
-, `package_snapshot_id` text, `runtime_origin_ref` text, `runtime_cache_lineage_ref` text);
+, `package_snapshot_id` text, `schema_snapshot_id` text, `runtime_origin_ref` text, `runtime_cache_lineage_ref` text);
 
 CREATE TABLE `evidence_bundles` (
   `evidence_bundle_id` text PRIMARY KEY NOT NULL,

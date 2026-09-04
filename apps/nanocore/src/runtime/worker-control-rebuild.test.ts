@@ -34,6 +34,8 @@ interface RestorableWorkerControlFixture {
   readonly workerControlToken: string;
   /** Raw worker-inference token retained by the restarted client. */
   readonly workerInferenceToken: string;
+  /** Raw worker-capability token retained by the restarted client. */
+  readonly workerCapabilityToken: string;
 }
 
 /**
@@ -129,6 +131,7 @@ function createRestorableWorkerControlFixture(
   const sandboxBindingRef = 'lease-binding:restore_1';
   const workerControlToken = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
   const workerInferenceToken = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+  const workerCapabilityToken = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
 
   createSchedulerSessionLease(coreDb, {
     agentSessionId: options.leaseAgentSessionId ?? environmentPackage.scope.agentSessionId,
@@ -146,6 +149,7 @@ function createRestorableWorkerControlFixture(
     leaseId: 'lease_restore_1',
     now: () => '2026-07-13T00:00:05.000Z',
     sandboxBindingRef,
+    workerCapabilityTokenHash: hashWorkerRouteToken(workerCapabilityToken),
     workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
     workerInferenceTokenHash: hashWorkerRouteToken(workerInferenceToken),
   });
@@ -154,6 +158,7 @@ function createRestorableWorkerControlFixture(
     coreDb,
     environmentPackage,
     sandboxBindingRef,
+    workerCapabilityToken,
     workerControlToken,
     workerInferenceToken,
   };

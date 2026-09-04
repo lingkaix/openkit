@@ -42,6 +42,8 @@ export const capabilityCalls = sqliteTable(
     agentSessionId: text('agent_session_id'),
     /** Agent Environment Package snapshot that authorized the call. */
     packageSnapshotId: text('package_snapshot_id'),
+    /** Schema snapshot used to validate a schema-bound call. */
+    schemaSnapshotId: text('schema_snapshot_id'),
     /** Product-safe runtime origin correlation reference. */
     runtimeOriginRef: text('runtime_origin_ref'),
     /** Product-safe runtime cache-lineage correlation reference. */

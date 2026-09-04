@@ -228,6 +228,8 @@ export interface PolicyApprovalTerminalWinner {
   readonly actor: Extract<ActorRef, { kind: 'user' }>;
   /** Audit-owned decision time. */
   readonly decidedAt: string;
+  /** Durable terminal permission decision id. */
+  readonly decisionId: string;
   /** Required Approval kind copied from the source decision. */
   readonly requiredApprovalKind: string;
   /** Winning command request id. */
@@ -443,6 +445,7 @@ export function readPolicyApprovalTerminalWinner(
     action: row.action,
     actor,
     decidedAt: TimestampSchema.parse(row.occurred_at),
+    decisionId: row.decision_id,
     requiredApprovalKind: row.required_approval_kind,
     requestId: RequestIdSchema.parse(row.request_id),
     resourceSummary: JSON.parse(row.resource_summary_json),

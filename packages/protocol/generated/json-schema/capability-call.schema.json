@@ -79,6 +79,18 @@
         }
       ]
     },
+    "schemaSnapshotId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "runtimeOriginRef": {
       "default": null,
       "anyOf": [
@@ -196,6 +208,7 @@
     "agentId",
     "agentSessionId",
     "packageSnapshotId",
+    "schemaSnapshotId",
     "runtimeOriginRef",
     "runtimeCacheLineageRef",
     "requestId",

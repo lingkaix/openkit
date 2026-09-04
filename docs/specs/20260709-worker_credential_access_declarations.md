@@ -37,7 +37,7 @@ implementation: Partial
 
 OpenKit already has the correct security model for worker credentials: workers should consume tools, providers, local files, or endpoints, while NanoCore owns vault resolution, grants, injection records, receipts, and audit.
 
-The current implementation proves runtime-file upload and host-side Git push. It resolves sandbox-provider declarations and their durable grant lineage, but stock OpenShell provider attachment is fail-closed because Providers v2 would otherwise add profile-owned endpoints that are absent from the immutable AEP network policy. Worker MCP gateway credentials are not current because the worker capability plane is disabled.
+The current implementation proves runtime-file upload, host-side Git push, and selected Worker MCP gateway-only credentials. It resolves sandbox-provider declarations and their durable grant lineage, but stock OpenShell provider attachment is fail-closed because Providers v2 would otherwise add profile-owned endpoints that are absent from the immutable AEP network policy. The MCP Gateway separately resolves only catalog-declared Workspace Vault grants into bounded stdio environment or HTTP header/query sinks and never exposes the material to the worker.
 
 This spec generalizes the worker launch-time credential path without adding a new secret system.
 
@@ -342,7 +342,7 @@ The current implementation is partial.
 
 The manifest and resolver accept reusable `requirementId` declarations and compose them with per-Workspace `credentialBindings`. Required missing bindings fail setup, optional missing bindings are omitted, and the same manifest can resolve to different Workspace-scoped VaultGrants without exposing the choice to the worker.
 
-The shared declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material. Current packages emit a disabled capability plane, so a non-null grant `targetCapabilityId` is intentionally fail-closed on this path.
+The shared launch-time declaration resolver validates every non-null durable grant user, workspace, agent, session, and capability constraint against the current package context before it creates injection records or resolves secret material; it still rejects a non-null `targetCapabilityId` because that resolver is not a capability sink. The selected MCP Gateway owns its separate per-call current-authority check and accepts only `mcp`, `mcp.list_tools`, or `mcp.call_tool` targets matching the exact operation.
 
 The shared worker resolver creates the plan, performs audited Vault resolution, completes the backend-private sink, and only then persists the receipt. Backend resolution failure or sink failure may leave redacted plan and `VaultUse` evidence but creates no receipt.
 

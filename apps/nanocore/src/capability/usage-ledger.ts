@@ -21,6 +21,7 @@ type CapabilityCallRow = {
   agent_id: string | null;
   agent_session_id: string | null;
   package_snapshot_id: string | null;
+  schema_snapshot_id: string | null;
   runtime_origin_ref: string | null;
   runtime_cache_lineage_ref: string | null;
   request_id: string | null;
@@ -70,6 +71,8 @@ export interface GatewayCallContext {
   agentSessionId?: string | null;
   /** Agent Environment Package snapshot that authorized the call. */
   packageSnapshotId?: string | null;
+  /** Schema snapshot used to validate a schema-bound call. */
+  schemaSnapshotId?: string | null;
   /** Product-safe runtime origin correlation reference. */
   runtimeOriginRef?: string | null;
   /** Product-safe runtime cache-lineage correlation reference. */
@@ -108,6 +111,8 @@ export interface StartCapabilityCallInput extends GatewayCallContext {
 export interface StartedCapabilityCall {
   /** Durable call id. */
   id: string;
+  /** Whether this invocation created the durable call row. */
+  inserted: boolean;
   /** Gateway call context copied from the stored row. */
   context: GatewayCallContext;
 }
@@ -154,6 +159,16 @@ export interface FinishCapabilityCallInput {
   errorCode?: string | null;
   /** Completion time. */
   now?: Date;
+}
+
+/** Input for binding a running call to its observed schema snapshot. */
+export interface StampCapabilityCallSchemaSnapshotInput {
+  /** Workspace-scoped database handle. */
+  readonly workspaceDb: WorkspaceDb;
+  /** Durable running capability call id. */
+  readonly callId: string;
+  /** Stable schema snapshot id used for validation. */
+  readonly schemaSnapshotId: string;
 }
 
 /** Input for recovering non-terminal capability calls after restart. */
@@ -203,6 +218,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
     agentId: input.agentId ?? null,
     agentSessionId: input.agentSessionId ?? null,
     packageSnapshotId: input.packageSnapshotId ?? null,
+    schemaSnapshotId: input.schemaSnapshotId ?? null,
     runtimeOriginRef: input.runtimeOriginRef ?? null,
     runtimeCacheLineageRef: input.runtimeCacheLineageRef ?? null,
     requestId: input.requestId ?? null,
@@ -215,7 +231,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
     completedAt: null,
   });
 
-  input.workspaceDb.sqlite
+  const insertion = input.workspaceDb.sqlite
     .prepare(
       `INSERT OR IGNORE INTO capability_calls (
         call_id,
@@ -239,9 +255,10 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
         started_at,
         completed_at,
         package_snapshot_id,
+        schema_snapshot_id,
         runtime_origin_ref,
         runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       protocolCall.id,
@@ -265,6 +282,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       protocolCall.startedAt,
       protocolCall.completedAt,
       protocolCall.packageSnapshotId,
+      protocolCall.schemaSnapshotId,
       protocolCall.runtimeOriginRef,
       protocolCall.runtimeCacheLineageRef
     );
@@ -274,6 +292,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
 
   return {
     id: stored.call_id,
+    inserted: insertion.changes === 1,
     context: {
       agentId: stored.agent_id,
       agentSessionId: stored.agent_session_id,
@@ -283,6 +302,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       itemId: stored.item_id,
       operation: stored.operation,
       packageSnapshotId: stored.package_snapshot_id,
+      schemaSnapshotId: stored.schema_snapshot_id,
       providerRef: stored.provider_ref,
       redactionClass: stored.redaction_class,
       requestId: stored.request_id,
@@ -485,6 +505,25 @@ export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
     .immediate();
 }
 
+/** Binds one running call to exactly one schema snapshot before its effect. */
+export function stampCapabilityCallSchemaSnapshot(
+  input: StampCapabilityCallSchemaSnapshotInput
+): void {
+  const parsed = CapabilityCallSchema.shape.schemaSnapshotId.unwrap().parse(input.schemaSnapshotId);
+  const result = input.workspaceDb.sqlite
+    .prepare(
+      `UPDATE capability_calls
+       SET schema_snapshot_id = ?
+       WHERE call_id = ? AND status = 'running' AND schema_snapshot_id IS NULL`
+    )
+    .run(parsed, input.callId);
+  if (result.changes === 1) return;
+  const stored = findCapabilityCallById(input.workspaceDb, input.callId);
+  if (stored?.schema_snapshot_id !== parsed) {
+    throw new Error(`Capability call schema snapshot conflicts: ${input.callId}`);
+  }
+}
+
 /**
  * Terminates non-terminal capability calls left behind by a prior process.
  *
@@ -612,9 +651,10 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
         started_at,
         completed_at,
         package_snapshot_id,
+        schema_snapshot_id,
         runtime_origin_ref,
         runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       call.id,
@@ -638,6 +678,7 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
       call.startedAt,
       call.completedAt,
       call.packageSnapshotId,
+      call.schemaSnapshotId,
       call.runtimeOriginRef,
       call.runtimeCacheLineageRef
     );
@@ -702,6 +743,7 @@ function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
     agentId: call.agent_id,
     agentSessionId: call.agent_session_id,
     packageSnapshotId: call.package_snapshot_id,
+    schemaSnapshotId: call.schema_snapshot_id,
     runtimeOriginRef: call.runtime_origin_ref,
     runtimeCacheLineageRef: call.runtime_cache_lineage_ref,
     requestId: call.request_id,
@@ -910,6 +952,7 @@ function assertMatchingCapabilityCallAttribution(
     stored.agent_id !== incoming.agentId ||
     stored.agent_session_id !== incoming.agentSessionId ||
     stored.package_snapshot_id !== incoming.packageSnapshotId ||
+    stored.schema_snapshot_id !== incoming.schemaSnapshotId ||
     stored.runtime_origin_ref !== incoming.runtimeOriginRef ||
     stored.runtime_cache_lineage_ref !== incoming.runtimeCacheLineageRef ||
     sourceIdsJson(parseSourceIdsJson(stored.source_ids_json)) !==

@@ -44,13 +44,13 @@ The accepted implementation pin is Codex CLI `0.144.1`, matching the real worker
 The first bounded native command is equivalent to:
 
 ```text
-codex exec --json --ignore-user-config --ignore-rules --strict-config --output-last-message <turn-final-message-path> --cd <workspace> <adapter-owned -c provider projection> --model <model> --dangerously-bypass-approvals-and-sandbox <turn-input>
+codex exec --json --ignore-user-config --ignore-rules --strict-config --output-last-message <turn-final-message-path> --cd <workspace> <adapter-owned -c provider and selected-MCP projections> --model <model> --dangerously-bypass-approvals-and-sandbox <turn-input>
 ```
 
-Every later Turn uses the same accepted safe flags and provider projection with the pinned native resume surface; the Harness sets the child working directory because the resume subcommand has no `--cd` option:
+Every later Turn uses the same accepted safe flags and provider and selected-MCP projections with the pinned native resume surface; the Harness sets the child working directory because the resume subcommand has no `--cd` option:
 
 ```text
-codex exec resume --json --ignore-user-config --ignore-rules --strict-config --output-last-message <turn-final-message-path> <adapter-owned -c provider projection> --model <model> --dangerously-bypass-approvals-and-sandbox <exact-native-thread-id> <turn-input>
+codex exec resume --json --ignore-user-config --ignore-rules --strict-config --output-last-message <turn-final-message-path> <adapter-owned -c provider and selected-MCP projections> --model <model> --dangerously-bypass-approvals-and-sandbox <exact-native-thread-id> <turn-input>
 ```
 
 Codex `0.144.1` exposes `exec resume [SESSION_ID] [PROMPT]`; a UUID selects the exact thread and neither `--last`, title search, cwd search, nor another discovery fallback is permitted. Session-continuity mode never uses `--ephemeral`, because persistence beneath the AgentSession-private `CODEX_HOME` is the native mechanism that a later process instance resumes. Every invocation uses `--ignore-user-config` and `--ignore-rules`.
@@ -66,12 +66,13 @@ The shared harness supplies the adapter with:
 - worker working directory
 - AgentSession-private state directory and Turn-private final-message path
 - the provider, model, endpoint, and credential bindings from the AEP's one already resolved LLM route
+- the exact selected MCP server ids from AEP supply and the Turn-local capability token only through the safe `OPENKIT_WORKER_CAPABILITY_TOKEN` environment binding
 - optional native provenance declaration
-- a safe child environment that excludes the worker-control credential
+- a safe child environment that excludes the worker-control credential and contains only the separately authorized inference and enabled capability route tokens
 
 The adapter must not read NanoCore private storage or invent missing provider, model, policy, or credential decisions.
 
-The shared Harness supplies one fresh empty AgentSession-private state root. `openSession` selects its fixed `CODEX_HOME`, reports the native handle `pending`, and starts no process because the pinned CLI creates a conversation only with the first prompt. `prepareTurn` selects a fresh Turn-private final-message path beneath that AgentSession, uses the first command when no handle exists, and uses exact UUID resume when the binding already holds one proved handle. It returns no config or authentication files. AEP-resolved authentication and provider material may enter the child only through backend-materialized credential bindings and adapter-owned argv or safe environment; executable MCP server entries, hooks, memories, sibling AgentSessions, and ambient user state are absent. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating Workspace policy files as hidden execution authority.
+The shared Harness supplies one fresh empty AgentSession-private state root. `openSession` selects its fixed `CODEX_HOME`, reports the native handle `pending`, and starts no process because the pinned CLI creates a conversation only with the first prompt. `prepareTurn` selects a fresh Turn-private final-message path beneath that AgentSession, uses the first command when no handle exists, and uses exact UUID resume when the binding already holds one proved handle. It returns no config or authentication files. AEP-resolved authentication and provider material may enter the child only through backend-materialized credential bindings and adapter-owned argv or safe environment. For each exact selected MCP server id, the adapter adds only `mcp_servers.<id>.url="http://127.0.0.1:17892/capabilities/mcp/<id>"` and `mcp_servers.<id>.bearer_token_env_var="OPENKIT_WORKER_CAPABILITY_TOKEN"` through inline `-c`; the raw token remains only in that environment variable and never enters argv. Unselected executable MCP entries, hooks, memories, sibling AgentSessions, ambient user state, and config artifacts are absent. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating Workspace policy files as hidden execution authority.
 
 ## Launch Plan
 
@@ -110,7 +111,7 @@ Another resident AgentSession belongs to another Thread and has a distinct priva
 
 ## Skills And MCP
 
-NanoCore may resolve approved static Skill and MCP supply into the AEP, but this change does not activate callable MCP or worker-capability execution. The capability plane remains disabled, and the Codex adapter must not discover, install, authorize, or broaden supply.
+NanoCore resolves approved static Skill and selected MCP supply into the AEP. When selected MCP supply is non-empty, the Codex adapter projects only those ids through the fixed authenticated loopback URLs above; NanoCore still owns catalog resolution, authorization, credentials, transport, usage, and audit, and the adapter must not discover, install, connect directly, authorize, or broaden supply. With no selected MCP server the capability plane remains disabled and no MCP override is emitted.
 
 ## Provider And Credentials
 
@@ -130,7 +131,7 @@ model_providers.openkit-worker-inference.wire_api="responses"
 model_providers.openkit-worker-inference.requires_openai_auth=false
 ```
 
-The child environment carries only the OpenShell-injected `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder. Its value must not appear in argv, native configuration, diagnostics, or evidence. Codex `0.144.1` supports only the Responses wire API through this projection, so a Chat-Completions-only relay is unsupported.
+The child environment always carries the OpenShell-injected `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder and carries `OPENKIT_WORKER_CAPABILITY_TOKEN` only when the exact AEP-selected MCP supply enables the capability route. No worker-control or other route token enters the native environment, and neither value may appear in argv, native configuration text, diagnostics, or evidence. Codex `0.144.1` supports only the Responses wire API through the inference projection, so a Chat-Completions-only relay is unsupported.
 
 Direct-provider routes are unsupported in this change because the current AEP route does not carry a separately proved Responses wire protocol and exact credential target for truthful Codex projection. Direct, Chat Completions, Anthropic Messages, Gemini, and other non-relay routes fail closed before spawn. The adapter never substitutes a direct route for the trusted relay, and neither NanoCore nor the shared harness knows a Codex config-file schema.
 

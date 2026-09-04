@@ -109,7 +109,7 @@ describe('fourth worker runtime fixture', () => {
         },
         runtime: {
           command: {
-            argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+            argv: ['openkit-worker-shim'],
             workingDirectory: root,
           },
         },

@@ -9,6 +9,25 @@ import {
 } from './index.js';
 
 describe('workspace MCP server catalog', () => {
+  it('bounds timeouts to the Node timer range', () => {
+    const input = (timeoutMs: number) => ({
+      schemaVersion: 1,
+      servers: [
+        {
+          allowedTools: ['echo'],
+          enabled: true,
+          id: 'echo',
+          schemaPolicy: 'tracking',
+          timeoutMs,
+          transport: { args: [], command: 'node', kind: 'stdio' },
+        },
+      ],
+    });
+
+    expect(() => WorkspaceMcpServerCatalogSchema.parse(input(2_147_483_647))).not.toThrow();
+    expect(() => WorkspaceMcpServerCatalogSchema.parse(input(2_147_483_648))).toThrow();
+  });
+
   it('resolves strict credential-free stdio entries with a stable digest', () => {
     const input = {
       schemaVersion: 1,
@@ -77,6 +96,112 @@ describe('workspace MCP server catalog', () => {
       })
     ).not.toThrow();
 
+    for (const name of ['Accept', 'content-type']) {
+      expect(() =>
+        WorkspaceMcpServerCatalogSchema.parse({
+          schemaVersion: 1,
+          servers: [
+            {
+              allowedTools: ['search'],
+              credentialBindings: [
+                {
+                  sink: { kind: 'header', name },
+                  slot: 'token',
+                  vaultGrantId: 'grant_search',
+                },
+              ],
+              enabled: true,
+              id: 'search',
+              schemaPolicy: 'tracking',
+              transport: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
+            },
+          ],
+        })
+      ).toThrow(/SDK-owned HTTP headers/);
+    }
+
+    for (const endpoint of [
+      'http://localhost:3000/mcp',
+      'http://127.0.0.1:3000/mcp',
+      'http://[::1]:3000/mcp',
+      'https://mcp.example.test/mcp',
+    ]) {
+      expect(() =>
+        WorkspaceMcpServerCatalogSchema.parse({
+          schemaVersion: 1,
+          servers: [
+            {
+              allowedTools: ['search'],
+              credentialBindings: [
+                {
+                  sink: { kind: 'header', name: 'Authorization' },
+                  slot: 'token',
+                  vaultGrantId: 'grant_search',
+                },
+              ],
+              enabled: true,
+              id: 'search',
+              schemaPolicy: 'tracking',
+              transport: { endpoint, kind: 'http' },
+            },
+          ],
+        })
+      ).not.toThrow();
+    }
+
+    expect(() =>
+      WorkspaceMcpServerCatalogSchema.parse({
+        schemaVersion: 1,
+        servers: [
+          {
+            allowedTools: ['search'],
+            credentialBindings: [
+              {
+                sink: { kind: 'header', name: 'Authorization' },
+                slot: 'token',
+                vaultGrantId: 'grant_search',
+              },
+            ],
+            enabled: true,
+            id: 'search',
+            schemaPolicy: 'tracking',
+            transport: { endpoint: 'http://mcp.example.test/mcp', kind: 'http' },
+          },
+        ],
+      })
+    ).toThrow(/must use HTTPS/);
+
+    for (const sinks of [
+      [
+        { kind: 'header', name: 'Authorization' },
+        { kind: 'header', name: 'authorization' },
+      ],
+      [
+        { kind: 'query', name: 'token' },
+        { kind: 'query', name: 'token' },
+      ],
+    ]) {
+      expect(() =>
+        WorkspaceMcpServerCatalogSchema.parse({
+          schemaVersion: 1,
+          servers: [
+            {
+              allowedTools: ['search'],
+              credentialBindings: sinks.map((sink, index) => ({
+                sink,
+                slot: `token-${index}`,
+                vaultGrantId: `grant_${index}`,
+              })),
+              enabled: true,
+              id: 'search',
+              schemaPolicy: 'tracking',
+              transport: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
+            },
+          ],
+        })
+      ).toThrow();
+    }
+
     expect(() =>
       WorkspaceMcpServerCatalogSchema.parse({
         schemaVersion: 1,
@@ -104,6 +229,14 @@ describe('workspace MCP server catalog', () => {
     ).not.toThrow();
 
     for (const server of [
+      {
+        allowedTools: [' echo '],
+        credentialBindings: [],
+        enabled: true,
+        id: 'echo',
+        schemaPolicy: 'tracking',
+        transport: { command: 'node', kind: 'stdio' },
+      },
       {
         allowedTools: ['echo'],
         approvalRequiredTools: [],

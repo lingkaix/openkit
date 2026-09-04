@@ -133,6 +133,7 @@ import {
   listGoalVerificationRecordsForTask,
 } from './runtime/goal-verification-records.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
+import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import type {
@@ -4793,6 +4794,13 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    const schemaTools = [
+      {
+        name: 'repo_status',
+        inputSchema: { type: 'object', properties: { owner: { type: 'string' } } },
+      },
+    ];
+    const schemaDigest = mcpToolSchemaContentDigest(schemaTools);
     try {
       sourceDb.sqlite
         .prepare(
@@ -4814,13 +4822,8 @@ describe('nanocore server', () => {
           'github-mcp',
           'mcp/github',
           '1.0.0',
-          'sha256:mcp-schema',
-          JSON.stringify([
-            {
-              name: 'repo_status',
-              inputSchema: { type: 'object', properties: { owner: { type: 'string' } } },
-            },
-          ]),
+          schemaDigest,
+          JSON.stringify(schemaTools),
           'live',
           '2026-07-06T00:07:00.000Z'
         );
@@ -4867,10 +4870,10 @@ describe('nanocore server', () => {
       expect(row).toMatchObject({
         captured_at: '2026-07-06T00:07:00.000Z',
         catalog_entry_id: 'github-mcp',
-        content_digest: 'sha256:mcp-schema',
+        content_digest: schemaDigest,
         server_version: '1.0.0',
         snapshot_id: 'mcpsnap_import_1',
-        source: 'live',
+        source: 'aep',
         source_ref: 'mcp/github',
         workspace_id: body.importedWorkspaceId,
       });
@@ -13664,6 +13667,14 @@ describe('nanocore server', () => {
         })
       ).resolves.toEqual({ status: 200 });
       await expect(
+        dispatch.route(firstServerSession, {
+          body: new Uint8Array(),
+          credentialClass: 'capability',
+          family: 'capability',
+          path: '/capabilities/mcp/echo',
+        })
+      ).resolves.toEqual({ status: 200 });
+      await expect(
         dispatch.effect(firstServerSession, {
           input: {
             backendSessionId: 'sandbox-session-main',
@@ -13687,7 +13698,7 @@ describe('nanocore server', () => {
           kind: 'attempt-session.cleanup',
         })
       ).rejects.toThrow(/effect|operation|enabled/i);
-      expect(routeHandler).toHaveBeenCalledTimes(1);
+      expect(routeHandler).toHaveBeenCalledTimes(2);
       expect(effectHandler).toHaveBeenCalledTimes(1);
 
       const observedCandidateClose = new Promise<void>((resolve) => {

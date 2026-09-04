@@ -39,6 +39,7 @@ const NON_APP_API_ROUTE_PATTERNS = [
   /^\/internal(?:\/|$)/,
   /^\/api\/worker-control(?:\/|$)/,
   /^\/api\/worker-inference(?:\/|$)/,
+  /^\/api\/worker-capabilities(?:\/|$)/,
   /^\/api\/nanohost\/transport\/session\/admit$/,
   /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|bridge\.(?:open|close)|image\.(?:acquire|build)|file\.export|reference\.import)(?:\/result)?$/,
   /^\/api\/workspaces(?:\/|$)/,

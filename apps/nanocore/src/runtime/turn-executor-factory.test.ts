@@ -312,6 +312,7 @@ describe('createConfiguredTurnExecutor', () => {
         environmentPackage,
         identity,
         leaseId: 'lease_optional_workspace_changes',
+        sharedHarness: { sandbox: { sandboxId: identity.backendSessionId.slice(0, 19) } },
         terminalInspectionComplete: true,
       });
 
@@ -862,7 +863,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessInstanceId: 'harness-absent-cleanup',
         imageDigest: `sha256:${'a'.repeat(64)}`,
         sandboxBindingRef: identity.backendSessionId,
-        sandboxCompatibilityKey: `${identity.backendSessionId.slice(3)}${'b'.repeat(48)}`,
+        sandboxCompatibilityKey: `${identity.backendSessionId.slice(3, 19)}${'b'.repeat(48)}`,
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-absent-cleanup',
         sandboxRuntimeId: 'sandbox-runtime-absent-cleanup',
         runtimeTargetId: 'target_absent_cleanup',
@@ -960,9 +961,11 @@ describe('createConfiguredTurnExecutor', () => {
           snapshotId: 'aepsnap_post_fence',
         })
       );
-      expect(identity.backendSessionId).toMatch(/^nh-[0-9a-f]{16}$/);
-      const sandboxCompatibilityKey = `${identity.backendSessionId.slice(3)}${'c'.repeat(48)}`;
-      expect(identity.backendSessionId).toBe(`nh-${sandboxCompatibilityKey.slice(0, 16)}`);
+      expect(identity.backendSessionId).toMatch(/^nh-[0-9a-f]{16}-[0-9a-f]{16}$/);
+      const sandboxCompatibilityKey = `${identity.backendSessionId.slice(3, 19)}${'c'.repeat(48)}`;
+      expect(identity.backendSessionId.slice(0, 19)).toBe(
+        `nh-${sandboxCompatibilityKey.slice(0, 16)}`
+      );
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
@@ -1273,7 +1276,7 @@ describe('createConfiguredTurnExecutor', () => {
       const nonProjectingIdentity: WorkerGovernanceBackendSessionIdentity = {
         agentSessionId: 'as_lookup_none',
         backendKind: 'openshell',
-        backendSessionId: `nh-${projectingPrefix.slice(0, 15)}b`,
+        backendSessionId: `nh-${projectingPrefix.slice(0, 15)}b-${'0'.repeat(16)}`,
         deploymentId: 'deployment_lookup',
         packageSnapshotId: 'aepsnap_lookup_none',
         runtimeTargetId: 'target_lookup',
@@ -1300,7 +1303,7 @@ describe('createConfiguredTurnExecutor', () => {
         backend.findDurableSandboxBinding({
           ...nonProjectingIdentity,
           agentSessionId: 'as_lookup_ambiguous',
-          backendSessionId: `nh-${projectingPrefix}`,
+          backendSessionId: `nh-${projectingPrefix}-${'0'.repeat(16)}`,
           packageSnapshotId: 'aepsnap_lookup_ambiguous',
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_ambiguous',
         })
@@ -1340,7 +1343,7 @@ describe('createConfiguredTurnExecutor', () => {
       const workerIdentity: WorkerGovernanceBackendSessionIdentity = {
         ...nonProjectingIdentity,
         agentSessionId: 'as_lookup_worker',
-        backendSessionId: `nh-${'e'.repeat(16)}`,
+        backendSessionId: `nh-${'e'.repeat(16)}-${'0'.repeat(16)}`,
         packageSnapshotId: 'aepsnap_lookup_worker',
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_worker',
       };
@@ -1375,7 +1378,7 @@ describe('createConfiguredTurnExecutor', () => {
       const agentIdentity: WorkerGovernanceBackendSessionIdentity = {
         ...nonProjectingIdentity,
         agentSessionId: 'as_lookup_agent',
-        backendSessionId: `nh-${'f'.repeat(16)}`,
+        backendSessionId: `nh-${'f'.repeat(16)}-${'0'.repeat(16)}`,
         packageSnapshotId: 'aepsnap_lookup_agent',
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_agent',
       };
@@ -1555,11 +1558,15 @@ describe('createConfiguredTurnExecutor', () => {
             root: '/workspace',
           },
         }) as AgentEnvironmentPackage;
-      const keyFor = (environmentPackage: AgentEnvironmentPackage) =>
+      const planFor = (environmentPackage: AgentEnvironmentPackage) =>
         backend.planSession(environmentPackage).backendSessionId;
-      const baseline = keyFor(packageFor('a'));
+      const keyFor = (environmentPackage: AgentEnvironmentPackage) =>
+        planFor(environmentPackage).slice(0, 19);
+      const baselinePackage = packageFor('a');
+      const baseline = keyFor(baselinePackage);
 
       expect(keyFor(packageFor('b'))).toBe(baseline);
+      expect(planFor(packageFor('b'))).not.toBe(planFor(baselinePackage));
       expect(keyFor(packageFor('c', { actorId: 'user-other' }))).not.toBe(baseline);
       expect(keyFor(packageFor('d', { mountLabel: 'secondary' }))).not.toBe(baseline);
       expect(keyFor(packageFor('e', { sensitivity: 'restricted' }))).not.toBe(baseline);
@@ -1632,6 +1639,176 @@ describe('createConfiguredTurnExecutor', () => {
 
       expect(workerControlGateway.getSessionSnapshot(priorPackageSnapshotId)?.commands).toEqual([]);
       expect(workerControlGateway.getSessionSnapshot(packageSnapshotId)?.commands).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('queues and settles an MCP human Gate stop through the configured NanoHost Harness', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+        if (request.kind === 'sandbox.create') {
+          return { sandboxId: request.input.sandboxId, state: 'created' };
+        }
+        if (request.kind === 'reference.import') return { state: 'imported' };
+        if (request.kind === 'bridge.open') {
+          return { accepted: true, integrationReady: true, state: 'open' };
+        }
+        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+          return { state: 'deleted' };
+        }
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_human_gate', 'identity_human_gate', 'deployment_human_gate',
+                     1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-03T00:00:00.000Z');
+      const environmentPackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'as_human_gate',
+          threadId: 'thread_human_gate',
+          turnId: 'turn_human_gate',
+          workspaceId: 'workspace_human_gate',
+        },
+        snapshotId: 'aepsnap_human_gate',
+      });
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref
+           ) VALUES (
+             'lease_human_gate', 'plan_human_gate', 'workspace_human_gate',
+             'thread_human_gate', 'turn_human_gate', 'as_human_gate', 'aepsnap_human_gate',
+             'pool_human_gate', 'target_human_gate', 'acquired', ?, ?, ?, ?, 0, 1,
+             'sandbox-binding:human-gate'
+           )`
+        )
+        .run(
+          '2026-09-03T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z'
+        );
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+      ).backend;
+      const materialization = await backend.materialize(environmentPackage, {
+        workspaceRoots: [],
+      });
+      const integration = coreDb.sqlite
+        .prepare(
+          `SELECT sandbox_integration_binding_ref AS integrationRef
+           FROM sandbox_runtime_records
+           LIMIT 1`
+        )
+        .get() as { integrationRef: string };
+      const settleNext = async (
+        operation: 'session.open' | 'turn.start' | 'turn.interrupt',
+        body: Readonly<Record<string, unknown>>
+      ) => {
+        let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+          command = dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: integration.integrationRef,
+          });
+          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        if (!command || command.operation !== operation) {
+          throw new Error(`Expected queued ${operation} Harness command.`);
+        }
+        runtime.acceptNanoHostHarnessCommand(command);
+        const result = {
+          body,
+          disposition: 'succeeded' as const,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          schemaVersion: 1 as const,
+          sequence: command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: integration.integrationRef,
+          timestamp: new Date().toISOString(),
+        });
+        runtime.acceptNanoHostHarnessResult(result);
+        return command;
+      };
+
+      const launch = backend.launch(materialization);
+      await settleNext('session.open', {
+        maxActiveTurns: 1,
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'open',
+      });
+      await settleNext('turn.start', {
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'started',
+      });
+      await launch;
+
+      runtime.requestHumanGateStop(environmentPackage.snapshotId);
+      const interrupt = await settleNext('turn.interrupt', {
+        childState: 'absent',
+        state: 'interrupted',
+      });
+      expect(interrupt.body).toMatchObject({
+        agentSessionId: 'as_human_gate',
+        leaseId: 'lease_human_gate',
+        purpose: 'human-gate',
+        turnId: 'turn_human_gate',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT operation, operation_state AS operationState
+             FROM harness_instance_records
+             WHERE harness_instance_id = ?`
+          )
+          .get(interrupt.harnessInstanceId)
+      ).toEqual({ operation: 'turn.interrupt', operationState: 'settled' });
+
+      await runtime.cleanupBackendSession(backend.planSession(environmentPackage));
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'sandbox.create',
+        'reference.import',
+        'bridge.open',
+        'bridge.close',
+        'sandbox.delete',
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
     }
@@ -2193,12 +2370,12 @@ describe('createConfiguredTurnExecutor', () => {
             process: { runAsGroup: 'sandbox', runAsUser: 'sandbox' },
             version: 1,
           },
-          sandboxId: firstPlan.backendSessionId,
+          sandboxId: firstPlan.backendSessionId.slice(0, 19),
         });
         expect(sandboxCreate?.kind).toBe('sandbox.create');
-        expect(firstPlan.backendSessionId.length).toBeLessThanOrEqual(19);
+        expect(firstPlan.backendSessionId.length).toBeLessThanOrEqual(36);
         expect(firstPlan.backendSessionId).toMatch(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/);
-        sandboxIds.push(firstPlan.backendSessionId);
+        sandboxIds.push(firstPlan.backendSessionId.slice(0, 19));
       }
 
       expect(new Set(sandboxIds).size).toBe(sandboxIds.length);

@@ -21,6 +21,7 @@ const CONNECTION_RECEIVE_WINDOW_BYTES = 5 * 1024 * 1024;
 const PER_STREAM_RECEIVE_WINDOW_BYTES = 256 * 1024;
 const WORKER_CONTROL_MAX_BYTES = 1024 * 1024;
 const INFERENCE_MAX_BYTES = 16 * 1024 * 1024;
+const CAPABILITY_MAX_BYTES = 512 * 1024;
 const MAX_HTTP2_WRITE_BYTES = 64 * 1024;
 const FORBIDDEN_REQUEST_HEADERS = new Set([
   'connection',
@@ -47,7 +48,7 @@ export const SANDBOX_INTEGRATION_ROUTE_NAMESPACES = [
   '/capabilities/',
 ] as const;
 
-type RouteFamily = 'worker-control' | 'inference';
+type RouteFamily = 'capability' | 'worker-control' | 'inference';
 
 const HARNESS_CONTROL_PATHS = new Set([
   '/worker-control/harness/poll',
@@ -69,6 +70,7 @@ type SandboxIntegrationResponse = {
 /** One accepted socket and its single standard HTTP/2 client session. */
 export class SandboxIntegrationClient {
   private acceptedSocket: Socket | null = null;
+  private capabilityToken: string | null = null;
   private controlToken: string | null = null;
   private inferenceToken: string | null = null;
   private readonly nativeRequests = new Set<AbortController>();
@@ -112,7 +114,7 @@ export class SandboxIntegrationClient {
       return collectBoundedResponse(response, WORKER_CONTROL_MAX_BYTES, 'Worker-control');
     };
     nativeServer.on('request', (request, response) => {
-      void this.handleNativeInference(request, response).catch(() => response.destroy());
+      void this.handleNativeRoute(request, response).catch(() => response.destroy());
     });
   }
 
@@ -128,22 +130,35 @@ export class SandboxIntegrationClient {
     return collectBoundedResponse(response, WORKER_CONTROL_MAX_BYTES, 'Harness-control');
   }
 
-  /** Binds the two distinct route tokens for one active Turn only. */
-  public bindTurnRouteTokens(tokens: { controlToken: string; inferenceToken: string }): void {
+  /** Binds the distinct route tokens for one active Turn only. */
+  public bindTurnRouteTokens(tokens: {
+    capabilityToken?: string | undefined;
+    controlToken: string;
+    inferenceToken: string;
+  }): void {
+    const capabilityToken = tokens.capabilityToken?.trim() || null;
     const controlToken = tokens.controlToken.trim();
     const inferenceToken = tokens.inferenceToken.trim();
-    if (!controlToken || !inferenceToken || controlToken === inferenceToken) {
+    if (
+      !controlToken ||
+      !inferenceToken ||
+      controlToken === inferenceToken ||
+      capabilityToken === controlToken ||
+      capabilityToken === inferenceToken
+    ) {
       throw new Error('Sandbox Integration requires distinct non-empty Turn route tokens.');
     }
-    if (this.controlToken || this.inferenceToken) {
+    if (this.capabilityToken || this.controlToken || this.inferenceToken) {
       throw new Error('Sandbox Integration Turn route tokens are already bound.');
     }
+    this.capabilityToken = capabilityToken;
     this.controlToken = controlToken;
     this.inferenceToken = inferenceToken;
   }
 
-  /** Clears both Turn-scoped route tokens at the Turn barrier. */
+  /** Clears all Turn-scoped route tokens at the Turn barrier. */
   public clearTurnRouteTokens(): void {
+    this.capabilityToken = null;
     this.controlToken = null;
     this.inferenceToken = null;
   }
@@ -205,7 +220,12 @@ export class SandboxIntegrationClient {
     const family = routeFamily(path);
     const bodyBytes =
       typeof init.body === 'string' ? Buffer.byteLength(init.body) : (init.body?.byteLength ?? 0);
-    const maxBytes = family === 'worker-control' ? WORKER_CONTROL_MAX_BYTES : INFERENCE_MAX_BYTES;
+    const maxBytes =
+      family === 'worker-control'
+        ? WORKER_CONTROL_MAX_BYTES
+        : family === 'inference'
+          ? INFERENCE_MAX_BYTES
+          : CAPABILITY_MAX_BYTES;
 
     if (bodyBytes > maxBytes) {
       throw new TypeError(`Sandbox Integration ${family} request exceeds its byte bound.`);
@@ -213,7 +233,13 @@ export class SandboxIntegrationClient {
     if (HARNESS_CONTROL_PATHS.has(path)) {
       requireCredentialFreeHarnessHeaders(init.headers);
     } else {
-      requireRouteToken(family, init.headers, this.controlToken, this.inferenceToken);
+      requireRouteToken(
+        family,
+        init.headers,
+        this.capabilityToken,
+        this.controlToken,
+        this.inferenceToken
+      );
     }
     const session = this.session;
     if (!session || session.closed || session.destroyed) {
@@ -239,8 +265,8 @@ export class SandboxIntegrationClient {
     return await responseForStream(stream, init.body, init.signal);
   }
 
-  /** Relays one authenticated native HTTP/1 inference request over the ready H2 session. */
-  private async handleNativeInference(
+  /** Relays one authenticated native HTTP/1 inference or capability request over the ready H2 session. */
+  private async handleNativeRoute(
     request: IncomingMessage,
     response: ServerResponse
   ): Promise<void> {
@@ -253,8 +279,10 @@ export class SandboxIntegrationClient {
       return;
     }
     const path = request.url ?? '';
+    let family: RouteFamily;
     try {
-      if (routeFamily(path) !== 'inference') {
+      family = routeFamily(path);
+      if (family === 'worker-control') {
         rejectNativeRequest(request, response, 404);
         return;
       }
@@ -265,17 +293,20 @@ export class SandboxIntegrationClient {
     let headers: Record<string, string>;
     try {
       headers = nativeRequestHeaders(request);
-      requireRouteToken('inference', headers, this.controlToken, this.inferenceToken);
+      requireRouteToken(
+        family,
+        headers,
+        this.capabilityToken,
+        this.controlToken,
+        this.inferenceToken
+      );
     } catch {
       rejectNativeRequest(request, response, 401);
       return;
     }
+    const maxBytes = family === 'inference' ? INFERENCE_MAX_BYTES : CAPABILITY_MAX_BYTES;
     const declaredLength = Number(request.headers['content-length'] ?? 0);
-    if (
-      !Number.isSafeInteger(declaredLength) ||
-      declaredLength < 0 ||
-      declaredLength > INFERENCE_MAX_BYTES
-    ) {
+    if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
       rejectNativeRequest(request, response, 413);
       return;
     }
@@ -291,7 +322,7 @@ export class SandboxIntegrationClient {
     request.once('aborted', cancel);
     response.once('close', cancelIfIncomplete);
     try {
-      const body = await collectNativeRequest(request);
+      const body = await collectNativeRequest(request, maxBytes);
       const upstream = await this.request(path, {
         body,
         headers,
@@ -409,7 +440,7 @@ function routeFamily(path: string): RouteFamily {
     return 'inference';
   }
   if (pathname.startsWith('/capabilities/')) {
-    throw new TypeError('Sandbox capability routes are disabled.');
+    return 'capability';
   }
   throw new TypeError('Sandbox Integration route namespace is not declared.');
 }
@@ -418,13 +449,19 @@ function routeFamily(path: string): RouteFamily {
 function requireRouteToken(
   family: RouteFamily,
   headers: Record<string, string>,
+  capabilityToken: string | null,
   controlToken: string | null,
   inferenceToken: string | null
 ): void {
   const authorization = Object.entries(headers).find(
     ([name]) => name.toLowerCase() === 'authorization'
   )?.[1];
-  const expected = family === 'worker-control' ? controlToken : inferenceToken;
+  const expected =
+    family === 'worker-control'
+      ? controlToken
+      : family === 'inference'
+        ? inferenceToken
+        : capabilityToken;
   if (!expected) {
     throw new TypeError(`Sandbox Integration ${family} route token is not bound.`);
   }
@@ -473,14 +510,14 @@ function nativeRequestHeaders(request: IncomingMessage): Record<string, string> 
 }
 
 /** Collects one encoded native request under the semantic aggregate bound. */
-async function collectNativeRequest(request: IncomingMessage): Promise<Buffer> {
+async function collectNativeRequest(request: IncomingMessage, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk as Uint8Array);
     bytes += buffer.byteLength;
-    if (bytes > INFERENCE_MAX_BYTES) {
-      throw new RangeError('Native inference request exceeds its byte bound.');
+    if (bytes > maxBytes) {
+      throw new RangeError('Native Integration request exceeds its byte bound.');
     }
     chunks.push(buffer);
   }

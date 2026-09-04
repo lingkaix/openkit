@@ -215,6 +215,8 @@ interface WorkerInferenceRouteFixture {
   readonly expireLease: () => void;
   /** Durable worker bearer token. */
   readonly token: string;
+  /** Capability token paired with the inference bearer. */
+  readonly workerCapabilityToken: string;
   /** Non-secret binding owned independently from the route credentials. */
   readonly sandboxBindingRef: string;
   /** Worker-control token paired with the inference bearer. */
@@ -315,6 +317,9 @@ function createWorkerInferenceRouteFixture(
   const workerInferenceToken = trustedRelay
     ? 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
     : 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD';
+  const workerCapabilityToken = trustedRelay
+    ? 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'
+    : 'EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE';
   let leaseLive = true;
   const workerControlGateway = new WorkerControlGateway({
     resolveTokenBinding: () =>
@@ -324,6 +329,7 @@ function createWorkerInferenceRouteFixture(
 
   workerControlGateway.registerSession(environmentPackage, {
     sandboxBindingRef,
+    workerCapabilityToken,
     workerControlToken,
     workerInferenceToken,
   });
@@ -386,6 +392,7 @@ function createWorkerInferenceRouteFixture(
     },
     sandboxBindingRef,
     token: workerInferenceToken,
+    workerCapabilityToken,
     workerControlToken,
     workerControlGateway,
   };
@@ -1313,6 +1320,7 @@ describe('worker inference routes', () => {
       },
       registeredAt: '2026-07-13T00:00:01.000Z',
       sandboxBindingRef: unhydrated.sandboxBindingRef,
+      workerCapabilityTokenHash: hashWorkerRouteToken(unhydrated.workerCapabilityToken),
       workerControlTokenHash: hashWorkerRouteToken(unhydrated.workerControlToken),
       workerInferenceTokenHash: hashWorkerRouteToken(unhydrated.token),
     });

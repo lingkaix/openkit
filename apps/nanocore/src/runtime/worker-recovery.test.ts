@@ -18,7 +18,10 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
-import { clearWorkerCheckpointAfterTerminalState } from './worker-recovery.js';
+import {
+  classifyClosedWorkerApprovalGate,
+  clearWorkerCheckpointAfterTerminalState,
+} from './worker-recovery.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 
 /**
@@ -204,6 +207,81 @@ function runtimeSha256(bytes: Uint8Array): string {
 }
 
 describe('worker recovery materialization', () => {
+  it.each([
+    ['granted', 'completed', 'completed'],
+    ['denied', 'interrupted', 'aborted'],
+  ] as const)('classifies a %s worker approval only after its terminal owner tuple closes', (decision, turnStatus, stopReason) => {
+    const store = createDemoStore();
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Close a worker approval', {
+      id: 'user_local',
+      kind: 'user',
+    });
+    const approval = store.createApproval({
+      createdAt: '2026-09-04T00:00:00.000Z',
+      description: 'Approve the exact worker effect.',
+      id: `ap_worker_${decision}`,
+      kind: 'permission',
+      resolvedAt: null,
+      status: 'pending',
+      threadId: turn.threadId,
+      title: 'Approve worker effect',
+      turnId: turn.id,
+      workspaceId: turn.workspaceId,
+    });
+    const request = store.createItem({
+      approvalRequestId: approval.id,
+      completedAt: '2026-09-04T00:00:00.000Z',
+      createdAt: '2026-09-04T00:00:00.000Z',
+      description: approval.description,
+      id: `it_worker_${decision}_request`,
+      kind: approval.kind,
+      status: 'completed',
+      threadId: turn.threadId,
+      title: approval.title,
+      turnId: turn.id,
+      type: 'approval-request',
+      workspaceId: turn.workspaceId,
+    });
+    const response = store.createItem({
+      actor: { id: 'user_local', kind: 'user' },
+      approvalRequestId: approval.id,
+      causationId: '00000000-0000-4000-8000-000000000401',
+      completedAt: '2026-09-04T00:01:00.000Z',
+      createdAt: '2026-09-04T00:01:00.000Z',
+      decision,
+      id: `it_worker_${decision}_decision`,
+      status: 'completed',
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'approval-decision',
+      workspaceId: turn.workspaceId,
+    });
+    store.updateApproval(approval.id, {
+      resolvedAt: '2026-09-04T00:01:00.000Z',
+      status: decision,
+    });
+    const closedTurn = store.updateTurn(turn.id, {
+      completedAt: '2026-09-04T00:01:00.000Z',
+      humanGate: null,
+      status: turnStatus,
+    });
+    store.emitTurnEvent(turn.id, {
+      data: { stopReason, turn: closedTurn, type: 'turn-completed' },
+      event: 'turn.completed',
+      requestId: '00000000-0000-4000-8000-000000000401',
+      threadId: turn.threadId,
+      turnId: turn.id,
+      workspaceId: turn.workspaceId,
+    });
+
+    expect(classifyClosedWorkerApprovalGate(store, closedTurn)).toEqual({
+      requestItemId: request.id,
+      responseItemId: response.id,
+      responseRequestId: '00000000-0000-4000-8000-000000000401',
+      stopReason,
+    });
+  });
+
   it('accepts the scheduler-owned evidence marker for a failed terminal closeout', () => {
     const source = readFileSync(new URL('./worker-recovery.ts', import.meta.url), 'utf8');
     const genericCloseout = source

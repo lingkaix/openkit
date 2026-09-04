@@ -19,6 +19,7 @@ import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
+import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createVerifiedWorkspaceExport } from './storage/workspace-transfer-routes.js';
@@ -175,6 +176,8 @@ it.each(
 it('durably fences an active owner deletion request before later lifecycle effects', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-route-'));
   const coreDb = openCoreDb(dataRoot);
+  const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+  const closeWorkspaceMcpSessions = vi.spyOn(workerMcpGateway, 'closeWorkspace');
 
   try {
     applyMigrations(coreDb);
@@ -186,6 +189,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
       mode: 'local',
       store,
       turnExecutor: new SimulatedTurnExecutor(),
+      workerMcpGateway,
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -214,6 +218,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
     });
 
     expect(response.status).toBe(202);
+    expect(closeWorkspaceMcpSessions).toHaveBeenCalledWith(workspace.id);
     expect(await response.json()).toEqual({
       deletion: {
         closureId: null,
@@ -288,6 +293,20 @@ it('durably fences an active owner deletion request before later lifecycle effec
       status: 'closed',
       updatedAt: new Date().toISOString(),
     });
+    closeWorkspaceMcpSessions.mockRejectedValueOnce(new Error('injected MCP cleanup failure'));
+    const cleanupFailure = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
+      body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    expect(cleanupFailure.status).toBe(409);
+    expect(await cleanupFailure.json()).toMatchObject({ code: 'recovery_required' });
+    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(true);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id)
+    ).toEqual({ revision: 1, status: 'active' });
     const retry = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
       body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
       headers: { 'content-type': 'application/json' },
@@ -298,6 +317,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
       deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
     });
   } finally {
+    await workerMcpGateway.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });
   }
