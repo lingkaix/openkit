@@ -32,7 +32,7 @@
     "test:coverage": "bash scripts/test-env.sh any pnpm -r --if-present test:coverage",
     "test:e2e:nano": "bash scripts/test-env.sh any bash -c 'turbo run build --filter=@openkit/nanocore && pnpm --filter @openkit/nanocore run test:e2e'",
     "test:e2e:web": "bash scripts/test-env.sh any bash -c 'turbo run build --filter=@openkit/nanocore --filter=@openkit/web && pnpm --filter @openkit/web e2e'",
-    "test:smoke": "bash scripts/test-env.sh any bash -c 'turbo run build --filter=@openkit/nanocore && node tests/smoke/nanocore-health-smoke.mjs && node tests/smoke/nanocore-worker-mcp-smoke.mjs && turbo run build --filter=@openkit/web && node tests/smoke/web-preview-smoke.mjs'",
+    "test:smoke": "bash scripts/test-env.sh any bash -c 'turbo run build --filter=@openkit/nanocore && node tests/smoke/nanocore-health-smoke.mjs && node tests/smoke/nanocore-worker-mcp-smoke.mjs --self-check && node tests/smoke/nanocore-worker-mcp-smoke.mjs && turbo run build --filter=@openkit/web && node tests/smoke/web-preview-smoke.mjs'",
     "test:e2e:real-codex": "bash scripts/test-env.sh host pnpm --filter @openkit/nanocore run test:e2e:real-codex",
     "test:e2e:real-provider": "bash scripts/test-env.sh host node apps/nanocore/e2e/pi-ai-real-provider-runner.mjs",
     "test:e2e:real-subscription:preflight": "bash scripts/test-env.sh any bash -c 'pnpm --filter @openkit/nanocore... build && node --test apps/nanocore/e2e/provider-subscription-real-lifecycle-runner.test.mjs'",

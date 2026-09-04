@@ -15,6 +15,9 @@ import { seedDemoWorkspaceAuthority, seedDemoWorkspaceDataRoot } from '../suppor
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const smokeRequestId = '0190f4c8-0000-7000-8000-000000000601';
 const integrationHeader = 'x-openkit-integration-binding';
+const smokeAdjudicationTimeoutMs = 5_000;
+
+class SmokeAdjudicationTimeout extends Error {}
 
 /** Runs one public Task through the built NanoCore, native NanoHost carriage, and a real SDK MCP client. */
 async function main() {
@@ -27,6 +30,7 @@ async function main() {
   let child;
   let h2;
   let mcpServerPid = null;
+  const observation = {};
 
   try {
     await seedFixture(dataRoot, repositoryPath, callFile, nanoHostPort);
@@ -59,7 +63,8 @@ async function main() {
       { authorization: `Bearer ${nanoHostSecret}`, 'content-type': 'application/json' }
     );
     assert.equal(admission.status, 200, responseFailure('NanoHost admission', admission));
-    assert.deepEqual(pickJson(admission, ['mayCarryWork', 'role']), {
+    const admissionProjection = pickJson(admission, ['mayCarryWork', 'role']);
+    assert.deepEqual(admissionProjection, {
       mayCarryWork: true,
       role: 'authoritative',
     });
@@ -205,7 +210,8 @@ async function main() {
       'Worker-control token'
     );
     const inferenceToken = requireString(started.body.inferenceToken, 'Inference token');
-    assert.equal(new Set([capabilityToken, workerControlToken, inferenceToken]).size, 3);
+    const distinctTokenCount = new Set([capabilityToken, workerControlToken, inferenceToken]).size;
+    assert.equal(distinctTokenCount, 3);
     assert.equal(started.body.packageSnapshotId, environmentPackage.snapshotId);
     assert.equal(started.body.turnId, environmentPackage.scope.turnId);
     const lineage = {
@@ -245,10 +251,8 @@ async function main() {
         })
       );
       const tools = await mcpClient.listTools();
-      assert.deepEqual(
-        tools.tools.map((tool) => tool.name),
-        ['echo']
-      );
+      const toolNames = tools.tools.map((tool) => tool.name);
+      assert.deepEqual(toolNames, ['echo']);
       const result = await mcpClient.callTool({
         arguments: { message: 'l5-packaged' },
         name: 'echo',
@@ -257,10 +261,14 @@ async function main() {
       assert.equal(result.structuredContent?.message, 'l5-packaged');
       mcpServerPid = Number(result.structuredContent?.pid);
       assert.ok(Number.isSafeInteger(mcpServerPid) && mcpServerPid > 0, 'MCP stub pid is invalid.');
+      observation.toolNames = toolNames;
+      observation.toolContent = result.content;
+      observation.toolMessage = result.structuredContent?.message;
     } finally {
       await mcpClient.close();
     }
-    assert.deepEqual((await readFile(callFile, 'utf8')).trim().split('\n'), ['l5-packaged']);
+    const callLog = (await readFile(callFile, 'utf8')).trim().split('\n');
+    assert.deepEqual(callLog, ['l5-packaged']);
 
     const terminalBody = {
       evidenceManifestDigests: {},
@@ -368,7 +376,6 @@ async function main() {
     assert.equal(task.turn?.status, 'completed');
     assert.equal(task.turn?.humanGate, null);
     assert.equal(task.turn?.id, environmentPackage.scope.turnId);
-    await assertDurableOutcome(dataRoot, task.turn.id);
 
     await stopProcess(child);
     await Promise.race([
@@ -379,6 +386,31 @@ async function main() {
     ]);
     await waitForProcessExit(mcpServerPid);
     await assertPortClosed(nanoHostPort);
+    const terminal = await settleSmokeAdjudication(async () => ({
+      admission: admissionProjection,
+      callLog,
+      cleanup: { h2Closed: true, listenerClosed: true, mcpProcessExited: true },
+      distinctTokenCount,
+      durable: await readDurableOutcome(dataRoot, task.turn.id),
+      environmentPackagePresent: environmentPackage !== null,
+      exports,
+      harnessOperations,
+      imageReference: image.command.imageReference,
+      importObserved: importCount >= 1,
+      readinessStatus: readiness.status,
+      targetObservable: existsSync(dataRoot),
+      task: {
+        humanGate: task.turn?.humanGate,
+        httpStatus: taskResponse.status,
+        state: task.state,
+        turnMatchesPackage: task.turn?.id === environmentPackage.scope.turnId,
+        turnStatus: task.turn?.status,
+      },
+      toolContent: observation.toolContent,
+      toolMessage: observation.toolMessage,
+      toolNames: observation.toolNames,
+    }));
+    if (terminal.status !== 'pass') throw terminal.error;
     console.log('OpenKit built public Task Worker MCP smoke PASS');
   } finally {
     h2?.destroy();
@@ -397,6 +429,98 @@ async function main() {
     await rm(dataRoot, { force: true, recursive: true });
     assert.equal(existsSync(repositoryPath), false);
     assert.equal(existsSync(dataRoot), false);
+  }
+}
+
+/** Runs the shared finite smoke adjudicator against pass, failure, and timeout stand-ins. */
+async function runHarnessAdmissionSelfCheck() {
+  const standInRoot = await mkdtemp(join(tmpdir(), 'worker-tool-smoke-admission-'));
+  const marker = join(standInRoot, 'observable');
+  try {
+    await writeFile(marker, 'stand-in remains observable');
+    const passed = await settleSmokeAdjudication(async () => ({
+      ...expectedSmokeObservation(),
+      targetObservable: existsSync(marker),
+    }));
+    assert.equal(passed.status, 'pass');
+
+    const failedObservation = structuredClone(expectedSmokeObservation());
+    failedObservation.cleanup.listenerClosed = false;
+    const failed = await settleSmokeAdjudication(async () => failedObservation);
+    assert.equal(failed.status, 'fail');
+
+    const timedOut = await settleSmokeAdjudication(() => new Promise(() => undefined), 25);
+    assert.equal(timedOut.status, 'timeout');
+    assert.equal(existsSync(marker), true);
+    console.log('OpenKit Worker MCP smoke Harness Admission PASS');
+  } finally {
+    await rm(standInRoot, { force: true, recursive: true });
+  }
+}
+
+/** Returns the complete normalized observation that the product smoke must match. */
+function expectedSmokeObservation() {
+  return {
+    admission: { mayCarryWork: true, role: 'authoritative' },
+    callLog: ['l5-packaged'],
+    cleanup: { h2Closed: true, listenerClosed: true, mcpProcessExited: true },
+    distinctTokenCount: 3,
+    durable: {
+      audit: [{ action: 'capability.finish', outcome: 'succeeded' }],
+      backend: { state: 'cleaned', workspaceHandoffState: 'complete' },
+      call: { itemIdValid: true, schemaSnapshotIdValid: true, status: 'succeeded' },
+      item: { server: 'echo', status: 'completed', tool: 'echo', type: 'tool-call' },
+      lease: { status: 'released' },
+      permission: [{ enforcementPoint: 'worker_capability.mcp.call_tool', result: 'allow' }],
+      schema: { catalogEntryId: 'echo', source: 'live', toolNames: ['echo'] },
+      usage: [{ quantity: 1, unit: 'tool_calls' }],
+    },
+    environmentPackagePresent: true,
+    exports: [
+      { presence: 'required', relativePath: 'events.jsonl' },
+      { presence: 'required', relativePath: 'items.jsonl' },
+      { presence: 'required', relativePath: 'artifacts.jsonl' },
+    ],
+    harnessOperations: ['session.open', 'turn.start', 'session.inspect', 'session.close'],
+    imageReference: 'openkit/worker-codex:dev',
+    importObserved: true,
+    readinessStatus: 204,
+    targetObservable: true,
+    task: {
+      humanGate: null,
+      httpStatus: 202,
+      state: 'completed',
+      turnMatchesPackage: true,
+      turnStatus: 'completed',
+    },
+    toolContent: [{ text: 'l5-packaged', type: 'text' }],
+    toolMessage: 'l5-packaged',
+    toolNames: ['echo'],
+  };
+}
+
+/** Converts one bounded observation into the smoke's shared terminal verdict. */
+async function settleSmokeAdjudication(readObservation, timeoutMs = smokeAdjudicationTimeoutMs) {
+  let timeout;
+  try {
+    const observation = await Promise.race([
+      readObservation(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new SmokeAdjudicationTimeout('Worker MCP smoke adjudication timed out.')),
+          timeoutMs
+        );
+      }),
+    ]);
+    assert.deepEqual(observation, expectedSmokeObservation());
+    return { status: 'pass' };
+  } catch (error) {
+    return {
+      error,
+      status: error instanceof SmokeAdjudicationTimeout ? 'timeout' : 'fail',
+    };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -542,34 +666,34 @@ async function issueNanoHostToken(dataRoot) {
   }
 }
 
-/** Verifies the durable call, policy, schema, audit, usage, Item, backend, and lease projections. */
-async function assertDurableOutcome(dataRoot, turnId) {
+/** Reads the normalized durable call, policy, schema, audit, usage, Item, backend, and lease facts. */
+async function readDurableOutcome(dataRoot, turnId) {
   const [{ FsStore }, { openCoreDb, openWorkspaceDb }] = await Promise.all([
     import('../../apps/nanocore/dist/lib/store.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
+  let backend;
+  let lease;
   try {
-    assert.deepEqual(
-      coreDb.sqlite
-        .prepare(
-          `SELECT state, workspace_handoff_state AS workspaceHandoffState
-           FROM worker_backend_sessions WHERE turn_id = ?`
-        )
-        .get(turnId),
-      { state: 'cleaned', workspaceHandoffState: 'complete' }
-    );
-    assert.deepEqual(
-      coreDb.sqlite
-        .prepare('SELECT status FROM scheduler_session_leases WHERE turn_id = ?')
-        .get(turnId),
-      { status: 'released' }
-    );
+    backend = coreDb.sqlite
+      .prepare(
+        `SELECT state, workspace_handoff_state AS workspaceHandoffState
+         FROM worker_backend_sessions WHERE turn_id = ?`
+      )
+      .get(turnId);
+    lease = coreDb.sqlite
+      .prepare('SELECT status FROM scheduler_session_leases WHERE turn_id = ?')
+      .get(turnId);
   } finally {
     coreDb.sqlite.close();
   }
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-  let call;
+  let audit = [];
+  let call = null;
+  let permission = [];
+  let schema = null;
+  let usage = [];
   try {
     const calls = workspaceDb.sqlite
       .prepare(
@@ -577,65 +701,70 @@ async function assertDurableOutcome(dataRoot, turnId) {
          FROM capability_calls WHERE operation = 'mcp.call_tool'`
       )
       .all();
-    assert.equal(calls.length, 1);
-    [call] = calls;
-    assert.equal(call.status, 'succeeded');
-    assert.match(call.itemId, /^it_mcp_/u);
-    assert.match(call.schemaSnapshotId, /^mcpsnap_echo_/u);
-    const schema = workspaceDb.sqlite
-      .prepare(
-        `SELECT catalog_entry_id AS catalogEntryId, source, tools_json AS toolsJson
-         FROM mcp_tool_schema_snapshots WHERE snapshot_id = ?`
-      )
-      .get(call.schemaSnapshotId);
-    assert.equal(schema.catalogEntryId, 'echo');
-    assert.equal(schema.source, 'live');
-    assert.deepEqual(
-      JSON.parse(schema.toolsJson).map((tool) => tool.name),
-      ['echo']
-    );
-    assert.deepEqual(
-      workspaceDb.sqlite
+    if (calls.length === 1) {
+      [call] = calls;
+      const schemaRow = workspaceDb.sqlite
+        .prepare(
+          `SELECT catalog_entry_id AS catalogEntryId, source, tools_json AS toolsJson
+           FROM mcp_tool_schema_snapshots WHERE snapshot_id = ?`
+        )
+        .get(call.schemaSnapshotId);
+      schema = schemaRow
+        ? {
+            catalogEntryId: schemaRow.catalogEntryId,
+            source: schemaRow.source,
+            toolNames: JSON.parse(schemaRow.toolsJson).map((tool) => tool.name),
+          }
+        : null;
+      usage = workspaceDb.sqlite
         .prepare(
           `SELECT quantity, unit FROM usage_records
            WHERE capability_call_id = ? AND unit = 'tool_calls'`
         )
-        .all(call.callId),
-      [{ quantity: 1, unit: 'tool_calls' }]
-    );
-    assert.deepEqual(
-      workspaceDb.sqlite
-        .prepare(
-          `SELECT enforcement_point AS enforcementPoint, result
-           FROM permission_decisions WHERE action = 'tool.use'`
-        )
-        .all(),
-      [{ enforcementPoint: 'worker_capability.mcp.call_tool', result: 'allow' }]
-    );
-    assert.deepEqual(
-      workspaceDb.sqlite
+        .all(call.callId);
+      audit = workspaceDb.sqlite
         .prepare(
           `SELECT action, outcome FROM audit_events
            WHERE capability_call_id = ? AND action = 'capability.finish'`
         )
-        .all(call.callId),
-      [{ action: 'capability.finish', outcome: 'succeeded' }]
-    );
+        .all(call.callId);
+    }
+    permission = workspaceDb.sqlite
+      .prepare(
+        `SELECT enforcement_point AS enforcementPoint, result
+         FROM permission_decisions WHERE action = 'tool.use'`
+      )
+      .all();
   } finally {
     workspaceDb.sqlite.close();
   }
-  const item = new FsStore({ dataRoot })
-    .getTurnById(turnId)
-    .items.find((candidate) => candidate.id === call.itemId);
-  assert.deepEqual(
-    {
+  const item = call
+    ? new FsStore({ dataRoot })
+        .getTurnById(turnId)
+        .items.find((candidate) => candidate.id === call.itemId)
+    : null;
+  return {
+    audit,
+    backend,
+    call:
+      call === null
+        ? null
+        : {
+            itemIdValid: /^it_mcp_/u.test(call.itemId),
+            schemaSnapshotIdValid: /^mcpsnap_echo_/u.test(call.schemaSnapshotId),
+            status: call.status,
+          },
+    item: {
       server: item?.server,
       status: item?.status,
       tool: item?.tool,
       type: item?.type,
     },
-    { server: 'echo', status: 'completed', tool: 'echo', type: 'tool-call' }
-  );
+    lease,
+    permission,
+    schema,
+    usage,
+  };
 }
 
 /** Verifies one raw Context import response and returns its decoded metadata. */
@@ -991,4 +1120,8 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-await main();
+if (process.argv[2] === '--self-check') {
+  await runHarnessAdmissionSelfCheck();
+} else {
+  await main();
+}

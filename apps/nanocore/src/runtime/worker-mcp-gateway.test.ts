@@ -164,7 +164,7 @@ describe('worker MCP gateway', () => {
     }
   });
 
-  it('classifies bounded result, crash, and timeout effects', async () => {
+  it('classifies bounded result, crash, and tool-error effects', async () => {
     const gateway = createDefaultWorkerMcpGateway();
     const server = resolveWorkspaceMcpServer({
       catalog: {
@@ -179,7 +179,7 @@ describe('worker MCP gateway', () => {
             id: 'echo',
             pinnedSchemaSnapshotId: null,
             schemaPolicy: 'tracking',
-            timeoutMs: 500,
+            timeoutMs: 5_000,
             transport: {
               args: [fileURLToPath(new URL('../test-support/mcp-stdio-stub.mjs', import.meta.url))],
               command: process.execPath,
@@ -211,6 +211,27 @@ describe('worker MCP gateway', () => {
       ).rejects.toMatchObject({ code: 'mcp-call-failed', upstreamEffect: 'unknown' });
       await expect(
         gateway.callTool({
+          arguments: { message: 'tool-error' },
+          server,
+          toolName: 'echo',
+          workspaceId: 'ws_demo',
+        })
+      ).rejects.toMatchObject({ code: 'mcp-call-failed', upstreamEffect: 'contacted' });
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('classifies a tool-call timeout after successful initialization', async () => {
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = stdioTestServer(5_000);
+
+    try {
+      await expect(gateway.listTools({ server, workspaceId: 'ws_demo' })).resolves.toMatchObject({
+        tools: [{ name: 'echo' }],
+      });
+      await expect(
+        gateway.callTool({
           arguments: { message: 'timeout' },
           server,
           toolName: 'echo',
@@ -218,14 +239,6 @@ describe('worker MCP gateway', () => {
         })
       ).rejects.toMatchObject({ code: 'mcp-timeout', upstreamEffect: 'unknown' });
       expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
-      await expect(
-        gateway.callTool({
-          arguments: { message: 'tool-error' },
-          server,
-          toolName: 'echo',
-          workspaceId: 'ws_demo',
-        })
-      ).rejects.toMatchObject({ code: 'mcp-call-failed', upstreamEffect: 'contacted' });
     } finally {
       await gateway.close();
     }
@@ -583,7 +596,7 @@ describe('worker MCP gateway', () => {
   });
 
   it('reaps a credential-bearing stdio descendant with its owned process group', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-process-group-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-process-group-'));
     const pidFile = join(dataRoot, 'descendant.pid');
     const credential = 'stdio-descendant-private-value';
     const coreDb = openCoreDb(dataRoot);
@@ -631,7 +644,7 @@ describe('worker MCP gateway', () => {
   });
 
   it('reaps a credential-bearing descendant when stdio initialization exits', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-init-exit-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-init-exit-'));
     const pidFile = join(dataRoot, 'descendant.pid');
     const { coreDb, gateway } = createAuditedGateway(dataRoot);
 
@@ -658,7 +671,7 @@ describe('worker MCP gateway', () => {
   });
 
   it('does not spawn a credential-bearing stdio server when its starting audit fails', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-audit-failure-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-audit-failure-'));
     const pidFile = join(dataRoot, 'descendant.pid');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -696,7 +709,7 @@ describe('worker MCP gateway', () => {
   });
 
   it('reaps the stdio server and credential-bearing descendant after NanoCore process death', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-parent-death-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-parent-death-'));
     const pidFile = join(dataRoot, 'descendant.pid');
     const child = spawn(
       process.execPath,
@@ -1044,7 +1057,7 @@ describe('worker MCP gateway', () => {
 });
 
 /** Creates one disposable durable Audit owner for credential-bearing gateway tests. */
-function createAuditedGateway(dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-audit-'))) {
+function createAuditedGateway(dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-audit-'))) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   return { coreDb, gateway: createDefaultWorkerMcpGateway(coreDb) };
