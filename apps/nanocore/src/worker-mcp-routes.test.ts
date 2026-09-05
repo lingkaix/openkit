@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import {
   ListHumanAttentionResponseSchema,
   StartTaskModeResponseSchema,
+  SubmitConversationResponseSchema,
   WorkspaceExportResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -622,7 +623,21 @@ describe('worker MCP routes', () => {
     }
   });
 
-  it('runs a public Task Gate and one approved successor call through the real worker lifecycle', async () => {
+  it.each([
+    {
+      entry: 'direct Task',
+      ownerCommand: 'task.start',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
+    },
+    {
+      entry: 'selected warm Worker conversation',
+      ownerCommand: 'conversation.submit',
+      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+    },
+  ])('runs a public $entry Gate and one approved successor call through the real worker lifecycle', async ({
+    ownerCommand,
+    path,
+  }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-'));
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-repository-'));
     const exportRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-export-'));
@@ -670,6 +685,20 @@ describe('worker MCP routes', () => {
             models: ['openai/gpt-5.2'],
           },
         ]),
+        workspaceConfigs: [
+          {
+            config: {
+              schemaVersion: 1,
+              workspace: {
+                agents: [{ agentId: agentSetup.manifest.id, profileId: 'default' }],
+                defaultAgentId: agentSetup.manifest.id,
+                name: 'Demo Workspace',
+              },
+            },
+            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
+            workspaceId: 'ws_demo',
+          },
+        ],
         workspaceMcpServerCatalogs: [
           {
             catalog,
@@ -970,10 +999,16 @@ describe('worker MCP routes', () => {
       expect(repositoryResponse.status).toBe(200);
 
       let firstSettled = false;
-      const firstRequest = app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
+      const firstRequest = app.request(path, {
         body: JSON.stringify({
           input: 'Implement the bounded MCP Task fix.',
           requestId: '0190f4c8-0000-7000-8000-000000000501',
+          ...(ownerCommand === 'conversation.submit'
+            ? {
+                artifactRefs: [],
+                targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
+              }
+            : {}),
         }),
         headers: { 'content-type': 'application/json' },
         method: 'POST',
@@ -991,11 +1026,23 @@ describe('worker MCP routes', () => {
         driveTask(true, () => firstSettled),
       ]);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
-      const firstTask = StartTaskModeResponseSchema.parse(await firstResponse.json());
-      expect(firstTask).toMatchObject({
-        state: 'awaiting-human',
-        turn: { humanGate: { kind: 'approval' }, status: 'awaiting_human' },
+      const firstTask =
+        ownerCommand === 'conversation.submit'
+          ? SubmitConversationResponseSchema.parse(await firstResponse.json())
+          : StartTaskModeResponseSchema.parse(await firstResponse.json());
+      expect(firstTask.turn).toMatchObject({
+        humanGate: { kind: 'approval' },
+        status: 'awaiting_human',
       });
+      if ('outcome' in firstTask) {
+        expect(firstTask).toMatchObject({
+          outcome: 'accepted',
+          receivingThreadId: 'th_demo',
+          targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
+        });
+      } else {
+        expect(firstTask.state).toBe('awaiting-human');
+      }
       expect(store.getAgentSession(firstRun.agentSessionId).status).toBe('suspended');
       const firstBackend = coreDb.sqlite
         .prepare(
@@ -1052,6 +1099,15 @@ describe('worker MCP routes', () => {
           .prepare('SELECT status FROM scheduler_session_leases WHERE turn_id = ?')
           .get(firstTask.turn.id)
       ).toEqual({ status: 'released' });
+      expect(
+        store
+          .listCommandRequests()
+          .filter(
+            (receipt) =>
+              receipt.response.kind === 'turn' && receipt.response.id === firstTask.turn.id
+          )
+          .map((receipt) => receipt.command)
+      ).toEqual([ownerCommand]);
 
       let secondSettled = false;
       const secondRequest = app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
@@ -1077,6 +1133,7 @@ describe('worker MCP routes', () => {
       expect(secondResponse.status, await secondResponse.clone().text()).toBe(202);
       const secondTask = StartTaskModeResponseSchema.parse(await secondResponse.json());
       expect(secondTask).toMatchObject({ state: 'completed', turn: { status: 'completed' } });
+      expect(secondTask.turn.id).not.toBe(firstTask.turn.id);
       expect(secondRun.agentSessionId).not.toBe(firstRun.agentSessionId);
       expect(secondRun.toolCall[0]).toMatchObject({ status: 'fulfilled' });
       expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
@@ -1091,6 +1148,15 @@ describe('worker MCP routes', () => {
           )
           .all()
       ).toEqual([{ status: 'denied' }, { status: 'succeeded' }]);
+      expect(
+        workspaceDb.sqlite
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM permission_decisions
+             WHERE action = 'tool.use' AND reason_code = 'mcp_approval_grant_reauthorized'`
+          )
+          .get()
+      ).toEqual({ count: 1 });
       expect(
         workspaceDb.sqlite
           .prepare(
