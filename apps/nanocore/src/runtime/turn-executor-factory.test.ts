@@ -719,7 +719,7 @@ describe('createConfiguredTurnExecutor', () => {
         'd'.repeat(64),
         'target_continuity_key',
         'codex',
-        '0.144.1'
+        '0.153.4'
       );
       const input = {
         agentSessionCompatibilityKey: sessionCompatibilityKey,
@@ -2529,7 +2529,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-09-06T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-capacity-guard',
         harnessCompatibilityKey: 'c'.repeat(64),
         harnessInstanceId: 'harness-capacity-guard',
