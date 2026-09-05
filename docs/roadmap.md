@@ -144,7 +144,7 @@ Reversible shortcuts are accepted at this stage. These are not reversible, and n
 
 - [ ] R056 — Workers can discover and call governed Core capabilities through one supported capability interface with typed results and current authorization.
 - [ ] R057 — Workers can request bounded Knowledge, Artifact, and diagnostic capabilities without receiving unrestricted access to Core stores or runtime internals.
-- [ ] R058 — Workers can use supported MCP servers through governed lifecycle, schema, credential, approval, usage, audit, and teardown behavior.
+- [x] R058 — Workers can use supported MCP servers through governed lifecycle, schema, credential, approval, usage, audit, and teardown behavior.
 - [ ] R059 — Capabilities have an inspectable catalog with per-capability limits, rate budgets, concurrency budgets, and explainable Policy decisions.
 - [ ] R060 — Sandbox time, memory, storage, network volume, external usage, and cost are measured with durable attribution and useful cost projection.
 - [ ] R061 — A Worker can use one authenticated third-party API without seeing the credential or bypassing approval, Policy, rate, Usage, and Audit controls.
