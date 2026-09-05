@@ -954,6 +954,7 @@ function capabilityUsageResponse() {
         agentId: 'assistant',
         agentSessionId: 'session_demo',
         packageSnapshotId: 'aep_snapshot_1',
+        schemaSnapshotId: null,
         runtimeOriginRef: 'rto_0123456789abcdef01234567',
         runtimeCacheLineageRef: 'rcl_89abcdef0123456789abcdef',
         sourceIds: ['repo_default'],
