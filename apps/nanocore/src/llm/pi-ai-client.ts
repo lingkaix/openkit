@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   type AssistantMessage,
   type AssistantMessageEvent,
@@ -40,7 +41,10 @@ import type {
 } from './openai-compatible-client.js';
 import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
-import { isWorkerAdditionalToolsItem } from './worker-inference-tool-policy.js';
+import {
+  isWorkerAdditionalToolsItem,
+  WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+} from './worker-inference-tool-policy.js';
 
 const ZERO_USAGE = {
   input: 0,
@@ -716,10 +720,8 @@ export class PiAiGatewayClient {
       }
       return {
         ...record,
-        ...(additionalTools
-          ? { input: [additionalTools.item, ...(record.input as unknown[])] }
-          : {}),
-        ...(additionalTools ? { tools: additionalTools.item.tools } : {}),
+        ...(additionalTools ? { input: additionalTools.providerInput } : {}),
+        ...(additionalTools ? { tools: additionalTools.providerTools } : {}),
         ...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
         ...(parallelToolCalls !== undefined ? { parallel_tool_calls: parallelToolCalls } : {}),
         ...(reasoning?.context === 'all_turns'
@@ -1091,14 +1093,21 @@ type ResponsesToolKind = 'custom' | 'function';
 interface ResponsesAdditionalTools {
   /** Exact message-anchored item replayed through pi-ai's payload hook. */
   readonly item: {
+    readonly id?: string;
     readonly role: 'developer';
     readonly tools: readonly Record<string, unknown>[];
     readonly type: 'additional_tools';
   };
+  /** Definitions keyed by exact namespace and callable name for conflict checks. */
+  readonly definitions: Map<string, Readonly<Record<string, unknown>>>;
+  /** Whether this request declares the exact client-executed search tool. */
+  readonly hasToolSearch: boolean;
   /** Tool kind keyed by namespace and name for public response reconstruction. */
-  readonly kinds: ReadonlyMap<string, ResponsesToolKind>;
-  /** Stock pi-ai grammar declarations used only to replay prior custom-call history. */
-  readonly replayTools: NonNullable<Context['tools']>;
+  readonly kinds: Map<string, ResponsesToolKind>;
+  /** Validated native history lowered only where stock pi-ai lacks a parser shape. */
+  readonly providerInput?: readonly unknown[];
+  /** Exact provider-facing tools, including the reserved search lowering. */
+  readonly providerTools: readonly Record<string, unknown>[];
 }
 
 const CODEX_RESPONSES_REQUEST_FIELDS = new Set([
@@ -1181,8 +1190,14 @@ export function assertCodexResponsesRequestAdmission(
     throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning');
   }
   const additionalTools = readResponsesAdditionalTools(request.input);
-  assertResponsesToolHistoryDeclarations(request.input, additionalTools);
-  return additionalTools;
+  if (!additionalTools) {
+    assertResponsesToolHistoryDeclarations(request.input, undefined);
+    return undefined;
+  }
+  return {
+    ...additionalTools,
+    providerInput: lowerCodexResponsesInput(request.input, additionalTools),
+  };
 }
 
 /** Rejects undeclared or type-conflicting tool history before credential or provider access. */
@@ -1197,6 +1212,9 @@ function assertResponsesToolHistoryDeclarations(
   const carriers = new Set<string>();
   for (const value of input) {
     const item = readRecord(value);
+    if (item?.type === 'additional_tools') {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools position');
+    }
     if (item?.type === 'function_call' || item?.type === 'custom_tool_call') {
       const kind = item.type === 'custom_tool_call' ? 'custom' : 'function';
       const namespace = typeof item.namespace === 'string' ? item.namespace : undefined;
@@ -1238,6 +1256,9 @@ function assertResponsesToolHistoryDeclarations(
       readResponsesTextContent(item.output);
     }
   }
+  if ([...calls.values()].some((queue) => queue.length > 0)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses tool call lineage');
+  }
 }
 
 /**
@@ -1259,7 +1280,10 @@ function toPiResponsesContext(
     Array<{ readonly carrierId: string; readonly kind: ResponsesToolKind; readonly name: string }>
   >();
   const input =
-    typeof request.input === 'string' ? [{ role: 'user', content: request.input }] : request.input;
+    additionalTools?.providerInput ??
+    (typeof request.input === 'string'
+      ? [{ role: 'user', content: request.input }]
+      : request.input);
 
   for (const [index, item] of input.entries()) {
     const record = readRecord(item);
@@ -1268,8 +1292,11 @@ function toPiResponsesContext(
     }
     const timestamp = index + 1;
 
-    if (record === additionalTools?.item) {
-      continue;
+    if (record.type === 'additional_tools') {
+      if (additionalTools?.providerInput || (index === 0 && additionalTools)) {
+        continue;
+      }
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools position');
     }
 
     if (record.type === 'function_call' || record.type === 'custom_tool_call') {
@@ -1293,7 +1320,15 @@ function toPiResponsesContext(
           typeof record.namespace === 'string' ? record.namespace : undefined
         )
       );
-      if ((additionalTools && declaredKind !== kind) || (!additionalTools && kind === 'custom')) {
+      const reservedSearchCall =
+        kind === 'function' &&
+        record.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
+        additionalTools?.hasToolSearch === true &&
+        record.namespace === undefined;
+      if (
+        (!reservedSearchCall && additionalTools && declaredKind !== kind) ||
+        (!additionalTools && kind === 'custom')
+      ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type} declaration`);
       }
       const argumentsValue =
@@ -1378,7 +1413,9 @@ function toPiResponsesContext(
     }
 
     if (record.role === 'system' || record.role === 'developer') {
-      instructions.push(readResponsesTextContent(record.content));
+      if (!additionalTools) {
+        instructions.push(readResponsesTextContent(record.content));
+      }
       continue;
     }
     if (record.role === 'user') {
@@ -1406,7 +1443,7 @@ function toPiResponsesContext(
     throw new GatewayUnsupportedFeatureError('pi-ai Responses input role');
   }
 
-  const tools = additionalTools?.replayTools ?? toPiTools(request.tools);
+  const tools = additionalTools ? [] : toPiTools(request.tools);
   return {
     messages,
     ...(instructions.filter(Boolean).length > 0
@@ -1435,33 +1472,373 @@ function readResponsesAdditionalTools(
   if (!isWorkerAdditionalToolsItem(record)) {
     throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools');
   }
+  const definitions = new Map<string, Readonly<Record<string, unknown>>>();
   const kinds = new Map<string, ResponsesToolKind>();
-  const replayTools: NonNullable<Context['tools']> = [];
-  for (const tool of record.tools) {
-    if (tool.type === 'namespace') {
-      for (const child of tool.tools as readonly Record<string, unknown>[]) {
-        if (child.type === 'custom' || child.type === 'function') {
-          kinds.set(responsesToolKey(child.name as string, tool.name as string), child.type);
-        }
+  const hasToolSearch = registerResponsesToolDefinitions(record.tools, definitions, kinds, true);
+  return {
+    definitions,
+    hasToolSearch,
+    item: record,
+    kinds,
+    providerTools: lowerResponsesToolDefinitions(record.tools, false),
+  };
+}
+
+/** Registers exact local declarations and rejects request-local definition conflicts. */
+function registerResponsesToolDefinitions(
+  tools: readonly Record<string, unknown>[],
+  definitions: Map<string, Readonly<Record<string, unknown>>>,
+  kinds: Map<string, ResponsesToolKind>,
+  allowToolSearch: boolean
+): boolean {
+  let hasToolSearch = false;
+  for (const tool of tools) {
+    if (tool.type === 'tool_search') {
+      if (!allowToolSearch || hasToolSearch) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses tool search declaration');
       }
-    } else if (tool.type === 'custom' || tool.type === 'function') {
-      kinds.set(responsesToolKey(tool.name as string), tool.type);
-      if (tool.type === 'custom') {
-        replayTools.push({
-          constrainedSampling: { type: 'grammar', variants: { openai_regex: '.*' } },
-          description: typeof tool.description === 'string' ? tool.description : '',
-          name: tool.name as string,
-          parameters: {
-            additionalProperties: false,
-            properties: { input: { type: 'string' } },
-            required: ['input'],
-            type: 'object',
-          },
-        });
+      hasToolSearch = true;
+      continue;
+    }
+    const namespace = tool.type === 'namespace' ? (tool.name as string) : undefined;
+    const candidates =
+      tool.type === 'namespace'
+        ? (tool.tools as readonly Record<string, unknown>[])
+        : ([tool] as const);
+    for (const candidate of candidates) {
+      if (candidate.type !== 'custom' && candidate.type !== 'function') {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools');
+      }
+      const name = candidate.name as string;
+      const key = responsesToolKey(name, namespace);
+      const kind = candidate.type;
+      const existing = definitions.get(key);
+      if (existing && !isDeepStrictEqual(existing, candidate)) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses tool definition conflict');
+      }
+      if (!existing) {
+        definitions.set(key, candidate);
+        kinds.set(key, kind);
       }
     }
   }
-  return { item: record, kinds, replayTools };
+  return hasToolSearch;
+}
+
+/** Lowers tool search and optionally activates deferred local declarations. */
+function lowerResponsesToolDefinitions(
+  tools: readonly Record<string, unknown>[],
+  activateDeferred: boolean
+): readonly Record<string, unknown>[] {
+  return tools.map((tool) => {
+    if (tool.type === 'tool_search') {
+      return {
+        description: tool.description,
+        name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+        parameters: tool.parameters,
+        type: 'function',
+      };
+    }
+    if (tool.type === 'namespace') {
+      return {
+        ...tool,
+        tools: lowerResponsesToolDefinitions(
+          tool.tools as readonly Record<string, unknown>[],
+          activateDeferred
+        ),
+      };
+    }
+    if (!activateDeferred) {
+      return tool;
+    }
+    const { defer_loading: _deferLoading, ...active } = tool;
+    return active;
+  });
+}
+
+/** Builds the exact provider input while lowering only client tool-search lifecycle items. */
+function lowerCodexResponsesInput(
+  input: OpenAICompatibleResponsesRequest['input'],
+  additionalTools: ResponsesAdditionalTools
+): readonly unknown[] {
+  if (!Array.isArray(input)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools input');
+  }
+  const lowered: unknown[] = [];
+  const ordinaryCalls = new Map<
+    string,
+    Array<{ readonly kind: ResponsesToolKind; readonly name: string; readonly namespace?: string }>
+  >();
+  const searchCalls = new Set<string>();
+  const carriers = new Set<string>();
+
+  for (const [index, value] of input.entries()) {
+    const item = readRecord(value);
+    if (!item) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses input');
+    }
+    if (index === 0 && item === additionalTools.item) {
+      lowered.push({ ...additionalTools.item, tools: additionalTools.providerTools });
+      continue;
+    }
+    if (item.type === 'additional_tools') {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools position');
+    }
+    if (item.type === 'tool_search_call') {
+      assertExactResponsesKeys(
+        item,
+        ['arguments', 'call_id', 'execution', 'id', 'status', 'type'],
+        'tool_search_call'
+      );
+      const argumentsValue = readRecord(item.arguments);
+      if (
+        !additionalTools.hasToolSearch ||
+        typeof item.call_id !== 'string' ||
+        !item.call_id ||
+        item.execution !== 'client' ||
+        !argumentsValue ||
+        (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
+        (item.status !== undefined && item.status !== 'completed') ||
+        searchCalls.has(item.call_id)
+      ) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses tool_search_call');
+      }
+      const carrier = typeof item.id === 'string' ? `${item.call_id}|${item.id}` : item.call_id;
+      if (carriers.has(carrier)) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses tool_search_call lineage');
+      }
+      carriers.add(carrier);
+      searchCalls.add(item.call_id);
+      lowered.push({
+        arguments: JSON.stringify(argumentsValue),
+        call_id: item.call_id,
+        ...(typeof item.id === 'string' ? { id: item.id } : {}),
+        name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+        ...(item.status === 'completed' ? { status: 'completed' } : {}),
+        type: 'function_call',
+      });
+      continue;
+    }
+    if (item.type === 'tool_search_output') {
+      assertExactResponsesKeys(
+        item,
+        ['call_id', 'execution', 'id', 'status', 'tools', 'type'],
+        'tool_search_output'
+      );
+      if (
+        typeof item.call_id !== 'string' ||
+        !item.call_id ||
+        item.execution !== 'client' ||
+        item.status !== 'completed' ||
+        !Array.isArray(item.tools) ||
+        (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
+        !searchCalls.delete(item.call_id)
+      ) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses tool_search_output');
+      }
+      const discoveredItem = {
+        role: 'developer',
+        tools: item.tools,
+        type: 'additional_tools',
+      };
+      if (
+        !isWorkerAdditionalToolsItem(discoveredItem) ||
+        item.tools.some((tool) => readRecord(tool)?.type === 'tool_search')
+      ) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses tool_search_output tools');
+      }
+      registerResponsesToolDefinitions(
+        discoveredItem.tools,
+        additionalTools.definitions,
+        additionalTools.kinds,
+        false
+      );
+      lowered.push({
+        call_id: item.call_id,
+        ...(typeof item.id === 'string' ? { id: item.id } : {}),
+        output: JSON.stringify(item.tools),
+        type: 'function_call_output',
+      });
+      lowered.push({
+        role: 'developer',
+        tools: lowerResponsesToolDefinitions(discoveredItem.tools, true),
+        type: 'additional_tools',
+      });
+      continue;
+    }
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+      const kind = item.type === 'custom_tool_call' ? 'custom' : 'function';
+      assertExactResponsesKeys(
+        item,
+        kind === 'custom'
+          ? ['call_id', 'id', 'input', 'name', 'namespace', 'status', 'type']
+          : ['arguments', 'call_id', 'id', 'name', 'namespace', 'status', 'type'],
+        item.type
+      );
+      const namespace = typeof item.namespace === 'string' ? item.namespace : undefined;
+      const declaredKind =
+        typeof item.name === 'string'
+          ? additionalTools.kinds.get(responsesToolKey(item.name, namespace))
+          : undefined;
+      if (
+        typeof item.call_id !== 'string' ||
+        !item.call_id ||
+        typeof item.name !== 'string' ||
+        !item.name ||
+        item.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION ||
+        (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
+        (item.namespace !== undefined && !namespace) ||
+        (item.status !== undefined && item.status !== 'completed') ||
+        (kind === 'custom'
+          ? typeof item.input !== 'string'
+          : parseToolArguments(item.arguments) === undefined) ||
+        declaredKind !== kind
+      ) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} declaration`);
+      }
+      const carrier = typeof item.id === 'string' ? `${item.call_id}|${item.id}` : item.call_id;
+      if (carriers.has(carrier)) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} declaration`);
+      }
+      carriers.add(carrier);
+      const queue = ordinaryCalls.get(item.call_id) ?? [];
+      queue.push({ kind, name: item.name, ...(namespace ? { namespace } : {}) });
+      ordinaryCalls.set(item.call_id, queue);
+      lowered.push(item);
+      continue;
+    }
+    if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
+      const kind = item.type === 'custom_tool_call_output' ? 'custom' : 'function';
+      assertExactResponsesKeys(
+        item,
+        kind === 'custom'
+          ? ['call_id', 'id', 'name', 'output', 'type']
+          : ['call_id', 'id', 'name', 'namespace', 'output', 'type'],
+        item.type
+      );
+      const call =
+        typeof item.call_id === 'string' ? ordinaryCalls.get(item.call_id)?.shift() : undefined;
+      if (
+        !call ||
+        call.kind !== kind ||
+        (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
+        (item.name !== undefined && item.name !== call.name) ||
+        (item.namespace !== undefined && item.namespace !== call.namespace)
+      ) {
+        throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
+      }
+      readExactResponsesTextContent(item.output);
+      lowered.push(item);
+      continue;
+    }
+    assertExactPreservedResponsesItem(item);
+    lowered.push(item);
+  }
+
+  if (searchCalls.size > 0 || [...ordinaryCalls.values()].some((queue) => queue.length > 0)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses tool call lineage');
+  }
+  return lowered;
+}
+
+/** Rejects unknown fields before one native input item is forwarded verbatim. */
+function assertExactPreservedResponsesItem(item: Record<string, unknown>): void {
+  if (item.type === 'reasoning') {
+    assertExactResponsesKeys(
+      item,
+      ['content', 'encrypted_content', 'id', 'status', 'summary', 'type'],
+      'reasoning item'
+    );
+    if (
+      (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
+      (item.status !== undefined && item.status !== 'completed') ||
+      (item.encrypted_content !== undefined &&
+        item.encrypted_content !== null &&
+        typeof item.encrypted_content !== 'string')
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning item');
+    }
+    readExactResponsesReasoningContent(item);
+    return;
+  }
+  if (
+    item.role === 'system' ||
+    item.role === 'developer' ||
+    item.role === 'user' ||
+    item.role === 'assistant'
+  ) {
+    assertExactResponsesKeys(
+      item,
+      ['content', 'id', 'phase', 'role', 'status', 'type'],
+      'message item'
+    );
+    if (
+      (item.type !== undefined && item.type !== 'message') ||
+      (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
+      (item.phase !== undefined && item.phase !== 'commentary' && item.phase !== 'final_answer') ||
+      (item.status !== undefined && item.status !== 'completed')
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses message item');
+    }
+    readExactResponsesTextContent(item.content);
+    return;
+  }
+  throw new GatewayUnsupportedFeatureError('pi-ai Responses input role');
+}
+
+/** Reads exact text-only content without admitting unowned nested fields. */
+function readExactResponsesTextContent(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses text content');
+  }
+  for (const valuePart of value) {
+    const part = readRecord(valuePart);
+    if (
+      !part ||
+      Object.keys(part).some((key) => key !== 'text' && key !== 'type') ||
+      (part.type !== 'input_text' && part.type !== 'output_text') ||
+      typeof part.text !== 'string'
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses non-text content');
+    }
+  }
+  return readResponsesTextContent(value);
+}
+
+/** Validates exact opaque reasoning text fields before forwarding the item. */
+function readExactResponsesReasoningContent(item: Record<string, unknown>): void {
+  for (const key of ['summary', 'content'] as const) {
+    const parts = item[key];
+    if (parts === undefined || (key === 'content' && parts === null)) continue;
+    if (!Array.isArray(parts)) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning content');
+    }
+    for (const valuePart of parts) {
+      const part = readRecord(valuePart);
+      if (
+        !part ||
+        Object.keys(part).some((field) => field !== 'text' && field !== 'type') ||
+        (part.type !== 'summary_text' && part.type !== 'reasoning_text') ||
+        typeof part.text !== 'string'
+      ) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses reasoning content');
+      }
+    }
+  }
+}
+
+/** Rejects unknown fields in one native item that will cross the provider boundary. */
+function assertExactResponsesKeys(
+  item: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string
+): void {
+  if (Object.keys(item).some((key) => !allowed.includes(key))) {
+    throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${label}`);
+  }
 }
 
 /**
@@ -1524,7 +1901,7 @@ function readResponsesTextContent(value: unknown): string {
 function readResponsesReasoningText(record: Record<string, unknown>): string {
   for (const key of ['summary', 'content'] as const) {
     const parts = record[key];
-    if (parts === undefined) {
+    if (parts === undefined || (key === 'content' && parts === null)) {
       continue;
     }
     if (!Array.isArray(parts)) {
@@ -1629,7 +2006,27 @@ function responsesToolCallItem(
   empty = false
 ): Record<string, unknown> {
   const [callId, itemId] = splitResponsesToolCallId(block.id);
+  if (block.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
+    if (
+      additionalTools?.hasToolSearch !== true ||
+      block.namespace !== undefined ||
+      !readRecord(block.arguments)
+    ) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses tool search output');
+    }
+    return {
+      arguments: empty ? {} : block.arguments,
+      call_id: callId,
+      execution: 'client',
+      id: itemId,
+      status,
+      type: 'tool_search_call',
+    };
+  }
   const kind = additionalTools?.kinds.get(responsesToolKey(block.name, block.namespace));
+  if (additionalTools && kind === undefined) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses undeclared provider tool output');
+  }
   if (kind === 'custom') {
     const input = empty ? '' : block.arguments.input;
     if (typeof input !== 'string') {
@@ -1947,6 +2344,9 @@ function toResponsesSseStream(
           if (event.type === 'toolcall_delta') {
             const block = readStreamToolCall(event.partial, event.contentIndex);
             const [callId, itemId] = splitResponsesToolCallId(block.id);
+            if (block.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
+              continue;
+            }
             if (
               additionalTools?.kinds.get(responsesToolKey(block.name, block.namespace)) === 'custom'
             ) {
@@ -1968,7 +2368,15 @@ function toResponsesSseStream(
               responsesToolKey(event.toolCall.name, event.toolCall.namespace)
             );
             const [, itemId] = splitResponsesToolCallId(event.toolCall.id);
-            if (kind === 'custom') {
+            if (event.toolCall.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
+              if (
+                additionalTools?.hasToolSearch !== true ||
+                event.toolCall.namespace !== undefined ||
+                !readRecord(event.toolCall.arguments)
+              ) {
+                throw new GatewayUnsupportedFeatureError('pi-ai Responses tool search output');
+              }
+            } else if (kind === 'custom') {
               const input = event.toolCall.arguments.input;
               if (typeof input !== 'string') {
                 throw new GatewayUnsupportedFeatureError('pi-ai Responses custom tool input');
