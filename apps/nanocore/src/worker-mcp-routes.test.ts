@@ -83,7 +83,10 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 describe('worker MCP routes', () => {
-  it('executes an approved stdio call once through a fresh Turn', async () => {
+  it.each([
+    'same',
+    'changed',
+  ])('rechecks an exact MCP grant with %s successor arguments', async (argumentCase) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -348,6 +351,33 @@ describe('worker MCP routes', () => {
         workspaceMcpServerCatalog: catalog,
         workspaceRoots: [],
       });
+      if (argumentCase === 'changed') {
+        await expect(
+          client.callTool({ arguments: { message: 'different effect' }, name: 'echo' })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(callTool).not.toHaveBeenCalled();
+        const nextGate = store.getTurnById(approvedTurn.id).humanGate;
+        expect(nextGate?.kind).toBe('approval');
+        if (nextGate?.kind !== 'approval') throw new Error('Expected a new exact-effect Approval.');
+        expect(nextGate.approvalRequestId).not.toBe(approvalId);
+        expect(store.getApproval(approvalId).status).toBe('granted');
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        try {
+          expect(
+            workspaceDb.sqlite
+              .prepare(
+                "SELECT status FROM capability_calls WHERE operation = 'mcp.call_tool' ORDER BY rowid"
+              )
+              .all()
+          ).toEqual([{ status: 'denied' }, { status: 'denied' }]);
+          expect(
+            workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM usage_records').get()
+          ).toEqual({ count: 0 });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+        return;
+      }
       const winner = client.callTool({ arguments: { message: 'hello' }, name: 'echo' });
       await vi.waitFor(() => expect(callTool).toHaveBeenCalledTimes(1));
       const loserCancellation = new AbortController();
