@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import {
+  AgentEnvironmentPackageSchema,
+  planSessionWorkspaceMaterialization,
+} from '@openkit/config-schema';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
@@ -934,6 +937,7 @@ function createWorkResourceLineageExportInput(followUp?: {
       ...sourceSnapshot.workspace,
       inputs: [
         buildWorkerContextPackageWorkspaceInput({
+          agentSessionId: source.sessionId,
           packageRootDigest: packageFiles.packageRootDigest,
           threadId: source.threadId,
           turnId: source.turnId,
@@ -985,7 +989,7 @@ function createWorkResourceLineageExportInput(followUp?: {
       createdAt: timestamp,
       id: trace.workspaceMaterializationRecordId,
       inputSnapshotId: trace.workspaceInputSnapshotId,
-      materializedRootRef: '/openkit/context',
+      materializedRootRef: `/openkit/sessions/${source.sessionId}/context`,
       packageSnapshotId: snapshot.snapshotId,
       policyDigest: createWorkerContextPackagePolicyDigest({
         backendKind: 'openshell',
@@ -1225,6 +1229,7 @@ function createWorkResourceLineageExportInput(followUp?: {
         ...snapshot.workspace,
         inputs: [
           buildWorkerContextPackageWorkspaceInput({
+            agentSessionId: source.sessionId,
             packageRootDigest: followUpPackage.packageRootDigest,
             threadId: source.threadId,
             turnId: followUpTurnId,
@@ -2085,6 +2090,15 @@ describe('workspace auxiliary lineage reminting', () => {
     });
     expect.soft(JSON.stringify(session)).not.toContain('/private/source/workspace');
     expect.soft(aep.snapshotId).not.toBe(sourceSnapshotId);
+    const importedPackage = AgentEnvironmentPackageSchema.parse(aep.snapshot);
+    expect.soft(importedPackage.extensions.openkit).toMatchObject({
+      sessionWorkspace: planSessionWorkspaceMaterialization({
+        environmentPackage: importedPackage,
+      }),
+    });
+    expect
+      .soft(JSON.stringify(importedPackage))
+      .not.toContain(`/openkit/sessions/${source.sessionId}/`);
     expect.soft(aep).toMatchObject({
       workspaceId: targetWorkspaceId,
       threadId: thread.id,

@@ -140,7 +140,7 @@ Host execution may exist only as deterministic test doubles, fixture executors, 
 Every real Worker Agent sees the same contract inside its container:
 
 ```text
-/openkit/config/package.json
+/openkit/sessions/<agent-session-id>/config/package.json
 /openkit/session/events.jsonl
 /openkit/session/items.jsonl
 /openkit/session/artifacts.jsonl

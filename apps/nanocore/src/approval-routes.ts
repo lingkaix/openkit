@@ -627,6 +627,64 @@ function isDirectTaskCheckpoint(
 }
 
 /**
+ * Verifies the exact outer mode-command receipt that owns one worker approval Gate.
+ *
+ * @param store Product store containing command receipts.
+ * @param workspaceDb Workspace receipt owner for Goal steps.
+ * @param checkpoint Exact worker checkpoint awaiting closeout.
+ * @param ownerScope Authenticated actor, Workspace, and Thread owner scope.
+ * @param turnId Worker Turn whose deterministic origin must match the receipt.
+ * @returns Whether the receipt proves the checkpoint's exact Goal, conversation, or Task origin.
+ */
+function hasExactWorkerApprovalOwnerReceipt(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  checkpoint: WorkerCheckpointRecord,
+  ownerScope: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>,
+  turnId: string
+): boolean {
+  if (checkpoint.goalId && checkpoint.taskId) {
+    const receipt = store.getCommandRequest(
+      'goal.step',
+      checkpoint.requestId,
+      ownerScope,
+      workspaceDb
+    );
+    return (
+      receipt?.inputHash === checkpoint.requestInputHash &&
+      receipt.scope.actorId === ownerScope.actorId &&
+      receipt.scope.workspaceId === ownerScope.workspaceId &&
+      receipt.scope.threadId === ownerScope.threadId &&
+      receipt.response.kind === 'goal' &&
+      receipt.response.id === checkpoint.goalId
+    );
+  }
+
+  if (
+    findExactConversationWorkerOwnerReceipt(store, {
+      actorId: ownerScope.actorId,
+      workspaceId: ownerScope.workspaceId,
+      receivingThreadId: ownerScope.threadId,
+      requestId: checkpoint.requestId,
+      requestInputHash: checkpoint.requestInputHash,
+      turnId,
+    })
+  ) {
+    return true;
+  }
+
+  const receipt = store.getCommandRequest('task.start', checkpoint.requestId, ownerScope);
+  return (
+    receipt?.inputHash === checkpoint.requestInputHash &&
+    receipt.scope.actorId === ownerScope.actorId &&
+    receipt.scope.workspaceId === ownerScope.workspaceId &&
+    receipt.scope.threadId === ownerScope.threadId &&
+    receipt.response.kind === 'turn' &&
+    receipt.response.id === turnId
+  );
+}
+
+/**
  * Closes one worker approval Gate without resuming its worker executor.
  *
  * @param coreDb Core database containing scheduler and worker lineage.
@@ -728,23 +786,9 @@ function closeWorkerApprovalGate(
   } catch {
     throw taskGateRecoveryError('The worker approval has no exact human command identity.');
   }
-  const ownerReceipt = goalTaskCheckpoint
-    ? store.getCommandRequest('goal.step', checkpoint.requestId, ownerScope, workspaceDb)
-    : (findExactConversationWorkerOwnerReceipt(store, {
-        actorId: ownerScope.actorId,
-        workspaceId: ownerScope.workspaceId,
-        receivingThreadId: ownerScope.threadId,
-        requestId: checkpoint.requestId,
-        requestInputHash: checkpoint.requestInputHash,
-        turnId: input.turnId,
-      }) ?? store.getCommandRequest('task.start', checkpoint.requestId, ownerScope));
   if (
     !evidence ||
-    !ownerReceipt ||
-    ownerReceipt.inputHash !== checkpoint.requestInputHash ||
-    (goalTaskCheckpoint
-      ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== checkpoint.goalId
-      : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId)
+    !hasExactWorkerApprovalOwnerReceipt(store, workspaceDb, checkpoint, ownerScope, input.turnId)
   ) {
     throw taskGateRecoveryError('The worker approval has no exact mode-command receipt.');
   }
@@ -891,14 +935,20 @@ async function clearWorkerApprovalGateCheckpoint(
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
   const closure = classifyClosedWorkerApprovalGate(store, turn);
   const evidence = checkpoint ? parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary) : null;
-  const ownerReceipt = checkpoint
-    ? store.getCommandRequest(
-        checkpoint.goalId && checkpoint.taskId ? 'goal.step' : 'task.start',
-        checkpoint.requestId,
-        requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
-        checkpoint.goalId && checkpoint.taskId ? workspaceDb : undefined
-      )
-    : null;
+  let hasOwnerReceipt = false;
+  try {
+    hasOwnerReceipt = checkpoint
+      ? hasExactWorkerApprovalOwnerReceipt(
+          store,
+          workspaceDb,
+          checkpoint,
+          requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
+          input.turnId
+        )
+      : false;
+  } catch {
+    hasOwnerReceipt = false;
+  }
   const gateReceipt = store.getCommandRequest('approval.respond', input.requestId, {
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -932,11 +982,7 @@ async function clearWorkerApprovalGateCheckpoint(
       closure?.stopReason !== expectedStopReason ||
       !evidence?.itemIds.includes(closure.requestItemId) ||
       !evidence.itemIds.includes(closure.responseItemId) ||
-      !ownerReceipt ||
-      ownerReceipt.inputHash !== checkpoint.requestInputHash ||
-      (checkpoint.goalId && checkpoint.taskId
-        ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== checkpoint.goalId
-        : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId) ||
+      !hasOwnerReceipt ||
       gateReceipt?.response.kind !== 'approval' ||
       gateReceipt.response.id !== input.approvalRequestId ||
       !goalOwnerComplete

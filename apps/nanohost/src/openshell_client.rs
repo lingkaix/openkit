@@ -1825,7 +1825,7 @@ mod tests {
             .expect("exact empty Harness stdin");
         assert!(validation < unary && unary < empty_stdin);
         assert!(!bootstrap.contains("--package"));
-        assert!(!bootstrap.contains("/openkit/config/package.json"));
+        assert!(!bootstrap.contains("/openkit/sessions/"));
         assert!(!production.contains("worker_control_token"));
         assert!(!production.contains("worker_inference_token"));
         assert_eq!(bootstrap.matches(".exec_sandbox(").count(), 1);

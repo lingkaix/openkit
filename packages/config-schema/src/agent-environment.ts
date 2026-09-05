@@ -1381,6 +1381,8 @@ function addDuplicateValueIssue(
  */
 function isBlockedWorkerSandboxFilesystemPath(targetPath: string): boolean {
   return (
+    targetPath === '/openkit/sessions' ||
+    targetPath.startsWith('/openkit/sessions/') ||
     targetPath === '/openkit/config' ||
     targetPath.startsWith('/openkit/config/') ||
     targetPath === '/openkit/control' ||

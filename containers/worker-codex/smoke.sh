@@ -10,7 +10,7 @@ test "$(/usr/local/lib/codex/bin/codex --version)" = "codex-cli 0.153.4"
 command -v openkit-worker-shim >/dev/null
 ! command -v opencode >/dev/null
 ! command -v pi >/dev/null
-test -d /openkit/config
+test -d /openkit/sessions
 test -d /openkit/session
 test -d /openkit/artifacts
 

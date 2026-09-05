@@ -501,9 +501,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           409
         );
       }
+      const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
       const preparedContext =
         this.coreDb && workspaceDb && checkpoint && context.sandboxBindingRef
           ? prepareWorkerTurnContextPackage(this.coreDb, workspaceDb, store, checkpoint, {
+              agentSessionId,
               requestId: context.requestId ?? null,
               threadId: turn.threadId,
               turnId: turn.id,
@@ -511,7 +513,6 @@ export class SimulatedTurnExecutor implements TurnExecutor {
               workspaceId: turn.workspaceId,
             })
           : null;
-      const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
       const environmentBackend = { kind: 'openshell' } as const;
       const resolvedEnvironmentPackage = preparedContext
         ? resolveAgentEnvironmentPackage({

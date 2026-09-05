@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { WORKER_ADAPTERS, type WorkerAdapter } from './adapter-registry.js';
 import {
   runWorkerShim,
@@ -67,6 +68,7 @@ interface HarnessSession {
   readonly stateRoot: string;
   readonly threadId: string;
   readonly workspaceId: string;
+  cleanupState: 'clean' | 'pending' | 'failed';
 }
 
 /** Options for one adapter-selected Harness instance. */
@@ -180,13 +182,28 @@ export class WorkerHarness {
     ) {
       throw harnessError('unsupported');
     }
-    if (this.sessions.has(bindingId)) {
+    if (
+      this.sessions.has(bindingId) ||
+      [...this.sessions.values()].some((session) => session.agentSessionId === agentSessionId)
+    ) {
       throw harnessError('conflict');
     }
     const privateName = createHash('sha256').update(bindingId).digest('hex');
     const sessionDirectory = resolve(this.rootDirectory, privateName);
     const stateRoot = resolve(sessionDirectory, 'native-state');
+    const inputPaths = workerSessionInputPaths(agentSessionId);
     await mkdir(sessionDirectory, { mode: 0o700, recursive: true });
+    await mkdir(
+      mapSandboxPath(inputPaths.packagePath, this.sandboxRoot).replace(/\/package\.json$/, ''),
+      {
+        mode: 0o700,
+        recursive: true,
+      }
+    );
+    await mkdir(mapSandboxPath(inputPaths.contextRoot, this.sandboxRoot), {
+      mode: 0o700,
+      recursive: true,
+    });
     const opened =
       this.adapter.mode === 'session-continuity'
         ? await this.adapter.openSession({ stateRoot })
@@ -200,6 +217,7 @@ export class WorkerHarness {
       stateRoot,
       threadId,
       workspaceId,
+      cleanupState: 'clean',
     });
     return {
       maxActiveTurns: 1,
@@ -213,15 +231,22 @@ export class WorkerHarness {
   private async inspectSession(body: Readonly<Record<string, unknown>>) {
     requireExactFields(body, ['agentSessionId', 'agentSessionRuntimeBindingId']);
     const session = this.requireSession(body);
+    if (session.activeTurn?.barrierReached) {
+      await session.activeTurn.promise.catch(() => undefined);
+    }
     const inspected =
       this.adapter.mode === 'session-continuity'
         ? await this.adapter.inspectSession({ stateRoot: session.stateRoot })
         : { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
     return {
       childState: session.activeTurn && !session.activeTurn.barrierReached ? 'running' : 'absent',
-      cleanupState: 'clean',
+      cleanupState: session.cleanupState,
       ...inspected,
-      state: session.activeTurn && !session.activeTurn.barrierReached ? 'active' : 'open',
+      state:
+        (session.activeTurn && !session.activeTurn.barrierReached) ||
+        session.cleanupState === 'pending'
+          ? 'active'
+          : 'open',
     };
   }
 
@@ -245,7 +270,12 @@ export class WorkerHarness {
       'capabilityToken',
     ]);
     const session = this.requireSession(body);
-    if (this.draining || session.activeTurn || this.activeTurnCount() >= 1) {
+    if (
+      this.draining ||
+      session.activeTurn ||
+      session.cleanupState !== 'clean' ||
+      this.activeTurnCount() >= 1
+    ) {
       throw harnessError('busy');
     }
     if (
@@ -258,9 +288,16 @@ export class WorkerHarness {
     const turnId = requireIdentity(body.turnId);
     const leaseId = requireIdentity(body.leaseId);
     const packageSnapshotId = requireIdentity(body.packageSnapshotId);
-    requireIdentity(body.contextPackageId);
-    requireSandboxReference(body.contextRef, this.sandboxRoot);
-    const packagePath = requireSandboxReference(body.aepRef, this.sandboxRoot);
+    if (body.contextPackageId !== `ctxpkg_${turnId}`) {
+      throw harnessError('stale');
+    }
+    const inputPaths = workerSessionInputPaths(session.agentSessionId);
+    const expectedContextPath = mapSandboxPath(inputPaths.contextRoot, this.sandboxRoot);
+    const expectedPackagePath = mapSandboxPath(inputPaths.packagePath, this.sandboxRoot);
+    if (body.contextRef !== expectedContextPath || body.aepRef !== expectedPackagePath) {
+      throw harnessError('stale');
+    }
+    const packagePath = expectedPackagePath;
     const capabilityToken = requireToken(body.capabilityToken);
     const controlToken = requireToken(body.workerControlToken);
     const inferenceToken = requireToken(body.inferenceToken);
@@ -287,7 +324,7 @@ export class WorkerHarness {
     const started = new Promise<void>((resolveStarted) => {
       markStarted = resolveStarted;
     });
-    const promise = runWorkerShim({
+    const runPromise = runWorkerShim({
       args: { dryRun: false, packagePath, sessionDir: this.turnOutputDirectory },
       controlToken,
       environment: {
@@ -307,20 +344,35 @@ export class WorkerHarness {
       onTurnBarrier: () => {
         if (session.activeTurn?.turnId === turnId) {
           session.activeTurn.barrierReached = true;
+          session.cleanupState = 'pending';
         }
       },
       ...(this.runner ? { runner: this.runner } : {}),
       sessionStateRoot: session.stateRoot,
       signal: abort.signal,
     });
+    const promise = runPromise.finally(async () => {
+      session.cleanupState = 'pending';
+      try {
+        const inputRoot = mapSandboxPath(
+          workerSessionInputPaths(session.agentSessionId).root,
+          this.sandboxRoot
+        );
+        await Promise.all(
+          ['config', 'context'].map((slot) =>
+            rm(resolve(inputRoot, slot), { force: true, recursive: true })
+          )
+        );
+        session.cleanupState = 'clean';
+      } catch {
+        session.cleanupState = 'failed';
+      }
+      if (session.activeTurn?.promise === promise) {
+        session.activeTurn = null;
+      }
+    });
     session.activeTurn = { abort, barrierReached: false, leaseId, promise, turnId };
-    void promise
-      .finally(() => {
-        if (session.activeTurn?.promise === promise) {
-          session.activeTurn = null;
-        }
-      })
-      .catch(() => undefined);
+    void promise.catch(() => undefined);
     await Promise.race([
       started,
       promise.then(() => {
@@ -370,6 +422,8 @@ export class WorkerHarness {
     if (session.activeTurn) {
       throw harnessError('busy');
     }
+    const inputPaths = workerSessionInputPaths(session.agentSessionId);
+    await rm(mapSandboxPath(inputPaths.root, this.sandboxRoot), { force: true, recursive: true });
     const closed =
       this.adapter.mode === 'session-continuity'
         ? await this.adapter.closeSession({
@@ -609,18 +663,9 @@ function requireToken(value: unknown): string {
   return token;
 }
 
-/** Requires one absolute owner-materialized reference beneath the fixed sandbox root. */
-function requireSandboxReference(value: unknown, sandboxRoot: string): string {
-  const path = requireIdentity(value);
-  if (!isAbsolute(path)) {
-    throw harnessError('stale');
-  }
-  const resolved = resolve(path);
-  const rel = relative(sandboxRoot, resolved);
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
-    throw harnessError('stale');
-  }
-  return resolved;
+/** Maps the canonical worker input path into a test-injected sandbox root. */
+function mapSandboxPath(path: string, sandboxRoot: string): string {
+  return resolve(sandboxRoot, relative('/openkit', path));
 }
 
 /** Builds one successful exact result envelope. */

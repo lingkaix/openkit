@@ -25,7 +25,7 @@ const MAX_FILE_BYTES = 268_435_456;
 const CANONICAL_WORKSPACE_SLOT_ROOTS = {
   'artifact-input': '/workspace/artifacts/in',
   cache: '/workspace/.openkit/cache',
-  context: '/openkit/context',
+  context: '/openkit/sessions',
   'external-data': '/workspace/data',
   instructions: '/openkit/instructions',
   'main-worktree': '/workspace/worktrees/main',
@@ -36,7 +36,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = {
 };
 const CANONICAL_SLOT_ROOTS = {
   ...CANONICAL_WORKSPACE_SLOT_ROOTS,
-  'package-config': '/openkit/config',
+  'package-config': '/openkit/sessions',
   'runtime-credential': '/',
 };
 
@@ -71,7 +71,7 @@ async function assertRejected(runFileEffect, slotRoots, rejection) {
 
   assert.notEqual(result.exitCode, 0, rejection.label);
   assert.equal(result.stdout.length, 0, rejection.label);
-  assert.ok(diagnostic.trim().length > 0, rejection.label);
+  assert.equal(diagnostic, 'File effect rejected.\n', rejection.label);
   for (const value of rejection.privateValues ?? []) {
     if (value.length > 0) {
       assert.equal(diagnostic.includes(value), false, rejection.label);
@@ -109,38 +109,44 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
   try {
     await Promise.all(Object.values(slotRoots).map((root) => mkdir(root, { recursive: true })));
 
-    const packageBytes = Buffer.from('{"schemaVersion":3}');
-    const packageDigest = `sha256:${createHash('sha256').update(packageBytes).digest('hex')}`;
-    const packageImport = await invokeFileEffect(
-      runFileEffect,
-      slotRoots,
-      [
-        'reference.import',
-        '--slot',
-        'package-config',
-        '--path',
-        'package.json',
-        '--length',
-        String(packageBytes.length),
-        '--sha256',
-        packageDigest,
-      ],
-      packageBytes
-    );
-    const packageTarget = join(slotRoots['package-config'], 'package.json');
+    const packageTarget = join(slotRoots['package-config'], 'as-one/config/package.json');
+    for (const [index, packageBytes] of [
+      Buffer.from('{"schemaVersion":3}'),
+      Buffer.from('{"schemaVersion":3,"snapshotId":"next-turn"}'),
+    ].entries()) {
+      const packageDigest = `sha256:${createHash('sha256').update(packageBytes).digest('hex')}`;
+      const packageImport = await invokeFileEffect(
+        runFileEffect,
+        slotRoots,
+        [
+          'reference.import',
+          '--slot',
+          'package-config',
+          '--path',
+          'as-one/config/package.json',
+          '--length',
+          String(packageBytes.length),
+          '--sha256',
+          packageDigest,
+        ],
+        packageBytes
+      );
 
-    assert.equal(packageImport.exitCode, 0);
-    assert.equal(packageImport.stderr.length, 0);
-    assert.equal(
-      packageImport.stdout.toString('utf8'),
-      `${packageDigest} ${packageBytes.length}\n`
-    );
-    assert.deepEqual(await readFile(packageTarget), packageBytes);
-    assert.equal((await lstat(packageTarget)).mode & 0o777, 0o600);
+      assert.equal(packageImport.exitCode, index === 0 ? 0 : 1);
+      if (index === 0) {
+        assert.equal(packageImport.stderr.length, 0);
+        assert.equal(
+          packageImport.stdout.toString('utf8'),
+          `${packageDigest} ${packageBytes.length}\n`
+        );
+        assert.deepEqual(await readFile(packageTarget), packageBytes);
+        assert.equal((await lstat(packageTarget)).mode & 0o777, 0o600);
+      }
+    }
 
     const importedBytes = Buffer.from('immutable context bytes\n');
     const importedDigest = `sha256:${createHash('sha256').update(importedBytes).digest('hex')}`;
-    const importedPath = 'turn/context.json';
+    const importedPath = 'as-one/context/context.json';
     const imported = await invokeFileEffect(
       runFileEffect,
       slotRoots,
@@ -194,7 +200,7 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
       assert.equal((await lstat(credentialTarget)).mode & 0o777, 0o600);
     }
 
-    const declaredLengthPath = 'turn/declared-length.bin';
+    const declaredLengthPath = 'as-one/context/declared-length.bin';
     let declaredLengthReads = 0;
     const declaredLengthInput = {
       /** Yields the declared body once and fails if the importer waits for transport EOF. */
@@ -307,8 +313,9 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
 
     const outsideFile = join(outsideRoot, 'outside-target');
     await writeFile(outsideFile, 'outside-original', { mode: 0o600 });
-    await symlink(outsideRoot, join(slotRoots.context, 'linked-ancestor'));
-    await symlink(outsideFile, join(slotRoots.context, 'linked-target'));
+    const privateContextRoot = join(slotRoots.context, 'as-one/context');
+    await symlink(outsideRoot, join(privateContextRoot, 'linked-ancestor'));
+    await symlink(outsideFile, join(privateContextRoot, 'linked-target'));
     const hardLinkSource = join(slotRoots['turn-output'], 'hard-source');
     const hardLinkTarget = join(slotRoots['turn-output'], 'hard-target');
     await writeFile(hardLinkSource, 'hard-linked', { mode: 0o600 });
@@ -392,17 +399,23 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         label: `invalid path ${JSON.stringify(path)}`,
         privateValues: [path],
       })),
+      ...['as-one/context', 'as-one/context/'].map((path) => ({
+        argv: validImportArgs('context', path),
+        input: importedBytes,
+        label: `context path without an inventory child ${JSON.stringify(path)}`,
+        privateValues: [path],
+      })),
       {
-        argv: validImportArgs('context', 'linked-ancestor/escaped'),
+        argv: validImportArgs('context', 'as-one/context/linked-ancestor/escaped'),
         input: importedBytes,
         label: 'symlink ancestor',
-        privateValues: ['linked-ancestor/escaped'],
+        privateValues: ['as-one/context/linked-ancestor/escaped'],
       },
       {
-        argv: validImportArgs('context', 'linked-target'),
+        argv: validImportArgs('context', 'as-one/context/linked-target'),
         input: importedBytes,
         label: 'symlink target',
-        privateValues: ['linked-target'],
+        privateValues: ['as-one/context/linked-target'],
       },
       {
         argv: [
@@ -436,16 +449,16 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         privateValues: [],
       },
       {
-        argv: [...validImportArgs('context', 'duplicate'), '--slot', 'context'],
+        argv: [...validImportArgs('context', 'as-one/context/duplicate'), '--slot', 'context'],
         input: importedBytes,
         label: 'duplicate arguments',
-        privateValues: ['duplicate'],
+        privateValues: ['as-one/context/duplicate'],
       },
       {
-        argv: [...validImportArgs('context', 'extra'), 'private-extra-argument'],
+        argv: [...validImportArgs('context', 'as-one/context/extra'), 'private-extra-argument'],
         input: importedBytes,
         label: 'extra arguments',
-        privateValues: ['extra', 'private-extra-argument'],
+        privateValues: ['as-one/context/extra', 'private-extra-argument'],
       },
       {
         argv: ['file.export', '--slot', 'turn-output', '--path', exportedPath, '--max-length', '1'],
@@ -458,14 +471,14 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     await assert.rejects(access(join(outsideRoot, 'escaped')));
     assert.equal(await readFile(outsideFile, 'utf8'), 'outside-original');
 
-    const integrityRoot = join(slotRoots.context, 'integrity');
+    const integrityRoot = join(privateContextRoot, 'integrity');
     await mkdir(integrityRoot);
     const existingTarget = join(integrityRoot, 'existing');
     await writeFile(existingTarget, 'existing-original', { mode: 0o600 });
     for (const rejection of [
       {
         argv: [
-          ...validImportArgs('context', 'integrity/wrong-digest').slice(0, -1),
+          ...validImportArgs('context', 'as-one/context/integrity/wrong-digest').slice(0, -1),
           `sha256:${'0'.repeat(64)}`,
         ],
         input: importedBytes,
@@ -473,29 +486,31 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         privateValues: [`sha256:${'0'.repeat(64)}`],
       },
       {
-        argv: validImportArgs('context', 'integrity/wrong-length').map((value, index, values) =>
-          values[index - 1] === '--length' ? String(importedBytes.length + 1) : value
+        argv: validImportArgs('context', 'as-one/context/integrity/wrong-length').map(
+          (value, index, values) =>
+            values[index - 1] === '--length' ? String(importedBytes.length + 1) : value
         ),
         input: importedBytes,
         label: 'wrong length',
         privateValues: [],
       },
       {
-        argv: validImportArgs('context', 'integrity/oversized-chunk'),
+        argv: validImportArgs('context', 'as-one/context/integrity/oversized-chunk'),
         input: Buffer.concat([importedBytes, Buffer.from('extra')]),
         label: 'oversized input chunk',
         privateValues: [],
       },
       {
-        argv: validImportArgs('context', 'integrity/oversized').map((value, index, values) =>
-          values[index - 1] === '--length' ? String(MAX_FILE_BYTES + 1) : value
+        argv: validImportArgs('context', 'as-one/context/integrity/oversized').map(
+          (value, index, values) =>
+            values[index - 1] === '--length' ? String(MAX_FILE_BYTES + 1) : value
         ),
         input: Buffer.alloc(0),
         label: 'oversized import',
         privateValues: [],
       },
       {
-        argv: validImportArgs('context', 'integrity/existing'),
+        argv: validImportArgs('context', 'as-one/context/integrity/existing'),
         input: importedBytes,
         label: 'existing import destination',
         privateValues: [],

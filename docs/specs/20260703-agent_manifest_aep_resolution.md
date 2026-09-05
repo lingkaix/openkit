@@ -380,7 +380,7 @@ Unsupported required features should produce blocked diagnostics that name the u
 
 Worker governance backends materialize the AEP into:
 
-- `/openkit/config/package.json`
+- `/openkit/sessions/<agent-session-id>/config/package.json`
 - the exact governed image and generic `openkit-worker-shim` entrypoint
 - skill directories or references
 - provider endpoint config

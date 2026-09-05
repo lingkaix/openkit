@@ -123,55 +123,17 @@ async function main() {
       state: 'created',
     });
 
-    let environmentPackage = null;
-    let importCount = 0;
-    let integrationBindingRef = null;
-    const startupDeadline = Date.now() + 30_000;
-    while (!integrationBindingRef && Date.now() < startupDeadline) {
-      assertProcessRunning(child, output, taskFailure);
-      const imported = await pollEffect(h2, 'reference.import');
-      if (imported.status === 200) {
-        importCount += 1;
-        const metadata = verifyImportedFile(imported);
-        if (metadata.slot === 'package-config' && metadata.relativePath === 'package.json') {
-          environmentPackage = JSON.parse(imported.bodyBytes.toString('utf8'));
-        }
-        const settled = await requestHttp2(
-          h2,
-          'POST',
-          '/api/nanohost/transport/effects/reference.import/result',
-          JSON.stringify({
-            byteLength: imported.bodyBytes.byteLength,
-            reference: `sandbox://${sandboxId}/${metadata.slot}/${metadata.relativePath}`,
-            requestId: metadata.requestId,
-          }),
-          { 'content-type': 'application/json' }
-        );
-        assert.equal(settled.status, 204, responseFailure('reference.import result', settled));
-        continue;
-      }
-      assert.equal(imported.status, 204, responseFailure('reference.import poll', imported));
-      const bridge = await pollEffect(h2, 'bridge.open');
-      if (bridge.status === 200) {
-        const command = parseJson(bridge, 'bridge.open command');
-        integrationBindingRef = requireString(
-          command.sandboxIntegrationBindingRef,
-          'Sandbox Integration binding'
-        );
-        await settleJsonEffect(h2, 'bridge.open', {
-          accepted: true,
-          integrationReady: true,
-          requestId: command.requestId,
-          state: 'open',
-        });
-      } else {
-        assert.equal(bridge.status, 204, responseFailure('bridge.open poll', bridge));
-        await sleep(10);
-      }
-    }
-    assert.ok(integrationBindingRef, 'NanoHost bridge.open was not dispatched.');
-    assert.ok(importCount >= 1, 'NanoHost did not import the canonical AEP.');
-    assert.ok(environmentPackage, 'NanoHost did not import package-config/package.json.');
+    const bridge = await waitForEffect(h2, 'bridge.open', child, output, () => taskFailure);
+    const integrationBindingRef = requireString(
+      bridge.command.sandboxIntegrationBindingRef,
+      'Sandbox Integration binding'
+    );
+    await settleJsonEffect(h2, 'bridge.open', {
+      accepted: true,
+      integrationReady: true,
+      requestId: bridge.command.requestId,
+      state: 'open',
+    });
 
     const harnessOperations = [];
     const opened = await waitForHarnessOperation(
@@ -189,13 +151,80 @@ async function main() {
       nativeHandleState: 'pending',
       state: 'open',
     });
-    const started = await waitForHarnessOperation(
-      h2,
-      integrationBindingRef,
-      'turn.start',
-      child,
-      output,
-      () => taskFailure
+
+    let environmentPackage = null;
+    const contextFiles = new Map();
+    let importCount = 0;
+    let started = null;
+    const startupDeadline = Date.now() + 30_000;
+    while (!started && Date.now() < startupDeadline) {
+      assertProcessRunning(child, output, taskFailure);
+      const imported = await pollEffect(h2, 'reference.import');
+      if (imported.status === 200) {
+        importCount += 1;
+        const metadata = verifyImportedFile(imported);
+        if (metadata.slot === 'package-config') {
+          assert.equal(importCount, 1, 'The canonical AEP must be the first Turn import.');
+          assert.equal(environmentPackage, null, 'NanoHost imported more than one canonical AEP.');
+          environmentPackage = JSON.parse(imported.bodyBytes.toString('utf8'));
+          assert.equal(metadata.relativePath, `${opened.body.agentSessionId}/config/package.json`);
+          assert.equal(environmentPackage.scope.agentSessionId, opened.body.agentSessionId);
+          assert.equal(environmentPackage.scope.workspaceId, opened.body.workspaceId);
+          assert.equal(environmentPackage.scope.threadId, opened.body.threadId);
+        } else if (metadata.slot === 'context') {
+          assert.ok(environmentPackage, 'NanoHost imported Context before the canonical AEP.');
+          const contextPrefix = `${environmentPackage.scope.agentSessionId}/context/`;
+          assert.ok(metadata.relativePath.startsWith(contextPrefix));
+          contextFiles.set(metadata.relativePath.slice(contextPrefix.length), imported.bodyBytes);
+        } else {
+          assert.fail(`Unexpected Worker MCP smoke import slot: ${metadata.slot}`);
+        }
+        const settled = await requestHttp2(
+          h2,
+          'POST',
+          '/api/nanohost/transport/effects/reference.import/result',
+          JSON.stringify({
+            byteLength: imported.bodyBytes.byteLength,
+            reference: `sandbox://${sandboxId}/${metadata.slot}/${metadata.relativePath}`,
+            requestId: metadata.requestId,
+          }),
+          { 'content-type': 'application/json' }
+        );
+        assert.equal(settled.status, 204, responseFailure('reference.import result', settled));
+        continue;
+      }
+      assert.equal(imported.status, 204, responseFailure('reference.import poll', imported));
+      const nextHarness = await pollHarness(h2, integrationBindingRef);
+      if (nextHarness.status === 200) {
+        started = parseJson(nextHarness, 'turn.start command');
+        assert.equal(started.operation, 'turn.start');
+      } else {
+        assert.equal(nextHarness.status, 204, responseFailure('Harness poll', nextHarness));
+        await sleep(10);
+      }
+    }
+    assert.ok(started, 'NanoHost Harness turn.start was not dispatched after Turn imports.');
+    assert.ok(environmentPackage, 'NanoHost did not import the canonical AgentSession AEP.');
+    const contextManifestBytes = contextFiles.get('package.json');
+    assert.ok(contextManifestBytes, 'NanoHost did not import the Context Package manifest.');
+    const contextManifest = JSON.parse(contextManifestBytes.toString('utf8'));
+    const contextInputId = `context_${environmentPackage.scope.turnId}`;
+    const contextInputs = environmentPackage.workspace.inputs.filter(
+      (input) => input.id === contextInputId
+    );
+    assert.equal(contextInputs.length, 1);
+    assert.equal(
+      contextInputs[0].target,
+      `/openkit/sessions/${environmentPackage.scope.agentSessionId}/context`
+    );
+    assert.equal(contextManifest.contextPackageId, `ctxpkg_${environmentPackage.scope.turnId}`);
+    assert.equal(started.body.contextPackageId, contextManifest.contextPackageId);
+    assert.equal(contextManifest.workspaceId, environmentPackage.scope.workspaceId);
+    assert.equal(contextManifest.threadId, environmentPackage.scope.threadId);
+    assert.equal(contextManifest.turnId, environmentPackage.scope.turnId);
+    assert.deepEqual(
+      [...contextFiles.keys()].sort(),
+      [...contextManifest.fileInventory.map((file) => file.path), 'package.json'].sort()
     );
     harnessOperations.push(started.operation);
     await settleHarness(h2, integrationBindingRef, started, {
@@ -212,7 +241,16 @@ async function main() {
     const inferenceToken = requireString(started.body.inferenceToken, 'Inference token');
     const distinctTokenCount = new Set([capabilityToken, workerControlToken, inferenceToken]).size;
     assert.equal(distinctTokenCount, 3);
+    assert.equal(started.body.agentSessionId, environmentPackage.scope.agentSessionId);
     assert.equal(started.body.packageSnapshotId, environmentPackage.snapshotId);
+    assert.equal(
+      started.body.aepRef,
+      `/openkit/sessions/${environmentPackage.scope.agentSessionId}/config/package.json`
+    );
+    assert.equal(
+      started.body.contextRef,
+      `/openkit/sessions/${environmentPackage.scope.agentSessionId}/context`
+    );
     assert.equal(started.body.turnId, environmentPackage.scope.turnId);
     const lineage = {
       agentSessionId: environmentPackage.scope.agentSessionId,

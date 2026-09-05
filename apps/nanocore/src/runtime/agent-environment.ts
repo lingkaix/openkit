@@ -18,6 +18,7 @@ import {
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
@@ -218,20 +219,32 @@ export function resolveAgentEnvironmentPackage(
 export function resolveAgentSessionCompatibilityKey(
   input: ResolveAgentSessionCompatibilityKeyInput
 ): string {
-  if (input.backend?.kind !== 'openshell') {
-    throw new Error('AgentSession compatibility requires a container backend.');
-  }
-  const environmentPackage = resolveOpenShellAgentEnvironmentPackage(
-    input,
-    input.backend,
-    'metadata-only',
-    hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
-  );
+  const environmentPackage = resolveAgentEnvironmentPackageMetadata(input);
   return (
     environmentPackage.extensions.openkit as {
       sessionWorkspace: SessionWorkspaceMaterializationPlan;
     }
   ).sessionWorkspace.compatibilityKey.digest;
+}
+
+/**
+ * Resolves the complete secret-free AEP projection used by pre-lease runtime admission.
+ *
+ * @param input Future Turn, resolved agent, and static workspace inputs.
+ * @returns Metadata-only Agent Environment Package with no Vault resolution or durable effects.
+ */
+export function resolveAgentEnvironmentPackageMetadata(
+  input: ResolveAgentSessionCompatibilityKeyInput
+): AgentEnvironmentPackage {
+  if (input.backend?.kind !== 'openshell') {
+    throw new Error('AgentSession compatibility requires a container backend.');
+  }
+  return resolveOpenShellAgentEnvironmentPackage(
+    input,
+    input.backend,
+    'metadata-only',
+    hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
+  );
 }
 
 /** Reads whether the existing durable launch path will prepare a Context Package for this Turn. */
@@ -302,7 +315,9 @@ function resolveOpenShellAgentEnvironmentPackage(
   const packageId = `aepkg_${input.turn.id}_${input.agentSessionId}`;
   const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
   const createdAt = input.createdAt ?? new Date().toISOString();
-  const workerPackagePath = '/openkit/config/package.json';
+  const { packagePath: workerPackagePath, contextRoot } = workerSessionInputPaths(
+    input.agentSessionId
+  );
   const trustedInferenceRequired = true;
   const runtimeProvenanceRequired = requiredCapabilities.includes(
     WORKER_RUNTIME_PROVENANCE_FEATURE
@@ -348,6 +363,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const preparedContextPackage = input.preparedContextPackage
     ? requirePreparedWorkerContextPackage(
         input.turn,
+        input.agentSessionId,
         input.workspaceRoots,
         input.preparedContextPackage
       )
@@ -360,7 +376,7 @@ function resolveOpenShellAgentEnvironmentPackage(
           id: `context_${input.turn.id}`,
           sourceKind: 'materialized-dir' as const,
           sourcePath: '/openkit/context-package-metadata',
-          workerPath: '/openkit/context',
+          workerPath: contextRoot,
         }
       : null);
   const contextPackageContentDigest =
@@ -389,7 +405,7 @@ function resolveOpenShellAgentEnvironmentPackage(
               kind: 'generated',
               pathRef: `threads/${input.turn.threadId}/turns/${input.turn.id}/context-package`,
             },
-            target: '/openkit/context',
+            target: contextRoot,
           },
         ]
       : []),
@@ -772,6 +788,7 @@ function sha256Digest(value: string): string {
  */
 function requirePreparedWorkerContextPackage(
   turn: Turn,
+  agentSessionId: string,
   workspaceRoots: readonly MaterializedWorkspaceRoot[],
   contextPackage: PreparedWorkerContextPackage
 ): PreparedWorkerContextPackage {
@@ -785,7 +802,7 @@ function requirePreparedWorkerContextPackage(
     root.id !== expectedId ||
     root.sourceKind !== 'materialized-dir' ||
     root.access !== 'read-only' ||
-    root.workerPath !== '/openkit/context'
+    root.workerPath !== workerSessionInputPaths(agentSessionId).contextRoot
   ) {
     throw new Error(`Prepared Context Package root does not match worker Turn ${turn.id}.`);
   }

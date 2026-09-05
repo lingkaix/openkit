@@ -24,9 +24,9 @@ export interface ThreadStreamProps {
  *
  * Renders every applicable §9.13 state: a skeleton while the read model is in
  * flight, an inline error with retry, a calm empty block, or the populated stream
- * grouped by Turn (Thread → Turn → Item). Approvals and non-secret Gate answers are actionable
- * inline unless read-only. Baseline readiness stays sticky only for the current Workspace and
- * Thread so later command refetches cannot tear down its live subscription.
+ * grouped by Turn (Thread → Turn → Item). Unresolved approvals and non-secret Gate answers are
+ * actionable inline unless read-only. Baseline readiness stays sticky only for the current
+ * Workspace and Thread so later command refetches cannot tear down its live subscription.
  */
 export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: ThreadStreamProps) {
   const connection = useConnection();
@@ -99,7 +99,16 @@ export function ThreadStream({ workspaceId, threadId, readOnly, emptyTitle }: Th
               <ItemView
                 key={item.id}
                 item={item}
-                readOnly={controlsReadOnly}
+                readOnly={
+                  controlsReadOnly ||
+                  (item.type === 'approval-request' &&
+                    (items.data ?? []).some(
+                      (candidate) =>
+                        candidate.type === 'approval-decision' &&
+                        candidate.turnId === item.turnId &&
+                        candidate.approvalRequestId === item.approvalRequestId
+                    ))
+                }
                 onApprovalDecision={(approvalRequestId, turnId, decision) =>
                   respond.mutate({ approvalRequestId, turnId, decision })
                 }

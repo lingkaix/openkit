@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-
 import {
   type AgentEnvironmentPackage,
   type AgentEnvironmentValidationDiagnostic,
@@ -12,7 +11,10 @@ import {
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import { responsibleUserIdForActor } from '@openkit/protocol';
-import { WorkerRuntimeRawStreamManifestSchema } from '@openkit/worker-protocol';
+import {
+  WorkerRuntimeRawStreamManifestSchema,
+  workerSessionInputPaths,
+} from '@openkit/worker-protocol';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { requireSchedulerSessionLeaseAdmissionContext } from '../scheduler-records.js';
@@ -302,6 +304,8 @@ function createNanoHostWorkerLifecycleRuntime(
 
 /** One materialized Turn awaiting operations on the shared private Harness. */
 interface NanoHostBackendTurnSession {
+  /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
+  pendingImports: NanoHostContextPackageImport[];
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly evidence: WorkerGovernanceEvidenceRecord[];
   readonly agentSessionCompatibilityKey: string;
@@ -361,6 +365,17 @@ interface NanoHostSharedSandbox {
   readonly sandboxId: string;
   readonly sandboxCompatibilityKey: string;
   readonly sandboxIntegrationBindingRef: string;
+  readonly sandboxRuntimeId: string;
+}
+
+/** One incompatible resident Sandbox whose complete private occupancy is proved idle. */
+interface NanoHostIdleSandboxEviction {
+  readonly bindings: NanoHostAgentSessionContinuityInspection[];
+  readonly bridgeOpen: boolean;
+  readonly closeAgentSessions: boolean;
+  readonly sandboxBindingRef: string;
+  readonly sandboxCompatibilityKey: string;
+  readonly sandboxId: string;
   readonly sandboxRuntimeId: string;
 }
 
@@ -756,6 +771,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       leaseId,
       nativeSessionReusable: false,
+      pendingImports: [],
       pendingHarnessOperation: null,
       humanGateStopSettlement: null,
       retainedStagingPaths: [],
@@ -857,6 +873,27 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!inspection) {
       return 'absent';
     }
+    if (!this.hasProcessLocalAgentSession(inspection)) {
+      if (input.reuseAllowed) {
+        return 'sandbox-replacement-required';
+      }
+      if (
+        !input.environmentPackage ||
+        !input.admissionAgentSessionId ||
+        !input.admissionLeaseId ||
+        input.environmentPackage.scope.agentSessionId !== input.admissionAgentSessionId ||
+        this.requireLeaseId(input.environmentPackage.snapshotId) !== input.admissionLeaseId
+      ) {
+        throw new Error('NanoHost restart-unproved retirement lacks admission package lineage.');
+      }
+      await this.evictIncompatibleIdleSandbox(
+        input.environmentPackage,
+        this.planSession(input.environmentPackage),
+        input.admissionLeaseId,
+        true
+      );
+      return 'closed';
+    }
     if (input.reuseAllowed) {
       return inspection.reusable ? 'reusable' : 'replacement-required';
     }
@@ -867,6 +904,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
     }
     return 'closed';
+  }
+
+  /** Reads whether this backend instance owns the exact live native binding inventory. */
+  private hasProcessLocalAgentSession(
+    inspection: NanoHostAgentSessionContinuityInspection
+  ): boolean {
+    const sharedHarness = [...this.sharedHarnesses.values()].find(
+      (candidate) => candidate.harnessInstanceId === inspection.harnessInstanceId
+    );
+    const binding = sharedHarness?.bindings.get(inspection.agentSessionId);
+    return binding?.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId;
   }
 
   /** Registers only the two exact cleanup result identities and performs no effect. */
@@ -1017,6 +1065,247 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
+  /** Reports one-Sandbox capacity without changing durable or physical runtime state. */
+  public inspectMaterializationCapacity(
+    environmentPackage: AgentEnvironmentPackage
+  ): 'available' | 'capacity-saturated' {
+    return this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated'
+      ? 'capacity-saturated'
+      : 'available';
+  }
+
+  /** Reads the one-Sandbox profile and returns only a completely idle replaceable resident. */
+  private inspectIncompatibleIdleSandbox(
+    environmentPackage: AgentEnvironmentPackage,
+    forceRetirement = false
+  ): NanoHostIdleSandboxEviction | 'capacity-saturated' | null {
+    const desiredKey = nanoHostSandboxCompatibilityKey(environmentPackage);
+    const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
+    const sandboxes = this.coreDb.sqlite
+      .prepare(
+        `SELECT sandbox_runtime_id AS sandboxRuntimeId,
+                sandbox_binding_ref AS sandboxBindingRef,
+                sandbox_compatibility_key AS sandboxCompatibilityKey,
+                lifecycle_state AS lifecycleState, health_state AS healthState,
+                drain_state AS drainState, cleanup_state AS cleanupState,
+                pinned_goal_id AS pinnedGoalId
+         FROM sandbox_runtime_records
+         WHERE runtime_target_id = ?
+         ORDER BY sandbox_runtime_id`
+      )
+      .all(runtimeTargetId) as Array<{
+      readonly cleanupState: string;
+      readonly drainState: string;
+      readonly healthState: string;
+      readonly lifecycleState: string;
+      readonly pinnedGoalId: string | null;
+      readonly sandboxBindingRef: string;
+      readonly sandboxCompatibilityKey: string;
+      readonly sandboxRuntimeId: string;
+    }>;
+    if (sandboxes.length === 0) {
+      return null;
+    }
+    if (sandboxes.length !== 1) {
+      return 'capacity-saturated';
+    }
+    const sandbox = sandboxes[0]!;
+    const processLocalSandbox =
+      this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.sandboxRuntimeId ===
+      sandbox.sandboxRuntimeId;
+    if (
+      sandbox.lifecycleState !== 'open' ||
+      sandbox.healthState !== 'ready' ||
+      sandbox.drainState !== 'accepting' ||
+      sandbox.cleanupState !== 'clean'
+    ) {
+      return 'capacity-saturated';
+    }
+    const harnesses = this.coreDb.sqlite
+      .prepare(
+        `SELECT harness_instance_id AS harnessInstanceId,
+                harness_binding_ref AS harnessBindingRef,
+                lifecycle_state AS lifecycleState, drain_state AS drainState,
+                active_turn_count AS activeTurnCount, operation_state AS operationState
+         FROM harness_instance_records
+         WHERE sandbox_runtime_id = ?
+         ORDER BY harness_instance_id`
+      )
+      .all(sandbox.sandboxRuntimeId) as Array<{
+      readonly activeTurnCount: number;
+      readonly drainState: string;
+      readonly harnessBindingRef: string;
+      readonly harnessInstanceId: string;
+      readonly lifecycleState: string;
+      readonly operationState: string;
+    }>;
+    if (
+      harnesses.some(
+        (harness) => harness.lifecycleState !== 'open' || harness.drainState !== 'accepting'
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    if (!forceRetirement && sandbox.sandboxCompatibilityKey === desiredKey && processLocalSandbox) {
+      return null;
+    }
+    if (
+      sandbox.pinnedGoalId !== null ||
+      [...this.sessions.values()].some(
+        (session) => session.sharedHarness.sandbox.sandboxRuntimeId === sandbox.sandboxRuntimeId
+      ) ||
+      harnesses.length === 0 ||
+      harnesses.some(
+        (harness) =>
+          harness.activeTurnCount !== 0 || !['idle', 'settled'].includes(harness.operationState)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    const bindings = this.coreDb.sqlite
+      .prepare(
+        `SELECT b.agent_session_id AS agentSessionId,
+                b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+                b.harness_instance_id AS harnessInstanceId,
+                h.harness_binding_ref AS harnessBindingRef,
+                b.lifecycle_state AS lifecycleState,
+                b.current_turn_id AS currentTurnId,
+                b.current_lease_id AS currentLeaseId,
+                b.cleanup_state AS cleanupState
+         FROM agent_session_runtime_bindings b
+         JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+         WHERE h.sandbox_runtime_id = ?
+           AND b.lifecycle_state <> 'closed'
+         ORDER BY b.agent_session_runtime_binding_id`
+      )
+      .all(sandbox.sandboxRuntimeId) as Array<{
+      readonly agentSessionId: string;
+      readonly agentSessionRuntimeBindingId: string;
+      readonly cleanupState: string;
+      readonly currentLeaseId: string | null;
+      readonly currentTurnId: string | null;
+      readonly harnessBindingRef: string;
+      readonly harnessInstanceId: string;
+      readonly lifecycleState: string;
+    }>;
+    if (
+      bindings.some(
+        (binding) =>
+          binding.lifecycleState !== 'open' ||
+          binding.currentTurnId !== null ||
+          binding.currentLeaseId !== null ||
+          binding.cleanupState !== 'clean' ||
+          this.agentSessionCloseOwners.has(binding.agentSessionRuntimeBindingId)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    if (
+      bindings.some((binding) =>
+        this.coreDb.sqlite
+          .prepare(
+            `SELECT 1 FROM scheduler_session_leases
+             WHERE agent_session_id = ?
+               AND status NOT IN ('released', 'lost', 'failed')
+             LIMIT 1`
+          )
+          .get(binding.agentSessionId)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    return {
+      bindings: bindings.map((binding) => ({
+        agentSessionId: binding.agentSessionId,
+        agentSessionRuntimeBindingId: binding.agentSessionRuntimeBindingId,
+        harnessBindingRef: binding.harnessBindingRef,
+        harnessInstanceId: binding.harnessInstanceId,
+        reusable: false,
+      })),
+      bridgeOpen: this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.bridgeOpen ?? true,
+      closeAgentSessions: processLocalSandbox && !forceRetirement,
+      sandboxBindingRef: sandbox.sandboxBindingRef,
+      sandboxCompatibilityKey: sandbox.sandboxCompatibilityKey,
+      sandboxId: nanoHostSandboxId(sandbox.sandboxCompatibilityKey),
+      sandboxRuntimeId: sandbox.sandboxRuntimeId,
+    };
+  }
+
+  /** Claims and cleanly deletes one proved-idle resident after replacement dispatch. */
+  private async evictIncompatibleIdleSandbox(
+    environmentPackage: AgentEnvironmentPackage,
+    identity: WorkerGovernanceBackendSessionIdentity,
+    leaseId: string,
+    forceRetirement = false
+  ): Promise<void> {
+    this.coreDb.sqlite.exec('BEGIN IMMEDIATE');
+    let eviction: NanoHostIdleSandboxEviction | null = null;
+    try {
+      const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
+      if (inspected === 'capacity-saturated') {
+        throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+      }
+      eviction = inspected;
+      if (eviction) {
+        const timestamp = new Date().toISOString();
+        const sandboxUpdate = this.coreDb.sqlite
+          .prepare(
+            `UPDATE sandbox_runtime_records
+             SET drain_state = 'draining', updated_at = ?
+             WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'
+               AND health_state = 'ready' AND drain_state = 'accepting'
+               AND cleanup_state = 'clean' AND pinned_goal_id IS NULL`
+          )
+          .run(timestamp, eviction.sandboxRuntimeId);
+        const harnessUpdate = this.coreDb.sqlite
+          .prepare(
+            `UPDATE harness_instance_records
+             SET drain_state = 'draining', updated_at = ?
+             WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'
+               AND drain_state = 'accepting' AND active_turn_count = 0
+               AND operation_state IN ('idle', 'settled')`
+          )
+          .run(timestamp, eviction.sandboxRuntimeId);
+        if (sandboxUpdate.changes !== 1 || harnessUpdate.changes < 1) {
+          throw new Error('NanoHost idle Sandbox eviction changed before drain claim.');
+        }
+      }
+      this.coreDb.sqlite.exec('COMMIT');
+    } catch (error) {
+      this.coreDb.sqlite.exec('ROLLBACK');
+      throw error;
+    }
+    if (!eviction) {
+      return;
+    }
+    try {
+      if (eviction.closeAgentSessions) {
+        for (const binding of eviction.bindings) {
+          await this.closeDurableAgentSession(binding);
+          for (const sharedHarness of this.sharedHarnesses.values()) {
+            if (sharedHarness.harnessInstanceId === binding.harnessInstanceId) {
+              sharedHarness.bindings.delete(binding.agentSessionId);
+            }
+          }
+        }
+      }
+      const cleanupInput = { leaseId, sandboxId: eviction.sandboxId };
+      if (eviction.bridgeOpen) {
+        await this.effect(identity, leaseId, 'bridge.close', cleanupInput);
+      }
+      await this.effect(identity, leaseId, 'sandbox.delete', cleanupInput);
+      removeNanoHostSandboxRuntimeByBinding(this.coreDb, eviction.sandboxBindingRef);
+      this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
+    } catch (error) {
+      fenceNanoHostSandboxRuntime(this.coreDb, {
+        sandboxBindingRef: eviction.sandboxBindingRef,
+        timestamp: new Date().toISOString(),
+      });
+      this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
+      throw error;
+    }
+  }
+
   /** Acquires or builds the immutable image and creates the exact NanoHost sandbox. */
   public async materialize(
     environmentPackage: AgentEnvironmentPackage,
@@ -1044,6 +1333,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       throw new Error('NanoHost image build requires the exact V1 empty build-context pair.');
     }
+    if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
+      throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+    }
+    await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId);
     let sharedHarness = this.restoreSharedHarness(
       sandboxCompatibilityKey,
       harnessCompatibilityKey,
@@ -1150,6 +1443,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       leaseId,
       nativeSessionReusable: false,
+      pendingImports: [],
       pendingHarnessOperation: null,
       humanGateStopSettlement: null,
       retainedStagingPaths: [],
@@ -1157,7 +1451,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       terminalInspectionComplete: false,
       turnStarted: false,
     });
-    const fileInventory = [
+    this.requireSession(environmentPackage.snapshotId).pendingImports = [
       ...(await prepareNanoHostContextPackageImports(environmentPackage, context)),
       ...runtimeCredentialImports,
     ];
@@ -1183,30 +1477,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       this.sharedSandboxes.set(sandboxCompatibilityKey, sharedSandbox);
       this.sharedHarnesses.set(harnessMapKey, sharedHarness);
     }
-    const importResults: Record<string, unknown>[] = [];
-    for (const file of fileInventory) {
-      const body = file.body;
-      const byteLength = file.byteLength;
-      const contentDigest = file.contentDigest;
-      const relativePath = file.relativePath;
-      const slot = file.slot;
-      const sha256 = contentDigest;
-      importResults.push(
-        await this.effect(identity, leaseId, 'reference.import', {
-          body,
-          byteLength,
-          relativePath,
-          sandboxId: sharedSandbox.sandboxId,
-          sha256,
-          slot,
-        })
-      );
-    }
-    evidence.push(
-      ...importResults.map((result) =>
-        nanoHostEffectEvidence(environmentPackage.createdAt, result, 'reference-import')
-      )
-    );
     return {
       backendKind: 'openshell',
       command: {
@@ -1231,7 +1501,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Opens the exact worker bridge after materialization. */
+  /** Opens or inspects the exact Session, imports its Turn inputs, then starts the child. */
   public async launch(
     materialization: WorkerGovernanceMaterializationRecord
   ): Promise<WorkerGovernanceEvidenceRecord> {
@@ -1298,6 +1568,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost retained AgentSession is not ready for exact resume.');
       }
     }
+    const pendingImports = session.pendingImports;
+    session.pendingImports = [];
+    for (const file of pendingImports) {
+      const imported = await this.effect(session.identity, session.leaseId, 'reference.import', {
+        body: file.body,
+        byteLength: file.byteLength,
+        relativePath: file.relativePath,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+        sha256: file.contentDigest,
+        slot: file.slot,
+      });
+      session.evidence.push(
+        nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')
+      );
+    }
+    const inputPaths = workerSessionInputPaths(session.environmentPackage.scope.agentSessionId);
     const lease = this.coreDb.sqlite
       .prepare(
         'SELECT startup_deadline AS startupDeadline FROM scheduler_session_leases WHERE lease_id = ?'
@@ -1307,11 +1593,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost Harness Turn startup deadline is unavailable.');
     }
     const started = await this.queueAndWaitForHarnessOperation(session, 'turn.start', {
-      aepRef: '/openkit/config/package.json',
+      aepRef: inputPaths.packagePath,
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      contextPackageId: `context_${session.environmentPackage.scope.turnId}`,
-      contextRef: '/openkit/context',
+      contextPackageId: `ctxpkg_${session.environmentPackage.scope.turnId}`,
+      contextRef: inputPaths.contextRoot,
       deadline: lease.startupDeadline,
       leaseId: session.leaseId,
       packageSnapshotId: session.environmentPackage.snapshotId,
@@ -2033,28 +2319,66 @@ function nanoHostRuntimeCredentialImports(
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */
 function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
   const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
+  const { contextRoot, packagePath } = workerSessionInputPaths(
+    environmentPackage.scope.agentSessionId
+  );
+  const { layout, materialization } = planSessionWorkspaceMaterialization({ environmentPackage });
+  const filesystem = environmentPackage.policy.filesystem;
   return createHash('sha256')
     .update(
       stableNanoHostEffectJson({
         backend: environmentPackage.backend,
         credentials: environmentPackage.credentials,
-        policy: environmentPackage.policy,
+        policy: {
+          ...environmentPackage.policy,
+          ...(filesystem
+            ? {
+                filesystem: {
+                  ...filesystem,
+                  rules: filesystem.rules.map((rule) =>
+                    rule &&
+                    typeof rule === 'object' &&
+                    !Array.isArray(rule) &&
+                    'id' in rule &&
+                    rule.id === 'openkit-context-package' &&
+                    'workerPath' in rule &&
+                    rule.workerPath === contextRoot
+                      ? { ...rule, workerPath: 'agent-session-context' }
+                      : rule
+                  ),
+                },
+              }
+            : {}),
+        },
         responsibleUserTrust: {
           actorKind: environmentPackage.scope.triggerActor.kind,
           responsibleUserId,
         },
+        resources: environmentPackage.resources,
         runtimeImage: environmentPackage.runtime.image,
+        runtimeProcess: environmentPackage.runtime.process ?? null,
         schemaVersion: environmentPackage.schemaVersion,
         vault: environmentPackage.vault,
         workspace: {
           generatedFiles: environmentPackage.workspace.generatedFiles.map((file) => ({
             access: file.access,
             id: file.id,
-            target: file.target,
+            target:
+              file.id === 'agent-environment-package' && file.target === packagePath
+                ? 'agent-session-package'
+                : file.target,
           })),
           id: environmentPackage.scope.workspaceId,
-          inputs: environmentPackage.workspace.inputs.map(nanoHostStaticWorkspaceInput),
-          layout: planSessionWorkspaceMaterialization({ environmentPackage }).layout,
+          inputs: environmentPackage.workspace.inputs.map((input, index) =>
+            nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId === 'context')
+          ),
+          layout: {
+            ...layout,
+            slots: layout.slots.map((slot) =>
+              slot.id === 'context' ? { ...slot, path: 'agent-session-context' } : slot
+            ),
+            control: { ...layout.control, contextRoot: 'agent-session-context' },
+          },
           outputs: environmentPackage.workspace.outputs,
         },
       })
@@ -2077,6 +2401,16 @@ function nanoHostSandboxIdFromBackendSessionId(backendSessionId: string): string
 
 /** Hashes the process-static adapter and Integration configuration of one Harness. */
 function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
+  const { openkit, ...extensions } = environmentPackage.extensions ?? {};
+  const openkitRecord =
+    openkit && typeof openkit === 'object' && !Array.isArray(openkit)
+      ? (openkit as Record<string, unknown>)
+      : null;
+  const {
+    turnInput: _turnInput,
+    sessionWorkspace: _sessionWorkspace,
+    ...staticOpenkit
+  } = openkitRecord ?? {};
   return createHash('sha256')
     .update(
       stableNanoHostEffectJson({
@@ -2089,7 +2423,7 @@ function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPac
           transcript: environmentPackage.control.transcript ?? null,
         },
         credentials: environmentPackage.credentials,
-        extensions: environmentPackage.extensions,
+        extensions: { ...extensions, openkit: openkitRecord ? staticOpenkit : openkit },
         resources: environmentPackage.resources,
         runtime: {
           binaries: environmentPackage.runtime.binaries,
@@ -2125,11 +2459,11 @@ function nanoHostSharedHarnessMapKey(
 
 /** Removes Turn content lineage while retaining one input's static isolation envelope. */
 function nanoHostStaticWorkspaceInput(
-  input: AgentEnvironmentPackage['workspace']['inputs'][number]
+  input: AgentEnvironmentPackage['workspace']['inputs'][number],
+  isContext: boolean
 ): Record<string, unknown> {
   const { commit: _commit, ...source } = input.source;
   const { contentDigest: _contentDigest, ...materialization } = input.materialization ?? {};
-  const isContext = materialization.slotId === 'context' || input.target === '/openkit/context';
   return {
     access: input.access,
     id: isContext ? 'context' : input.id,
@@ -2137,7 +2471,7 @@ function nanoHostStaticWorkspaceInput(
     materialization,
     mount: input.mount ?? null,
     source: isContext ? { kind: source.kind } : source,
-    target: input.target,
+    target: isContext ? 'agent-session-context' : input.target,
   };
 }
 

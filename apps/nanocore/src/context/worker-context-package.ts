@@ -16,6 +16,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
@@ -672,6 +673,7 @@ export function writeWorkerContextPackageFiles(
 
 /** Builds the exact generated AEP input for one prepared Context Package root. */
 export function buildWorkerContextPackageWorkspaceInput(input: {
+  readonly agentSessionId: string;
   readonly threadId: string;
   readonly turnId: string;
   readonly packageRootDigest: string;
@@ -692,7 +694,7 @@ export function buildWorkerContextPackageWorkspaceInput(input: {
       kind: 'generated',
       pathRef: `threads/${input.threadId}/turns/${input.turnId}/context-package`,
     },
-    target: '/openkit/context',
+    target: workerSessionInputPaths(input.agentSessionId).contextRoot,
   };
 }
 
@@ -1148,6 +1150,7 @@ function verifyWorkerContextPackagePortableOwners(
   );
   const packageRootDigest = verifyPackageFiles(input.workspaceRoot, trace);
   const expectedInput = buildWorkerContextPackageWorkspaceInput({
+    agentSessionId: trace.agentSessionId,
     packageRootDigest,
     threadId: trace.threadId,
     turnId: trace.turnId,
@@ -1155,7 +1158,7 @@ function verifyWorkerContextPackagePortableOwners(
   const contextInputs = environmentPackage?.workspace.inputs.filter(
     (candidate) =>
       candidate.id === expectedInput.id ||
-      candidate.target === '/openkit/context' ||
+      candidate.target === expectedInput.target ||
       candidate.materialization?.slotId === 'context'
   );
   if (
@@ -1257,7 +1260,7 @@ function verifyWorkerContextPackagePortableOwners(
     createdAt: turn.startedAt,
     id: trace.workspaceMaterializationRecordId,
     inputSnapshotId: trace.workspaceInputSnapshotId,
-    materializedRootRef: '/openkit/context',
+    materializedRootRef: expectedInput.target,
     packageSnapshotId: trace.packageSnapshotId,
     policyDigest: createWorkerContextPackagePolicyDigest({
       backendKind,

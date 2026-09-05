@@ -642,6 +642,7 @@ function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
         fixture.turn.id
       )!,
       {
+        agentSessionId: 'as_context',
         requestId: fixture.requestId,
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
@@ -1079,6 +1080,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceRoots: [],
     };
     const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+    const historyBeforeCommit = store.listThreadTurns(turn.workspaceId, turn.threadId);
 
     expect(store.getAgentSession('as-current-replacement').status).toBe('idle');
     await executor.commitPreparedAgentSessionForTurn(store, {
@@ -1092,6 +1094,83 @@ describe('WorkerGovernanceTurnExecutor', () => {
       status: 'closed',
       updatedAt: '2026-08-21T00:00:05.000Z',
     });
+    expect(store.listThreadTurns(turn.workspaceId, turn.threadId)).toEqual(historyBeforeCommit);
+  });
+
+  it('selects a fresh AgentSession without local close for restart-unproved Sandbox continuity', async () => {
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Replace restart continuity');
+    const currentCompatibilityKey = `sha256:${'1'.repeat(64)}`;
+    const freshCompatibilityKey = `sha256:${'2'.repeat(64)}`;
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-09-06T00:00:00.000Z',
+      id: 'as-restart-unproved-current',
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: currentCompatibilityKey,
+      status: 'idle',
+      threadId: turn.threadId,
+      updatedAt: '2026-09-06T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    let finishRetirement!: () => void;
+    const retirement = new Promise<void>((resolve) => {
+      finishRetirement = resolve;
+    });
+    const continuity = vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
+      if (input.reuseAllowed) return 'sandbox-replacement-required' as const;
+      await retirement;
+      return 'closed' as const;
+    });
+    Object.assign(backend, { prepareAgentSessionContinuity: continuity });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      now: () => '2026-09-06T00:00:01.000Z',
+    });
+    Object.assign(executor, {
+      previewAgentSessionCompatibilityKey: (agentSessionId: string) =>
+        agentSessionId === 'as-restart-unproved-current'
+          ? currentCompatibilityKey
+          : freshCompatibilityKey,
+    });
+    const preparation = {
+      agentSetup: createTestAgentSetup(),
+      freshAgentSessionId: 'as-restart-unproved-fresh',
+      requestId: 'req-restart-unproved',
+      turn,
+      turnInput: turn.input,
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    const historyBefore = store.listThreadTurns(turn.workspaceId, turn.threadId);
+
+    const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+    expect(prepared).toMatchObject({
+      agentSessionId: 'as-restart-unproved-fresh',
+      replacementRequired: true,
+      sessionCompatibilityKey: freshCompatibilityKey,
+    });
+    const committed = executor.commitPreparedAgentSessionForTurn(store, {
+      leaseId: 'lease-restart-unproved',
+      prepared,
+      preparation,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(continuity).toHaveBeenCalledTimes(3);
+    expect(continuity.mock.calls.map(([input]) => input.reuseAllowed)).toEqual([true, true, false]);
+    expect(store.getAgentSession('as-restart-unproved-current').status).toBe('idle');
+    expect(() => store.getAgentSession('as-restart-unproved-fresh')).toThrow();
+    finishRetirement();
+    await committed;
+    expect(store.getAgentSession('as-restart-unproved-current')).toMatchObject({
+      status: 'closed',
+      updatedAt: '2026-09-06T00:00:01.000Z',
+    });
+    expect(() => store.getAgentSession('as-restart-unproved-fresh')).toThrow();
+    expect(store.listThreadTurns(turn.workspaceId, turn.threadId)).toEqual(historyBefore);
   });
 
   it('starts an ordinary product Turn from the real pre-lease preview key without a Context Package', async () => {
@@ -4148,7 +4227,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           id: `context_${turn.id}`,
           sourceKind: 'materialized-dir',
           sourcePath: packageRoot,
-          workerPath: '/openkit/context',
+          workerPath: `/openkit/sessions/${agentSessionId}/context`,
         },
       ]);
     } finally {

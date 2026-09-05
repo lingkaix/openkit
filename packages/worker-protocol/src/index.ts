@@ -613,3 +613,24 @@ export type WorkerControlHeartbeatRequest = z.infer<typeof WorkerControlHeartbea
 export type WorkerControlResponseEnvelope = z.infer<typeof WorkerControlResponseEnvelopeSchema>;
 /** Product-safe worker error envelope inferred TypeScript type. */
 export type WorkerErrorEnvelope = z.infer<typeof WorkerErrorEnvelopeSchema>;
+
+/**
+ * Derives the closed AEP and Context input slots owned by one admitted AgentSession.
+ *
+ * @param agentSessionId Exact internal identity, without a lossy path transformation.
+ * @returns Stable absolute input paths and file-effect slot-relative paths.
+ * @throws Error when the identity is missing or is not a canonical path segment.
+ */
+export function workerSessionInputPaths(agentSessionId: string | undefined) {
+  if (typeof agentSessionId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(agentSessionId)) {
+    throw new Error('Worker inputs require a canonical AgentSession identity.');
+  }
+  const root = `/openkit/sessions/${agentSessionId}`;
+  return {
+    root,
+    packagePath: `${root}/config/package.json`,
+    contextRoot: `${root}/context`,
+    packageRelativePath: `${agentSessionId}/config/package.json`,
+    contextRelativePath: `${agentSessionId}/context`,
+  };
+}

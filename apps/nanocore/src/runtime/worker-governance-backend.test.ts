@@ -25,7 +25,7 @@ describe('NanoHost worker governance helpers', () => {
         body: expectedBytes,
         byteLength: expectedBytes.byteLength,
         contentDigest: expectedDigest,
-        relativePath: 'package.json',
+        relativePath: `${environmentPackage.scope.agentSessionId}/config/package.json`,
         slot: 'package-config',
       });
       expect(imports[0]?.body[0]).not.toBe(0xef);
