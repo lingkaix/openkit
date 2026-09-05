@@ -1,6 +1,6 @@
 # GitHub Workflows
 
-This directory contains repository-level CI workflows.
+This directory contains repository-level CI workflows. Test-image jobs use Docker `--init` to reap orphaned child processes, matching the local `scripts/test-env.sh` container path.
 
 The current workflow policy is intentionally resource-light:
 

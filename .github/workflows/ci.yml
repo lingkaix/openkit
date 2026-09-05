@@ -147,6 +147,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -197,6 +198,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -228,6 +230,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -258,6 +261,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -288,6 +292,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -330,6 +335,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -369,6 +375,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -409,6 +416,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -503,6 +511,7 @@ jobs:
       packages: read
     container:
       image: ${{ needs.test-image.outputs.image }}
+      options: --init
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
