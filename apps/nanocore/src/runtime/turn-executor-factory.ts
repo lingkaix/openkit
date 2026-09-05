@@ -372,6 +372,7 @@ interface NanoHostSharedSandbox {
 interface NanoHostIdleSandboxEviction {
   readonly bindings: NanoHostAgentSessionContinuityInspection[];
   readonly bridgeOpen: boolean;
+  readonly closeAgentSessions: boolean;
   readonly sandboxBindingRef: string;
   readonly sandboxCompatibilityKey: string;
   readonly sandboxId: string;
@@ -872,6 +873,27 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!inspection) {
       return 'absent';
     }
+    if (!this.hasProcessLocalAgentSession(inspection)) {
+      if (input.reuseAllowed) {
+        return 'sandbox-replacement-required';
+      }
+      if (
+        !input.environmentPackage ||
+        !input.admissionAgentSessionId ||
+        !input.admissionLeaseId ||
+        input.environmentPackage.scope.agentSessionId !== input.admissionAgentSessionId ||
+        this.requireLeaseId(input.environmentPackage.snapshotId) !== input.admissionLeaseId
+      ) {
+        throw new Error('NanoHost restart-unproved retirement lacks admission package lineage.');
+      }
+      await this.evictIncompatibleIdleSandbox(
+        input.environmentPackage,
+        this.planSession(input.environmentPackage),
+        input.admissionLeaseId,
+        true
+      );
+      return 'closed';
+    }
     if (input.reuseAllowed) {
       return inspection.reusable ? 'reusable' : 'replacement-required';
     }
@@ -882,6 +904,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
     }
     return 'closed';
+  }
+
+  /** Reads whether this backend instance owns the exact live native binding inventory. */
+  private hasProcessLocalAgentSession(
+    inspection: NanoHostAgentSessionContinuityInspection
+  ): boolean {
+    const sharedHarness = [...this.sharedHarnesses.values()].find(
+      (candidate) => candidate.harnessInstanceId === inspection.harnessInstanceId
+    );
+    const binding = sharedHarness?.bindings.get(inspection.agentSessionId);
+    return binding?.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId;
   }
 
   /** Registers only the two exact cleanup result identities and performs no effect. */
@@ -1041,9 +1074,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       : 'available';
   }
 
-  /** Reads the one-Sandbox profile and returns only a completely idle incompatible resident. */
+  /** Reads the one-Sandbox profile and returns only a completely idle replaceable resident. */
   private inspectIncompatibleIdleSandbox(
-    environmentPackage: AgentEnvironmentPackage
+    environmentPackage: AgentEnvironmentPackage,
+    forceRetirement = false
   ): NanoHostIdleSandboxEviction | 'capacity-saturated' | null {
     const desiredKey = nanoHostSandboxCompatibilityKey(environmentPackage);
     const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
@@ -1076,6 +1110,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return 'capacity-saturated';
     }
     const sandbox = sandboxes[0]!;
+    const processLocalSandbox =
+      this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.sandboxRuntimeId ===
+      sandbox.sandboxRuntimeId;
     if (
       sandbox.lifecycleState !== 'open' ||
       sandbox.healthState !== 'ready' ||
@@ -1109,7 +1146,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       return 'capacity-saturated';
     }
-    if (sandbox.sandboxCompatibilityKey === desiredKey) {
+    if (!forceRetirement && sandbox.sandboxCompatibilityKey === desiredKey && processLocalSandbox) {
       return null;
     }
     if (
@@ -1186,6 +1223,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         reusable: false,
       })),
       bridgeOpen: this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.bridgeOpen ?? true,
+      closeAgentSessions: processLocalSandbox && !forceRetirement,
       sandboxBindingRef: sandbox.sandboxBindingRef,
       sandboxCompatibilityKey: sandbox.sandboxCompatibilityKey,
       sandboxId: nanoHostSandboxId(sandbox.sandboxCompatibilityKey),
@@ -1193,16 +1231,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Claims and cleanly deletes one proved-idle incompatible resident after scheduler dispatch. */
+  /** Claims and cleanly deletes one proved-idle resident after replacement dispatch. */
   private async evictIncompatibleIdleSandbox(
     environmentPackage: AgentEnvironmentPackage,
     identity: WorkerGovernanceBackendSessionIdentity,
-    leaseId: string
+    leaseId: string,
+    forceRetirement = false
   ): Promise<void> {
     this.coreDb.sqlite.exec('BEGIN IMMEDIATE');
     let eviction: NanoHostIdleSandboxEviction | null = null;
     try {
-      const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage);
+      const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
       if (inspected === 'capacity-saturated') {
         throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
       }
@@ -1240,11 +1279,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return;
     }
     try {
-      for (const binding of eviction.bindings) {
-        await this.closeDurableAgentSession(binding);
-        for (const sharedHarness of this.sharedHarnesses.values()) {
-          if (sharedHarness.harnessInstanceId === binding.harnessInstanceId) {
-            sharedHarness.bindings.delete(binding.agentSessionId);
+      if (eviction.closeAgentSessions) {
+        for (const binding of eviction.bindings) {
+          await this.closeDurableAgentSession(binding);
+          for (const sharedHarness of this.sharedHarnesses.values()) {
+            if (sharedHarness.harnessInstanceId === binding.harnessInstanceId) {
+              sharedHarness.bindings.delete(binding.agentSessionId);
+            }
           }
         }
       }
@@ -1295,6 +1336,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
       throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
     }
+    await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId);
     let sharedHarness = this.restoreSharedHarness(
       sandboxCompatibilityKey,
       harnessCompatibilityKey,
@@ -1307,7 +1349,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sharedHarness?.sandbox ??
       this.restoreSharedSandbox(sandboxCompatibilityKey, requireNanoHostRuntimeTargetId(identity));
     if (!sharedSandbox) {
-      await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId);
       const deploymentImageDigest =
         image.kind === 'reference' &&
         image.pullPolicy === 'never' &&

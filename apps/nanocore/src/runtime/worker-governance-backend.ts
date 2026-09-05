@@ -59,6 +59,8 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
   readonly agentSessionId: string;
   /** Exact desired compatibility key derived from current static owners. */
   readonly agentSessionCompatibilityKey: string;
+  /** Secret-free successor package required only for post-dispatch whole-Sandbox retirement. */
+  readonly environmentPackage?: AgentEnvironmentPackage;
   /** Whether the product owner permits reuse if backend hygiene is exact. */
   readonly reuseAllowed: boolean;
   /** Bound Thread lineage. */
@@ -71,6 +73,8 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
 export type WorkerGovernanceAgentSessionContinuityDisposition =
   | 'reusable'
   | 'replacement-required'
+  /** The durable binding lacks process-local proof and requires whole-Sandbox retirement. */
+  | 'sandbox-replacement-required'
   | 'closed'
   | 'absent';
 

@@ -1,7 +1,10 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import {
+  type AgentEnvironmentPackage,
+  planSessionWorkspaceMaterialization,
+} from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -612,7 +615,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('maps the owning SessionCompatibilityKey to exact reusable NanoHost continuity', async () => {
+  it('maps process-locally restored SessionCompatibilityKey to reusable continuity', async () => {
     const coreDb = createFactoryCoreDb();
     const sessionCompatibilityKey = `sha256:${'a'.repeat(64)}`;
     const runtimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
@@ -700,9 +703,24 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const backend = (
         runtime.turnExecutor as unknown as {
-          readonly backend: WorkerGovernanceBackend;
+          readonly backend: WorkerGovernanceBackend & {
+            restoreSharedHarness(
+              sandboxCompatibilityKey: string,
+              harnessCompatibilityKey: string,
+              runtimeTargetId: string,
+              adapterId: 'codex',
+              adapterVersion: string
+            ): unknown;
+          };
         }
       ).backend;
+      backend.restoreSharedHarness(
+        'c'.repeat(64),
+        'd'.repeat(64),
+        'target_continuity_key',
+        'codex',
+        '0.144.1'
+      );
       const input = {
         agentSessionCompatibilityKey: sessionCompatibilityKey,
         agentSessionId: 'as-continuity-key',
@@ -2605,6 +2623,362 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
       ).toEqual({ count: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('replaces same-key idle Sandbox rows that a fresh backend cannot prove process-locally', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'sandbox.create') {
+          return { sandboxId: request.input.sandboxId, state: 'created' };
+        }
+        if (request.kind === 'bridge.close') return { state: 'closed' };
+        if (request.kind === 'sandbox.delete') return { state: 'deleted' };
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_restart_unproved', 'identity_restart_unproved',
+                     'deployment_restart_unproved', 1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-06T00:00:00.000Z');
+      const packageFor = (
+        agentSessionId: string,
+        threadId: string,
+        turnId: string,
+        snapshotId: string
+      ) =>
+        completeNanoHostPackage({
+          runtime: {
+            image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'7'.repeat(64)}` },
+          },
+          scope: {
+            agentSessionId,
+            threadId,
+            turnId,
+            workspaceId: 'workspace_restart_unproved',
+          },
+          snapshotId,
+        });
+      const firstPackage = packageFor(
+        'as_restart_unproved_old',
+        'thread_restart_unproved_old',
+        'turn_restart_unproved_old',
+        'snapshot_restart_unproved_old'
+      );
+      const firstRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const firstBackend = (
+        firstRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      firstBackend.requireLeaseId = (snapshotId) => `lease-${snapshotId}`;
+      await firstBackend.materialize(firstPackage, { workspaceRoots: [] });
+      const harness = coreDb.sqlite
+        .prepare(
+          `SELECT harness_instance_id AS harnessInstanceId,
+                  harness_compatibility_key AS harnessCompatibilityKey,
+                  adapter_id AS adapterId, adapter_version AS adapterVersion,
+                  s.sandbox_runtime_id AS sandboxRuntimeId,
+                  s.sandbox_binding_ref AS sandboxBindingRef,
+                  s.sandbox_integration_binding_ref AS sandboxIntegrationBindingRef,
+                  s.sandbox_compatibility_key AS sandboxCompatibilityKey,
+                  s.image_digest AS imageDigest, s.runtime_target_id AS runtimeTargetId
+           FROM harness_instance_records h
+           JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id`
+        )
+        .get() as {
+        readonly adapterId: 'codex';
+        readonly adapterVersion: string;
+        readonly harnessCompatibilityKey: string;
+        readonly harnessInstanceId: string;
+        readonly imageDigest: string;
+        readonly runtimeTargetId: string;
+        readonly sandboxBindingRef: string;
+        readonly sandboxCompatibilityKey: string;
+        readonly sandboxIntegrationBindingRef: string;
+        readonly sandboxRuntimeId: string;
+      };
+      const sessionCompatibilityKey = planSessionWorkspaceMaterialization({
+        environmentPackage: firstPackage,
+      }).compatibilityKey.digest;
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: harness.adapterId,
+          adapterVersion: harness.adapterVersion,
+          harnessCompatibilityKey: harness.harnessCompatibilityKey,
+          sessionCompatibilityKey,
+          threadId: firstPackage.scope.threadId,
+        }),
+        agentSessionId: firstPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: 'binding-restart-unproved-old',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: harness.harnessInstanceId,
+        threadId: firstPackage.scope.threadId,
+        timestamp: '2026-09-06T00:00:01.000Z',
+        workspaceId: firstPackage.scope.workspaceId,
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', native_handle_state = 'ready',
+               native_handle_digest = ?, cleanup_state = 'clean'`
+        )
+        .run('9'.repeat(64));
+      const unprovedPackage = packageFor(
+        'as_restart_unproved_other_harness',
+        'thread_restart_unproved_other_harness',
+        'turn_restart_unproved_other_harness',
+        'snapshot_restart_unproved_other_harness'
+      );
+      const unprovedSessionCompatibilityKey = planSessionWorkspaceMaterialization({
+        environmentPackage: unprovedPackage,
+      }).compatibilityKey.digest;
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: harness.adapterId,
+        adapterVersion: harness.adapterVersion,
+        harnessBindingRef: 'harness-binding-restart-unproved-other',
+        harnessCompatibilityKey: '8'.repeat(64),
+        harnessInstanceId: 'harness-restart-unproved-other',
+        imageDigest: harness.imageDigest,
+        runtimeTargetId: harness.runtimeTargetId,
+        sandboxBindingRef: harness.sandboxBindingRef,
+        sandboxCompatibilityKey: harness.sandboxCompatibilityKey,
+        sandboxIntegrationBindingRef: harness.sandboxIntegrationBindingRef,
+        sandboxRuntimeId: harness.sandboxRuntimeId,
+        timestamp: '2026-09-06T00:00:01.000Z',
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: harness.adapterId,
+          adapterVersion: harness.adapterVersion,
+          harnessCompatibilityKey: '8'.repeat(64),
+          sessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          threadId: unprovedPackage.scope.threadId,
+        }),
+        agentSessionId: unprovedPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: 'binding-restart-unproved-other',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-restart-unproved-other',
+        threadId: unprovedPackage.scope.threadId,
+        timestamp: '2026-09-06T00:00:01.000Z',
+        workspaceId: unprovedPackage.scope.workspaceId,
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', native_handle_state = 'ready',
+               native_handle_digest = ?, cleanup_state = 'clean'
+           WHERE agent_session_runtime_binding_id = 'binding-restart-unproved-other'`
+        )
+        .run('8'.repeat(64));
+
+      const recoveringRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const recoveringBackend = (
+        recoveringRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            restoreSession(environmentPackage: AgentEnvironmentPackage, leaseId: string): void;
+          };
+        }
+      ).backend;
+      recoveringBackend.restoreSession(firstPackage, 'lease-active-recovery');
+      await expect(
+        recoveringBackend.prepareAgentSessionContinuity?.({
+          agentSessionCompatibilityKey: sessionCompatibilityKey,
+          agentSessionId: firstPackage.scope.agentSessionId,
+          environmentPackage: firstPackage,
+          reuseAllowed: true,
+          threadId: firstPackage.scope.threadId,
+          workspaceId: firstPackage.scope.workspaceId,
+        })
+      ).resolves.toBe('reusable');
+
+      const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const restartedBackend = (
+        restartedRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            restoreSharedHarness(
+              sandboxCompatibilityKey: string,
+              harnessCompatibilityKey: string,
+              runtimeTargetId: string,
+              adapterId: 'codex',
+              adapterVersion: string
+            ): unknown;
+          };
+        }
+      ).backend;
+      const secondPackage = packageFor(
+        'as_restart_unproved_fresh',
+        unprovedPackage.scope.threadId,
+        'turn_restart_unproved_fresh',
+        'snapshot_restart_unproved_fresh'
+      );
+      coreDb.sqlite
+        .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_restart_unproved'")
+        .run();
+      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+        'capacity-saturated'
+      );
+      coreDb.sqlite.prepare('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL').run();
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'active', current_turn_id = 'turn_restart_busy',
+               current_lease_id = 'lease_restart_busy'`
+        )
+        .run();
+      coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
+      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+        'capacity-saturated'
+      );
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', current_turn_id = NULL, current_lease_id = NULL`
+        )
+        .run();
+      coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 0').run();
+      coreDb.sqlite
+        .prepare(
+          `UPDATE sandbox_runtime_records
+           SET lifecycle_state = 'failed', health_state = 'unknown',
+               drain_state = 'draining', cleanup_state = 'unknown'`
+        )
+        .run();
+      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+        'capacity-saturated'
+      );
+      coreDb.sqlite
+        .prepare(
+          `UPDATE sandbox_runtime_records
+           SET lifecycle_state = 'open', health_state = 'ready',
+               drain_state = 'accepting', cleanup_state = 'clean'`
+        )
+        .run();
+      restartedBackend.restoreSharedHarness(
+        harness.sandboxCompatibilityKey,
+        harness.harnessCompatibilityKey,
+        harness.runtimeTargetId,
+        harness.adapterId,
+        harness.adapterVersion
+      );
+      await expect(
+        restartedBackend.prepareAgentSessionContinuity?.({
+          agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          agentSessionId: unprovedPackage.scope.agentSessionId,
+          reuseAllowed: true,
+          threadId: unprovedPackage.scope.threadId,
+          workspaceId: unprovedPackage.scope.workspaceId,
+        })
+      ).resolves.toBe('sandbox-replacement-required');
+
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref
+           ) VALUES ('lease-restart-unproved-fresh', 'plan-restart-unproved-fresh',
+                     ?, ?, ?, ?, ?, 'pool_restart_unproved', 'target_restart_unproved',
+                     'acquired', ?, ?, ?, ?, 0, 1, 'lease-binding:restart-unproved')`
+        )
+        .run(
+          secondPackage.scope.workspaceId,
+          secondPackage.scope.threadId,
+          secondPackage.scope.turnId,
+          secondPackage.scope.agentSessionId,
+          secondPackage.snapshotId,
+          '2026-09-06T00:00:02.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z'
+        );
+      await expect(
+        recoveringBackend.prepareAgentSessionContinuity?.({
+          admissionAgentSessionId: secondPackage.scope.agentSessionId,
+          admissionLeaseId: 'lease-restart-unproved-fresh',
+          agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          agentSessionId: unprovedPackage.scope.agentSessionId,
+          environmentPackage: secondPackage,
+          reuseAllowed: false,
+          threadId: unprovedPackage.scope.threadId,
+          workspaceId: unprovedPackage.scope.workspaceId,
+        })
+      ).rejects.toThrow('NanoHost one-Sandbox capacity is occupied or unproved.');
+      await expect(
+        restartedBackend.prepareAgentSessionContinuity?.({
+          admissionAgentSessionId: secondPackage.scope.agentSessionId,
+          admissionLeaseId: 'lease-restart-unproved-fresh',
+          agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          agentSessionId: unprovedPackage.scope.agentSessionId,
+          environmentPackage: secondPackage,
+          reuseAllowed: false,
+          threadId: unprovedPackage.scope.threadId,
+          workspaceId: unprovedPackage.scope.workspaceId,
+        })
+      ).resolves.toBe('closed');
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'sandbox.create',
+        'bridge.close',
+        'sandbox.delete',
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+      ).toEqual({ count: 0 });
+
+      expect(restartedBackend.planSession(secondPackage).backendSessionId.slice(0, 19)).toBe(
+        firstBackend.planSession(firstPackage).backendSessionId.slice(0, 19)
+      );
+      await restartedBackend.materialize(secondPackage, { workspaceRoots: [] });
+
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'sandbox.create',
+        'bridge.close',
+        'sandbox.delete',
+        'sandbox.create',
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+      ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
     }

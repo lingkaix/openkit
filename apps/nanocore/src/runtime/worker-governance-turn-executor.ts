@@ -679,12 +679,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         input.freshAgentSessionId,
         input
       );
+      const environmentPackage = this.previewAgentEnvironmentPackage(
+        input.freshAgentSessionId,
+        input
+      );
       this.requireMaterializationCapacity(input.freshAgentSessionId, input);
       let disposition: WorkerGovernanceAgentSessionContinuityDisposition;
       try {
         disposition = await this.backend.prepareAgentSessionContinuity({
           agentSessionCompatibilityKey: sessionCompatibilityKey,
           agentSessionId: input.freshAgentSessionId,
+          environmentPackage,
           reuseAllowed: true,
           threadId: input.turn.threadId,
           workspaceId: input.turn.workspaceId,
@@ -725,6 +730,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     const currentCompatibilityKey = this.previewAgentSessionCompatibilityKey(current.id, input);
+    const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, input);
     this.requireMaterializationCapacity(current.id, input);
     const reuseAllowed =
       current.status === 'idle' &&
@@ -744,6 +750,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       disposition = await this.backend.prepareAgentSessionContinuity({
         agentSessionCompatibilityKey: currentCompatibilityKey,
         agentSessionId: current.id,
+        environmentPackage: currentEnvironmentPackage,
         reuseAllowed: true,
         threadId: input.turn.threadId,
         workspaceId: input.turn.workspaceId,
@@ -772,7 +779,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         sessionCompatibilityKey: currentCompatibilityKey,
       };
     }
-    if (!['reusable', 'replacement-required', 'absent'].includes(disposition)) {
+    if (
+      !['reusable', 'replacement-required', 'sandbox-replacement-required', 'absent'].includes(
+        disposition
+      )
+    ) {
       throw new TurnStartValidationError(
         'recovery_required',
         'The worker backend performed an effect during read-only continuity inspection.',
@@ -811,6 +822,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const inspectBackendContinuity = async (
       agentSessionId: string,
       agentSessionCompatibilityKey: string,
+      environmentPackage: AgentEnvironmentPackage,
       reuseAllowed: boolean
     ) => {
       try {
@@ -819,6 +831,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           admissionLeaseId: input.leaseId,
           agentSessionCompatibilityKey,
           agentSessionId,
+          environmentPackage,
           reuseAllowed,
           threadId: preparation.turn.threadId,
           workspaceId: preparation.turn.workspaceId,
@@ -844,6 +857,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         prepared.agentSessionId,
         preparation
       );
+      const freshEnvironmentPackage = this.previewAgentEnvironmentPackage(
+        prepared.agentSessionId,
+        preparation
+      );
       if (freshCompatibilityKey !== prepared.sessionCompatibilityKey) {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -855,6 +872,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const disposition = await inspectBackendContinuity(
         prepared.agentSessionId,
         freshCompatibilityKey,
+        freshEnvironmentPackage,
         true
       );
       if (disposition !== 'absent') {
@@ -910,6 +928,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       current.id,
       preparation
     );
+    const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, preparation);
     const reuseAllowed =
       current.agentId === preparation.agentSetup.manifest.id &&
       current.policySnapshotId === WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID &&
@@ -928,7 +947,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       this.requireMaterializationCapacity(current.id, preparation);
-      const disposition = await inspectBackendContinuity(current.id, currentCompatibilityKey, true);
+      const disposition = await inspectBackendContinuity(
+        current.id,
+        currentCompatibilityKey,
+        currentEnvironmentPackage,
+        true
+      );
       if (disposition !== 'reusable') {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -953,6 +977,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       prepared.agentSessionId,
       preparation
     );
+    const freshEnvironmentPackage = this.previewAgentEnvironmentPackage(
+      prepared.agentSessionId,
+      preparation
+    );
     if (freshCompatibilityKey !== prepared.sessionCompatibilityKey) {
       throw new TurnStartValidationError(
         'recovery_required',
@@ -961,8 +989,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     this.requireMaterializationCapacity(prepared.agentSessionId, preparation);
-    const inspected = await inspectBackendContinuity(current.id, currentCompatibilityKey, true);
-    if (!['reusable', 'replacement-required', 'absent'].includes(inspected)) {
+    const inspected = await inspectBackendContinuity(
+      current.id,
+      currentCompatibilityKey,
+      currentEnvironmentPackage,
+      true
+    );
+    if (
+      !['reusable', 'replacement-required', 'sandbox-replacement-required', 'absent'].includes(
+        inspected
+      )
+    ) {
       throw new TurnStartValidationError(
         'recovery_required',
         'The predecessor AgentSession runtime inspection was not read-only.',
@@ -970,7 +1007,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     if (inspected !== 'absent') {
-      const closed = await inspectBackendContinuity(current.id, currentCompatibilityKey, false);
+      const closed = await inspectBackendContinuity(
+        current.id,
+        currentCompatibilityKey,
+        freshEnvironmentPackage,
+        false
+      );
       if (closed !== 'closed' && closed !== 'absent') {
         throw new TurnStartValidationError(
           'recovery_required',
