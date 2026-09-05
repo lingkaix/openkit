@@ -2,10 +2,10 @@
 set -euo pipefail
 
 openkit-worker-common-smoke
-test "$(PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 pi --version)" = "0.80.7"
+test "$(PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 pi --version)" = "0.85.0"
 test "$(id -u)" -ne 0
 test "$(command -v pi)" = "/usr/local/bin/pi"
-test "$(readlink -f "$(command -v pi)")" = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+test "$(readlink -f "$(command -v pi)")" = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
 test "$(head -n 1 "$(readlink -f "$(command -v pi)")")" = "#!/usr/bin/env node"
 command -v openkit-worker-shim >/dev/null
 ! command -v codex >/dev/null

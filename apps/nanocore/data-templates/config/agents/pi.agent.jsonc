@@ -5,12 +5,12 @@
   "displayName": "Pi Agent",
   "readiness": {
     "status": "disabled",
-    "message": "Pi 0.80.7 requires a direct Provider route and is disabled until its adapter supports the Gateway relay."
+    "message": "Pi 0.85.0 requires a direct Provider route and is disabled until its adapter supports the Gateway relay."
   },
   "runtime": {
     "kind": "pi",
     "adapter": "pi",
-    "version": "0.80.7",
+    "version": "0.85.0",
     "image": {
       "kind": "reference",
       "ref": "openkit/worker-pi:dev",

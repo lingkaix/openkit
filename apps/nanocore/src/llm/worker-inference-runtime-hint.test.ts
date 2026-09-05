@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readWorkerInferenceRuntimeHint } from './worker-inference-runtime-hint.js';
 
 /**
- * Creates pinned Codex 0.144.1 runtime metadata and its compatibility projections.
+ * Creates pinned Codex 0.153.4 runtime metadata and its compatibility projections.
  *
  * @param overrides Optional canonical metadata overrides.
  * @param subagentHeader Optional native sub-agent compatibility header.

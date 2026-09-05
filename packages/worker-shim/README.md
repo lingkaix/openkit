@@ -10,9 +10,9 @@ The adapter registry has two closed modes. A `bounded-turn` adapter owns only `p
 
 ## Supported Adapters
 
-- `codex`: Codex 0.144.1 through the trusted NanoCore Responses relay only. This is the sole `session-continuity` adapter; it owns the fixed first-launch and exact-thread-UUID resume arguments, AgentSession-private `CODEX_HOME`, restricted handle proof, race-safe final-message file, and optional pinned runtime-provenance capture.
+- `codex`: Codex 0.153.4 through the trusted NanoCore Responses relay only. This is the sole `session-continuity` adapter; it owns the fixed first-launch `--cd` arguments, exact-thread-UUID resume arguments without `--cd` because the Harness owns process cwd, AgentSession-private `CODEX_HOME`, restricted handle proof, race-safe final-message file, and optional pinned runtime-provenance capture.
 - `opencode`: OpenCode 1.18.1 through the trusted NanoCore OpenAI-compatible relay only. This remains a `bounded-turn` adapter with an isolated home, inline non-secret provider configuration, and fail-closed JSON-event collection.
-- `pi`: Pi 0.80.7 through the exact direct `anthropic/claude-sonnet-4-5` route only. This remains a `bounded-turn` adapter that disables optional native discovery surfaces and requires correlated terminal provider and model evidence.
+- `pi`: Pi 0.85.0 through the exact direct `anthropic/claude-sonnet-4-5` route only. This remains a `bounded-turn` adapter that disables optional native discovery surfaces and requires correlated terminal provider and model evidence.
 
 Every package must contain exactly one resolved LLM route. Codex and OpenCode reject direct-provider routes, while Pi rejects relay routes and every provider/model pair other than its one accepted direct pair.
 
@@ -26,7 +26,7 @@ For one read-write Git workspace input, the shared supervisor validates the clos
 
 ## Codex Runtime Provenance
 
-Runtime provenance is opt-in through `control.transcript.runtimeProvenance`. The Codex adapter streams primary `codex exec --json` output with backpressure and incrementally copies the stable Codex 0.144.1 rollout forest reachable from the primary thread. It writes only the fixed package-declared outputs under `/openkit/session/runtime`, subject to the declared byte and stream limits and the adapter's pinned discovery guards.
+Runtime provenance is opt-in through `control.transcript.runtimeProvenance`. The Codex adapter streams primary `codex exec --json` output with backpressure and incrementally copies the stable Codex 0.153.4 rollout forest reachable from the primary thread. It writes only the fixed package-declared outputs under `/openkit/session/runtime`, subject to the declared byte and stream limits and the adapter's pinned discovery guards.
 
 Missing root evidence is `failed`; missing, contradictory, or changing reachable evidence is `unstable`; and partial or limit-bounded evidence is `truncated`. Malformed physical frames remain explicitly indexed instead of being silently attributed. A new capture removes any prior manifest commit marker before touching raw files, and provenance-enabled failures do not copy native output into ordinary transcript diagnostics.
 
@@ -45,4 +45,4 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 - `src/adapter-registry.ts`: literal production registry and the two closed adapter-mode contracts.
 - `src/adapters/`: pinned Codex, OpenCode, and Pi adapters with adapter-local tests.
 - `src/fourth-runtime.fixture.test.ts`: proof that one fixture registry entry crosses the unchanged shared supervisor.
-- `snapshots/codex-0.144.1/`: minimized primary-exec and rollout JSONL fixtures pinned to Codex `rust-v0.144.1`.
+- `snapshots/codex-0.153.4/`: minimized primary-exec and rollout JSONL fixtures pinned to Codex `rust-v0.153.4`.

@@ -55,7 +55,7 @@ function createRecoveryRuntimeStream(
 ) {
   const bytes = Buffer.from(`${JSON.stringify(record)}\n`);
   const entry = WorkerRuntimeNativeOriginIndexEntrySchema.parse({
-    adapterVersion: '0.144.1',
+    adapterVersion: '0.153.4',
     byteLength: bytes.byteLength,
     byteOffset: 0,
     eventKind: record.type,
@@ -158,7 +158,7 @@ async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
   const streamManifestPath = join(captureRoot, 'raw-streams.json');
   const nativeOriginIndexPath = join(captureRoot, 'native-origin-index.jsonl');
   const manifest = WorkerRuntimeRawStreamManifestSchema.parse({
-    adapterVersion: '0.144.1',
+    adapterVersion: '0.153.4',
     captureStatus: 'complete',
     lineage,
     primaryStreamRef: 'stream-0000.jsonl',

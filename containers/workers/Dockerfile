@@ -193,7 +193,7 @@ USER sandbox
 FROM worker-common AS worker-codex
 
 ARG TARGETARCH
-ARG CODEX_CLI_VERSION="0.144.1"
+ARG CODEX_CLI_VERSION="0.153.4"
 
 LABEL org.openkit.image="worker-codex"
 LABEL org.openkit.worker.runtime="codex"
@@ -275,7 +275,7 @@ USER sandbox
 
 FROM worker-common AS worker-pi
 
-ARG PI_VERSION="0.80.7"
+ARG PI_VERSION="0.85.0"
 
 LABEL org.openkit.image="worker-pi"
 LABEL org.openkit.worker.runtime="pi"

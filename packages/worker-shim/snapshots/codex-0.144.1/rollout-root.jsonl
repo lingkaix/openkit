@@ -1,2 +1,0 @@
-{"timestamp":"2026-07-09T00:00:00.000Z","type":"session_meta","payload":{"session_id":"019f0000-0000-7000-8000-000000000001","id":"019f0000-0000-7000-8000-000000000001","timestamp":"2026-07-09T00:00:00.000Z","cwd":"/workspace/openkit","originator":"codex_exec","cli_version":"0.144.1","source":"exec"}}
-{"timestamp":"2026-07-09T00:00:01.000Z","type":"turn_context","payload":{"turn_id":"20000000-0000-4000-8000-000000000001","cwd":"/workspace/openkit","approval_policy":"never","sandbox_policy":{"type":"danger-full-access"},"model":"gpt-5","summary":"auto"}}

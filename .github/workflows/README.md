@@ -34,6 +34,8 @@ The `CI` workflow exposes these manual `gate` choices:
 - `release-gate`: tag-release gate equivalent.
 - `full`: explicit full manual validation, including L4.
 
+The manual `release-gate` and `full` gates also build and smoke every worker image from the catalog on both declared Linux platforms without registry publication.
+
 Agent-first L6 is not wired into GitHub Actions.
 
 Future agentic workflow jobs must stay manual unless the L6 spec and release policy explicitly promote a constrained story subset.

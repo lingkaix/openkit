@@ -1,0 +1,151 @@
+---
+type: change-plan
+status: in-progress
+started: 2026-09-05
+branch: codex/codex-pi-stable-refresh
+---
+# Codex And PI Agent Stable Refresh
+
+## Intent Epoch 1
+
+- **Source:** Delegated builder assignment in the Cursor CLI session on 2026-09-05, after explicit engineer steering that Codex and PI Agent version/schema compatibility work may proceed in parallel while the primary finishes PR #4 tests.
+- **Requested outcome:** Refresh only Codex and PI Agent Workers to the latest formal non-prerelease stable releases, including exact pins, lockfile, freshly generated Codex app-server schema and metadata, PI contract alignment, affected adapter/protocol consumers, tests, and local guides.
+- **Non-negotiables:** Conform to the new versions rather than retain backward compatibility; add no migration layer, wrapper, runner, compatibility shim, or broader feature; do not change OpenCode, OpenShell, models.dev, Open Knowledge Format, roadmap feature state, or the R058 change record; do not deploy, SSH, access credentials, run real-provider/host tests, publish, push, or open or merge PRs; do not commit until requested; leave the result reviewable for the primary so PR #4 can merge first.
+- **Acceptance observations:** Official registry and release identities for the selected Codex and PI pins are recorded under this worktree `temp/research`; Codex schema metadata records the exact immutable tag and peeled commit from a complete non-shallow checkout; image, manifest, adapter, schema, provenance, smoke, and focused tests name the same pins; focused schema, adapter, PI, lint, typecheck, and build checks report exact observed results.
+- **Exclusions:** OpenCode, OpenShell, models.dev catalog, Open Knowledge Format, pi-ai Gateway pin, NanoHost/OpenShell pins, R058 feature work, real-provider or host tests, image publication, and any new Worker architecture.
+- **Effect boundary:** Edits and local installs stay inside `/Users/m5pro/Documents/AI/openkit/temp/worktrees/codex-pi-stable-refresh` on branch `codex/codex-pi-stable-refresh`; network is used only to read official npm and GitHub sources and to clone exact tags into this worktree `temp/research`.
+
+## Intent Epoch 2
+
+- **Source:** Delegated builder follow-up in the same Cursor CLI session on 2026-09-05, authorizing local Docker image proof while the completed source diff stays under independent read-only review.
+- **Requested outcome:** Build and smoke only `worker-codex` and `worker-pi` with unique task tags `openkit/worker-codex:codex-pi-refresh-20260905` and `openkit/worker-pi:codex-pi-refresh-20260905`; capture source input digests, image IDs, logs, and exit statuses under this worktree `temp/research`; update this plan's evidence.
+- **Non-negotiables:** Do not change shared `:dev` tags; keep production source bytes frozen during reviewer inspection and report any genuine build/smoke failure before editing; no A2, host credential, provider request, push, commit, deploy, or unrelated cleanup; do not broaden scope or create test frameworks.
+- **Acceptance observations:** Local Docker Engine 29.5.2 on linux/aarch64 produces named task-tag images; smoke scripts exit 0 and print the current Codex `0.153.4` and PI `0.85.0` proofs; evidence files under `temp/research/image-proof-20260905/` record digests, inspect output, logs, and statuses.
+- **Exclusions:** OpenCode image, shared `:dev` tags, publication, host/provider tests, and any source change unless a named build/smoke bug is first reported.
+- **Effect boundary:** Same isolated worktree; local Docker build and `docker run --rm` smoke for the two unique tags; network only as those image builds require for pinned package installs.
+
+## Intent Epoch 3
+
+- **Source:** Independent reviewer findings returned to this isolated worktree on 2026-09-05 after local unique-tag image proof.
+- **Requested outcome:** Reconcile the compaction spec's current Pi pin and source identity; restore truthful historical July/August image-evidence attribution and add only actual 2026-09-05 results; add per-generated-file checksum evidence and explicit compatible/adapted/blocking dispositions plus recorded feasibility/realization results under the existing snapshot metadata owner.
+- **Non-negotiables:** Do not invent a validator or framework; do not widen repin scope to unrelated baseline gaps; keep provenance fixtures synthetic; no commit, push, deploy, or A2.
+- **Acceptance observations:** Compaction spec current Pi pin is `0.85.0` at `107d79f11072bbc8a3a757ed7fd69596bee7d68c`; owning image specs attribute 2026-07-21/2026-08-01 evidence to previous pins and record 2026-09-05 unique-tag results separately; `packages/codex-app-server-schema/metadata.json` checksums cover every generated JSON file; consumed-surface dispositions and gate results are recorded.
+- **Exclusions:** OpenCode, models.dev, OpenShell snapshot repair, native provenance recapture, A2, and new architecture.
+- **Effect boundary:** Same isolated worktree; production edits limited to the named spec, snapshot metadata, existing schema validator, and this plan.
+
+## Intent Epoch 4
+
+- **Source:** Root direction in the same Cursor CLI session on 2026-09-05 after the resume `--cd` correction: CI verification is a separate isolated checkout, and remaining selectable-pin checks for this refresh are cut to image smokes plus stock OpenShell packaging.
+- **Requested outcome:** Keep this worktree on version, schema, adapter compatibility, metadata, documentation, and the concrete resume `--cd` fix. Record that required remaining re-pin checks are eight catalog worker/platform image smokes with `push:false` and A2 stock OpenShell create, AEP upload, generic shim dry-run, and delete. Do not treat general real-provider, reconnect, recovery, or provenance L6 work as new refresh blockers.
+- **Non-negotiables:** Do not edit CI or workflow files in this checkout. Tag-only image-matrix cannot verify without publication; the dedicated CI builder in `temp/worktrees/codex-pi-refresh-ci` (base `edc9e31f1366897f69152328e26aaf0fe24bf737`) owns a minimal existing manual release-gate extension that runs those eight smokes with `push:false`. Root integrates the reviewed CI diff later. No commit, push, deploy, or A2 from this delegated session.
+- **Acceptance observations:** This plan and the owning adapter and image evidence distinguish refresh-required remaining checks from separately owned baseline gates. This checkout still contains no CI/workflow edits.
+- **Exclusions:** `.github/` and other CI/workflow files; the CI checkout; real-provider turns; worker-control reconnect and recovery; provenance L5/L6 and production advertisement; inventing a new image-matrix or publication path.
+- **Effect boundary:** Same isolated worktree; documentation and metadata only for this remaining-gate cut.
+
+## Intent Epoch 5
+
+- **Source:** Root direction on 2026-09-05 after independent acceptance of the CI slice: integrate the exact reviewed patch into this refresh worktree as the sole destination writer.
+- **Requested outcome:** Apply unchanged `temp/changes/202609031230162442-r058_worker_mcp/candidate-review/codex-pi-ci-reviewed.patch` (SHA-256 `55a4ef614943818ab61a72115b93360156eb8f2c69d5d761eee15ef60b1493c0`) after hash verify and `git apply --check`. It may touch only `.github/workflows/ci.yml`, `.github/workflows/README.md`, and `tests/release-workflow.test.mjs`. Run focused eight workflow tests and `git diff --check`. Freeze the whole candidate including the resume `--cd` fix and metadata. Remaining required effect-domain checks are the actual eight GitHub-hosted worker/platform smoke jobs and A2 stock OpenShell packaging.
+- **Non-negotiables:** The previous no-CI-edit instruction is superseded only for this accepted patch. Do not redesign the workflow. Do not call the producer `red.log` RED; it was a missing-yaml Node 22 setup failure. Independent Node 24 evidence is 7 pass / 1 fail then 8/8 plus the read-only/`push: false` boundary, recorded in `temp/changes/202609031230162442-r058_worker_mcp/candidate-review/codex-pi-refresh-ci-review.md`. No commit, push, workflow dispatch, or A2 from this delegated session. Root owns next execution.
+- **Acceptance observations:** Patch hash matched; `git apply --check` and apply were clean; this tree's `node --test tests/release-workflow.test.mjs` is 8 pass / 0 fail under Node `v24.18.0`; `git diff --check` is clean.
+- **Exclusions:** Redesign of image-matrix or publication; commit; push; dispatch; A2; real-provider, reconnect, recovery, and provenance L6 as new refresh blockers.
+- **Effect boundary:** Same isolated worktree; production CI/workflow edits limited to the three reviewed files.
+
+## Intent Epoch 6
+
+- **Source:** Independent Auditor finding CPR-AUD-001 in `/Users/m5pro/Documents/AI/openkit/temp/changes/202609031230162442-r058_worker_mcp/final-audit/20260905-r058-worker-mcp-repository-integrity-audit.md`, returned to this worktree on 2026-09-05.
+- **Requested outcome:** Restore the standing vendor re-pin MUST and the consuming Codex, Pi, and image owners' existing required-gate meaning. Record every applicable unrun feasibility or realization gate as pending. Remove the unsupported claim that eight CI worker smokes plus stock OpenShell packaging alone close selectability or integration. Clarify that `push: false` nonpublication applies to worker release images; the existing `test-image` job may publish a content-addressed CI execution image.
+- **Non-negotiables:** Do not invent optional, disabled, or release-only exceptions. Preserve only exceptions already explicit in an owning specification. No code, CI, metadata, schema, or test edits. No commit, push, dispatch, or A2. Earlier Intent Epochs stay immutable historical record.
+- **Acceptance observations:** Affected Codex, Pi, and image evidence paragraphs again state that real-provider, readiness, heartbeat, interruption, reconnect, recovery, stock OpenShell, and architecture evidence remain unobserved acceptance obligations. The plan pending list matches those consuming-spec gates.
+- **Exclusions:** New checks, new architecture, vendor-owner exception drafting, implementation, and remaining execution.
+- **Effect boundary:** Same isolated worktree; documentation restoration only.
+
+## Owning Documents
+
+- `docs/specs/20260522-vendor_snapshot_packages.md` owns snapshot packaging, exact-tag non-shallow evidence, and the standing re-pin obligation.
+- `docs/specs/20260716-codex_worker_adapter.md` owns the Codex adapter, command surface, and native version pin.
+- `docs/specs/20260716-pi_worker_adapter.md` owns the PI adapter, JSON-mode command surface, and native version pin.
+- `docs/specs/20260721-worker_execution_environment_images.md` owns worker image runtime pins.
+- `docs/specs/20260711-worker_runtime_subagent_provenance.md` owns Codex provenance fixture and parser version alignment.
+- `docs/specs/20260802-nanohost_runtime_and_transport.md` remains the NanoHost boundary and is not changed by this pin refresh.
+- `packages/codex-app-server-schema/` owns generated Codex app-server schema artifacts.
+
+## Accepted Decisions Already In Force
+
+- Compatibility means the current accepted adapter contracts against the new pinned runtimes, not a retained old-version path.
+- PI remains a `bounded-turn` adapter on the historical direct Anthropic pair until a separately accepted relay-capable contract exists; this refresh does not invent that contract.
+- Codex remains the sole `session-continuity` adapter using `codex exec` / `codex exec resume` and the trusted NanoCore Responses relay.
+- Schema generation uses the pinned Codex CLI command recorded in package metadata, with source identity taken from the exact GitHub tag checkout.
+- CPR-AUD-001 restoration remains: the vendor Standing Re-Pin Obligation and consuming-spec required-gate meaning are not waived. After owner reconciliation, this refresh's current integration gates are the four listed below. Pi target-NanoHost ineligibility and template `readiness.status: disabled` keep Pi provider, lifecycle, session-continuity, and `inference.local` obligations pending before future Pi selectability; they are not waived and are not required to land a still-disabled pin. Optional provenance stays pending while explicitly unadvertised. This refresh does not create a new real-resume gate, full release qualification, generic RelayStream campaign, or separate OpenCode acceptance.
+
+## Re-Pin Dispositions And Gates
+
+Codex consumed-surface dispositions are recorded in `packages/codex-app-server-schema/metadata.json`. Summary: exec/resume positional argv and flags except resume `--cd` are `compatible`; first-turn `--cd` versus resume Harness cwd is `adapted`; `-c` TOML override keys, `CODEX_HOME`/`sessions`/`rollout-*.jsonl`, native version output `codex-cli 0.153.4`, exec JSONL provenance fields, rollout JSONL fields, and NanoCore worker-inference runtime-hint fields are `compatible`; app-server JSON-RPC schema growth is `compatible` because the worker adapter does not parse that protocol; `ThreadReadResponse.json` parent-thread fields remain present (`compatible`); `ItemStartedNotification.json` no longer carries parent-thread fields and is not consumed by the rollout parser (`compatible`). `metadata.implementationValues` is the single frozen map of actual consumed upstream literals from `packages/worker-shim/src/adapters/codex.ts`, `packages/worker-shim/src/codex-runtime-provenance.ts`, `apps/nanocore/src/llm/worker-inference-runtime-hint.ts`, and `containers/worker-codex/smoke.sh`. The OpenKit image path `/usr/local/lib/codex/bin/codex` is excluded. That metadata completion and the resume `--cd` adaptation do not close the current integration gates.
+
+Pi consumed-surface dispositions are recorded in `docs/specs/20260716-pi_worker_adapter.md`: JSON-mode flags, `claude-sonnet-4-5`, and `agent_settled` are `compatible`; published bin `dist/bundle/cli.js` is `adapted`; Gateway/`inference.local` remains `blocking` for the target route, unchanged from `0.80.7`.
+
+`docs/specs/20260522-vendor_snapshot_packages.md` Standing Re-Pin Obligation requires consuming-spec feasibility or realization gates to re-run before a new pin becomes selectable. Unique-tag local linux/aarch64 image smoke, focused workflow tests, and the integrated manual worker-image job graph do not close that obligation. Spec meaning restored by CPR-AUD-001 is unchanged. The lists below classify current integration gates versus future disabled or unadvertised obligations after owner reconciliation. Independent Verifier and Auditor inspection confirmed this classification against Codex readiness, the explicitly disabled Pi manifest and owner, and the unadvertised optional provenance owner; no gate was waived or reported passed.
+
+Observed 2026-09-05 as evidence only, not as selectable-pin closure: unique-tag local linux/aarch64 Docker build and smoke for `worker-codex` and `worker-pi`; focused adapter, provenance, schema, image-contract, lint, typecheck, and build checks; isolated native `exec`/`exec resume` parse proof; accepted CI patch applied unchanged; focused eight workflow tests 8/8 under Node `v24.18.0`.
+
+Independent CI review path: `/Users/m5pro/Documents/AI/openkit/temp/changes/202609031230162442-r058_worker_mcp/candidate-review/codex-pi-refresh-ci-review.md`. Reviewed patch: `/Users/m5pro/Documents/AI/openkit/temp/changes/202609031230162442-r058_worker_mcp/candidate-review/codex-pi-ci-reviewed.patch` SHA-256 `55a4ef614943818ab61a72115b93360156eb8f2c69d5d761eee15ef60b1493c0`. Independent Node 24 evidence is RED 7 pass / 1 fail (`codex-pi-ci-independent-red.log`) then GREEN 8/8 (`codex-pi-ci-independent-green.log`). The producer `temp/research/codex-pi-ci/red.log` is a missing-yaml Node 22 setup failure and is not RED. Manual worker-image jobs use `contents: read`, `load: true`, and `push: false` and do not publish release worker images. The existing `test-image` job has `packages: write` and may publish a content-addressed CI execution image.
+
+Current integration gates, pending until observed:
+
+- Eight catalog worker/platform image builds and smokes: `worker-common`, `worker-codex`, `worker-opencode`, and `worker-pi` on `linux/amd64` and `linux/arm64`. The `worker-common` smoke already includes the throwaway derived-image proof. Owners: `docs/specs/20260721-worker_execution_environment_images.md`, `docs/specs/20260708-container_image_packaging.md`.
+- A2 stock OpenShell create, AEP upload, generic shim dry-run, and delete for all three final leaves (`worker-codex`, `worker-opencode`, `worker-pi`) — `docs/specs/20260721-worker_execution_environment_images.md`, `docs/specs/20260708-container_image_packaging.md`.
+- Codex Unit F F1 on the exact new Codex worker image: real-provider success, ready, heartbeat progress, NanoCore restart, next-generation reconnect, same-lineage completion, and teardown/fresh-empty — `docs/specs/20260716-codex_worker_adapter.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- One public `interruptTurn` observation on that exact Codex image after ready and active work, with interrupted state and cleanup — `docs/specs/20260716-codex_worker_adapter.md`, `docs/specs/20260703-worker_control_protocol.md`.
+
+Pending before future Pi selectability, not waived, and not required to land the still-disabled Pi pin (`docs/specs/20260716-pi_worker_adapter.md` target-NanoHost ineligibility; template `readiness.status: disabled`):
+
+- Pi real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, and recovery
+- Pi NanoHost RuntimeTarget, session-continuity, and Gateway `inference.local`
+
+Pending while optional provenance remains explicitly unadvertised (`docs/specs/20260711-worker_runtime_subagent_provenance.md`):
+
+- Provenance L5 and L6 packaged NanoCore Codex task that spawns at least two sub-agents
+- Provenance skip-aware real Codex story opt-in acceptance gate
+- `worker.runtime-provenance.v1` production advertisement
+
+This refresh does not create a new real-resume gate, a full release-qualification campaign, a generic RelayStream campaign, or a separate OpenCode pin-acceptance obligation. OpenCode appears in the eight smokes and three-leaf A2 check only because the shared worker catalog and Dockerfile already require that leaf.
+
+## Working Checkpoint
+
+- **Current facts:** This worktree remains based on `edc9e31f1366897f69152328e26aaf0fe24bf737` on `codex/codex-pi-stable-refresh`, uncommitted. Official non-prerelease pins selected 2026-09-05T07:03:37Z are Codex `@openai/codex@0.153.4` / GitHub `rust-v0.153.4` peeled commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a` and PI `@earendil-works/pi-coding-agent@0.85.0` / GitHub `v0.85.0` commit `107d79f11072bbc8a3a757ed7fd69596bee7d68c`. Local Docker Engine 29.5.2 on linux/aarch64 built unique tags only. The first Codex unique-tag docker log completed naming/unpack of smoked id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d` and installed `codex-cli 0.153.4`, but the zsh wrapper used read-only `status` and did not capture that process exit. A cached rerun of the same command captured `codex_unique_tag_build_exit=0` (`startedAt=2026-09-05T07:50:20Z`, `finishedAt=2026-09-05T07:50:23Z`); all layers were CACHED; BuildKit re-exported current tag id `sha256:bdcff050a506859966ef95373573444867dbe9d501a0a885f3ecb781f5119ef2` with identical RootFS layers, Created, and Size. Codex smoke exit 0 targeted the smoked `2fdd17` image and was not rerun. Pi unique-tag id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745` captured build exit 0 and smoke exit 0, native `0.85.0`. Shared `:dev` tags were absent before and after. Source-input aggregate SHA-256 of Dockerfile COPY inputs plus catalog and both leaf smokes is `9f9786dd057bd2951e131738d6cca5908505e6909f19fb2e0c05b3b3505b6ac4` (53 files). Resume `--cd` is omitted at the shared launch builder. Current Dockerfile COPY inputs differ from the unique-tag build in `packages/worker-shim/README.md`, `packages/worker-shim/src/adapters/codex.ts`, and `packages/worker-shim/src/adapters/codex.test.ts`; current 53-file sha256sum-lines aggregate is `a0be5b8c18e793f419a6d4407a6be58efecbcfe8303e1438b63d787e118e268b`. The accepted CI patch is applied unchanged. CPR-AUD-001 spec meaning remains. Current integration gates are the eight catalog worker/platform smokes, A2 three-leaf stock OpenShell packaging, Codex Unit F F1 on the exact new image, and one public `interruptTurn` observation. Pi disabled-target obligations stay pending for future Pi selectability. Optional provenance stays pending while unadvertised.
+- **Material unknowns:** Whether the four current integration gates against these candidate bytes will pass remains unobserved. Independent review accepts the implementation, snapshot, and CI bytes; the restored mandatory-gate meaning and current-versus-disabled classification have independent Verifier and Auditor acceptance.
+- **Method:** The primary inspected the actual diff, review outputs, and all 342 manifest entries, then took sole worktree write ownership from the frozen Cursor session. Source changes since the final implementation review are limited to the five documented specification/plan corrections.
+- **Frontier:** The source candidate is ready for isolated CI evidence. Integration remains blocked by the four current gates and by the engineer's requirement to merge PR #4 first.
+- **Next Action:** Commit and push only this isolated branch, then dispatch the existing manual `release-gate` workflow. The deciding observable is all eight exact-candidate worker/platform build-and-smoke results; a workflow source, matrix, build, or smoke failure causes a local correction before integration. Release worker images remain unpublished; the existing content-addressed CI test-image behavior is unchanged. A2 image and lifecycle checks follow the R058 scene cleanup.
+
+## Verification Observed
+
+Toolchain: `node -v` = `v24.18.0`; `pnpm -v` = `10.33.3`; PATH used `/Users/m5pro/.local/share/mise/shims`.
+
+- Final independent review observed Worker Shim 185/185, schema checks and all 304 hashes, workflow 8/8, documentation checks, and catalog validation passing. The required four-file release suite reported 36/42, with six unchanged package-release cases failing because macOS BSD tar rejects the existing GNU `--mtime=@0` argument. Repository validators passed before Biome processed zero files because this isolated checkout is beneath excluded `temp/`; package lint passed separately. The primary moved the unchanged Git worktree to `/Users/m5pro/Documents/AI/openkit-codex-pi-stable-refresh`, outside the excluded `temp/` tree, trusted the unchanged pinned mise file at its new location, and observed `pnpm -w check:repo` exit 0 with all validators, 976 Biome files, and catalog checks passing; raw output is `temp/research/check-repo-root-owned-final.log`. Linux CI must still settle the host-specific GNU tar cases. Evidence is retained in `temp/changes/202609031230162442-r058_worker_mcp/candidate-review/codex-pi-refresh-review.md` and its named raw logs.
+
+- `pnpm --filter @openkit/codex-app-server-schema test` exit 0 after resume `--cd` `adapted` disposition; `lint` exit 0, Biome checked 3 files, no fixes. The frozen `implementationValues` map remains 59 unique consumed literals; dispositions are now 11.
+- `pnpm --filter @openkit/worker-protocol build` then `test` TAP `1..20` all ok, exit 0; `typecheck` exit 0; `lint` checked 4 files, no fixes.
+- `pnpm --filter @openkit/worker-shim test` TAP `1..186` all ok, including Codex `0.153.4` provenance parse and PI adapter JSON command tests, exit 0; `typecheck` exit 0; `lint` checked 28 files, no fixes. That whole-package TAP predates collapsing the resume `--cd` regression into the session-continuity test.
+- Focused `pnpm --filter @openkit/worker-shim exec vitest run --reporter=tap-flat src/adapters/codex.test.ts` TAP `1..16` all ok, exit 0 after first-turn `--cd` retains `workingDirectory` and resume omits `--cd` in the existing session-continuity test; the separate full-argv resume case is removed.
+- `pnpm --filter @openkit/protocol build` then `pnpm --filter @openkit/config-schema test` TAP `1..159` all ok, exit 0; `typecheck` exit 0; `lint` checked 32 files, no fixes.
+- `pnpm exec turbo run build --filter=@openkit/nanocore^...` 7 successful / 7 total, exit 0.
+- NanoCore focused Vitest: `openshell-worker-dockerfile.test.ts`, `worker-inference-runtime-hint.test.ts`, `worker-runtime-provenance.test.ts`, `nanohost-harness-records.test.ts`, `worker-recovery.test.ts`, `turn-executor-factory.test.ts` TAP `1..85` all ok, exit 0; `worker-governance-turn-executor.test.ts` TAP `1..106` all ok, exit 0.
+- `pnpm --filter @openkit/nanocore typecheck` exit 0; `lint` checked 564 files, no fixes; `build` exit 0.
+- `node scripts/validate-spec-lifecycle.mjs` exit 0; `node scripts/validate-doc-model.mjs` validated 216 documents, exit 0; `node scripts/generate-doc-index.mjs --check` index current, exit 0.
+
+Full-suite green is not claimed. Generated schema tree matches `temp/research/codex-schema-0.153.4` (304 JSON files; no extra/missing names). Snapshot SHA-256 values match `packages/worker-shim/snapshots/codex-0.153.4/metadata.json`.
+
+Local unique-tag image proof on Docker Engine 29.5.2 / linux/aarch64, Node `v24.18.0`, PATH `/Users/m5pro/.local/share/mise/shims`:
+
+- Source-input aggregate SHA-256 `9f9786dd057bd2951e131738d6cca5908505e6909f19fb2e0c05b3b3505b6ac4` (`temp/research/image-proof-20260905/source-input-digests.json`).
+- First `scripts/docker/build-image.sh worker-codex openkit/worker-codex:codex-pi-refresh-20260905` docker log completed naming/unpack of smoked id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d` and recorded `codex-cli 0.153.4`. The zsh wrapper then used read-only `status` and aborted before capturing a process exit; that wrapper failure is not a captured docker build exit.
+- Cached rerun of the same unique-tag command captured `codex_unique_tag_build_exit=0` in a task-specific variable, not zsh `status` (`startedAt=2026-09-05T07:50:20Z`, `finishedAt=2026-09-05T07:50:23Z`; `temp/research/image-proof-20260905/worker-codex-build-cached-rerun.exit.txt`). All layers were CACHED. BuildKit re-exported current tag id `sha256:bdcff050a506859966ef95373573444867dbe9d501a0a885f3ecb781f5119ef2`; RootFS layers, Created, and Size matched the smoked `2fdd17` image; the original `2fdd17` index digest is no longer named.
+- `scripts/docker/smoke-image.sh worker-codex openkit/worker-codex:codex-pi-refresh-20260905` exit 0 against smoked id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`; log ends `OpenKit Codex worker image smoke OK` (`startedAt=2026-09-05T07:39:07Z`, `finishedAt=2026-09-05T07:39:09Z`). Smoke was not rerun after the cached re-export.
+- `scripts/docker/build-image.sh worker-pi openkit/worker-pi:codex-pi-refresh-20260905` exit 0; image id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`; build log recorded `0.85.0`.
+- `scripts/docker/smoke-image.sh worker-pi openkit/worker-pi:codex-pi-refresh-20260905` exit 0; log ends `OpenKit Pi worker image smoke OK` (`startedAt=2026-09-05T07:39:55Z`, `finishedAt=2026-09-05T07:39:57Z`).
+- Isolated native parse proof on `openkit/worker-codex:codex-pi-refresh-20260905`, `--network=none`, no provider credentials (`temp/research/codex-0.153.4-exec-parse-proof/`): `codex exec --help` documents `-C, --cd`; `codex exec resume --help` does not. First-turn full emitted argv with `--cd` parsed (`thread.started`, then network reconnect wait, timeout exit 124). Resume full emitted argv without `--cd` parsed (`no rollout found for thread id 00000000-0000-0000-0000-000000000000`, exit 1). Neither form reported `unexpected argument '--cd'`.
+- Shared `:dev` tags remained absent. Smoke logs also printed `mise WARN  mise version 2026.9.1 available`; that is an upstream update notice, not a smoke failure. Unique-tag linux/aarch64 image smoke does not close the vendor re-pin obligation. Current integration gates remain unobserved.
+- Accepted CI patch SHA-256 `55a4ef614943818ab61a72115b93360156eb8f2c69d5d761eee15ef60b1493c0` matched; `git apply --check` exit 0; apply clean to `.github/workflows/ci.yml`, `.github/workflows/README.md`, and `tests/release-workflow.test.mjs` only.
+- Independent review `temp/changes/202609031230162442-r058_worker_mcp/candidate-review/codex-pi-refresh-ci-review.md`: Node 24 RED 7 pass / 1 fail then GREEN 8/8 plus read-only/`push: false`. Producer `red.log` is a missing-yaml Node 22 setup failure and is not RED.
+- This integrated tree: `node --test tests/release-workflow.test.mjs` under Node `v24.18.0` / pnpm `10.33.3`: tests 8, pass 8, fail 0, exit 0. `git diff --check` exit 0. `pnpm exec biome check tests/release-workflow.test.mjs .github/workflows/README.md` checked 1 file, no fixes, exit 0.

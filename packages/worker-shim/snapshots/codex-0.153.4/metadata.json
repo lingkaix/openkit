@@ -1,0 +1,22 @@
+{
+  "sourceProject": "https://github.com/openai/codex",
+  "sourceRelease": "https://github.com/openai/codex/releases/tag/rust-v0.153.4",
+  "sourceTag": "rust-v0.153.4",
+  "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+  "cliVersion": "0.153.4",
+  "refreshedAt": "2026-09-05",
+  "fixtures": [
+    {
+      "file": "exec-primary.jsonl",
+      "sha256": "bbcc6f8b8866de73e33b8601dc71949a88167cbf4d397a87651566804c2f2f02"
+    },
+    {
+      "file": "rollout-root.jsonl",
+      "sha256": "f21abebdccfc727a02dcc417c23456228b876f92a625985b1d719ee77a3d6d71"
+    },
+    {
+      "file": "rollout-child-0001.jsonl",
+      "sha256": "67e3f36cadba2ab9fcb719baaccf6c25c916a9cebf2d08e27bdd48201957d759"
+    }
+  ]
+}

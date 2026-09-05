@@ -443,7 +443,7 @@ async function verifyRuntimeProvenance(
   if (!isDeepStrictEqual(manifest.lineage, lineage)) {
     errors.push('Manifest lineage does not match the authoritative AEP.');
   }
-  if (manifest.runtimeFamily !== 'codex' || manifest.adapterVersion !== '0.144.1') {
+  if (manifest.runtimeFamily !== 'codex' || manifest.adapterVersion !== '0.153.4') {
     errors.push('Runtime adapter version is unsupported.');
   }
   if (

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
@@ -65,6 +67,79 @@ test('release workflow smokes one digest on every platform before tag promotion'
   });
   assert.ok(job.steps.indexOf(verify) < job.steps.indexOf(anonymous));
   assert.equal(record.env.ANONYMOUS_PULL, actionExpression('matrix.anonymousPull'));
+});
+
+test('manual release gate derives a nonpublishing worker image smoke matrix', () => {
+  const matrixJob = workflow.jobs['container-image-matrix'];
+  assert.match(
+    matrixJob.if,
+    /workflow_dispatch.*release-gate/u,
+    'container image matrix must be available to the manual release gate'
+  );
+  assert.doesNotMatch(matrixJob.if, /release-preflight/u);
+  assert.equal(matrixJob.needs, undefined);
+
+  const producer = step(matrixJob, 'Read release image manifest');
+  const outputFile = join(mkdtempSync(join(tmpdir(), 'openkit-release-matrix-')), 'output');
+  try {
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', producer.run], {
+      cwd: process.cwd(),
+      env: { ...process.env, GITHUB_OUTPUT: outputFile },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const output = readFileSync(outputFile, 'utf8');
+    const matrix = JSON.parse(output.match(/^worker-matrix=(.+)$/m)?.[1] ?? '{}');
+    assert.deepEqual(
+      matrix.include.map(({ id, platform }) => `${id}:${platform}`),
+      [
+        'worker-common:linux/amd64',
+        'worker-common:linux/arm64',
+        'worker-codex:linux/amd64',
+        'worker-codex:linux/arm64',
+        'worker-opencode:linux/amd64',
+        'worker-opencode:linux/arm64',
+        'worker-pi:linux/amd64',
+        'worker-pi:linux/arm64',
+      ]
+    );
+  } finally {
+    rmSync(join(outputFile, '..'), { recursive: true, force: true });
+  }
+
+  const smokeJob = workflow.jobs['smoke-worker-images'];
+  assert.ok(smokeJob, 'missing manual worker image smoke job');
+  assert.match(smokeJob.if, /workflow_dispatch.*release-gate/u);
+  assert.deepEqual(smokeJob.permissions, { contents: 'read' });
+  assert.equal(smokeJob.needs, 'container-image-matrix');
+  assert.deepEqual(
+    smokeJob.strategy.matrix,
+    actionExpression('fromJSON(needs.container-image-matrix.outputs.worker-matrix)')
+  );
+  assert.ok(step(smokeJob, 'Set up QEMU').uses);
+  assert.ok(step(smokeJob, 'Set up Docker Buildx').uses);
+  assert.equal(step(smokeJob, 'Build worker image').with.load, true);
+  assert.equal(step(smokeJob, 'Build worker image').with.push, false);
+  assert.equal(
+    workflow.jobs['publish-container-images'].if,
+    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+  );
+  assert.ok(workflow.jobs['publish-container-images'].needs.includes('release-preflight'));
+  assert.ok(
+    !(smokeJob.steps ?? []).some(
+      (candidate) =>
+        /docker\/(?:login|build-push-action)/u.test(candidate.uses ?? '') &&
+        /login-action/u.test(candidate.uses ?? '')
+    )
+  );
+  assert.equal(
+    step(smokeJob, 'Run worker image smoke').run,
+    'bash scripts/docker/smoke-image.sh "${' + 'IMAGE_ID}"'
+  );
+  assert.equal(
+    step(smokeJob, 'Run worker image smoke').env.DOCKER_DEFAULT_PLATFORM,
+    actionExpression('matrix.platform')
+  );
 });
 
 test('release workflow publishes and independently verifies the portable release bundle', () => {

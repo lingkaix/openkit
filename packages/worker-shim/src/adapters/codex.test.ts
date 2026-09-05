@@ -96,7 +96,7 @@ function writeRootRollout(stateRoot: string, threadId: string): void {
     join(directory, `rollout-${threadId}.jsonl`),
     `${JSON.stringify({
       payload: {
-        cli_version: '0.144.1',
+        cli_version: '0.153.4',
         cwd: '/workspace/repository',
         id: threadId,
         originator: 'codex_exec',
@@ -152,6 +152,8 @@ describe('Codex worker adapter', () => {
     const initialPlan = await codexAdapter.prepareTurn(first);
     expect(initialPlan.argv).not.toContain('resume');
     expect(initialPlan.argv).not.toContain('--ephemeral');
+    expect(initialPlan.argv).toContain('--cd');
+    expect(initialPlan.argv[initialPlan.argv.indexOf('--cd') + 1]).toBe(first.workingDirectory);
     writeRootRollout(first.stateRoot, threadId);
     writeFileSync(
       initialPlan.argv[initialPlan.argv.indexOf('--output-last-message') + 1] as string,
@@ -181,6 +183,8 @@ describe('Codex worker adapter', () => {
     expect(resumedPlan.argv[resumeIndex + 1]).toBe('--json');
     expect(resumedPlan.argv.at(-2)).toBe(threadId);
     expect(resumedPlan.argv.at(-1)).toBe(first.turnInput);
+    expect(resumedPlan.argv).not.toContain('--cd');
+    expect(resumedPlan.argv).not.toContain(first.workingDirectory);
     await expect(
       codexAdapter.inspectSession({ stateRoot: sibling.stateRoot })
     ).resolves.toMatchObject({

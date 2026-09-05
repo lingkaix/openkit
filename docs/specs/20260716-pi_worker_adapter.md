@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-21
+updated: 2026-09-05
 ---
 # Pi Worker Adapter
 
@@ -38,7 +38,7 @@ This adapter remains in the shared registry's `bounded-turn` mode and is already
 
 ## Upstream Contract
 
-The accepted upstream research pin is Pi monorepo commit `818d67457cdd6b60bce6b121d16b23141c252dd8`, whose coding-agent package reports version `0.80.7`.
+The accepted upstream research pin is Pi monorepo commit `107d79f11072bbc8a3a757ed7fd69596bee7d68c`, whose coding-agent package reports version `0.85.0`.
 
 The current bounded native command uses JSON mode with all ambient resource and approval paths disabled:
 
@@ -106,7 +106,7 @@ Pi does not need native MCP support to satisfy the OpenKit boundary. The selecte
 
 The accepted NanoHost runtime exposes the logical worker-local `inference.local` binding at fixed `http://127.0.0.1:17892/inference/v1`, projected by Sandbox Integration through `/inference/*` with an inference credential distinct from `/worker-control/*` and `/capabilities/*`. Pi must not receive a direct NanoCore endpoint, the worker-control token, an SSH or Gateway-forward route, or a second control path. The pinned Pi runtime still cannot consume that fixed target under this adapter contract, so the target remains unsupported for Pi.
 
-The authored Agent Manifest owns logical-model preferences, credential requirements, backend-capability requirements, and network needs; the resolved AEP owns the exact allowed logical-model contract, credential bindings, and effective launch policy while the Gateway privately owns Provider routes. Pi `0.80.7` cannot consume the accepted `inference.local` target under the no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-Provider path requires `models.json`. The target binding is therefore unsupported. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, expose a concrete Provider route, or silently replace worker-local inference with a direct route.
+The authored Agent Manifest owns logical-model preferences, credential requirements, backend-capability requirements, and network needs; the resolved AEP owns the exact allowed logical-model contract, credential bindings, and effective launch policy while the Gateway privately owns Provider routes. Pi `0.85.0` cannot consume the accepted `inference.local` target under the no-generated-file adapter contract. The pinned runtime has no safe custom-base argv or environment binding; its custom-Provider path requires `models.json`. The target binding is therefore unsupported. The adapter must not generate `models.json`, use `--api-key`, patch or fork Pi, expose a concrete Provider route, or silently replace worker-local inference with a direct route.
 
 The historical Pi adapter accepted only the pinned `anthropic` / `claude-sonnet-4-5` direct pair with the manifest-declared `ANTHROPIC_API_KEY` credential binding, which the image smoke proved existed exactly in Pi's catalog. It passed that exact pair through `--provider` and `--model`, rejected zero or multiple routes, and failed before spawn when the pair or credential binding differed. Pi's fuzzy and synthetic model fallback was never accepted as route resolution. This direct credential path is historical evidence, not current NanoHost guidance.
 
@@ -114,7 +114,7 @@ The historical Pi adapter accepted only the pinned `anthropic` / `claude-sonnet-
 
 The repository-owned Pi AgentManifest selects adapter id `pi`, the Pi worker image, native executable paths used by network policy, the exact `anthropic` / `claude-sonnet-4-5` pair and `ANTHROPIC_API_KEY` binding, resource-discovery isolation flags, and only capabilities proven by this specification.
 
-The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.80.7`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its current smoke check verifies the exact native version, JSON mode, generic shim dry run, the fixed fail-closed flags and environment, the historical direct Provider/model pair, non-root identity, and expected worker filesystem layout. That catalog proof does not make Pi dispatch-ready under the logical-model target.
+The Pi image installs the generic worker shim and `@earendil-works/pi-coding-agent@0.85.0`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no Codex or OpenCode runtime. Its current smoke check verifies the exact native version, JSON mode, generic shim dry run, the fixed fail-closed flags and environment, the historical direct Provider/model pair, non-root identity, and expected worker filesystem layout. That catalog proof does not make Pi dispatch-ready under the logical-model target.
 
 Pi-specific install commands, binary paths, resource flags, event fixtures, and version pins live only in the Pi AgentManifest, adapter, image, specification, and tests.
 
@@ -164,9 +164,11 @@ Required image smoke covers pinned `pi --version`, JSON mode help, generic shim 
 
 ## Implementation Evidence And Limit
 
-The Pi `0.80.7` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and refreshed image smoke are implemented for the legacy direct `anthropic` / `claude-sonnet-4-5` route. Pi remains ineligible for the target NanoHost route and shared-Harness RuntimeTarget because neither the accepted route nor a session-continuity adapter is implemented. The refreshed 2026-07-21 arm64 image builds locally and passes its complete smoke. The earlier minimal arm64 image passed stock unpatched OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, but that historical run is not refreshed-image evidence and proves neither the target NanoHost lifecycle nor RelayStream plus nested HTTP/2 feasibility.
+The Pi `0.85.0` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and image smoke are implemented for the legacy direct `anthropic` / `claude-sonnet-4-5` route. Pi remains ineligible for the target NanoHost route and shared-Harness RuntimeTarget because neither the accepted route nor a session-continuity adapter is implemented. The 2026-07-21 arm64 image build and complete smoke, and the earlier minimal arm64 OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, are historical evidence for the previous Pi `0.80.7` image contents. They are not 0.85.0 image evidence and prove neither the target NanoHost lifecycle nor RelayStream plus nested HTTP/2 feasibility. On 2026-09-05 this worktree built and smoked unique local tag `openkit/worker-pi:codex-pi-refresh-20260905` on Docker Engine 29.5.2 linux/aarch64 (image id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`, smoke exit 0, native version `0.85.0`). That local unique-tag proof does not replace stock OpenShell, amd64 cross-build, real-provider, worker-control, heartbeat, interruption, reconnect, or recovery gates.
 
-This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
+This local unique-tag smoke proves image contents and adapter dry-run for the 0.85.0 pin. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
+
+Consumed-surface dispositions for this pin change: JSON-mode flags, `claude-sonnet-4-5`, and `agent_settled` remain present (`compatible`); the published bin path moved from `dist/cli.js` to `dist/bundle/cli.js` and smoke was updated (`adapted`); `inference.local` / `models.json` / Gateway relay remain unavailable (`blocking` for the target route, unchanged from `0.80.7` and not invented by this refresh).
 
 ## Acceptance
 
@@ -176,16 +178,16 @@ Pi proves the intended extensibility only when it is added as one AgentManifest,
 
 ## Upstream Evidence
 
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/coding-agent/README.md`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/coding-agent/docs/json.md`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/coding-agent/docs/rpc.md`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/ai/src/types.ts`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/agent/src/types.ts`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/agent/src/agent-loop.ts`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/coding-agent/src/core/agent-session.ts`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/coding-agent/src/modes/print-mode.ts`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/coding-agent/test/suite/agent-session-retry-events.test.ts`
-- `https://github.com/badlogic/pi-mono/blob/818d67457cdd6b60bce6b121d16b23141c252dd8/packages/coding-agent/test/suite/regressions/6363-agent-settled-event.test.ts`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/coding-agent/README.md`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/coding-agent/docs/json.md`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/coding-agent/docs/rpc.md`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/ai/src/types.ts`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/agent/src/types.ts`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/agent/src/agent-loop.ts`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/coding-agent/src/core/agent-session.ts`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/coding-agent/src/modes/print-mode.ts`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/coding-agent/test/suite/agent-session-retry-events.test.ts`
+- `https://github.com/earendil-works/pi/blob/107d79f11072bbc8a3a757ed7fd69596bee7d68c/packages/coding-agent/test/suite/regressions/6363-agent-settled-event.test.ts`
 
 ## Related Documents
 

@@ -233,7 +233,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Pinned Pi 0.80.7 worker adapter. */
+/** Pinned Pi 0.85.0 worker adapter. */
 export const piAdapter: WorkerAdapter = {
   collect: collectPi,
   mode: 'bounded-turn',

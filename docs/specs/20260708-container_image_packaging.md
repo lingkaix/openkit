@@ -657,7 +657,7 @@ Runtime default state:
 - The AEP launches `openkit-worker-shim`; `control.adapter.targetRuntime` selects one adapter in the shim's static registry.
 - Current release documentation uses exact GHCR version or digest references.
 
-The current catalog contains separate Codex, OpenCode, and Pi worker images. Each currently contains the generic shim and a singular catalog-declared runtime: Codex `0.144.1`, OpenCode `1.18.1`, or Pi `0.80.7`. Those leaves remain singular facts because no present need merges them.
+The current catalog contains separate Codex, OpenCode, and Pi worker images. Each currently contains the generic shim and a singular catalog-declared runtime: Codex `0.153.4`, OpenCode `1.18.1`, or Pi `0.85.0`. Those leaves remain singular facts because no present need merges them.
 
 Release worker base state:
 
@@ -679,11 +679,16 @@ A1 verification state before the 2026-07-21 execution-environment refresh:
 - Historical stock unpatched OpenShell `0.0.80` evidence created one sandbox from each previous image, uploaded its AEP package, completed the generic shim dry run, and deleted the sandbox after the Cell's separate same-tag image cache was refreshed.
 - This historical evidence proves the unchanged adapter, shim, stock OpenShell containment, upload, and cleanup path for the previous image contents only. It is not current verification of the refreshed common environment or its new AEP network grants.
 
-Current refreshed-image verification state:
+Historical 2026-07-21 refreshed-image verification state for the then-current pins:
 
-- On 2026-07-21, all three refreshed arm64 final targets built from `containers/workers/Dockerfile` on the current development host and passed their complete image smoke checks as non-root `sandbox` users.
+- On 2026-07-21, all three refreshed arm64 final targets built from `containers/workers/Dockerfile` on the then-current development host and passed their complete image smoke checks as non-root `sandbox` users. Those images carried Codex `0.144.1`, OpenCode `1.18.1`, and Pi `0.80.7`.
 - The same host cross-built all three refreshed targets as `linux/amd64`, and every cross-platform image passed the same complete non-root smoke contract.
-- On 2026-08-01, historical A1 verification repeated stock OpenShell create, AEP upload, shim dry-run, and legacy whole-Cell cleanup for every refreshed image. This proves image compatibility only; it does not prove the unimplemented Runtime Epoch target, stock RelayStream plus nested standard HTTP/2 feasibility, or route-token separation.
+- On 2026-08-01, historical A1 verification repeated stock OpenShell create, AEP upload, shim dry-run, and legacy whole-Cell cleanup for every then-refreshed image. This proves image compatibility only for those previous image contents; it does not prove the unimplemented Runtime Epoch target, stock RelayStream plus nested standard HTTP/2 feasibility, or route-token separation.
+
+2026-09-05 Codex and Pi pin-refresh image verification:
+
+- Local Docker Engine 29.5.2 on linux/aarch64 built and smoked unique task tags only: `openkit/worker-codex:codex-pi-refresh-20260905` id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d` (native `codex-cli 0.153.4`, smoke exit 0) and `openkit/worker-pi:codex-pi-refresh-20260905` id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745` (native `0.85.0`, smoke exit 0). Shared `:dev` tags were not written.
+- This refresh did not rebuild or smoke OpenCode `1.18.1` in this checkout, did not observe GitHub-hosted worker/platform smokes, and did not repeat stock OpenShell, real-provider, worker-control, heartbeat, interruption, reconnect, or recovery gates. The manual worker-image job does not publish release worker images (`load: true`, `push: false`, no registry login). The existing `test-image` job may still publish a content-addressed CI execution image.
 
 ## Alternatives Considered
 

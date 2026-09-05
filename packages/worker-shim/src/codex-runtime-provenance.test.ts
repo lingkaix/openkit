@@ -22,7 +22,7 @@ const ROLLOUT_CANDIDATE_HARD_CAP = 256;
 const RETAINED_FRAME_HARD_CAP = 4096;
 
 describe('Codex runtime provenance capture', () => {
-  it('parses the pinned Codex 0.144.1 primary and child rollout snapshots', async () => {
+  it('parses the pinned Codex 0.153.4 primary and child rollout snapshots', async () => {
     const fixture = provenanceFixture();
     const primary = readFileSync(snapshotUrl('exec-primary.jsonl'));
     installRolloutBytes(
@@ -45,7 +45,7 @@ describe('Codex runtime provenance capture', () => {
       readJson(fixture.streamManifestPath)
     );
     expect(manifest).toMatchObject({
-      adapterVersion: '0.144.1',
+      adapterVersion: '0.153.4',
       captureStatus: 'complete',
       streams: [
         expect.objectContaining({ streamRef: 'stream-0000.jsonl' }),
@@ -103,7 +103,7 @@ describe('Codex runtime provenance capture', () => {
       readJson(fixture.streamManifestPath)
     );
     expect(manifest).toMatchObject({
-      adapterVersion: '0.144.1',
+      adapterVersion: '0.153.4',
       captureStatus: 'complete',
       lineage: LINEAGE,
       primaryStreamRef: 'stream-0000.jsonl',
@@ -577,7 +577,7 @@ function provenanceFixture(overrides: FixtureOverrides = {}) {
     codexHome,
     nativeOriginIndexPath: join(sessionDir, 'runtime', 'native-origin-index.jsonl'),
     options: {
-      adapterVersion: '0.144.1',
+      adapterVersion: '0.153.4',
       codexHome,
       lineage: LINEAGE,
       maxStreamCount: overrides.maxStreamCount ?? 8,
@@ -603,14 +603,14 @@ interface SessionMetaInput {
 }
 
 /**
- * Builds one minimized Codex 0.144.1 rollout session metadata line.
+ * Builds one minimized Codex 0.153.4 rollout session metadata line.
  *
  * @param input Native session and thread metadata.
  * @returns One rollout JSONL line.
  */
 function sessionMeta(input: SessionMetaInput): string {
   return rolloutLine('session_meta', {
-    ...(input.cliVersion === null ? {} : { cli_version: input.cliVersion ?? '0.144.1' }),
+    ...(input.cliVersion === null ? {} : { cli_version: input.cliVersion ?? '0.153.4' }),
     cwd: '/workspace/openkit',
     id: input.threadId,
     originator: 'codex_exec',
@@ -703,7 +703,7 @@ function installRolloutBytes(codexHome: string, name: string, bytes: Uint8Array)
  * @returns File URL for the snapshot.
  */
 function snapshotUrl(name: string): URL {
-  return new URL(`../snapshots/codex-0.144.1/${name}`, import.meta.url);
+  return new URL(`../snapshots/codex-0.153.4/${name}`, import.meta.url);
 }
 
 /**

@@ -2,11 +2,11 @@
 set -euo pipefail
 
 openkit-worker-common-smoke
-test "$(codex --version)" = "codex-cli 0.144.1"
+test "$(codex --version)" = "codex-cli 0.153.4"
 test "$(id -u)" -ne 0
 test "$(command -v codex)" = "/usr/local/bin/codex"
 test "$(readlink -f "$(command -v codex)")" = "/usr/local/lib/codex/bin/codex"
-test "$(/usr/local/lib/codex/bin/codex --version)" = "codex-cli 0.144.1"
+test "$(/usr/local/lib/codex/bin/codex --version)" = "codex-cli 0.153.4"
 command -v openkit-worker-shim >/dev/null
 ! command -v opencode >/dev/null
 ! command -v pi >/dev/null

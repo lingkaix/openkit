@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-28
+updated: 2026-09-05
 ---
 # Worker Execution Environment Images
 
@@ -93,9 +93,9 @@ The accepted baseline as of 2026-08-28 is:
 | uv and uvx | `0.11.30`, source image `ghcr.io/astral-sh/uv:0.11.30@sha256:93b61e21202b1dab861092748e46bbd6e0e41dd84f59b9174efd2353186e1b47` | Official uv multi-architecture image |
 | GitHub CLI | `2.96.0` | Official release archive with architecture-specific SHA-256 verification |
 | mise | `2026.8.14` | Official release binary with architecture-specific SHA-256 verification |
-| Codex | `0.144.1`, Codex image only | Pinned native package |
+| Codex | `0.153.4`, Codex image only | Pinned native package |
 | OpenCode | `1.18.1`, OpenCode image only | Pinned native package |
-| Pi | `0.80.7`, Pi image only | Pinned native package |
+| Pi | `0.85.0`, Pi image only | Pinned native package |
 
 The common OS tool set is `bash`, `build-essential`, `ca-certificates`, `curl`, `dnsutils`, `fd-find`, `file`, `git`, `iproute2`, `iputils-ping`, `jq`, `lsof`, `nano`, `net-tools`, `netcat-openbsd`, `openssh-client`, `pkg-config`, `procps`, `ripgrep`, `tar`, `tini`, `traceroute`, `unzip`, `vim`, and `xz-utils`. The image must expose the Debian `fdfind` binary through the conventional `fd` command.
 
@@ -184,11 +184,13 @@ The repository now builds `worker-common`, `worker-codex`, `worker-opencode`, an
 
 The three built-in AgentManifest templates now declare the complete common binary paths and five development grants owned as copy-on-init templates by `docs/specs/20260703-agent_manifest_aep_resolution.md`. Config-schema accepts bounded exact `GET` or `POST` REST rules, NanoCore preserves those authored rules through resolved setup and AEP creation, trusted worker inference permits unrelated authored development grants while still rejecting direct provider credentials, and OpenShell materialization renders the exact Git wildcard rules without a hidden endpoint or `git-receive-pack`. Worker inference authority is limited to the AEP-selected adapter; image contents confer no adapter or credential authority.
 
-On 2026-07-21, the current arm64 development host built and smoked all three final targets natively, then cross-built and smoked the same targets as `linux/amd64`. Every smoke ran as the non-root `sandbox` user and covered exact versions, command inventory, declared-set conformance, writable and immutable path checks, absence of baked policy, absence of root-owned writable state, and generic shim dry-run.
+On 2026-07-21, the then-current arm64 development host built and smoked all three final targets natively, then cross-built and smoked the same targets as `linux/amd64`. Those images carried Codex `0.144.1`, OpenCode `1.18.1`, and Pi `0.80.7`. Every smoke ran as the non-root `sandbox` user and covered exact versions, command inventory, declared-set conformance, writable and immutable path checks, absence of baked policy, absence of root-owned writable state, and generic shim dry-run.
 
-On 2026-08-01, historical A1 verification used stock OpenShell and Gateway `0.0.80` to create one disposable sandbox from each refreshed Codex, OpenCode, and Pi image, upload a representative AEP with exactly the five common development grants and no additional host, complete the generic shim dry run, and return zero residual containers and sandboxes through legacy whole-Cell cleanup after every case. This completes image-content acceptance only; it does not prove the target NanoHost lifecycle, stock RelayStream, nested standard HTTP/2 behavior, or route-token separation.
+On 2026-08-01, historical A1 verification used stock OpenShell and Gateway `0.0.80` to create one disposable sandbox from each then-refreshed Codex, OpenCode, and Pi image, upload a representative AEP with exactly the five common development grants and no additional host, complete the generic shim dry run, and return zero residual containers and sandboxes through legacy whole-Cell cleanup after every case. This completes image-content acceptance only for those previous image contents; it does not prove the target NanoHost lifecycle, stock RelayStream, nested standard HTTP/2 behavior, or route-token separation.
 
-The current strict-version-4, NanoHost, config-schema, worker-shim, App API, Core Client, migration, build, lint, OpenAPI, and Rust package-exit checks pass. This projection records that package state only and does not claim a new A1 gate is implemented.
+On 2026-09-05 this worktree built and smoked unique local tags `openkit/worker-codex:codex-pi-refresh-20260905` (id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`, `codex-cli 0.153.4`) and `openkit/worker-pi:codex-pi-refresh-20260905` (id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`, Pi `0.85.0`) on Docker Engine 29.5.2 linux/aarch64. OpenCode was not rebuilt in this checkout. Shared `:dev` tags were not written. Stock OpenShell, amd64 cross-build, real-provider, worker-control, heartbeat, interruption, reconnect, and recovery gates for these new image bytes remain unobserved.
+
+The current strict-version-4, NanoHost, config-schema, worker-shim, App API, Core Client, migration, build, lint, OpenAPI, and Rust package-exit checks pass. This projection records that package state only and does not claim a new stock OpenShell packaging gate is implemented.
 
 `containers/images.json` now carries four worker entries on one Dockerfile. `worker-common` is `release: true` with `baseImage` and `target` and without `runtime` or `workerContract`, which is the empty declared runtime set identified structurally by absent runtime metadata. Local smoke of that base is `containers/workers/openkit-worker-common-base-smoke.sh`, which reuses `smoke-common.sh` for baseline, mise version, and ownership, then proves no first-party Agent CLI is present. `scripts/docker/smoke-image.sh` additionally builds one network-free throwaway image `FROM` the local base, regains `USER root`, adds one tiny executable, returns to `USER sandbox`, proves the inherited common baseline plus that executable, and deletes the temporary image. `test-env` is not that derived proof. First GHCR publication of `worker-common` remains a later version-tag release event; this repository change does not publish. The internal Codex-plus-Pi dogfood image remains design and backlog only.
 

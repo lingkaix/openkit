@@ -31,7 +31,7 @@ const workerImageContracts = [
     id: 'worker-codex',
     manifest: 'codex.agent.jsonc',
     nativeBinary: '/usr/local/bin/codex',
-    nativeVersion: '0.144.1',
+    nativeVersion: '0.153.4',
     runtime: 'codex',
   },
   {
@@ -45,7 +45,7 @@ const workerImageContracts = [
     id: 'worker-pi',
     manifest: 'pi.agent.jsonc',
     nativeBinary: '/usr/local/bin/pi',
-    nativeVersion: '0.80.7',
+    nativeVersion: '0.85.0',
     runtime: 'pi',
   },
 ] as const;

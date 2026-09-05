@@ -8,4 +8,4 @@ Read `README.md` first. This file contains only local agent execution rules for 
 - Do not add OpenKit `UI <-> Core` protocol schemas here; those belong in `@openkit/protocol`.
 - Do not add NanoCore adapter business logic here; consumers should treat this package as a read-only external boundary snapshot.
 - Refresh snapshots only through explicit maintenance work with a reviewed schema diff.
-- Keep `metadata.json` in sync with the generated files and the generator command.
+- Keep `metadata.json` in sync with the generated files, per-file checksums, consumed implementation values, consumed-surface dispositions, and the generator command.

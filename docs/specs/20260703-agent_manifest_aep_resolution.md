@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-28
+updated: 2026-09-05
 ---
 # Agent Manifest And AEP Resolution
 
@@ -520,7 +520,7 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - Shim and adapter records remain candidates until NanoCore validates and commits canonical product state.
 - AEP snapshots are immutable launch contracts. Any material supply, policy, workspace, provider, vault, backend, or request change produces a new snapshot.
 - Server Manifest, Workspace binding, selected profile, and User preference compose one authored setup before resolution. Workspace composition may add Workspace-owned resources; catalogs, grants, policy, runtime proof, governance materialization, and adaptation remain non-authoring.
-- Codex `0.144.1` and OpenCode `1.18.1` are relay-only for LLM authority. Direct LLM Provider credentials and endpoints are excluded from dispatchable worker supply. Pi `0.80.7` remains direct-provider-only in the current implementation and is therefore non-ready in the clean logical-model target until an accepted relay-capable adapter replaces that constraint.
+- Codex `0.153.4` and OpenCode `1.18.1` are relay-only for LLM authority. Direct LLM Provider credentials and endpoints are excluded from dispatchable worker supply. Pi `0.85.0` remains direct-provider-only in the current implementation and is therefore non-ready in the clean logical-model target until an accepted relay-capable adapter replaces that constraint.
 - Current runtime-native launch details are adapter-derived outputs from AEP snapshots and are never stable product contracts; generated native files are not authorized by the current adapter interface.
 - Readiness is a redacted pre-launch diagnostic with `ready`, `degraded`, `blocked`, and `stale` target states.
 - Scale fields in manifests are intent. Scheduler records decide actual placement, queueing, reuse, and capacity.

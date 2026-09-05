@@ -249,7 +249,7 @@ describe('shared Worker Harness', () => {
               rolloutPath,
               `${JSON.stringify({
                 payload: {
-                  cli_version: '0.144.1',
+                  cli_version: '0.153.4',
                   cwd: sandboxRoot,
                   id: threadId,
                   originator: 'codex_exec',
