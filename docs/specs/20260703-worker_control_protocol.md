@@ -57,7 +57,7 @@ V2 serves the one-process, one-configured-NanoHost shared-runtime profile with m
 - Do not carry large artifacts, patches, bundles, or raw logs over the control plane.
 - Do not expose arbitrary shell execution.
 - Do not let Sandbox Integration mutate product state.
-- Do not duplicate capability calls; the future `/capabilities/*` route family owns privileged services.
+- Do not duplicate capability calls; `/capabilities/*` owns privileged-service traffic, with only selected MCP currently implemented.
 - Do not define runtime-native transcript parsing in this spec.
 - Do not add a general offline command queue, replacement-worker protocol, multi-target failover, settlement workflow, or feature-specific recovery harness.
 

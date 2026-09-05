@@ -17,7 +17,7 @@ implementation: Partial
 
 ## Does Not Own
 
-- The worker capability plane itself: routing, envelopes, lineage, and `CapabilityCall` semantics. `docs/specs/20260703-worker_agent_capability.md` owns those; this spec fills its deferred `mcp.*` routes.
+- The worker capability plane itself: routing, envelopes, lineage, and `CapabilityCall` semantics. `docs/specs/20260703-worker_agent_capability.md` owns those; this spec owns its selected `mcp.*` route family.
 - The end-user `openkit` Skill and bundled CLI. `docs/specs/20260713-openkit_agent_skill_interface.md` owns that surface. The direction matters: that spec is an external coordinator driving NanoCore through public operations, while this spec is NanoCore supplying MCP tools to worker agents. They share no transport contract, code path, record, or policy ownership.
 - Vault record semantics and injection plan shapes (`docs/specs/20260703-vault_secret_injection.md`).
 - Third-party non-MCP API proxying and unified network egress, which remain deferred on the roadmap.
@@ -34,9 +34,9 @@ implementation: Partial
 
 ## Summary
 
-Worker agents need MCP tools, and the product vision routes all worker access to external systems through Core-governed gateways. This spec defines the accepted MCP plane for worker traffic: workers never connect to MCP servers directly; they will call `mcp.*` operations on worker-local `capability.local`, Sandbox Integration will carry them through `/capabilities/mcp/*` with the distinct capability token, and NanoCore will own the servers, credentials, policy checks, audit trail, and tool schema history.
+Worker agents need MCP tools, and the product vision routes all worker access to external systems through Core-governed gateways. This spec defines the accepted MCP plane for worker traffic: workers never connect to MCP servers directly; they call `mcp.*` operations on worker-local `capability.local`, Sandbox Integration carries them through `/capabilities/mcp/*` with the distinct capability token, and NanoCore owns the servers, credentials, policy checks, audit trail, and tool schema history.
 
-In the accepted target, MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: endpoints and launch configs never appear inline in manifests. Every tool call will be one `CapabilityCall` with a `UsageRecord`; tool schemas will be snapshotted per server version so calls stay interpretable after servers change; credentials will be injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
+In the accepted target, MCP servers are declared once in a workspace-scoped catalog and referenced by name from agent manifests, mirroring the workspace data source catalog pattern: endpoints and launch configs never appear inline in manifests. Every `mcp.call_tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted; tool schemas are snapshotted per server version so calls stay interpretable after servers change; credentials are injected at the gateway with `gateway-only` visibility and never reach worker sandboxes.
 
 ## Goals / Non-goals
 
@@ -58,7 +58,7 @@ In the accepted target, MCP servers are declared once in a workspace-scoped cata
 
 ## Background
 
-`docs/specs/20260703-worker_agent_capability.md` establishes `capability.local` as the worker-local capability API and lists the `mcp.*` route family as deferred. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns its `/capabilities/*` carriage and keeps its credential and semantics distinct from `/inference/*` and `/worker-control/*`. This spec fixes the target MCP contract while implementation remains sequenced on the roadmap beside third-party auth proxying and network egress.
+`docs/specs/20260703-worker_agent_capability.md` establishes `capability.local` as the worker-local capability API. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns its `/capabilities/*` carriage and keeps its credential and semantics distinct from `/inference/*` and `/worker-control/*`. This spec owns the selected-MCP contract; third-party auth proxying and network egress remain independently deferred. The Current Implementation Projection separates implemented MCP behavior from pending acceptance and release closure.
 
 The workspace data source catalog (`docs/specs/20260704-workspace_data_source_catalog.md`) already set the pattern this spec mirrors: declare a named resource once at workspace scope, reference it by name everywhere, never inline endpoints in manifests.
 
@@ -68,7 +68,7 @@ The workspace data source catalog (`docs/specs/20260704-workspace_data_source_ca
 - MCP servers are declared in a workspace-scoped catalog (with read-only projection of server-scoped shared entries) and referenced by name from agent manifests.
 - NanoCore owns MCP server lifecycle: it spawns stdio servers and connects to HTTP servers; workers never hold server handles.
 - Credentials resolve from vault references at the gateway with `gateway-only` visibility.
-- Every `mcp.call_tool` is one `CapabilityCall` producing one `UsageRecord`; tool schemas are snapshotted per server version.
+- Every `mcp.call_tool` request produces one `CapabilityCall`; exactly one `UsageRecord` is produced unless upstream is proved not contacted. Tool schemas are snapshotted per server version.
 - `tool.use` is the policy-kernel action for `mcp.call_tool`; the default posture is deny-unless-enabled at the catalog level plus policy allow at call level.
 
 ## Contract / Expected Behavior
@@ -145,7 +145,7 @@ Rules:
 
 ### Usage and audit
 
-- Every `mcp.call_tool` produces one `CapabilityCall` record and one `UsageRecord` (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/agent-capability.md`.
+- Every `mcp.call_tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/agent-capability.md`.
 - `mcp.list_servers` and `mcp.list_tools` are capability calls for audit purposes but do not emit usage rows.
 - Server lifecycle transitions, schema snapshot captures, and credential-bearing spawns emit audit events.
 - Usage rows and audit rows MUST NOT contain tool arguments or results; those belong to redacted diagnostics and restricted evidence per the audit spec's visibility split.
