@@ -8,6 +8,8 @@ This report retains R058 observations and dispositions as execution evidence; th
 
 - [x] `R058-FND-002` [closed] NanoHost prose duplicates a stale Harness poll body
 
+- [ ] `R058-FND-003` [open] Incompatible Workspace placement creates a second retained Sandbox
+
 ## [deferred] R058-FND-001 — Agent Catalog has no production manifest projection
 
 - **Observation:** A fresh authenticated A2 user created Workspace `ws_2` through the public API on product candidate `09d8b77`; the Agent Catalog remained empty and `agent_codex_host` returned HTTP 404 despite a valid Server Agent Manifest and successful config reload. `agents/catalog-routes.ts` reads only `FsStore.getWorkspaceResources().agents`, new and restored resources initialize that array empty, and no production caller populates it through `upsertAgent`.
@@ -25,3 +27,11 @@ This report retains R058 observations and dispositions as execution evidence; th
 - **Next action:** Opened during the NanoHost readiness correction. Reconcile the stale duplicated sentence through the existing Worker Control owner without expanding this runtime repair into the deferred V2 migration. The Reviewer, Verifier, and Auditor accepted the one-line owner reference and this finding transitioned from open to closed.
 - **Closing verdict:** Closed by the independently accepted ownership reconciliation; NanoHost now references the unique Worker Control owner for its poll body while retaining its transport and credential boundaries.
 - **Closure evidence:** The actual one-line specification diff received normal Reviewer, fresh Verifier, and Auditor acceptance; the focused exact-poll regression passes and no wire-version migration was introduced.
+
+## [open] R058-FND-003 — Incompatible Workspace placement creates a second retained Sandbox
+
+- **Observation:** After Run 9 completed in Workspace `ws_2`, its leases were released and Turn backends cleaned while the compatible Sandbox remained warm. Correctly configured Run 11 in fresh Workspace `ws_4` created a different Sandbox without deleting the old one. OpenShell returned CreateSandbox HTTP 200, then NanoHost exited during `sandbox.create`; its singleton coordinator rejects a second retained Sandbox only after the native create. The public Turn remained running and public interruption returned `turn_interrupt_failed` because no live Worker lineage existed.
+- **Impact:** Ordinary use of a second Workspace can terminate the shared NanoHost and strand pre-launch work. Per-run service restoration concealed this retained-state defect; neither cross-Workspace co-residency nor a test reset is a correction.
+- **Evidence:** Shared-root `temp/r058-l6-run11/logs/nanohost-terminal.log`, `receipts/scheduler-state-before-interrupt.json`, `receipts/public-interrupt.json`, and sealed input SHA-256 `75f7294592b10ba7951dcc35e6f565becc920258bbe0bce0b5c4709c121d4a8a` retain the observations. Full-epoch logs contain no DeleteSandbox between Run 9 and Run 11. Both clean judges returned FAIL; the accumulator retained the failed run and current sequence `0/2`.
+- **Owner:** `docs/specs/20260703-runtime_scheduling_scale.md` permits the one-Sandbox profile and owns queued admission and unpinned warm-state disposability; `docs/specs/20260704-agent_session_continuity.md` owns idle eviction and exact session-close proof; `docs/specs/20260802-nanohost_runtime_and_transport.md` owns Workspace isolation, fixed lifecycle operations, and fail-stop containment.
+- **Next action:** Opened after Run 11. Independent direction returned Reframe, then Continue after confirming existing idle-eviction authority: preserve Workspace compatibility, queue occupied or unproved admission, close proved-idle unpinned bindings through the existing owner, and close/delete the old Sandbox before replacement. Add the NanoHost occupied-create preflight before any native effect. Verify ordinary recovery of the failed Turn through its existing owner before another actor. No multi-Sandbox transport, new wire field, pool policy, timer, or test runner is admitted.

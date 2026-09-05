@@ -513,18 +513,24 @@ pub fn capacity_ready(image_import_proved: bool) -> bool {
     image_import_proved
 }
 
-/// Preflights cleanup against the exact retained Sandbox state.
+/// Preflights lifecycle effects against the exact retained single-Sandbox state.
 ///
 /// A fresh-empty epoch can prove an old bridge and Sandbox already absent without
 /// calling OpenShell. Live cleanup still proceeds through the ordinary owner,
 /// while mismatched, partial, reordered, or auxiliary-bearing input fails closed.
-fn definite_absence_lifecycle_result(
+/// A second create is rejected before OpenShell can produce an untracked Sandbox.
+fn preflight_lifecycle_result(
     request: &LifecycleEffectRequest,
     current_sandbox_name: Option<&str>,
     bridge_present: bool,
     monitor_present: bool,
     auxiliary_input_present: bool,
 ) -> Result<Option<&'static str>, EpochFault> {
+    if request.kind() == LifecycleEffectKind::CreateSandbox
+        && (current_sandbox_name.is_some() || bridge_present || monitor_present)
+    {
+        return Err(EpochFault::IdentityMismatch);
+    }
     let absent_result = match request.kind() {
         LifecycleEffectKind::CloseBridge => "closed",
         LifecycleEffectKind::DeleteSandbox => "deleted",
@@ -1267,7 +1273,7 @@ impl EpochCoordinator {
             (None, None) => None,
             _ => return Err(EpochFault::IdentityMismatch),
         };
-        if let Some(result) = definite_absence_lifecycle_result(
+        if let Some(result) = preflight_lifecycle_result(
             request,
             self.current_sandbox
                 .as_ref()
@@ -2159,9 +2165,9 @@ mod tests {
         AttemptImportOutcome, EpochAction, EpochEvidenceWriter, EpochFault, EpochMemberMonitor,
         EpochNetworkNamespaceMode, EpochPlan, EpochProcessRole, ImageBackend, ImageImportError,
         MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, SUPERVISOR_IMAGE,
-        capacity_ready, definite_absence_lifecycle_result, dockerd_dns_arguments,
-        gateway_cert_command, has_up_tap0_default_route, import_attempt_image,
-        import_required_images, resolve_epoch_nameservers, wait_for_success,
+        capacity_ready, dockerd_dns_arguments, gateway_cert_command, has_up_tap0_default_route,
+        import_attempt_image, import_required_images, preflight_lifecycle_result,
+        resolve_epoch_nameservers, wait_for_success,
     };
     #[cfg(target_os = "linux")]
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
@@ -2735,11 +2741,36 @@ mod tests {
     }
 
     #[test]
+    fn occupied_epoch_rejects_second_create_before_the_gateway_effect() {
+        let request = LifecycleEffectRequest::new(
+            "request",
+            "lease",
+            "replacement",
+            LifecycleEffectKind::CreateSandbox,
+        );
+        for (sandbox, bridge, monitor) in [
+            (Some("retained"), false, false),
+            (Some("replacement"), true, true),
+            (None, true, false),
+            (None, false, true),
+        ] {
+            assert_eq!(
+                preflight_lifecycle_result(&request, sandbox, bridge, monitor, true),
+                Err(EpochFault::IdentityMismatch),
+            );
+        }
+        assert_eq!(
+            preflight_lifecycle_result(&request, None, false, false, true),
+            Ok(None),
+        );
+    }
+
+    #[test]
     fn fresh_empty_epoch_settles_only_exact_cleanup_absence() {
         let request = |kind| LifecycleEffectRequest::new("request", "lease", "sandbox", kind);
 
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &request(LifecycleEffectKind::CloseBridge),
                 None,
                 false,
@@ -2749,7 +2780,7 @@ mod tests {
             Ok(Some("closed"))
         );
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &request(LifecycleEffectKind::DeleteSandbox),
                 None,
                 false,
@@ -2763,13 +2794,13 @@ mod tests {
             LifecycleEffectKind::OpenBridge,
         ] {
             assert_eq!(
-                definite_absence_lifecycle_result(&request(kind), None, false, false, false),
+                preflight_lifecycle_result(&request(kind), None, false, false, false),
                 Ok(None)
             );
         }
         for (bridge_present, monitor_present) in [(true, false), (false, true)] {
             assert_eq!(
-                definite_absence_lifecycle_result(
+                preflight_lifecycle_result(
                     &request(LifecycleEffectKind::CloseBridge),
                     None,
                     bridge_present,
@@ -2780,7 +2811,7 @@ mod tests {
             );
         }
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &request(LifecycleEffectKind::CloseBridge),
                 Some("sandbox"),
                 true,
@@ -2790,7 +2821,7 @@ mod tests {
             Ok(None)
         );
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &request(LifecycleEffectKind::DeleteSandbox),
                 Some("sandbox"),
                 false,
@@ -2804,7 +2835,7 @@ mod tests {
             (LifecycleEffectKind::DeleteSandbox, true),
         ] {
             assert_eq!(
-                definite_absence_lifecycle_result(
+                preflight_lifecycle_result(
                     &request(kind),
                     Some("sandbox"),
                     bridge_present,
@@ -2815,7 +2846,7 @@ mod tests {
             );
         }
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &request(LifecycleEffectKind::CloseBridge),
                 Some("sandbox"),
                 true,
@@ -2825,7 +2856,7 @@ mod tests {
             Err(EpochFault::IdentityMismatch)
         );
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &LifecycleEffectRequest::new(
                     "request",
                     "lease",
@@ -2840,7 +2871,7 @@ mod tests {
             Err(EpochFault::IdentityMismatch)
         );
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &request(LifecycleEffectKind::CloseBridge),
                 None,
                 false,
@@ -2850,7 +2881,7 @@ mod tests {
             Err(EpochFault::IdentityMismatch)
         );
         assert_eq!(
-            definite_absence_lifecycle_result(
+            preflight_lifecycle_result(
                 &LifecycleEffectRequest::new(
                     "",
                     "lease",

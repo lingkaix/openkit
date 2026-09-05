@@ -63,6 +63,8 @@ After verifying the outer checksum and extracting the archive, run `./install.sh
 
 NanoHost validates every session and image input before evidence, recovery, Image Store, Runtime Epoch, backend, Gateway, or network-session effects. It then starts the fresh Runtime Epoch, selects the usable credential at connection time, and runs the authenticated NanoCore session concurrently with epoch member supervision; either terminal session failure or member failure exits the service so the existing fail-stop group is torn down.
 
+The current one-Sandbox realization rejects a second create before calling OpenShell while any Sandbox, bridge, or Harness monitor remains retained. NanoCore owns compatible reuse and clean retirement of an incompatible idle Sandbox; this preflight prevents an invalid second create from producing an untracked native Sandbox.
+
 The operator must first install the exact manifest-owned `/usr/bin/slirp4netns` OS package; repository host provisioning never installs or upgrades it and host assertion will verify its path, version, and SHA-256. Then build and install the NanoHost binary, checksum-verified stock OpenShell `v0.0.99` Gateway, and the single systemd service from `apps/nanohost`:
 
 ```bash
