@@ -18,7 +18,7 @@ Define the acceptance proof that a user can run a worker task whose resolved Age
 
 ## Preconditions
 
-- NanoCore can boot with a disposable data root.
+- An exact candidate NanoCore deployment can provide a fresh story-owned Workspace, either in a disposable deployment or in engineer-designated retained staging.
 - Web can boot against that NanoCore instance.
 - The test environment can use a deterministic local Responses provider and stdio MCP stub server instead of real provider quota or an external MCP provider.
 - A packaged Codex worker and real NanoHost/OpenShell lifecycle are available; real provider quota, real GitHub credentials, and external MCP network access are not required.
@@ -26,9 +26,9 @@ Define the acceptance proof that a user can run a worker task whose resolved Age
 
 ## Setup
 
-- Start an exact candidate NanoCore and Web deployment with disposable story-owned Workspace state.
+- Start or reuse the exact candidate NanoCore and Web deployment and create fresh story-owned Workspace state.
 - Use the deployed real NanoHost/OpenShell and packaged Codex worker without mutating private runtime state during the actor flow.
-- Register or select an agent configuration that enables the catalog `github` MCP server for a disposable workspace.
+- Register or select an agent configuration that enables the catalog `github` MCP server for the story-owned Workspace.
 - Use only fake credential markers if a vault-backed credential path is seeded.
 - Seed the MCP server with deterministic tools named `repos.get` and `issues.list`.
 - Mark `issues.list` as approval-required and leave `repos.get` as directly callable after policy allow.
@@ -37,7 +37,7 @@ Define the acceptance proof that a user can run a worker task whose resolved Age
 ## User-visible Steps
 
 1. Open the Web UI root route.
-2. Create or select a disposable workspace and thread.
+2. Create or select the story-owned Workspace and Thread.
 3. Start a worker task that needs repository information from the MCP catalog server.
 4. Let the worker complete the repository-information portion of the task.
 5. Continue the task to obtain the current issue list.
@@ -78,9 +78,9 @@ Define the acceptance proof that a user can run a worker task whose resolved Age
 
 ## Cleanup
 
-- Stop all spawned NanoCore, Web, and MCP stub processes.
-- Remove the temporary data root and any disposable repository or stub files.
-- Revoke or discard any fake vault grant and fake credential material seeded during setup.
+- End run-owned actor, judge, and browser processes, and verify that completed Worker-owned MCP subprocesses have settled through their normal lifecycle.
+- For a disposable deployment, stop its spawned NanoCore and Web processes, remove its temporary data root and disposable repository or stub files, and discard its fake vault grants and credentials.
+- For engineer-designated retained staging, preserve normal App and NanoHost services, data, users, configuration, credentials, and subscriptions. Record their retained state and active data-root identities separately from transient-process completion; do not claim retained product state was removed or restored.
 
 ## Failure Triage Notes
 
