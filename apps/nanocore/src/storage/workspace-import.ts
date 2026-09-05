@@ -28,6 +28,7 @@ import {
 import {
   AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
+  planSessionWorkspaceMaterialization,
   WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
   type WorkspaceExportManifest,
@@ -44,6 +45,7 @@ import {
   UsageRecordSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
@@ -1056,7 +1058,26 @@ export function readWorkspaceImportSnapshot(
     dataSourceCatalog: securityRuntime.dataSourceCatalog,
     gitPushRecords: securityRuntime.gitPushRecords,
     resolvedAgentSetups: securityRuntime.resolvedAgentSetups,
-    agentEnvironmentPackageSnapshots: workResources.agentEnvironmentPackageSnapshots,
+    agentEnvironmentPackageSnapshots: workResources.agentEnvironmentPackageSnapshots.map(
+      (record) => {
+        const environmentPackage = AgentEnvironmentPackageSchema.parse(record.snapshot);
+        const snapshot = {
+          ...environmentPackage,
+          extensions: {
+            ...environmentPackage.extensions,
+            openkit: {
+              ...(environmentPackage.extensions.openkit as Record<string, unknown>),
+              sessionWorkspace: planSessionWorkspaceMaterialization({ environmentPackage }),
+            },
+          },
+        };
+        return {
+          ...record,
+          contentDigest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),
+          snapshot,
+        };
+      }
+    ),
     workspaceRepositories: workspaceSync.workspaceRepositories,
     workspaceInputSnapshots: workResources.workspaceInputSnapshots,
     workspaceMaterializationRecords: workResources.workspaceMaterializationRecords,
@@ -1302,6 +1323,10 @@ function readCanonicalImportState(context: ImportRemintContext) {
         rewriteJsonStringReferences(snapshot, [
           [parsed.snapshotId, snapshotId],
           [parsed.packageId, packageId],
+          [
+            workerSessionInputPaths(parsed.agentSessionId).root,
+            workerSessionInputPaths(agentSessionId).root,
+          ],
         ])
       );
       const rewrittenSnapshot = {
@@ -2845,8 +2870,9 @@ function readWorkResourceImportState(
       workspace: {
         ...environmentPackage.workspace,
         inputs: environmentPackage.workspace.inputs.map((candidate) =>
-          candidate.target === '/openkit/context'
+          candidate.materialization?.slotId === 'context'
             ? buildWorkerContextPackageWorkspaceInput({
+                agentSessionId: targetTrace.agentSessionId,
                 packageRootDigest: targetPackage.packageRootDigest,
                 threadId: targetThreadId,
                 turnId: targetTurnId,
@@ -2896,7 +2922,7 @@ function readWorkResourceImportState(
         createdAt: targetTurn.startedAt,
         id: targetTrace.workspaceMaterializationRecordId,
         inputSnapshotId: targetTrace.workspaceInputSnapshotId,
-        materializedRootRef: '/openkit/context',
+        materializedRootRef: workerSessionInputPaths(targetTrace.agentSessionId).contextRoot,
         packageSnapshotId: targetPackageSnapshotId,
         policyDigest: createWorkerContextPackagePolicyDigest({
           backendKind: sourceMaterialization.backendKind,

@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-
 import {
   type AgentEnvironmentPackage,
   type AgentEnvironmentValidationDiagnostic,
@@ -12,7 +11,10 @@ import {
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import { responsibleUserIdForActor } from '@openkit/protocol';
-import { WorkerRuntimeRawStreamManifestSchema } from '@openkit/worker-protocol';
+import {
+  WorkerRuntimeRawStreamManifestSchema,
+  workerSessionInputPaths,
+} from '@openkit/worker-protocol';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { requireSchedulerSessionLeaseAdmissionContext } from '../scheduler-records.js';
@@ -302,6 +304,8 @@ function createNanoHostWorkerLifecycleRuntime(
 
 /** One materialized Turn awaiting operations on the shared private Harness. */
 interface NanoHostBackendTurnSession {
+  /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
+  pendingImports: NanoHostContextPackageImport[];
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly evidence: WorkerGovernanceEvidenceRecord[];
   readonly agentSessionCompatibilityKey: string;
@@ -756,6 +760,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       leaseId,
       nativeSessionReusable: false,
+      pendingImports: [],
       pendingHarnessOperation: null,
       humanGateStopSettlement: null,
       retainedStagingPaths: [],
@@ -1150,6 +1155,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       leaseId,
       nativeSessionReusable: false,
+      pendingImports: [],
       pendingHarnessOperation: null,
       humanGateStopSettlement: null,
       retainedStagingPaths: [],
@@ -1157,7 +1163,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       terminalInspectionComplete: false,
       turnStarted: false,
     });
-    const fileInventory = [
+    this.requireSession(environmentPackage.snapshotId).pendingImports = [
       ...(await prepareNanoHostContextPackageImports(environmentPackage, context)),
       ...runtimeCredentialImports,
     ];
@@ -1183,30 +1189,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       this.sharedSandboxes.set(sandboxCompatibilityKey, sharedSandbox);
       this.sharedHarnesses.set(harnessMapKey, sharedHarness);
     }
-    const importResults: Record<string, unknown>[] = [];
-    for (const file of fileInventory) {
-      const body = file.body;
-      const byteLength = file.byteLength;
-      const contentDigest = file.contentDigest;
-      const relativePath = file.relativePath;
-      const slot = file.slot;
-      const sha256 = contentDigest;
-      importResults.push(
-        await this.effect(identity, leaseId, 'reference.import', {
-          body,
-          byteLength,
-          relativePath,
-          sandboxId: sharedSandbox.sandboxId,
-          sha256,
-          slot,
-        })
-      );
-    }
-    evidence.push(
-      ...importResults.map((result) =>
-        nanoHostEffectEvidence(environmentPackage.createdAt, result, 'reference-import')
-      )
-    );
     return {
       backendKind: 'openshell',
       command: {
@@ -1231,7 +1213,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Opens the exact worker bridge after materialization. */
+  /** Opens or inspects the exact Session, imports its Turn inputs, then starts the child. */
   public async launch(
     materialization: WorkerGovernanceMaterializationRecord
   ): Promise<WorkerGovernanceEvidenceRecord> {
@@ -1298,6 +1280,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost retained AgentSession is not ready for exact resume.');
       }
     }
+    const pendingImports = session.pendingImports;
+    session.pendingImports = [];
+    for (const file of pendingImports) {
+      const imported = await this.effect(session.identity, session.leaseId, 'reference.import', {
+        body: file.body,
+        byteLength: file.byteLength,
+        relativePath: file.relativePath,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+        sha256: file.contentDigest,
+        slot: file.slot,
+      });
+      session.evidence.push(
+        nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')
+      );
+    }
+    const inputPaths = workerSessionInputPaths(session.environmentPackage.scope.agentSessionId);
     const lease = this.coreDb.sqlite
       .prepare(
         'SELECT startup_deadline AS startupDeadline FROM scheduler_session_leases WHERE lease_id = ?'
@@ -1307,11 +1305,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost Harness Turn startup deadline is unavailable.');
     }
     const started = await this.queueAndWaitForHarnessOperation(session, 'turn.start', {
-      aepRef: '/openkit/config/package.json',
+      aepRef: inputPaths.packagePath,
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      contextPackageId: `context_${session.environmentPackage.scope.turnId}`,
-      contextRef: '/openkit/context',
+      contextPackageId: `ctxpkg_${session.environmentPackage.scope.turnId}`,
+      contextRef: inputPaths.contextRoot,
       deadline: lease.startupDeadline,
       leaseId: session.leaseId,
       packageSnapshotId: session.environmentPackage.snapshotId,
@@ -2033,28 +2031,66 @@ function nanoHostRuntimeCredentialImports(
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */
 function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
   const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
+  const { contextRoot, packagePath } = workerSessionInputPaths(
+    environmentPackage.scope.agentSessionId
+  );
+  const { layout, materialization } = planSessionWorkspaceMaterialization({ environmentPackage });
+  const filesystem = environmentPackage.policy.filesystem;
   return createHash('sha256')
     .update(
       stableNanoHostEffectJson({
         backend: environmentPackage.backend,
         credentials: environmentPackage.credentials,
-        policy: environmentPackage.policy,
+        policy: {
+          ...environmentPackage.policy,
+          ...(filesystem
+            ? {
+                filesystem: {
+                  ...filesystem,
+                  rules: filesystem.rules.map((rule) =>
+                    rule &&
+                    typeof rule === 'object' &&
+                    !Array.isArray(rule) &&
+                    'id' in rule &&
+                    rule.id === 'openkit-context-package' &&
+                    'workerPath' in rule &&
+                    rule.workerPath === contextRoot
+                      ? { ...rule, workerPath: 'agent-session-context' }
+                      : rule
+                  ),
+                },
+              }
+            : {}),
+        },
         responsibleUserTrust: {
           actorKind: environmentPackage.scope.triggerActor.kind,
           responsibleUserId,
         },
+        resources: environmentPackage.resources,
         runtimeImage: environmentPackage.runtime.image,
+        runtimeProcess: environmentPackage.runtime.process ?? null,
         schemaVersion: environmentPackage.schemaVersion,
         vault: environmentPackage.vault,
         workspace: {
           generatedFiles: environmentPackage.workspace.generatedFiles.map((file) => ({
             access: file.access,
             id: file.id,
-            target: file.target,
+            target:
+              file.id === 'agent-environment-package' && file.target === packagePath
+                ? 'agent-session-package'
+                : file.target,
           })),
           id: environmentPackage.scope.workspaceId,
-          inputs: environmentPackage.workspace.inputs.map(nanoHostStaticWorkspaceInput),
-          layout: planSessionWorkspaceMaterialization({ environmentPackage }).layout,
+          inputs: environmentPackage.workspace.inputs.map((input, index) =>
+            nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId === 'context')
+          ),
+          layout: {
+            ...layout,
+            slots: layout.slots.map((slot) =>
+              slot.id === 'context' ? { ...slot, path: 'agent-session-context' } : slot
+            ),
+            control: { ...layout.control, contextRoot: 'agent-session-context' },
+          },
           outputs: environmentPackage.workspace.outputs,
         },
       })
@@ -2077,6 +2113,16 @@ function nanoHostSandboxIdFromBackendSessionId(backendSessionId: string): string
 
 /** Hashes the process-static adapter and Integration configuration of one Harness. */
 function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
+  const { openkit, ...extensions } = environmentPackage.extensions ?? {};
+  const openkitRecord =
+    openkit && typeof openkit === 'object' && !Array.isArray(openkit)
+      ? (openkit as Record<string, unknown>)
+      : null;
+  const {
+    turnInput: _turnInput,
+    sessionWorkspace: _sessionWorkspace,
+    ...staticOpenkit
+  } = openkitRecord ?? {};
   return createHash('sha256')
     .update(
       stableNanoHostEffectJson({
@@ -2089,7 +2135,7 @@ function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPac
           transcript: environmentPackage.control.transcript ?? null,
         },
         credentials: environmentPackage.credentials,
-        extensions: environmentPackage.extensions,
+        extensions: { ...extensions, openkit: openkitRecord ? staticOpenkit : openkit },
         resources: environmentPackage.resources,
         runtime: {
           binaries: environmentPackage.runtime.binaries,
@@ -2125,11 +2171,11 @@ function nanoHostSharedHarnessMapKey(
 
 /** Removes Turn content lineage while retaining one input's static isolation envelope. */
 function nanoHostStaticWorkspaceInput(
-  input: AgentEnvironmentPackage['workspace']['inputs'][number]
+  input: AgentEnvironmentPackage['workspace']['inputs'][number],
+  isContext: boolean
 ): Record<string, unknown> {
   const { commit: _commit, ...source } = input.source;
   const { contentDigest: _contentDigest, ...materialization } = input.materialization ?? {};
-  const isContext = materialization.slotId === 'context' || input.target === '/openkit/context';
   return {
     access: input.access,
     id: isContext ? 'context' : input.id,
@@ -2137,7 +2183,7 @@ function nanoHostStaticWorkspaceInput(
     materialization,
     mount: input.mount ?? null,
     source: isContext ? { kind: source.kind } : source,
-    target: input.target,
+    target: isContext ? 'agent-session-context' : input.target,
   };
 }
 

@@ -2,6 +2,8 @@
 
 `nanocore` is the tiny real demo core server for the UI-first protocol slice.
 
+NanoCore derives private AEP and Context input paths from the admitted AgentSession, opens or inspects that exact session before importing its complete Turn inputs, and starts the Worker only after all imports succeed. Turn-specific paths and payloads do not partition otherwise compatible shared Sandbox or Harness identities.
+
 ## Scope
 
 - local-mode implicit single-user operation

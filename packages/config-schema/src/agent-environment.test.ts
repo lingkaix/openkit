@@ -644,18 +644,19 @@ describe('agent environment package schema', () => {
       })
     ).toThrow();
 
-    expect(() =>
-      WorkerSandboxAccessSchema.parse({
-        filesystem: [
-          {
-            access: 'read-write',
-            id: 'core_config',
-            purpose: 'Core config',
-            targetPath: '/openkit/config',
-          },
-        ],
-      })
-    ).toThrow();
+    for (const targetPath of [
+      '/openkit/config',
+      '/openkit/sessions',
+      '/openkit/sessions/as_a/context',
+    ]) {
+      expect(() =>
+        WorkerSandboxAccessSchema.parse({
+          filesystem: [
+            { access: 'read-write', id: 'core_config', purpose: 'Core config', targetPath },
+          ],
+        })
+      ).toThrow();
+    }
 
     expect(() =>
       WorkerSandboxAccessSchema.parse({

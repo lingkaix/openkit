@@ -12,7 +12,7 @@ test ! -e /etc/opencode
 test ! -e "${HOME}/.config/opencode"
 test -z "${OPENCODE_CONFIG:-}"
 test -z "${OPENCODE_CONFIG_CONTENT:-}"
-test -d /openkit/config
+test -d /openkit/sessions
 test -d /openkit/session
 test -d /openkit/artifacts
 test "$(opencode --version)" = "1.18.1"

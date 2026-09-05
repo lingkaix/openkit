@@ -642,6 +642,7 @@ function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
         fixture.turn.id
       )!,
       {
+        agentSessionId: 'as_context',
         requestId: fixture.requestId,
         threadId: fixture.turn.threadId,
         turnId: fixture.turn.id,
@@ -4148,7 +4149,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           id: `context_${turn.id}`,
           sourceKind: 'materialized-dir',
           sourcePath: packageRoot,
-          workerPath: '/openkit/context',
+          workerPath: `/openkit/sessions/${agentSessionId}/context`,
         },
       ]);
     } finally {

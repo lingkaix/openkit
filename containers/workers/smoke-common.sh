@@ -72,9 +72,8 @@ for path in \
   /workspace/outputs \
   /workspace/scratch \
   /workspace/.openkit/cache \
-  /openkit/config \
+  /openkit/sessions \
   /openkit/session \
-  /openkit/context \
   /openkit/instructions; do
   test -d "${path}"
   test -w "${path}"
@@ -89,14 +88,15 @@ fi
 test -x /usr/local/bin/openkit-file-effect
 node --input-type=module -e "import('/usr/local/lib/openkit/worker-shim/dist/index.js').then(({ SANDBOX_INTEGRATION_TARGET }) => { if (!/^127[.]0[.]0[.]1:[1-9][0-9]*$/.test(SANDBOX_INTEGRATION_TARGET)) process.exit(1); })"
 
-empty_context_path='openkit-file-effect-smoke-empty'
+empty_context_path='image-smoke/context/openkit-file-effect-smoke-empty'
 empty_context_digest='sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
-trap 'rm -f "/openkit/context/${empty_context_path}"' EXIT
+mkdir -p /openkit/sessions/image-smoke/context
+trap 'rm -rf /openkit/sessions/image-smoke' EXIT
 test "$(printf '' | openkit-file-effect reference.import --slot context --path "${empty_context_path}" --length 0 --sha256 "${empty_context_digest}")" = "${empty_context_digest} 0"
-test -f "/openkit/context/${empty_context_path}"
-test "$(stat -c '%a' "/openkit/context/${empty_context_path}")" = '600'
-test ! -s "/openkit/context/${empty_context_path}"
-test -z "$(find /openkit/context -maxdepth 1 -name '.openkit-file-effect-*.partial' -print -quit)"
+test -f "/openkit/sessions/${empty_context_path}"
+test "$(stat -c '%a' "/openkit/sessions/${empty_context_path}")" = '600'
+test ! -s "/openkit/sessions/${empty_context_path}"
+test -z "$(find /openkit/sessions/image-smoke/context -maxdepth 1 -name '.openkit-file-effect-*.partial' -print -quit)"
 
 if find /sandbox /workspace -xdev -uid 0 -print -quit | grep -q .; then
   echo "Writable worker paths contain root-owned build state." >&2

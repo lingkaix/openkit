@@ -224,6 +224,7 @@ function createEnvironmentPackage(
       ...unresolved.workspace,
       inputs: [
         buildWorkerContextPackageWorkspaceInput({
+          agentSessionId: 'as_context',
           packageRootDigest: packageFiles.packageRootDigest,
           threadId: packageFiles.threadId,
           turnId: packageFiles.turnId,
@@ -292,7 +293,7 @@ function createAcceptedFixture(
     createdAt: TURN_STARTED_AT,
     id: trace.workspaceMaterializationRecordId,
     inputSnapshotId: workspaceInputSnapshot.id,
-    materializedRootRef: '/openkit/context',
+    materializedRootRef: '/openkit/sessions/as_context/context',
     packageSnapshotId: environmentPackage.snapshotId,
     policyDigest: createWorkerContextPackagePolicyDigest({
       backendKind: 'openshell',
@@ -485,6 +486,13 @@ function createImportedHistoryFixture(
       agentSessionId,
       requestId,
     },
+    workspace: {
+      ...sourceEnvironmentPackage.workspace,
+      inputs: sourceEnvironmentPackage.workspace.inputs.map((input) => ({
+        ...input,
+        target: `/openkit/sessions/${agentSessionId}/context`,
+      })),
+    },
   };
   const sourceInputSnapshot = accepted.authorities.readWorkspaceInputSnapshot(
     accepted.trace.workspaceId,
@@ -505,6 +513,7 @@ function createImportedHistoryFixture(
   const workspaceMaterializationRecord = {
     ...sourceMaterialization,
     id: trace.workspaceMaterializationRecordId,
+    materializedRootRef: `/openkit/sessions/${agentSessionId}/context`,
     inputSnapshotId: trace.workspaceInputSnapshotId,
     packageSnapshotId,
     policyDigest: createWorkerContextPackagePolicyDigest({
@@ -637,6 +646,7 @@ describe('worker Context Package owner', () => {
     );
     expect(
       buildWorkerContextPackageWorkspaceInput({
+        agentSessionId: 'as_context',
         packageRootDigest: first.packageRootDigest,
         threadId: 'th_context',
         turnId: 'tu_context',
@@ -654,7 +664,7 @@ describe('worker Context Package owner', () => {
         kind: 'generated',
         pathRef: 'threads/th_context/turns/tu_context/context-package',
       },
-      target: '/openkit/context',
+      target: '/openkit/sessions/as_context/context',
     });
     expect(
       readFileSync(

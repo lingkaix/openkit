@@ -40,9 +40,10 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './turn-executor-factory.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
-import type {
-  WorkerGovernanceBackend,
-  WorkerGovernanceBackendSessionIdentity,
+import {
+  openShellFilesystemGrantsFromPackagePolicy,
+  type WorkerGovernanceBackend,
+  type WorkerGovernanceBackendSessionIdentity,
 } from './worker-governance-backend.js';
 
 /** Creates the durable deployment identity required by real executor construction. */
@@ -151,7 +152,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(backendSource).not.toContain('throw nanoHostSessionUnavailable()');
     const materializeSource = backendSource
       ?.split('public async materialize(')[1]
-      ?.split('/** Opens the exact worker bridge')[0];
+      ?.split('public async launch(')[0];
     const launchSource = backendSource
       ?.split('public async launch(')[1]
       ?.split('/** Validates an immutable update')[0];
@@ -173,26 +174,28 @@ describe('createConfiguredTurnExecutor', () => {
     const imageBuild = materializeSource?.indexOf("'image.build'") ?? -1;
     const sandboxCreate = materializeSource?.indexOf("'sandbox.create'") ?? -1;
     const contextRefCarriage = materializeSource?.indexOf('contextRef: image.contextRef') ?? -1;
-    const referenceImport = materializeSource?.indexOf("'reference.import'") ?? -1;
+    const referenceImport = launchSource?.indexOf("'reference.import'") ?? -1;
     const prepareImports = materializeSource?.indexOf('prepareNanoHostContextPackageImports') ?? -1;
     expect(imageBuild).toBeGreaterThanOrEqual(0);
     expect(contextRefCarriage).toBeGreaterThan(imageBuild);
     expect(contextRefCarriage).toBeLessThan(sandboxCreate);
     expect(sandboxCreate).toBeGreaterThanOrEqual(0);
     expect(prepareImports).toBeGreaterThan(sandboxCreate);
-    expect(referenceImport).toBeGreaterThan(sandboxCreate);
-    expect(referenceImport).toBeGreaterThan(prepareImports);
-    expect(materializeSource).toContain('for (const file of fileInventory)');
+    expect(referenceImport).toBeGreaterThan(launchSource?.indexOf("'session.open'") ?? -1);
+    expect(referenceImport).toBeGreaterThan(launchSource?.indexOf("'session.inspect'") ?? -1);
+    expect(referenceImport).toBeLessThan(launchSource?.indexOf("'turn.start'") ?? -1);
+    expect(materializeSource).not.toContain("'reference.import'");
+    expect(launchSource).toContain('for (const file of pendingImports)');
     expect(materializeSource).toContain('this.restoreSharedHarness(');
     expect(materializeSource).toContain('await this.effect(identity, leaseId');
     for (const requiredImportOwner of [
-      'fileInventory',
+      'pendingImports',
       'contentDigest',
       'byteLength',
       'relativePath',
       'body',
     ]) {
-      expect(materializeSource).toContain(requiredImportOwner);
+      expect(launchSource).toContain(requiredImportOwner);
     }
     expect(launchSource).toContain("'bridge.open'");
     const effectSource = backendSource?.split('private async effect(')[1];
@@ -228,7 +231,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(collectionSource?.indexOf('byteLength', exportCommand)).toBeGreaterThan(exportCommand);
     }
     for (const field of ['slot', 'relativePath', 'sha256', 'byteLength']) {
-      expect(materializeSource).toContain(field);
+      expect(launchSource).toContain(field);
     }
     expect(cleanupSource?.indexOf("'bridge.close'")).toBeLessThan(
       cleanupSource?.indexOf("'sandbox.delete'") ?? -1
@@ -1502,7 +1505,17 @@ describe('createConfiguredTurnExecutor', () => {
           control: { adapter: { targetRuntime: 'codex' } },
           credentials: {},
           llm: {},
-          policy: {},
+          policy: {
+            filesystem: {
+              rules: [
+                {
+                  access: 'read-only',
+                  id: 'openkit-context-package',
+                  workerPath: `/openkit/sessions/agent-session-${turnId}/context`,
+                },
+              ],
+            },
+          },
           resources: {},
           runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
           schemaVersion: 4,
@@ -1522,7 +1535,7 @@ describe('createConfiguredTurnExecutor', () => {
                 access: 'read-only',
                 contentRef: `agent-environment-package://snapshot-${turnId}`,
                 id: 'agent-environment-package',
-                target: '/openkit/agent-environment-package.json',
+                target: `/openkit/sessions/agent-session-${turnId}/config/package.json`,
               },
             ],
             inputs: [
@@ -1531,7 +1544,7 @@ describe('createConfiguredTurnExecutor', () => {
                 id: `context_${turnId}`,
                 kind: 'generated',
                 materialization: {
-                  contentDigest: turnId.repeat(64).slice(0, 64),
+                  contentDigest: `sha256:${turnId.repeat(64).slice(0, 64)}`,
                   slotId: 'context',
                   strategy: 'filesystem',
                 },
@@ -1539,7 +1552,7 @@ describe('createConfiguredTurnExecutor', () => {
                   kind: 'generated',
                   pathRef: `threads/thread-${turnId}/turns/${turnId}/context-package`,
                 },
-                target: '/openkit/context',
+                target: `/openkit/sessions/agent-session-${turnId}/context`,
               },
               {
                 access: 'read-only',
@@ -1570,6 +1583,40 @@ describe('createConfiguredTurnExecutor', () => {
       expect(keyFor(packageFor('c', { actorId: 'user-other' }))).not.toBe(baseline);
       expect(keyFor(packageFor('d', { mountLabel: 'secondary' }))).not.toBe(baseline);
       expect(keyFor(packageFor('e', { sensitivity: 'restricted' }))).not.toBe(baseline);
+      expect(
+        keyFor({ ...baselinePackage, resources: { cpu: { limitMillicores: 1000 } } })
+      ).not.toBe(baseline);
+      expect(
+        keyFor({
+          ...baselinePackage,
+          runtime: { ...baselinePackage.runtime, process: { user: 'worker' } },
+        })
+      ).not.toBe(baseline);
+
+      expect(openShellFilesystemGrantsFromPackagePolicy(baselinePackage)).toEqual([
+        { access: 'read-only', path: '/openkit/sessions' },
+      ]);
+      for (const change of [
+        (value: AgentEnvironmentPackage) => {
+          value.policy.filesystem!.rules[0] = {
+            access: 'read-only',
+            id: 'other-rule',
+            workerPath: value.workspace.inputs[0]!.target,
+          };
+        },
+        (value: AgentEnvironmentPackage) => {
+          value.workspace.generatedFiles[0]!.target = value.workspace.inputs[0]!.target;
+        },
+        (value: AgentEnvironmentPackage) => {
+          value.workspace.inputs[0]!.source.pathRef = `other/${value.scope.turnId}`;
+        },
+      ]) {
+        const first = packageFor('a');
+        const second = packageFor('b');
+        change(first);
+        change(second);
+        expect(keyFor(first)).not.toBe(keyFor(second));
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -1721,8 +1768,15 @@ describe('createConfiguredTurnExecutor', () => {
         runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
       ).backend;
       const materialization = await backend.materialize(environmentPackage, {
+        runtimeFileCredentials: [
+          {
+            credentialValue: 'runtime-file-secret',
+            targetPath: '/sandbox/.config/example/credentials',
+          },
+        ],
         workspaceRoots: [],
       });
+      expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
       const integration = coreDb.sqlite
         .prepare(
           `SELECT sandbox_integration_binding_ref AS integrationRef
@@ -1743,6 +1797,26 @@ describe('createConfiguredTurnExecutor', () => {
         }
         if (!command || command.operation !== operation) {
           throw new Error(`Expected queued ${operation} Harness command.`);
+        }
+        if (operation === 'session.open') {
+          expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
+        }
+        if (operation === 'turn.start') {
+          expect(
+            effects
+              .filter((effect) => effect.kind === 'reference.import')
+              .map((effect) => effect.input.slot)
+          ).toEqual(['package-config', 'runtime-credential']);
+          expect(command.body).toMatchObject({
+            aepRef: '/openkit/sessions/as_human_gate/config/package.json',
+            contextRef: '/openkit/sessions/as_human_gate/context',
+          });
+          expect(
+            effects.find((effect) => effect.input.slot === 'runtime-credential')?.input
+          ).toMatchObject({
+            body: Buffer.from('runtime-file-secret'),
+            relativePath: 'sandbox/.config/example/credentials',
+          });
         }
         runtime.acceptNanoHostHarnessCommand(command);
         const result = {
@@ -1801,8 +1875,9 @@ describe('createConfiguredTurnExecutor', () => {
       expect(effects.map((effect) => effect.kind)).toEqual([
         'image.acquire',
         'sandbox.create',
-        'reference.import',
         'bridge.open',
+        'reference.import',
+        'reference.import',
         'bridge.close',
         'sandbox.delete',
       ]);
@@ -2068,17 +2143,17 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       backend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
-      const packageFor = (adapterId: 'codex' | 'opencode') => {
+      const packageFor = (adapterId: 'codex' | 'opencode', suffix: string = adapterId) => {
         const triggerActor = { id: 'user-multi-harness', kind: 'user' as const };
         return resolveAgentEnvironmentPackage({
-          agentSessionId: `agent-session-${adapterId}`,
+          agentSessionId: `agent-session-${suffix}`,
           agentSetup: createTestAgentSetup({
             adapter: adapterId,
             agentId: `agent-${adapterId}`,
             imageRef: `sha256:${'f'.repeat(64)}`,
           }),
           backend: { kind: 'openshell' },
-          requestId: `request-${adapterId}`,
+          requestId: `request-${suffix}`,
           triggerActor,
           turn: {
             completedAt: null,
@@ -2086,15 +2161,15 @@ describe('createConfiguredTurnExecutor', () => {
             durationMs: null,
             error: null,
             humanGate: null,
-            id: `turn-${adapterId}`,
+            id: `turn-${suffix}`,
             items: [],
             startedAt: '2026-08-21T00:00:00.000Z',
             status: 'running',
-            threadId: `thread-${adapterId}`,
+            threadId: `thread-${suffix}`,
             triggerActor,
             workspaceId: 'workspace-multi-harness',
           },
-          turnInput: `Run ${adapterId}`,
+          turnInput: `Run ${suffix}`,
           workspaceCwd: '/workspace',
           workspaceRoots: [],
         });
@@ -2102,6 +2177,7 @@ describe('createConfiguredTurnExecutor', () => {
 
       await backend.materialize(packageFor('codex'), { workspaceRoots: [] });
       await backend.materialize(packageFor('opencode'), { workspaceRoots: [] });
+      await backend.materialize(packageFor('codex', 'codex-next'), { workspaceRoots: [] });
 
       expect(effects.filter((effect) => effect.kind === 'image.acquire')).toHaveLength(1);
       expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
@@ -2192,13 +2268,7 @@ describe('createConfiguredTurnExecutor', () => {
           EXAMPLE_TOKEN: 'runtime-env-secret',
         }
       );
-      expect(
-        effects.find((effect) => effect.input.slot === 'runtime-credential')?.input
-      ).toMatchObject({
-        body: Buffer.from('runtime-file-secret'),
-        relativePath: 'sandbox/.config/example/credentials',
-        slot: 'runtime-credential',
-      });
+      expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
 
       effects.length = 0;
       await expect(

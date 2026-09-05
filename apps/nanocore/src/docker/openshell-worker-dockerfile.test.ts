@@ -74,7 +74,7 @@ const canonicalWorkspaceRoots = [
   '/workspace/scratch',
   '/workspace/.openkit/cache',
   '/openkit/session',
-  '/openkit/context',
+  '/openkit/sessions',
   '/openkit/instructions',
 ] as const;
 
@@ -172,7 +172,7 @@ describe('governed worker image contracts', () => {
     expect(dockerfile).toContain('/usr/sbin/groupadd --system sandbox');
     expect(dockerfile).toContain('/usr/sbin/useradd --system --gid sandbox --home-dir /sandbox');
     expect(dockerfile).toContain('/sandbox/openkit/session');
-    expect(commonRuntimeSetup).toContain('/sandbox/openkit/config');
+    expect(commonRuntimeSetup).toContain('/sandbox/openkit/sessions');
     expect(dockerfile).toContain('ln -s /sandbox/openkit /openkit');
     expect(dockerfile).toContain('chown -R sandbox:sandbox /sandbox /workspace');
     expect(workerCommonBuildWrites).not.toContain('/openkit/config/package.json');

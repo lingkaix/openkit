@@ -6,6 +6,7 @@ import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
+import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import {
@@ -1683,7 +1684,7 @@ describe('workspace export verifier', () => {
       threadId: workerThread.id,
       triggerActor: localActor,
       items: [],
-      status: 'completed',
+      status: 'completed' as const,
       humanGate: null,
       error: null,
       configVersion: null,
@@ -1691,6 +1692,17 @@ describe('workspace export verifier', () => {
       completedAt: timestamp,
       durationMs: 1,
     };
+    const workerPackage = resolveAgentEnvironmentPackage({
+      agentSessionId: 'as_1',
+      agentSetup,
+      backend: { kind: 'openshell' },
+      requestId: 'req_1',
+      triggerActor: localActor,
+      turn: workerTurn,
+      turnInput: 'Worker evidence',
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
+    });
     const workerSession = {
       id: 'as_1',
       agentId: 'agent_codex_host',
@@ -1700,7 +1712,7 @@ describe('workspace export verifier', () => {
       message: null,
       sandboxSummary: null,
       configVersion: null,
-      environmentPackageSnapshotId: 'aepsnap_demo',
+      environmentPackageSnapshotId: workerPackage.snapshotId,
       policySnapshotId: null,
       sessionCompatibilityKey: null,
       stale: false,
@@ -1765,28 +1777,17 @@ describe('workspace export verifier', () => {
       ],
       agentEnvironmentPackageSnapshots: [
         {
-          snapshotId: 'aepsnap_demo',
+          snapshotId: workerPackage.snapshotId,
           workspaceId: 'ws_demo',
           turnId: 'turn_1',
           threadId: 'th_1',
           agentSessionId: 'as_1',
           agentId: 'agent_codex_host',
-          packageId: 'aep_demo',
+          packageId: workerPackage.packageId,
           runtimeKind: 'codex',
           backendKind: 'openshell',
           contentDigest: 'digest_demo',
-          snapshot: {
-            snapshotId: 'aepsnap_demo',
-            packageId: 'aep_demo',
-            scope: {
-              workspaceId: 'ws_demo',
-              threadId: 'th_1',
-              turnId: 'turn_1',
-              agentSessionId: 'as_1',
-            },
-            agent: { agentId: 'agent_codex_host', runtimeKind: 'codex' },
-            backend: { preferred: 'openshell' },
-          },
+          snapshot: workerPackage,
           createdAt: timestamp,
         },
       ],
@@ -1797,7 +1798,7 @@ describe('workspace export verifier', () => {
     );
     expect(
       readFileSync(join(root, 'records', 'agent-environment-package-snapshots.jsonl'), 'utf8')
-    ).toContain('aepsnap_demo');
+    ).toContain(workerPackage.snapshotId);
 
     const snapshot = readImportSnapshot(root, 'ws_imported_demo');
 
@@ -1825,7 +1826,9 @@ describe('workspace export verifier', () => {
         }),
       }),
     ]);
-    expect(snapshot.agentEnvironmentPackageSnapshots[0]!.snapshotId).not.toBe('aepsnap_demo');
+    expect(snapshot.agentEnvironmentPackageSnapshots[0]!.snapshotId).not.toBe(
+      workerPackage.snapshotId
+    );
     expect(snapshot.agentEnvironmentPackageSnapshots[0]!.contentDigest).not.toBe('digest_demo');
   });
 

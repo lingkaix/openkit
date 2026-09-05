@@ -13,6 +13,7 @@ import {
   type WorkspaceSyncReviewPatchPayload,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 
 /** Options for building workspace input snapshots from one package. */
 export interface BuildWorkspaceInputSnapshotsInput {
@@ -204,7 +205,8 @@ function acceptedContextPackageRootDigest(
     workspaceInput.id !== `context_${turnId}` ||
     workspaceInput.kind !== 'generated' ||
     workspaceInput.access !== 'read-only' ||
-    workspaceInput.target !== '/openkit/context' ||
+    workspaceInput.target !==
+      workerSessionInputPaths(environmentPackage.scope.agentSessionId).contextRoot ||
     'mount' in workspaceInput ||
     workspaceInput.source.kind !== 'generated' ||
     workspaceInput.source.pathRef !== `threads/${threadId}/turns/${turnId}/context-package` ||

@@ -12,6 +12,7 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import type { StopReason } from '@openkit/protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
@@ -185,6 +186,7 @@ export function prepareWorkerTurnContextPackage(
   store: FsStore,
   checkpoint: WorkerCheckpointRecord,
   input: {
+    readonly agentSessionId: string;
     readonly workerRequest: string;
     readonly requestId: string | null;
     readonly workspaceId: string;
@@ -476,7 +478,7 @@ export function prepareWorkerTurnContextPackage(
         id: `context_${input.turnId}`,
         sourceKind: 'materialized-dir',
         sourcePath: packageRoot,
-        workerPath: '/openkit/context',
+        workerPath: workerSessionInputPaths(input.agentSessionId).contextRoot,
       },
     },
     queuedMaterialSelection,
@@ -1112,6 +1114,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           store,
           checkpoint,
           {
+            agentSessionId: resolvedAgentSessionId,
             requestId,
             threadId: turn.threadId,
             turnId: turn.id,
@@ -1847,7 +1850,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           (input) =>
             input.id === `context_${environmentPackage.scope.turnId}` &&
             input.kind === 'generated' &&
-            input.target === '/openkit/context'
+            input.target ===
+              workerSessionInputPaths(environmentPackage.scope.agentSessionId).contextRoot
         )
       ) {
         acceptedContextPackageTrace = readWorkerContextPackageTrace({

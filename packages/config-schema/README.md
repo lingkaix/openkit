@@ -22,6 +22,8 @@ Authored configuration is split by owner: Server resource and fallback files (`s
 
 NanoCore-created linked-repository roots add a full `sourceCommit` object id before AEP projection. The AEP source, durable input snapshot, and materialization record preserve that exact base so worker change manifests cannot substitute a different repository lineage.
 
+The session workspace planner consumes the pure Worker protocol path projection to bind Context inputs to `/openkit/sessions/<agent-session-id>/context`; authored filesystem grants cannot select this Core-managed namespace.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

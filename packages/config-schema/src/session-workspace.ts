@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
 /** Worker-visible workspace slot kind. */
@@ -194,6 +195,7 @@ export interface SessionWorkspacePlanningPackage {
   snapshotId?: string;
   /** Durable Thread and Turn lineage for turn-scoped inputs. */
   scope?: {
+    agentSessionId?: string;
     threadId?: string;
     turnId?: string;
   };
@@ -332,6 +334,7 @@ function createDefaultSessionWorkspaceLayout(
   environmentPackage: SessionWorkspacePlanningPackage
 ): SessionWorkspaceLayout {
   const root = environmentPackage.workspace?.root ?? '/workspace';
+  const { contextRoot } = workerSessionInputPaths(environmentPackage.scope?.agentSessionId);
 
   return SessionWorkspaceLayoutSchema.parse({
     schemaVersion: 1,
@@ -422,7 +425,7 @@ function createDefaultSessionWorkspaceLayout(
       slot(
         'context',
         'context',
-        '/openkit/context',
+        contextRoot,
         'read-only',
         ['generated'],
         ['copy', 'upload'],
@@ -453,7 +456,7 @@ function createDefaultSessionWorkspaceLayout(
     ],
     control: {
       transcriptRoot: '/openkit/session',
-      contextRoot: '/openkit/context',
+      contextRoot,
       instructionsRoot: '/openkit/instructions',
     },
   });
@@ -549,7 +552,7 @@ function isDedicatedContextPackageInput(
     typeof scope.turnId === 'string' &&
     workspaceInput.kind === 'generated' &&
     workspaceInput.access === 'read-only' &&
-    workspaceInput.target === '/openkit/context' &&
+    workspaceInput.target === workerSessionInputPaths(scope.agentSessionId).contextRoot &&
     !('mount' in workspaceInput) &&
     source?.kind === 'generated' &&
     source.pathRef === `threads/${scope.threadId}/turns/${scope.turnId}/context-package` &&

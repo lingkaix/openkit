@@ -10,7 +10,7 @@ test "$(head -n 1 "$(readlink -f "$(command -v pi)")")" = "#!/usr/bin/env node"
 command -v openkit-worker-shim >/dev/null
 ! command -v codex >/dev/null
 ! command -v opencode >/dev/null
-test -d /openkit/config
+test -d /openkit/sessions
 test -d /openkit/session
 test -d /openkit/artifacts
 

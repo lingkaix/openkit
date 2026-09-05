@@ -14,7 +14,10 @@ import {
   type SessionWorkspaceMaterializationPlan,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { WorkerTranscriptArtifactRecordSchema } from '@openkit/worker-protocol';
+import {
+  WorkerTranscriptArtifactRecordSchema,
+  workerSessionInputPaths,
+} from '@openkit/worker-protocol';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 import type { OpenShellFilesystemGrant, OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
@@ -125,6 +128,7 @@ export async function prepareNanoHostContextPackageImports(
   environmentPackage: AgentEnvironmentPackage,
   context: WorkerGovernanceMaterializationContext
 ): Promise<NanoHostContextPackageImport[]> {
+  const inputPaths = workerSessionInputPaths(environmentPackage.scope.agentSessionId);
   const expectedInputId = `context_${environmentPackage.scope.turnId}`;
   const candidates = environmentPackage.workspace.inputs.filter(
     (input) => input.id === expectedInputId
@@ -155,7 +159,7 @@ export async function prepareNanoHostContextPackageImports(
       candidateInput.source.kind !== 'generated' ||
       candidateInput.source.pathRef !== expectedPathRef ||
       candidateInput.access !== 'read-only' ||
-      candidateInput.target !== '/openkit/context' ||
+      candidateInput.target !== inputPaths.contextRoot ||
       candidateRoot.access !== 'read-only' ||
       candidateRoot.workerPath !== candidateInput.target ||
       !resolve(candidateRoot.sourcePath).endsWith(`${sep}${expectedSourceSuffix}`) ||
@@ -168,7 +172,7 @@ export async function prepareNanoHostContextPackageImports(
     body: canonicalPackage.body,
     byteLength: canonicalPackage.body.byteLength,
     contentDigest: `sha256:${createHash('sha256').update(canonicalPackage.body).digest('hex')}`,
-    relativePath: 'package.json',
+    relativePath: inputPaths.packageRelativePath,
     slot: 'package-config',
   };
   if (candidates.length === 0) {
@@ -210,7 +214,7 @@ export async function prepareNanoHostContextPackageImports(
       contentDigest:
         fileInventory[index]?.contentDigest ??
         `sha256:${createHash('sha256').update(file.body).digest('hex')}`,
-      relativePath: file.path,
+      relativePath: `${inputPaths.contextRelativePath}/${file.path}`,
       slot: 'context',
     })),
   ];
@@ -673,7 +677,7 @@ function openShellContextPackageRootDigest(
   const materialization = input.materialization;
 
   if (
-    workerPath !== '/openkit/context' ||
+    input.target !== workerPath ||
     !isRecord(materialization) ||
     materialization.slotId !== 'context'
   ) {
@@ -807,7 +811,12 @@ export function openShellFilesystemGrantsFromPackagePolicy(
     return [
       {
         access: rule.access,
-        path: rule.workerPath,
+        path:
+          rule.id === 'openkit-context-package' &&
+          rule.workerPath ===
+            workerSessionInputPaths(environmentPackage.scope.agentSessionId).contextRoot
+            ? '/openkit/sessions'
+            : rule.workerPath,
       },
     ];
   });
