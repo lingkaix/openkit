@@ -6,6 +6,16 @@ import { parse } from 'yaml';
 
 const workflow = parse(readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8'));
 
+test('test image jobs reap orphaned processes through Docker init', () => {
+  const jobs = Object.entries(workflow.jobs).filter(
+    ([, job]) => job.container?.image === actionExpression('needs.test-image.outputs.image')
+  );
+  assert.equal(jobs.length, 9);
+  for (const [name, job] of jobs) {
+    assert.equal(job.container.options, '--init', `${name} must reap orphaned processes`);
+  }
+});
+
 test('release workflow serializes tag releases and pins third-party actions', () => {
   assert.deepEqual(workflow.on.push.tags, ['v*.*.*']);
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
