@@ -1072,6 +1072,18 @@ describe('worker MCP routes', () => {
 
       const firstGate = firstTask.turn.humanGate;
       if (firstGate?.kind !== 'approval') throw new Error('Expected the public Task MCP Gate.');
+      expect(
+        store
+          .listThreadItems(firstTask.turn.workspaceId, firstTask.turn.threadId)
+          .find(
+            (item) =>
+              item.type === 'approval-request' &&
+              item.approvalRequestId === firstGate.approvalRequestId
+          )
+      ).toMatchObject({
+        description:
+          'Allow one echo/echo MCP tool call. After approving, send a new task message to continue.',
+      });
       const approvalResponse = await app.request(
         `/api/approvals/${firstGate.approvalRequestId}/respond`,
         {

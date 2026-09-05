@@ -1122,7 +1122,7 @@ function createMcpToolApprovalGate(
       workspaceId: input.environmentPackage.scope.workspaceId,
     },
     decisionId: `pd_mcp_required_${identity}`,
-    description: `Allow one ${input.serverId}/${input.toolName} MCP tool call.`,
+    description: `Allow one ${input.serverId}/${input.toolName} MCP tool call. After approving, send a new task message to continue.`,
     reasonCode: 'mcp_tool_approval_required',
     resourceSummary: {
       ...effect,
