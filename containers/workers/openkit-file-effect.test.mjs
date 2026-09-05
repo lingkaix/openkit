@@ -109,34 +109,38 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
   try {
     await Promise.all(Object.values(slotRoots).map((root) => mkdir(root, { recursive: true })));
 
-    const packageBytes = Buffer.from('{"schemaVersion":3}');
-    const packageDigest = `sha256:${createHash('sha256').update(packageBytes).digest('hex')}`;
-    const packageImport = await invokeFileEffect(
-      runFileEffect,
-      slotRoots,
-      [
-        'reference.import',
-        '--slot',
-        'package-config',
-        '--path',
-        'package.json',
-        '--length',
-        String(packageBytes.length),
-        '--sha256',
-        packageDigest,
-      ],
-      packageBytes
-    );
     const packageTarget = join(slotRoots['package-config'], 'package.json');
+    for (const packageBytes of [
+      Buffer.from('{"schemaVersion":3}'),
+      Buffer.from('{"schemaVersion":3,"snapshotId":"next-turn"}'),
+    ]) {
+      const packageDigest = `sha256:${createHash('sha256').update(packageBytes).digest('hex')}`;
+      const packageImport = await invokeFileEffect(
+        runFileEffect,
+        slotRoots,
+        [
+          'reference.import',
+          '--slot',
+          'package-config',
+          '--path',
+          'package.json',
+          '--length',
+          String(packageBytes.length),
+          '--sha256',
+          packageDigest,
+        ],
+        packageBytes
+      );
 
-    assert.equal(packageImport.exitCode, 0);
-    assert.equal(packageImport.stderr.length, 0);
-    assert.equal(
-      packageImport.stdout.toString('utf8'),
-      `${packageDigest} ${packageBytes.length}\n`
-    );
-    assert.deepEqual(await readFile(packageTarget), packageBytes);
-    assert.equal((await lstat(packageTarget)).mode & 0o777, 0o600);
+      assert.equal(packageImport.exitCode, 0);
+      assert.equal(packageImport.stderr.length, 0);
+      assert.equal(
+        packageImport.stdout.toString('utf8'),
+        `${packageDigest} ${packageBytes.length}\n`
+      );
+      assert.deepEqual(await readFile(packageTarget), packageBytes);
+      assert.equal((await lstat(packageTarget)).mode & 0o777, 0o600);
+    }
 
     const importedBytes = Buffer.from('immutable context bytes\n');
     const importedDigest = `sha256:${createHash('sha256').update(importedBytes).digest('hex')}`;

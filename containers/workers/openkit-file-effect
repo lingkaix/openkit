@@ -100,7 +100,7 @@ function parseCommand(argv, slotRoots) {
   ) {
     const relativePath = parseRelativePath(argv[4]);
     const slot = argv[2];
-    const replace = slot === 'runtime-credential';
+    const replace = slot === 'runtime-credential' || slot === 'package-config';
     const root =
       slot === 'package-config'
         ? resolvePackageConfigRoot(slotRoots, relativePath)
@@ -220,7 +220,7 @@ function parseBoundedDecimal(value) {
 }
 
 /**
- * Imports one verified stdin body through private fsynced no-overwrite placement.
+ * Imports one verified stdin body through private fsynced atomic placement.
  *
  * @param {{root: string, relativePath: string, length: number, digest: string, replace: boolean}} command Parsed import command.
  * @param {AsyncIterable<Uint8Array | string>} stdin Import body stream.
@@ -299,11 +299,11 @@ async function importReference(command, stdin, stdout) {
 }
 
 /**
- * Resolves and creates an import parent without accepting a symlink or existing target.
+ * Resolves an import parent and permits replacement only for an admitted regular target.
  *
  * @param {string} root Canonical slot root.
  * @param {string} relativePath Validated slot-relative path.
- * @param {boolean} allowExisting Whether one regular credential target may be atomically replaced.
+ * @param {boolean} allowExisting Whether one regular package or credential target may be atomically replaced.
  * @returns {Promise<{parent: string, target: string}>} Secured parent and target paths.
  */
 async function prepareImportTarget(root, relativePath, allowExisting) {
