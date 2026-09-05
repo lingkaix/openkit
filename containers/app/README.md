@@ -8,7 +8,7 @@ The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before st
 
 The runtime image exposes the compiled stopped-server administrator recovery command as `/usr/local/bin/openkit-operator`. It acquires the ordinary NanoCore data-root lock and refuses a live deployment; the image entrypoint does not invoke it.
 
-The runtime installs `util-linux` so NanoCore can use `setsid` and `setpriv` to own and terminate each MCP stdio server process group, including credential-bearing descendants.
+NanoCore uses Node's detached process groups and a private supervisor IPC channel to terminate MCP stdio servers and credential-bearing descendants, including when NanoCore exits unexpectedly.
 
 The manual CI `smoke` gate builds this image and runs the operator against disposable data and credential bind mounts without starting NanoCore or Caddy. After a local image build, the same opt-in host check is `OPENKIT_TEST_APP_IMAGE_RECOVERY=1 pnpm run test:app-image-admin-recovery`; never point it at an active or persistent deployment.
 

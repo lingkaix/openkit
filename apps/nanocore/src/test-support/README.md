@@ -9,6 +9,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 - `agent-environment.ts` records deterministic production-shaped AEP snapshots for scheduler recovery fixtures.
 - `app.ts` creates an app with an explicit simulated executor unless a test supplies another executor.
 - `workspace-sync.ts` records deterministic trusted input and materialization lineage for review fixtures.
+- `mcp-stdio-stub.mjs` publishes a descendant-written PID and credential digest receipt so MCP process cleanup tests verify inherited credentials on supported POSIX hosts without Linux-specific process inspection.
 - Fixtures must use production public paths where practical, stay deterministic, and avoid silently changing production defaults.
 - Add shared helpers only when multiple tests repeat the same fixture knowledge.
 

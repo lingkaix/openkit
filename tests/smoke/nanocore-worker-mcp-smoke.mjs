@@ -416,6 +416,7 @@ async function main() {
     h2?.destroy();
     if (child && child.exitCode === null && child.signalCode === null) {
       await stopProcess(child).catch(async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
         child.kill('SIGKILL');
         await new Promise((resolveExit) => child.once('exit', resolveExit));
       });

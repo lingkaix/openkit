@@ -1,13 +1,12 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import {
-  getDefaultEnvironment,
-  StdioClientTransport,
-} from '@modelcontextprotocol/sdk/client/stdio.js';
+import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
   StreamableHTTPClientTransport,
   StreamableHTTPError,
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ResolvedWorkspaceMcpServer } from '@openkit/config-schema';
 
@@ -17,12 +16,11 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
 const MCP_RESULT_MAX_BYTES = 512 * 1024;
-const MCP_HTTP_RESPONSE_MAX_BYTES = 2 * MCP_RESULT_MAX_BYTES;
+const MCP_PROTOCOL_RESPONSE_MAX_BYTES = 2 * MCP_RESULT_MAX_BYTES;
 const MCP_HEALTH_CHECK_MS = 15_000;
 const MCP_SESSION_IDLE_MS = 60_000;
-const MCP_STDIO_SESSION_COMMAND = '/usr/bin/setsid';
 const MCP_STDIO_SUPERVISOR =
-  "const{spawn}=require('node:child_process');if(process.ppid!==Number(process.argv[1]))process.exit(70);const reap=()=>{try{process.kill(-process.pid,'SIGKILL')}catch{process.exit(71)}};process.on('SIGTERM',reap);const child=spawn(process.argv[2],process.argv.slice(3),{stdio:'inherit'});child.on('error',reap);child.on('exit',reap);";
+  "const{spawn}=require('node:child_process');const reap=()=>{try{process.kill(-process.pid,'SIGKILL')}catch{process.exit(71)}};process.on('SIGTERM',reap);process.on('disconnect',reap);if(!process.connected||process.ppid!==Number(process.argv[1]))reap();else{const child=spawn(process.argv[2],process.argv.slice(3),{stdio:'inherit'});child.on('error',reap);child.on('exit',reap)}";
 
 /** Product-safe process-local MCP server health. */
 export type WorkerMcpServerHealth = 'inactive' | 'starting' | 'ready' | 'degraded' | 'failed';
@@ -335,7 +333,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           'mcp-call-failed',
           'MCP tool result was rejected.',
           502,
-          'contacted'
+          'contacted',
+          false,
+          true
         );
         try {
           await this.discard(key, undefined, pending);
@@ -460,7 +460,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     this.transition(input, 'starting');
     const client = new Client({ name: 'openkit-nanocore', version: '1.0.0' });
     const key = workerMcpSessionKey(input);
+    let transportClosed = false;
     client.onclose = () => {
+      transportClosed = true;
       if (this.teardownRequired.has(key)) return;
       const pending = this.sessions.get(key);
       if (!pending) return;
@@ -473,41 +475,55 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         () => undefined
       );
     };
-    const transport =
-      input.server.transport.kind === 'stdio'
-        ? new StdioClientTransport({
-            args: [
-              '--wait',
-              '--',
-              '/usr/bin/setpriv',
-              '--pdeathsig',
-              'SIGTERM',
-              '--',
-              process.execPath,
-              '-e',
-              MCP_STDIO_SUPERVISOR,
-              String(process.pid),
-              input.server.transport.command,
-              ...input.server.transport.args,
-            ],
-            command: MCP_STDIO_SESSION_COMMAND,
-            env: { ...getDefaultEnvironment(), ...input.credentials?.environment },
-            maxBufferSize: 2 * MCP_RESULT_MAX_BYTES,
-            stderr: 'pipe',
-          })
-        : new StreamableHTTPClientTransport(httpEndpoint(input), {
-            fetch: boundedMcpFetch(input.server.timeoutMs, hasCredentials(input)),
-            requestInit: input.credentials?.headers ? { headers: input.credentials.headers } : {},
-          });
-    if (transport instanceof StdioClientTransport) {
-      transport.stderr?.on('data', () => undefined);
+    let transport: StdioServerTransport | StreamableHTTPClientTransport;
+    let processGroupId: number | null = null;
+    if (input.server.transport.kind === 'stdio') {
+      const child = spawn(
+        process.execPath,
+        [
+          '-e',
+          MCP_STDIO_SUPERVISOR,
+          String(process.pid),
+          input.server.transport.command,
+          ...input.server.transport.args,
+        ],
+        {
+          detached: true,
+          env: { ...getDefaultEnvironment(), ...input.credentials?.environment },
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+        }
+      );
+      processGroupId = child.pid ?? null;
+      // The SDK's stream transport is role-neutral; Node owns spawning and process groups.
+      const streams = new StdioServerTransport(child.stdout!, child.stdin!, {
+        maxBufferSize: MCP_PROTOCOL_RESPONSE_MAX_BYTES,
+      });
+      /** Settles native termination through the SDK close path at most once. */
+      const close = () => {
+        if (!transportClosed) void streams.close();
+      };
+      /** Fences the transport after a child or pipe failure. */
+      const fail = (error: Error) => {
+        streams.onerror?.(error);
+        close();
+      };
+      child.on('error', fail);
+      child.once('exit', close);
+      child.stdin!.on('error', fail);
+      child.stderr!.on('data', () => undefined);
+      child.stderr!.on('error', fail);
+      transport = streams;
+    } else {
+      transport = new StreamableHTTPClientTransport(httpEndpoint(input), {
+        fetch: boundedMcpFetch(input.server.timeoutMs, hasCredentials(input)),
+        requestInit: input.credentials?.headers ? { headers: input.credentials.headers } : {},
+      });
     }
     // The SDK's optional sessionId declaration conflicts with exactOptionalPropertyTypes.
     const connection = client.connect(
       transport as Parameters<Client['connect']>[0],
       requestOptions(input.server.timeoutMs, input.signal)
     );
-    const processGroupId = transport instanceof StdioClientTransport ? transport.pid : null;
     this.sessionTeardowns.set(key, () => closeMcpSession(client, transport, processGroupId));
     try {
       await connection;
@@ -714,7 +730,7 @@ interface WorkerMcpSession {
 /** Proves one initialized or initializing SDK transport closed before ownership is released. */
 async function closeMcpSession(
   client: Client,
-  transport: StdioClientTransport | StreamableHTTPClientTransport,
+  transport: StdioServerTransport | StreamableHTTPClientTransport,
   processGroupId: number | null
 ): Promise<void> {
   if (transport instanceof StreamableHTTPClientTransport) {
@@ -818,7 +834,7 @@ function boundedMcpFetch(timeoutMs: number, credentialsMaterialized: boolean): t
 function boundMcpHttpResponse(response: Response, credentialsMaterialized: boolean): Response {
   if (!response.body) return response;
   const declaredBytes = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredBytes) && declaredBytes > MCP_HTTP_RESPONSE_MAX_BYTES) {
+  if (Number.isFinite(declaredBytes) && declaredBytes > MCP_PROTOCOL_RESPONSE_MAX_BYTES) {
     void response.body.cancel();
     throw new McpHttpResponseTooLargeError(credentialsMaterialized);
   }
@@ -827,7 +843,7 @@ function boundMcpHttpResponse(response: Response, credentialsMaterialized: boole
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         observedBytes += chunk.byteLength;
-        if (observedBytes > MCP_HTTP_RESPONSE_MAX_BYTES) {
+        if (observedBytes > MCP_PROTOCOL_RESPONSE_MAX_BYTES) {
           controller.error(new McpHttpResponseTooLargeError(credentialsMaterialized));
           return;
         }
@@ -842,13 +858,17 @@ function boundMcpHttpResponse(response: Response, credentialsMaterialized: boole
   });
 }
 
-/** Rejects a whole result when it contains an exact credential value used by this call. */
+/** Rejects a whole result containing a credential or its query sink's serialized wire value. */
 function containsCredential(result: unknown, credentials?: WorkerMcpGatewayCredentials): boolean {
   if (!credentials) return false;
+  const queryValues = Object.values(credentials.query ?? {});
   const credentialValues = [
     ...Object.values(credentials.environment ?? {}),
     ...Object.values(credentials.headers ?? {}),
-    ...Object.values(credentials.query ?? {}),
+    ...queryValues,
+    ...queryValues.map((value) =>
+      new URLSearchParams({ credential: value }).toString().slice('credential='.length)
+    ),
   ].filter(Boolean);
   const pending: unknown[] = [result];
   const seen = new Set<object>();

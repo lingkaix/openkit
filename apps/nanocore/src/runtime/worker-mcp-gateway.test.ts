@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -625,8 +626,11 @@ describe('worker MCP gateway', () => {
         (error: unknown) => error
       );
       await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
-      const descendantPid = Number(readFileSync(pidFile, 'utf8'));
-      expect(readFileSync(`/proc/${descendantPid}/environ`, 'utf8')).toContain(credential);
+      const descendant = JSON.parse(readFileSync(pidFile, 'utf8'));
+      const descendantPid = descendant.pid;
+      expect(descendant.credentialDigest).toBe(
+        createHash('sha256').update(credential).digest('hex')
+      );
       await gateway.closeWorkspace('ws_demo');
       expect(await activeCallOutcome).toMatchObject({ code: 'mcp-call-failed' });
       expect(() => process.kill(descendantPid, 0)).toThrow(
@@ -662,7 +666,7 @@ describe('worker MCP gateway', () => {
           workspaceId: 'ws_demo',
         })
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
-      const descendantPid = Number(readFileSync(pidFile, 'utf8'));
+      const descendantPid = JSON.parse(readFileSync(pidFile, 'utf8')).pid;
       await expect(waitForProcessExit(descendantPid)).resolves.toBe(true);
     } finally {
       await gateway.close();
@@ -727,8 +731,8 @@ describe('worker MCP gateway', () => {
     const pids = JSON.parse(line) as { descendantPid: number; serverPid: number };
 
     try {
-      expect(readFileSync(`/proc/${pids.descendantPid}/environ`, 'utf8')).toContain(
-        'crash-private-value'
+      expect(JSON.parse(readFileSync(pidFile, 'utf8')).credentialDigest).toBe(
+        createHash('sha256').update('crash-private-value').digest('hex')
       );
       child.kill('SIGKILL');
       await once(child, 'close');
@@ -747,30 +751,49 @@ describe('worker MCP gateway', () => {
   it('does not reap a session while a tool call is active', async () => {
     vi.useFakeTimers({ toFake: ['clearTimeout', 'setTimeout'] });
     const ping = vi.spyOn(Client.prototype, 'ping').mockResolvedValue({});
-    const upstream = await createMcpHttpStub({ delayMs: 60_001 });
+    const upstream = await createMcpHttpStub();
     const gateway = createDefaultWorkerMcpGateway();
     const server = httpTestServer(upstream.url, 180_000);
+    const response = Promise.withResolvers<Awaited<ReturnType<Client['callTool']>>>();
+    const callTool = vi.spyOn(Client.prototype, 'callTool');
+    let settled = false;
 
     try {
       await gateway.listTools({ server, workspaceId: 'ws_demo' });
-      const call = gateway.callTool({
-        arguments: { message: 'delayed' },
-        server,
-        toolName: 'echo',
-        workspaceId: 'ws_demo',
-      });
+      callTool.mockReturnValue(response.promise);
+      const call = gateway
+        .callTool({
+          arguments: { message: 'delayed' },
+          server,
+          toolName: 'echo',
+          workspaceId: 'ws_demo',
+        })
+        .then(
+          (result) => {
+            settled = true;
+            return { result };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { error };
+          }
+        );
       await vi.advanceTimersByTimeAsync(60_000);
+      expect(settled).toBe(false);
       expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('ready');
-      await vi.advanceTimersByTimeAsync(1);
-      await expect(call).resolves.toMatchObject({ content: [{ text: 'delayed' }] });
+      response.resolve({ content: [{ text: 'delayed', type: 'text' }] });
+      await expect(call).resolves.toMatchObject({ result: { content: [{ text: 'delayed' }] } });
       await vi.advanceTimersByTimeAsync(60_000);
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive');
+      await vi.waitFor(() =>
+        expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive')
+      );
     } finally {
+      vi.useRealTimers();
+      response.resolve({ content: [] });
       await gateway.close();
       await upstream.close();
       ping.mockRestore();
-      vi.useRealTimers();
+      callTool.mockRestore();
     }
   });
 
@@ -963,6 +986,34 @@ describe('worker MCP gateway', () => {
         })
       ).rejects.toMatchObject({ code: 'mcp-call-failed' });
       expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('degraded');
+    } finally {
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects an HTTP query credential echoed in its serialized wire form', async () => {
+    const credential = 'query value/+?&=';
+    const encoded = new URLSearchParams({ token: credential }).toString().slice('token='.length);
+    const upstream = await createMcpHttpStub({ credentialEcho: encoded });
+    const { coreDb, gateway } = createAuditedGateway();
+
+    try {
+      await expect(
+        gateway.callTool({
+          arguments: { message: 'leak' },
+          credentials: { query: { token: credential } },
+          server: httpTestServer(upstream.url, 2_000),
+          toolName: 'echo',
+          workspaceId: 'ws_demo',
+        })
+      ).rejects.toMatchObject({
+        code: 'mcp-call-failed',
+        credentialsMaterialized: true,
+        upstreamEffect: 'contacted',
+      });
+      expect(upstream.observed.some((request) => request.includes(`|${credential}|`))).toBe(true);
     } finally {
       await gateway.close();
       await upstream.close();

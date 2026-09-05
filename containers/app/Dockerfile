@@ -56,7 +56,6 @@ RUN apt-get update \
     git \
     libsqlite3-0 \
     tini \
-    util-linux \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable \

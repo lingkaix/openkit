@@ -55,7 +55,7 @@ while (!existsSync(pidFile) || !existsSync(serverPidFile)) {
 }
 process.stdout.write(
   `${JSON.stringify({
-    descendantPid: Number(readFileSync(pidFile, 'utf8')),
+    descendantPid: JSON.parse(readFileSync(pidFile, 'utf8')).pid,
     serverPid: Number(readFileSync(serverPidFile, 'utf8')),
   })}\n`
 );

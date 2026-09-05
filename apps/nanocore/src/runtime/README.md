@@ -28,6 +28,8 @@ This directory owns accepted-turn execution, scheduler dispatch integration, wor
 - `idempotent-command.ts` owns process-local duplicate collapse and delegates durable command records to storage.
 - `agent-environment.ts` owns the metadata-only pre-lease SessionCompatibilityKey projection and the full effect-owning AEP construction; scheduler and runtime owners revalidate that one key before launch.
 - MCP catalog supply remains non-executable metadata; exact selected supply enables only the fixed governed MCP route, while transport topology and Vault grant bindings never enter the AEP.
+- `worker-mcp-gateway.ts` rejects entire upstream results containing resolved credential values or the URL-encoded query values it sends, before returning them to a Worker.
+- MCP stdio sessions use Node's detached process groups; a private supervisor IPC channel reaps credential-bearing descendants if NanoCore dies, while explicit cleanup proves process-group absence before releasing session ownership.
 
 ## Verification
 

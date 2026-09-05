@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -23,11 +23,18 @@ if (process.env.OPENKIT_MCP_INIT_HANG) {
 if (process.env.OPENKIT_MCP_DESCENDANT_PID_FILE) {
   const child = spawn(
     process.execPath,
-    ['-e', "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],
+    [
+      '-e',
+      "const fs=require('node:fs');const{createHash}=require('node:crypto');const path=process.env.OPENKIT_MCP_DESCENDANT_PID_FILE;process.on('SIGTERM',()=>{});fs.writeFileSync(path+'.partial',JSON.stringify({pid:process.pid,credentialDigest:createHash('sha256').update(process.env.OPENKIT_MCP_DESCENDANT_SECRET??'').digest('hex')}));fs.renameSync(path+'.partial',path);setInterval(()=>{},1000)",
+    ],
     { env: process.env, stdio: 'ignore' }
   );
   if (!child.pid) throw new Error('MCP descendant fixture did not start.');
-  writeFileSync(process.env.OPENKIT_MCP_DESCENDANT_PID_FILE, String(child.pid));
+  const deadline = Date.now() + 2_000;
+  while (!existsSync(process.env.OPENKIT_MCP_DESCENDANT_PID_FILE)) {
+    if (Date.now() >= deadline) throw new Error('MCP descendant receipt was not published.');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 if (process.env.OPENKIT_MCP_INIT_EXIT) process.exit(77);
 
