@@ -657,7 +657,7 @@ Runtime default state:
 - The AEP launches `openkit-worker-shim`; `control.adapter.targetRuntime` selects one adapter in the shim's static registry.
 - Current release documentation uses exact GHCR version or digest references.
 
-The current catalog contains separate Codex, OpenCode, and Pi worker images. Each currently contains the generic shim and a singular catalog-declared runtime: Codex `0.153.4`, OpenCode `1.18.1`, or Pi `0.85.0`. Those leaves remain singular facts because no present need merges them.
+The current catalog contains separate Codex, OpenCode, and Pi worker images. Each currently contains the generic shim and a singular catalog-declared runtime: Codex `0.153.4`, OpenCode `1.18.1`, or Pi `0.85.1`. Those leaves remain singular facts because no present need merges them.
 
 Release worker base state:
 
@@ -687,7 +687,8 @@ Historical 2026-07-21 refreshed-image verification state for the then-current pi
 
 2026-09-05 Codex and Pi pin-refresh image verification:
 
-- Local Docker Engine 29.5.2 on linux/aarch64 built and smoked unique task tags only: `openkit/worker-codex:codex-pi-refresh-20260905` id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d` (native `codex-cli 0.153.4`, smoke exit 0) and `openkit/worker-pi:codex-pi-refresh-20260905` id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745` (native `0.85.0`, smoke exit 0). Shared `:dev` tags were not written.
+- Local Docker Engine 29.5.2 on linux/aarch64 built and smoked unique task tags only: `openkit/worker-codex:codex-pi-refresh-20260905` id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d` (native `codex-cli 0.153.4`, smoke exit 0) and `openkit/worker-pi:codex-pi-refresh-20260905` id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745` (native `0.85.0`, smoke exit 0). That Pi unique-tag proof is historical for the previous `0.85.0` pin. Shared `:dev` tags were not written.
+- On 2026-09-06 this worktree built and smoked unique local tag `openkit/worker-pi:pi-0.85.1-refresh-20260906` id `sha256:6cd46bcc208092417082152cf022a1818674f21bdcc921b02d6424c8e60662de` (native `0.85.1`, build exit 0, smoke exit 0) on Docker Engine 29.5.2 linux/arm64. Codex and OpenCode were not rebuilt for this patch pin.
 - This refresh did not rebuild or smoke OpenCode `1.18.1` in this checkout, did not observe GitHub-hosted worker/platform smokes, and did not repeat stock OpenShell, real-provider, worker-control, heartbeat, interruption, reconnect, or recovery gates. The manual worker-image job does not publish release worker images (`load: true`, `push: false`, no registry login). The existing `test-image` job may still publish a content-addressed CI execution image.
 
 ## Alternatives Considered

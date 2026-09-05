@@ -45,7 +45,7 @@ const workerImageContracts = [
     id: 'worker-pi',
     manifest: 'pi.agent.jsonc',
     nativeBinary: '/usr/local/bin/pi',
-    nativeVersion: '0.85.0',
+    nativeVersion: '0.85.1',
     runtime: 'pi',
   },
 ] as const;
@@ -492,11 +492,11 @@ describe('governed worker image contracts', () => {
     expect(buildScript).toContain(`docker build "\${docker_args[@]}" "\${context}"`);
   });
 
-  it('passes the manifest target through the release candidate build', () => {
+  it('passes the manifest target through worker smoke and release candidate builds', () => {
     const workflow = readFileSync(releaseWorkflowPath, 'utf8');
 
     expect(workflow).toContain("target: image.target || ''");
-    expect(workflow.match(/target: \$\{\{ matrix\.target \}\}/g)).toHaveLength(1);
+    expect(workflow.match(/target: \$\{\{ matrix\.target \}\}/g)).toHaveLength(2);
   });
 
   it('keeps the worker Codex version aligned with the vendored app-server schema', () => {

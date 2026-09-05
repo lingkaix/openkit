@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-05
+updated: 2026-09-06
 ---
 # Worker Execution Environment Images
 
@@ -95,7 +95,7 @@ The accepted baseline as of 2026-08-28 is:
 | mise | `2026.8.14` | Official release binary with architecture-specific SHA-256 verification |
 | Codex | `0.153.4`, Codex image only | Pinned native package |
 | OpenCode | `1.18.1`, OpenCode image only | Pinned native package |
-| Pi | `0.85.0`, Pi image only | Pinned native package |
+| Pi | `0.85.1`, Pi image only | Pinned native package |
 
 The common OS tool set is `bash`, `build-essential`, `ca-certificates`, `curl`, `dnsutils`, `fd-find`, `file`, `git`, `iproute2`, `iputils-ping`, `jq`, `lsof`, `nano`, `net-tools`, `netcat-openbsd`, `openssh-client`, `pkg-config`, `procps`, `ripgrep`, `tar`, `tini`, `traceroute`, `unzip`, `vim`, and `xz-utils`. The image must expose the Debian `fdfind` binary through the conventional `fd` command.
 
@@ -188,7 +188,9 @@ On 2026-07-21, the then-current arm64 development host built and smoked all thre
 
 On 2026-08-01, historical A1 verification used stock OpenShell and Gateway `0.0.80` to create one disposable sandbox from each then-refreshed Codex, OpenCode, and Pi image, upload a representative AEP with exactly the five common development grants and no additional host, complete the generic shim dry run, and return zero residual containers and sandboxes through legacy whole-Cell cleanup after every case. This completes image-content acceptance only for those previous image contents; it does not prove the target NanoHost lifecycle, stock RelayStream, nested standard HTTP/2 behavior, or route-token separation.
 
-On 2026-09-05 this worktree built and smoked unique local tags `openkit/worker-codex:codex-pi-refresh-20260905` (id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`, `codex-cli 0.153.4`) and `openkit/worker-pi:codex-pi-refresh-20260905` (id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`, Pi `0.85.0`) on Docker Engine 29.5.2 linux/aarch64. OpenCode was not rebuilt in this checkout. Shared `:dev` tags were not written. Stock OpenShell, amd64 cross-build, real-provider, worker-control, heartbeat, interruption, reconnect, and recovery gates for these new image bytes remain unobserved.
+On 2026-09-05 this worktree built and smoked unique local tags `openkit/worker-codex:codex-pi-refresh-20260905` (id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`, `codex-cli 0.153.4`) and `openkit/worker-pi:codex-pi-refresh-20260905` (id `sha256:ba074c6f0caa0a52b9f3fd9ca0c87e6703f842f98966e0e506e1a8ad86a7b745`, Pi `0.85.0`) on Docker Engine 29.5.2 linux/aarch64. That Pi unique-tag proof is historical for the previous `0.85.0` pin. OpenCode was not rebuilt in this checkout. Shared `:dev` tags were not written. Stock OpenShell, amd64 cross-build, real-provider, worker-control, heartbeat, interruption, reconnect, and recovery gates for these image bytes remain unobserved.
+
+On 2026-09-06 this worktree built and smoked unique local tag `openkit/worker-pi:pi-0.85.1-refresh-20260906` (id `sha256:6cd46bcc208092417082152cf022a1818674f21bdcc921b02d6424c8e60662de`, Pi `0.85.1`, build exit 0, smoke exit 0) on Docker Engine 29.5.2 linux/arm64. Codex and OpenCode were not rebuilt for this patch pin. Shared `:dev` tags were not written.
 
 The current strict-version-4, NanoHost, config-schema, worker-shim, App API, Core Client, migration, build, lint, OpenAPI, and Rust package-exit checks pass. This projection records that package state only and does not claim a new stock OpenShell packaging gate is implemented.
 

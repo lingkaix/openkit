@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-05
+updated: 2026-09-06
 ---
 # Worker Runtime Communication Model
 
@@ -371,7 +371,7 @@ The current implementation is a partial projection of this broader communication
 
 - `packages/worker-protocol` exists and defines canonical worker lineage, schema version, worker event records, transcript records, workspace change manifests, capability call summaries, worker-control request and response envelopes, and worker error shapes.
 - `packages/worker-shim` provides one generic zero-argument `openkit-worker-shim` entrypoint, one static registry, the implemented `bounded-turn` `prepare` and `collect` contract for OpenCode and Pi, and the implemented five-operation `session-continuity` adapter contract for Codex. Its one concrete shared Harness admits independent Codex AgentSessions for distinct Threads, runs at most one active Turn, retains only each AgentSession's restricted native handle, resumes the exact Codex thread UUID in a fresh process, and uses the existing process-group supervisor. Runtime-native argv, safe child environment, state-root selection, bounded result parsing, and selected fixed-loopback MCP projection remain adapter-owned. The shared shim has no native config-artifact contract, generic capability client, sidecar binary, or runtime-name fallback.
-- Codex `0.153.4` and OpenCode `1.18.1` accept only the trusted NanoCore relay envelope. Pi `0.85.0` accepts only the exact direct Anthropic `claude-sonnet-4-5` envelope. Every adapter rejects zero or multiple routes, mixed relay and direct authority, and unsupported runtime-route combinations before child launch.
+- Codex `0.153.4` and OpenCode `1.18.1` accept only the trusted NanoCore relay envelope. Pi `0.85.1` accepts only the exact direct Anthropic `claude-sonnet-4-5` envelope. Every adapter rejects zero or multiple routes, mixed relay and direct authority, and unsupported runtime-route combinations before child launch.
 - NanoCore preserves the strict manifest-authored image, pull policy, runtime binaries, adapter id, logical-model admission, and Sandbox envelope through `ResolvedAgentSetup`, then projects the preferred and exact allowed logical-model IDs into the immutable AEP. `control.adapter.targetRuntime` alone selects the adapter; runtime kind, image name, environment, deployment, transport, and backend topology do not select or infer one.
 - The zero-argument Harness keeps one Integration client alive inside the bounded outage budget, may hold multiple Codex AgentSession bindings, and launches one fresh native process for each admitted Turn; the production binary has no package-argument or one-shot compatibility path.
 - `apps/nanocore/src/runtime/agent-environment.ts` resolves OpenShell-backed AEP snapshots with the fixed sandbox-local Integration control binding and exact `worker-control` backend capability requirements. Current packages enable only the three selected MCP routes when MCP supply is non-empty and otherwise emit a disabled capability plane with no routes.
@@ -653,7 +653,7 @@ Mitigation: require the exact memory-only process key, durable lineage, next seq
 - Public runtime configuration exposes one NanoHost identity and rendezvous boundary, not a worker-runtime, placement, backend, SSH, Gateway, or sandbox-direct endpoint selector.
 - Sandbox Integration's sandbox-local `/worker-control/*` binding is the sole Worker-facing target for worker control. The `/inference/*` and future `/capabilities/*` families share only the standard HTTP/2 carriage and retain separate tokens, scopes, payload bounds, retry rules, failure semantics, usage, and audit ownership.
 - NanoHost lifecycle, Runtime Epoch fencing, stock RelayStream carriage, standard HTTP/2 session ownership, and transport credential boundaries are owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-- The AEP resolves one specialized LLM route, while its runtime-native projection is adapter-specific and fail-closed. Codex `0.153.4` and OpenCode `1.18.1` can represent the trusted NanoCore relay within the current no-file contract; Pi `0.85.0` cannot and supports only an exact pinned native direct provider/model pair.
+- The AEP resolves one specialized LLM route, while its runtime-native projection is adapter-specific and fail-closed. Codex `0.153.4` and OpenCode `1.18.1` can represent the trusted NanoCore relay within the current no-file contract; Pi `0.85.1` cannot and supports only an exact pinned native direct provider/model pair.
 - `openkit-worker-shim` is the generic real container entrypoint; runtime-native behavior is selected by the AEP-declared opaque adapter id inside the worker image.
 - Codex, OpenCode, and Pi use one shared Harness registry with the two closed adapter modes and separate runtime adapters; only an adapter that proves `session-continuity` is eligible for the shared-Harness RuntimeTarget.
 - One authored `AgentManifest`, one adapter module plus static registry entry, and one governed image definition plus existing-catalog entry are the complete permitted production extension surface for a fourth Worker Agent.

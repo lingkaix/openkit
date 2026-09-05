@@ -275,7 +275,7 @@ USER sandbox
 
 FROM worker-common AS worker-pi
 
-ARG PI_VERSION="0.85.0"
+ARG PI_VERSION="0.85.1"
 
 LABEL org.openkit.image="worker-pi"
 LABEL org.openkit.worker.runtime="pi"

@@ -12,7 +12,7 @@ The adapter registry has two closed modes. A `bounded-turn` adapter owns only `p
 
 - `codex`: Codex 0.153.4 through the trusted NanoCore Responses relay only. This is the sole `session-continuity` adapter; it owns the fixed first-launch `--cd` arguments, exact-thread-UUID resume arguments without `--cd` because the Harness owns process cwd, AgentSession-private `CODEX_HOME`, restricted handle proof, race-safe final-message file, and optional pinned runtime-provenance capture.
 - `opencode`: OpenCode 1.18.1 through the trusted NanoCore OpenAI-compatible relay only. This remains a `bounded-turn` adapter with an isolated home, inline non-secret provider configuration, and fail-closed JSON-event collection.
-- `pi`: Pi 0.85.0 through the exact direct `anthropic/claude-sonnet-4-5` route only. This remains a `bounded-turn` adapter that disables optional native discovery surfaces and requires correlated terminal provider and model evidence.
+- `pi`: Pi 0.85.1 through the exact direct `anthropic/claude-sonnet-4-5` route only. This remains a `bounded-turn` adapter that disables optional native discovery surfaces and requires correlated terminal provider and model evidence.
 
 Every package must contain exactly one resolved LLM route. Codex and OpenCode reject direct-provider routes, while Pi rejects relay routes and every provider/model pair other than its one accepted direct pair.
 
