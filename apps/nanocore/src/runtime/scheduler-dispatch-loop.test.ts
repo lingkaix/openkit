@@ -49,6 +49,7 @@ import {
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records';
+import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 
 class RecordingTurnExecutor implements TurnExecutor {
   public readonly capabilities = {
@@ -296,6 +297,71 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('scheduler dispatch loop', () => {
+  it('leaves admission queued when the runtime reports one-Sandbox capacity saturation', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    turnExecutor.prepareAgentSessionForTurn = async () => {
+      throw new WorkerGovernanceCapacityUnavailableError();
+    };
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      createSchedulerAdmissionEntry(coreDb, {
+        priorityClass: 'interactive',
+        profileRef: null,
+        queueEntryId: 'queue_runtime_capacity',
+        requestedAgentId: 'agent_codex_host',
+        requiredPoolConstraints: ['openshell.local'],
+        threadId: 'th_demo',
+        turnId: 'turn_runtime_capacity',
+        turnInput: 'Wait for the resident Sandbox',
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_demo',
+      });
+
+      await expect(
+        runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => 'as_runtime_capacity',
+          createLeaseId: () => 'lease_runtime_capacity',
+          createPlanId: () => 'plan_runtime_capacity',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+          schedulerEpoch: 1,
+          startupTimeoutMs: 120_000,
+          store,
+          turnExecutor,
+        })
+      ).resolves.toEqual({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'capacity-saturated' },
+      });
+      expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([
+        expect.objectContaining({
+          queueEntryId: 'queue_runtime_capacity',
+          status: 'queued',
+        }),
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_placement_plans').get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases').get()
+      ).toEqual({ count: 0 });
+      expect(() => store.getTurnById('turn_runtime_capacity')).toThrow('Turn not found');
+      expect(turnExecutor.calls).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('selects the dequeued Workspace context instead of the initiating request context', async () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();

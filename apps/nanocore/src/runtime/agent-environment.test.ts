@@ -26,6 +26,7 @@ import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   resolveAgentEnvironmentPackage,
+  resolveAgentEnvironmentPackageMetadata,
   resolveAgentSessionCompatibilityKey,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -888,8 +889,27 @@ describe('agent environment package resolver', () => {
         workspaceCwd: '/workspace/repo',
         workspaceRoots: [],
       } as Parameters<typeof resolveAgentSessionCompatibilityKey>[0]);
+      const metadataPackage = resolveAgentEnvironmentPackageMetadata({
+        agentSessionId: 'session_preview_1',
+        agentSetup,
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: now,
+        requestId: 'req_preview_1',
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      });
 
       expect(compatibilityKey).toMatch(/^sha256:/);
+      expect(
+        (
+          metadataPackage.extensions.openkit as {
+            sessionWorkspace: SessionWorkspaceMaterializationPlan;
+          }
+        ).sessionWorkspace.compatibilityKey.digest
+      ).toBe(compatibilityKey);
       expect(sinkCalls).toBe(0);
       expect(vaultBackendCalls).toBe(0);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);

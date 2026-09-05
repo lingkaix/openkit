@@ -1080,6 +1080,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceRoots: [],
     };
     const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+    const historyBeforeCommit = store.listThreadTurns(turn.workspaceId, turn.threadId);
 
     expect(store.getAgentSession('as-current-replacement').status).toBe('idle');
     await executor.commitPreparedAgentSessionForTurn(store, {
@@ -1093,6 +1094,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       status: 'closed',
       updatedAt: '2026-08-21T00:00:05.000Z',
     });
+    expect(store.listThreadTurns(turn.workspaceId, turn.threadId)).toEqual(historyBeforeCommit);
   });
 
   it('starts an ordinary product Turn from the real pre-lease preview key without a Context Package', async () => {

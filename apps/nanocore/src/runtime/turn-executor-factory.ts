@@ -368,6 +368,16 @@ interface NanoHostSharedSandbox {
   readonly sandboxRuntimeId: string;
 }
 
+/** One incompatible resident Sandbox whose complete private occupancy is proved idle. */
+interface NanoHostIdleSandboxEviction {
+  readonly bindings: NanoHostAgentSessionContinuityInspection[];
+  readonly bridgeOpen: boolean;
+  readonly sandboxBindingRef: string;
+  readonly sandboxCompatibilityKey: string;
+  readonly sandboxId: string;
+  readonly sandboxRuntimeId: string;
+}
+
 /** NanoHost-backed effect boundary used by the sole production turn executor. */
 class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private readonly agentSessionCloseOwners = new Map<string, NanoHostAgentSessionCloseOwner>();
@@ -1022,6 +1032,239 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
+  /** Reports one-Sandbox capacity without changing durable or physical runtime state. */
+  public inspectMaterializationCapacity(
+    environmentPackage: AgentEnvironmentPackage
+  ): 'available' | 'capacity-saturated' {
+    return this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated'
+      ? 'capacity-saturated'
+      : 'available';
+  }
+
+  /** Reads the one-Sandbox profile and returns only a completely idle incompatible resident. */
+  private inspectIncompatibleIdleSandbox(
+    environmentPackage: AgentEnvironmentPackage
+  ): NanoHostIdleSandboxEviction | 'capacity-saturated' | null {
+    const desiredKey = nanoHostSandboxCompatibilityKey(environmentPackage);
+    const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
+    const sandboxes = this.coreDb.sqlite
+      .prepare(
+        `SELECT sandbox_runtime_id AS sandboxRuntimeId,
+                sandbox_binding_ref AS sandboxBindingRef,
+                sandbox_compatibility_key AS sandboxCompatibilityKey,
+                lifecycle_state AS lifecycleState, health_state AS healthState,
+                drain_state AS drainState, cleanup_state AS cleanupState,
+                pinned_goal_id AS pinnedGoalId
+         FROM sandbox_runtime_records
+         WHERE runtime_target_id = ?
+         ORDER BY sandbox_runtime_id`
+      )
+      .all(runtimeTargetId) as Array<{
+      readonly cleanupState: string;
+      readonly drainState: string;
+      readonly healthState: string;
+      readonly lifecycleState: string;
+      readonly pinnedGoalId: string | null;
+      readonly sandboxBindingRef: string;
+      readonly sandboxCompatibilityKey: string;
+      readonly sandboxRuntimeId: string;
+    }>;
+    if (sandboxes.length === 0) {
+      return null;
+    }
+    if (sandboxes.length !== 1) {
+      return 'capacity-saturated';
+    }
+    const sandbox = sandboxes[0]!;
+    if (
+      sandbox.lifecycleState !== 'open' ||
+      sandbox.healthState !== 'ready' ||
+      sandbox.drainState !== 'accepting' ||
+      sandbox.cleanupState !== 'clean'
+    ) {
+      return 'capacity-saturated';
+    }
+    const harnesses = this.coreDb.sqlite
+      .prepare(
+        `SELECT harness_instance_id AS harnessInstanceId,
+                harness_binding_ref AS harnessBindingRef,
+                lifecycle_state AS lifecycleState, drain_state AS drainState,
+                active_turn_count AS activeTurnCount, operation_state AS operationState
+         FROM harness_instance_records
+         WHERE sandbox_runtime_id = ?
+         ORDER BY harness_instance_id`
+      )
+      .all(sandbox.sandboxRuntimeId) as Array<{
+      readonly activeTurnCount: number;
+      readonly drainState: string;
+      readonly harnessBindingRef: string;
+      readonly harnessInstanceId: string;
+      readonly lifecycleState: string;
+      readonly operationState: string;
+    }>;
+    if (
+      harnesses.some(
+        (harness) => harness.lifecycleState !== 'open' || harness.drainState !== 'accepting'
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    if (sandbox.sandboxCompatibilityKey === desiredKey) {
+      return null;
+    }
+    if (
+      sandbox.pinnedGoalId !== null ||
+      [...this.sessions.values()].some(
+        (session) => session.sharedHarness.sandbox.sandboxRuntimeId === sandbox.sandboxRuntimeId
+      ) ||
+      harnesses.length === 0 ||
+      harnesses.some(
+        (harness) =>
+          harness.activeTurnCount !== 0 || !['idle', 'settled'].includes(harness.operationState)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    const bindings = this.coreDb.sqlite
+      .prepare(
+        `SELECT b.agent_session_id AS agentSessionId,
+                b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+                b.harness_instance_id AS harnessInstanceId,
+                h.harness_binding_ref AS harnessBindingRef,
+                b.lifecycle_state AS lifecycleState,
+                b.current_turn_id AS currentTurnId,
+                b.current_lease_id AS currentLeaseId,
+                b.cleanup_state AS cleanupState
+         FROM agent_session_runtime_bindings b
+         JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+         WHERE h.sandbox_runtime_id = ?
+           AND b.lifecycle_state <> 'closed'
+         ORDER BY b.agent_session_runtime_binding_id`
+      )
+      .all(sandbox.sandboxRuntimeId) as Array<{
+      readonly agentSessionId: string;
+      readonly agentSessionRuntimeBindingId: string;
+      readonly cleanupState: string;
+      readonly currentLeaseId: string | null;
+      readonly currentTurnId: string | null;
+      readonly harnessBindingRef: string;
+      readonly harnessInstanceId: string;
+      readonly lifecycleState: string;
+    }>;
+    if (
+      bindings.some(
+        (binding) =>
+          binding.lifecycleState !== 'open' ||
+          binding.currentTurnId !== null ||
+          binding.currentLeaseId !== null ||
+          binding.cleanupState !== 'clean' ||
+          this.agentSessionCloseOwners.has(binding.agentSessionRuntimeBindingId)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    if (
+      bindings.some((binding) =>
+        this.coreDb.sqlite
+          .prepare(
+            `SELECT 1 FROM scheduler_session_leases
+             WHERE agent_session_id = ?
+               AND status NOT IN ('released', 'lost', 'failed')
+             LIMIT 1`
+          )
+          .get(binding.agentSessionId)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    return {
+      bindings: bindings.map((binding) => ({
+        agentSessionId: binding.agentSessionId,
+        agentSessionRuntimeBindingId: binding.agentSessionRuntimeBindingId,
+        harnessBindingRef: binding.harnessBindingRef,
+        harnessInstanceId: binding.harnessInstanceId,
+        reusable: false,
+      })),
+      bridgeOpen: this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.bridgeOpen ?? true,
+      sandboxBindingRef: sandbox.sandboxBindingRef,
+      sandboxCompatibilityKey: sandbox.sandboxCompatibilityKey,
+      sandboxId: nanoHostSandboxId(sandbox.sandboxCompatibilityKey),
+      sandboxRuntimeId: sandbox.sandboxRuntimeId,
+    };
+  }
+
+  /** Claims and cleanly deletes one proved-idle incompatible resident after scheduler dispatch. */
+  private async evictIncompatibleIdleSandbox(
+    environmentPackage: AgentEnvironmentPackage,
+    identity: WorkerGovernanceBackendSessionIdentity,
+    leaseId: string
+  ): Promise<void> {
+    this.coreDb.sqlite.exec('BEGIN IMMEDIATE');
+    let eviction: NanoHostIdleSandboxEviction | null = null;
+    try {
+      const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage);
+      if (inspected === 'capacity-saturated') {
+        throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+      }
+      eviction = inspected;
+      if (eviction) {
+        const timestamp = new Date().toISOString();
+        const sandboxUpdate = this.coreDb.sqlite
+          .prepare(
+            `UPDATE sandbox_runtime_records
+             SET drain_state = 'draining', updated_at = ?
+             WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'
+               AND health_state = 'ready' AND drain_state = 'accepting'
+               AND cleanup_state = 'clean' AND pinned_goal_id IS NULL`
+          )
+          .run(timestamp, eviction.sandboxRuntimeId);
+        const harnessUpdate = this.coreDb.sqlite
+          .prepare(
+            `UPDATE harness_instance_records
+             SET drain_state = 'draining', updated_at = ?
+             WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'
+               AND drain_state = 'accepting' AND active_turn_count = 0
+               AND operation_state IN ('idle', 'settled')`
+          )
+          .run(timestamp, eviction.sandboxRuntimeId);
+        if (sandboxUpdate.changes !== 1 || harnessUpdate.changes < 1) {
+          throw new Error('NanoHost idle Sandbox eviction changed before drain claim.');
+        }
+      }
+      this.coreDb.sqlite.exec('COMMIT');
+    } catch (error) {
+      this.coreDb.sqlite.exec('ROLLBACK');
+      throw error;
+    }
+    if (!eviction) {
+      return;
+    }
+    try {
+      for (const binding of eviction.bindings) {
+        await this.closeDurableAgentSession(binding);
+        for (const sharedHarness of this.sharedHarnesses.values()) {
+          if (sharedHarness.harnessInstanceId === binding.harnessInstanceId) {
+            sharedHarness.bindings.delete(binding.agentSessionId);
+          }
+        }
+      }
+      const cleanupInput = { leaseId, sandboxId: eviction.sandboxId };
+      if (eviction.bridgeOpen) {
+        await this.effect(identity, leaseId, 'bridge.close', cleanupInput);
+      }
+      await this.effect(identity, leaseId, 'sandbox.delete', cleanupInput);
+      removeNanoHostSandboxRuntimeByBinding(this.coreDb, eviction.sandboxBindingRef);
+      this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
+    } catch (error) {
+      fenceNanoHostSandboxRuntime(this.coreDb, {
+        sandboxBindingRef: eviction.sandboxBindingRef,
+        timestamp: new Date().toISOString(),
+      });
+      this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
+      throw error;
+    }
+  }
+
   /** Acquires or builds the immutable image and creates the exact NanoHost sandbox. */
   public async materialize(
     environmentPackage: AgentEnvironmentPackage,
@@ -1049,6 +1292,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       throw new Error('NanoHost image build requires the exact V1 empty build-context pair.');
     }
+    if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
+      throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+    }
     let sharedHarness = this.restoreSharedHarness(
       sandboxCompatibilityKey,
       harnessCompatibilityKey,
@@ -1061,6 +1307,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sharedHarness?.sandbox ??
       this.restoreSharedSandbox(sandboxCompatibilityKey, requireNanoHostRuntimeTargetId(identity));
     if (!sharedSandbox) {
+      await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId);
       const deploymentImageDigest =
         image.kind === 'reference' &&
         image.pullPolicy === 'never' &&

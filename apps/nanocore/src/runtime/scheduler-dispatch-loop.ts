@@ -42,6 +42,7 @@ import type {
 } from './types.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
+import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 
 /** Input for one scheduler dispatch loop run. */
 export interface RunSchedulerDispatchLoopInput {
@@ -228,9 +229,20 @@ export async function runSchedulerDispatchLoop(
       ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
       ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
     };
-    const preparedAgentSession = input.turnExecutor.prepareAgentSessionForTurn
-      ? await input.turnExecutor.prepareAgentSessionForTurn(input.store, prepareInput)
-      : prepareFreshAgentSessionWithoutRuntimeOwner(input, prepareInput);
+    let preparedAgentSession: PreparedAgentSessionForTurn;
+    try {
+      preparedAgentSession = input.turnExecutor.prepareAgentSessionForTurn
+        ? await input.turnExecutor.prepareAgentSessionForTurn(input.store, prepareInput)
+        : prepareFreshAgentSessionWithoutRuntimeOwner(input, prepareInput);
+    } catch (error) {
+      if (error instanceof WorkerGovernanceCapacityUnavailableError) {
+        return {
+          startedTurns,
+          terminalResult: { status: 'queued', reason: 'capacity-saturated' },
+        };
+      }
+      throw error;
+    }
     const leaseId = (input.createLeaseId ?? createLeaseId)();
     const dispatch = dispatchNextSchedulerEntry(input.coreDb, {
       agentSessionId: preparedAgentSession.agentSessionId,

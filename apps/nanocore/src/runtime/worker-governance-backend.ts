@@ -74,6 +74,14 @@ export type WorkerGovernanceAgentSessionContinuityDisposition =
   | 'closed'
   | 'absent';
 
+/** Signals that existing scheduler admission must remain queued for physical runtime capacity. */
+export class WorkerGovernanceCapacityUnavailableError extends Error {
+  public constructor() {
+    super('Worker runtime capacity is saturated.');
+    this.name = 'WorkerGovernanceCapacityUnavailableError';
+  }
+}
+
 /**
  * Backend-private workspace context used for transport effects.
  */
@@ -574,6 +582,11 @@ export interface WorkerGovernanceBackend {
    * @returns Deterministic physical identity persisted before materialization.
    */
   planSession(environmentPackage: AgentEnvironmentPackage): WorkerGovernanceBackendSessionIdentity;
+
+  /** Reads whether the one configured physical runtime can admit this secret-free package. */
+  inspectMaterializationCapacity?(
+    environmentPackage: AgentEnvironmentPackage
+  ): 'available' | 'capacity-saturated';
 
   /**
    * Proves exact retained continuity or closes the predecessor after scheduler admission.

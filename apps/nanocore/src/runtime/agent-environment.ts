@@ -219,20 +219,32 @@ export function resolveAgentEnvironmentPackage(
 export function resolveAgentSessionCompatibilityKey(
   input: ResolveAgentSessionCompatibilityKeyInput
 ): string {
-  if (input.backend?.kind !== 'openshell') {
-    throw new Error('AgentSession compatibility requires a container backend.');
-  }
-  const environmentPackage = resolveOpenShellAgentEnvironmentPackage(
-    input,
-    input.backend,
-    'metadata-only',
-    hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
-  );
+  const environmentPackage = resolveAgentEnvironmentPackageMetadata(input);
   return (
     environmentPackage.extensions.openkit as {
       sessionWorkspace: SessionWorkspaceMaterializationPlan;
     }
   ).sessionWorkspace.compatibilityKey.digest;
+}
+
+/**
+ * Resolves the complete secret-free AEP projection used by pre-lease runtime admission.
+ *
+ * @param input Future Turn, resolved agent, and static workspace inputs.
+ * @returns Metadata-only Agent Environment Package with no Vault resolution or durable effects.
+ */
+export function resolveAgentEnvironmentPackageMetadata(
+  input: ResolveAgentSessionCompatibilityKeyInput
+): AgentEnvironmentPackage {
+  if (input.backend?.kind !== 'openshell') {
+    throw new Error('AgentSession compatibility requires a container backend.');
+  }
+  return resolveOpenShellAgentEnvironmentPackage(
+    input,
+    input.backend,
+    'metadata-only',
+    hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
+  );
 }
 
 /** Reads whether the existing durable launch path will prepare a Context Package for this Turn. */
