@@ -20,16 +20,19 @@ One record family must have one durable authority. Do not add aggregate workspac
 - `db.ts` and `migrate.ts` own database opening, integrity validation, and the committed fresh-database setup.
 - Authoritative SQLite integrity failure stops boot and leaves the original database file unchanged; only derived indexes may rebuild automatically.
 - `workspace-file-records.ts` owns canonical workspace record serialization and boot loading.
+- `workspace-file-records.ts` also ensures the OKF v0.2 bundle-root `knowledge/pages/index.md` once, preserves valid authored index bytes, and writes the same final Knowledge Page candidate bytes that direct-edit validation accepted.
 - `command-request-records.ts` owns scope-homed SQLite command idempotency; process-local duplicate collapse remains in `../runtime/idempotent-command.ts`.
 - `../workspace-materials.ts` owns exactly the three app-local Material tables and their same-transaction command mutations; worker delivery, Artifact Review, and portable graph rewriting remain with their later S16 stages.
 - `../goal-steering-authority.ts` owns the Thread-unique pending input and immutable terminal outcome rows; callers own Item, Context Package, follow-up Turn, and body-free receipt effects around its exact transaction fences.
 - `workspace-export.ts` owns the V2 export tree, manifest, exact-byte inventory, and offline verification.
 - `workspace-archive.ts` owns strict USTAR path representability shared by export creation, offline verification, and archive production, plus bounded one-shot extraction into private request-local staging.
 - `workspace-import.ts` parses only verified bytes, validates and remints the import graph, and reconstructs importable records.
+- Native Knowledge Page import remints string-only `source_refs` through the parsed YAML document so block sequences and unknown nested metadata survive.
 - `workspace-portable-file-state.ts` owns portable Knowledge ledgers, workspace config and schema, native OKF pages, S61 retrieval traces, and retained S39 worker Context Package files.
 - Standalone Knowledge context traces and materializations are unsupported; worker delivery belongs only to the S39 Context Package owner.
 - `workspace-transfer-routes.ts` coordinates public requests, staged workspace publication, the Core database transaction, and synchronous compensation when Core replay fails.
 - `index-rebuild.ts` consumes canonical records and authoritative ledgers but must never become their source of truth.
+- Knowledge Page enumeration excludes `index.md` and `log.md` at every bundle depth while native portability keeps every Markdown file byte-for-byte.
 - Secret material belongs to `../vault/` backends and credential consumers; storage may retain only explicitly allowed non-secret metadata and redacted evidence.
 - The scheduler lease is the narrow exception for worker route authentication: it retains exactly three nullable lowercase SHA-256 projections for the control, inference, and capability families, never a raw token or a derived sandbox-binding credential.
 

@@ -156,6 +156,14 @@ function writePortableFixture(root: string): void {
     '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n'
   );
   writeFileSync(
+    join(root, 'knowledge', 'pages', 'nested', 'index.md'),
+    '# Nested authored index\n\nKeep this navigation byte-for-byte.\n'
+  );
+  writeFileSync(
+    join(root, 'knowledge', 'pages', 'nested', 'log.md'),
+    '# Nested authored log\n\nKeep this history byte-for-byte.\n'
+  );
+  writeFileSync(
     join(root, 'knowledge', 'pages', 'kn_owned.md'),
     '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n'
   );
@@ -202,6 +210,8 @@ describe('workspace portable file-state IO', () => {
     expect([...state.nativeKnowledgePages.keys()]).toEqual([
       'knowledge/pages/kn_owned.md',
       'knowledge/pages/native.md',
+      'knowledge/pages/nested/index.md',
+      'knowledge/pages/nested/log.md',
       'knowledge/pages/nested/native.md',
     ]);
     expect(state.nativeKnowledgePages.get('knowledge/pages/kn_owned.md')).toContain(

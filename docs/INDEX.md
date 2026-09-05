@@ -210,6 +210,7 @@ Change plans are not indexed. List `docs/changes/` to see them.
 ## External Snapshots
 
 - `docs/okf-spec-v0.1-snapshot.md` — Snapshot kind: external format specification snapshot (verbatim)
+- `docs/okf-spec-v0.2-snapshot.md` — Snapshot kind: external format specification snapshot (verbatim)
 
 ## Cookbooks
 

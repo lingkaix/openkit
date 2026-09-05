@@ -1,0 +1,43 @@
+---
+type: change-plan
+status: in-progress
+started: 2026-09-06
+branch: codex/okf-v0.2
+---
+# Open Knowledge Format v0.2
+
+## Intent Epoch 1
+
+- **Source:** Engineer request to finish and merge PR #4, update only Codex and Pi Workers to current stable, and update Open Knowledge Format to official v0.2; later roadmap features stay paused. Subsequent steering retains A2 as normal persistent staging and requires all intended Git changes in main before branch/worktree cleanup.
+- **Outcome:** Update the pinned format, parser, OpenKit status projection, producers, consumers, portability, tests, and guides against the official v0.2 snapshot. Preserve unknown nested metadata and existing staging data.
+- **Boundaries:** No backward-compatibility branch, new framework, attestation execution, trust UI, retrieval redesign, or later feature. Worker PR #5 merges before this change. Local isolated implementation may proceed while its fixed candidate is tested. A2 uses existing users, credentials, subscription, and data; no A1 effects.
+- **Acceptance:** Focused existing checks prove nested YAML, native proposal metadata, type-only base conformance, recursive secret rejection, six lifecycle projections, reserved filenames, metadata-preserving edits and import, root-index preservation, and an explicit schema migration. Independent review inspects actual artifacts and results before merge.
+
+## Owners And Accepted Direction
+
+- `docs/core/knowledge.md` retains product authority.
+- `docs/specs/20260702-knowledge_store_governance_rules.md` owns profile lifecycle and validation.
+- `docs/specs/20260703-knowledge_store_implementation.md` owns format pin, file encoding, write/import boundaries, and migration.
+- Official snapshot commit is `ad30107c31c06aec8a7d5636e0d1058118604e6f`; its SPEC blob is `c06e3eede0c910d0ecf12524c34204156f8795ac`.
+
+Independent consultation accepted reuse of the installed YAML parser, `openkit_status` as the single product state with standard status projection, and an ensure-only index rule that preserves human-authored bytes. It rejected a recurring navigation writer, public metadata bag, legacy dual-read, and attestation runtime. The full exploratory proposal remains uncommitted under shared-root `temp/research/okf-v0.2/proposal.md`.
+
+## Working Checkpoint
+
+PR #4 merged as `f7cab191`; this isolated worktree starts at Worker candidate `545b3f48`, tree `7607fbe3f66cb8f094e583ed816fb562e701961f`. The fresh Consultant returned Continue for isolated implementation with merge ordered after PR #5. A2 read-only inspection found 53 default v1 Workspace schemas in the original data root and 6 in the exercised staging root, with no Knowledge Markdown pages in either; one explicit schema migration is a present need, while page migration is unnecessary for those named datasets.
+
+The next action updates the two existing owners and their parser/storage consumers, then runs existing focused tests. A mismatch between actual YAML, saved bytes, import results, or status eligibility and those owners causes a local correction. Production Worker images remain frozen while this independent source work proceeds.
+
+Independent owner review identified that the existing whole-Workspace layout migration cannot migrate these current schemas. The accepted smaller correction is a one-time stopped-server maintenance command with exact canonical-v1 eligibility, all-Workspace preflight, preserved schema history, atomic replacement, and a deterministic report; it adds no permanent migration API or runtime fallback. A second read-only observation found all 53 original and 7 exercised schemas byte-identical to canonical v1 SHA `830a3d0ae6a3c3e9b85933be7cb564903f4d18437a1f421d5b80a23d947e3ee6`; the count changed because normal F1 preparation created another Workspace. Deployment re-discovers registry-owned Workspaces only inside `/home/ubuntu/openkit/r058-l6-20260905/run9/data/openkit`, after stopping `openkit-r058-l6-run9` and before deploying its OKF App. The original `/home/ubuntu/.openkit` and healthy `openkit-staging` remain unchanged; their schemas must not be migrated beneath their existing v1 producer. The independent Auditor accepted this exact placement and the two owner amendments after checking both live mounts, schema digests, page counts, and the official snapshot.
+
+## Verification Observed
+
+The independent owner reviewer accepted the corrected two-specification/snapshot/doc-model slice after inspecting actual bytes and independently rerunning documentation model (218), specification lifecycle, generated index, and diff checks. The App API nested reserved-id regression failed on the old regex with `expected true to be false`; changing both page-id and page-source reference boundaries then passed all 115 App API schema tests. App API typecheck, build, and lint passed. Raw logs are retained under shared-root `temp/changes/202609060642100001-okf_v0_2/`. Parser, storage, migration, and combined-source acceptance remain pending.
+
+The combined NanoCore selection exercised 726 tests: 723 passed; two App API export assertions still expected the old file count, and one existing Linux `/proc/self/fd` assertion cannot run on macOS. The root-index change explains exactly one additional exported file. The exact export list now includes `workspace-files/knowledge/pages/index.md`, counts are 22 and 21, and both existing targeted tests pass (155 unrelated tests filtered). Core Client passed 76/76, typecheck, and lint. The macOS `/proc` failure remains visible and requires a Linux observation; no assertion or check was removed. Independent implementation review found native-YAML profile type/status validation and recursive diagnostic redaction gaps; their bounded parser correction remains under verification.
+
+After the parser correction, all 741 selected tests executed: 740 passed and the unchanged macOS `/proc/self/fd` check failed. The explicit Linux second opinion used the existing `scripts/test-env.sh` owner and ran that exact test successfully (one executed, 30 unrelated tests filtered); both environment results are retained. All 41 parser cases passed, including closed lifecycle values, absent-versus-null standard status, native scalar rejection, timestamps, and fixed diagnostic redaction. NanoCore typecheck/build and lint passed; the root also aligned the three store admission guards with the absent-only status default. Raw outputs are retained as `okf-reviewed-*`, `okf-proc-linux-second-opinion.log`, and `okf-v02-parser-review-*` under the existing shared-root change evidence directory.
+
+A final independent storage probe found the new root-index validation ran after Thread persistence, so an invalid authored index could report failure after saving an unrelated Thread. The existing three-case invalid-index table now checks unchanged Thread directories and fresh-store Thread state; all three cases first failed with an unexpected `th_1` directory. Moving the existing ensure call directly after safe layout preconditions and before canonical record writes fixes that ordering; the boundary and store-reload suites pass 97/97. This is a local persistence-order correction and adds no transaction or rollback framework.
+
+The independent Reviewer accepted the frozen source diff after inspecting all parser, storage, import, proposal, index, schema, OpenAPI, test, and guide changes and the post-correction build. No source finding remains. The separately reviewed stopped-server migration, A2 App upgrade, and final merge remain pending; this source acceptance does not certify those unexecuted effects.

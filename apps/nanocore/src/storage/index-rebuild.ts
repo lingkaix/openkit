@@ -17,6 +17,7 @@ import {
   parseOkfDocument,
   parseWorkspaceKnowledgeSchema,
   stringFrontmatterField,
+  stringListFrontmatterField,
   validateKnowledgePageCandidate,
   type WorkspaceKnowledgeSchema,
 } from '../knowledge/okf.js';
@@ -603,10 +604,11 @@ export function retrieveWorkspaceKnowledge(
       registeredSourceIds,
       knowledgeIds,
     });
-    const sourceReferences =
-      document && Array.isArray(document.frontmatter.source_refs)
-        ? [...new Set(document.frontmatter.source_refs)].sort(compareBytewise)
-        : [];
+    const sourceReferences = document
+      ? [...new Set(stringListFrontmatterField(document, 'source_refs') ?? [])].sort(
+          compareBytewise
+        )
+      : [];
     const referenceProof = matchingKnowledgeReferenceProof(
       input.referenceProofs,
       candidate.knowledgePageId,
@@ -624,7 +626,7 @@ export function retrieveWorkspaceKnowledge(
     const projectedSourceReferences = [
       ...new Set(sourceReferencesByConcept.get(candidate.knowledgePageId) ?? []),
     ].sort(compareBytewise);
-    const active = document?.frontmatter.status === 'active';
+    const active = document?.frontmatter.openkit_status === 'active';
     const staticallyIndexed =
       active &&
       stringFrontmatterField(document, 'review_state') === 'user-authored' &&
@@ -785,10 +787,11 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
 
     const parsed = parseOkfDocument({ path, content });
     const document = parsed.document;
-    const sourceRefs =
-      document && Array.isArray(document.frontmatter.source_refs)
-        ? [...new Set(document.frontmatter.source_refs)].sort(compareBytewise)
-        : [];
+    const sourceRefs = document
+      ? [...new Set(stringListFrontmatterField(document, 'source_refs') ?? [])].sort(
+          compareBytewise
+        )
+      : [];
     const contentDigest = sha256Digest(content);
     const referenceProof = matchingKnowledgeReferenceProof(
       input.referenceProofs,
@@ -816,7 +819,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       validation.conformance !== 'Workspace-schema-valid' ||
       validation.errors.length > 0 ||
       document.conceptId !== selected.knowledgePageId ||
-      stringFrontmatterField(document, 'status') !== 'active' ||
+      stringFrontmatterField(document, 'openkit_status') !== 'active' ||
       (reviewState !== 'accepted' && reviewState !== 'user-authored') ||
       (reviewState === 'accepted' && !referenceProof) ||
       sensitivity === 'restricted' ||
@@ -901,10 +904,11 @@ function addProofBackedKnowledgeCandidates(input: {
     const path = `knowledge/pages/${knowledgePageId}.md`;
     const parsed = parseOkfDocument({ path, content });
     const document = parsed.document;
-    const sourceReferences =
-      document && Array.isArray(document.frontmatter.source_refs)
-        ? [...new Set(document.frontmatter.source_refs)].sort(compareBytewise)
-        : [];
+    const sourceReferences = document
+      ? [...new Set(stringListFrontmatterField(document, 'source_refs') ?? [])].sort(
+          compareBytewise
+        )
+      : [];
     if (
       !parsed.ok ||
       !document ||
@@ -1159,7 +1163,7 @@ function readKnowledgePageIds(pagesRoot: string): Set<string> {
  * @returns Sorted bundle-relative Page ids.
  */
 function indexKnowledgePageIds(pagesRoot: string): string[] {
-  return listKnowledgePageIds(pagesRoot).filter((id) => id !== 'index' && id !== 'log');
+  return listKnowledgePageIds(pagesRoot);
 }
 
 /**
@@ -1197,7 +1201,7 @@ function sourceReferencesResolve(
   knowledgeIds: ReadonlySet<string>,
   resolvedReferences?: ReadonlySet<string>
 ): boolean {
-  if (!Array.isArray(document.frontmatter.source_refs)) {
+  if (stringListFrontmatterField(document, 'source_refs') === null) {
     return false;
   }
 
@@ -1263,7 +1267,7 @@ function buildKnowledgeValidationRecords(
       registeredSourceIds,
       knowledgeIds,
     });
-    const active = parsed.document?.frontmatter.status === 'active';
+    const active = parsed.document?.frontmatter.openkit_status === 'active';
     const reviewState = parsed.document
       ? stringFrontmatterField(parsed.document, 'review_state')
       : null;
@@ -1308,9 +1312,9 @@ function buildKnowledgeSourceReferences(
     const path = join(pagesRoot, `${knowledgePageId}.md`);
     const parsed = parseOkfDocument({ path, content: readCanonicalTextFile(path) });
     const document = parsed.document;
-    const sourceRefs = document?.frontmatter.source_refs;
+    const sourceRefs = document ? stringListFrontmatterField(document, 'source_refs') : null;
 
-    if (!document || !Array.isArray(sourceRefs)) {
+    if (!document || sourceRefs === null) {
       continue;
     }
 

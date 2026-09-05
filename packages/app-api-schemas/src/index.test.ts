@@ -249,8 +249,9 @@ const canonicalKnowledgePageBytes = [
   '---',
   'type: "KnowledgePage"',
   'title: "Release review"',
-  'schema_version: "openkit-workspace-knowledge-schema-v1"',
-  'status: "active"',
+  'schema_version: "openkit-workspace-knowledge-schema-v2"',
+  'openkit_status: "active"',
+  'status: "stable"',
   'scope: "workspace"',
   `source_refs: ${JSON.stringify([knowledgeSourceReference])}`,
   'review_state: "accepted"',
@@ -1385,6 +1386,21 @@ describe('app api schemas', () => {
     const request = knowledgeProposalDraftRequest;
 
     expect(KnowledgeManagerDraftProposalRequestSchema.parse(request)).toEqual(request);
+    for (const reservedId of ['index', 'log', 'nested/index', 'nested/log']) {
+      expect(
+        KnowledgeManagerDraftProposalRequestSchema.safeParse({
+          ...request,
+          knowledgePageId: reservedId,
+        }).success
+      ).toBe(false);
+      expect(
+        KnowledgeManagerDraftProposalRequestSchema.safeParse({
+          ...request,
+          sourceReferences: [`knowledge:${reservedId}@sha256:${'a'.repeat(64)}`],
+        }).success
+      ).toBe(false);
+    }
+
     expect(
       KnowledgeManagerDraftProposalRequestSchema.safeParse({
         ...request,

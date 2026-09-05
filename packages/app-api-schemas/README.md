@@ -24,6 +24,8 @@ Runtime configuration file metadata includes the deployment-admin-only Workspace
 
 Artifact and Material interaction schemas remain App API projections: the version-owned Artifact Review view excludes private decision request proof, Material views expose immutable revision identity without mutation lineage, and every decision body targets its exact owning route rather than a generic review verdict.
 
+Knowledge Proposal page ids and page-source references reserve the final `index` and `log` segments at every hierarchy level, matching OKF reserved filenames.
+
 Do not add stable Core protocol records here. Core records, commands, events, errors, and conformance fixtures belong in `@openkit/protocol`.
 
 ## Commands

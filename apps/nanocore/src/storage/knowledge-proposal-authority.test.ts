@@ -38,7 +38,11 @@ function authorityRequestId(label: string): string {
 }
 
 /** Builds one valid accepted Knowledge Page byte sequence for proposal application. */
-function candidatePage(knowledgePageId: string, sourceReference: string): string {
+function candidatePage(
+  knowledgePageId: string,
+  sourceReference: string,
+  includeStandardStatus = true
+): string {
   return [
     '---',
     'type: "KnowledgePage"',
@@ -46,7 +50,8 @@ function candidatePage(knowledgePageId: string, sourceReference: string): string
     'openkit_entry_kind: "project-context"',
     `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
     `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
-    'status: "active"',
+    'openkit_status: "active"',
+    ...(includeStandardStatus ? ['status: "stable"'] : []),
     'scope: "workspace"',
     `source_refs: ${JSON.stringify([sourceReference])}`,
     'review_state: "accepted"',
@@ -61,7 +66,7 @@ function candidatePage(knowledgePageId: string, sourceReference: string): string
 }
 
 /** Creates one file-backed proposal with an existing Knowledge Page as its evidence. */
-function createFixture(requestLabel = 'proposal-authority-draft') {
+function createFixture(requestLabel = 'proposal-authority-draft', includeStandardStatus = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-proposal-authority-'));
   const store = new FsStore({ dataRoot });
   const workspace = store.createWorkspace('Knowledge proposal authority');
@@ -78,7 +83,7 @@ function createFixture(requestLabel = 'proposal-authority-draft') {
   );
   const sourceReference = `knowledge:${source.id}@${digest(sourceBytes)}`;
   const knowledgePageId = 'review/review-authority-lesson';
-  const canonicalPageBytes = candidatePage(knowledgePageId, sourceReference);
+  const canonicalPageBytes = candidatePage(knowledgePageId, sourceReference, includeStandardStatus);
   const contentDigest = digest(canonicalPageBytes);
   const proposal = store.createKnowledgeProposal({
     workspaceId: workspace.id,
@@ -351,6 +356,16 @@ describe('knowledge proposal authority', () => {
     expect(restarted.store.listKnowledgeProposalReviewDecisions(fixture.workspaceId)).toHaveLength(
       1
     );
+  });
+
+  it('accepts a missing standard status as the effective stable projection', () => {
+    const fixture = createFixture('proposal-effective-stable-status', false);
+
+    const accepted = decide(fixture, 'accepted', 'review-effective-stable-status');
+
+    expect(accepted.application?.present).toBe(true);
+    expect(readFileSync(fixture.pagePath, 'utf8')).toBe(fixture.canonicalPageBytes);
+    expect(fixture.canonicalPageBytes).not.toContain('\nstatus:');
   });
 
   it('retrieves one hierarchical accepted page only through its exact proposal proof', () => {

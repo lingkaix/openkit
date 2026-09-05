@@ -579,6 +579,49 @@ describe('workspace export route boundaries', () => {
 });
 
 describe('workspace import route handles', () => {
+  it('adds a missing root index while preserving imported reserved Markdown bytes', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-okf-index-'));
+    const store = createBoundaryStore(dataRoot);
+    const exportId = 'wsexp_missing_okf_index';
+    const exportRoot = join(dataRoot, 'server', 'exports', 'workspaces', 'ws_demo', exportId);
+    const nestedIndex = '# Imported topic index\n\nKeep this navigation byte-for-byte.\n';
+    const nestedLog = '# Imported topic log\n\nKeep this history byte-for-byte.\n';
+    const input = minimalExportInput(exportRoot, 'ws_demo', exportId);
+    mkdirSync(dirname(exportRoot), { recursive: true });
+    writeWorkspaceExportTree({
+      ...input,
+      sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      portableFileState: {
+        ...input.portableFileState!,
+        nativeKnowledgePages: new Map([
+          ['knowledge/pages/topic/index.md', nestedIndex],
+          ['knowledge/pages/topic/log.md', nestedLog],
+        ]),
+      },
+    });
+
+    const response = await createApp({ dataRoot, store }).request('/api/app/workspace-imports', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId }),
+    });
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    const result = (await response.json()) as { importedWorkspaceId: string };
+    const pagesRoot = join(
+      dataRoot,
+      'workspaces',
+      result.importedWorkspaceId,
+      'knowledge',
+      'pages'
+    );
+    expect(readFileSync(join(pagesRoot, 'index.md'), 'utf8')).toBe(
+      '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n'
+    );
+    expect(readFileSync(join(pagesRoot, 'topic', 'index.md'), 'utf8')).toBe(nestedIndex);
+    expect(readFileSync(join(pagesRoot, 'topic', 'log.md'), 'utf8')).toBe(nestedLog);
+  });
+
   it.each([
     'dry-run',
     'import',

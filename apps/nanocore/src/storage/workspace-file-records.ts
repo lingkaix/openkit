@@ -43,6 +43,8 @@ import {
   DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION,
   parseOkfDocument,
   stringFrontmatterField,
+  stringListFrontmatterField,
+  updateOkfFrontmatter,
 } from '../knowledge/okf.js';
 import type {
   AgentSession,
@@ -804,19 +806,25 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
+ * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
-  updateWorkspaceConfigName = false
+  updateWorkspaceConfigName = false,
+  exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
+  const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
+  ensureCanonicalDirectory(pagesRoot);
+  ensureRootKnowledgeIndex(pagesRoot);
   writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
   writeThreads(workspaceRoot, records);
-  writeKnowledge(workspaceRoot, records);
+  writeKnowledge(workspaceRoot, records, exactKnowledgePageBytes);
   writeSources(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records);
   writeAgentSessions(workspaceRoot, records);
@@ -1318,13 +1326,16 @@ export function parseOwnedKnowledgeEntry(
     throw new Error(`Knowledge page ${knowledgePageId} is not a valid owned record.`);
   }
 
-  const sourceReferences = parsed.document.frontmatter.source_refs;
+  const sourceReferences = stringListFrontmatterField(parsed.document, 'source_refs');
+  if (parsed.document.frontmatter.source_refs !== undefined && sourceReferences === null) {
+    throw new Error(`Knowledge page ${knowledgePageId} has invalid source_refs.`);
+  }
   return KnowledgeEntrySchema.parse({
     id,
     kind: requiredFrontmatterString(parsed.document, 'openkit_entry_kind', path),
     title: requiredFrontmatterString(parsed.document, 'title', path),
     content: trimCanonicalMarkdownBody(parsed.document.body),
-    ...(Array.isArray(sourceReferences) && sourceReferences.length > 0 ? { sourceReferences } : {}),
+    ...(sourceReferences && sourceReferences.length > 0 ? { sourceReferences } : {}),
     createdAt: requiredFrontmatterString(parsed.document, 'created_at', path),
     updatedAt: requiredFrontmatterString(parsed.document, 'updated_at', path),
   });
@@ -1361,7 +1372,7 @@ export function knowledgeEntriesEqual(left: KnowledgeEntry, right: KnowledgeEntr
  */
 export function listKnowledgePageIds(pagesRoot: string, prefix = ''): string[] {
   const direct = listFileNames(pagesRoot)
-    .filter((name) => name.endsWith('.md'))
+    .filter((name) => name.endsWith('.md') && name !== 'index.md' && name !== 'log.md')
     .map((name) => `${prefix}${name.slice(0, -'.md'.length)}`);
   const nested = listDirectoryNames(pagesRoot).flatMap((name) =>
     listKnowledgePageIds(join(pagesRoot, name), `${prefix}${name}/`)
@@ -1369,7 +1380,7 @@ export function listKnowledgePageIds(pagesRoot: string, prefix = ''): string[] {
 
   const ids = [...direct, ...nested].sort();
   for (const id of ids) {
-    if (id !== 'index' && id !== 'log' && !KnowledgeProposalPageIdSchema.safeParse(id).success) {
+    if (!KnowledgeProposalPageIdSchema.safeParse(id).success) {
       throw new Error(`Knowledge Page id is invalid: ${id}.`);
     }
   }
@@ -1471,16 +1482,17 @@ function loadKnowledgeProposals(
       }
 
       const id = fileName.slice(0, -'.md'.length);
-      const sourceReferences = parsed.document.frontmatter.source_references;
+      const sourceReferences = stringListFrontmatterField(parsed.document, 'source_references');
       const producerValue = parsed.document.frontmatter.producer;
       const confidenceValue = parsed.document.frontmatter.confidence;
       if (
         parsed.document.frontmatter.type !== 'proposal' ||
         parsed.document.frontmatter.operation !== 'create' ||
-        parsed.document.frontmatter.review_required !== 'true' ||
-        !Array.isArray(sourceReferences) ||
-        typeof producerValue !== 'string' ||
-        typeof confidenceValue !== 'string'
+        parsed.document.frontmatter.review_required !== true ||
+        sourceReferences === null ||
+        typeof producerValue !== 'object' ||
+        producerValue === null ||
+        typeof confidenceValue !== 'number'
       ) {
         throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
       }
@@ -1494,8 +1506,8 @@ function loadKnowledgeProposals(
         contentDigest: requiredFrontmatterString(parsed.document, 'content_digest', path),
         sourceReferences,
         rationale: requiredFrontmatterString(parsed.document, 'rationale', path),
-        confidence: Number(confidenceValue),
-        producer: JSON.parse(producerValue) as unknown,
+        confidence: confidenceValue,
+        producer: producerValue,
         createdAt: requiredFrontmatterString(parsed.document, 'created_at', path),
       });
       const candidateDigest = `sha256:${createHash('sha256')
@@ -1840,7 +1852,8 @@ export function serializeUserAuthoredKnowledgePage(entry: KnowledgeEntry): strin
     'type: "KnowledgePage"',
     `title: ${JSON.stringify(entry.title)}`,
     `schema_version: ${JSON.stringify(DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION)}`,
-    'status: "active"',
+    'openkit_status: "active"',
+    'status: "stable"',
     'scope: "workspace"',
     `source_refs: ${JSON.stringify(entry.sourceReferences ?? [])}`,
     'review_state: "user-authored"',
@@ -1857,12 +1870,42 @@ export function serializeUserAuthoredKnowledgePage(entry: KnowledgeEntry): strin
 }
 
 /**
+ * Produces final direct-edit bytes while retaining metadata outside the managed edit fields.
+ *
+ * @param path Canonical page path used for YAML diagnostics.
+ * @param content Current exact Knowledge Page bytes.
+ * @param entry Updated protocol projection.
+ * @returns One final candidate byte sequence for validation and persistence.
+ */
+export function updateUserAuthoredKnowledgePage(
+  path: string,
+  content: string,
+  entry: KnowledgeEntry
+): string {
+  return updateOkfFrontmatter({
+    path,
+    content,
+    updates: {
+      title: entry.title,
+      review_state: 'user-authored',
+      updated_at: entry.updatedAt,
+    },
+    body: `${entry.content}\n`,
+  });
+}
+
+/**
  * Writes owned knowledge pages, proposals, and reviews.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
  */
-function writeKnowledge(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeKnowledge(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords,
+  exactKnowledgePageBytes: ReadonlyMap<string, string>
+): void {
   const schemaRoot = join(workspaceRoot, 'knowledge', 'schema');
   const pagesRoot = join(workspaceRoot, 'knowledge', 'pages');
   const proposalsRoot = join(workspaceRoot, 'knowledge', 'proposals');
@@ -1930,6 +1973,16 @@ function writeKnowledge(workspaceRoot: string, records: WorkspaceFileRecords): v
   }
 
   for (const entry of records.knowledge) {
+    const exactContent = exactKnowledgePageBytes.get(entry.id);
+    const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, entry.id, true);
+    if (!path) {
+      throw new Error(`Knowledge Page parent could not be created: ${entry.id}.`);
+    }
+    if (exactContent !== undefined) {
+      writeFileAtomic(path, exactContent);
+      continue;
+    }
+
     const proposal = acceptedProposalByPage.get(entry.id);
     const currentPageBytes = readWorkspaceKnowledgePage(workspaceRoot, entry.id);
     let currentEntry: KnowledgeEntry | null = null;
@@ -1957,11 +2010,43 @@ function writeKnowledge(workspaceRoot: string, records: WorkspaceFileRecords): v
         : proposalEntry && knowledgeEntriesEqual(proposalEntry, entry) && currentPageBytes === null
           ? proposal!.canonicalPageBytes
           : serializeUserAuthoredKnowledgePage(entry);
-    const path = resolveWorkspaceKnowledgePagePath(workspaceRoot, entry.id, true);
-    if (!path) {
-      throw new Error(`Knowledge Page parent could not be created: ${entry.id}.`);
-    }
     writeFileAtomic(path, content);
+  }
+}
+
+/** Ensures the bundle-root v0.2 index without maintaining human-authored navigation. */
+function ensureRootKnowledgeIndex(pagesRoot: string): void {
+  const path = join(pagesRoot, 'index.md');
+  const metadata = lstatSync(path, { throwIfNoEntry: false });
+  if (!metadata) {
+    const links = [
+      ...listFileNames(pagesRoot)
+        .filter((name) => name.endsWith('.md') && name !== 'index.md' && name !== 'log.md')
+        .map((name) => [name.slice(0, -3), name] as const),
+      ...listDirectoryNames(pagesRoot).map((name) => [name, `${name}/`] as const),
+    ].map(
+      ([title, target]) =>
+        `* [${title.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]')}](<${encodeURI(target)}>)`
+    );
+    writeFileAtomic(
+      path,
+      `---\nokf_version: "0.2"\n---\n# Knowledge${links.length > 0 ? `\n\n${links.join('\n')}` : ''}\n`
+    );
+    return;
+  }
+  assertCanonicalRegularFile(path);
+  const content = readCanonicalTextFile(path);
+  if (!content.startsWith('---')) {
+    const candidate = `---\nokf_version: "0.2"\n---\n${content}`;
+    if (!parseOkfDocument({ path: 'knowledge/pages/index.md', content: candidate }).ok) {
+      throw new Error('Knowledge bundle root index body is invalid.');
+    }
+    writeFileAtomic(path, candidate);
+    return;
+  }
+  const parsed = parseOkfDocument({ path: 'knowledge/pages/index.md', content });
+  if (!parsed.ok || parsed.document.frontmatter.okf_version !== '0.2') {
+    throw new Error('Knowledge bundle root index must declare okf_version "0.2".');
   }
 }
 

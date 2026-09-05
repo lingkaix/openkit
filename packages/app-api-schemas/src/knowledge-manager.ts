@@ -502,7 +502,7 @@ export const KnowledgeManagerPrepareContextResponseSchema = z
 export const KnowledgeProposalPageIdSchema = z
   .string()
   .max(240)
-  .regex(/^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/);
+  .regex(/^(?!(?:.*\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*$/);
 
 /** Lowercase SHA-256 digest over exact canonical Knowledge content bytes. */
 export const KnowledgeProposalContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -514,7 +514,7 @@ const knowledgeProposalSourceReferenceSchema = z
       /^source:ks_[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}@sha256:[a-f0-9]{64}$/.test(
         reference
       ) ||
-      /^knowledge:(?!index@|log@)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*@sha256:[a-f0-9]{64}$/.test(
+      /^knowledge:(?!(?:.*\/)?(?:index|log)@)[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*@sha256:[a-f0-9]{64}$/.test(
         reference
       ) ||
       /^(?:turn|item):[^@\s]+$/.test(reference) ||

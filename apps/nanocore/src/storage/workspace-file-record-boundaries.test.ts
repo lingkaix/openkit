@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -68,6 +69,61 @@ function createBoundaryFixture() {
 }
 
 describe('workspace file-record write and load boundaries', () => {
+  it('ensures the OKF v0.2 root index once and preserves valid human-authored bytes', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-index-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('OKF index workspace');
+    const pagesRoot = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages');
+    const indexPath = join(pagesRoot, 'index.md');
+
+    expect(readFileSync(indexPath, 'utf8')).toBe('---\nokf_version: "0.2"\n---\n# Knowledge\n');
+
+    const authored = '---\nokf_version: "0.2"\n---\n# Team knowledge\n\nKeep this navigation.\n';
+    writeFileSync(indexPath, authored);
+    store.createThread(workspace.id, 'Do not rewrite the index');
+    expect(readFileSync(indexPath, 'utf8')).toBe(authored);
+
+    rmSync(indexPath);
+    mkdirSync(join(pagesRoot, 'topic'));
+    writeFileSync(join(pagesRoot, 'topic', 'page.md'), '---\ntype: Topic\n---\n# Topic\n');
+    store.createThread(workspace.id, 'Recreate the missing index');
+    expect(readFileSync(indexPath, 'utf8')).toBe(
+      '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [topic](<topic/>)\n'
+    );
+  });
+
+  it('adds only the v0.2 version block to a body-only root index', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-body-index-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Body index workspace');
+    const indexPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages', 'index.md');
+    const body = '# Hand-written index\n\nKeep every body byte.\n';
+    writeFileSync(indexPath, body);
+
+    store.createThread(workspace.id, 'Version the existing index');
+
+    expect(readFileSync(indexPath, 'utf8')).toBe(`---\nokf_version: "0.2"\n---\n${body}`);
+  });
+
+  it.each([
+    '---\nokf_version: ["0.2"]\n---\n# Invalid scalar\n',
+    '---\nokf_version: "0.1"\n---\n# Conflicting version\n',
+    '---\nokf_version: "0.2"\n# Unclosed frontmatter\n',
+  ])('rejects an invalid root index before writing other canonical records', (content) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-okf-invalid-index-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Invalid index workspace');
+    const indexPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'pages', 'index.md');
+    const threadsRoot = join(dataRoot, 'workspaces', workspace.id, 'threads');
+    const originalThreads = store.listThreads(workspace.id);
+    const originalDirectories = readdirSync(threadsRoot);
+    writeFileSync(indexPath, content);
+
+    expect(() => store.createThread(workspace.id, 'Reject the index')).toThrow();
+    expect(readFileSync(indexPath, 'utf8')).toBe(content);
+    expect(readdirSync(threadsRoot)).toEqual(originalDirectories);
+    expect(new FsStore({ dataRoot }).listThreads(workspace.id)).toEqual(originalThreads);
+  });
   it('does not fall back to owner-nested workspace records when the canonical root is absent', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-no-fallback-'));
     const seedStore = new FsStore({ dataRoot });

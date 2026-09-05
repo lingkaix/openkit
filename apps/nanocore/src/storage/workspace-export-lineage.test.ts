@@ -1345,6 +1345,14 @@ describe('workspace auxiliary lineage reminting', () => {
     input.portableFileState!.nativeKnowledgePages.set(
       `knowledge/pages/${knowledge.id}.md`,
       serializeUserAuthoredKnowledgePage(knowledge)
+        .replace(
+          `source_refs: ${JSON.stringify(knowledge.sourceReferences)}`,
+          `source_refs:\n  - ${JSON.stringify(knowledge.sourceReferences[0])}`
+        )
+        .replace(
+          'scope: "workspace"',
+          'scope: "workspace"\nsources:\n  - id: retained-source\n    credibility:\n      author: human:owner'
+        )
     );
 
     const imported = importLineage(input);
@@ -1362,6 +1370,9 @@ describe('workspace auxiliary lineage reminting', () => {
     expect(parseOwnedKnowledgeEntry(pagePath, knowledge.id, pageContent).sourceReferences).toEqual([
       expectedReference,
     ]);
+    expect(pageContent).toContain(
+      'sources:\n  - id: retained-source\n    credibility:\n      author: human:owner'
+    );
   });
 
   it('remints one complete Material, Review, and S39 imported-history graph', () => {
