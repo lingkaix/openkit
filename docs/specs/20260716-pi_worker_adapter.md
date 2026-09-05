@@ -100,7 +100,7 @@ If a future requirement adopts RPC mode, it must reuse the same adapter boundary
 
 Native Skills and extensions remain disabled by the fixed launch flags. This change does not activate callable MCP or worker-capability execution, and the adapter must not scan arbitrary locations, install packages, or enable undeclared resources.
 
-Pi does not need native MCP support to satisfy the OpenKit boundary. The OpenKit worker capability plane remains disabled; any future governed MCP work requires its owning implementation slice, and the adapter must not add a direct policy-bypassing path.
+Pi does not need native MCP support to satisfy the OpenKit boundary. The selected MCP capability plane is implemented only for the delivered Codex session-continuity adapter; Pi remains ineligible and must not add a direct policy-bypassing path.
 
 ## Provider And Credentials
 

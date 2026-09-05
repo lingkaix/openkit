@@ -82,6 +82,7 @@ import {
 import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
 import { listExportableWorkerCheckpoints } from './runtime/worker-checkpoints.js';
 import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-control-gateway.js';
+import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import {
   CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
@@ -105,6 +106,7 @@ import { rebuildExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
+import { reconcileWorkerMcpItems } from './worker-mcp-routes.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -459,6 +461,8 @@ const activeWorkerLifecycleRuntime = requireBootValue(
 const workerPlacement = 'local' as const;
 const refreshStatusCollector = maybeOpenShellRefreshStatusCollector(turnExecutor);
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
+const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+reconcileWorkerMcpItems(coreDb.dataRoot, store);
 
 /**
  * Ensures the personal Quick Chat Workspace before Better Auth records a new active session.
@@ -494,6 +498,7 @@ const app = createApp({
   vaultUnlockState: activeVaultUnlockState,
   workerLifecycleRuntime: activeWorkerLifecycleRuntime,
   workerControlGateway,
+  workerMcpGateway,
   workerPlacement,
   workspaceMutationAdmission,
 });
@@ -511,8 +516,10 @@ const isNanoHostPrivateRequest = (request: Request) => {
   const path = new URL(request.url).pathname;
   return (
     path.startsWith('/api/nanohost/transport/') ||
+    path.startsWith('/api/worker-capabilities/') ||
     path.startsWith('/worker-control/') ||
-    path.startsWith('/inference/')
+    path.startsWith('/inference/') ||
+    path.startsWith('/capabilities/')
   );
 };
 const appFetch: typeof app.fetch = async (request, env, executionContext) =>
@@ -576,9 +583,6 @@ const nanoHostServer = nanoHostListener
   : null;
 
 schedulerDispatchRetry = startSchedulerDispatchRetryService({
-  agentManifests: runtimeConfigManager.current().agentManifests,
-  gatewayConfig: runtimeConfigManager.current().gatewayConfig,
-  configVersion: runtimeConfigManager.current().version,
   coreDb,
   dependencies: { providerCredentialResolver: schedulerProviderCredentialResolver },
   expectedControlMode: 'poll',
@@ -588,9 +592,7 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   intervalMs: SCHEDULER_DISPATCH_RETRY_INTERVAL_MS,
   leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
   maxDispatches: SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES,
-  providerRegistry: runtimeConfigManager.current().providerRegistry,
-  userConfigs: runtimeConfigManager.current().userConfigs,
-  workspaceConfigs: runtimeConfigManager.current().workspaceConfigs,
+  runtimeConfigSnapshot: () => runtimeConfigManager.current(),
   schedulerEpoch,
   startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
   store,
@@ -700,15 +702,20 @@ function shutdown(signal: NodeJS.Signals): void {
 
 /** Closes both process listeners before completing orderly shutdown. */
 function closeNanoCoreListeners(onClosed: () => void): void {
-  let remaining = nanoHostServer ? 2 : 1;
-  const markClosed = () => {
-    remaining -= 1;
-    if (remaining === 0) {
-      onClosed();
-    }
-  };
-  appServer.close(markClosed);
-  nanoHostServer?.close(markClosed);
+  void workerMcpGateway
+    .close()
+    .catch(() => undefined)
+    .then(() => {
+      let remaining = nanoHostServer ? 2 : 1;
+      const markClosed = () => {
+        remaining -= 1;
+        if (remaining === 0) {
+          onClosed();
+        }
+      };
+      appServer.close(markClosed);
+      nanoHostServer?.close(markClosed);
+    });
 }
 
 /**

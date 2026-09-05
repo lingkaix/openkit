@@ -1,3 +1,4 @@
+import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import {
   type RunSchedulerDispatchLoopInput,
   runSchedulerDispatchLoop,
@@ -5,10 +6,17 @@ import {
 } from './scheduler-dispatch-loop.js';
 
 /** Input for one background scheduler dispatch retry. */
-export type RunSchedulerDispatchRetryOnceInput = Omit<
-  RunSchedulerDispatchLoopInput,
-  'storeForEntry'
->;
+export type RunSchedulerDispatchRetryOnceInput = RunSchedulerDispatchLoopInput;
+
+type RuntimeConfigDispatchInput =
+  | 'agentManifests'
+  | 'configVersion'
+  | 'gatewayConfig'
+  | 'providerRegistry'
+  | 'userConfigs'
+  | 'workspaceConfigs'
+  | 'workspaceDataSourceCatalogs'
+  | 'workspaceMcpServerCatalogs';
 
 /** Timer hooks used by the dispatch retry service. */
 export interface SchedulerDispatchRetryTimerHooks {
@@ -20,10 +28,12 @@ export interface SchedulerDispatchRetryTimerHooks {
 
 /** Input used to start the dispatch retry service. */
 export interface StartSchedulerDispatchRetryServiceInput
-  extends RunSchedulerDispatchRetryOnceInput,
+  extends Omit<RunSchedulerDispatchRetryOnceInput, RuntimeConfigDispatchInput>,
     SchedulerDispatchRetryTimerHooks {
   /** Repeated dispatch retry interval. */
   readonly intervalMs: number;
+  /** Reads one current runtime config snapshot for each retry iteration. */
+  readonly runtimeConfigSnapshot: () => RuntimeConfigSnapshot;
   /** Optional error sink. */
   readonly onError?: (error: unknown) => void;
 }
@@ -68,7 +78,18 @@ export function startSchedulerDispatchRetryService(
     }
 
     try {
-      return await runSchedulerDispatchRetryOnce(input);
+      const snapshot = input.runtimeConfigSnapshot();
+      return await runSchedulerDispatchRetryOnce({
+        ...input,
+        agentManifests: snapshot.agentManifests,
+        configVersion: snapshot.version,
+        gatewayConfig: snapshot.gatewayConfig,
+        providerRegistry: snapshot.providerRegistry,
+        userConfigs: snapshot.userConfigs,
+        workspaceConfigs: snapshot.workspaceConfigs,
+        workspaceDataSourceCatalogs: snapshot.workspaceDataSourceCatalogs,
+        workspaceMcpServerCatalogs: snapshot.workspaceMcpServerCatalogs,
+      });
     } catch (error) {
       input.onError?.(error);
       return null;

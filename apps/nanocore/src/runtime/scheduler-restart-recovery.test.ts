@@ -232,6 +232,12 @@ function prepareReconnectLease(
   };
 }
 
+/** Returns one production-shaped NanoHost backend attempt identity for a fixture suffix. */
+function testNanoHostBackendSessionId(suffix: string): string {
+  const digest = createHash('sha256').update(suffix).digest('hex');
+  return `nh-${digest.slice(0, 16)}-${digest.slice(16, 32)}`;
+}
+
 /** Records one durable backend anchor and advances it to the requested state. */
 function recordBackendSession(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
@@ -257,7 +263,7 @@ function recordBackendSession(
     identity: {
       agentSessionId: `as_${suffix}`,
       backendKind: 'openshell',
-      backendSessionId: `openkit-as_${suffix}`,
+      backendSessionId: testNanoHostBackendSessionId(suffix),
       deploymentId: 'deployment-test',
       packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
       runtimeTargetId: 'runtime-target-test',
@@ -323,7 +329,9 @@ function recordCanonicalWorkspaceHandoff(
         packageSnapshotId: environmentPackage.snapshotId,
         requiredCapabilities: environmentPackage.backend.requiredCapabilities,
         sandbox: {
-          name: `openkit-${environmentPackage.scope.agentSessionId}`,
+          name: testNanoHostBackendSessionId(
+            environmentPackage.scope.agentSessionId.replace(/^as_/, '')
+          ),
           state: 'created',
         },
         workspaceInputs: environmentPackage.workspace.inputs.map((input) => ({
@@ -1087,7 +1095,7 @@ describe('scheduler restart recovery', () => {
       expect(preparedIdentity).toEqual({
         agentSessionId: `as_${suffix}`,
         backendKind: 'openshell',
-        backendSessionId: `openkit-as_${suffix}`,
+        backendSessionId: testNanoHostBackendSessionId(suffix),
         deploymentId: 'deployment-test',
         packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
         runtimeTargetId: 'runtime-target-test',
@@ -1897,7 +1905,7 @@ describe('scheduler restart recovery', () => {
         runRestartRecoveryThroughMaintenance(coreDb, {
           cleanupBackendSession: async (session) => {
             cleanupCalls.push(session.backendSessionId);
-            if (session.backendSessionId === 'openkit-as_aggregate_a') {
+            if (session.backendSessionId === testNanoHostBackendSessionId('aggregate_a')) {
               throw new Error('aggregate cleanup A failed');
             }
           },
@@ -1906,7 +1914,10 @@ describe('scheduler restart recovery', () => {
         })
       ).rejects.toThrow('aggregate cleanup A failed');
 
-      expect(cleanupCalls).toEqual(['openkit-as_aggregate_a', 'openkit-as_aggregate_b']);
+      expect(cleanupCalls).toEqual([
+        testNanoHostBackendSessionId('aggregate_a'),
+        testNanoHostBackendSessionId('aggregate_b'),
+      ]);
       expect(getWorkerBackendSession(coreDb, 'lease_aggregate_a')).toMatchObject({
         state: 'cleanup-failed',
       });
@@ -2322,7 +2333,7 @@ describe('minimal scheduler reconnect contract', () => {
       });
       expect(preparedIdentity).toMatchObject({
         agentSessionId: `as_${suffix}`,
-        backendSessionId: `openkit-as_${suffix}`,
+        backendSessionId: testNanoHostBackendSessionId(suffix),
         packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
         runtimeTargetId: 'runtime-target-test',
       });

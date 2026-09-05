@@ -9,6 +9,7 @@ export type ConfigCatalogKind =
   | 'agent'
   | 'workspace'
   | 'data-source'
+  | 'mcp-server'
   | 'user'
   | 'effective';
 
@@ -150,6 +151,18 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
     reloadClass: 'session-scoped',
     secretPolicy: 'secret-ref-only',
     summary: 'Workspace data sources declare non-secret locators and vault grant references.',
+  },
+  {
+    kind: 'mcp-server',
+    path: '$.servers',
+    owner: 'workspace',
+    merge: 'replace',
+    workspaceOverride: 'allowed',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'session-scoped',
+    secretPolicy: 'secret-ref-only',
+    summary: 'Workspace MCP servers declare governed transports, tool rules, and Vault grants.',
   },
 ];
 

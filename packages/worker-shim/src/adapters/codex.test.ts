@@ -248,6 +248,30 @@ describe('Codex worker adapter', () => {
     expect(plan).not.toHaveProperty('configArtifacts');
   });
 
+  it('projects selected MCP servers through fixed authenticated loopback URLs', async () => {
+    const input = codexInput();
+    const capabilityToken = 'capability-token-value';
+    const plan = await codexAdapter.prepareTurn({
+      ...input,
+      childEnvironment: {
+        ...input.childEnvironment,
+        OPENKIT_WORKER_CAPABILITY_TOKEN: capabilityToken,
+      },
+      mcpServerIds: ['echo', 'search-tools'],
+    });
+
+    expect(plan.argv).toEqual(
+      expect.arrayContaining([
+        'mcp_servers.echo.url="http://127.0.0.1:17892/capabilities/mcp/echo"',
+        'mcp_servers.echo.bearer_token_env_var="OPENKIT_WORKER_CAPABILITY_TOKEN"',
+        'mcp_servers.search-tools.url="http://127.0.0.1:17892/capabilities/mcp/search-tools"',
+        'mcp_servers.search-tools.bearer_token_env_var="OPENKIT_WORKER_CAPABILITY_TOKEN"',
+      ])
+    );
+    expect(plan.environment.OPENKIT_WORKER_CAPABILITY_TOKEN).toBe(capabilityToken);
+    expect(plan.argv).not.toContain(capabilityToken);
+  });
+
   it('rejects direct-provider authority before launch', async () => {
     const input = codexInput();
 

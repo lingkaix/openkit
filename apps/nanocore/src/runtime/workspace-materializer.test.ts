@@ -100,7 +100,7 @@ describe('workspace materializer records', () => {
         kind: 'generated',
         pathRef: `threads/${turn.threadId}/turns/${turn.id}/context-package`,
       },
-      target: '/openkit/context',
+      target: '/openkit/sessions/session_context_1/context',
     };
     const nearMissInput: AgentEnvironmentPackage['workspace']['inputs'][number] = {
       ...contextInput,
@@ -182,7 +182,7 @@ describe('workspace materializer records', () => {
       createdAt: '2026-07-18T01:01:00.000Z',
       id: `wmr_${environmentPackage.snapshotId}_context_${turn.id}`,
       inputSnapshotId: `wis_${environmentPackage.snapshotId}_context_${turn.id}`,
-      materializedRootRef: '/openkit/context',
+      materializedRootRef: '/openkit/sessions/session_context_1/context',
       packageSnapshotId: environmentPackage.snapshotId,
       strategy: 'filesystem',
       workerSessionId: 'backend_session_context_1',

@@ -122,6 +122,10 @@ import {
 } from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
+import {
+  createDefaultWorkerMcpGateway,
+  type WorkerMcpGateway,
+} from './runtime/worker-mcp-gateway.js';
 import { registerWorkerRecoveryRoutes } from './runtime/worker-recovery-routes.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import { registerWorkspaceSyncRoutes } from './runtime/workspace-sync-routes.js';
@@ -145,6 +149,7 @@ import { registerTurnEventRoutes } from './turn-event-routes.js';
 import { registerTurnRoutes } from './turn-routes.js';
 import { registerVaultAdminRoutes } from './vault/vault-admin-routes.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
+import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import {
   isTerminalWorkspaceDeletionRequest,
   listAllWorkspaceDeletionRequests,
@@ -359,6 +364,8 @@ export interface CreateAppOptions {
   automationStore?: AutomationStore;
   /** Process-local worker control gateway used by private Sandbox Integration routes. */
   workerControlGateway?: WorkerControlGateway;
+  /** Process-local MCP supervisor used by private worker capability routes. */
+  workerMcpGateway?: WorkerMcpGateway;
   /** Scheduler epoch owned by this app instance. */
   schedulerEpoch?: number;
   /** Configured scheduler placement used for admission. */
@@ -460,7 +467,9 @@ export function createDefaultWorkerControlGateway(
       const resolution = resolveSchedulerLeaseTokenBinding(coreDb, input);
       if (
         resolution.status === 'accepted' &&
-        (!resolution.lease.workerControlTokenHash || !resolution.lease.workerInferenceTokenHash)
+        (!resolution.lease.workerControlTokenHash ||
+          !resolution.lease.workerInferenceTokenHash ||
+          !resolution.lease.workerCapabilityTokenHash)
       ) {
         return { status: 'rejected', reason: 'binding-not-found' };
       }
@@ -704,6 +713,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const automationStore = options.automationStore ?? new AutomationStore();
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
+  const workerMcpGateway =
+    options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
   const schedulerEpoch = options.schedulerEpoch ?? 1;
   const app = new Hono<{ Variables: AuthVariables }>();
   const nanohostTransportSessionAuthority =
@@ -958,6 +969,23 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 workspaceDb.sqlite.close();
               }
             },
+            onMcpServerAuthorityChange: (change) => {
+              const workspaceDb = repositoryWorkspaceDb(change.workspaceId);
+              try {
+                recordWorkspaceAuditEvent({
+                  workspaceDb,
+                  workspaceId: change.workspaceId,
+                  category: 'system',
+                  action: 'mcp_server_catalog.authority.update',
+                  resource: `mcp-server-catalog:${change.serverId}`,
+                  outcome: 'succeeded',
+                  severity: 'info',
+                  summary: `Workspace MCP server catalog authority changed for ${change.serverId}: ${change.fields.join(', ')}.`,
+                });
+              } finally {
+                workspaceDb.sqlite.close();
+              }
+            },
           }
         : {}),
     });
@@ -1040,6 +1068,21 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     resolveGatewayProvider,
     runtimeConfig,
     workerControlGateway,
+  });
+
+  app.use('/api/worker-capabilities/*', browserCors);
+  registerWorkerMcpRoutes({
+    app,
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    runtimeConfig,
+    store: sharedStore,
+    vaultUnlockState,
+    workerControlGateway,
+    workerMcpGateway,
+    workspaceMutationAdmission,
+    ...(configuredWorkerRuntime
+      ? { requestHumanGateStop: configuredWorkerRuntime.requestHumanGateStop }
+      : {}),
   });
 
   registerNanoHostSessionSemanticRoutes({
@@ -1199,6 +1242,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   registerWorkspaceDeletionRoutes({
     app,
+    closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
     coreDb: options.coreDb,
     dataRoot,
     mutationAdmission: workspaceMutationAdmission,

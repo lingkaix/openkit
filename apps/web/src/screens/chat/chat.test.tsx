@@ -665,6 +665,37 @@ describe('chat thread (boards 02/03)', () => {
     });
   });
 
+  it('keeps a resolved approval request and decision legible without response controls', async () => {
+    const resolvedItems = ItemSchema.array().parse([
+      ...ITEMS,
+      {
+        id: 'i-approval-decision',
+        workspaceId: 'ws1',
+        threadId: 'th1',
+        turnId: 't1',
+        type: 'approval-decision',
+        status: 'completed',
+        actor: { kind: 'user', id: 'user_approver' },
+        causationId: 'req_approval',
+        approvalRequestId: 'ap1',
+        decision: 'granted',
+        createdAt: '2026-07-21T00:00:03.000Z',
+        completedAt: '2026-07-21T00:00:03.000Z',
+      },
+    ]);
+    const client = makeClient({
+      listThreadItems: vi.fn().mockResolvedValue({ items: resolvedItems, nextCursor: null }),
+    });
+
+    renderApp('/chat/ws1/th1', client);
+
+    expect(await screen.findByText('Approve $5 spend')).toBeInTheDocument();
+    expect(screen.getByText('Approved')).toBeInTheDocument();
+    expect(screen.getByText(/user_approver/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
+  });
+
   it('renders every non-secret Gate question and submits one complete answer map', async () => {
     const user = userEvent.setup();
     const startTurn = vi.fn().mockResolvedValue(COMPLETED_TURN);

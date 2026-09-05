@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bootstrap_error() {
-  printf '%s\n' "$1" >&2
-  exit 64
-}
-
 runtime_env=(
   "ALL_PROXY=${ALL_PROXY:-}"
   "COLORTERM=${COLORTERM:-}"
@@ -46,53 +41,13 @@ runtime_env=(
   "no_proxy=${no_proxy:-}"
 )
 
-if (( $# == 0 )); then
-  exec env -i "${runtime_env[@]}" node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-worker-shim.js
-fi
-
-worker_control_token=''
-if ! IFS= read -r worker_control_token; then
-  if [[ -z "${worker_control_token}" ]]; then
-    bootstrap_error 'Worker bootstrap input is missing.'
-  fi
-  bootstrap_error 'Worker bootstrap input is invalid.'
-fi
-
-worker_inference_token=''
-if ! IFS= read -r worker_inference_token; then
-  if [[ -z "${worker_inference_token}" ]]; then
-    bootstrap_error 'Worker bootstrap input is missing.'
-  fi
-  bootstrap_error 'Worker bootstrap input is invalid.'
-fi
-
-token_pattern='^[A-Za-z0-9_-]{43}$'
-if [[ ! "${worker_control_token}" =~ ${token_pattern} ]] ||
-  [[ ! "${worker_inference_token}" =~ ${token_pattern} ]] ||
-  [[ "${worker_control_token}" == "${worker_inference_token}" ]]; then
-  bootstrap_error 'Worker bootstrap input is invalid.'
-fi
-
-trailing_input=''
-if IFS= read -r trailing_input || [[ -n "${trailing_input}" ]]; then
-  bootstrap_error 'Worker bootstrap input has trailing data.'
-fi
-
-exec 3<<<"${worker_control_token}"
-
-runtime_env+=(
-  "OPENKIT_AGENT_SESSION_ID=${OPENKIT_AGENT_SESSION_ID:-}"
-  "OPENKIT_CONTROL_TOKEN_FD=3"
-  "OPENKIT_PACKAGE_SNAPSHOT_ID=${OPENKIT_PACKAGE_SNAPSHOT_ID:-}"
-  "OPENKIT_REQUEST_ID=${OPENKIT_REQUEST_ID:-}"
-  "OPENKIT_THREAD_ID=${OPENKIT_THREAD_ID:-}"
-  "OPENKIT_TURN_ID=${OPENKIT_TURN_ID:-}"
-  "OPENKIT_WORKER_INFERENCE_TOKEN=${worker_inference_token}"
-  "OPENKIT_WORKSPACE_ID=${OPENKIT_WORKSPACE_ID:-}"
-)
-
 if [[ -f /usr/local/lib/openkit/allow-anthropic-api-key ]]; then
   runtime_env+=("ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
 fi
 
-exec env -i "${runtime_env[@]}" node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-worker-shim.js "$@"
+if (( $# != 0 )); then
+  printf '%s\n' 'Worker Harness accepts no arguments.' >&2
+  exit 64
+fi
+
+exec env -i "${runtime_env[@]}" node /usr/local/lib/openkit/worker-shim/dist/bin/openkit-worker-shim.js

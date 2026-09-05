@@ -23,8 +23,12 @@ const RELAY_PROVIDER_ID = 'openkit-worker-inference';
 
 /** Codex environment key containing the OpenShell-injected relay placeholder. */
 const RELAY_TOKEN_ENV_KEY = 'OPENKIT_WORKER_INFERENCE_TOKEN';
+/** Codex environment key containing the worker capability route token. */
+const CAPABILITY_TOKEN_ENV_KEY = 'OPENKIT_WORKER_CAPABILITY_TOKEN';
 /** Fixed sandbox-local native inference endpoint consumed by Codex. */
 const INTEGRATION_INFERENCE_BASE_URL = 'http://127.0.0.1:17892/inference/v1';
+/** Fixed sandbox-local MCP endpoint prefix consumed by Codex. */
+const INTEGRATION_MCP_BASE_URL = 'http://127.0.0.1:17892/capabilities/mcp';
 /** Maximum product-safe diagnostic summary length. */
 const DIAGNOSTIC_MAX_CHARACTERS = 1000;
 
@@ -97,6 +101,10 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
   if (!input.childEnvironment[RELAY_TOKEN_ENV_KEY]) {
     throw new Error(`Codex trusted relay requires ${RELAY_TOKEN_ENV_KEY}.`);
   }
+  const mcpServerIds = [...(input.mcpServerIds ?? [])];
+  if (mcpServerIds.length > 0 && !input.childEnvironment[CAPABILITY_TOKEN_ENV_KEY]) {
+    throw new Error(`Codex MCP capability access requires ${CAPABILITY_TOKEN_ENV_KEY}.`);
+  }
 
   await mkdir(input.stateRoot, { mode: 0o700, recursive: true });
   const nativeTurnDirectory = input.nativeTurnDirectory ?? input.sessionDirectory;
@@ -146,6 +154,12 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
       `model_provider=${quoteTomlString(RELAY_PROVIDER_ID)}`,
       '-c',
       'web_search="disabled"',
+      ...mcpServerIds.flatMap((serverId) => [
+        '-c',
+        `mcp_servers.${serverId}.url=${quoteTomlString(`${INTEGRATION_MCP_BASE_URL}/${serverId}`)}`,
+        '-c',
+        `mcp_servers.${serverId}.bearer_token_env_var=${quoteTomlString(CAPABILITY_TOKEN_ENV_KEY)}`,
+      ]),
       '-c',
       `model_providers.${RELAY_PROVIDER_ID}.name="OpenKit Worker Inference"`,
       '-c',

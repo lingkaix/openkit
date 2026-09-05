@@ -277,11 +277,7 @@ export const AgentEnvironmentRuntimeImageSchema = z
  */
 export const AgentEnvironmentRuntimeCommandSchema = z
   .object({
-    argv: z.tuple([
-      z.literal('openkit-worker-shim'),
-      z.literal('--package'),
-      z.literal('/openkit/config/package.json'),
-    ]),
+    argv: z.tuple([z.literal('openkit-worker-shim')]),
     workingDirectory: z.string().min(1),
     stdin: z.enum(['pipe', 'inherit', 'ignore']).optional(),
     stdout: z.enum(['pipe', 'inherit', 'ignore']).optional(),
@@ -450,31 +446,17 @@ export const AgentEnvironmentSkillSchema = z
   .strict();
 
 /**
- * Worker MCP tool schema declaration.
- */
-export const AgentEnvironmentMcpToolSchema = z
-  .object({
-    name: z.string().min(1),
-    inputSchema: z.record(z.string(), z.unknown()),
-  })
-  .strict();
-
-/**
  * Worker MCP server declaration.
  */
 export const AgentEnvironmentMcpServerSchema = z
   .object({
     id: z.string().min(1),
-    version: z.string().min(1).optional(),
-    sourceRef: z.string().min(1).optional(),
+    catalogDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     allowedTools: z.array(z.string().min(1)).default([]),
+    deniedTools: z.array(z.string().min(1)).default([]),
     approvalRequiredTools: z.array(z.string().min(1)).default([]),
-    toolSchemas: z.array(AgentEnvironmentMcpToolSchema).default([]),
-    allowedPrompts: z.array(z.string().min(1)).default([]),
-    allowedRuntimeAdapters: z.array(z.string().min(1)).default([]),
-    allowedWorkspaceScopes: z.array(z.string().min(1)).default([]),
-    integrity: AgentEnvironmentSupplyIntegritySchema.optional(),
-    reviewStatus: AgentEnvironmentSupplyReviewStatusSchema.optional(),
+    schemaPolicy: z.enum(['pinned', 'tracking']),
+    pinnedSchemaSnapshotId: z.string().min(1).nullable().default(null),
   })
   .strict();
 
@@ -615,13 +597,26 @@ export const AgentEnvironmentControlSchema = z
 /**
  * Worker capability plane declaration.
  */
-export const AgentEnvironmentCapabilitiesSchema = z
-  .object({
-    protocol: z.literal('openkit-worker-capability-v1'),
-    mode: z.literal('disabled'),
-    routes: z.tuple([]).default([]),
-  })
-  .strict();
+export const AgentEnvironmentCapabilitiesSchema = z.discriminatedUnion('mode', [
+  z
+    .object({
+      protocol: z.literal('openkit-worker-capability-v1'),
+      mode: z.literal('disabled'),
+      routes: z.tuple([]).default([]),
+    })
+    .strict(),
+  z
+    .object({
+      protocol: z.literal('openkit-worker-capability-v1'),
+      mode: z.literal('enabled'),
+      routes: z.tuple([
+        z.literal('mcp.list_servers'),
+        z.literal('mcp.list_tools'),
+        z.literal('mcp.call_tool'),
+      ]),
+    })
+    .strict(),
+]);
 
 /**
  * Worker credential declaration visibility classes resolved before launch.
@@ -1055,6 +1050,14 @@ export const AgentEnvironmentPackageSchema = z
   .superRefine((value, ctx) => {
     addRawSecretIssues(value, ctx, []);
 
+    if (value.capabilities.mode === 'enabled' && value.supply.mcpServers.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Enabled MCP capabilities require selected MCP server supply.',
+        path: ['supply', 'mcpServers'],
+      });
+    }
+
     const runtimeBinaryPaths = new Set(value.runtime.binaries.map((binary) => binary.path));
     for (const [ruleIndex, rule] of (value.policy.network?.rules ?? []).entries()) {
       if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
@@ -1378,6 +1381,8 @@ function addDuplicateValueIssue(
  */
 function isBlockedWorkerSandboxFilesystemPath(targetPath: string): boolean {
   return (
+    targetPath === '/openkit/sessions' ||
+    targetPath.startsWith('/openkit/sessions/') ||
     targetPath === '/openkit/config' ||
     targetPath.startsWith('/openkit/config/') ||
     targetPath === '/openkit/control' ||

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { type AuditEvent, AuditEventSchema } from '@openkit/protocol';
+import { type AuditEvent, AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
 
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
@@ -417,10 +417,7 @@ function assertNoUnsafeAuditValue(value: unknown): void {
  * @returns UUID request id, otherwise null.
  */
 function protocolRequestIdOrNull(requestId: string | null | undefined): string | null {
-  return requestId &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)
-    ? requestId
-    : null;
+  return RequestIdSchema.safeParse(requestId).data ?? null;
 }
 
 /**

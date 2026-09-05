@@ -1,7 +1,10 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import {
+  type AgentEnvironmentPackage,
+  planSessionWorkspaceMaterialization,
+} from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -40,9 +43,12 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './turn-executor-factory.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
-import type {
-  WorkerGovernanceBackend,
-  WorkerGovernanceBackendSessionIdentity,
+import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import {
+  openShellFilesystemGrantsFromPackagePolicy,
+  type WorkerGovernanceBackend,
+  type WorkerGovernanceBackendSessionIdentity,
+  WorkerGovernanceCapacityUnavailableError,
 } from './worker-governance-backend.js';
 
 /** Creates the durable deployment identity required by real executor construction. */
@@ -151,7 +157,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(backendSource).not.toContain('throw nanoHostSessionUnavailable()');
     const materializeSource = backendSource
       ?.split('public async materialize(')[1]
-      ?.split('/** Opens the exact worker bridge')[0];
+      ?.split('public async launch(')[0];
     const launchSource = backendSource
       ?.split('public async launch(')[1]
       ?.split('/** Validates an immutable update')[0];
@@ -173,26 +179,28 @@ describe('createConfiguredTurnExecutor', () => {
     const imageBuild = materializeSource?.indexOf("'image.build'") ?? -1;
     const sandboxCreate = materializeSource?.indexOf("'sandbox.create'") ?? -1;
     const contextRefCarriage = materializeSource?.indexOf('contextRef: image.contextRef') ?? -1;
-    const referenceImport = materializeSource?.indexOf("'reference.import'") ?? -1;
+    const referenceImport = launchSource?.indexOf("'reference.import'") ?? -1;
     const prepareImports = materializeSource?.indexOf('prepareNanoHostContextPackageImports') ?? -1;
     expect(imageBuild).toBeGreaterThanOrEqual(0);
     expect(contextRefCarriage).toBeGreaterThan(imageBuild);
     expect(contextRefCarriage).toBeLessThan(sandboxCreate);
     expect(sandboxCreate).toBeGreaterThanOrEqual(0);
     expect(prepareImports).toBeGreaterThan(sandboxCreate);
-    expect(referenceImport).toBeGreaterThan(sandboxCreate);
-    expect(referenceImport).toBeGreaterThan(prepareImports);
-    expect(materializeSource).toContain('for (const file of fileInventory)');
+    expect(referenceImport).toBeGreaterThan(launchSource?.indexOf("'session.open'") ?? -1);
+    expect(referenceImport).toBeGreaterThan(launchSource?.indexOf("'session.inspect'") ?? -1);
+    expect(referenceImport).toBeLessThan(launchSource?.indexOf("'turn.start'") ?? -1);
+    expect(materializeSource).not.toContain("'reference.import'");
+    expect(launchSource).toContain('for (const file of pendingImports)');
     expect(materializeSource).toContain('this.restoreSharedHarness(');
     expect(materializeSource).toContain('await this.effect(identity, leaseId');
     for (const requiredImportOwner of [
-      'fileInventory',
+      'pendingImports',
       'contentDigest',
       'byteLength',
       'relativePath',
       'body',
     ]) {
-      expect(materializeSource).toContain(requiredImportOwner);
+      expect(launchSource).toContain(requiredImportOwner);
     }
     expect(launchSource).toContain("'bridge.open'");
     const effectSource = backendSource?.split('private async effect(')[1];
@@ -228,7 +236,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(collectionSource?.indexOf('byteLength', exportCommand)).toBeGreaterThan(exportCommand);
     }
     for (const field of ['slot', 'relativePath', 'sha256', 'byteLength']) {
-      expect(materializeSource).toContain(field);
+      expect(launchSource).toContain(field);
     }
     expect(cleanupSource?.indexOf("'bridge.close'")).toBeLessThan(
       cleanupSource?.indexOf("'sandbox.delete'") ?? -1
@@ -312,6 +320,7 @@ describe('createConfiguredTurnExecutor', () => {
         environmentPackage,
         identity,
         leaseId: 'lease_optional_workspace_changes',
+        sharedHarness: { sandbox: { sandboxId: identity.backendSessionId.slice(0, 19) } },
         terminalInspectionComplete: true,
       });
 
@@ -452,7 +461,7 @@ describe('createConfiguredTurnExecutor', () => {
           turnInput: turn.input,
           workspaceRoots: [],
         })
-      ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
+      ).rejects.toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
       expect(store.getAgentSession('as-unready-predecessor').status).toBe('idle');
       expect(
         coreDb.sqlite
@@ -606,7 +615,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('maps the owning SessionCompatibilityKey to exact reusable NanoHost continuity', async () => {
+  it('maps process-locally restored SessionCompatibilityKey to reusable continuity', async () => {
     const coreDb = createFactoryCoreDb();
     const sessionCompatibilityKey = `sha256:${'a'.repeat(64)}`;
     const runtimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
@@ -694,9 +703,24 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const backend = (
         runtime.turnExecutor as unknown as {
-          readonly backend: WorkerGovernanceBackend;
+          readonly backend: WorkerGovernanceBackend & {
+            restoreSharedHarness(
+              sandboxCompatibilityKey: string,
+              harnessCompatibilityKey: string,
+              runtimeTargetId: string,
+              adapterId: 'codex',
+              adapterVersion: string
+            ): unknown;
+          };
         }
       ).backend;
+      backend.restoreSharedHarness(
+        'c'.repeat(64),
+        'd'.repeat(64),
+        'target_continuity_key',
+        'codex',
+        '0.144.1'
+      );
       const input = {
         agentSessionCompatibilityKey: sessionCompatibilityKey,
         agentSessionId: 'as-continuity-key',
@@ -862,7 +886,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessInstanceId: 'harness-absent-cleanup',
         imageDigest: `sha256:${'a'.repeat(64)}`,
         sandboxBindingRef: identity.backendSessionId,
-        sandboxCompatibilityKey: `${identity.backendSessionId.slice(3)}${'b'.repeat(48)}`,
+        sandboxCompatibilityKey: `${identity.backendSessionId.slice(3, 19)}${'b'.repeat(48)}`,
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-absent-cleanup',
         sandboxRuntimeId: 'sandbox-runtime-absent-cleanup',
         runtimeTargetId: 'target_absent_cleanup',
@@ -960,9 +984,11 @@ describe('createConfiguredTurnExecutor', () => {
           snapshotId: 'aepsnap_post_fence',
         })
       );
-      expect(identity.backendSessionId).toMatch(/^nh-[0-9a-f]{16}$/);
-      const sandboxCompatibilityKey = `${identity.backendSessionId.slice(3)}${'c'.repeat(48)}`;
-      expect(identity.backendSessionId).toBe(`nh-${sandboxCompatibilityKey.slice(0, 16)}`);
+      expect(identity.backendSessionId).toMatch(/^nh-[0-9a-f]{16}-[0-9a-f]{16}$/);
+      const sandboxCompatibilityKey = `${identity.backendSessionId.slice(3, 19)}${'c'.repeat(48)}`;
+      expect(identity.backendSessionId.slice(0, 19)).toBe(
+        `nh-${sandboxCompatibilityKey.slice(0, 16)}`
+      );
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
         adapterVersion: '0.144.1',
@@ -1273,7 +1299,7 @@ describe('createConfiguredTurnExecutor', () => {
       const nonProjectingIdentity: WorkerGovernanceBackendSessionIdentity = {
         agentSessionId: 'as_lookup_none',
         backendKind: 'openshell',
-        backendSessionId: `nh-${projectingPrefix.slice(0, 15)}b`,
+        backendSessionId: `nh-${projectingPrefix.slice(0, 15)}b-${'0'.repeat(16)}`,
         deploymentId: 'deployment_lookup',
         packageSnapshotId: 'aepsnap_lookup_none',
         runtimeTargetId: 'target_lookup',
@@ -1300,7 +1326,7 @@ describe('createConfiguredTurnExecutor', () => {
         backend.findDurableSandboxBinding({
           ...nonProjectingIdentity,
           agentSessionId: 'as_lookup_ambiguous',
-          backendSessionId: `nh-${projectingPrefix}`,
+          backendSessionId: `nh-${projectingPrefix}-${'0'.repeat(16)}`,
           packageSnapshotId: 'aepsnap_lookup_ambiguous',
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_ambiguous',
         })
@@ -1340,7 +1366,7 @@ describe('createConfiguredTurnExecutor', () => {
       const workerIdentity: WorkerGovernanceBackendSessionIdentity = {
         ...nonProjectingIdentity,
         agentSessionId: 'as_lookup_worker',
-        backendSessionId: `nh-${'e'.repeat(16)}`,
+        backendSessionId: `nh-${'e'.repeat(16)}-${'0'.repeat(16)}`,
         packageSnapshotId: 'aepsnap_lookup_worker',
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_worker',
       };
@@ -1375,7 +1401,7 @@ describe('createConfiguredTurnExecutor', () => {
       const agentIdentity: WorkerGovernanceBackendSessionIdentity = {
         ...nonProjectingIdentity,
         agentSessionId: 'as_lookup_agent',
-        backendSessionId: `nh-${'f'.repeat(16)}`,
+        backendSessionId: `nh-${'f'.repeat(16)}-${'0'.repeat(16)}`,
         packageSnapshotId: 'aepsnap_lookup_agent',
         stagingDirectoryRef: 'server/runtime/worker-backend-sessions/aepsnap_lookup_agent',
       };
@@ -1499,7 +1525,17 @@ describe('createConfiguredTurnExecutor', () => {
           control: { adapter: { targetRuntime: 'codex' } },
           credentials: {},
           llm: {},
-          policy: {},
+          policy: {
+            filesystem: {
+              rules: [
+                {
+                  access: 'read-only',
+                  id: 'openkit-context-package',
+                  workerPath: `/openkit/sessions/agent-session-${turnId}/context`,
+                },
+              ],
+            },
+          },
           resources: {},
           runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
           schemaVersion: 4,
@@ -1519,7 +1555,7 @@ describe('createConfiguredTurnExecutor', () => {
                 access: 'read-only',
                 contentRef: `agent-environment-package://snapshot-${turnId}`,
                 id: 'agent-environment-package',
-                target: '/openkit/agent-environment-package.json',
+                target: `/openkit/sessions/agent-session-${turnId}/config/package.json`,
               },
             ],
             inputs: [
@@ -1528,7 +1564,7 @@ describe('createConfiguredTurnExecutor', () => {
                 id: `context_${turnId}`,
                 kind: 'generated',
                 materialization: {
-                  contentDigest: turnId.repeat(64).slice(0, 64),
+                  contentDigest: `sha256:${turnId.repeat(64).slice(0, 64)}`,
                   slotId: 'context',
                   strategy: 'filesystem',
                 },
@@ -1536,7 +1572,7 @@ describe('createConfiguredTurnExecutor', () => {
                   kind: 'generated',
                   pathRef: `threads/thread-${turnId}/turns/${turnId}/context-package`,
                 },
-                target: '/openkit/context',
+                target: `/openkit/sessions/agent-session-${turnId}/context`,
               },
               {
                 access: 'read-only',
@@ -1555,14 +1591,52 @@ describe('createConfiguredTurnExecutor', () => {
             root: '/workspace',
           },
         }) as AgentEnvironmentPackage;
-      const keyFor = (environmentPackage: AgentEnvironmentPackage) =>
+      const planFor = (environmentPackage: AgentEnvironmentPackage) =>
         backend.planSession(environmentPackage).backendSessionId;
-      const baseline = keyFor(packageFor('a'));
+      const keyFor = (environmentPackage: AgentEnvironmentPackage) =>
+        planFor(environmentPackage).slice(0, 19);
+      const baselinePackage = packageFor('a');
+      const baseline = keyFor(baselinePackage);
 
       expect(keyFor(packageFor('b'))).toBe(baseline);
+      expect(planFor(packageFor('b'))).not.toBe(planFor(baselinePackage));
       expect(keyFor(packageFor('c', { actorId: 'user-other' }))).not.toBe(baseline);
       expect(keyFor(packageFor('d', { mountLabel: 'secondary' }))).not.toBe(baseline);
       expect(keyFor(packageFor('e', { sensitivity: 'restricted' }))).not.toBe(baseline);
+      expect(
+        keyFor({ ...baselinePackage, resources: { cpu: { limitMillicores: 1000 } } })
+      ).not.toBe(baseline);
+      expect(
+        keyFor({
+          ...baselinePackage,
+          runtime: { ...baselinePackage.runtime, process: { user: 'worker' } },
+        })
+      ).not.toBe(baseline);
+
+      expect(openShellFilesystemGrantsFromPackagePolicy(baselinePackage)).toEqual([
+        { access: 'read-only', path: '/openkit/sessions' },
+      ]);
+      for (const change of [
+        (value: AgentEnvironmentPackage) => {
+          value.policy.filesystem!.rules[0] = {
+            access: 'read-only',
+            id: 'other-rule',
+            workerPath: value.workspace.inputs[0]!.target,
+          };
+        },
+        (value: AgentEnvironmentPackage) => {
+          value.workspace.generatedFiles[0]!.target = value.workspace.inputs[0]!.target;
+        },
+        (value: AgentEnvironmentPackage) => {
+          value.workspace.inputs[0]!.source.pathRef = `other/${value.scope.turnId}`;
+        },
+      ]) {
+        const first = packageFor('a');
+        const second = packageFor('b');
+        change(first);
+        change(second);
+        expect(keyFor(first)).not.toBe(keyFor(second));
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -1632,6 +1706,204 @@ describe('createConfiguredTurnExecutor', () => {
 
       expect(workerControlGateway.getSessionSnapshot(priorPackageSnapshotId)?.commands).toEqual([]);
       expect(workerControlGateway.getSessionSnapshot(packageSnapshotId)?.commands).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('queues and settles an MCP human Gate stop through the configured NanoHost Harness', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+        if (request.kind === 'sandbox.create') {
+          return { sandboxId: request.input.sandboxId, state: 'created' };
+        }
+        if (request.kind === 'reference.import') return { state: 'imported' };
+        if (request.kind === 'bridge.open') {
+          return { accepted: true, integrationReady: true, state: 'open' };
+        }
+        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+          return { state: 'deleted' };
+        }
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_human_gate', 'identity_human_gate', 'deployment_human_gate',
+                     1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-03T00:00:00.000Z');
+      const environmentPackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'as_human_gate',
+          threadId: 'thread_human_gate',
+          turnId: 'turn_human_gate',
+          workspaceId: 'workspace_human_gate',
+        },
+        snapshotId: 'aepsnap_human_gate',
+      });
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref
+           ) VALUES (
+             'lease_human_gate', 'plan_human_gate', 'workspace_human_gate',
+             'thread_human_gate', 'turn_human_gate', 'as_human_gate', 'aepsnap_human_gate',
+             'pool_human_gate', 'target_human_gate', 'acquired', ?, ?, ?, ?, 0, 1,
+             'sandbox-binding:human-gate'
+           )`
+        )
+        .run(
+          '2026-09-03T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z'
+        );
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+      ).backend;
+      const materialization = await backend.materialize(environmentPackage, {
+        runtimeFileCredentials: [
+          {
+            credentialValue: 'runtime-file-secret',
+            targetPath: '/sandbox/.config/example/credentials',
+          },
+        ],
+        workspaceRoots: [],
+      });
+      expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
+      const integration = coreDb.sqlite
+        .prepare(
+          `SELECT sandbox_integration_binding_ref AS integrationRef
+           FROM sandbox_runtime_records
+           LIMIT 1`
+        )
+        .get() as { integrationRef: string };
+      const settleNext = async (
+        operation: 'session.open' | 'turn.start' | 'turn.interrupt',
+        body: Readonly<Record<string, unknown>>
+      ) => {
+        let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+          command = dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: integration.integrationRef,
+          });
+          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        if (!command || command.operation !== operation) {
+          throw new Error(`Expected queued ${operation} Harness command.`);
+        }
+        if (operation === 'session.open') {
+          expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
+        }
+        if (operation === 'turn.start') {
+          expect(
+            effects
+              .filter((effect) => effect.kind === 'reference.import')
+              .map((effect) => effect.input.slot)
+          ).toEqual(['package-config', 'runtime-credential']);
+          expect(command.body).toMatchObject({
+            aepRef: '/openkit/sessions/as_human_gate/config/package.json',
+            contextRef: '/openkit/sessions/as_human_gate/context',
+          });
+          expect(
+            effects.find((effect) => effect.input.slot === 'runtime-credential')?.input
+          ).toMatchObject({
+            body: Buffer.from('runtime-file-secret'),
+            relativePath: 'sandbox/.config/example/credentials',
+          });
+        }
+        runtime.acceptNanoHostHarnessCommand(command);
+        const result = {
+          body,
+          disposition: 'succeeded' as const,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          schemaVersion: 1 as const,
+          sequence: command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: integration.integrationRef,
+          timestamp: new Date().toISOString(),
+        });
+        runtime.acceptNanoHostHarnessResult(result);
+        return command;
+      };
+
+      const launch = backend.launch(materialization);
+      await settleNext('session.open', {
+        maxActiveTurns: 1,
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'open',
+      });
+      await settleNext('turn.start', {
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'started',
+      });
+      await launch;
+
+      runtime.requestHumanGateStop(environmentPackage.snapshotId);
+      const interrupt = await settleNext('turn.interrupt', {
+        childState: 'absent',
+        state: 'interrupted',
+      });
+      expect(interrupt.body).toMatchObject({
+        agentSessionId: 'as_human_gate',
+        leaseId: 'lease_human_gate',
+        purpose: 'human-gate',
+        turnId: 'turn_human_gate',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT operation, operation_state AS operationState
+             FROM harness_instance_records
+             WHERE harness_instance_id = ?`
+          )
+          .get(interrupt.harnessInstanceId)
+      ).toEqual({ operation: 'turn.interrupt', operationState: 'settled' });
+
+      await runtime.cleanupBackendSession(backend.planSession(environmentPackage));
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'sandbox.create',
+        'bridge.open',
+        'reference.import',
+        'reference.import',
+        'bridge.close',
+        'sandbox.delete',
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1891,17 +2163,17 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       backend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
-      const packageFor = (adapterId: 'codex' | 'opencode') => {
+      const packageFor = (adapterId: 'codex' | 'opencode', suffix: string = adapterId) => {
         const triggerActor = { id: 'user-multi-harness', kind: 'user' as const };
         return resolveAgentEnvironmentPackage({
-          agentSessionId: `agent-session-${adapterId}`,
+          agentSessionId: `agent-session-${suffix}`,
           agentSetup: createTestAgentSetup({
             adapter: adapterId,
             agentId: `agent-${adapterId}`,
             imageRef: `sha256:${'f'.repeat(64)}`,
           }),
           backend: { kind: 'openshell' },
-          requestId: `request-${adapterId}`,
+          requestId: `request-${suffix}`,
           triggerActor,
           turn: {
             completedAt: null,
@@ -1909,15 +2181,15 @@ describe('createConfiguredTurnExecutor', () => {
             durationMs: null,
             error: null,
             humanGate: null,
-            id: `turn-${adapterId}`,
+            id: `turn-${suffix}`,
             items: [],
             startedAt: '2026-08-21T00:00:00.000Z',
             status: 'running',
-            threadId: `thread-${adapterId}`,
+            threadId: `thread-${suffix}`,
             triggerActor,
             workspaceId: 'workspace-multi-harness',
           },
-          turnInput: `Run ${adapterId}`,
+          turnInput: `Run ${suffix}`,
           workspaceCwd: '/workspace',
           workspaceRoots: [],
         });
@@ -1925,6 +2197,7 @@ describe('createConfiguredTurnExecutor', () => {
 
       await backend.materialize(packageFor('codex'), { workspaceRoots: [] });
       await backend.materialize(packageFor('opencode'), { workspaceRoots: [] });
+      await backend.materialize(packageFor('codex', 'codex-next'), { workspaceRoots: [] });
 
       expect(effects.filter((effect) => effect.kind === 'image.acquire')).toHaveLength(1);
       expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
@@ -1938,6 +2211,774 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .all()
       ).toEqual([{ adapterId: 'codex' }, { adapterId: 'opencode' }]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('evicts one clean idle incompatible Sandbox before creating its replacement', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'sandbox.create') {
+          return { sandboxId: request.input.sandboxId, state: 'created' };
+        }
+        if (request.kind === 'bridge.open') {
+          return { accepted: true, integrationReady: true, state: 'open' };
+        }
+        return { state: 'deleted' };
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_idle_eviction', 'identity_idle_eviction', 'deployment_idle_eviction',
+                     1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-06T00:00:00.000Z');
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            inspectTerminalHarnessSession(session: unknown): Promise<void>;
+            readonly sessions: Map<string, unknown>;
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+      const firstPackage = completeNanoHostPackage({
+        runtime: {
+          image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
+        },
+        scope: {
+          agentSessionId: 'as_idle_eviction_a',
+          threadId: 'thread_idle_eviction_a',
+          turnId: 'turn_idle_eviction_a',
+          workspaceId: 'workspace_idle_eviction_a',
+        },
+        snapshotId: 'snapshot_idle_eviction_a',
+      });
+      const secondPackage = completeNanoHostPackage({
+        runtime: {
+          image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
+        },
+        scope: {
+          agentSessionId: 'as_idle_eviction_b',
+          threadId: 'thread_idle_eviction_b',
+          turnId: 'turn_idle_eviction_b',
+          workspaceId: 'workspace_idle_eviction_b',
+        },
+        snapshotId: 'snapshot_idle_eviction_b',
+      });
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
+        )
+        .run(
+          'lease-snapshot_idle_eviction_a',
+          'plan_idle_eviction_a',
+          firstPackage.scope.workspaceId,
+          firstPackage.scope.threadId,
+          firstPackage.scope.turnId,
+          firstPackage.scope.agentSessionId,
+          firstPackage.snapshotId,
+          'pool_idle_eviction',
+          'target_idle_eviction',
+          '2026-09-06T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          'lease-binding:idle-eviction-a'
+        );
+      const settleNext = async (
+        operation: 'session.open' | 'turn.start' | 'session.inspect' | 'session.close',
+        body: Readonly<Record<string, unknown>>
+      ) => {
+        let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+        for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+          const integration = coreDb.sqlite
+            .prepare(
+              `SELECT sandbox_integration_binding_ref AS integrationRef
+               FROM sandbox_runtime_records ORDER BY created_at LIMIT 1`
+            )
+            .get() as { readonly integrationRef: string };
+          command = dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: integration.integrationRef,
+          });
+          if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        if (!command || command.operation !== operation) {
+          throw new Error(`Expected queued ${operation} Harness command.`);
+        }
+        if (operation === 'session.close') {
+          expect(
+            coreDb.sqlite
+              .prepare(
+                `SELECT s.drain_state AS sandboxDrainState,
+                        h.drain_state AS harnessDrainState
+                 FROM sandbox_runtime_records s
+                 JOIN harness_instance_records h
+                   ON h.sandbox_runtime_id = s.sandbox_runtime_id`
+              )
+              .get()
+          ).toEqual({ harnessDrainState: 'draining', sandboxDrainState: 'draining' });
+          expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('capacity-saturated');
+          await expect(backend.materialize(firstPackage, { workspaceRoots: [] })).rejects.toThrow(
+            'NanoHost one-Sandbox capacity is occupied or unproved.'
+          );
+          expect(effects.map((effect) => effect.kind)).toEqual([
+            'sandbox.create',
+            'bridge.open',
+            'reference.import',
+          ]);
+        }
+        runtime.acceptNanoHostHarnessCommand(command);
+        const integrationRef = (
+          coreDb.sqlite
+            .prepare(
+              `SELECT sandbox_integration_binding_ref AS integrationRef
+               FROM sandbox_runtime_records ORDER BY created_at LIMIT 1`
+            )
+            .get() as { readonly integrationRef: string }
+        ).integrationRef;
+        const result = {
+          body,
+          disposition: 'succeeded' as const,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          schemaVersion: 1 as const,
+          sequence: command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: integrationRef,
+          timestamp: '2026-09-06T00:00:01.000Z',
+        });
+        runtime.acceptNanoHostHarnessResult(result);
+      };
+
+      const firstMaterialization = await backend.materialize(firstPackage, { workspaceRoots: [] });
+      const launch = backend.launch(firstMaterialization);
+      await settleNext('session.open', {
+        maxActiveTurns: 1,
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'open',
+      });
+      await settleNext('turn.start', {
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'started',
+      });
+      await launch;
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-09-06T00:00:01.000Z',
+        lineage: {
+          agentSessionId: firstPackage.scope.agentSessionId,
+          packageSnapshotId: firstPackage.snapshotId,
+          requestId: firstPackage.scope.requestId,
+          threadId: firstPackage.scope.threadId,
+          turnId: firstPackage.scope.turnId,
+          workspaceId: firstPackage.scope.workspaceId,
+        },
+        operation: 'final_status',
+        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+        recordKey: '1',
+        sequence: 1,
+      });
+      const terminalInspection = backend.inspectTerminalHarnessSession(
+        backend.sessions.get(firstPackage.snapshotId)
+      );
+      await settleNext('session.inspect', {
+        childState: 'absent',
+        cleanupState: 'clean',
+        nativeHandleDigest: 'a'.repeat(64),
+        nativeHandleState: 'ready',
+        state: 'open',
+      });
+      await terminalInspection;
+      await runtime.cleanupBackendSession(backend.planSession(firstPackage));
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases SET status = 'released'
+           WHERE lease_id = 'lease-snapshot_idle_eviction_a'`
+        )
+        .run();
+      const retainedBinding = coreDb.sqlite
+        .prepare(
+          `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
+                  cleanup_state AS cleanupState
+           FROM agent_session_runtime_bindings`
+        )
+        .get();
+      expect(retainedBinding).toEqual({
+        agentSessionId: 'as_idle_eviction_a',
+        cleanupState: 'clean',
+        lifecycleState: 'open',
+      });
+      coreDb.sqlite
+        .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_compatible'")
+        .run();
+      expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
+      coreDb.sqlite.prepare('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL').run();
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'active', current_turn_id = 'turn_compatible_busy',
+               current_lease_id = 'lease_compatible_busy'`
+        )
+        .run();
+      coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
+      expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', current_turn_id = NULL, current_lease_id = NULL`
+        )
+        .run();
+      coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 0').run();
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO agent_session_runtime_bindings (
+             agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
+             workspace_id, thread_id, agent_session_compatibility_key,
+             effective_setup_generation, native_handle_state, native_handle_digest,
+             lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence,
+             cleanup_state, created_at, updated_at
+           ) SELECT 'binding_closed_history', harness_instance_id, 'as_closed_history',
+                    'workspace_closed_history', 'thread_closed_history', ?, 1, 'ready', ?,
+                    'closed', NULL, NULL, 1, 'clean', ?, ?
+             FROM harness_instance_records LIMIT 1`
+        )
+        .run(
+          'f'.repeat(64),
+          'e'.repeat(64),
+          '2026-09-06T00:00:00.000Z',
+          '2026-09-06T00:00:00.000Z'
+        );
+
+      const replacement = backend.materialize(secondPackage, { workspaceRoots: [] });
+      await settleNext('session.close', {
+        childState: 'absent',
+        privateState: 'absent',
+        state: 'closed',
+      });
+      await replacement;
+
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'sandbox.create',
+        'bridge.open',
+        'reference.import',
+        'bridge.close',
+        'sandbox.delete',
+        'sandbox.create',
+      ]);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT sandbox_compatibility_key AS key FROM sandbox_runtime_records')
+          .all()
+      ).toHaveLength(1);
+      expect(
+        coreDb.sqlite.prepare('SELECT agent_session_id FROM agent_session_runtime_bindings').get()
+      ).toBeUndefined();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'busy',
+    'pinned',
+    'uncertain',
+  ] as const)('reports one incompatible %s resident as saturated without a second Sandbox effect', async (residentState) => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+               target_id, identity_id, deployment_id, connection_generation,
+               predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             ) VALUES ('target_capacity_guard', 'identity_capacity_guard',
+                       'deployment_capacity_guard', 1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-06T00:00:00.000Z');
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.144.1',
+        harnessBindingRef: 'harness-binding-capacity-guard',
+        harnessCompatibilityKey: 'c'.repeat(64),
+        harnessInstanceId: 'harness-capacity-guard',
+        imageDigest: `sha256:${'1'.repeat(64)}`,
+        sandboxBindingRef: 'sandbox-binding-capacity-guard',
+        sandboxCompatibilityKey: 'b'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-capacity-guard',
+        sandboxRuntimeId: 'sandbox-runtime-capacity-guard',
+        runtimeTargetId: 'target_capacity_guard',
+        timestamp: '2026-09-06T00:00:00.000Z',
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'd'.repeat(64),
+        agentSessionId: 'as_capacity_guard_resident',
+        agentSessionRuntimeBindingId: 'binding-capacity-guard',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-capacity-guard',
+        threadId: 'thread_capacity_guard_resident',
+        timestamp: '2026-09-06T00:00:00.000Z',
+        workspaceId: 'workspace_capacity_guard_resident',
+      });
+      if (residentState === 'busy') {
+        coreDb.sqlite
+          .prepare(
+            `UPDATE agent_session_runtime_bindings
+               SET lifecycle_state = 'active', current_turn_id = 'turn_busy',
+                   current_lease_id = 'lease_busy'
+               WHERE agent_session_runtime_binding_id = 'binding-capacity-guard'`
+          )
+          .run();
+        coreDb.sqlite
+          .prepare(
+            `UPDATE harness_instance_records SET active_turn_count = 1
+               WHERE harness_instance_id = 'harness-capacity-guard'`
+          )
+          .run();
+      } else if (residentState === 'pinned') {
+        coreDb.sqlite
+          .prepare(
+            `UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_capacity_guard'
+               WHERE sandbox_runtime_id = 'sandbox-runtime-capacity-guard'`
+          )
+          .run();
+      } else {
+        coreDb.sqlite
+          .prepare(
+            `UPDATE sandbox_runtime_records
+               SET lifecycle_state = 'failed', health_state = 'unknown',
+                   drain_state = 'draining', cleanup_state = 'unknown'
+               WHERE sandbox_runtime_id = 'sandbox-runtime-capacity-guard'`
+          )
+          .run();
+      }
+      const sessionDispatch: NanoHostSessionDispatch = {
+        async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+          effects.push(carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest));
+          return {};
+        },
+        async poll() {
+          return null;
+        },
+        async result() {},
+        async route() {
+          throw new Error('Unexpected semantic route.');
+        },
+      };
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+      ).backend;
+      const desiredPackage = completeNanoHostPackage({
+        runtime: {
+          image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
+        },
+        scope: {
+          agentSessionId: 'as_capacity_guard_desired',
+          threadId: 'thread_capacity_guard_desired',
+          turnId: 'turn_capacity_guard_desired',
+          workspaceId: 'workspace_capacity_guard_desired',
+        },
+        snapshotId: 'snapshot_capacity_guard_desired',
+      });
+
+      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
+      expect(effects).toEqual([]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('replaces same-key idle Sandbox rows that a fresh backend cannot prove process-locally', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        if (request.kind === 'sandbox.create') {
+          return { sandboxId: request.input.sandboxId, state: 'created' };
+        }
+        if (request.kind === 'bridge.close') return { state: 'closed' };
+        if (request.kind === 'sandbox.delete') return { state: 'deleted' };
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_restart_unproved', 'identity_restart_unproved',
+                     'deployment_restart_unproved', 1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-06T00:00:00.000Z');
+      const packageFor = (
+        agentSessionId: string,
+        threadId: string,
+        turnId: string,
+        snapshotId: string
+      ) =>
+        completeNanoHostPackage({
+          runtime: {
+            image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'7'.repeat(64)}` },
+          },
+          scope: {
+            agentSessionId,
+            threadId,
+            turnId,
+            workspaceId: 'workspace_restart_unproved',
+          },
+          snapshotId,
+        });
+      const firstPackage = packageFor(
+        'as_restart_unproved_old',
+        'thread_restart_unproved_old',
+        'turn_restart_unproved_old',
+        'snapshot_restart_unproved_old'
+      );
+      const firstRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const firstBackend = (
+        firstRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      firstBackend.requireLeaseId = (snapshotId) => `lease-${snapshotId}`;
+      await firstBackend.materialize(firstPackage, { workspaceRoots: [] });
+      const harness = coreDb.sqlite
+        .prepare(
+          `SELECT harness_instance_id AS harnessInstanceId,
+                  harness_compatibility_key AS harnessCompatibilityKey,
+                  adapter_id AS adapterId, adapter_version AS adapterVersion,
+                  s.sandbox_runtime_id AS sandboxRuntimeId,
+                  s.sandbox_binding_ref AS sandboxBindingRef,
+                  s.sandbox_integration_binding_ref AS sandboxIntegrationBindingRef,
+                  s.sandbox_compatibility_key AS sandboxCompatibilityKey,
+                  s.image_digest AS imageDigest, s.runtime_target_id AS runtimeTargetId
+           FROM harness_instance_records h
+           JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id`
+        )
+        .get() as {
+        readonly adapterId: 'codex';
+        readonly adapterVersion: string;
+        readonly harnessCompatibilityKey: string;
+        readonly harnessInstanceId: string;
+        readonly imageDigest: string;
+        readonly runtimeTargetId: string;
+        readonly sandboxBindingRef: string;
+        readonly sandboxCompatibilityKey: string;
+        readonly sandboxIntegrationBindingRef: string;
+        readonly sandboxRuntimeId: string;
+      };
+      const sessionCompatibilityKey = planSessionWorkspaceMaterialization({
+        environmentPackage: firstPackage,
+      }).compatibilityKey.digest;
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: harness.adapterId,
+          adapterVersion: harness.adapterVersion,
+          harnessCompatibilityKey: harness.harnessCompatibilityKey,
+          sessionCompatibilityKey,
+          threadId: firstPackage.scope.threadId,
+        }),
+        agentSessionId: firstPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: 'binding-restart-unproved-old',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: harness.harnessInstanceId,
+        threadId: firstPackage.scope.threadId,
+        timestamp: '2026-09-06T00:00:01.000Z',
+        workspaceId: firstPackage.scope.workspaceId,
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', native_handle_state = 'ready',
+               native_handle_digest = ?, cleanup_state = 'clean'`
+        )
+        .run('9'.repeat(64));
+      const unprovedPackage = packageFor(
+        'as_restart_unproved_other_harness',
+        'thread_restart_unproved_other_harness',
+        'turn_restart_unproved_other_harness',
+        'snapshot_restart_unproved_other_harness'
+      );
+      const unprovedSessionCompatibilityKey = planSessionWorkspaceMaterialization({
+        environmentPackage: unprovedPackage,
+      }).compatibilityKey.digest;
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: harness.adapterId,
+        adapterVersion: harness.adapterVersion,
+        harnessBindingRef: 'harness-binding-restart-unproved-other',
+        harnessCompatibilityKey: '8'.repeat(64),
+        harnessInstanceId: 'harness-restart-unproved-other',
+        imageDigest: harness.imageDigest,
+        runtimeTargetId: harness.runtimeTargetId,
+        sandboxBindingRef: harness.sandboxBindingRef,
+        sandboxCompatibilityKey: harness.sandboxCompatibilityKey,
+        sandboxIntegrationBindingRef: harness.sandboxIntegrationBindingRef,
+        sandboxRuntimeId: harness.sandboxRuntimeId,
+        timestamp: '2026-09-06T00:00:01.000Z',
+      });
+      openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: harness.adapterId,
+          adapterVersion: harness.adapterVersion,
+          harnessCompatibilityKey: '8'.repeat(64),
+          sessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          threadId: unprovedPackage.scope.threadId,
+        }),
+        agentSessionId: unprovedPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: 'binding-restart-unproved-other',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-restart-unproved-other',
+        threadId: unprovedPackage.scope.threadId,
+        timestamp: '2026-09-06T00:00:01.000Z',
+        workspaceId: unprovedPackage.scope.workspaceId,
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', native_handle_state = 'ready',
+               native_handle_digest = ?, cleanup_state = 'clean'
+           WHERE agent_session_runtime_binding_id = 'binding-restart-unproved-other'`
+        )
+        .run('8'.repeat(64));
+
+      const recoveringRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const recoveringBackend = (
+        recoveringRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            restoreSession(environmentPackage: AgentEnvironmentPackage, leaseId: string): void;
+          };
+        }
+      ).backend;
+      recoveringBackend.restoreSession(firstPackage, 'lease-active-recovery');
+      await expect(
+        recoveringBackend.prepareAgentSessionContinuity?.({
+          agentSessionCompatibilityKey: sessionCompatibilityKey,
+          agentSessionId: firstPackage.scope.agentSessionId,
+          environmentPackage: firstPackage,
+          reuseAllowed: true,
+          threadId: firstPackage.scope.threadId,
+          workspaceId: firstPackage.scope.workspaceId,
+        })
+      ).resolves.toBe('reusable');
+
+      const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const restartedBackend = (
+        restartedRuntime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            restoreSharedHarness(
+              sandboxCompatibilityKey: string,
+              harnessCompatibilityKey: string,
+              runtimeTargetId: string,
+              adapterId: 'codex',
+              adapterVersion: string
+            ): unknown;
+          };
+        }
+      ).backend;
+      const secondPackage = packageFor(
+        'as_restart_unproved_fresh',
+        unprovedPackage.scope.threadId,
+        'turn_restart_unproved_fresh',
+        'snapshot_restart_unproved_fresh'
+      );
+      coreDb.sqlite
+        .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_restart_unproved'")
+        .run();
+      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+        'capacity-saturated'
+      );
+      coreDb.sqlite.prepare('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL').run();
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'active', current_turn_id = 'turn_restart_busy',
+               current_lease_id = 'lease_restart_busy'`
+        )
+        .run();
+      coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
+      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+        'capacity-saturated'
+      );
+      coreDb.sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings
+           SET lifecycle_state = 'open', current_turn_id = NULL, current_lease_id = NULL`
+        )
+        .run();
+      coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 0').run();
+      coreDb.sqlite
+        .prepare(
+          `UPDATE sandbox_runtime_records
+           SET lifecycle_state = 'failed', health_state = 'unknown',
+               drain_state = 'draining', cleanup_state = 'unknown'`
+        )
+        .run();
+      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+        'capacity-saturated'
+      );
+      coreDb.sqlite
+        .prepare(
+          `UPDATE sandbox_runtime_records
+           SET lifecycle_state = 'open', health_state = 'ready',
+               drain_state = 'accepting', cleanup_state = 'clean'`
+        )
+        .run();
+      restartedBackend.restoreSharedHarness(
+        harness.sandboxCompatibilityKey,
+        harness.harnessCompatibilityKey,
+        harness.runtimeTargetId,
+        harness.adapterId,
+        harness.adapterVersion
+      );
+      await expect(
+        restartedBackend.prepareAgentSessionContinuity?.({
+          agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          agentSessionId: unprovedPackage.scope.agentSessionId,
+          reuseAllowed: true,
+          threadId: unprovedPackage.scope.threadId,
+          workspaceId: unprovedPackage.scope.workspaceId,
+        })
+      ).resolves.toBe('sandbox-replacement-required');
+
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref
+           ) VALUES ('lease-restart-unproved-fresh', 'plan-restart-unproved-fresh',
+                     ?, ?, ?, ?, ?, 'pool_restart_unproved', 'target_restart_unproved',
+                     'acquired', ?, ?, ?, ?, 0, 1, 'lease-binding:restart-unproved')`
+        )
+        .run(
+          secondPackage.scope.workspaceId,
+          secondPackage.scope.threadId,
+          secondPackage.scope.turnId,
+          secondPackage.scope.agentSessionId,
+          secondPackage.snapshotId,
+          '2026-09-06T00:00:02.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z'
+        );
+      await expect(
+        recoveringBackend.prepareAgentSessionContinuity?.({
+          admissionAgentSessionId: secondPackage.scope.agentSessionId,
+          admissionLeaseId: 'lease-restart-unproved-fresh',
+          agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          agentSessionId: unprovedPackage.scope.agentSessionId,
+          environmentPackage: secondPackage,
+          reuseAllowed: false,
+          threadId: unprovedPackage.scope.threadId,
+          workspaceId: unprovedPackage.scope.workspaceId,
+        })
+      ).rejects.toThrow('NanoHost one-Sandbox capacity is occupied or unproved.');
+      await expect(
+        restartedBackend.prepareAgentSessionContinuity?.({
+          admissionAgentSessionId: secondPackage.scope.agentSessionId,
+          admissionLeaseId: 'lease-restart-unproved-fresh',
+          agentSessionCompatibilityKey: unprovedSessionCompatibilityKey,
+          agentSessionId: unprovedPackage.scope.agentSessionId,
+          environmentPackage: secondPackage,
+          reuseAllowed: false,
+          threadId: unprovedPackage.scope.threadId,
+          workspaceId: unprovedPackage.scope.workspaceId,
+        })
+      ).resolves.toBe('closed');
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'sandbox.create',
+        'bridge.close',
+        'sandbox.delete',
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+      ).toEqual({ count: 0 });
+
+      expect(restartedBackend.planSession(secondPackage).backendSessionId.slice(0, 19)).toBe(
+        firstBackend.planSession(firstPackage).backendSessionId.slice(0, 19)
+      );
+      await restartedBackend.materialize(secondPackage, { workspaceRoots: [] });
+
+      expect(effects.map((effect) => effect.kind)).toEqual([
+        'sandbox.create',
+        'bridge.close',
+        'sandbox.delete',
+        'sandbox.create',
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+      ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
     }
@@ -2015,13 +3056,7 @@ describe('createConfiguredTurnExecutor', () => {
           EXAMPLE_TOKEN: 'runtime-env-secret',
         }
       );
-      expect(
-        effects.find((effect) => effect.input.slot === 'runtime-credential')?.input
-      ).toMatchObject({
-        body: Buffer.from('runtime-file-secret'),
-        relativePath: 'sandbox/.config/example/credentials',
-        slot: 'runtime-credential',
-      });
+      expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
 
       effects.length = 0;
       await expect(
@@ -2193,12 +3228,12 @@ describe('createConfiguredTurnExecutor', () => {
             process: { runAsGroup: 'sandbox', runAsUser: 'sandbox' },
             version: 1,
           },
-          sandboxId: firstPlan.backendSessionId,
+          sandboxId: firstPlan.backendSessionId.slice(0, 19),
         });
         expect(sandboxCreate?.kind).toBe('sandbox.create');
-        expect(firstPlan.backendSessionId.length).toBeLessThanOrEqual(19);
+        expect(firstPlan.backendSessionId.length).toBeLessThanOrEqual(36);
         expect(firstPlan.backendSessionId).toMatch(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/);
-        sandboxIds.push(firstPlan.backendSessionId);
+        sandboxIds.push(firstPlan.backendSessionId.slice(0, 19));
       }
 
       expect(new Set(sandboxIds).size).toBe(sandboxIds.length);

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -48,6 +49,7 @@ import {
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records';
+import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 
 class RecordingTurnExecutor implements TurnExecutor {
   public readonly capabilities = {
@@ -97,6 +99,9 @@ class RecordingTurnExecutor implements TurnExecutor {
         workspaceRoots: input.workspaceRoots,
         ...(input.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+          : {}),
+        ...(input.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
           : {}),
         ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
       });
@@ -292,6 +297,191 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('scheduler dispatch loop', () => {
+  it('leaves admission queued when the runtime reports one-Sandbox capacity saturation', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    turnExecutor.prepareAgentSessionForTurn = async () => {
+      throw new WorkerGovernanceCapacityUnavailableError();
+    };
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      createSchedulerAdmissionEntry(coreDb, {
+        priorityClass: 'interactive',
+        profileRef: null,
+        queueEntryId: 'queue_runtime_capacity',
+        requestedAgentId: 'agent_codex_host',
+        requiredPoolConstraints: ['openshell.local'],
+        threadId: 'th_demo',
+        turnId: 'turn_runtime_capacity',
+        turnInput: 'Wait for the resident Sandbox',
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_demo',
+      });
+
+      await expect(
+        runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => 'as_runtime_capacity',
+          createLeaseId: () => 'lease_runtime_capacity',
+          createPlanId: () => 'plan_runtime_capacity',
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+          schedulerEpoch: 1,
+          startupTimeoutMs: 120_000,
+          store,
+          turnExecutor,
+        })
+      ).resolves.toEqual({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'capacity-saturated' },
+      });
+      expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([
+        expect.objectContaining({
+          queueEntryId: 'queue_runtime_capacity',
+          status: 'queued',
+        }),
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_placement_plans').get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases').get()
+      ).toEqual({ count: 0 });
+      expect(() => store.getTurnById('turn_runtime_capacity')).toThrow('Turn not found');
+      expect(turnExecutor.calls).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('selects the dequeued Workspace context instead of the initiating request context', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const queuedWorkspace = store.createWorkspace('Queued Workspace');
+    const queuedThread = store.createThread(queuedWorkspace.id, 'Queued Thread');
+    const turnExecutor = new RecordingTurnExecutor();
+    const queuedCommit = '0123456789abcdef0123456789abcdef01234567';
+    const initiatingCommit = '89abcdef0123456789abcdef0123456789abcdef';
+    const queuedUrl = 'https://git.example.test/queued.git';
+    const manifest = {
+      ...createTestAgentSetup({ mcpIds: ['echo'] }).manifest,
+      workspace: {
+        inputs: [{ access: 'read-write' as const, id: 'repo_remote', sourceRef: 'main-repo' }],
+      },
+    };
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: queuedWorkspace.id,
+    });
+    seedLocalSchedulerTarget(coreDb);
+    createSchedulerAdmissionEntry(coreDb, {
+      priorityClass: 'interactive',
+      profileRef: null,
+      queueEntryId: 'queue_older_workspace',
+      requestedAgentId: manifest.id,
+      requiredPoolConstraints: ['openshell.local'],
+      threadId: queuedThread.id,
+      turnId: 'turn_older_workspace',
+      turnInput: 'Use the queued Workspace catalog',
+      triggerActor: { kind: 'user', id: 'user_local' },
+      workspaceCwd: '/workspace/queued',
+      workspaceId: queuedWorkspace.id,
+      workspaceRoots: [
+        {
+          access: 'read-write',
+          id: 'repo_remote',
+          sourceCommit: queuedCommit,
+          sourceKind: 'remote-git',
+          workerPath: '/workspace/queued',
+        },
+      ],
+      now: () => '2026-07-05T00:00:00.000Z',
+    });
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [manifest],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+      providerRegistry: localProviderRegistry(),
+      workspaceDataSourceCatalogs: [
+        {
+          catalog: dataSourceCatalog(queuedUrl, queuedCommit),
+          path: `workspaces/${queuedWorkspace.id}/config/data-sources.jsonc`,
+          workspaceId: queuedWorkspace.id,
+        },
+        {
+          catalog: dataSourceCatalog('https://git.example.test/initiating.git', initiatingCommit),
+          path: 'workspaces/ws_demo/config/data-sources.jsonc',
+          workspaceId: 'ws_demo',
+        },
+      ],
+      workspaceMcpServerCatalogs: [
+        {
+          catalog: mcpCatalog('queued-tool'),
+          path: `workspaces/${queuedWorkspace.id}/config/mcp-servers.jsonc`,
+          workspaceId: queuedWorkspace.id,
+        },
+        {
+          catalog: mcpCatalog('initiating-tool'),
+          path: 'workspaces/ws_demo/config/mcp-servers.jsonc',
+          workspaceId: 'ws_demo',
+        },
+      ],
+    });
+
+    try {
+      await expect(
+        startProductTurn({
+          coreDb,
+          input: {
+            input: 'Initiate another Workspace turn',
+            requestId: '0190f4c8-0000-7000-8000-000000000215',
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          },
+          providerCredentialResolver: () => null,
+          schedulerEpoch: 1,
+          snapshot,
+          store,
+          triggerActor: { kind: 'user', id: 'user_local' },
+          turnExecutor,
+          workerPlacement: 'local',
+        })
+      ).rejects.toMatchObject({ code: 'scheduler_admission_deferred' });
+
+      expect(turnExecutor.calls[0]).toMatchObject({ turnId: 'turn_older_workspace' });
+      expect(
+        turnExecutor.calls[0]?.context?.workspaceMcpServerCatalog?.servers[0]?.allowedTools
+      ).toEqual(['queued-tool']);
+      expect(turnExecutor.calls[0]?.context).toMatchObject({
+        workspaceCwd: '/workspace/queued',
+        workspaceDataSourceCatalog: {
+          sources: [{ locator: { commit: queuedCommit, url: queuedUrl } }],
+        },
+        workspaceRoots: [
+          {
+            id: 'repo_remote',
+            sourceCommit: queuedCommit,
+            sourceKind: 'remote-git',
+            workerPath: '/workspace/queued',
+          },
+        ],
+        workspaceSourceRefs: { repo_remote: 'main-repo' },
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('denies a queued admission whose actor lost current Workspace authority', async () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();
@@ -1464,3 +1654,48 @@ describe('scheduler dispatch loop', () => {
     }
   });
 });
+
+/** Creates one enabled credential-free MCP catalog for scheduler ownership tests. */
+function mcpCatalog(tool: string) {
+  return {
+    schemaVersion: 1 as const,
+    servers: [
+      {
+        allowedTools: [tool],
+        approvalRequiredTools: [],
+        credentialBindings: [],
+        deniedTools: [],
+        enabled: true,
+        id: 'echo',
+        pinnedSchemaSnapshotId: null,
+        schemaPolicy: 'tracking' as const,
+        timeoutMs: 60_000,
+        transport: { args: [], command: 'node', environment: {}, kind: 'stdio' as const },
+      },
+    ],
+  };
+}
+
+/** Creates one credential-free remote Git catalog for scheduler ownership tests. */
+function dataSourceCatalog(url: string, commit: string): WorkspaceDataSourceCatalog {
+  return {
+    extensions: {},
+    requiredFeatures: [],
+    schemaVersion: 1,
+    sources: [
+      {
+        access: 'read-write',
+        allowedSlotKinds: ['worktree'],
+        displayName: 'Remote repository',
+        extensions: {},
+        id: 'main-repo',
+        kind: 'git',
+        locator: { commit, url },
+        requiredFeatures: [],
+        sensitivity: 'internal',
+        status: 'active',
+        syncHints: {},
+      },
+    ],
+  };
+}

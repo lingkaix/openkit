@@ -1684,12 +1684,13 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
-  it('records durable terminal usage for aborted and timed-out attributed Anthropic streams through pi-ai', async () => {
+  it('does not infer durable abort or timeout outcomes from pi-ai provider messages', async () => {
     for (const testCase of [
       {
         code: 'gateway_stream_failed',
         message: 'client aborted token=tok_secret',
         requestId: '88888888-8888-4888-8888-888888888888',
+        ledgerStatus: 'failed',
         stopReason: 'aborted' as const,
         workspaceId: 'ws_chat_stream_aborted_usage',
       },
@@ -1697,6 +1698,7 @@ describe('OpenAI-compatible agent gateway', () => {
         code: 'gateway_provider_unavailable',
         message: 'provider timeout token=tok_secret',
         requestId: '99999999-9999-4999-8999-999999999999',
+        ledgerStatus: 'failed',
         stopReason: 'error' as const,
         workspaceId: 'ws_chat_stream_timeout_usage',
       },
@@ -1762,7 +1764,7 @@ describe('OpenAI-compatible agent gateway', () => {
           ).toMatchObject({
             capability_id: 'llm.chat_completions',
             operation: 'chat_completions',
-            status: 'failed',
+            status: testCase.ledgerStatus,
             error_code: 'llm_gateway_stream_failed',
           });
           const usageCount = workspaceDb.sqlite
@@ -1776,6 +1778,144 @@ describe('OpenAI-compatible agent gateway', () => {
       } finally {
         coreDb.sqlite.close();
       }
+    }
+  });
+
+  it('records only proof-backed provider terminal outcomes', async () => {
+    for (const testCase of [
+      {
+        error: new DOMException('provider-originated abort', 'AbortError'),
+        ledgerStatus: 'failed',
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        responseStatus: 400,
+        workspaceId: 'ws_provider_abort_failed',
+      },
+      {
+        error: new OpenAICompatibleProviderError({
+          message: 'provider gateway timeout',
+          status: 504,
+        }),
+        ledgerStatus: 'timed-out',
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        responseStatus: 503,
+        workspaceId: 'ws_typed_provider_timeout',
+      },
+    ]) {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-terminal-proof-'));
+      const coreDb = openCoreDb(dataRoot);
+
+      try {
+        applyMigrations(coreDb);
+        recordLocalGatewayAuthority(coreDb, testCase.workspaceId);
+        const app = createApp({
+          coreDb,
+          dataRoot,
+          ...createOllamaProviderOptions(),
+          llmGatewayDispatcher: {
+            createChatCompletion: async () => {
+              throw testCase.error;
+            },
+          } as unknown as LLMGatewayProviderDispatcher,
+        });
+
+        const res = await app.request('/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'openai/gpt-5.1',
+            messages: [{ role: 'user', content: 'Hello' }],
+            metadata: {
+              openkit: {
+                requestId: testCase.requestId,
+                workspaceId: testCase.workspaceId,
+              },
+            },
+          }),
+          headers: { 'content-type': 'application/json' },
+        });
+
+        expect(res.status).toBe(testCase.responseStatus);
+        const workspaceDb = openWorkspaceDb(dataRoot, testCase.workspaceId);
+        try {
+          expect(
+            workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
+          ).toMatchObject({
+            status: testCase.ledgerStatus,
+            error_code: 'llm_gateway_failed',
+          });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  });
+
+  it('records caller-attributed cancellation as aborted', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-cancelled-'));
+    const coreDb = openCoreDb(dataRoot);
+    const abortController = new AbortController();
+    let markProviderStarted: (() => void) | undefined;
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve;
+    });
+
+    try {
+      applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, 'ws_caller_cancelled');
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        ...createOllamaProviderOptions(),
+        llmGatewayDispatcher: {
+          createChatCompletion: async (_provider, _request, context = {}) => {
+            const signal = (context as { readonly transport?: { readonly signal?: AbortSignal } })
+              .transport?.signal;
+            if (!signal) throw new Error('Expected request cancellation signal.');
+            markProviderStarted?.();
+            await new Promise<never>((_resolve, reject) => {
+              const rejectWithReason = () => reject(signal.reason);
+              if (signal.aborted) rejectWithReason();
+              else signal.addEventListener('abort', rejectWithReason, { once: true });
+            });
+          },
+        } as unknown as LLMGatewayProviderDispatcher,
+      });
+
+      const responsePromise = app.request('/v1/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'openai/gpt-5.1',
+          messages: [{ role: 'user', content: 'Hello' }],
+          metadata: {
+            openkit: {
+              requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+              workspaceId: 'ws_caller_cancelled',
+            },
+          },
+        }),
+        headers: { 'content-type': 'application/json' },
+        signal: abortController.signal,
+      });
+
+      await providerStarted;
+      abortController.abort();
+      const res = await responsePromise;
+
+      expect(res.status).toBe(499);
+      await expect(res.json()).resolves.toMatchObject({
+        error: { code: 'gateway_request_cancelled' },
+      });
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_caller_cancelled');
+      try {
+        expect(
+          workspaceDb.sqlite.prepare('SELECT status, error_code FROM capability_calls').get()
+        ).toMatchObject({ status: 'aborted', error_code: 'llm_gateway_cancelled' });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
     }
   });
 

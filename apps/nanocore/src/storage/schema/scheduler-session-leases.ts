@@ -74,6 +74,8 @@ export const schedulerSessionLeases = sqliteTable(
     workerControlTokenHash: text('worker_control_token_hash'),
     /** Lowercase SHA-256 projection of the live-memory worker-inference token. */
     workerInferenceTokenHash: text('worker_inference_token_hash'),
+    /** Lowercase SHA-256 projection of the live-memory worker-capability token. */
+    workerCapabilityTokenHash: text('worker_capability_token_hash'),
   },
   (table) => [
     index('scheduler_session_leases_plan_idx').on(table.planId, table.status),

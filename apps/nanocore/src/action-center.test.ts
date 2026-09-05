@@ -12,6 +12,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { createPendingUserTurnRecord } from './goal-steering-authority.js';
 import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from './knowledge/okf.js';
+import { createPolicyApprovalGate } from './policy/approval-gates.js';
 import { createGoalReviewRecord, resolveGoalReviewRecord } from './runtime/goal-review-records.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './runtime/goal-store.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
@@ -174,7 +175,8 @@ describe('action center app API', () => {
   });
 
   it('returns unified human attention rows for pending approval and question gates', async () => {
-    const store = createDemoStore();
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const thread = store.createThread('ws_demo', 'Needs human input');
     const approvalTurn = store.createTurn('ws_demo', thread.id, 'Run guarded work', {
       kind: 'user',
@@ -249,7 +251,31 @@ describe('action center app API', () => {
         itemId: questionItem.id,
       },
     });
-    const app = createApp({ store });
+    const toolUseTurn = store.createTurn('ws_demo', thread.id, 'Use an MCP tool', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const toolUseWorkspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      createPolicyApprovalGate({
+        action: 'tool.use',
+        approvalId: 'ap_incomplete_tool_use',
+        approvalItemId: 'it_incomplete_tool_use',
+        decisionId: 'pd_incomplete_tool_use',
+        description: 'Approve one exact MCP tool effect.',
+        reasonCode: 'mcp_tool_approval_required',
+        resourceSummary: { serverId: 'echo', tool: 'echo' },
+        store,
+        subjectSummary: { agentId: 'agent_codex' },
+        title: 'Approve MCP tool use',
+        turnId: toolUseTurn.id,
+        workspaceDb: toolUseWorkspaceDb,
+        workspaceId: 'ws_demo',
+      });
+    } finally {
+      toolUseWorkspaceDb.sqlite.close();
+    }
+    const app = createAuthorizedCoreApp(coreDb, store);
 
     const res = await app.request('/api/app/workspaces/ws_demo/action-center');
 
@@ -292,6 +318,30 @@ describe('action center app API', () => {
     expect((await app.request('/api/app/workspaces/ws_demo/action-center/questions')).status).toBe(
       404
     );
+
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      upsertWorkerCheckpoint(workspaceDb, {
+        diagnosticsSummary: null,
+        iteration: 1,
+        requestId: `req_${approvalTurn.id}`,
+        requestInputHash: `sha256:${approvalTurn.id}`,
+        stage: 'running_worker',
+        threadId: thread.id,
+        turnId: approvalTurn.id,
+        workerSessionId: 'as_pending_worker_gate',
+        workspaceId: 'ws_demo',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const incompleteWorkerGate = await app.request('/api/app/workspaces/ws_demo/action-center');
+    expect(
+      ListHumanAttentionResponseSchema.parse(await incompleteWorkerGate.json()).items.map(
+        (item) => item.id
+      )
+    ).toEqual([`question:${questionItem.id}`]);
+    coreDb.sqlite.close();
   });
 
   it('projects actionable rows only to the currently eligible actor', async () => {

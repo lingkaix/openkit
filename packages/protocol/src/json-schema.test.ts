@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
 
-import { AuditEventSchema, PROTOCOL_VERSION } from './index.js';
+import { AuditEventSchema, CapabilityCallSchema, PROTOCOL_VERSION } from './index.js';
 
 const eventSchemaUrl = new URL('../generated/json-schema/event.schema.json', import.meta.url);
 const actorRefSchemaUrl = new URL(
@@ -12,6 +12,10 @@ const actorRefSchemaUrl = new URL(
 );
 const auditEventSchemaUrl = new URL(
   '../generated/json-schema/audit-event.schema.json',
+  import.meta.url
+);
+const capabilityCallSchemaUrl = new URL(
+  '../generated/json-schema/capability-call.schema.json',
   import.meta.url
 );
 const stopReasonSchemaUrl = new URL(
@@ -30,11 +34,13 @@ function loadJsonSchema(schemaUrl: URL): unknown {
 /**
  * Builds a draft 2020-12 JSON Schema validator for generated protocol artifacts.
  */
-function createValidator(schemaUrl: URL = eventSchemaUrl) {
+function createValidator(schemaUrl: URL) {
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu);
   return ajv.compile(loadJsonSchema(schemaUrl));
 }
+
+const validateEvent = createValidator(eventSchemaUrl);
 
 /**
  * Builds a valid terminal turn-completed event envelope for schema parity assertions.
@@ -118,7 +124,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('accepts valid item delta matrix combinations', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
     const envelope = {
       protocolVersion: PROTOCOL_VERSION,
       event: 'item.delta',
@@ -141,7 +147,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('rejects invalid item delta matrix combinations', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
     const envelope = {
       protocolVersion: PROTOCOL_VERSION,
       event: 'item.delta',
@@ -209,7 +215,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('accepts terminal turn completion records with stop reasons', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
 
     expect(validate(createTurnCompletedEnvelope('completed'))).toBe(true);
     expect(validate(createTurnCompletedEnvelope('ask_user'))).toBe(true);
@@ -217,7 +223,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('rejects terminal turn completion records with missing or invalid stop reasons', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
     const missingStopReasonEnvelope = createTurnCompletedEnvelope();
     delete (missingStopReasonEnvelope.data as { stopReason?: string }).stopReason;
 
@@ -235,5 +241,50 @@ describe('generated JSON Schema event parity', () => {
     expect(validate('ask_user')).toBe(true);
     expect(validate('budget_exhausted')).toBe(true);
     expect(validate('unknown')).toBe(false);
+  });
+
+  it('preserves representable CapabilityCall timestamp lifecycle constraints', () => {
+    const validate = createValidator(capabilityCallSchemaUrl);
+    const terminal = CapabilityCallSchema.parse({
+      agentSessionId: null,
+      capabilityId: 'llm.responses',
+      completedAt: '2026-07-05T00:00:02.000Z',
+      errorCode: null,
+      id: 'cap_demo',
+      startedAt: '2026-07-05T00:00:01.000Z',
+      status: 'succeeded',
+      summary: null,
+      threadId: null,
+      turnId: null,
+      workspaceId: 'ws_demo',
+    });
+
+    expect(validate(terminal)).toBe(true);
+    expect(validate({ ...terminal, completedAt: null })).toBe(false);
+    expect(validate({ ...terminal, completedAt: null, startedAt: null, status: 'queued' })).toBe(
+      true
+    );
+    expect(validate({ ...terminal, completedAt: null, startedAt: null, status: 'running' })).toBe(
+      false
+    );
+    expect(
+      validate({
+        ...terminal,
+        completedAt: '2026-07-05T00:00:02.000Z',
+        startedAt: null,
+        status: 'running',
+      })
+    ).toBe(false);
+
+    const reversedInstants = {
+      ...terminal,
+      completedAt: '2026-07-05T01:30:00.000+01:00',
+      startedAt: '2026-07-05T01:00:00.000Z',
+    };
+    expect(CapabilityCallSchema.safeParse(reversedInstants).success).toBe(false);
+    expect(validate(reversedInstants)).toBe(true);
+    expect(loadJsonSchema(capabilityCallSchemaUrl)).toMatchObject({
+      description: expect.stringContaining('JSON Schema cannot compare sibling date-time values'),
+    });
   });
 });

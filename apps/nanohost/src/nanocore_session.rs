@@ -37,9 +37,9 @@ use crate::credential_slots::{
 };
 use crate::epoch_coordinator::RuntimeEffectKind;
 use crate::sandbox_bridge::{
-    CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
-    PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult, RouteFamily,
-    WORKER_CONTROL_IN_FLIGHT_BYTES,
+    CAPABILITY_IN_FLIGHT_BYTES, CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES,
+    OUTER_MAX_CONCURRENT_STREAMS, PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult,
+    RouteFamily, WORKER_CONTROL_IN_FLIGHT_BYTES,
 };
 
 const FILE_DATA_BODY_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -94,9 +94,9 @@ impl OuterRouteProjection {
     ///
     /// # Errors
     ///
-    /// Rejects a non-POST request, capability traffic, an oversized body, outer
+    /// Rejects a non-POST request, an oversized body, outer
     /// connection failure, or response delivery failure. The returned boolean is
-    /// true only for an exact sequence-zero `starting` heartbeat accepted by NanoCore.
+    /// true only for an exact credential-free Harness poll accepted with empty `204`.
     pub async fn forward(
         &self,
         family: RouteFamily,
@@ -110,7 +110,7 @@ impl OuterRouteProjection {
             .await
             .clone()
             .ok_or("outer route connection unavailable")?;
-        if request.method() != Method::POST || family == RouteFamily::Capabilities {
+        if request.method() != Method::POST {
             send_nested_status(&mut respond, StatusCode::METHOD_NOT_ALLOWED)?;
             return Err("sandbox route method rejected");
         }
@@ -122,7 +122,7 @@ impl OuterRouteProjection {
         let expected_prefix = match family {
             RouteFamily::WorkerControl => "/worker-control/",
             RouteFamily::Inference => "/inference/",
-            RouteFamily::Capabilities => unreachable!("capability rejected above"),
+            RouteFamily::Capabilities => "/capabilities/",
         };
         if !path.starts_with(expected_prefix) || path.starts_with("//") {
             send_nested_status(&mut respond, StatusCode::NOT_FOUND)?;
@@ -141,7 +141,7 @@ impl OuterRouteProjection {
         let body_limit = match family {
             RouteFamily::WorkerControl => WORKER_CONTROL_IN_FLIGHT_BYTES,
             RouteFamily::Inference => INFERENCE_IN_FLIGHT_BYTES,
-            RouteFamily::Capabilities => unreachable!("capability rejected above"),
+            RouteFamily::Capabilities => CAPABILITY_IN_FLIGHT_BYTES,
         };
         let (parts, mut nested_body) = request.into_parts();
         let mut body = BytesMut::new();
@@ -271,7 +271,7 @@ fn send_nested_status(
         .map_err(|_| "nested route response failed")
 }
 
-/// Returns whether one exact credential-free Harness poll carries the initial latch.
+/// Recognizes the exact Integration-scoped poll eligible for the readiness latch.
 fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, body: &[u8]) -> bool {
     if method != Method::POST
         || path != HARNESS_POLL_PATH
@@ -284,15 +284,11 @@ fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, bod
         .ok()
         .is_some_and(|value| {
             value.as_object().is_some_and(|object| {
-                object.len() == 2
+                object.len() == 1
                     && object
                         .get("schemaVersion")
                         .and_then(serde_json::Value::as_u64)
                         == Some(1)
-                    && object
-                        .get("nextExpectedSequence")
-                        .and_then(serde_json::Value::as_u64)
-                        == Some(0)
             })
         })
 }
@@ -2523,7 +2519,7 @@ mod tests {
     #[test]
     fn initial_harness_poll_is_exact_and_credential_free() {
         let headers = http::HeaderMap::new();
-        let body = br#"{"schemaVersion":1,"nextExpectedSequence":0}"#;
+        let body = br#"{"schemaVersion":1}"#;
         assert!(is_initial_harness_poll(
             &Method::POST,
             "/worker-control/harness/poll",
@@ -2541,6 +2537,12 @@ mod tests {
             "/worker-control/harness/poll",
             &headers,
             br#"{"schemaVersion":1,"nextExpectedSequence":1}"#,
+        ));
+        assert!(!is_initial_harness_poll(
+            &Method::POST,
+            "/worker-control/harness/poll",
+            &headers,
+            br#"{"schemaVersion":1,"nextExpectedSequence":0}"#,
         ));
         let mut credential_headers = http::HeaderMap::new();
         credential_headers.insert(
@@ -2604,7 +2606,7 @@ mod tests {
                 .expect("accepted nested request");
             projection_for_route
                 .forward(
-                    RouteFamily::WorkerControl,
+                    RouteFamily::Capabilities,
                     request,
                     respond,
                     "harness-binding",
@@ -2617,7 +2619,7 @@ mod tests {
         tokio::spawn(nested_connection);
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/worker-control/harness/poll")
+            .uri("/capabilities/mcp/echo")
             .header("content-type", "application/json")
             .body(())
             .expect("nested request");

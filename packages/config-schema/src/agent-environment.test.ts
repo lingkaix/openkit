@@ -62,9 +62,9 @@ function openshellPackageFixture(): unknown {
         { id: 'git', path: '/usr/bin/git' },
       ],
       command: {
-        argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+        argv: ['openkit-worker-shim'],
         workingDirectory: '/workspace/repo',
-        stdin: 'pipe',
+        stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
       },
@@ -124,41 +124,12 @@ function openshellPackageFixture(): unknown {
       mcpServers: [
         {
           id: 'github',
-          version: '1.0.0',
-          sourceRef: 'server:mcp/github',
+          catalogDigest: `sha256:${'a'.repeat(64)}`,
           allowedTools: ['repos.get', 'issues.list'],
+          deniedTools: [],
           approvalRequiredTools: ['issues.list'],
-          toolSchemas: [
-            {
-              inputSchema: {
-                additionalProperties: false,
-                properties: {
-                  owner: { type: 'string' },
-                  repo: { type: 'string' },
-                },
-                required: ['owner', 'repo'],
-                type: 'object',
-              },
-              name: 'repos.get',
-            },
-            {
-              inputSchema: {
-                additionalProperties: false,
-                properties: {
-                  owner: { type: 'string' },
-                  repo: { type: 'string' },
-                },
-                required: ['owner', 'repo'],
-                type: 'object',
-              },
-              name: 'issues.list',
-            },
-          ],
-          allowedPrompts: [],
-          allowedRuntimeAdapters: ['codex'],
-          allowedWorkspaceScopes: ['workspace'],
-          integrity: { sha256: 'sha256-github-mcp-v1' },
-          reviewStatus: 'approved',
+          schemaPolicy: 'tracking',
+          pinnedSchemaSnapshotId: null,
         },
       ],
       services: [],
@@ -673,18 +644,19 @@ describe('agent environment package schema', () => {
       })
     ).toThrow();
 
-    expect(() =>
-      WorkerSandboxAccessSchema.parse({
-        filesystem: [
-          {
-            access: 'read-write',
-            id: 'core_config',
-            purpose: 'Core config',
-            targetPath: '/openkit/config',
-          },
-        ],
-      })
-    ).toThrow();
+    for (const targetPath of [
+      '/openkit/config',
+      '/openkit/sessions',
+      '/openkit/sessions/as_a/context',
+    ]) {
+      expect(() =>
+        WorkerSandboxAccessSchema.parse({
+          filesystem: [
+            { access: 'read-write', id: 'core_config', purpose: 'Core config', targetPath },
+          ],
+        })
+      ).toThrow();
+    }
 
     expect(() =>
       WorkerSandboxAccessSchema.parse({
@@ -897,21 +869,8 @@ describe('agent environment package schema', () => {
       id: 'github',
       allowedTools: ['repos.get', 'issues.list'],
       approvalRequiredTools: ['issues.list'],
-      reviewStatus: 'approved',
-      toolSchemas: [
-        {
-          name: 'repos.get',
-          inputSchema: {
-            required: ['owner', 'repo'],
-          },
-        },
-        {
-          name: 'issues.list',
-          inputSchema: {
-            required: ['owner', 'repo'],
-          },
-        },
-      ],
+      catalogDigest: `sha256:${'a'.repeat(64)}`,
+      schemaPolicy: 'tracking',
     });
     expect(parsed.capabilities).toEqual({
       mode: 'disabled',
@@ -968,7 +927,7 @@ describe('agent environment package schema', () => {
 
   it('accepts only the fixed generic shim command', () => {
     const command = {
-      argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+      argv: ['openkit-worker-shim'],
       workingDirectory: '/workspace/repo',
     };
 
@@ -1256,6 +1215,38 @@ describe('agent environment package schema', () => {
         AgentEnvironmentPackageSchema.parse({ ...fixture, capabilities: invalidCapability })
       ).toThrow();
     }
+  });
+
+  it('accepts only the exact enabled MCP route set with selected server supply', () => {
+    const fixture = openshellPackageFixture();
+    const enabled = {
+      mode: 'enabled',
+      protocol: 'openkit-worker-capability-v1',
+      routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+    };
+
+    expect(
+      AgentEnvironmentPackageSchema.parse({ ...fixture, capabilities: enabled }).capabilities
+    ).toEqual(enabled);
+    for (const routes of [
+      [],
+      ['mcp.list_servers', 'mcp.call_tool'],
+      ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool', 'knowledge.read'],
+    ]) {
+      expect(() =>
+        AgentEnvironmentPackageSchema.parse({
+          ...fixture,
+          capabilities: { ...enabled, routes },
+        })
+      ).toThrow();
+    }
+    expect(() =>
+      AgentEnvironmentPackageSchema.parse({
+        ...fixture,
+        capabilities: enabled,
+        supply: { ...fixture.supply, mcpServers: [] },
+      })
+    ).toThrow();
   });
 
   it('accepts manifest-authored network grants with a placeholder-backed trusted inference route', () => {
@@ -1684,7 +1675,7 @@ describe('agent environment package schema', () => {
       runtime: {
         ...(openshellPackageFixture() as { runtime: Record<string, unknown> }).runtime,
         command: {
-          argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+          argv: ['openkit-worker-shim'],
           workingDirectory: '/Users/m5pro/Documents/AI/openkit',
         },
       },

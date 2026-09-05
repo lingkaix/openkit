@@ -15,12 +15,16 @@ import { readPendingGoalSteeringProjection } from './context/worker-context-proj
 import { GoalSteeringAuthorityError } from './goal-steering-authority.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
+import { isExactMcpApprovalSourceDecision } from './policy/approval-gates.js';
+import { listPolicyApprovalSourceDecisions } from './policy/permission-decisions.js';
 import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
 import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
+import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
 import {
   hasExactActiveHumanGate,
   materializeInterruptedWorkerStates,
+  recoverWorkerCheckpointStopReason,
 } from './runtime/worker-recovery.js';
 import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
@@ -130,7 +134,7 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
         policyOperation: 'review.apply',
       }));
   const rows = [
-    ...(approvalDecisionAuthorized ? approvalRows(input.store, input.workspaceId) : []),
+    ...(approvalDecisionAuthorized ? approvalRows(input) : []),
     ...questionRows(
       input.store,
       input.workspaceId,
@@ -344,21 +348,72 @@ function isUserInputResponseItem(item: StoreItem): item is UserInputResponseStor
 /**
  * Checks whether one approval Item has the exact pending Gate owners required for actionability.
  *
- * @param store Product store containing the Turn and Approval owners.
+ * @param input Projection dependencies containing Product and worker owners.
  * @param item Approval request Item to validate.
- * @returns True only for one completed request owned by the active pending Approval Gate.
+ * @returns True only for one completed request owned by an actionable pending Approval Gate.
  */
-function isActionableApprovalRequest(store: FsStore, item: ApprovalRequestStoreItem): boolean {
+function isActionableApprovalRequest(
+  input: BuildHumanAttentionRowsInput,
+  item: ApprovalRequestStoreItem
+): boolean {
   if (item.status !== 'completed') {
     return false;
   }
   try {
-    const turn = store.getTurn(item.workspaceId, item.threadId, item.turnId);
+    const turn = input.store.getTurn(item.workspaceId, item.threadId, item.turnId);
+    if (
+      !hasExactActiveHumanGate(input.store, turn) ||
+      turn.humanGate.kind !== 'approval' ||
+      turn.humanGate.itemId !== item.id ||
+      turn.humanGate.approvalRequestId !== item.approvalRequestId
+    ) {
+      return false;
+    }
+    if (!input.coreDb || !input.workspaceDb) {
+      return true;
+    }
+    const checkpoint = getWorkerCheckpoint(
+      input.workspaceDb,
+      item.workspaceId,
+      item.threadId,
+      item.turnId
+    );
+    const policySources = listPolicyApprovalSourceDecisions(
+      input.workspaceDb,
+      item.workspaceId,
+      item.approvalRequestId
+    );
+    const aepBacked = checkpoint?.workerSessionId
+      ? input.store.getAgentSession(checkpoint.workerSessionId).environmentPackageSnapshotId !==
+        null
+      : false;
+    if (
+      policySources.length > 1 ||
+      (aepBacked &&
+        (policySources.length !== 1 ||
+          !policySources[0] ||
+          !isExactMcpApprovalSourceDecision({
+            approvalCreatedAt: input.store.getApproval(item.approvalRequestId).createdAt,
+            source: policySources[0],
+            threadId: item.threadId,
+            turnId: item.turnId,
+            workspaceDb: input.workspaceDb,
+            workspaceId: item.workspaceId,
+          }))) ||
+      (!aepBacked && policySources[0]?.action === 'tool.use')
+    ) {
+      return false;
+    }
     return (
-      hasExactActiveHumanGate(store, turn) &&
-      turn.humanGate.kind === 'approval' &&
-      turn.humanGate.itemId === item.id &&
-      turn.humanGate.approvalRequestId === item.approvalRequestId
+      !checkpoint ||
+      (checkpoint.stage === 'waiting_for_user' &&
+        checkpoint.stopReason === 'ask_user' &&
+        recoverWorkerCheckpointStopReason(
+          input.coreDb,
+          input.store,
+          input.workspaceDb,
+          checkpoint
+        ) === 'ask_user')
     );
   } catch {
     return false;
@@ -393,12 +448,11 @@ function isExactUserInputRequest(store: FsStore, item: UserInputRequestStoreItem
 /**
  * Projects unresolved approval requests into unified rows.
  *
- * @param store Request-scoped workspace store.
- * @param workspaceId Workspace id to inspect.
+ * @param input Projection dependencies and Workspace scope.
  * @returns Approval rows.
  */
-function approvalRows(store: FsStore, workspaceId: string): HumanAttentionRow[] {
-  const items = store.listAllItems().filter((item) => item.workspaceId === workspaceId);
+function approvalRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+  const items = input.store.listAllItems().filter((item) => item.workspaceId === input.workspaceId);
   const decisions = new Set(
     items.filter(isApprovalDecisionItem).map((item) => item.approvalRequestId)
   );
@@ -406,10 +460,10 @@ function approvalRows(store: FsStore, workspaceId: string): HumanAttentionRow[] 
   return items
     .filter(isApprovalRequestItem)
     .filter((item) => !decisions.has(item.approvalRequestId))
-    .filter((item) => isActionableApprovalRequest(store, item))
+    .filter((item) => isActionableApprovalRequest(input, item))
     .map((item) => {
-      const approval = store.getApproval(item.approvalRequestId);
-      const thread = store.getThread(item.workspaceId, item.threadId);
+      const approval = input.store.getApproval(item.approvalRequestId);
+      const thread = input.store.getThread(item.workspaceId, item.threadId);
 
       return {
         id: `approval:${approval.id}`,

@@ -17,10 +17,7 @@ import {
 import type { CoreDb } from '../storage/db.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
-import {
-  materializeWorkspaceRootsForTurn,
-  workspaceSourceContextForTurn,
-} from './turn-workspace-context.js';
+import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 import type { TurnExecutor } from './types.js';
 
 /** Product turn inputs needed for scheduler admission and worker startup. */
@@ -115,12 +112,6 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.input.workspaceId,
     selectedAgent
   );
-  const workspaceSourceContext = workspaceSourceContextForTurn(
-    input.snapshot,
-    input.input.workspaceId,
-    workspaceRoots,
-    selectedAgent
-  );
   const workspaceCwd =
     workspaceRoots.find((root) => root.sourceKind === 'remote-git')?.workerPath ?? null;
 
@@ -176,14 +167,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
     store: input.store,
     turnExecutor: input.turnExecutor,
     configVersion: input.snapshot.version,
-    workspaceCwd,
-    workspaceRoots,
-    ...(workspaceSourceContext.workspaceDataSourceCatalog
-      ? { workspaceDataSourceCatalog: workspaceSourceContext.workspaceDataSourceCatalog }
-      : {}),
-    ...(workspaceSourceContext.workspaceSourceRefs
-      ? { workspaceSourceRefs: workspaceSourceContext.workspaceSourceRefs }
-      : {}),
+    workspaceDataSourceCatalogs: input.snapshot.workspaceDataSourceCatalogs,
+    workspaceMcpServerCatalogs: input.snapshot.workspaceMcpServerCatalogs,
   });
   const started = dispatch.startedTurns.find(
     (turn) => turn.dispatch.entry.queueEntryId === queueEntryId

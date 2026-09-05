@@ -375,6 +375,7 @@ describe('database setup', () => {
       expect(leaseTokenColumns).toEqual([
         { name: 'worker_control_token_hash', notnull: 0 },
         { name: 'worker_inference_token_hash', notnull: 0 },
+        { name: 'worker_capability_token_hash', notnull: 0 },
       ]);
       expect(listColumnNames(coreDb, 'scheduler_session_leases')).not.toEqual(
         expect.arrayContaining(['worker_control_token', 'worker_inference_token'])
@@ -551,6 +552,7 @@ describe('database setup', () => {
         'started_at',
         'completed_at',
         'package_snapshot_id',
+        'schema_snapshot_id',
         'runtime_origin_ref',
         'runtime_cache_lineage_ref',
       ]);

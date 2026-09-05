@@ -1,6 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Readable } from 'node:stream';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
@@ -23,6 +33,53 @@ vi.mock('./integration-client.js', async (importOriginal) => ({
 }));
 
 const DIGEST = 'a'.repeat(64);
+
+type RunFileEffect = (input: {
+  argv: string[];
+  stdin: AsyncIterable<string | Uint8Array>;
+  stdout: NodeJS.WritableStream;
+  stderr: NodeJS.WritableStream;
+  slotRoots: Record<string, string>;
+}) => Promise<number>;
+
+/** Imports one immutable private input through the installed image helper seam. */
+async function importWorkerInput(
+  runFileEffect: RunFileEffect,
+  slotRoots: Record<string, string>,
+  slot: 'context' | 'package-config',
+  path: string,
+  bytes: Buffer
+) {
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  stdout.on('data', (chunk) => stdoutChunks.push(Buffer.from(chunk)));
+  stderr.on('data', (chunk) => stderrChunks.push(Buffer.from(chunk)));
+
+  const exitCode = await runFileEffect({
+    argv: [
+      'reference.import',
+      '--slot',
+      slot,
+      '--path',
+      path,
+      '--length',
+      String(bytes.length),
+      '--sha256',
+      digest,
+    ],
+    stderr,
+    stdin: Readable.from([bytes]),
+    stdout,
+    slotRoots,
+  });
+
+  expect(exitCode).toBe(0);
+  expect(Buffer.concat(stderrChunks)).toHaveLength(0);
+  expect(Buffer.concat(stdoutChunks).toString('utf8')).toBe(`${digest} ${bytes.length}\n`);
+}
 
 /** Builds one exact private Harness command for focused lifecycle checks. */
 function command(operation: string, sequence: number, body: Readonly<Record<string, unknown>>) {
@@ -120,19 +177,31 @@ describe('shared Worker Harness', () => {
   it('runs sequential Turns by resuming the exact first Codex UUID', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-turns-'));
     const sandboxRoot = join(root, 'openkit');
-    const packagePath = join(sandboxRoot, 'config', 'package.json');
-    const contextPath = join(sandboxRoot, 'context');
+    const packagePath = join(sandboxRoot, 'sessions', 'as-a', 'config', 'package.json');
+    const contextPath = join(sandboxRoot, 'sessions', 'as-a', 'context');
     const outputPath = join(sandboxRoot, 'session');
-    mkdirSync(join(sandboxRoot, 'config'), { recursive: true });
-    mkdirSync(contextPath, { recursive: true });
-    const writePackage = (turn: number, requestId?: unknown) =>
-      writeFileSync(
-        packagePath,
+    const fileEffectPath = fileURLToPath(
+      new URL('../../../containers/workers/openkit-file-effect', import.meta.url)
+    );
+    const { runFileEffect } = (await import(pathToFileURL(fileEffectPath).href)) as {
+      runFileEffect: RunFileEffect;
+    };
+    const slotRoots = {
+      context: join(sandboxRoot, 'sessions'),
+      'package-config': join(sandboxRoot, 'sessions'),
+    };
+    const packageBytes = (turn: number, requestId?: unknown, agentSessionId = 'as-a') =>
+      Buffer.from(
         JSON.stringify({
+          capabilities: {
+            mode: 'enabled',
+            protocol: 'openkit-worker-capability-v1',
+            routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+          },
           scope: {
-            agentSessionId: 'as-a',
+            agentSessionId,
             ...(requestId === undefined ? {} : { requestId }),
-            threadId: 'thread-as-a',
+            threadId: `thread-${agentSessionId}`,
             turnId: `turn-${turn}`,
             workspaceId: 'workspace-one',
           },
@@ -172,23 +241,53 @@ describe('shared Worker Harness', () => {
           },
           runtime: {
             command: {
-              argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'],
+              argv: ['openkit-worker-shim'],
               workingDirectory: sandboxRoot,
             },
           },
-        }),
-        'utf8'
+          supply: { mcpServers: [{ id: 'echo' }] },
+        })
       );
-    writePackage(1);
+    const importPackage = async (turn: number, requestId?: unknown, agentSessionId = 'as-a') =>
+      importWorkerInput(
+        runFileEffect,
+        slotRoots,
+        'package-config',
+        `${agentSessionId}/config/package.json`,
+        packageBytes(turn, requestId, agentSessionId)
+      );
+    const importContext = async (agentSessionId: string, path: string, bytes: string) =>
+      importWorkerInput(
+        runFileEffect,
+        slotRoots,
+        'context',
+        `${agentSessionId}/context/${path}`,
+        Buffer.from(bytes)
+      );
     const threadId = '019f0000-0000-7000-8000-000000000001';
     const launches: string[][] = [];
-    const boundTokens: Array<{ controlToken: string; inferenceToken: string }> = [];
-    const finalStatuses: Array<{ lineage: Record<string, unknown> }> = [];
+    const observedContextFiles: string[][] = [];
+    const boundTokens: Array<{
+      capabilityToken?: string;
+      controlToken: string;
+      inferenceToken: string;
+    }> = [];
+    const finalStatuses: Array<{
+      body: { status: string; stopReason: string };
+      lineage: Record<string, unknown>;
+    }> = [];
+    let holdNextRun = false;
+    let nativeAbortCount = 0;
+    let runningAgentSessionId = 'as-a';
     const harnessEnvironment: { OPENKIT_REQUEST_ID?: string } = {
       OPENKIT_REQUEST_ID: 'request-harness',
     };
     const integration = {
-      bindTurnRouteTokens(tokens: { controlToken: string; inferenceToken: string }) {
+      bindTurnRouteTokens(tokens: {
+        capabilityToken?: string;
+        controlToken: string;
+        inferenceToken: string;
+      }) {
         boundTokens.push(tokens);
       },
       clearTurnRouteTokens() {},
@@ -217,7 +316,12 @@ describe('shared Worker Harness', () => {
       rootDirectory: join(root, 'private'),
       runner: {
         async run(input) {
+          const holdUntilInterrupted = holdNextRun;
+          holdNextRun = false;
           launches.push(input.argv);
+          observedContextFiles.push(
+            readdirSync(join(sandboxRoot, 'sessions', runningAgentSessionId, 'context')).sort()
+          );
           input.onStart?.();
           const codexHome = input.env.CODEX_HOME as string;
           const rolloutDirectory = join(codexHome, 'sessions', '2026', '08', '21');
@@ -247,6 +351,24 @@ describe('shared Worker Harness', () => {
           await input.writeStdout?.(
             Buffer.from(`${JSON.stringify({ thread_id: threadId, type: 'thread.started' })}\n`)
           );
+          if (holdUntilInterrupted) {
+            await new Promise<void>((resolve) => {
+              if (input.signal.aborted) {
+                nativeAbortCount += 1;
+                resolve();
+                return;
+              }
+              input.signal.addEventListener(
+                'abort',
+                () => {
+                  nativeAbortCount += 1;
+                  resolve();
+                },
+                { once: true }
+              );
+            });
+            return { exitCode: null, signal: 'SIGTERM', stderr: '', stdout: '' };
+          }
           return { exitCode: 0, signal: null, stderr: '', stdout: '' };
         },
       },
@@ -254,21 +376,45 @@ describe('shared Worker Harness', () => {
       turnOutputDirectory: outputPath,
     });
     await harness.handle(command('session.open', 0, openBody('binding-a', 'as-a')));
+    await harness.handle(command('session.open', 0, openBody('binding-b', 'as-b')));
+    await expect(
+      harness.handle(command('session.open', 0, openBody('binding-duplicate', 'as-a')))
+    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
+    await importPackage(1);
+    await importContext('as-a', 'current.txt', 'AgentSession A Turn 1\n');
+    await importContext('as-a', 'turn-one-only.txt', 'Removed before Turn 2\n');
+    await importPackage(9, undefined, 'as-b');
+    await importContext('as-b', 'current.txt', 'AgentSession B private bytes\n');
+    expect(readFileSync(join(contextPath, 'current.txt'), 'utf8')).toBe('AgentSession A Turn 1\n');
+    expect(readFileSync(packagePath)).not.toEqual(
+      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'config', 'package.json'))
+    );
+    expect(
+      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
+    ).toBe('AgentSession B private bytes\n');
 
-    const startBody = (turn: number) => ({
-      aepRef: packagePath,
-      agentSessionId: 'as-a',
-      agentSessionRuntimeBindingId: 'binding-a',
-      contextPackageId: `context-${turn}`,
-      contextRef: contextPath,
+    const token = (value: number) =>
+      (value < 10 ? String(value) : String.fromCharCode(87 + value)).repeat(43);
+    const startBody = (
+      turn: number,
+      agentSessionId = 'as-a',
+      bindingId = 'binding-a',
+      turnSequence = turn - 1
+    ) => ({
+      aepRef: join(sandboxRoot, 'sessions', agentSessionId, 'config', 'package.json'),
+      agentSessionId,
+      agentSessionRuntimeBindingId: bindingId,
+      contextPackageId: `ctxpkg_turn-${turn}`,
+      contextRef: join(sandboxRoot, 'sessions', agentSessionId, 'context'),
       deadline: '2026-08-21T01:00:00.000Z',
-      inferenceToken: String(turn).repeat(43),
+      capabilityToken: token(turn + 4),
+      inferenceToken: token(turn),
       leaseId: `lease-${turn}`,
       packageSnapshotId: `package-${turn}`,
-      threadId: 'thread-as-a',
+      threadId: `thread-${agentSessionId}`,
       turnId: `turn-${turn}`,
-      turnSequence: turn - 1,
-      workerControlToken: String(turn + 2).repeat(43),
+      turnSequence,
+      workerControlToken: token(turn + 2),
       workspaceId: 'workspace-one',
     });
     await expect(harness.handle(command('turn.start', 1, startBody(1)))).resolves.toMatchObject({
@@ -287,8 +433,16 @@ describe('shared Worker Harness', () => {
         disposition: 'succeeded',
       });
     });
+    expect(observedContextFiles[0]).toEqual(['current.txt', 'turn-one-only.txt']);
+    expect(existsSync(packagePath)).toBe(false);
+    expect(existsSync(join(contextPath, 'turn-one-only.txt'))).toBe(false);
+    expect(
+      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
+    ).toBe('AgentSession B private bytes\n');
 
-    writePackage(2, 'request-harness');
+    await importPackage(2, 'request-harness');
+    await importContext('as-a', 'current.txt', 'AgentSession A Turn 2\n');
+    expect(existsSync(join(contextPath, 'turn-one-only.txt'))).toBe(false);
     await expect(harness.handle(command('turn.start', 3, startBody(2)))).resolves.toMatchObject({
       body: { nativeHandleState: 'ready', state: 'started' },
       disposition: 'succeeded',
@@ -297,9 +451,18 @@ describe('shared Worker Harness', () => {
     expect(launches[0]).not.toContain('resume');
     expect(launches[1]).toContain('resume');
     expect(launches[1]?.at(-2)).toBe(threadId);
+    expect(observedContextFiles[1]).toEqual(['current.txt']);
     expect(boundTokens).toEqual([
-      { controlToken: '3'.repeat(43), inferenceToken: '1'.repeat(43) },
-      { controlToken: '4'.repeat(43), inferenceToken: '2'.repeat(43) },
+      {
+        capabilityToken: '5'.repeat(43),
+        controlToken: '3'.repeat(43),
+        inferenceToken: '1'.repeat(43),
+      },
+      {
+        capabilityToken: '6'.repeat(43),
+        controlToken: '4'.repeat(43),
+        inferenceToken: '2'.repeat(43),
+      },
     ]);
     expect(finalStatuses.map((status) => status.lineage)).toEqual([
       {
@@ -321,7 +484,17 @@ describe('shared Worker Harness', () => {
     ]);
 
     delete harnessEnvironment.OPENKIT_REQUEST_ID;
-    writePackage(3, 'request-aep-only');
+    await vi.waitFor(async () => {
+      const inspected = await harness.handle(
+        command('session.inspect', 4, {
+          agentSessionId: 'as-a',
+          agentSessionRuntimeBindingId: 'binding-a',
+        })
+      );
+      expect(inspected.body.cleanupState).toBe('clean');
+    });
+    await importPackage(3, 'request-aep-only');
+    await importContext('as-a', 'current.txt', 'AgentSession A Turn 3\n');
     await expect(harness.handle(command('turn.start', 4, startBody(3)))).resolves.toMatchObject({
       body: { nativeHandleState: 'ready', state: 'started' },
       disposition: 'succeeded',
@@ -335,20 +508,135 @@ describe('shared Worker Harness', () => {
       turnId: 'turn-3',
       workspaceId: 'workspace-one',
     });
+    await vi.waitFor(async () => {
+      const inspected = await harness.handle(
+        command('session.inspect', 5, {
+          agentSessionId: 'as-a',
+          agentSessionRuntimeBindingId: 'binding-a',
+        })
+      );
+      expect(inspected.body.cleanupState).toBe('clean');
+    });
     harnessEnvironment.OPENKIT_REQUEST_ID = 'request-harness';
 
     for (const [index, invalidRequestId] of ['different-request', null, '', 17].entries()) {
       const turn = index + 4;
-      writePackage(turn, invalidRequestId);
+      const agentSessionId = `as-invalid-${index}`;
+      const bindingId = `binding-invalid-${index}`;
+      await harness.handle(command('session.open', turn + 1, openBody(bindingId, agentSessionId)));
+      await importPackage(turn, invalidRequestId, agentSessionId);
       const launchesBeforeRejection = launches.length;
-      const result = await harness.handle(command('turn.start', turn + 1, startBody(turn)));
+      const result = await harness.handle(
+        command('turn.start', turn + 1, startBody(turn, agentSessionId, bindingId))
+      );
 
       expect(
         launches,
         `requestId ${JSON.stringify(invalidRequestId)} reached native start`
       ).toHaveLength(launchesBeforeRejection);
       expect(result).toMatchObject({ disposition: 'refused' });
+      await expect(
+        harness.handle(
+          command('session.close', turn + 1, {
+            agentSessionId,
+            agentSessionRuntimeBindingId: bindingId,
+          })
+        )
+      ).resolves.toMatchObject({ disposition: 'succeeded' });
     }
+
+    const launchesBeforeCrossSessionRef = launches.length;
+    await expect(
+      harness.handle(
+        command('turn.start', 19, {
+          ...startBody(8, 'as-a', 'binding-a', 3),
+          aepRef: join(sandboxRoot, 'sessions', 'as-b', 'config', 'package.json'),
+          contextRef: join(sandboxRoot, 'sessions', 'as-b', 'context'),
+        })
+      )
+    ).resolves.toMatchObject({ body: { reasonCode: 'stale' }, disposition: 'refused' });
+    expect(launches).toHaveLength(launchesBeforeCrossSessionRef);
+
+    await importPackage(8);
+    await importContext('as-a', 'current.txt', 'AgentSession A held Turn\n');
+    holdNextRun = true;
+    await expect(
+      harness.handle(command('turn.start', 20, startBody(8, 'as-a', 'binding-a', 3)))
+    ).resolves.toMatchObject({
+      disposition: 'succeeded',
+    });
+    await expect(
+      harness.handle(
+        command('turn.start', 20, {
+          ...startBody(9, 'as-b', 'binding-b', 0),
+          aepRef: packagePath,
+          contextRef: contextPath,
+        })
+      )
+    ).resolves.toMatchObject({ body: { reasonCode: 'busy' }, disposition: 'refused' });
+    const interruptBody = {
+      agentSessionId: 'as-a',
+      agentSessionRuntimeBindingId: 'binding-a',
+      leaseId: 'lease-8',
+      turnId: 'turn-8',
+    };
+    for (const invalidBody of [
+      interruptBody,
+      { ...interruptBody, purpose: 'unknown' },
+      { ...interruptBody, extra: 'forbidden', purpose: 'interrupt' },
+    ]) {
+      await expect(
+        harness.handle(command('turn.interrupt', 21, invalidBody))
+      ).resolves.toMatchObject({ disposition: 'refused' });
+      expect(nativeAbortCount).toBe(0);
+    }
+    await expect(
+      harness.handle(command('turn.interrupt', 21, { ...interruptBody, purpose: 'interrupt' }))
+    ).resolves.toMatchObject({
+      body: { childState: 'absent', state: 'interrupted' },
+      disposition: 'succeeded',
+    });
+    await vi.waitFor(() => expect(finalStatuses).toHaveLength(4));
+    expect(finalStatuses.at(-1)).toMatchObject({
+      body: { status: 'interrupted', stopReason: 'aborted' },
+    });
+
+    await expect(
+      harness.handle(
+        command('session.close', 22, {
+          agentSessionId: 'as-a',
+          agentSessionRuntimeBindingId: 'binding-a',
+        })
+      )
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    expect(existsSync(join(sandboxRoot, 'sessions', 'as-a'))).toBe(false);
+    expect(
+      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
+    ).toBe('AgentSession B private bytes\n');
+    runningAgentSessionId = 'as-b';
+    holdNextRun = true;
+    await expect(
+      harness.handle(command('turn.start', 24, startBody(9, 'as-b', 'binding-b', 0)))
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    expect(observedContextFiles.at(-1)).toEqual(['current.txt']);
+    expect(
+      readFileSync(join(sandboxRoot, 'sessions', 'as-b', 'context', 'current.txt'), 'utf8')
+    ).toBe('AgentSession B private bytes\n');
+    await expect(
+      harness.handle(
+        command('turn.interrupt', 25, {
+          agentSessionId: 'as-b',
+          agentSessionRuntimeBindingId: 'binding-b',
+          leaseId: 'lease-9',
+          purpose: 'human-gate',
+          turnId: 'turn-9',
+        })
+      )
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    await vi.waitFor(() => expect(finalStatuses).toHaveLength(5));
+    expect(finalStatuses.at(-1)).toMatchObject({
+      body: { status: 'blocked', stopReason: 'ask_user' },
+    });
   });
 
   it('keeps two Codex Sessions isolated and closes only the exact named private root', async () => {
@@ -464,6 +752,7 @@ describe('shared Worker Harness', () => {
           contextPackageId: 'context-a',
           contextRef: join(root, 'context'),
           deadline: '2026-08-21T01:00:00.000Z',
+          capabilityToken: 'p'.repeat(43),
           inferenceToken: 'i'.repeat(43),
           leaseId: 'lease-a',
           packageSnapshotId: 'package-a',

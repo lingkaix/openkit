@@ -95,7 +95,7 @@ The OpenCode adapter implements only `prepare` and `collect`; it does not implem
 
 ## Skills And MCP
 
-NanoCore may resolve approved static Skill and MCP supply into the AEP, but this change does not activate callable MCP or worker-capability execution. The capability plane remains disabled, and the OpenCode adapter must not discover, install, authorize, or broaden supply.
+NanoCore may resolve approved static Skill and MCP supply into the AEP, but the delivered selected-MCP capability slice is restricted to the Codex session-continuity adapter. OpenCode remains ineligible and must not discover, install, connect directly, authorize, or broaden supply.
 
 ## Provider And Credentials
 

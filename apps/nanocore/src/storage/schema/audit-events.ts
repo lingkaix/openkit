@@ -10,7 +10,7 @@ export type AuditEventCategory =
   | 'system';
 
 /** Durable audit event outcome values. */
-export type AuditEventOutcome = 'succeeded' | 'failed' | 'denied' | 'cancelled';
+export type AuditEventOutcome = 'succeeded' | 'failed' | 'denied' | 'cancelled' | 'unknown';
 
 /** Durable audit event severity values. */
 export type AuditEventSeverity = 'info' | 'warning' | 'error';

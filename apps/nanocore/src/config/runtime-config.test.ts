@@ -176,6 +176,13 @@ function writeWorkspaceDataSources(dataRoot: string, workspaceId: string, body: 
   writeFileSync(join(configRoot, 'data-sources.jsonc'), body);
 }
 
+/** Writes one Workspace MCP server catalog to its canonical config path. */
+function writeWorkspaceMcpServers(dataRoot: string, workspaceId: string, body: string): void {
+  const configRoot = join(dataRoot, 'workspaces', workspaceId, 'config');
+  mkdirSync(configRoot, { recursive: true });
+  writeFileSync(join(configRoot, 'mcp-servers.jsonc'), body);
+}
+
 describe('runtime config loading and reload planning', () => {
   it('loads one immutable runtime config snapshot from canonical config inputs', () => {
     const dataRoot = createDataRoot();
@@ -274,6 +281,52 @@ describe('runtime config loading and reload planning', () => {
         }),
       }),
     ]);
+  });
+
+  it('loads Workspace MCP catalogs and scopes their changes to future sessions', () => {
+    const baseRoot = createDataRoot();
+    const nextRoot = createDataRoot();
+    for (const root of [baseRoot, nextRoot]) {
+      writeConfiguredServer(root, 'openai/gpt-5.1');
+    }
+    const catalog = (timeoutMs: number) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        servers: [
+          {
+            allowedTools: ['echo'],
+            approvalRequiredTools: [],
+            credentialBindings: [],
+            deniedTools: [],
+            enabled: true,
+            id: 'echo',
+            schemaPolicy: 'tracking',
+            timeoutMs,
+            transport: { args: ['fixtures/echo.mjs'], command: 'node', kind: 'stdio' },
+          },
+        ],
+      });
+    writeWorkspaceMcpServers(baseRoot, 'ws_demo', catalog(60_000));
+    writeWorkspaceMcpServers(nextRoot, 'ws_demo', catalog(30_000));
+
+    const base = loadRuntimeConfig(baseRoot, { version: 1 });
+    const next = loadRuntimeConfig(nextRoot, { version: 2 });
+
+    expect(base.workspaceMcpServerCatalogs).toEqual([
+      expect.objectContaining({
+        workspaceId: 'ws_demo',
+        catalog: expect.objectContaining({
+          servers: [expect.objectContaining({ id: 'echo', timeoutMs: 60_000 })],
+        }),
+      }),
+    ]);
+    expect(diffRuntimeConfig(base, next).deferred).toContainEqual(
+      expect.objectContaining({
+        action: 'deferred',
+        category: 'session-scoped',
+        path: 'workspaceMcpServers',
+      })
+    );
   });
 
   it('classifies workspace root changes as session-scoped', () => {

@@ -21,6 +21,7 @@ type CapabilityCallRow = {
   agent_id: string | null;
   agent_session_id: string | null;
   package_snapshot_id: string | null;
+  schema_snapshot_id: string | null;
   runtime_origin_ref: string | null;
   runtime_cache_lineage_ref: string | null;
   request_id: string | null;
@@ -70,6 +71,8 @@ export interface GatewayCallContext {
   agentSessionId?: string | null;
   /** Agent Environment Package snapshot that authorized the call. */
   packageSnapshotId?: string | null;
+  /** Schema snapshot used to validate a schema-bound call. */
+  schemaSnapshotId?: string | null;
   /** Product-safe runtime origin correlation reference. */
   runtimeOriginRef?: string | null;
   /** Product-safe runtime cache-lineage correlation reference. */
@@ -108,6 +111,8 @@ export interface StartCapabilityCallInput extends GatewayCallContext {
 export interface StartedCapabilityCall {
   /** Durable call id. */
   id: string;
+  /** Whether this invocation created the durable call row. */
+  inserted: boolean;
   /** Gateway call context copied from the stored row. */
   context: GatewayCallContext;
 }
@@ -149,11 +154,21 @@ export interface FinishCapabilityCallInput {
   /** Durable call id. */
   callId: string;
   /** Terminal status. */
-  status: Extract<CapabilityCall['status'], 'succeeded' | 'failed' | 'cancelled'>;
-  /** Stable error code for failed or cancelled calls. */
+  status: Exclude<CapabilityCall['status'], 'queued' | 'running'>;
+  /** Stable error code for non-success terminal calls. */
   errorCode?: string | null;
   /** Completion time. */
   now?: Date;
+}
+
+/** Input for binding a running call to its observed schema snapshot. */
+export interface StampCapabilityCallSchemaSnapshotInput {
+  /** Workspace-scoped database handle. */
+  readonly workspaceDb: WorkspaceDb;
+  /** Durable running capability call id. */
+  readonly callId: string;
+  /** Stable schema snapshot id used for validation. */
+  readonly schemaSnapshotId: string;
 }
 
 /** Input for recovering non-terminal capability calls after restart. */
@@ -203,6 +218,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
     agentId: input.agentId ?? null,
     agentSessionId: input.agentSessionId ?? null,
     packageSnapshotId: input.packageSnapshotId ?? null,
+    schemaSnapshotId: input.schemaSnapshotId ?? null,
     runtimeOriginRef: input.runtimeOriginRef ?? null,
     runtimeCacheLineageRef: input.runtimeCacheLineageRef ?? null,
     requestId: input.requestId ?? null,
@@ -215,7 +231,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
     completedAt: null,
   });
 
-  input.workspaceDb.sqlite
+  const insertion = input.workspaceDb.sqlite
     .prepare(
       `INSERT OR IGNORE INTO capability_calls (
         call_id,
@@ -239,9 +255,10 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
         started_at,
         completed_at,
         package_snapshot_id,
+        schema_snapshot_id,
         runtime_origin_ref,
         runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       protocolCall.id,
@@ -265,6 +282,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       protocolCall.startedAt,
       protocolCall.completedAt,
       protocolCall.packageSnapshotId,
+      protocolCall.schemaSnapshotId,
       protocolCall.runtimeOriginRef,
       protocolCall.runtimeCacheLineageRef
     );
@@ -274,6 +292,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
 
   return {
     id: stored.call_id,
+    inserted: insertion.changes === 1,
     context: {
       agentId: stored.agent_id,
       agentSessionId: stored.agent_session_id,
@@ -283,6 +302,7 @@ export function startCapabilityCall(input: StartCapabilityCallInput): StartedCap
       itemId: stored.item_id,
       operation: stored.operation,
       packageSnapshotId: stored.package_snapshot_id,
+      schemaSnapshotId: stored.schema_snapshot_id,
       providerRef: stored.provider_ref,
       redactionClass: stored.redaction_class,
       requestId: stored.request_id,
@@ -437,43 +457,71 @@ function hasEquivalentUsageRecord(workspaceDb: WorkspaceDb, usage: UsageRecord):
 export function finishCapabilityCall(input: FinishCapabilityCallInput): void {
   const now = input.now ?? new Date();
   const completedAt = now.toISOString();
-  const call = findCapabilityCallById(input.workspaceDb, input.callId);
 
-  if (!call || call.completed_at) {
-    return;
-  }
+  input.workspaceDb.sqlite
+    .transaction(() => {
+      const call = findCapabilityCallById(input.workspaceDb, input.callId);
+      if (!call || call.completed_at) {
+        return;
+      }
+      capabilityCallFromRow({
+        ...call,
+        completed_at: completedAt,
+        error_code: input.errorCode ?? null,
+        status: input.status,
+      });
+      const result = input.workspaceDb.sqlite
+        .prepare(
+          `UPDATE capability_calls
+           SET status = ?, error_code = ?, completed_at = ?
+           WHERE call_id = ? AND completed_at IS NULL`
+        )
+        .run(input.status, input.errorCode ?? null, completedAt, input.callId);
+      if (result.changes !== 1) {
+        throw new Error(`Capability call changed concurrently: ${input.callId}`);
+      }
 
+      recordWorkspaceAuditEvent({
+        action: 'capability.finish',
+        agentId: call.agent_id,
+        agentSessionId: call.agent_session_id,
+        capabilityCallId: call.call_id,
+        category: 'capability',
+        errorCode: input.errorCode ?? null,
+        itemId: call.item_id,
+        now,
+        occurredAt: now,
+        outcome: capabilityAuditOutcome(input.status),
+        requestId: call.request_id,
+        resource: `capability:${call.capability_id}`,
+        severity: capabilityAuditSeverity(input.status),
+        summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null),
+        threadId: call.thread_id,
+        turnId: call.turn_id,
+        workspaceDb: input.workspaceDb,
+        workspaceId: call.workspace_id,
+      });
+    })
+    .immediate();
+}
+
+/** Binds one running call to exactly one schema snapshot before its effect. */
+export function stampCapabilityCallSchemaSnapshot(
+  input: StampCapabilityCallSchemaSnapshotInput
+): void {
+  const parsed = CapabilityCallSchema.shape.schemaSnapshotId.unwrap().parse(input.schemaSnapshotId);
   const result = input.workspaceDb.sqlite
     .prepare(
       `UPDATE capability_calls
-       SET status = ?, error_code = ?, completed_at = ?
-       WHERE call_id = ? AND completed_at IS NULL`
+       SET schema_snapshot_id = ?
+       WHERE call_id = ? AND status = 'running' AND schema_snapshot_id IS NULL`
     )
-    .run(input.status, input.errorCode ?? null, completedAt, input.callId);
-
-  if (result.changes === 0) {
-    return;
+    .run(parsed, input.callId);
+  if (result.changes === 1) return;
+  const stored = findCapabilityCallById(input.workspaceDb, input.callId);
+  if (stored?.schema_snapshot_id !== parsed) {
+    throw new Error(`Capability call schema snapshot conflicts: ${input.callId}`);
   }
-
-  recordWorkspaceAuditEvent({
-    action: 'capability.finish',
-    agentId: call.agent_id,
-    agentSessionId: call.agent_session_id,
-    capabilityCallId: call.call_id,
-    category: 'capability',
-    errorCode: input.errorCode ?? null,
-    itemId: call.item_id,
-    now,
-    outcome: input.status,
-    requestId: call.request_id,
-    resource: `capability:${call.capability_id}`,
-    severity: capabilityAuditSeverity(input.status),
-    summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null),
-    threadId: call.thread_id,
-    turnId: call.turn_id,
-    workspaceDb: input.workspaceDb,
-    workspaceId: call.workspace_id,
-  });
 }
 
 /**
@@ -493,7 +541,7 @@ export function recoverRunningCapabilityCalls(input: RecoverRunningCapabilityCal
       callId: call.call_id,
       errorCode: 'capability_call_recovered_after_restart',
       now,
-      status: 'cancelled',
+      status: 'unknown',
       workspaceDb: input.workspaceDb,
     });
   }
@@ -603,9 +651,10 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
         started_at,
         completed_at,
         package_snapshot_id,
+        schema_snapshot_id,
         runtime_origin_ref,
         runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       call.id,
@@ -629,6 +678,7 @@ function insertCapabilityCall(workspaceDb: WorkspaceDb, call: CapabilityCallLedg
       call.startedAt,
       call.completedAt,
       call.packageSnapshotId,
+      call.schemaSnapshotId,
       call.runtimeOriginRef,
       call.runtimeCacheLineageRef
     );
@@ -693,6 +743,7 @@ function capabilityCallFromRow(row: unknown): CapabilityCallLedgerRecord {
     agentId: call.agent_id,
     agentSessionId: call.agent_session_id,
     packageSnapshotId: call.package_snapshot_id,
+    schemaSnapshotId: call.schema_snapshot_id,
     runtimeOriginRef: call.runtime_origin_ref,
     runtimeCacheLineageRef: call.runtime_cache_lineage_ref,
     requestId: call.request_id,
@@ -797,7 +848,20 @@ function capabilityAuditSeverity(
     return 'info';
   }
 
-  return status === 'cancelled' ? 'warning' : 'error';
+  return status === 'failed' || status === 'timed-out' ? 'error' : 'warning';
+}
+
+/** Maps the Core terminal status into the independently owned audit outcome. */
+function capabilityAuditOutcome(
+  status: FinishCapabilityCallInput['status']
+): Parameters<typeof recordWorkspaceAuditEvent>[0]['outcome'] {
+  if (status === 'succeeded' || status === 'denied' || status === 'unknown') {
+    return status;
+  }
+  if (status === 'failed' || status === 'timed-out') {
+    return 'failed';
+  }
+  return 'cancelled';
 }
 
 /**
@@ -817,11 +881,7 @@ function capabilityAuditSummary(
     return `Capability call succeeded: ${call.summary ?? call.capability_id}`;
   }
 
-  if (status === 'cancelled') {
-    return `Capability call cancelled: ${errorCode ?? call.capability_id}`;
-  }
-
-  return `Capability call failed: ${errorCode ?? call.capability_id}`;
+  return `Capability call ${status}: ${errorCode ?? call.capability_id}`;
 }
 
 /**
@@ -892,6 +952,7 @@ function assertMatchingCapabilityCallAttribution(
     stored.agent_id !== incoming.agentId ||
     stored.agent_session_id !== incoming.agentSessionId ||
     stored.package_snapshot_id !== incoming.packageSnapshotId ||
+    stored.schema_snapshot_id !== incoming.schemaSnapshotId ||
     stored.runtime_origin_ref !== incoming.runtimeOriginRef ||
     stored.runtime_cache_lineage_ref !== incoming.runtimeCacheLineageRef ||
     sourceIdsJson(parseSourceIdsJson(stored.source_ids_json)) !==

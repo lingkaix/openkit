@@ -17,6 +17,7 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
     packageId: 'aepkg_demo',
     snapshotId: 'aepsnap_demo',
     scope: {
+      agentSessionId: 'as_demo',
       threadId: 'th_demo',
       turnId: 'turn_demo',
     },
@@ -79,6 +80,30 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('session workspace layout schema', () => {
+  it('binds Context slots to distinct admitted AgentSessions', () => {
+    const roots = ['as_a', 'as_b'].map((agentSessionId) => {
+      const planned = planSessionWorkspaceMaterialization({
+        environmentPackage: packageFixture({
+          scope: { agentSessionId, threadId: 'th_demo', turnId: 'turn_demo' },
+        }),
+      });
+      expect(planned.layout.slots.find((slot) => slot.id === 'context')?.path).toBe(
+        `/openkit/sessions/${agentSessionId}/context`
+      );
+      return planned.layout.control.contextRoot;
+    });
+    expect(new Set(roots).size).toBe(2);
+    for (const agentSessionId of ['../as_a', 'as:a', 'as?a', '']) {
+      expect(() =>
+        planSessionWorkspaceMaterialization({
+          environmentPackage: packageFixture({
+            scope: { agentSessionId, threadId: 'th_demo', turnId: 'turn_demo' },
+          }),
+        })
+      ).toThrow();
+    }
+  });
+
   it('accepts the default worker skeleton and rejects unsafe slots', () => {
     const planned = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });
 
@@ -155,7 +180,7 @@ describe('session workspace planner', () => {
                 kind: 'generated',
                 pathRef: 'threads/th_demo/turns/turn_demo/context-package',
               },
-              target: '/openkit/context',
+              target: '/openkit/sessions/as_demo/context',
             },
           ],
           outputs: [],
@@ -250,7 +275,7 @@ describe('session workspace planner', () => {
         kind: 'generated',
         pathRef: 'threads/th_demo/turns/turn_demo/context-package',
       },
-      target: '/openkit/context',
+      target: '/openkit/sessions/as_demo/context',
       ...change,
     };
     const planned = planSessionWorkspaceMaterialization({

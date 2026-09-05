@@ -245,7 +245,7 @@ Every release deployment worker image must:
 - provide the generic `openkit-worker-shim` entrypoint,
 - include exactly its catalog-declared runtime set and the generic shim package whose existing static registry contains the AEP-selected adapter,
 - provide every runtime binary id and worker-local executable path declared by its authored `AgentManifest`,
-- provide `/openkit/config/package.json`,
+- provide `/openkit/sessions/<agent-session-id>/config/package.json`,
 - write `/openkit/session/events.jsonl`,
 - write `/openkit/session/items.jsonl`,
 - write `/openkit/session/artifacts.jsonl`,
@@ -263,7 +263,7 @@ Worker images must not:
 - store vault secrets as durable image files,
 - assume host filesystem paths,
 - publish product API endpoints,
-- advertise or execute worker capability or MCP routes while the capability plane remains disabled,
+- advertise or execute a worker capability or MCP route absent exact selected AEP supply and the separately authenticated governed Gateway path,
 - make final authorization decisions,
 - push, tag, deploy, or mutate protected branches without NanoCore-approved review and apply gates,
 - treat OpenShell-native ids or logs as canonical product state.
@@ -759,7 +759,7 @@ Dockerfile static tests:
 - App image Dockerfile copies required migrations, data templates, app entrypoint, and app smoke script.
 - The shared worker Dockerfile uses digest-pinned direct image inputs, builds `@openkit/worker-protocol` and `@openkit/worker-shim` once, and exposes one final target per release worker.
 - Every final worker target installs exactly its catalog-declared runtime set and verified binary paths.
-- The shared worker stage creates `/openkit/config`, `/openkit/session`, and `/openkit/artifacts` and declares the sandbox user expected by OpenShell.
+- The shared worker stage creates `/openkit/sessions`, `/openkit/session`, and `/openkit/artifacts` and declares the sandbox user expected by OpenShell.
 - Codex image and launcher tests separately require a writable runtime home and the governed Node proxy contract when the optional S33 provenance extension is enabled.
 
 Local build acceptance:
@@ -786,7 +786,7 @@ Worker image smoke acceptance:
 
 - The image contains the generic `openkit-worker-shim` and proves that its manifest-selected adapter exists in the static registry.
 - The image contains every native runtime binary and worker-local executable path declared by its authored `AgentManifest`.
-- The image can read an AEP package from `/openkit/config/package.json`.
+- The image can read an AEP package from `/openkit/sessions/<agent-session-id>/config/package.json`.
 - The image can write session records under `/openkit/session`.
 - The image runs the native runtime's bounded machine-readable mode without advertising worker capability or executable MCP routes.
 - The Codex image exposes a writable `CODEX_HOME` or `HOME` when the optional S33 provenance extension is enabled; this is not a shared worker-image requirement.

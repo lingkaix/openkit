@@ -31,6 +31,13 @@ import {
 const WORKER_CONTROL_READINESS_TIMEOUT_MS = 10_000;
 const WORKER_CONTROL_TOKEN_MAX_BYTES = 4096;
 const NATIVE_STDOUT_MAX_BYTES = 16 * 1024 * 1024;
+const WORKER_MCP_CAPABILITY_ROUTES = [
+  'mcp.list_servers',
+  'mcp.list_tools',
+  'mcp.call_tool',
+] as const;
+/** Exact parent-cancellation reason used only for an MCP Approval Gate stop. */
+export const WORKER_HUMAN_GATE_STOP = Symbol('openkit.worker.human-gate-stop');
 const SAFE_WORKER_CHILD_ENVIRONMENT_KEYS = [
   'ALL_PROXY',
   'COLORTERM',
@@ -101,6 +108,8 @@ export interface WorkerShimEnvironment {
   OPENKIT_REQUEST_ID?: string | undefined;
   /** OpenShell placeholder resolved only when a relay adapter calls trusted worker inference. */
   OPENKIT_WORKER_INFERENCE_TOKEN?: string | undefined;
+  /** Turn-scoped bearer token for the worker-local MCP capability route. */
+  OPENKIT_WORKER_CAPABILITY_TOKEN?: string | undefined;
   /** Optional lowercase HTTP proxy URL inherited by child processes. */
   http_proxy?: string | undefined;
   /** Optional lowercase HTTPS proxy URL inherited by child processes. */
@@ -193,7 +202,7 @@ export interface WorkerShimRunResult {
   /** Process signal, or null when the process exited normally. */
   signal: NodeJS.Signals | null;
   /** Normalized worker terminal status. */
-  status: 'completed' | 'failed' | 'interrupted';
+  status: 'blocked' | 'completed' | 'failed' | 'interrupted';
 }
 
 /** Direct worker-control command accepted by the worker supervisor. */
@@ -266,8 +275,19 @@ interface WorkerShimPackageManifest {
   };
   /** Static inert supply declarations. */
   supply?: {
+    /** Catalog-resolved MCP server declarations. */
+    mcpServers?: unknown;
     /** Skill metadata supplied by NanoCore. */
     skills?: unknown;
+  };
+  /** Worker-local capability route declaration. */
+  capabilities?: {
+    /** Whether the worker capability route is callable. */
+    mode?: unknown;
+    /** Fixed worker capability protocol. */
+    protocol?: unknown;
+    /** Exact enabled operation set. */
+    routes?: unknown;
   };
   /** Worker-visible workspace declarations. */
   workspace?: {
@@ -449,6 +469,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     throw new Error(`Unknown worker adapter: ${adapterId}`);
   }
   const llmRoute = resolveWorkerLlmRoute(packageManifest);
+  const mcpServerIds = resolveWorkerMcpServerIds(packageManifest);
   const turnInput = resolveWorkerTurnInput(packageManifest);
   const cwd = resolveWorkerWorkingDirectory(packageManifest);
   const workspaceInputs = resolveWorkspaceInputs(packageManifest);
@@ -460,6 +481,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
         childEnvironment: workerChildEnvironment(packageManifest, environment, llmRoute),
         llmRoute,
+        mcpServerIds,
         sessionDirectory: options.args.sessionDir,
         stateRoot,
         turnInput,
@@ -507,6 +529,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     launchPlan = await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
       childEnvironment,
       llmRoute,
+      mcpServerIds,
       ...(provenanceDeclaration
         ? { runtimeProvenance: { ...provenanceDeclaration, lineage } }
         : {}),
@@ -569,6 +592,14 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       });
       await integration.ready;
       integration.bindTurnRouteTokens({
+        ...(mcpServerIds.length > 0
+          ? {
+              capabilityToken: requireEnvironmentValue(
+                environment,
+                'OPENKIT_WORKER_CAPABILITY_TOKEN'
+              ),
+            }
+          : {}),
         controlToken,
         inferenceToken:
           inferenceToken ?? requireEnvironmentValue(environment, 'OPENKIT_WORKER_INFERENCE_TOKEN'),
@@ -620,15 +651,16 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     }
 
     if (interrupted || options.signal?.aborted) {
+      const humanGateStop = options.signal?.reason === WORKER_HUMAN_GATE_STOP;
       terminalOutcomeAttempted = true;
       await writeAndReportTerminalOutcome(writer, workerControlReady ? session : null, {
-        status: 'interrupted',
-        stopReason: 'aborted',
+        status: humanGateStop ? 'blocked' : 'interrupted',
+        stopReason: humanGateStop ? 'ask_user' : 'aborted',
       });
       return {
         exitCode: null,
         signal: 'SIGTERM',
-        status: 'interrupted',
+        status: humanGateStop ? 'blocked' : 'interrupted',
       };
     }
 
@@ -757,14 +789,22 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       adapterResult.assistantText,
       credentialValues
     );
+    const humanGateStop = options.signal?.reason === WORKER_HUMAN_GATE_STOP;
     const status =
       interrupted || options.signal?.aborted
-        ? 'interrupted'
+        ? humanGateStop
+          ? 'blocked'
+          : 'interrupted'
         : assistantOutputRejected
           ? 'failed'
           : adapterResult.status;
 
-    if (adapterResult.assistantText && status !== 'interrupted' && !assistantOutputRejected) {
+    if (
+      adapterResult.assistantText &&
+      status !== 'blocked' &&
+      status !== 'interrupted' &&
+      !assistantOutputRejected
+    ) {
       await writer.writeAssistantMessage({
         status,
         text: adapterResult.assistantText,
@@ -786,7 +826,13 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
         : {}),
       status,
       stopReason:
-        status === 'completed' ? 'completed' : status === 'interrupted' ? 'aborted' : 'error',
+        status === 'completed'
+          ? 'completed'
+          : status === 'blocked'
+            ? 'ask_user'
+            : status === 'interrupted'
+              ? 'aborted'
+              : 'error',
     };
     terminalOutcomeAttempted = true;
     const terminalRecord = await writer.writeTerminalOutcome(terminalInput);
@@ -1343,6 +1389,46 @@ function validateSandboxIntegrationBindings(value: unknown): void {
 }
 
 /**
+ * Resolves the exact catalog-selected MCP server ids exposed to the native adapter.
+ *
+ * @param packageManifest Worker-visible AEP.
+ * @returns Stable MCP server ids, or an empty list when capability access is disabled.
+ * @throws When an enabled capability declaration or server id is malformed.
+ */
+function resolveWorkerMcpServerIds(packageManifest: WorkerShimPackageManifest): string[] {
+  const capabilities = packageManifest.capabilities;
+  if (!capabilities || capabilities.mode === 'disabled') {
+    if (capabilities?.routes !== undefined && JSON.stringify(capabilities.routes) !== '[]') {
+      throw new Error('Disabled worker capabilities cannot declare routes.');
+    }
+    return [];
+  }
+  if (
+    capabilities.mode !== 'enabled' ||
+    capabilities.protocol !== 'openkit-worker-capability-v1' ||
+    !Array.isArray(capabilities.routes) ||
+    capabilities.routes.length !== WORKER_MCP_CAPABILITY_ROUTES.length ||
+    capabilities.routes.some((route, index) => route !== WORKER_MCP_CAPABILITY_ROUTES[index])
+  ) {
+    throw new Error('Worker shim requires the exact enabled MCP capability routes.');
+  }
+  const servers = packageManifest.supply?.mcpServers;
+  if (!Array.isArray(servers) || servers.length === 0) {
+    throw new Error('Enabled worker MCP capabilities require selected server supply.');
+  }
+  const ids = servers.map((server) =>
+    isRecord(server) && typeof server.id === 'string' ? server.id : ''
+  );
+  if (ids.some((id) => !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id))) {
+    throw new Error('Worker MCP server supply contains an invalid id.');
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('Worker MCP server supply contains duplicate ids.');
+  }
+  return ids;
+}
+
+/**
  * Validates the fixed runtime provenance declaration before process launch or file creation.
  *
  * @param value Untrusted package manifest value.
@@ -1489,13 +1575,7 @@ function rejectRetiredWorkerOverrides(
 function validateWorkerShimCommand(packageManifest: WorkerShimPackageManifest): void {
   const argv = packageManifest.runtime?.command?.argv;
 
-  if (
-    !Array.isArray(argv) ||
-    argv.length !== 3 ||
-    argv[0] !== 'openkit-worker-shim' ||
-    argv[1] !== '--package' ||
-    argv[2] !== '/openkit/config/package.json'
-  ) {
+  if (!Array.isArray(argv) || argv.length !== 1 || argv[0] !== 'openkit-worker-shim') {
     throw new Error('Worker shim requires the fixed AEP runtime.command.argv.');
   }
 }
@@ -1791,19 +1871,20 @@ function workerCredentialNames(
   packageManifest: WorkerShimPackageManifest,
   route: WorkerAdapterLlmRoute
 ): Set<string> {
+  const names = new Set<string>();
   if (route.credentialVisibility === 'environment') {
-    const names = resolveRuntimeCredentialNames(packageManifest);
-    if (names.size !== 1) {
+    const runtimeNames = resolveRuntimeCredentialNames(packageManifest);
+    if (runtimeNames.size !== 1) {
       throw new Error('Worker environment route requires exactly one runtime-env credential.');
     }
-
-    return names;
+    for (const name of runtimeNames) names.add(name);
+  } else if (route.credentialVisibility === 'placeholder') {
+    names.add('OPENKIT_WORKER_INFERENCE_TOKEN');
   }
-  if (route.credentialVisibility === 'placeholder') {
-    return new Set(['OPENKIT_WORKER_INFERENCE_TOKEN']);
+  if (resolveWorkerMcpServerIds(packageManifest).length > 0) {
+    names.add('OPENKIT_WORKER_CAPABILITY_TOKEN');
   }
-
-  return new Set();
+  return names;
 }
 
 /**

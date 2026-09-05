@@ -12,6 +12,7 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import type { StopReason } from '@openkit/protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
@@ -64,7 +65,7 @@ import {
   type ResolvedAgentEnvironmentRuntimeEnvCredential,
   type ResolvedAgentEnvironmentRuntimeFileCredential,
   resolveAgentEnvironmentPackage,
-  resolveAgentSessionCompatibilityKey,
+  resolveAgentEnvironmentPackageMetadata,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { generateUuidV7 } from './session-id.js';
@@ -109,6 +110,7 @@ import {
   type WorkerGovernanceAgentSessionContinuityDisposition,
   type WorkerGovernanceBackend,
   type WorkerGovernanceBackendSessionIdentity,
+  WorkerGovernanceCapacityUnavailableError,
   type WorkerGovernanceEvidenceRecord,
   type WorkerGovernanceWorkspaceChangeRecord,
 } from './worker-governance-backend.js';
@@ -185,6 +187,7 @@ export function prepareWorkerTurnContextPackage(
   store: FsStore,
   checkpoint: WorkerCheckpointRecord,
   input: {
+    readonly agentSessionId: string;
     readonly workerRequest: string;
     readonly requestId: string | null;
     readonly workspaceId: string;
@@ -476,7 +479,7 @@ export function prepareWorkerTurnContextPackage(
         id: `context_${input.turnId}`,
         sourceKind: 'materialized-dir',
         sourcePath: packageRoot,
-        workerPath: '/openkit/context',
+        workerPath: workerSessionInputPaths(input.agentSessionId).contextRoot,
       },
     },
     queuedMaterialSelection,
@@ -664,8 +667,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     const current = currentSessions[0];
-    const previewCompatibilityKey = (agentSessionId: string) =>
-      this.previewAgentSessionCompatibilityKey(agentSessionId, input);
     if (!current) {
       if (!this.backend.prepareAgentSessionContinuity) {
         throw new TurnStartValidationError(
@@ -674,12 +675,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      const sessionCompatibilityKey = previewCompatibilityKey(input.freshAgentSessionId);
+      const sessionCompatibilityKey = this.previewAgentSessionCompatibilityKey(
+        input.freshAgentSessionId,
+        input
+      );
+      const environmentPackage = this.previewAgentEnvironmentPackage(
+        input.freshAgentSessionId,
+        input
+      );
+      this.requireMaterializationCapacity(input.freshAgentSessionId, input);
       let disposition: WorkerGovernanceAgentSessionContinuityDisposition;
       try {
         disposition = await this.backend.prepareAgentSessionContinuity({
           agentSessionCompatibilityKey: sessionCompatibilityKey,
           agentSessionId: input.freshAgentSessionId,
+          environmentPackage,
           reuseAllowed: true,
           threadId: input.turn.threadId,
           workspaceId: input.turn.workspaceId,
@@ -719,7 +729,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    const currentCompatibilityKey = previewCompatibilityKey(current.id);
+    const currentCompatibilityKey = this.previewAgentSessionCompatibilityKey(current.id, input);
+    const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, input);
+    this.requireMaterializationCapacity(current.id, input);
     const reuseAllowed =
       current.status === 'idle' &&
       !current.stale &&
@@ -738,6 +750,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       disposition = await this.backend.prepareAgentSessionContinuity({
         agentSessionCompatibilityKey: currentCompatibilityKey,
         agentSessionId: current.id,
+        environmentPackage: currentEnvironmentPackage,
         reuseAllowed: true,
         threadId: input.turn.threadId,
         workspaceId: input.turn.workspaceId,
@@ -766,14 +779,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         sessionCompatibilityKey: currentCompatibilityKey,
       };
     }
-    if (!['reusable', 'replacement-required', 'absent'].includes(disposition)) {
+    if (
+      !['reusable', 'replacement-required', 'sandbox-replacement-required', 'absent'].includes(
+        disposition
+      )
+    ) {
       throw new TurnStartValidationError(
         'recovery_required',
         'The worker backend performed an effect during read-only continuity inspection.',
         409
       );
     }
-    const freshCompatibilityKey = previewCompatibilityKey(input.freshAgentSessionId);
+    const freshCompatibilityKey = this.previewAgentSessionCompatibilityKey(
+      input.freshAgentSessionId,
+      input
+    );
+    this.requireMaterializationCapacity(input.freshAgentSessionId, input);
     return {
       agentSessionId: input.freshAgentSessionId,
       currentAgentSession,
@@ -791,8 +812,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const currentSessions = store
       .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
       .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
-    const previewCompatibilityKey = (agentSessionId: string) =>
-      this.previewAgentSessionCompatibilityKey(agentSessionId, preparation);
     if (!this.backend.prepareAgentSessionContinuity) {
       throw new TurnStartValidationError(
         'recovery_required',
@@ -803,6 +822,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const inspectBackendContinuity = async (
       agentSessionId: string,
       agentSessionCompatibilityKey: string,
+      environmentPackage: AgentEnvironmentPackage,
       reuseAllowed: boolean
     ) => {
       try {
@@ -811,6 +831,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           admissionLeaseId: input.leaseId,
           agentSessionCompatibilityKey,
           agentSessionId,
+          environmentPackage,
           reuseAllowed,
           threadId: preparation.turn.threadId,
           workspaceId: preparation.turn.workspaceId,
@@ -832,7 +853,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      const freshCompatibilityKey = previewCompatibilityKey(prepared.agentSessionId);
+      const freshCompatibilityKey = this.previewAgentSessionCompatibilityKey(
+        prepared.agentSessionId,
+        preparation
+      );
+      const freshEnvironmentPackage = this.previewAgentEnvironmentPackage(
+        prepared.agentSessionId,
+        preparation
+      );
       if (freshCompatibilityKey !== prepared.sessionCompatibilityKey) {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -840,9 +868,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
+      this.requireMaterializationCapacity(prepared.agentSessionId, preparation);
       const disposition = await inspectBackendContinuity(
         prepared.agentSessionId,
         freshCompatibilityKey,
+        freshEnvironmentPackage,
         true
       );
       if (disposition !== 'absent') {
@@ -894,7 +924,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    const currentCompatibilityKey = previewCompatibilityKey(current.id);
+    const currentCompatibilityKey = this.previewAgentSessionCompatibilityKey(
+      current.id,
+      preparation
+    );
+    const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, preparation);
     const reuseAllowed =
       current.agentId === preparation.agentSetup.manifest.id &&
       current.policySnapshotId === WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID &&
@@ -912,7 +946,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      const disposition = await inspectBackendContinuity(current.id, currentCompatibilityKey, true);
+      this.requireMaterializationCapacity(current.id, preparation);
+      const disposition = await inspectBackendContinuity(
+        current.id,
+        currentCompatibilityKey,
+        currentEnvironmentPackage,
+        true
+      );
       if (disposition !== 'reusable') {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -933,7 +973,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    const freshCompatibilityKey = previewCompatibilityKey(prepared.agentSessionId);
+    const freshCompatibilityKey = this.previewAgentSessionCompatibilityKey(
+      prepared.agentSessionId,
+      preparation
+    );
+    const freshEnvironmentPackage = this.previewAgentEnvironmentPackage(
+      prepared.agentSessionId,
+      preparation
+    );
     if (freshCompatibilityKey !== prepared.sessionCompatibilityKey) {
       throw new TurnStartValidationError(
         'recovery_required',
@@ -941,8 +988,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    const inspected = await inspectBackendContinuity(current.id, currentCompatibilityKey, true);
-    if (!['reusable', 'replacement-required', 'absent'].includes(inspected)) {
+    this.requireMaterializationCapacity(prepared.agentSessionId, preparation);
+    const inspected = await inspectBackendContinuity(
+      current.id,
+      currentCompatibilityKey,
+      currentEnvironmentPackage,
+      true
+    );
+    if (
+      !['reusable', 'replacement-required', 'sandbox-replacement-required', 'absent'].includes(
+        inspected
+      )
+    ) {
       throw new TurnStartValidationError(
         'recovery_required',
         'The predecessor AgentSession runtime inspection was not read-only.',
@@ -950,7 +1007,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     if (inspected !== 'absent') {
-      const closed = await inspectBackendContinuity(current.id, currentCompatibilityKey, false);
+      const closed = await inspectBackendContinuity(
+        current.id,
+        currentCompatibilityKey,
+        freshEnvironmentPackage,
+        false
+      );
       if (closed !== 'closed' && closed !== 'absent') {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -977,12 +1039,47 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
   }
 
+  /** Rejects admission when the current NanoHost target cannot host the resolved package. */
+  private requireMaterializationCapacity(
+    agentSessionId: string,
+    input: PrepareAgentSessionForTurnInput
+  ): void {
+    if (!this.backend.inspectMaterializationCapacity) {
+      return;
+    }
+    let capacity: 'available' | 'capacity-saturated';
+    try {
+      capacity = this.backend.inspectMaterializationCapacity(
+        this.previewAgentEnvironmentPackage(agentSessionId, input)
+      );
+    } catch {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The worker backend materialization capacity cannot be safely inspected.',
+        409
+      );
+    }
+    if (capacity === 'capacity-saturated') {
+      throw new WorkerGovernanceCapacityUnavailableError();
+    }
+  }
+
   /** Computes the metadata-only compatibility key used by admission and full launch. */
   private previewAgentSessionCompatibilityKey(
     agentSessionId: string,
     input: PrepareAgentSessionForTurnInput
   ): string {
-    return resolveAgentSessionCompatibilityKey({
+    return agentSessionCompatibilityKeyFromPackage(
+      this.previewAgentEnvironmentPackage(agentSessionId, input)
+    );
+  }
+
+  /** Resolves one complete secret-free AEP for admission without backend or Store effects. */
+  private previewAgentEnvironmentPackage(
+    agentSessionId: string,
+    input: PrepareAgentSessionForTurnInput
+  ): AgentEnvironmentPackage {
+    return resolveAgentEnvironmentPackageMetadata({
       agentSessionId,
       agentSetup: input.agentSetup,
       backend: { kind: 'openshell' },
@@ -995,6 +1092,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceRoots: input.workspaceRoots,
       ...(input.workspaceDataSourceCatalog
         ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+        : {}),
+      ...(input.workspaceMcpServerCatalog
+        ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
         : {}),
       ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
     });
@@ -1070,6 +1170,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ...(context.workspaceDataSourceCatalog
             ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
             : {}),
+          ...(context.workspaceMcpServerCatalog
+            ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
+            : {}),
           ...(context.workspaceSourceRefs
             ? { workspaceSourceRefs: context.workspaceSourceRefs }
             : {}),
@@ -1106,6 +1209,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           store,
           checkpoint,
           {
+            agentSessionId: resolvedAgentSessionId,
             requestId,
             threadId: turn.threadId,
             turnId: turn.id,
@@ -1148,6 +1252,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ...(this.vaultBackend ? { vaultBackend: this.vaultBackend } : {}),
         ...(context.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+          : {}),
+        ...(context.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
           : {}),
         workspaceCwd: workerVisibleWorkspaceCwd(context, { kind: 'openshell' }),
         workspaceRoots: context.workspaceRoots,
@@ -1531,7 +1638,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
 
     if (
       workerFinalStatus &&
-      canonicalStopReasonForAcceptedWorkerFinalStatus(workerFinalStatus) === 'ask_user'
+      canonicalStopReasonForAcceptedWorkerFinalStatus(workerFinalStatus) === 'ask_user' &&
+      store.getTurnById(turn.id).status !== 'awaiting_human'
     ) {
       throw new TurnStartValidationError(
         'recovery_required',
@@ -1683,6 +1791,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         const recoveredTurn = store.getTurnById(environmentPackage.scope.turnId);
         const recoveredSession = store.getAgentSession(environmentPackage.scope.agentSessionId);
         if (
+          recoveredTurn.status === 'awaiting_human' &&
+          recoveredTurn.humanGate !== null &&
+          recoveredSession.status === 'suspended'
+        ) {
+          return recoveredStatus;
+        }
+        if (
           recoveredTurn.workspaceId !== environmentPackage.scope.workspaceId ||
           recoveredTurn.threadId !== environmentPackage.scope.threadId ||
           recoveredTurn.agentSessionId !== environmentPackage.scope.agentSessionId ||
@@ -1830,7 +1945,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           (input) =>
             input.id === `context_${environmentPackage.scope.turnId}` &&
             input.kind === 'generated' &&
-            input.target === '/openkit/context'
+            input.target ===
+              workerSessionInputPaths(environmentPackage.scope.agentSessionId).contextRoot
         )
       ) {
         acceptedContextPackageTrace = readWorkerContextPackageTrace({
@@ -2452,6 +2568,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): void {
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted);
     if (stopReason === 'ask_user') {
+      const turn = store.getTurnById(turnScope.id);
+      const session = store.getAgentSession(agentSessionId);
+      if (
+        turn.workspaceId === turnScope.workspaceId &&
+        turn.threadId === turnScope.threadId &&
+        turn.agentSessionId === agentSessionId &&
+        turn.status === 'awaiting_human' &&
+        turn.humanGate !== null &&
+        session.workspaceId === turnScope.workspaceId &&
+        session.threadId === turnScope.threadId &&
+        ['busy', 'degraded', 'suspended'].includes(session.status)
+      ) {
+        store.updateAgentSession(agentSessionId, {
+          message: null,
+          status: 'suspended',
+          updatedAt: this.now(),
+        });
+        return;
+      }
       terminalizeGovernedWorkerTurn({
         agentSessionId,
         completedAt: this.now(),
@@ -2597,6 +2732,17 @@ function asWorkerArtifactTurnError(error: unknown): unknown {
     return new TurnStartValidationError(error.code, error.message, error.status);
   }
   return error;
+}
+
+/** Reads the canonical SessionCompatibilityKey from one metadata-only AEP. */
+function agentSessionCompatibilityKeyFromPackage(
+  environmentPackage: AgentEnvironmentPackage
+): string {
+  return (
+    environmentPackage.extensions.openkit as {
+      sessionWorkspace: SessionWorkspaceMaterializationPlan;
+    }
+  ).sessionWorkspace.compatibilityKey.digest;
 }
 
 /** Verifies that the restored package, Core session, and backend plan have one authority lineage. */

@@ -15169,6 +15169,18 @@
                     }
                   ]
                 },
+                "schemaSnapshotId": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "runtimeOriginRef": {
                   "default": null,
                   "anyOf": [
@@ -15225,7 +15237,11 @@
                     "running",
                     "succeeded",
                     "failed",
-                    "cancelled"
+                    "denied",
+                    "aborted",
+                    "timed-out",
+                    "interrupted",
+                    "unknown"
                   ]
                 },
                 "summary": {
@@ -15325,6 +15341,7 @@
                 "agentId",
                 "agentSessionId",
                 "packageSnapshotId",
+                "schemaSnapshotId",
                 "runtimeOriginRef",
                 "runtimeCacheLineageRef",
                 "requestId",
@@ -15341,7 +15358,96 @@
                 "serviceRef",
                 "redactionClass"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "properties": {
+                          "status": {
+                            "const": "queued"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "completedAt": {
+                          "type": "null"
+                        },
+                        "startedAt": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "properties": {
+                          "status": {
+                            "const": "running"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "completedAt": {
+                          "type": "null"
+                        },
+                        "startedAt": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "properties": {
+                          "status": {
+                            "enum": [
+                              "succeeded",
+                              "failed",
+                              "denied",
+                              "aborted",
+                              "timed-out",
+                              "interrupted",
+                              "unknown"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "completedAt": {
+                          "type": "string"
+                        },
+                        "startedAt": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ],
+              "description": "Capability call timestamp nullability is determined by status. Parsed-instant ordering of terminal timestamps is enforced by the canonical Zod schema because JSON Schema cannot compare sibling date-time values."
             }
           },
           "usageRecords": {
@@ -23393,7 +23499,8 @@
                     "succeeded",
                     "failed",
                     "denied",
-                    "cancelled"
+                    "cancelled",
+                    "unknown"
                   ]
                 },
                 "severity": {
@@ -24071,7 +24178,8 @@
                     "succeeded",
                     "failed",
                     "denied",
-                    "cancelled"
+                    "cancelled",
+                    "unknown"
                   ]
                 },
                 "severity": {
@@ -34897,7 +35005,8 @@
                     "agent",
                     "user",
                     "workspace",
-                    "data-source"
+                    "data-source",
+                    "mcp-server"
                   ]
                 },
                 "path": {
@@ -34968,7 +35077,8 @@
                   "agent",
                   "user",
                   "workspace",
-                  "data-source"
+                  "data-source",
+                  "mcp-server"
                 ]
               },
               "path": {
@@ -35039,7 +35149,8 @@
               "agent",
               "user",
               "workspace",
-              "data-source"
+              "data-source",
+              "mcp-server"
             ]
           },
           "content": {
@@ -35084,7 +35195,8 @@
                   "agent",
                   "user",
                   "workspace",
-                  "data-source"
+                  "data-source",
+                  "mcp-server"
                 ]
               },
               "path": {
@@ -35698,7 +35810,8 @@
                     "agent",
                     "user",
                     "workspace",
-                    "data-source"
+                    "data-source",
+                    "mcp-server"
                   ]
                 },
                 "title": {
@@ -85806,5 +85919,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:cea1bf2f08eb403b7e1ee5c914da5fcafade5465138bddf12d66fe541691b59e"
+  "x-openkit-source-digest": "sha256:f0d1b501580affa991294ff066abc05957d53c6287d8d0671c8cae61a3c31655"
 }

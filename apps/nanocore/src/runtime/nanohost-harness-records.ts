@@ -660,6 +660,10 @@ export function dispatchNanoHostHarnessOperation(
       while (inferenceToken === workerControlToken) {
         inferenceToken = requireRouteToken(token());
       }
+      let capabilityToken = requireRouteToken(token());
+      while (capabilityToken === workerControlToken || capabilityToken === inferenceToken) {
+        capabilityToken = requireRouteToken(token());
+      }
       const leaseId = body.leaseId as string;
       const lease = coreDb.sqlite
         .prepare(
@@ -671,19 +675,22 @@ export function dispatchNanoHostHarnessOperation(
       }
       const workerControlTokenHash = hashWorkerRouteToken(workerControlToken);
       const workerInferenceTokenHash = hashWorkerRouteToken(inferenceToken);
+      const workerCapabilityTokenHash = hashWorkerRouteToken(capabilityToken);
       bindSchedulerLeaseRouteTokenHashes(coreDb, {
         leaseId,
         ...(input.now ? { now: input.now } : {}),
         sandboxBindingRef: lease.sandboxBindingRef,
+        workerCapabilityTokenHash,
         workerControlTokenHash,
         workerInferenceTokenHash,
       });
       durableBody = {
         ...body,
+        capabilityTokenHash: workerCapabilityTokenHash,
         inferenceTokenHash: workerInferenceTokenHash,
         workerControlTokenHash,
       };
-      wireBody = { ...body, inferenceToken, workerControlToken };
+      wireBody = { ...body, capabilityToken, inferenceToken, workerControlToken };
     }
     const operationId = sha256(
       canonicalJson({
@@ -961,6 +968,7 @@ function requireOperationLineage(
     .prepare(
       `SELECT agent_session_id AS agentSessionId, workspace_id AS workspaceId,
               thread_id AS threadId, lifecycle_state AS lifecycleState,
+              current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId,
               next_turn_sequence AS nextTurnSequence
        FROM agent_session_runtime_bindings
        WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`
@@ -968,6 +976,8 @@ function requireOperationLineage(
     .get(body.agentSessionRuntimeBindingId, harness.harness_instance_id) as
     | {
         readonly agentSessionId: string;
+        readonly currentLeaseId: string | null;
+        readonly currentTurnId: string | null;
         readonly workspaceId: string;
         readonly threadId: string;
         readonly lifecycleState: string;
@@ -976,6 +986,66 @@ function requireOperationLineage(
     | undefined;
   if (!binding || binding.agentSessionId !== body.agentSessionId) {
     throw new Error('NanoHost Harness AgentSession binding lineage conflicts.');
+  }
+  if (operation === 'turn.interrupt') {
+    if (
+      harness.active_turn_count !== 1 ||
+      binding.lifecycleState !== 'active' ||
+      binding.currentTurnId !== body.turnId ||
+      binding.currentLeaseId !== body.leaseId
+    ) {
+      throw new Error('NanoHost Harness interrupt conflicts with the active Turn binding.');
+    }
+    const lease = coreDb.sqlite
+      .prepare(
+        `SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
+                agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
+                status
+         FROM scheduler_session_leases WHERE lease_id = ?`
+      )
+      .get(body.leaseId) as
+      | {
+          readonly agentSessionId: string;
+          readonly packageSnapshotId: string;
+          readonly status: string;
+          readonly threadId: string;
+          readonly turnId: string;
+          readonly workspaceId: string;
+        }
+      | undefined;
+    const acceptedFinal = lease
+      ? coreDb.sqlite
+          .prepare(
+            `SELECT 1 FROM worker_control_records
+             WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+               AND agent_session_id = ? AND package_snapshot_id = ?
+               AND operation = 'final_status' LIMIT 1`
+          )
+          .get(
+            lease.workspaceId,
+            lease.threadId,
+            lease.turnId,
+            lease.agentSessionId,
+            lease.packageSnapshotId
+          )
+      : null;
+    const activeTurnStart =
+      harness.operation === 'turn.start' && harness.command_body_json
+        ? readJsonObject(harness.command_body_json)
+        : null;
+    if (
+      !lease ||
+      !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
+      lease.workspaceId !== binding.workspaceId ||
+      lease.threadId !== binding.threadId ||
+      lease.turnId !== body.turnId ||
+      lease.agentSessionId !== body.agentSessionId ||
+      activeTurnStart?.packageSnapshotId !== lease.packageSnapshotId ||
+      acceptedFinal
+    ) {
+      throw new Error('NanoHost Harness interrupt conflicts with the live lease lineage.');
+    }
+    return;
   }
   if (operation !== 'turn.start') {
     return;
@@ -1049,7 +1119,13 @@ function requireHarnessOperationBody(
       'turnSequence',
       'workspaceId',
     ],
-    'turn.interrupt': ['agentSessionId', 'agentSessionRuntimeBindingId', 'leaseId', 'turnId'],
+    'turn.interrupt': [
+      'agentSessionId',
+      'agentSessionRuntimeBindingId',
+      'leaseId',
+      'purpose',
+      'turnId',
+    ],
     'session.close': ['agentSessionId', 'agentSessionRuntimeBindingId'],
     'harness.drain': [],
   };
@@ -1071,6 +1147,13 @@ function requireHarnessOperationBody(
     ) {
       throw new Error('NanoHost Harness session.open adapter or setup generation is unsupported.');
     }
+  }
+  if (
+    operation === 'turn.interrupt' &&
+    body.purpose !== 'interrupt' &&
+    body.purpose !== 'human-gate'
+  ) {
+    throw new Error('NanoHost Harness turn.interrupt purpose is unsupported.');
   }
 }
 

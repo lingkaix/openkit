@@ -504,4 +504,33 @@ describe('protocol hardening boundary', () => {
       }).workspaceId
     ).toBeNull();
   });
+
+  it('orders capability terminal timestamps by their parsed instants', () => {
+    const call = {
+      id: 'cap_ordered_time',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      agentSessionId: 'as_demo',
+      capabilityId: 'runtime.worker_turn',
+      status: 'succeeded',
+      summary: null,
+      errorCode: null,
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:30:00+02:00',
+    } as const;
+
+    expect(protocol.CapabilityCallSchema.safeParse(call).success).toBe(false);
+    expect(
+      protocol.CapabilityCallSchema.safeParse({ ...call, completedAt: 'not-a-timestamp' }).success
+    ).toBe(false);
+    expect(
+      protocol.CapabilityCallSchema.safeParse({
+        ...call,
+        completedAt: null,
+        startedAt: 'not-a-timestamp',
+        status: 'running',
+      }).success
+    ).toBe(false);
+  });
 });

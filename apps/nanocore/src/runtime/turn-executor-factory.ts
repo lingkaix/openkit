@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-
 import {
   type AgentEnvironmentPackage,
   type AgentEnvironmentValidationDiagnostic,
@@ -12,7 +11,10 @@ import {
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import { responsibleUserIdForActor } from '@openkit/protocol';
-import { WorkerRuntimeRawStreamManifestSchema } from '@openkit/worker-protocol';
+import {
+  WorkerRuntimeRawStreamManifestSchema,
+  workerSessionInputPaths,
+} from '@openkit/worker-protocol';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { requireSchedulerSessionLeaseAdmissionContext } from '../scheduler-records.js';
@@ -136,6 +138,8 @@ export interface ConfiguredWorkerLifecycleRuntime {
   ) => Promise<void>;
   /** Registers restart cleanup result identities before the transport listener exists. */
   readonly prepareBackendCleanup: (identity: WorkerGovernanceBackendSessionIdentity) => void;
+  /** Durably queues the existing Codex Harness stop for one MCP Approval Gate. */
+  readonly requestHumanGateStop: (packageSnapshotId: string) => void;
   /** Restores and closes one worker whose final status is already durable. */
   readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
     readonly status: 'cancelled' | 'completed' | 'failed' | 'interrupted';
@@ -272,6 +276,7 @@ function createNanoHostWorkerLifecycleRuntime(
   return {
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
+    requestHumanGateStop: (packageSnapshotId) => backend.requestHumanGateStop(packageSnapshotId),
     acceptNanoHostHarnessCommand: (command) => backend.acceptHarnessCommand(command),
     acceptNanoHostHarnessResult: (result) => backend.acceptHarnessResult(result),
     runtimeTargetKind: 'nanohost',
@@ -299,6 +304,8 @@ function createNanoHostWorkerLifecycleRuntime(
 
 /** One materialized Turn awaiting operations on the shared private Harness. */
 interface NanoHostBackendTurnSession {
+  /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
+  pendingImports: NanoHostContextPackageImport[];
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly evidence: WorkerGovernanceEvidenceRecord[];
   readonly agentSessionCompatibilityKey: string;
@@ -310,6 +317,7 @@ interface NanoHostBackendTurnSession {
   nativeSessionReusable: boolean;
   readonly sharedHarness: NanoHostSharedHarness;
   pendingHarnessOperation: PendingNanoHostHarnessOperation | null;
+  humanGateStopSettlement: Promise<void> | null;
   readonly retainedStagingPaths: string[];
   terminalInspectionComplete: boolean;
   turnStarted: boolean;
@@ -353,8 +361,21 @@ interface NanoHostSharedHarness {
 interface NanoHostSharedSandbox {
   bridgeOpen: boolean;
   readonly imageDigest: string;
+  readonly sandboxBindingRef: string;
+  readonly sandboxId: string;
   readonly sandboxCompatibilityKey: string;
   readonly sandboxIntegrationBindingRef: string;
+  readonly sandboxRuntimeId: string;
+}
+
+/** One incompatible resident Sandbox whose complete private occupancy is proved idle. */
+interface NanoHostIdleSandboxEviction {
+  readonly bindings: NanoHostAgentSessionContinuityInspection[];
+  readonly bridgeOpen: boolean;
+  readonly closeAgentSessions: boolean;
+  readonly sandboxBindingRef: string;
+  readonly sandboxCompatibilityKey: string;
+  readonly sandboxId: string;
   readonly sandboxRuntimeId: string;
 }
 
@@ -410,10 +431,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         const leaseId = command.body.leaseId;
         const workerControlToken = command.body.workerControlToken;
         const workerInferenceToken = command.body.inferenceToken;
+        const workerCapabilityToken = command.body.capabilityToken;
         if (
           leaseId !== session.leaseId ||
           typeof workerControlToken !== 'string' ||
-          typeof workerInferenceToken !== 'string'
+          typeof workerInferenceToken !== 'string' ||
+          typeof workerCapabilityToken !== 'string'
         ) {
           throw new Error('NanoHost dispatched Turn does not match its live producer.');
         }
@@ -430,6 +453,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         this.workerControlGateway.registerSession(session.environmentPackage, {
           sandboxBindingRef: lease.sandboxBindingRef,
+          workerCapabilityToken,
           workerControlToken,
           workerInferenceToken,
         });
@@ -545,6 +569,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       .prepare(
         `SELECT sandbox_runtime_id AS sandboxRuntimeId,
                 runtime_target_id AS runtimeTargetId,
+                sandbox_binding_ref AS sandboxBindingRef,
                 sandbox_integration_binding_ref AS sandboxIntegrationBindingRef,
                 image_digest AS imageDigest,
                 lifecycle_state AS lifecycleState,
@@ -561,6 +586,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           readonly imageDigest: string;
           readonly lifecycleState: string;
           readonly runtimeTargetId: string;
+          readonly sandboxBindingRef: string;
           readonly sandboxIntegrationBindingRef: string;
           readonly sandboxRuntimeId: string;
         }
@@ -580,6 +606,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const sandbox: NanoHostSharedSandbox = {
       bridgeOpen: true,
       imageDigest: row.imageDigest,
+      sandboxBindingRef: row.sandboxBindingRef,
+      sandboxId: nanoHostSandboxId(sandboxCompatibilityKey),
       sandboxCompatibilityKey,
       sandboxIntegrationBindingRef: row.sandboxIntegrationBindingRef,
       sandboxRuntimeId: row.sandboxRuntimeId,
@@ -605,6 +633,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       .prepare(
         `SELECT s.sandbox_runtime_id AS sandboxRuntimeId,
                 s.runtime_target_id AS runtimeTargetId,
+                s.sandbox_binding_ref AS sandboxBindingRef,
                 s.image_digest AS imageDigest,
                 s.sandbox_integration_binding_ref AS sandboxIntegrationBindingRef,
                 s.lifecycle_state AS sandboxLifecycleState,
@@ -640,6 +669,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           readonly maxOpenSessions: number;
           readonly runtimeTargetId: string;
           readonly sandboxDrainState: string;
+          readonly sandboxBindingRef: string;
           readonly sandboxLifecycleState: string;
           readonly sandboxIntegrationBindingRef: string;
           readonly sandboxRuntimeId: string;
@@ -666,6 +696,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const sandbox = this.sharedSandboxes.get(sandboxCompatibilityKey) ?? {
       bridgeOpen: true,
       imageDigest: row.imageDigest,
+      sandboxBindingRef: row.sandboxBindingRef,
+      sandboxId: nanoHostSandboxId(sandboxCompatibilityKey),
       sandboxCompatibilityKey,
       sandboxIntegrationBindingRef: row.sandboxIntegrationBindingRef,
       sandboxRuntimeId: row.sandboxRuntimeId,
@@ -739,7 +771,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       leaseId,
       nativeSessionReusable: false,
+      pendingImports: [],
       pendingHarnessOperation: null,
+      humanGateStopSettlement: null,
       retainedStagingPaths: [],
       sharedHarness,
       terminalInspectionComplete: false,
@@ -796,10 +830,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!target) {
       throw new Error('Configured NanoHost RuntimeTarget is unavailable.');
     }
+    const sandboxId = nanoHostSandboxId(nanoHostSandboxCompatibilityKey(environmentPackage));
+    const attemptId = createHash('sha256')
+      .update(environmentPackage.snapshotId)
+      .digest('hex')
+      .slice(0, 16);
     return {
       agentSessionId: environmentPackage.scope.agentSessionId,
       backendKind: 'openshell',
-      backendSessionId: `nh-${nanoHostSandboxCompatibilityKey(environmentPackage).slice(0, 16)}`,
+      backendSessionId: `${sandboxId}-${attemptId}`,
       deploymentId: target.deploymentId,
       packageSnapshotId: environmentPackage.snapshotId,
       runtimeTargetId: target.targetId,
@@ -834,6 +873,27 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!inspection) {
       return 'absent';
     }
+    if (!this.hasProcessLocalAgentSession(inspection)) {
+      if (input.reuseAllowed) {
+        return 'sandbox-replacement-required';
+      }
+      if (
+        !input.environmentPackage ||
+        !input.admissionAgentSessionId ||
+        !input.admissionLeaseId ||
+        input.environmentPackage.scope.agentSessionId !== input.admissionAgentSessionId ||
+        this.requireLeaseId(input.environmentPackage.snapshotId) !== input.admissionLeaseId
+      ) {
+        throw new Error('NanoHost restart-unproved retirement lacks admission package lineage.');
+      }
+      await this.evictIncompatibleIdleSandbox(
+        input.environmentPackage,
+        this.planSession(input.environmentPackage),
+        input.admissionLeaseId,
+        true
+      );
+      return 'closed';
+    }
     if (input.reuseAllowed) {
       return inspection.reusable ? 'reusable' : 'replacement-required';
     }
@@ -844,6 +904,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
     }
     return 'closed';
+  }
+
+  /** Reads whether this backend instance owns the exact live native binding inventory. */
+  private hasProcessLocalAgentSession(
+    inspection: NanoHostAgentSessionContinuityInspection
+  ): boolean {
+    const sharedHarness = [...this.sharedHarnesses.values()].find(
+      (candidate) => candidate.harnessInstanceId === inspection.harnessInstanceId
+    );
+    const binding = sharedHarness?.bindings.get(inspection.agentSessionId);
+    return binding?.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId;
   }
 
   /** Registers only the two exact cleanup result identities and performs no effect. */
@@ -926,7 +997,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
       } else {
         try {
-          const cleanupInput = { leaseId, sandboxId: identity.backendSessionId };
+          const cleanupInput = {
+            leaseId,
+            sandboxId:
+              session?.sharedHarness.sandbox.sandboxId ??
+              nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
+          };
           const recoveryResult = !session
             ? (this.cleanupRecoveryResults.get(identity.packageSnapshotId) ??
               this.createCleanupRecoveryResult(identity))
@@ -989,6 +1065,247 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
+  /** Reports one-Sandbox capacity without changing durable or physical runtime state. */
+  public inspectMaterializationCapacity(
+    environmentPackage: AgentEnvironmentPackage
+  ): 'available' | 'capacity-saturated' {
+    return this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated'
+      ? 'capacity-saturated'
+      : 'available';
+  }
+
+  /** Reads the one-Sandbox profile and returns only a completely idle replaceable resident. */
+  private inspectIncompatibleIdleSandbox(
+    environmentPackage: AgentEnvironmentPackage,
+    forceRetirement = false
+  ): NanoHostIdleSandboxEviction | 'capacity-saturated' | null {
+    const desiredKey = nanoHostSandboxCompatibilityKey(environmentPackage);
+    const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
+    const sandboxes = this.coreDb.sqlite
+      .prepare(
+        `SELECT sandbox_runtime_id AS sandboxRuntimeId,
+                sandbox_binding_ref AS sandboxBindingRef,
+                sandbox_compatibility_key AS sandboxCompatibilityKey,
+                lifecycle_state AS lifecycleState, health_state AS healthState,
+                drain_state AS drainState, cleanup_state AS cleanupState,
+                pinned_goal_id AS pinnedGoalId
+         FROM sandbox_runtime_records
+         WHERE runtime_target_id = ?
+         ORDER BY sandbox_runtime_id`
+      )
+      .all(runtimeTargetId) as Array<{
+      readonly cleanupState: string;
+      readonly drainState: string;
+      readonly healthState: string;
+      readonly lifecycleState: string;
+      readonly pinnedGoalId: string | null;
+      readonly sandboxBindingRef: string;
+      readonly sandboxCompatibilityKey: string;
+      readonly sandboxRuntimeId: string;
+    }>;
+    if (sandboxes.length === 0) {
+      return null;
+    }
+    if (sandboxes.length !== 1) {
+      return 'capacity-saturated';
+    }
+    const sandbox = sandboxes[0]!;
+    const processLocalSandbox =
+      this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.sandboxRuntimeId ===
+      sandbox.sandboxRuntimeId;
+    if (
+      sandbox.lifecycleState !== 'open' ||
+      sandbox.healthState !== 'ready' ||
+      sandbox.drainState !== 'accepting' ||
+      sandbox.cleanupState !== 'clean'
+    ) {
+      return 'capacity-saturated';
+    }
+    const harnesses = this.coreDb.sqlite
+      .prepare(
+        `SELECT harness_instance_id AS harnessInstanceId,
+                harness_binding_ref AS harnessBindingRef,
+                lifecycle_state AS lifecycleState, drain_state AS drainState,
+                active_turn_count AS activeTurnCount, operation_state AS operationState
+         FROM harness_instance_records
+         WHERE sandbox_runtime_id = ?
+         ORDER BY harness_instance_id`
+      )
+      .all(sandbox.sandboxRuntimeId) as Array<{
+      readonly activeTurnCount: number;
+      readonly drainState: string;
+      readonly harnessBindingRef: string;
+      readonly harnessInstanceId: string;
+      readonly lifecycleState: string;
+      readonly operationState: string;
+    }>;
+    if (
+      harnesses.some(
+        (harness) => harness.lifecycleState !== 'open' || harness.drainState !== 'accepting'
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    if (!forceRetirement && sandbox.sandboxCompatibilityKey === desiredKey && processLocalSandbox) {
+      return null;
+    }
+    if (
+      sandbox.pinnedGoalId !== null ||
+      [...this.sessions.values()].some(
+        (session) => session.sharedHarness.sandbox.sandboxRuntimeId === sandbox.sandboxRuntimeId
+      ) ||
+      harnesses.length === 0 ||
+      harnesses.some(
+        (harness) =>
+          harness.activeTurnCount !== 0 || !['idle', 'settled'].includes(harness.operationState)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    const bindings = this.coreDb.sqlite
+      .prepare(
+        `SELECT b.agent_session_id AS agentSessionId,
+                b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+                b.harness_instance_id AS harnessInstanceId,
+                h.harness_binding_ref AS harnessBindingRef,
+                b.lifecycle_state AS lifecycleState,
+                b.current_turn_id AS currentTurnId,
+                b.current_lease_id AS currentLeaseId,
+                b.cleanup_state AS cleanupState
+         FROM agent_session_runtime_bindings b
+         JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+         WHERE h.sandbox_runtime_id = ?
+           AND b.lifecycle_state <> 'closed'
+         ORDER BY b.agent_session_runtime_binding_id`
+      )
+      .all(sandbox.sandboxRuntimeId) as Array<{
+      readonly agentSessionId: string;
+      readonly agentSessionRuntimeBindingId: string;
+      readonly cleanupState: string;
+      readonly currentLeaseId: string | null;
+      readonly currentTurnId: string | null;
+      readonly harnessBindingRef: string;
+      readonly harnessInstanceId: string;
+      readonly lifecycleState: string;
+    }>;
+    if (
+      bindings.some(
+        (binding) =>
+          binding.lifecycleState !== 'open' ||
+          binding.currentTurnId !== null ||
+          binding.currentLeaseId !== null ||
+          binding.cleanupState !== 'clean' ||
+          this.agentSessionCloseOwners.has(binding.agentSessionRuntimeBindingId)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    if (
+      bindings.some((binding) =>
+        this.coreDb.sqlite
+          .prepare(
+            `SELECT 1 FROM scheduler_session_leases
+             WHERE agent_session_id = ?
+               AND status NOT IN ('released', 'lost', 'failed')
+             LIMIT 1`
+          )
+          .get(binding.agentSessionId)
+      )
+    ) {
+      return 'capacity-saturated';
+    }
+    return {
+      bindings: bindings.map((binding) => ({
+        agentSessionId: binding.agentSessionId,
+        agentSessionRuntimeBindingId: binding.agentSessionRuntimeBindingId,
+        harnessBindingRef: binding.harnessBindingRef,
+        harnessInstanceId: binding.harnessInstanceId,
+        reusable: false,
+      })),
+      bridgeOpen: this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.bridgeOpen ?? true,
+      closeAgentSessions: processLocalSandbox && !forceRetirement,
+      sandboxBindingRef: sandbox.sandboxBindingRef,
+      sandboxCompatibilityKey: sandbox.sandboxCompatibilityKey,
+      sandboxId: nanoHostSandboxId(sandbox.sandboxCompatibilityKey),
+      sandboxRuntimeId: sandbox.sandboxRuntimeId,
+    };
+  }
+
+  /** Claims and cleanly deletes one proved-idle resident after replacement dispatch. */
+  private async evictIncompatibleIdleSandbox(
+    environmentPackage: AgentEnvironmentPackage,
+    identity: WorkerGovernanceBackendSessionIdentity,
+    leaseId: string,
+    forceRetirement = false
+  ): Promise<void> {
+    this.coreDb.sqlite.exec('BEGIN IMMEDIATE');
+    let eviction: NanoHostIdleSandboxEviction | null = null;
+    try {
+      const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
+      if (inspected === 'capacity-saturated') {
+        throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+      }
+      eviction = inspected;
+      if (eviction) {
+        const timestamp = new Date().toISOString();
+        const sandboxUpdate = this.coreDb.sqlite
+          .prepare(
+            `UPDATE sandbox_runtime_records
+             SET drain_state = 'draining', updated_at = ?
+             WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'
+               AND health_state = 'ready' AND drain_state = 'accepting'
+               AND cleanup_state = 'clean' AND pinned_goal_id IS NULL`
+          )
+          .run(timestamp, eviction.sandboxRuntimeId);
+        const harnessUpdate = this.coreDb.sqlite
+          .prepare(
+            `UPDATE harness_instance_records
+             SET drain_state = 'draining', updated_at = ?
+             WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'
+               AND drain_state = 'accepting' AND active_turn_count = 0
+               AND operation_state IN ('idle', 'settled')`
+          )
+          .run(timestamp, eviction.sandboxRuntimeId);
+        if (sandboxUpdate.changes !== 1 || harnessUpdate.changes < 1) {
+          throw new Error('NanoHost idle Sandbox eviction changed before drain claim.');
+        }
+      }
+      this.coreDb.sqlite.exec('COMMIT');
+    } catch (error) {
+      this.coreDb.sqlite.exec('ROLLBACK');
+      throw error;
+    }
+    if (!eviction) {
+      return;
+    }
+    try {
+      if (eviction.closeAgentSessions) {
+        for (const binding of eviction.bindings) {
+          await this.closeDurableAgentSession(binding);
+          for (const sharedHarness of this.sharedHarnesses.values()) {
+            if (sharedHarness.harnessInstanceId === binding.harnessInstanceId) {
+              sharedHarness.bindings.delete(binding.agentSessionId);
+            }
+          }
+        }
+      }
+      const cleanupInput = { leaseId, sandboxId: eviction.sandboxId };
+      if (eviction.bridgeOpen) {
+        await this.effect(identity, leaseId, 'bridge.close', cleanupInput);
+      }
+      await this.effect(identity, leaseId, 'sandbox.delete', cleanupInput);
+      removeNanoHostSandboxRuntimeByBinding(this.coreDb, eviction.sandboxBindingRef);
+      this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
+    } catch (error) {
+      fenceNanoHostSandboxRuntime(this.coreDb, {
+        sandboxBindingRef: eviction.sandboxBindingRef,
+        timestamp: new Date().toISOString(),
+      });
+      this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
+      throw error;
+    }
+  }
+
   /** Acquires or builds the immutable image and creates the exact NanoHost sandbox. */
   public async materialize(
     environmentPackage: AgentEnvironmentPackage,
@@ -1016,6 +1333,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       throw new Error('NanoHost image build requires the exact V1 empty build-context pair.');
     }
+    if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
+      throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
+    }
+    await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId);
     let sharedHarness = this.restoreSharedHarness(
       sandboxCompatibilityKey,
       harnessCompatibilityKey,
@@ -1054,6 +1375,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 timeLimitSeconds: image.timeLimitSeconds,
               });
       const imageDigest = requireNanoHostResultString(imageResult, 'digest');
+      const sandboxId = nanoHostSandboxId(sandboxCompatibilityKey);
       const sandboxResult = await this.effect(identity, leaseId, 'sandbox.create', {
         environment: runtimeEnvironment,
         imageDigest,
@@ -1064,13 +1386,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           additionalNetworkEndpoints:
             openShellNetworkEndpointsFromPackagePolicy(environmentPackage),
         }),
-        sandboxId: identity.backendSessionId,
+        sandboxId,
       });
       requireNanoHostResultString(sandboxResult, 'sandboxId');
       const sandboxIdentity = sandboxCompatibilityKey.slice(0, 24);
       sharedSandbox = {
         bridgeOpen: false,
         imageDigest,
+        sandboxBindingRef:
+          context.sandboxBindingRef ?? `sandbox-binding-${sandboxCompatibilityKey.slice(0, 24)}`,
+        sandboxId,
         sandboxCompatibilityKey,
         sandboxIntegrationBindingRef: `integration-binding-${sandboxIdentity}`,
         sandboxRuntimeId: `sandbox-runtime-${sandboxIdentity}`,
@@ -1096,7 +1421,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
     }
     const privateIdentity = createHash('sha256')
-      .update(`${identity.backendSessionId}\0${environmentPackage.scope.agentSessionId}`)
+      .update(`${sharedHarness.harnessInstanceId}\0${environmentPackage.scope.agentSessionId}`)
       .digest('hex')
       .slice(0, 24);
     const agentSessionRuntimeBindingId = `session-binding-${privateIdentity}`;
@@ -1118,13 +1443,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       leaseId,
       nativeSessionReusable: false,
+      pendingImports: [],
       pendingHarnessOperation: null,
+      humanGateStopSettlement: null,
       retainedStagingPaths: [],
       sharedHarness,
       terminalInspectionComplete: false,
       turnStarted: false,
     });
-    const fileInventory = [
+    this.requireSession(environmentPackage.snapshotId).pendingImports = [
       ...(await prepareNanoHostContextPackageImports(environmentPackage, context)),
       ...runtimeCredentialImports,
     ];
@@ -1140,8 +1467,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         harnessCompatibilityKey,
         harnessInstanceId: sharedHarness.harnessInstanceId,
         imageDigest: sharedSandbox.imageDigest,
-        sandboxBindingRef:
-          context.sandboxBindingRef ?? `sandbox-binding-${sandboxCompatibilityKey.slice(0, 24)}`,
+        sandboxBindingRef: sharedSandbox.sandboxBindingRef,
         sandboxCompatibilityKey,
         sandboxIntegrationBindingRef: sharedSandbox.sandboxIntegrationBindingRef,
         sandboxRuntimeId: sharedSandbox.sandboxRuntimeId,
@@ -1151,30 +1477,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       this.sharedSandboxes.set(sandboxCompatibilityKey, sharedSandbox);
       this.sharedHarnesses.set(harnessMapKey, sharedHarness);
     }
-    const importResults: Record<string, unknown>[] = [];
-    for (const file of fileInventory) {
-      const body = file.body;
-      const byteLength = file.byteLength;
-      const contentDigest = file.contentDigest;
-      const relativePath = file.relativePath;
-      const slot = file.slot;
-      const sha256 = contentDigest;
-      importResults.push(
-        await this.effect(identity, leaseId, 'reference.import', {
-          body,
-          byteLength,
-          relativePath,
-          sandboxId: identity.backendSessionId,
-          sha256,
-          slot,
-        })
-      );
-    }
-    evidence.push(
-      ...importResults.map((result) =>
-        nanoHostEffectEvidence(environmentPackage.createdAt, result, 'reference-import')
-      )
-    );
     return {
       backendKind: 'openshell',
       command: {
@@ -1199,7 +1501,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Opens the exact worker bridge after materialization. */
+  /** Opens or inspects the exact Session, imports its Turn inputs, then starts the child. */
   public async launch(
     materialization: WorkerGovernanceMaterializationRecord
   ): Promise<WorkerGovernanceEvidenceRecord> {
@@ -1266,6 +1568,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost retained AgentSession is not ready for exact resume.');
       }
     }
+    const pendingImports = session.pendingImports;
+    session.pendingImports = [];
+    for (const file of pendingImports) {
+      const imported = await this.effect(session.identity, session.leaseId, 'reference.import', {
+        body: file.body,
+        byteLength: file.byteLength,
+        relativePath: file.relativePath,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+        sha256: file.contentDigest,
+        slot: file.slot,
+      });
+      session.evidence.push(
+        nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')
+      );
+    }
+    const inputPaths = workerSessionInputPaths(session.environmentPackage.scope.agentSessionId);
     const lease = this.coreDb.sqlite
       .prepare(
         'SELECT startup_deadline AS startupDeadline FROM scheduler_session_leases WHERE lease_id = ?'
@@ -1275,11 +1593,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost Harness Turn startup deadline is unavailable.');
     }
     const started = await this.queueAndWaitForHarnessOperation(session, 'turn.start', {
-      aepRef: '/openkit/config/package.json',
+      aepRef: inputPaths.packagePath,
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      contextPackageId: `context_${session.environmentPackage.scope.turnId}`,
-      contextRef: '/openkit/context',
+      contextPackageId: `ctxpkg_${session.environmentPackage.scope.turnId}`,
+      contextRef: inputPaths.contextRoot,
       deadline: lease.startupDeadline,
       leaseId: session.leaseId,
       packageSnapshotId: session.environmentPackage.snapshotId,
@@ -1309,11 +1627,33 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
       leaseId: session.leaseId,
+      purpose: 'interrupt',
       turnId: session.environmentPackage.scope.turnId,
     });
     if (result.state !== 'interrupted' || result.childState !== 'absent') {
       throw new Error('NanoHost Harness turn.interrupt result is incompatible.');
     }
+  }
+
+  /** Queues one Gate-owned stop and leaves result settlement to the existing Harness owner. */
+  public requestHumanGateStop(packageSnapshotId: string): void {
+    const session = this.requireSession(packageSnapshotId);
+    if (session.sharedHarness.adapterId !== 'codex') {
+      throw new Error('Only the Codex session-continuity Harness accepts a human Gate stop.');
+    }
+    const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
+      agentSessionId: session.environmentPackage.scope.agentSessionId,
+      agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+      leaseId: session.leaseId,
+      purpose: 'human-gate',
+      turnId: session.environmentPackage.scope.turnId,
+    }).then((result) => {
+      if (result.state !== 'interrupted' || result.childState !== 'absent') {
+        throw new Error('NanoHost Harness human Gate stop result is incompatible.');
+      }
+    });
+    session.humanGateStopSettlement = settlement;
+    void settlement.catch(() => undefined);
   }
 
   /** Validates an immutable update without performing a runtime effect. */
@@ -1362,7 +1702,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         processGroupAbsent,
         presence: 'required',
         relativePath,
-        sandboxId: session.identity.backendSessionId,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
         slot,
         terminalBarrierProved,
       });
@@ -1402,7 +1742,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           processGroupAbsent,
           presence: 'required',
           relativePath,
-          sandboxId: session.identity.backendSessionId,
+          sandboxId: session.sharedHarness.sandbox.sandboxId,
           slot,
           terminalBarrierProved,
         });
@@ -1477,7 +1817,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       processGroupAbsent,
       presence: 'optional',
       relativePath,
-      sandboxId: session.identity.backendSessionId,
+      sandboxId: session.sharedHarness.sandbox.sandboxId,
       slot,
       terminalBarrierProved,
     });
@@ -1502,7 +1842,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         processGroupAbsent,
         presence: 'required',
         relativePath: patchLocation.relativePath,
-        sandboxId: session.identity.backendSessionId,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
         slot: patchLocation.slot,
         terminalBarrierProved,
       });
@@ -1580,7 +1920,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return null;
     }
     const leaseId = this.requireLeaseId(identity.packageSnapshotId);
-    const cleanupInput = { leaseId, sandboxId: identity.backendSessionId };
+    const cleanupInput = {
+      leaseId,
+      sandboxId: nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
+    };
     const expectations = (['bridge.close', 'sandbox.delete'] as const).map((operation) => {
       const request = this.createEffectRequest(identity, leaseId, operation, cleanupInput);
       return { kind: operation, requestId: request.requestId! };
@@ -1620,7 +1963,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
       .all(
         identity.packageSnapshotId,
-        identity.backendSessionId,
+        nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
         identity.agentSessionId
       ) as Array<{
       readonly cleanupState: string;
@@ -1780,26 +2123,31 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (session.pendingHarnessOperation) {
       throw new Error('NanoHost Harness producer already has an unsettled operation.');
     }
-    return new Promise((resolve, reject) => {
-      session.pendingHarnessOperation = {
-        operation,
-        operationId: null,
-        reject,
-        resolve,
-        timeout: null,
-      };
-      try {
-        queueNanoHostHarnessOperation(this.coreDb, {
-          body,
-          harnessInstanceId: session.harnessInstanceId,
-          operation,
-          timestamp: new Date().toISOString(),
-        });
-      } catch (error) {
-        session.pendingHarnessOperation = null;
-        reject(error);
-      }
+    let resolveResult!: (body: Readonly<Record<string, unknown>>) => void;
+    let rejectResult!: (error: Error) => void;
+    const result = new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
     });
+    session.pendingHarnessOperation = {
+      operation,
+      operationId: null,
+      reject: rejectResult,
+      resolve: resolveResult,
+      timeout: null,
+    };
+    try {
+      queueNanoHostHarnessOperation(this.coreDb, {
+        body,
+        harnessInstanceId: session.harnessInstanceId,
+        operation,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      session.pendingHarnessOperation = null;
+      throw error;
+    }
+    return result;
   }
 
   /** Proves child absence once before any terminal output export or capacity return. */
@@ -1807,6 +2155,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (session.terminalInspectionComplete) {
       return;
     }
+    await session.humanGateStopSettlement;
     const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -1970,28 +2319,66 @@ function nanoHostRuntimeCredentialImports(
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */
 function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
   const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
+  const { contextRoot, packagePath } = workerSessionInputPaths(
+    environmentPackage.scope.agentSessionId
+  );
+  const { layout, materialization } = planSessionWorkspaceMaterialization({ environmentPackage });
+  const filesystem = environmentPackage.policy.filesystem;
   return createHash('sha256')
     .update(
       stableNanoHostEffectJson({
         backend: environmentPackage.backend,
         credentials: environmentPackage.credentials,
-        policy: environmentPackage.policy,
+        policy: {
+          ...environmentPackage.policy,
+          ...(filesystem
+            ? {
+                filesystem: {
+                  ...filesystem,
+                  rules: filesystem.rules.map((rule) =>
+                    rule &&
+                    typeof rule === 'object' &&
+                    !Array.isArray(rule) &&
+                    'id' in rule &&
+                    rule.id === 'openkit-context-package' &&
+                    'workerPath' in rule &&
+                    rule.workerPath === contextRoot
+                      ? { ...rule, workerPath: 'agent-session-context' }
+                      : rule
+                  ),
+                },
+              }
+            : {}),
+        },
         responsibleUserTrust: {
           actorKind: environmentPackage.scope.triggerActor.kind,
           responsibleUserId,
         },
+        resources: environmentPackage.resources,
         runtimeImage: environmentPackage.runtime.image,
+        runtimeProcess: environmentPackage.runtime.process ?? null,
         schemaVersion: environmentPackage.schemaVersion,
         vault: environmentPackage.vault,
         workspace: {
           generatedFiles: environmentPackage.workspace.generatedFiles.map((file) => ({
             access: file.access,
             id: file.id,
-            target: file.target,
+            target:
+              file.id === 'agent-environment-package' && file.target === packagePath
+                ? 'agent-session-package'
+                : file.target,
           })),
           id: environmentPackage.scope.workspaceId,
-          inputs: environmentPackage.workspace.inputs.map(nanoHostStaticWorkspaceInput),
-          layout: planSessionWorkspaceMaterialization({ environmentPackage }).layout,
+          inputs: environmentPackage.workspace.inputs.map((input, index) =>
+            nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId === 'context')
+          ),
+          layout: {
+            ...layout,
+            slots: layout.slots.map((slot) =>
+              slot.id === 'context' ? { ...slot, path: 'agent-session-context' } : slot
+            ),
+            control: { ...layout.control, contextRoot: 'agent-session-context' },
+          },
           outputs: environmentPackage.workspace.outputs,
         },
       })
@@ -1999,8 +2386,31 @@ function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPac
     .digest('hex');
 }
 
+/** Derives the NanoHost-facing physical Sandbox identity from its reuse key. */
+function nanoHostSandboxId(sandboxCompatibilityKey: string): string {
+  return `nh-${sandboxCompatibilityKey.slice(0, 16)}`;
+}
+
+/** Recovers the embedded physical Sandbox identity from one backend attempt identity. */
+function nanoHostSandboxIdFromBackendSessionId(backendSessionId: string): string {
+  if (!/^nh-[0-9a-f]{16}-[0-9a-f]{16}$/.test(backendSessionId)) {
+    throw new Error('NanoHost backend session identity is invalid.');
+  }
+  return backendSessionId.slice(0, 19);
+}
+
 /** Hashes the process-static adapter and Integration configuration of one Harness. */
 function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPackage): string {
+  const { openkit, ...extensions } = environmentPackage.extensions ?? {};
+  const openkitRecord =
+    openkit && typeof openkit === 'object' && !Array.isArray(openkit)
+      ? (openkit as Record<string, unknown>)
+      : null;
+  const {
+    turnInput: _turnInput,
+    sessionWorkspace: _sessionWorkspace,
+    ...staticOpenkit
+  } = openkitRecord ?? {};
   return createHash('sha256')
     .update(
       stableNanoHostEffectJson({
@@ -2013,7 +2423,7 @@ function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPac
           transcript: environmentPackage.control.transcript ?? null,
         },
         credentials: environmentPackage.credentials,
-        extensions: environmentPackage.extensions,
+        extensions: { ...extensions, openkit: openkitRecord ? staticOpenkit : openkit },
         resources: environmentPackage.resources,
         runtime: {
           binaries: environmentPackage.runtime.binaries,
@@ -2049,11 +2459,11 @@ function nanoHostSharedHarnessMapKey(
 
 /** Removes Turn content lineage while retaining one input's static isolation envelope. */
 function nanoHostStaticWorkspaceInput(
-  input: AgentEnvironmentPackage['workspace']['inputs'][number]
+  input: AgentEnvironmentPackage['workspace']['inputs'][number],
+  isContext: boolean
 ): Record<string, unknown> {
   const { commit: _commit, ...source } = input.source;
   const { contentDigest: _contentDigest, ...materialization } = input.materialization ?? {};
-  const isContext = materialization.slotId === 'context' || input.target === '/openkit/context';
   return {
     access: input.access,
     id: isContext ? 'context' : input.id,
@@ -2061,7 +2471,7 @@ function nanoHostStaticWorkspaceInput(
     materialization,
     mount: input.mount ?? null,
     source: isContext ? { kind: source.kind } : source,
-    target: input.target,
+    target: isContext ? 'agent-session-context' : input.target,
   };
 }
 

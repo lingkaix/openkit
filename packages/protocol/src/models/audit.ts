@@ -46,7 +46,7 @@ export const AuditEventSchema = z
     action: z.string().min(1),
     resource: z.string().min(1).nullable().default(null),
     resourceRevision: z.number().int().positive().nullable().default(null),
-    outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled']),
+    outcome: z.enum(['succeeded', 'failed', 'denied', 'cancelled', 'unknown']),
     severity: AuditSeveritySchema.default('info'),
     summary: z.string().min(1),
     errorCode: z.string().min(1).nullable().default(null),

@@ -51,6 +51,8 @@ export interface WorkerAdapterRuntimeProvenance {
 export interface WorkerAdapterPrepareInput {
   /** Allowlisted environment inherited by the native process. */
   readonly childEnvironment: Record<string, string>;
+  /** Catalog-selected MCP server ids exposed through the fixed local capability route. */
+  readonly mcpServerIds?: readonly string[] | undefined;
   /** The package's single already resolved LLM route. */
   readonly llmRoute: WorkerAdapterLlmRoute;
   /** Durable OpenKit session directory. */

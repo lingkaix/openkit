@@ -28,6 +28,8 @@ import { upsertNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 const CONTROL_BODY_MAX_BYTES = 1024 * 1024;
 /** Exact outer-session inference request ceiling preserved from its semantic owner. */
 const INFERENCE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+/** Exact outer-session capability request ceiling. */
+const CAPABILITY_BODY_MAX_BYTES = 512 * 1024;
 /** Exact V1 maximum for one file-data body. */
 const FILE_DATA_MAX_BYTES = 256 * 1024 * 1024;
 /** Maximum application write or consumption release for file data. */
@@ -620,9 +622,6 @@ export function createNanoHostSessionDispatch(
 
     async route(physicalConnection, request) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (request.family === 'capability') {
-        throw new Error('NanoHost capability routes are disabled.');
-      }
       const isHarnessRoute =
         request.path === HARNESS_POLL_PATH || request.path === HARNESS_RESULT_PATH;
       if (isHarnessRoute) {
@@ -638,12 +637,20 @@ export function createNanoHostSessionDispatch(
       if (request.credentialClass !== request.family) {
         throw new Error('NanoHost route credential class does not match its family.');
       }
-      const prefix = request.family === 'worker-control' ? '/worker-control/' : '/inference/';
+      const prefix =
+        request.family === 'worker-control'
+          ? '/worker-control/'
+          : request.family === 'inference'
+            ? '/inference/'
+            : '/capabilities/';
       if (!request.path.startsWith(prefix) || request.path.startsWith('//')) {
         throw new Error('NanoHost route path does not match its family.');
       }
       if (request.family === 'worker-control' && request.body.byteLength > CONTROL_BODY_MAX_BYTES) {
         throw new Error('NanoHost worker-control body exceeds its bound.');
+      }
+      if (request.family === 'capability' && request.body.byteLength > CAPABILITY_BODY_MAX_BYTES) {
+        throw new Error('NanoHost capability body exceeds its bound.');
       }
       if (!input.routeHandler) {
         return;
@@ -671,11 +678,11 @@ function removePendingEffectGroup(
 }
 
 /**
- * Installs readiness and the two fixed semantic projections on the native session.
+ * Installs readiness and the three fixed semantic projections on the native session.
  *
  * Readiness is registered as private pre-auth transport carriage. The semantic
  * paths preserve method, query, headers, body, status, response headers, and
- * response bytes while delegating decisions to the two existing App owners
+ * response bytes while delegating decisions to the existing App owners
  * after public route matching. None becomes a public App API or proxy route.
  *
  * @param input App and authoritative dispatcher owned by the composition root.
@@ -717,7 +724,9 @@ export function registerNanoHostSessionSemanticRoutes(
       ? 'worker-control'
       : path.startsWith('/inference/')
         ? 'inference'
-        : null;
+        : path.startsWith('/capabilities/')
+          ? 'capability'
+          : null;
     if (!family) {
       return context.text('404 Not Found', 404);
     }
@@ -728,7 +737,11 @@ export function registerNanoHostSessionSemanticRoutes(
       const request = context.req.raw;
       const bodyBuffer = await readBoundedSemanticBody(
         request,
-        family === 'worker-control' ? CONTROL_BODY_MAX_BYTES : INFERENCE_BODY_MAX_BYTES
+        family === 'worker-control'
+          ? CONTROL_BODY_MAX_BYTES
+          : family === 'inference'
+            ? INFERENCE_BODY_MAX_BYTES
+            : CAPABILITY_BODY_MAX_BYTES
       );
       const body = new Uint8Array(bodyBuffer);
       const isHarnessRoute = path === HARNESS_POLL_PATH || path === HARNESS_RESULT_PATH;
@@ -789,7 +802,9 @@ export function registerNanoHostSessionSemanticRoutes(
       target.pathname =
         family === 'worker-control'
           ? `/api${target.pathname}`
-          : `/api/worker-inference${target.pathname.slice('/inference'.length)}`;
+          : family === 'inference'
+            ? `/api/worker-inference${target.pathname.slice('/inference'.length)}`
+            : `/api/worker-capabilities${target.pathname.slice('/capabilities'.length)}`;
       return input.app.fetch(
         new Request(target, {
           body: bodyBuffer,

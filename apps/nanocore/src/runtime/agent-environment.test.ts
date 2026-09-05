@@ -26,6 +26,7 @@ import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   resolveAgentEnvironmentPackage,
+  resolveAgentEnvironmentPackageMetadata,
   resolveAgentSessionCompatibilityKey,
 } from './agent-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -236,7 +237,7 @@ describe('agent environment package resolver', () => {
 
     expect(resolved.runtime).toMatchObject({
       binaries: setupResult.setup.manifest.runtime.binaries,
-      command: { argv: ['openkit-worker-shim', '--package', '/openkit/config/package.json'] },
+      command: { argv: ['openkit-worker-shim'] },
       image: {
         kind: 'reference',
         pullPolicy: 'never',
@@ -430,7 +431,7 @@ describe('agent environment package resolver', () => {
     );
   });
 
-  it('keeps approved Skill and MCP supply static and non-executable', () => {
+  it('resolves selected MCP supply without exposing its server topology', () => {
     const turn = createTurnFixture('Use static supply');
     const resolved = resolveAgentEnvironmentPackage({
       agentSetup: createTestSetup({
@@ -447,14 +448,47 @@ describe('agent environment package resolver', () => {
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceCwd: '/workspace/repo',
       workspaceRoots: [],
+      workspaceMcpServerCatalog: {
+        schemaVersion: 1,
+        servers: [
+          {
+            allowedTools: ['echo'],
+            approvalRequiredTools: [],
+            credentialBindings: [],
+            deniedTools: [],
+            enabled: true,
+            id: 'github',
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking',
+            timeoutMs: 60_000,
+            transport: {
+              args: ['fixtures/echo.mjs'],
+              command: 'node',
+              environment: {},
+              kind: 'stdio',
+            },
+          },
+        ],
+      },
     });
 
     expect(resolved.supply.skills).toEqual([expect.objectContaining({ id: 'repo-guidelines' })]);
-    expect(resolved.supply.mcpServers).toEqual([expect.objectContaining({ id: 'github' })]);
+    expect(resolved.supply.mcpServers).toEqual([
+      expect.objectContaining({
+        allowedTools: ['echo'],
+        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        id: 'github',
+        schemaPolicy: 'tracking',
+      }),
+    ]);
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('command');
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');
-    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('materialization');
-    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('providerInstanceIds');
+    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('credentialBindings');
+    expect(resolved.capabilities).toEqual({
+      mode: 'enabled',
+      protocol: 'openkit-worker-capability-v1',
+      routes: ['mcp.list_servers', 'mcp.list_tools', 'mcp.call_tool'],
+    });
     expect(resolved).not.toHaveProperty('providers');
   });
 
@@ -475,7 +509,7 @@ describe('agent environment package resolver', () => {
           id: `context_${turn.id}`,
           sourceKind: 'materialized-dir',
           sourcePath: '/private/context-package',
-          workerPath: '/openkit/context',
+          workerPath: '/openkit/sessions/session_context_1/context',
         },
       },
       requestId: 'req_context_1',
@@ -499,7 +533,7 @@ describe('agent environment package resolver', () => {
           kind: 'generated',
           pathRef: `threads/${turn.threadId}/turns/${turn.id}/context-package`,
         },
-        target: '/openkit/context',
+        target: '/openkit/sessions/session_context_1/context',
       },
     ]);
   });
@@ -855,8 +889,27 @@ describe('agent environment package resolver', () => {
         workspaceCwd: '/workspace/repo',
         workspaceRoots: [],
       } as Parameters<typeof resolveAgentSessionCompatibilityKey>[0]);
+      const metadataPackage = resolveAgentEnvironmentPackageMetadata({
+        agentSessionId: 'session_preview_1',
+        agentSetup,
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: now,
+        requestId: 'req_preview_1',
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      });
 
       expect(compatibilityKey).toMatch(/^sha256:/);
+      expect(
+        (
+          metadataPackage.extensions.openkit as {
+            sessionWorkspace: SessionWorkspaceMaterializationPlan;
+          }
+        ).sessionWorkspace.compatibilityKey.digest
+      ).toBe(compatibilityKey);
       expect(sinkCalls).toBe(0);
       expect(vaultBackendCalls).toBe(0);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
@@ -875,7 +928,7 @@ describe('agent environment package resolver', () => {
               id: `context_${turn.id}`,
               sourceKind: 'materialized-dir',
               sourcePath: `/private/context-${character}`,
-              workerPath: '/openkit/context',
+              workerPath: '/openkit/sessions/session_context_digest/context',
             },
           },
           requestId: 'req_context_digest',

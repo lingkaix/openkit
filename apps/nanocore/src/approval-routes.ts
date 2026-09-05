@@ -11,6 +11,7 @@ import { apiErrorPayload, asCommandError, asInvalidRequestError } from './api-er
 import type { AuthVariables } from './auth/middleware.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import type { FsStore } from './lib/store.js';
+import { isExactMcpApprovalSourceDecision } from './policy/approval-gates.js';
 import {
   listPolicyApprovalSourceDecisions,
   type PolicyApprovalSourceDecision,
@@ -154,8 +155,11 @@ export function registerApprovalRoutes({
               throw taskGateRecoveryError('The policy approval winner has no exact source.');
             }
           }
-          if (policyApproval && policyApproval.action !== 'repo.push') {
+          if (policyApproval && !isSupportedPolicyApprovalAction(policyApproval.action)) {
             throw taskGateRecoveryError('The policy approval action is not supported.');
+          }
+          if (policyApproval?.action === 'tool.use' && workerLeases.length !== 1) {
+            throw taskGateRecoveryError('The worker tool approval has no exact active lease.');
           }
           const closedWorkerGate =
             workerLeases.length === 1
@@ -363,7 +367,19 @@ function claimPolicyApprovalOutcome(
   }
 
   const approval = store.getApproval(input.approvalRequestId);
-  if (source.action !== 'repo.push' || source.requiredApprovalKind !== approval.kind) {
+  if (
+    !isSupportedPolicyApprovalAction(source.action) ||
+    source.requiredApprovalKind !== approval.kind ||
+    (source.action === 'tool.use' &&
+      !isExactMcpApprovalSourceDecision({
+        approvalCreatedAt: approval.createdAt,
+        source,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        workspaceDb,
+        workspaceId: input.workspaceId,
+      }))
+  ) {
     throw taskGateRecoveryError('The policy approval source tuple is not exact.');
   }
   const sourceContext = source.contextSummary;
@@ -395,7 +411,7 @@ function claimPolicyApprovalOutcome(
     try {
       recordProductPermissionDecision({
         workspaceDb,
-        decisionId: `pd_repo_push_${input.decision}_${input.approvalRequestId}`,
+        decisionId: `pd_${policyActionSlug(source.action)}_${input.decision}_${input.approvalRequestId}`,
         ownerScope: 'workspace',
         workspaceId: input.workspaceId,
         policyEngineVersion: 'nanocore-approval-policy:v1',
@@ -408,8 +424,8 @@ function claimPolicyApprovalOutcome(
           requestId: input.requestId,
         },
         result: input.decision === 'granted' ? 'allow' : 'deny',
-        reasonCode: input.decision === 'granted' ? 'repo_push_approved' : 'repo_push_denied',
-        enforcementPoint: 'repo.push.approval_response',
+        reasonCode: `${policyActionSlug(source.action)}_${input.decision === 'granted' ? 'approved' : 'denied'}`,
+        enforcementPoint: `${source.action}.approval_response`,
         requiredApprovalKind: source.requiredApprovalKind,
         approvalId: input.approvalRequestId,
         auditActor: actor,
@@ -453,6 +469,16 @@ function claimPolicyApprovalOutcome(
   }
 
   return winner;
+}
+
+/** Returns whether the current response route owns this policy action. */
+function isSupportedPolicyApprovalAction(action: string): action is 'repo.push' | 'tool.use' {
+  return action === 'repo.push' || action === 'tool.use';
+}
+
+/** Produces the existing identifier-safe action segment. */
+function policyActionSlug(action: 'repo.push' | 'tool.use'): string {
+  return action.replace('.', '_');
 }
 
 /**
@@ -601,6 +627,64 @@ function isDirectTaskCheckpoint(
 }
 
 /**
+ * Verifies the exact outer mode-command receipt that owns one worker approval Gate.
+ *
+ * @param store Product store containing command receipts.
+ * @param workspaceDb Workspace receipt owner for Goal steps.
+ * @param checkpoint Exact worker checkpoint awaiting closeout.
+ * @param ownerScope Authenticated actor, Workspace, and Thread owner scope.
+ * @param turnId Worker Turn whose deterministic origin must match the receipt.
+ * @returns Whether the receipt proves the checkpoint's exact Goal, conversation, or Task origin.
+ */
+function hasExactWorkerApprovalOwnerReceipt(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  checkpoint: WorkerCheckpointRecord,
+  ownerScope: ReturnType<typeof requireWorkerCheckpointHumanCommandScope>,
+  turnId: string
+): boolean {
+  if (checkpoint.goalId && checkpoint.taskId) {
+    const receipt = store.getCommandRequest(
+      'goal.step',
+      checkpoint.requestId,
+      ownerScope,
+      workspaceDb
+    );
+    return (
+      receipt?.inputHash === checkpoint.requestInputHash &&
+      receipt.scope.actorId === ownerScope.actorId &&
+      receipt.scope.workspaceId === ownerScope.workspaceId &&
+      receipt.scope.threadId === ownerScope.threadId &&
+      receipt.response.kind === 'goal' &&
+      receipt.response.id === checkpoint.goalId
+    );
+  }
+
+  if (
+    findExactConversationWorkerOwnerReceipt(store, {
+      actorId: ownerScope.actorId,
+      workspaceId: ownerScope.workspaceId,
+      receivingThreadId: ownerScope.threadId,
+      requestId: checkpoint.requestId,
+      requestInputHash: checkpoint.requestInputHash,
+      turnId,
+    })
+  ) {
+    return true;
+  }
+
+  const receipt = store.getCommandRequest('task.start', checkpoint.requestId, ownerScope);
+  return (
+    receipt?.inputHash === checkpoint.requestInputHash &&
+    receipt.scope.actorId === ownerScope.actorId &&
+    receipt.scope.workspaceId === ownerScope.workspaceId &&
+    receipt.scope.threadId === ownerScope.threadId &&
+    receipt.response.kind === 'turn' &&
+    receipt.response.id === turnId
+  );
+}
+
+/**
  * Closes one worker approval Gate without resuming its worker executor.
  *
  * @param coreDb Core database containing scheduler and worker lineage.
@@ -702,23 +786,9 @@ function closeWorkerApprovalGate(
   } catch {
     throw taskGateRecoveryError('The worker approval has no exact human command identity.');
   }
-  const ownerReceipt = goalTaskCheckpoint
-    ? store.getCommandRequest('goal.step', checkpoint.requestId, ownerScope, workspaceDb)
-    : (findExactConversationWorkerOwnerReceipt(store, {
-        actorId: ownerScope.actorId,
-        workspaceId: ownerScope.workspaceId,
-        receivingThreadId: ownerScope.threadId,
-        requestId: checkpoint.requestId,
-        requestInputHash: checkpoint.requestInputHash,
-        turnId: input.turnId,
-      }) ?? store.getCommandRequest('task.start', checkpoint.requestId, ownerScope));
   if (
     !evidence ||
-    !ownerReceipt ||
-    ownerReceipt.inputHash !== checkpoint.requestInputHash ||
-    (goalTaskCheckpoint
-      ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== checkpoint.goalId
-      : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId)
+    !hasExactWorkerApprovalOwnerReceipt(store, workspaceDb, checkpoint, ownerScope, input.turnId)
   ) {
     throw taskGateRecoveryError('The worker approval has no exact mode-command receipt.');
   }
@@ -761,12 +831,12 @@ function closeWorkerApprovalGate(
     completedAt: timestamp,
   });
   store.updateAgentSession(checkpoint.workerSessionId, {
-    status: input.decision === 'denied' ? 'interrupted' : 'idle',
+    status: input.decision === 'denied' ? 'interrupted' : 'closed',
     updatedAt: timestamp,
   });
   const expectedStopReason = input.decision === 'denied' ? 'aborted' : 'completed';
   const closedTurn = store.updateTurn(input.turnId, {
-    status: input.decision === 'denied' ? 'cancelled' : 'completed',
+    status: input.decision === 'denied' ? 'interrupted' : 'completed',
     humanGate: null,
     completedAt: timestamp,
   });
@@ -865,14 +935,20 @@ async function clearWorkerApprovalGateCheckpoint(
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
   const closure = classifyClosedWorkerApprovalGate(store, turn);
   const evidence = checkpoint ? parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary) : null;
-  const ownerReceipt = checkpoint
-    ? store.getCommandRequest(
-        checkpoint.goalId && checkpoint.taskId ? 'goal.step' : 'task.start',
-        checkpoint.requestId,
-        requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
-        checkpoint.goalId && checkpoint.taskId ? workspaceDb : undefined
-      )
-    : null;
+  let hasOwnerReceipt = false;
+  try {
+    hasOwnerReceipt = checkpoint
+      ? hasExactWorkerApprovalOwnerReceipt(
+          store,
+          workspaceDb,
+          checkpoint,
+          requireWorkerCheckpointHumanCommandScope(coreDb, checkpoint),
+          input.turnId
+        )
+      : false;
+  } catch {
+    hasOwnerReceipt = false;
+  }
   const gateReceipt = store.getCommandRequest('approval.respond', input.requestId, {
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -906,11 +982,7 @@ async function clearWorkerApprovalGateCheckpoint(
       closure?.stopReason !== expectedStopReason ||
       !evidence?.itemIds.includes(closure.requestItemId) ||
       !evidence.itemIds.includes(closure.responseItemId) ||
-      !ownerReceipt ||
-      ownerReceipt.inputHash !== checkpoint.requestInputHash ||
-      (checkpoint.goalId && checkpoint.taskId
-        ? ownerReceipt.response.kind !== 'goal' || ownerReceipt.response.id !== checkpoint.goalId
-        : ownerReceipt.response.kind !== 'turn' || ownerReceipt.response.id !== input.turnId) ||
+      !hasOwnerReceipt ||
       gateReceipt?.response.kind !== 'approval' ||
       gateReceipt.response.id !== input.approvalRequestId ||
       !goalOwnerComplete

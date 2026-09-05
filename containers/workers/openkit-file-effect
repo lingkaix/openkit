@@ -16,7 +16,7 @@ const FAILURE_DIAGNOSTIC = 'File effect rejected.\n';
 const CANONICAL_WORKSPACE_SLOT_ROOTS = Object.freeze({
   'artifact-input': '/workspace/artifacts/in',
   cache: '/workspace/.openkit/cache',
-  context: '/openkit/context',
+  context: '/openkit/sessions',
   'external-data': '/workspace/data',
   instructions: '/openkit/instructions',
   'main-worktree': '/workspace/worktrees/main',
@@ -29,7 +29,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = Object.freeze({
 /** Fixed installed roots for workspace effects and the sole image-private package import. */
 export const CANONICAL_SLOT_ROOTS = Object.freeze({
   ...CANONICAL_WORKSPACE_SLOT_ROOTS,
-  'package-config': '/openkit/config',
+  'package-config': '/openkit/sessions',
   'runtime-credential': '/',
 });
 
@@ -104,7 +104,9 @@ function parseCommand(argv, slotRoots) {
     const root =
       slot === 'package-config'
         ? resolvePackageConfigRoot(slotRoots, relativePath)
-        : replace
+        : slot === 'context'
+          ? resolveContextRoot(slotRoots, relativePath)
+          : replace
           ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
           : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
     const length = parseBoundedDecimal(argv[6]);
@@ -132,6 +134,14 @@ function parseCommand(argv, slotRoots) {
   throw new Error('invalid arguments');
 }
 
+/** Resolves one AgentSession-private context namespace. */
+function resolveContextRoot(slotRoots, relativePath) {
+  if (!/^[A-Za-z0-9_-]+\/context\/.+$/.test(relativePath)) {
+    throw new Error('invalid context path');
+  }
+  return resolveSlotRoot(slotRoots, 'context', new Set(['context']));
+}
+
 /**
  * Resolves the one image-private package destination without creating a generic config slot.
  *
@@ -140,7 +150,7 @@ function parseCommand(argv, slotRoots) {
  * @returns {string} Fixed package-config root.
  */
 function resolvePackageConfigRoot(slotRoots, relativePath) {
-  if (relativePath !== 'package.json') {
+  if (!/^[A-Za-z0-9_-]+\/config\/package\.json$/.test(relativePath)) {
     throw new Error('invalid package path');
   }
   return resolveSlotRoot(slotRoots, 'package-config', PACKAGE_CONFIG_SLOTS);
@@ -220,7 +230,7 @@ function parseBoundedDecimal(value) {
 }
 
 /**
- * Imports one verified stdin body through private fsynced no-overwrite placement.
+ * Imports one verified stdin body through private fsynced atomic placement.
  *
  * @param {{root: string, relativePath: string, length: number, digest: string, replace: boolean}} command Parsed import command.
  * @param {AsyncIterable<Uint8Array | string>} stdin Import body stream.
@@ -299,11 +309,11 @@ async function importReference(command, stdin, stdout) {
 }
 
 /**
- * Resolves and creates an import parent without accepting a symlink or existing target.
+ * Resolves an import parent and permits replacement only for an admitted runtime credential.
  *
  * @param {string} root Canonical slot root.
  * @param {string} relativePath Validated slot-relative path.
- * @param {boolean} allowExisting Whether one regular credential target may be atomically replaced.
+ * @param {boolean} allowExisting Whether one regular runtime credential may be atomically replaced.
  * @returns {Promise<{parent: string, target: string}>} Secured parent and target paths.
  */
 async function prepareImportTarget(root, relativePath, allowExisting) {

@@ -309,13 +309,17 @@ export function recoverWorkerCheckpointStopReason(
     throw new Error('Worker checkpoint has no canonical StopReason.');
   }
 
-  const expectedTurnStatus = turnStatusForCanonicalWorkerStopReason(stopReason);
   if (stopReason === 'ask_user') {
     const evidence = parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary);
+    const leaseMatchesWorkerKind = agentSession.environmentPackageSnapshotId
+      ? lease.status === 'releasing' &&
+        lease.releaseReason === 'worker-final-status' &&
+        lease.recoveryState === 'needs-evidence'
+      : ['acquired', 'starting', 'active', 'idle'].includes(lease.status) &&
+        lease.recoveryState === null;
     if (
       agentSession.status !== 'suspended' ||
-      !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
-      lease.recoveryState !== null ||
+      !leaseMatchesWorkerKind ||
       !turn.humanGate ||
       !evidence?.itemIds.includes(turn.humanGate.itemId) ||
       !hasExactActiveHumanGate(store, turn)
@@ -325,13 +329,21 @@ export function recoverWorkerCheckpointStopReason(
     return stopReason;
   }
 
+  const closedApprovalGate = classifyClosedWorkerApprovalGate(store, turn);
+  const expectedTurnStatus = closedApprovalGate
+    ? closedApprovalGate.stopReason === 'aborted'
+      ? 'interrupted'
+      : 'completed'
+    : turnStatusForCanonicalWorkerStopReason(stopReason);
   const expectedLeaseStatus = expectedTurnStatus === 'failed' ? 'failed' : 'released';
   const expectedAgentSessionStatus =
-    expectedTurnStatus === 'completed'
-      ? 'idle'
-      : expectedTurnStatus === 'cancelled'
-        ? 'interrupted'
-        : 'failed';
+    closedApprovalGate?.stopReason === 'completed'
+      ? 'closed'
+      : expectedTurnStatus === 'completed'
+        ? 'idle'
+        : expectedTurnStatus === 'cancelled' || expectedTurnStatus === 'interrupted'
+          ? 'interrupted'
+          : 'failed';
   const terminalEvents = store
     .getTurnEvents(checkpoint.turnId)
     .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
@@ -365,12 +377,13 @@ export function classifyClosedWorkerApprovalGate(
   readonly responseItemId: string;
   readonly stopReason: Extract<StopReason, 'aborted' | 'completed'>;
 } | null {
-  if (turn.humanGate || (turn.status !== 'completed' && turn.status !== 'cancelled')) {
+  if (turn.humanGate || (turn.status !== 'completed' && turn.status !== 'interrupted')) {
     return null;
   }
 
   const candidates: Array<{
     readonly requestItemId: string;
+    readonly responseRequestId: string;
     readonly responseItemId: string;
     readonly stopReason: Extract<StopReason, 'aborted' | 'completed'>;
   }> = [];
@@ -406,6 +419,7 @@ export function classifyClosedWorkerApprovalGate(
     }
     candidates.push({
       requestItemId: requests[0].id,
+      responseRequestId: response.causationId,
       responseItemId: response.id,
       stopReason: response.decision === 'denied' ? 'aborted' : 'completed',
     });
@@ -419,17 +433,18 @@ export function classifyClosedWorkerApprovalGate(
     .getTurnEvents(turn.id)
     .filter((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
   const terminalEvent = terminalEvents[0];
-  const expectedTurnStatus = closure.stopReason === 'aborted' ? 'cancelled' : 'completed';
+  const expectedTurnStatus = closure.stopReason === 'aborted' ? 'interrupted' : 'completed';
   if (
     turn.status !== expectedTurnStatus ||
     terminalEvents.length !== 1 ||
     terminalEvent?.data.type !== 'turn-completed' ||
     terminalEvent.data.stopReason !== closure.stopReason ||
-    !terminalEvent.requestId
+    !terminalEvent.requestId ||
+    closure.responseRequestId !== terminalEvent.requestId
   ) {
     return null;
   }
-  return { ...closure, responseRequestId: terminalEvent.requestId };
+  return closure;
 }
 
 /**

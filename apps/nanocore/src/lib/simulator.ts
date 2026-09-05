@@ -53,6 +53,7 @@ import {
   buildWorkspaceMaterializationRecords,
 } from '../runtime/workspace-materializer.js';
 import { recordWorkspaceBackendHandoff } from '../runtime/workspace-sync-records.js';
+import { markSchedulerSessionLeaseReleasing } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -190,6 +191,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         ...(input.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
           : {}),
+        ...(input.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
+          : {}),
         ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
       });
     if (!current) {
@@ -279,6 +283,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         workspaceRoots: preparation.workspaceRoots,
         ...(preparation.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: preparation.workspaceDataSourceCatalog }
+          : {}),
+        ...(preparation.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: preparation.workspaceMcpServerCatalog }
           : {}),
         ...(preparation.workspaceSourceRefs
           ? { workspaceSourceRefs: preparation.workspaceSourceRefs }
@@ -460,6 +467,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         ...(context.workspaceDataSourceCatalog
           ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
           : {}),
+        ...(context.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
+          : {}),
         ...(context.workspaceSourceRefs
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
@@ -491,9 +501,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           409
         );
       }
+      const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
       const preparedContext =
         this.coreDb && workspaceDb && checkpoint && context.sandboxBindingRef
           ? prepareWorkerTurnContextPackage(this.coreDb, workspaceDb, store, checkpoint, {
+              agentSessionId,
               requestId: context.requestId ?? null,
               threadId: turn.threadId,
               turnId: turn.id,
@@ -501,7 +513,6 @@ export class SimulatedTurnExecutor implements TurnExecutor {
               workspaceId: turn.workspaceId,
             })
           : null;
-      const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
       const environmentBackend = { kind: 'openshell' } as const;
       const resolvedEnvironmentPackage = preparedContext
         ? resolveAgentEnvironmentPackage({
@@ -519,6 +530,9 @@ export class SimulatedTurnExecutor implements TurnExecutor {
             workspaceRoots: context.workspaceRoots,
             ...(context.workspaceDataSourceCatalog
               ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+              : {}),
+            ...(context.workspaceMcpServerCatalog
+              ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
               : {}),
             ...(context.workspaceSourceRefs
               ? { workspaceSourceRefs: context.workspaceSourceRefs }
@@ -740,6 +754,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
           recordKey: '1',
           sequence: 1,
+        });
+        markSchedulerSessionLeaseReleasing(this.coreDb, {
+          leaseId: backendSession.leaseId,
+          now: () => timestamp,
+          releaseReason: 'worker-final-status',
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'materialized',

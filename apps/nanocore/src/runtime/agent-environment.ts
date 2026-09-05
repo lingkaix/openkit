@@ -11,11 +11,14 @@ import {
   planSessionWorkspaceMaterialization,
   requireCredentialFreeHttpsGitLocator,
   resolveWorkspaceDataSourceReference,
+  resolveWorkspaceMcpServer,
   type SessionWorkspaceMaterializationPlan,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
   type WorkspaceDataSourceCatalog,
+  type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
@@ -62,34 +65,6 @@ interface WorkerSkillCatalogEntry {
   secretRefIds: string[];
 }
 
-/**
- * Worker MCP catalog entry owned by NanoCore.
- */
-interface WorkerMcpCatalogEntry {
-  /** Stable catalog id. */
-  id: string;
-  /** Cataloged supply version. */
-  version: string;
-  /** NanoCore-owned source reference. */
-  sourceRef: string;
-  /** Digest for the generated MCP config. */
-  sha256: string;
-  /** Runtime adapters allowed to consume this MCP server. */
-  allowedRuntimeAdapters: string[];
-  /** Workspace scopes where this supply may be used. */
-  allowedWorkspaceScopes: string[];
-  /** Tool names allowed through this MCP server. */
-  allowedTools: string[];
-  /** Tool names that require human approval before use. */
-  approvalRequiredTools: string[];
-  /** Tool schemas retained for gateway validation. */
-  toolSchemas: Array<{ inputSchema: Record<string, unknown>; name: string }>;
-  /** Prompt names allowed through this MCP server. */
-  allowedPrompts: string[];
-  /** Review status of this catalog entry. */
-  reviewStatus: 'approved' | 'pending' | 'rejected';
-}
-
 const WORKER_SKILL_CATALOG: Record<string, WorkerSkillCatalogEntry> = {
   'repo-guidelines': {
     allowedRuntimeAdapters: ['codex'],
@@ -101,47 +76,6 @@ const WORKER_SKILL_CATALOG: Record<string, WorkerSkillCatalogEntry> = {
     sha256: 'sha256-repo-guidelines-v1',
     sourceRef: 'server:skills/repo-guidelines',
     targetPath: '/openkit/supply/skills/repo-guidelines',
-    version: '1.0.0',
-  },
-};
-
-const WORKER_MCP_CATALOG: Record<string, WorkerMcpCatalogEntry> = {
-  github: {
-    allowedPrompts: [],
-    allowedRuntimeAdapters: ['codex'],
-    allowedTools: ['repos.get', 'issues.list'],
-    approvalRequiredTools: ['issues.list'],
-    toolSchemas: [
-      {
-        inputSchema: {
-          additionalProperties: false,
-          properties: {
-            owner: { type: 'string' },
-            repo: { type: 'string' },
-          },
-          required: ['owner', 'repo'],
-          type: 'object',
-        },
-        name: 'repos.get',
-      },
-      {
-        inputSchema: {
-          additionalProperties: false,
-          properties: {
-            owner: { type: 'string' },
-            repo: { type: 'string' },
-          },
-          required: ['owner', 'repo'],
-          type: 'object',
-        },
-        name: 'issues.list',
-      },
-    ],
-    allowedWorkspaceScopes: ['workspace'],
-    id: 'github',
-    reviewStatus: 'approved',
-    sha256: 'sha256-github-mcp-v1',
-    sourceRef: 'server:mcp/github',
     version: '1.0.0',
   },
 };
@@ -227,6 +161,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   workspaceRoots: MaterializedWorkspaceRoot[];
   /** Optional workspace data source catalog for sourceRef-backed roots. */
   workspaceDataSourceCatalog?: WorkspaceDataSourceCatalog;
+  /** Optional Workspace MCP catalog used to resolve manifest-selected servers. */
+  workspaceMcpServerCatalog?: WorkspaceMcpServerCatalog;
   /** Optional root-id to sourceRef bindings supplied by manifest resolution. */
   workspaceSourceRefs?: Record<string, string>;
   /** Optional vault backend used to validate grant-derived provider attachments. */
@@ -283,20 +219,32 @@ export function resolveAgentEnvironmentPackage(
 export function resolveAgentSessionCompatibilityKey(
   input: ResolveAgentSessionCompatibilityKeyInput
 ): string {
-  if (input.backend?.kind !== 'openshell') {
-    throw new Error('AgentSession compatibility requires a container backend.');
-  }
-  const environmentPackage = resolveOpenShellAgentEnvironmentPackage(
-    input,
-    input.backend,
-    'metadata-only',
-    hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
-  );
+  const environmentPackage = resolveAgentEnvironmentPackageMetadata(input);
   return (
     environmentPackage.extensions.openkit as {
       sessionWorkspace: SessionWorkspaceMaterializationPlan;
     }
   ).sessionWorkspace.compatibilityKey.digest;
+}
+
+/**
+ * Resolves the complete secret-free AEP projection used by pre-lease runtime admission.
+ *
+ * @param input Future Turn, resolved agent, and static workspace inputs.
+ * @returns Metadata-only Agent Environment Package with no Vault resolution or durable effects.
+ */
+export function resolveAgentEnvironmentPackageMetadata(
+  input: ResolveAgentSessionCompatibilityKeyInput
+): AgentEnvironmentPackage {
+  if (input.backend?.kind !== 'openshell') {
+    throw new Error('AgentSession compatibility requires a container backend.');
+  }
+  return resolveOpenShellAgentEnvironmentPackage(
+    input,
+    input.backend,
+    'metadata-only',
+    hasWorkerContextPackageCheckpoint(input.coreDb, input.turn)
+  );
 }
 
 /** Reads whether the existing durable launch path will prepare a Context Package for this Turn. */
@@ -367,7 +315,9 @@ function resolveOpenShellAgentEnvironmentPackage(
   const packageId = `aepkg_${input.turn.id}_${input.agentSessionId}`;
   const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
   const createdAt = input.createdAt ?? new Date().toISOString();
-  const workerPackagePath = '/openkit/config/package.json';
+  const { packagePath: workerPackagePath, contextRoot } = workerSessionInputPaths(
+    input.agentSessionId
+  );
   const trustedInferenceRequired = true;
   const runtimeProvenanceRequired = requiredCapabilities.includes(
     WORKER_RUNTIME_PROVENANCE_FEATURE
@@ -407,11 +357,13 @@ function resolveOpenShellAgentEnvironmentPackage(
   );
   const workerMcpServers = resolveWorkerMcpServerSupply(
     (manifest.mcp ?? []).map((server) => server.id),
-    manifest.runtime.adapter
+    manifest.runtime.adapter,
+    input.workspaceMcpServerCatalog
   );
   const preparedContextPackage = input.preparedContextPackage
     ? requirePreparedWorkerContextPackage(
         input.turn,
+        input.agentSessionId,
         input.workspaceRoots,
         input.preparedContextPackage
       )
@@ -424,7 +376,7 @@ function resolveOpenShellAgentEnvironmentPackage(
           id: `context_${input.turn.id}`,
           sourceKind: 'materialized-dir' as const,
           sourcePath: '/openkit/context-package-metadata',
-          workerPath: '/openkit/context',
+          workerPath: contextRoot,
         }
       : null);
   const contextPackageContentDigest =
@@ -453,7 +405,7 @@ function resolveOpenShellAgentEnvironmentPackage(
               kind: 'generated',
               pathRef: `threads/${input.turn.threadId}/turns/${input.turn.id}/context-package`,
             },
-            target: '/openkit/context',
+            target: contextRoot,
           },
         ]
       : []),
@@ -510,9 +462,9 @@ function resolveOpenShellAgentEnvironmentPackage(
       image: resolveRuntimeImage(manifest.runtime.image),
       binaries: manifest.runtime.binaries,
       command: {
-        argv: ['openkit-worker-shim', '--package', workerPackagePath],
+        argv: ['openkit-worker-shim'],
         workingDirectory,
-        stdin: 'pipe',
+        stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
       },
@@ -607,8 +559,16 @@ function resolveOpenShellAgentEnvironmentPackage(
     },
     capabilities: {
       protocol: 'openkit-worker-capability-v1',
-      mode: 'disabled',
-      routes: [],
+      ...(workerMcpServers.length > 0
+        ? {
+            mode: 'enabled' as const,
+            routes: [
+              'mcp.list_servers' as const,
+              'mcp.list_tools' as const,
+              'mcp.call_tool' as const,
+            ],
+          }
+        : { mode: 'disabled' as const, routes: [] as const }),
     },
     credentials: {
       declarations: [...credentialArtifacts.declarations],
@@ -828,6 +788,7 @@ function sha256Digest(value: string): string {
  */
 function requirePreparedWorkerContextPackage(
   turn: Turn,
+  agentSessionId: string,
   workspaceRoots: readonly MaterializedWorkspaceRoot[],
   contextPackage: PreparedWorkerContextPackage
 ): PreparedWorkerContextPackage {
@@ -841,7 +802,7 @@ function requirePreparedWorkerContextPackage(
     root.id !== expectedId ||
     root.sourceKind !== 'materialized-dir' ||
     root.access !== 'read-only' ||
-    root.workerPath !== '/openkit/context'
+    root.workerPath !== workerSessionInputPaths(agentSessionId).contextRoot
   ) {
     throw new Error(`Prepared Context Package root does not match worker Turn ${turn.id}.`);
   }
@@ -993,8 +954,8 @@ function resolveWorkerSkillSupply(skillIds: string[], adapter: string) {
       throw new Error(`Worker supply catalog entry not found: skill:${skillId}`);
     }
 
-    assertSupplyApproved('skill', entry.id, entry.reviewStatus);
-    assertRuntimeAdapterAllowed('skill', entry.id, adapter, entry.allowedRuntimeAdapters);
+    assertSupplyApproved(entry.id, entry.reviewStatus);
+    assertRuntimeAdapterAllowed(entry.id, adapter, entry.allowedRuntimeAdapters);
 
     return {
       allowedRuntimeAdapters: [...entry.allowedRuntimeAdapters],
@@ -1020,34 +981,32 @@ function resolveWorkerSkillSupply(skillIds: string[], adapter: string) {
  *
  * @param mcpServerIds Worker MCP server ids requested by the selected agent.
  * @param adapter Runtime adapter that will consume the supply.
+ * @param catalog Workspace-owned MCP catalog captured for this Turn.
  * @returns Catalog-resolved MCP server supply entries.
  */
-function resolveWorkerMcpServerSupply(mcpServerIds: string[], adapter: string) {
+function resolveWorkerMcpServerSupply(
+  mcpServerIds: string[],
+  adapter: string,
+  catalog: WorkspaceMcpServerCatalog | undefined
+) {
+  if (mcpServerIds.length === 0) return [];
+  if (adapter !== 'codex') {
+    throw new Error(`Worker MCP supply does not support runtime adapter: ${adapter}`);
+  }
+  if (!catalog) {
+    throw new Error('Workspace MCP server catalog is required by the selected Agent.');
+  }
   return mcpServerIds.map((mcpServerId) => {
-    const entry = WORKER_MCP_CATALOG[mcpServerId];
-
-    if (!entry) {
-      throw new Error(`Worker supply catalog entry not found: mcp:${mcpServerId}`);
-    }
-
-    assertSupplyApproved('mcp', entry.id, entry.reviewStatus);
-    assertRuntimeAdapterAllowed('mcp', entry.id, adapter, entry.allowedRuntimeAdapters);
+    const entry = resolveWorkspaceMcpServer({ catalog, serverId: mcpServerId });
 
     return {
-      allowedPrompts: [...entry.allowedPrompts],
-      allowedRuntimeAdapters: [...entry.allowedRuntimeAdapters],
       allowedTools: [...entry.allowedTools],
       approvalRequiredTools: [...entry.approvalRequiredTools],
-      toolSchemas: entry.toolSchemas.map((tool) => ({
-        inputSchema: { ...tool.inputSchema },
-        name: tool.name,
-      })),
-      allowedWorkspaceScopes: [...entry.allowedWorkspaceScopes],
+      catalogDigest: entry.catalogDigest,
+      deniedTools: [...entry.deniedTools],
       id: entry.id,
-      integrity: { sha256: entry.sha256 },
-      reviewStatus: entry.reviewStatus,
-      sourceRef: entry.sourceRef,
-      version: entry.version,
+      pinnedSchemaSnapshotId: entry.pinnedSchemaSnapshotId,
+      schemaPolicy: entry.schemaPolicy,
     };
   });
 }
@@ -1556,36 +1515,29 @@ function requireVaultBackend(input: { readonly vaultBackend?: () => VaultBackend
 /**
  * Fails closed when a catalog entry has not been approved for worker supply.
  *
- * @param kind Catalog entry kind.
  * @param id Catalog entry id.
  * @param reviewStatus Catalog review status.
  */
-function assertSupplyApproved(
-  kind: 'skill' | 'mcp',
-  id: string,
-  reviewStatus: 'approved' | 'pending' | 'rejected'
-): void {
+function assertSupplyApproved(id: string, reviewStatus: 'approved' | 'pending' | 'rejected'): void {
   if (reviewStatus !== 'approved') {
-    throw new Error(`Worker supply catalog entry is not approved: ${kind}:${id}`);
+    throw new Error(`Worker skill catalog entry is not approved: ${id}`);
   }
 }
 
 /**
  * Fails closed when a catalog entry is not allowed for the selected runtime adapter.
  *
- * @param kind Catalog entry kind.
  * @param id Catalog entry id.
  * @param adapter Selected runtime adapter.
  * @param allowedRuntimeAdapters Runtime adapters allowed by the catalog entry.
  */
 function assertRuntimeAdapterAllowed(
-  kind: 'skill' | 'mcp',
   id: string,
   adapter: string,
   allowedRuntimeAdapters: string[]
 ): void {
   if (!allowedRuntimeAdapters.includes(adapter)) {
-    throw new Error(`Worker supply catalog entry is not allowed for ${adapter}: ${kind}:${id}`);
+    throw new Error(`Worker skill catalog entry is not allowed for ${adapter}: ${id}`);
   }
 }
 

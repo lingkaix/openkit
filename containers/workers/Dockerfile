@@ -155,7 +155,7 @@ RUN /usr/sbin/groupadd --system sandbox \
     /sandbox/.local/state \
     /sandbox/.npm \
     /sandbox/openkit/artifacts \
-    /sandbox/openkit/config \
+    /sandbox/openkit/sessions \
     /sandbox/openkit/session \
     /workspace \
   && ln -s /sandbox/openkit /openkit \
@@ -168,7 +168,6 @@ RUN /usr/sbin/groupadd --system sandbox \
     /workspace/scratch \
     /workspace/.openkit/cache \
     /openkit/session \
-    /openkit/context \
     /openkit/instructions \
   && uv venv --python "${PYTHON_VERSION}" --seed /sandbox/.venv \
   && uv cache clean \
@@ -186,7 +185,7 @@ LABEL org.openkit.image="worker-common"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-common-base-smoke"
 
 ENTRYPOINT ["tini", "-g", "--"]
-CMD ["openkit-worker-shim", "--package", "/openkit/config/package.json"]
+CMD ["openkit-worker-shim"]
 
 USER sandbox
 

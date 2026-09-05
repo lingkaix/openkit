@@ -78,6 +78,8 @@ export interface StartTurnInput {
   workspaceRoots?: MaterializedWorkspaceRoot[];
   /** Optional workspace data source catalog captured for sourceRef-backed roots. */
   workspaceDataSourceCatalog?: TurnStartRuntimeContext['workspaceDataSourceCatalog'];
+  /** Optional Workspace MCP server catalog captured for the selected Agent. */
+  workspaceMcpServerCatalog?: TurnStartRuntimeContext['workspaceMcpServerCatalog'];
   /** Optional root-id to sourceRef bindings captured for sourceRef-backed roots. */
   workspaceSourceRefs?: TurnStartRuntimeContext['workspaceSourceRefs'];
   /** Host-local working directory selected for worker startup. */
@@ -186,7 +188,7 @@ export function assertAgentManifestSupportsModel(
  * @param workspaceRoots Materialized roots available for this turn.
  * @returns Root-id to sourceRef bindings for matching workspace inputs.
  */
-function workspaceSourceRefsFromAgentManifest(
+export function workspaceSourceRefsFromAgentManifest(
   manifest: AgentManifest,
   workspaceRoots: MaterializedWorkspaceRoot[]
 ): Record<string, string> | undefined {
@@ -340,6 +342,9 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     ...(input.sandboxBindingRef ? { sandboxBindingRef: input.sandboxBindingRef } : {}),
     ...(input.workspaceDataSourceCatalog
       ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+      : {}),
+    ...(input.workspaceMcpServerCatalog
+      ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
       : {}),
     workspaceRoots: input.workspaceRoots ?? [],
     ...(Object.keys(workspaceSourceRefs).length > 0 ? { workspaceSourceRefs } : {}),

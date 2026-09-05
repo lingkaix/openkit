@@ -10,7 +10,7 @@ test "$(head -n 1 "$(readlink -f "$(command -v pi)")")" = "#!/usr/bin/env node"
 command -v openkit-worker-shim >/dev/null
 ! command -v codex >/dev/null
 ! command -v opencode >/dev/null
-test -d /openkit/config
+test -d /openkit/sessions
 test -d /openkit/session
 test -d /openkit/artifacts
 
@@ -43,11 +43,7 @@ model_list="$(
 )"
 grep -Eq 'anthropic([/[:space:]]+)claude-sonnet-4-5([[:space:]]|$)' <<<"${model_list}"
 
-printf '%s\n' '{"schemaVersion":3,"control":{"protocol":"openkit-worker-control-v1","mode":"sandbox-integration","bindings":{"workerControl":{"pathPrefix":"/worker-control/","tokenRef":"runtime://openkit/worker-control-token"},"inference":{"pathPrefix":"/inference/","tokenRef":"runtime://openkit/inference-token"},"capabilities":{"pathPrefix":"/capabilities/","tokenRef":"runtime://openkit/capability-token"}},"adapter":{"kind":"openkit-worker-shim","targetRuntime":"pi"}},"runtime":{"image":{"kind":"reference","ref":"openkit-worker-pi:smoke","pullPolicy":"if-not-present"},"command":{"argv":["openkit-worker-shim","--package","/openkit/config/package.json"],"workingDirectory":"/workspace"}},"extensions":{"openkit":{"turnInput":"Image smoke dry run."}},"credentials":{"declarations":[{"targetEnvVarName":"ANTHROPIC_API_KEY","visibility":"runtime-env"}]},"llm":{"mode":"gateway","routes":[{"credentialVisibility":"environment","endpoint":{"kind":"provider-compatible","upstream":{"kind":"direct-provider"}},"id":"worker-inference","model":"claude-sonnet-4-5","providerInstanceId":"anthropic"}]}}' >"${shim_package}"
-printf '%s\n%s\n' \
-  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
-  'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' | \
-  ANTHROPIC_API_KEY=smoke \
-  openkit-worker-shim --package "${shim_package}" --dry-run
+printf '%s\n' '{"schemaVersion":3,"control":{"protocol":"openkit-worker-control-v1","mode":"sandbox-integration","bindings":{"workerControl":{"pathPrefix":"/worker-control/","tokenRef":"runtime://openkit/worker-control-token"},"inference":{"pathPrefix":"/inference/","tokenRef":"runtime://openkit/inference-token"},"capabilities":{"pathPrefix":"/capabilities/","tokenRef":"runtime://openkit/capability-token"}},"adapter":{"kind":"openkit-worker-shim","targetRuntime":"pi"}},"runtime":{"image":{"kind":"reference","ref":"openkit-worker-pi:smoke","pullPolicy":"if-not-present"},"command":{"argv":["openkit-worker-shim"],"workingDirectory":"/workspace"}},"extensions":{"openkit":{"turnInput":"Image smoke dry run."}},"credentials":{"declarations":[{"targetEnvVarName":"ANTHROPIC_API_KEY","visibility":"runtime-env"}]},"llm":{"mode":"gateway","routes":[{"credentialVisibility":"environment","endpoint":{"kind":"provider-compatible","upstream":{"kind":"direct-provider"}},"id":"worker-inference","model":"claude-sonnet-4-5","providerInstanceId":"anthropic"}]}}' >"${shim_package}"
+ANTHROPIC_API_KEY=smoke SHIM_PACKAGE="${shim_package}" node --input-type=module -e "const { runWorkerShimCli } = await import('/usr/local/lib/openkit/worker-shim/dist/index.js'); await runWorkerShimCli(['--package', process.env.SHIM_PACKAGE, '--dry-run']);"
 
 echo "OpenKit Pi worker image smoke OK"

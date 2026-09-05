@@ -205,6 +205,7 @@ function createDurableWorkerControlLease(
   bindSchedulerLeaseRouteTokenHashes(coreDb, {
     leaseId: `lease_${suffix}`,
     sandboxBindingRef: binding,
+    workerCapabilityTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'capability')),
     workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
     workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
   });
@@ -226,7 +227,7 @@ function createDurableWorkerControlLease(
 /** Derives one deterministic 32-byte raw route token for a durable fixture. */
 function workerRouteToken(
   sandboxBindingRef: string,
-  family: 'worker-control' | 'inference'
+  family: 'capability' | 'worker-control' | 'inference'
 ): string {
   return createHash('sha256').update(`${family}:${sandboxBindingRef}`).digest('base64url');
 }
@@ -239,6 +240,7 @@ function registerDurableWorkerControlSession(
 ) {
   return gateway.registerSession(environmentPackage, {
     sandboxBindingRef,
+    workerCapabilityToken: workerRouteToken(sandboxBindingRef, 'capability'),
     workerControlToken: workerRouteToken(sandboxBindingRef, 'worker-control'),
     workerInferenceToken: workerRouteToken(sandboxBindingRef, 'inference'),
   });
@@ -323,6 +325,9 @@ describe('worker control routes', () => {
       'ALL /api/worker-inference/*',
       'POST /api/worker-inference/v1/chat/completions',
       'POST /api/worker-inference/v1/responses',
+      'ALL /api/worker-capabilities/*',
+      'POST /api/worker-capabilities/mcp/_list-servers',
+      'POST /api/worker-capabilities/mcp/:serverId',
       'ALL /api/*',
       'ALL /api/*',
     ]);
@@ -989,6 +994,9 @@ describe('worker control routes', () => {
     bindSchedulerLeaseRouteTokenHashes(coreDb, {
       leaseId: 'lease_default_binding',
       sandboxBindingRef: 'lease-binding:lease_default_binding',
+      workerCapabilityTokenHash: hashWorkerRouteToken(
+        workerRouteToken('lease-binding:lease_default_binding', 'capability')
+      ),
       workerControlTokenHash: hashWorkerRouteToken(
         workerRouteToken('lease-binding:lease_default_binding', 'worker-control')
       ),
@@ -1422,6 +1430,9 @@ describe('worker control routes', () => {
       leaseId: 'lease_final_status',
       now: () => '2099-07-05T00:00:03.000Z',
       sandboxBindingRef: 'lease-binding:lease_final_status',
+      workerCapabilityTokenHash: hashWorkerRouteToken(
+        workerRouteToken('lease-binding:lease_final_status', 'capability')
+      ),
       workerControlTokenHash: hashWorkerRouteToken(
         workerRouteToken('lease-binding:lease_final_status', 'worker-control')
       ),
@@ -2223,6 +2234,9 @@ describe('worker control routes', () => {
       bindSchedulerLeaseRouteTokenHashes(coreDb, {
         leaseId: 'lease_supply_refresh',
         sandboxBindingRef: 'lease-binding:lease_supply_refresh',
+        workerCapabilityTokenHash: hashWorkerRouteToken(
+          workerRouteToken('lease-binding:lease_supply_refresh', 'capability')
+        ),
         workerControlTokenHash: hashWorkerRouteToken(
           workerRouteToken('lease-binding:lease_supply_refresh', 'worker-control')
         ),
@@ -2647,6 +2661,9 @@ describe('worker control routes', () => {
       bindSchedulerLeaseRouteTokenHashes(coreDb, {
         leaseId: 'lease_rebuild',
         sandboxBindingRef: 'lease-binding:lease_rebuild',
+        workerCapabilityTokenHash: hashWorkerRouteToken(
+          workerRouteToken('lease-binding:lease_rebuild', 'capability')
+        ),
         workerControlTokenHash: hashWorkerRouteToken(
           workerRouteToken('lease-binding:lease_rebuild', 'worker-control')
         ),

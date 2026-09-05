@@ -79,6 +79,18 @@
         }
       ]
     },
+    "schemaSnapshotId": {
+      "default": null,
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "runtimeOriginRef": {
       "default": null,
       "anyOf": [
@@ -135,7 +147,11 @@
         "running",
         "succeeded",
         "failed",
-        "cancelled"
+        "denied",
+        "aborted",
+        "timed-out",
+        "interrupted",
+        "unknown"
       ]
     },
     "summary": {
@@ -192,6 +208,7 @@
     "agentId",
     "agentSessionId",
     "packageSnapshotId",
+    "schemaSnapshotId",
     "runtimeOriginRef",
     "runtimeCacheLineageRef",
     "requestId",
@@ -203,5 +220,94 @@
     "startedAt",
     "completedAt"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "not": {
+            "properties": {
+              "status": {
+                "const": "queued"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "completedAt": {
+              "type": "null"
+            },
+            "startedAt": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "not": {
+            "properties": {
+              "status": {
+                "const": "running"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "completedAt": {
+              "type": "null"
+            },
+            "startedAt": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "not": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "succeeded",
+                  "failed",
+                  "denied",
+                  "aborted",
+                  "timed-out",
+                  "interrupted",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "completedAt": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "description": "Capability call timestamp nullability is determined by status. Parsed-instant ordering of terminal timestamps is enforced by the canonical Zod schema because JSON Schema cannot compare sibling date-time values."
 }
