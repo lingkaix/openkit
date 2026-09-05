@@ -96,7 +96,7 @@ impl OuterRouteProjection {
     ///
     /// Rejects a non-POST request, an oversized body, outer
     /// connection failure, or response delivery failure. The returned boolean is
-    /// true only for an exact sequence-zero `starting` heartbeat accepted by NanoCore.
+    /// true only for an exact credential-free Harness poll accepted with empty `204`.
     pub async fn forward(
         &self,
         family: RouteFamily,
@@ -271,7 +271,7 @@ fn send_nested_status(
         .map_err(|_| "nested route response failed")
 }
 
-/// Returns whether one exact credential-free Harness poll carries the initial latch.
+/// Recognizes the exact Integration-scoped poll eligible for the readiness latch.
 fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, body: &[u8]) -> bool {
     if method != Method::POST
         || path != HARNESS_POLL_PATH
@@ -284,15 +284,11 @@ fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, bod
         .ok()
         .is_some_and(|value| {
             value.as_object().is_some_and(|object| {
-                object.len() == 2
+                object.len() == 1
                     && object
                         .get("schemaVersion")
                         .and_then(serde_json::Value::as_u64)
                         == Some(1)
-                    && object
-                        .get("nextExpectedSequence")
-                        .and_then(serde_json::Value::as_u64)
-                        == Some(0)
             })
         })
 }
@@ -2523,7 +2519,7 @@ mod tests {
     #[test]
     fn initial_harness_poll_is_exact_and_credential_free() {
         let headers = http::HeaderMap::new();
-        let body = br#"{"schemaVersion":1,"nextExpectedSequence":0}"#;
+        let body = br#"{"schemaVersion":1}"#;
         assert!(is_initial_harness_poll(
             &Method::POST,
             "/worker-control/harness/poll",
@@ -2541,6 +2537,12 @@ mod tests {
             "/worker-control/harness/poll",
             &headers,
             br#"{"schemaVersion":1,"nextExpectedSequence":1}"#,
+        ));
+        assert!(!is_initial_harness_poll(
+            &Method::POST,
+            "/worker-control/harness/poll",
+            &headers,
+            br#"{"schemaVersion":1,"nextExpectedSequence":0}"#,
         ));
         let mut credential_headers = http::HeaderMap::new();
         credential_headers.insert(
