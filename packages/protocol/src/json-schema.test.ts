@@ -34,11 +34,13 @@ function loadJsonSchema(schemaUrl: URL): unknown {
 /**
  * Builds a draft 2020-12 JSON Schema validator for generated protocol artifacts.
  */
-function createValidator(schemaUrl: URL = eventSchemaUrl) {
+function createValidator(schemaUrl: URL) {
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu);
   return ajv.compile(loadJsonSchema(schemaUrl));
 }
+
+const validateEvent = createValidator(eventSchemaUrl);
 
 /**
  * Builds a valid terminal turn-completed event envelope for schema parity assertions.
@@ -122,7 +124,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('accepts valid item delta matrix combinations', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
     const envelope = {
       protocolVersion: PROTOCOL_VERSION,
       event: 'item.delta',
@@ -145,7 +147,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('rejects invalid item delta matrix combinations', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
     const envelope = {
       protocolVersion: PROTOCOL_VERSION,
       event: 'item.delta',
@@ -213,7 +215,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('accepts terminal turn completion records with stop reasons', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
 
     expect(validate(createTurnCompletedEnvelope('completed'))).toBe(true);
     expect(validate(createTurnCompletedEnvelope('ask_user'))).toBe(true);
@@ -221,7 +223,7 @@ describe('generated JSON Schema event parity', () => {
   });
 
   it('rejects terminal turn completion records with missing or invalid stop reasons', () => {
-    const validate = createValidator();
+    const validate = validateEvent;
     const missingStopReasonEnvelope = createTurnCompletedEnvelope();
     delete (missingStopReasonEnvelope.data as { stopReason?: string }).stopReason;
 
