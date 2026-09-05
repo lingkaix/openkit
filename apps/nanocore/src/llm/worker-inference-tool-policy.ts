@@ -124,7 +124,11 @@ function hasUniqueToolKeys(tools: readonly unknown[]): boolean {
       if (typeof name !== 'string') {
         continue;
       }
-      const key = `${namespace ?? ''}\0${name}`;
+      const canonicalNamespace =
+        namespace === undefined || namespace === '' || namespace === 'functions'
+          ? 'functions'
+          : namespace;
+      const key = `${canonicalNamespace}\0${name}`;
       if (keys.has(key)) {
         return false;
       }

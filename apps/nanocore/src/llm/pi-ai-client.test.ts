@@ -1104,6 +1104,15 @@ describe('PiAiGatewayClient', () => {
       call_id: 'call_search',
       id: 'fc_search',
       name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+      namespace: 'functions',
+      status: 'completed',
+      type: 'function_call',
+    } as const;
+    const secondSearchCall = {
+      arguments: '{"query":"more local tools","limit":1}',
+      call_id: 'call_search_again',
+      id: 'fc_search_again',
+      name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
       status: 'completed',
       type: 'function_call',
     } as const;
@@ -1188,7 +1197,7 @@ describe('PiAiGatewayClient', () => {
       return new Response(
         callIndex === 0
           ? responseBody([searchCall])
-          : responseBody([discoveredFunctionCall, discoveredCustomCall]),
+          : responseBody([secondSearchCall, discoveredFunctionCall, discoveredCustomCall]),
         { headers: { 'content-type': 'text/event-stream' }, status: 200 }
       );
     });
@@ -1221,8 +1230,8 @@ describe('PiAiGatewayClient', () => {
         },
         rootFunction,
         {
-          description: 'Local callable tools.',
-          name: 'functions',
+          description: 'Namespaced local callable tools.',
+          name: 'shell',
           tools: [namespacedCustom],
           type: 'namespace',
         },
@@ -1333,7 +1342,7 @@ describe('PiAiGatewayClient', () => {
               id: 'ctc_namespaced_exec',
               input: 'text(false);',
               name: 'exec',
-              namespace: 'functions',
+              namespace: 'shell',
               type: 'custom_tool_call',
             },
             {
@@ -1365,6 +1374,15 @@ describe('PiAiGatewayClient', () => {
         .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
       expect(events).toEqual(
         expect.arrayContaining([
+          expect.objectContaining({
+            item: expect.objectContaining({
+              arguments: { query: 'more local tools', limit: 1 },
+              call_id: 'call_search_again',
+              execution: 'client',
+              type: 'tool_search_call',
+            }),
+            type: 'response.output_item.done',
+          }),
           expect.objectContaining({
             item: expect.objectContaining({
               arguments: '{"task_name":"inspect"}',
@@ -1402,8 +1420,8 @@ describe('PiAiGatewayClient', () => {
             },
             rootFunction,
             {
-              description: 'Local callable tools.',
-              name: 'functions',
+              description: 'Namespaced local callable tools.',
+              name: 'shell',
               tools: [namespacedCustom],
               type: 'namespace',
             },
@@ -1422,7 +1440,7 @@ describe('PiAiGatewayClient', () => {
           expect.objectContaining({
             call_id: 'call_namespaced_exec',
             name: 'exec',
-            namespace: 'functions',
+            namespace: 'shell',
             type: 'custom_tool_call',
           }),
           expect.objectContaining({
@@ -1624,32 +1642,41 @@ describe('PiAiGatewayClient', () => {
       summary: [{ text: 'Current reasoning.', type: 'summary_text' }],
       type: 'reasoning',
     } as const;
-    const upstreamBody = [
-      `data: ${JSON.stringify({
-        response: { id: 'resp_lite', model: 'gpt-5.6-sol', output: [], status: 'in_progress' },
-        type: 'response.created',
-      })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null, status: 'in_progress', summary: [] }, output_index: 0, type: 'response.output_item.added' })}\n\n`,
-      `data: ${JSON.stringify({ delta: 'Current reasoning.', item_id: currentReasoning.id, output_index: 0, summary_index: 0, type: 'response.reasoning_summary_text.delta' })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null }, output_index: 0, type: 'response.output_item.done' })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...functionCall, arguments: '', status: 'in_progress' }, output_index: 1, type: 'response.output_item.added' })}\n\n`,
-      `data: ${JSON.stringify({ call_id: functionCall.call_id, delta: functionCall.arguments, output_index: 1, type: 'response.function_call_arguments.delta' })}\n\n`,
-      `data: ${JSON.stringify({ item: functionCall, output_index: 1, type: 'response.output_item.done' })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...customCall, input: '', status: 'in_progress' }, output_index: 2, type: 'response.output_item.added' })}\n\n`,
-      `data: ${JSON.stringify({ delta: customCall.input, output_index: 2, type: 'response.custom_tool_call_input.delta' })}\n\n`,
-      `data: ${JSON.stringify({ item: customCall, output_index: 2, type: 'response.output_item.done' })}\n\n`,
-      `data: ${JSON.stringify({
-        response: {
-          id: 'resp_lite',
-          model: 'gpt-5.6-sol',
-          output: [currentReasoning, functionCall, customCall],
-          status: 'completed',
-          usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
-        },
-        type: 'response.completed',
-      })}\n\n`,
-      'data: [DONE]\n\n',
-    ].join('');
+    const upstreamChunks = [
+      [
+        `data: ${JSON.stringify({
+          response: {
+            id: 'resp_lite',
+            model: 'gpt-5.6-sol',
+            output: [],
+            status: 'in_progress',
+          },
+          type: 'response.created',
+        })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null, status: 'in_progress', summary: [] }, output_index: 0, type: 'response.output_item.added' })}\n\n`,
+        `data: ${JSON.stringify({ delta: 'Current reasoning.', item_id: currentReasoning.id, output_index: 0, summary_index: 0, type: 'response.reasoning_summary_text.delta' })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null }, output_index: 0, type: 'response.output_item.done' })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...functionCall, arguments: '', namespace: undefined, status: 'in_progress' }, output_index: 1, type: 'response.output_item.added' })}\n\n`,
+        `data: ${JSON.stringify({ call_id: functionCall.call_id, delta: functionCall.arguments, output_index: 1, type: 'response.function_call_arguments.delta' })}\n\n`,
+      ].join(''),
+      [
+        `data: ${JSON.stringify({ item: functionCall, output_index: 1, type: 'response.output_item.done' })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...customCall, input: '', status: 'in_progress' }, output_index: 2, type: 'response.output_item.added' })}\n\n`,
+        `data: ${JSON.stringify({ delta: customCall.input, output_index: 2, type: 'response.custom_tool_call_input.delta' })}\n\n`,
+        `data: ${JSON.stringify({ item: customCall, output_index: 2, type: 'response.output_item.done' })}\n\n`,
+        `data: ${JSON.stringify({
+          response: {
+            id: 'resp_lite',
+            model: 'gpt-5.6-sol',
+            output: [currentReasoning, functionCall, customCall],
+            status: 'completed',
+            usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+          },
+          type: 'response.completed',
+        })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join(''),
+    ] as const;
     let observedUpstreamInput: unknown;
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const requestBody = Buffer.from(init?.body as Uint8Array);
@@ -1658,13 +1685,31 @@ describe('PiAiGatewayClient', () => {
           ? zstdDecompressSync(requestBody)
           : requestBody;
       observedUpstreamInput = (JSON.parse(decodedBody.toString()) as { input?: unknown }).input;
-      return new Response(upstreamBody, {
-        headers: {
-          'content-type': 'text/event-stream',
-          'x-codex-turn-state': 'next-turn-state',
-        },
-        status: 200,
-      });
+      const encoder = new TextEncoder();
+      let upstreamCancelled = false;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(upstreamChunks[0]));
+            setImmediate(() => {
+              if (!upstreamCancelled) {
+                controller.enqueue(encoder.encode(upstreamChunks[1]));
+                controller.close();
+              }
+            });
+          },
+          cancel() {
+            upstreamCancelled = true;
+          },
+        }),
+        {
+          headers: {
+            'content-type': 'text/event-stream',
+            'x-codex-turn-state': 'next-turn-state',
+          },
+          status: 200,
+        }
+      );
     });
     vi.stubGlobal('fetch', fetchMock);
     const observedUsage: unknown[] = [];
@@ -1673,10 +1718,17 @@ describe('PiAiGatewayClient', () => {
       role: 'developer',
       tools: [
         {
-          description: 'Run code.',
-          format: { type: 'text' },
-          name: 'exec',
-          type: 'custom',
+          description: 'Default local tools.',
+          name: 'functions',
+          tools: [
+            {
+              description: 'Run code.',
+              format: { type: 'text' },
+              name: 'exec',
+              type: 'custom',
+            },
+          ],
+          type: 'namespace',
         },
         {
           description: 'Coordinate agents.',
@@ -1731,6 +1783,7 @@ describe('PiAiGatewayClient', () => {
               id: 'ctc_previous_exec',
               input: 'text(true);',
               name: 'exec',
+              namespace: '',
               type: 'custom_tool_call',
             },
             {
@@ -1789,6 +1842,15 @@ describe('PiAiGatewayClient', () => {
           type: 'function_call',
         },
       });
+      expect(events[7]).toMatchObject({
+        call_id: functionCall.call_id,
+        item_id: functionCall.id,
+        delta: functionCall.arguments,
+      });
+      expect(events[8]).toMatchObject({
+        item_id: functionCall.id,
+        arguments: functionCall.arguments,
+      });
       expect(events[9]).toMatchObject({ item: functionCall });
       expect(events[10]).toMatchObject({
         item: {
@@ -1829,6 +1891,7 @@ describe('PiAiGatewayClient', () => {
           id: 'ctc_previous_exec',
           input: 'text(true);',
           name: 'exec',
+          namespace: '',
           type: 'custom_tool_call',
         },
         {
@@ -2405,6 +2468,26 @@ describe('PiAiGatewayClient', () => {
             tools: [
               { format: { type: 'text' }, name: 'exec', type: 'custom' },
               { name: 'exec', parameters: { type: 'object' }, type: 'function' },
+            ],
+            type: 'additional_tools',
+          },
+          { content: 'Hello', role: 'user' },
+        ],
+      },
+    ],
+    [
+      'a root and default-namespace callable collision',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              { name: 'exec', parameters: { type: 'object' }, type: 'function' },
+              {
+                name: 'functions',
+                tools: [{ format: { type: 'text' }, name: 'exec', type: 'custom' }],
+                type: 'namespace',
+              },
             ],
             type: 'additional_tools',
           },

@@ -1228,7 +1228,7 @@ function assertResponsesToolHistoryDeclarations(
         typeof item.name !== 'string' ||
         !item.name ||
         (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
-        (item.namespace !== undefined && !namespace) ||
+        (item.namespace !== undefined && typeof item.namespace !== 'string') ||
         (kind === 'custom'
           ? typeof item.input !== 'string'
           : parseToolArguments(item.arguments) === undefined) ||
@@ -1307,8 +1307,7 @@ function toPiResponsesContext(
         typeof record.name !== 'string' ||
         !record.name ||
         (record.id !== undefined && (typeof record.id !== 'string' || !record.id)) ||
-        (record.namespace !== undefined &&
-          (typeof record.namespace !== 'string' || !record.namespace))
+        (record.namespace !== undefined && typeof record.namespace !== 'string')
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${record.type}`);
       }
@@ -1324,7 +1323,7 @@ function toPiResponsesContext(
         kind === 'function' &&
         record.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
         additionalTools?.hasToolSearch === true &&
-        record.namespace === undefined;
+        isDefaultResponsesNamespace(record.namespace);
       if (
         (!reservedSearchCall && additionalTools && declaredKind !== kind) ||
         (!additionalTools && kind === 'custom')
@@ -1687,7 +1686,7 @@ function lowerCodexResponsesInput(
         !item.name ||
         item.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION ||
         (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
-        (item.namespace !== undefined && !namespace) ||
+        (item.namespace !== undefined && typeof item.namespace !== 'string') ||
         (item.status !== undefined && item.status !== 'completed') ||
         (kind === 'custom'
           ? typeof item.input !== 'string'
@@ -1702,7 +1701,11 @@ function lowerCodexResponsesInput(
       }
       carriers.add(carrier);
       const queue = ordinaryCalls.get(item.call_id) ?? [];
-      queue.push({ kind, name: item.name, ...(namespace ? { namespace } : {}) });
+      queue.push({
+        kind,
+        name: item.name,
+        ...(typeof item.namespace === 'string' ? { namespace: item.namespace } : {}),
+      });
       ordinaryCalls.set(item.call_id, queue);
       lowered.push(item);
       continue;
@@ -1723,7 +1726,10 @@ function lowerCodexResponsesInput(
         call.kind !== kind ||
         (item.id !== undefined && (typeof item.id !== 'string' || !item.id)) ||
         (item.name !== undefined && item.name !== call.name) ||
-        (item.namespace !== undefined && item.namespace !== call.namespace)
+        (item.namespace !== undefined &&
+          (typeof item.namespace !== 'string' ||
+            responsesToolKey(call.name, item.namespace) !==
+              responsesToolKey(call.name, call.namespace)))
       ) {
         throw new GatewayUnsupportedFeatureError(`pi-ai Responses ${item.type} lineage`);
       }
@@ -2009,7 +2015,7 @@ function responsesToolCallItem(
   if (block.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
     if (
       additionalTools?.hasToolSearch !== true ||
-      block.namespace !== undefined ||
+      !isDefaultResponsesNamespace(block.namespace) ||
       !readRecord(block.arguments)
     ) {
       throw new GatewayUnsupportedFeatureError('pi-ai Responses tool search output');
@@ -2063,7 +2069,12 @@ function splitResponsesToolCallId(id: string): readonly [string, string] {
 
 /** Builds one collision-free lookup key for an optional namespace and tool name. */
 function responsesToolKey(name: string, namespace?: string): string {
-  return `${namespace ?? ''}\0${name}`;
+  return `${isDefaultResponsesNamespace(namespace) ? 'functions' : namespace}\0${name}`;
+}
+
+/** Returns whether one native namespace spelling names the default function namespace. */
+function isDefaultResponsesNamespace(namespace: unknown): boolean {
+  return namespace === undefined || namespace === '' || namespace === 'functions';
 }
 
 /**
@@ -2139,6 +2150,7 @@ function toResponsesSseStream(
   let terminal = false;
   let usageObserved = false;
   const pendingReasoning = new Set<number>();
+  const pendingToolCalls = new Set<number>();
   const encodeEvent = (event: Record<string, unknown>) =>
     encoder.encode(responsesStreamEvent({ ...event, sequence_number: sequenceNumber++ }));
 
@@ -2332,6 +2344,10 @@ function toResponsesSseStream(
           }
           if (event.type === 'toolcall_start') {
             const block = readStreamToolCall(event.partial, event.contentIndex);
+            if (additionalTools && block.namespace === undefined) {
+              pendingToolCalls.add(event.contentIndex);
+              continue;
+            }
             controller.enqueue(
               encodeEvent({
                 type: 'response.output_item.added',
@@ -2342,6 +2358,9 @@ function toResponsesSseStream(
             return;
           }
           if (event.type === 'toolcall_delta') {
+            if (pendingToolCalls.has(event.contentIndex)) {
+              continue;
+            }
             const block = readStreamToolCall(event.partial, event.contentIndex);
             const [callId, itemId] = splitResponsesToolCallId(block.id);
             if (block.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
@@ -2364,19 +2383,22 @@ function toResponsesSseStream(
             return;
           }
           if (event.type === 'toolcall_end') {
+            const item = responsesToolCallItem(event.toolCall, additionalTools, 'completed');
             const kind = additionalTools?.kinds.get(
               responsesToolKey(event.toolCall.name, event.toolCall.namespace)
             );
-            const [, itemId] = splitResponsesToolCallId(event.toolCall.id);
-            if (event.toolCall.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
-              if (
-                additionalTools?.hasToolSearch !== true ||
-                event.toolCall.namespace !== undefined ||
-                !readRecord(event.toolCall.arguments)
-              ) {
-                throw new GatewayUnsupportedFeatureError('pi-ai Responses tool search output');
-              }
-            } else if (kind === 'custom') {
+            const [callId, itemId] = splitResponsesToolCallId(event.toolCall.id);
+            const deferred = pendingToolCalls.delete(event.contentIndex);
+            if (deferred) {
+              controller.enqueue(
+                encodeEvent({
+                  type: 'response.output_item.added',
+                  output_index: event.contentIndex,
+                  item: responsesToolCallItem(event.toolCall, additionalTools, 'in_progress', true),
+                })
+              );
+            }
+            if (event.toolCall.name !== WORKER_CLIENT_TOOL_SEARCH_FUNCTION && kind === 'custom') {
               const input = event.toolCall.arguments.input;
               if (typeof input !== 'string') {
                 throw new GatewayUnsupportedFeatureError('pi-ai Responses custom tool input');
@@ -2399,7 +2421,18 @@ function toResponsesSseStream(
                   type: 'response.custom_tool_call_input.done',
                 })
               );
-            } else {
+            } else if (event.toolCall.name !== WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
+              if (deferred) {
+                controller.enqueue(
+                  encodeEvent({
+                    type: 'response.function_call_arguments.delta',
+                    call_id: callId,
+                    delta: JSON.stringify(event.toolCall.arguments ?? {}),
+                    item_id: itemId,
+                    output_index: event.contentIndex,
+                  })
+                );
+              }
               controller.enqueue(
                 encodeEvent({
                   arguments: JSON.stringify(event.toolCall.arguments ?? {}),
@@ -2412,7 +2445,7 @@ function toResponsesSseStream(
             }
             controller.enqueue(
               encodeEvent({
-                item: responsesToolCallItem(event.toolCall, additionalTools, 'completed'),
+                item,
                 output_index: event.contentIndex,
                 type: 'response.output_item.done',
               })
