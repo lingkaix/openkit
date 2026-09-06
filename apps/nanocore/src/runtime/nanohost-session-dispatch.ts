@@ -772,7 +772,7 @@ export function registerNanoHostSessionSemanticRoutes(
         });
         const value = parseJsonObject(body, 'NanoHost private Harness body is invalid.');
         if (path === HARNESS_POLL_PATH) {
-          if (Object.keys(value).length !== 1 || value.schemaVersion !== 1) {
+          if (Object.keys(value).length !== 1 || value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
           const command = dispatchNanoHostHarnessOperation(input.coreDb, {

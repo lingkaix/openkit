@@ -8,7 +8,11 @@ import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
 import { assertAarch64Elf } from './lib/nanohost-elf.mjs';
-import { parseNanoHostHostManifest, parseNanoHostPin } from './release-preflight.mjs';
+import {
+  assertOpenShellSdkRevision,
+  parseNanoHostHostManifest,
+  parseOpenShellRelease,
+} from './release-preflight.mjs';
 
 const FILES = [
   'MANIFEST.json',
@@ -43,17 +47,18 @@ export function verifyNanoHostRelease(input) {
     archiveName
   );
   if (!match) throw new Error(`NanoHost archive name is invalid: ${archiveName}`);
-  const pin = parseNanoHostPin(
-    readFileSync(join(repoRoot, 'apps/nanohost/openshell-pin/manifest.md'), 'utf8')
+  const release = parseOpenShellRelease(
+    readFileSync(join(repoRoot, 'apps/nanohost/openshell/release.json'), 'utf8')
   );
-  const pinArtifact = (kind, representation) =>
-    pin.artifacts.find(
-      (candidate) => candidate.kind === kind && candidate.representation === representation
-    );
-  const archivePin = pinArtifact('gateway-executable', 'release-archive');
-  const gatewayPin = pinArtifact('gateway-executable', 'extracted-executable');
-  const licensePin = pinArtifact('redistribution-license', 'source-file');
-  const noticesPin = pinArtifact('redistribution-notices', 'source-file');
+  assertOpenShellSdkRevision(
+    release,
+    readFileSync(join(repoRoot, 'apps/nanohost/Cargo.toml'), 'utf8'),
+    readFileSync(join(repoRoot, 'apps/nanohost/Cargo.lock'), 'utf8')
+  );
+  const archiveRelease = release.gateway.archive;
+  const gatewayRelease = release.gateway.executable;
+  const licenseRelease = release.redistribution.license;
+  const noticesRelease = release.redistribution.notices;
   const outer = parseChecksums(readFileSync(checksumFile, 'utf8'));
   if (outer.get(archiveName) !== sha256(archive)) {
     throw new Error('NanoHost archive does not match the portable SHA256SUMS.');
@@ -150,30 +155,30 @@ export function verifyNanoHostRelease(input) {
       );
     }
     assertSha256(
-      manifest.openshellPin?.gateway?.sha256,
+      manifest.openshellRelease?.gateway?.sha256,
       join(root, 'openshell-gateway'),
-      'Gateway pin'
+      'Gateway release identity'
     );
     assertSha256(
-      manifest.openshellPin?.license?.sha256,
+      manifest.openshellRelease?.license?.sha256,
       join(root, 'licenses/openshell-LICENSE'),
-      'license pin'
+      'license release identity'
     );
     assertSha256(
-      manifest.openshellPin?.notices?.sha256,
+      manifest.openshellRelease?.notices?.sha256,
       join(root, 'licenses/openshell-THIRD-PARTY-NOTICES'),
-      'notices pin'
+      'notices release identity'
     );
     if (
-      manifest.openshellPin?.tag !== pin.source.tag ||
-      manifest.openshellPin?.commit !== pin.source.commit ||
-      manifest.openshellPin?.gatewayArchive?.name !== archivePin.name ||
-      manifest.openshellPin?.gatewayArchive?.sha256 !== archivePin.checksum.slice(7) ||
-      manifest.openshellPin?.gateway?.sha256 !== gatewayPin.checksum.slice(7) ||
-      manifest.openshellPin?.license?.sha256 !== licensePin.checksum.slice(7) ||
-      manifest.openshellPin?.notices?.sha256 !== noticesPin.checksum.slice(7)
+      manifest.openshellRelease?.version !== release.version ||
+      manifest.openshellRelease?.sourceCommit !== release.source.commit ||
+      manifest.openshellRelease?.gatewayArchive?.name !== archiveRelease.name ||
+      manifest.openshellRelease?.gatewayArchive?.sha256 !== archiveRelease.sha256 ||
+      manifest.openshellRelease?.gateway?.sha256 !== gatewayRelease.sha256 ||
+      manifest.openshellRelease?.license?.sha256 !== licenseRelease.sha256 ||
+      manifest.openshellRelease?.notices?.sha256 !== noticesRelease.sha256
     ) {
-      throw new Error('NanoHost generated manifest differs from the checkout OpenShell pin.');
+      throw new Error('NanoHost generated manifest differs from the checkout OpenShell release.');
     }
     for (const [member, checkout] of [
       ['install.sh', 'apps/nanohost/deploy/install.sh'],

@@ -691,7 +691,7 @@ describe('createConfiguredTurnExecutor', () => {
           disposition: 'succeeded',
           harnessInstanceId: 'harness-continuity-key',
           operationId: command.operationId,
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: command.sequence,
         },
         timestamp: '2026-08-21T00:00:03.000Z',
@@ -1711,7 +1711,10 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('queues and settles an MCP human Gate stop through the configured NanoHost Harness', async () => {
+  it.each([
+    'human-gate',
+    'interrupt',
+  ] as const)('settles %s before terminal Harness inspection', async (purpose) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -1785,7 +1788,13 @@ describe('createConfiguredTurnExecutor', () => {
         workerControlGateway: new WorkerControlGateway(),
       });
       const backend = (
-        runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            interruptTurn(snapshotId: string): Promise<void>;
+            inspectTerminalHarnessSession(session: unknown): Promise<void>;
+            readonly sessions: Map<string, unknown>;
+          };
+        }
       ).backend;
       const materialization = await backend.materialize(environmentPackage, {
         runtimeFileCredentials: [
@@ -1805,7 +1814,12 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .get() as { integrationRef: string };
       const settleNext = async (
-        operation: 'session.open' | 'turn.start' | 'turn.interrupt',
+        operation:
+          | 'session.open'
+          | 'turn.start'
+          | 'turn.interrupt'
+          | 'session.inspect'
+          | 'session.close',
         body: Readonly<Record<string, unknown>>
       ) => {
         let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
@@ -1844,7 +1858,7 @@ describe('createConfiguredTurnExecutor', () => {
           disposition: 'succeeded' as const,
           harnessInstanceId: command.harnessInstanceId,
           operationId: command.operationId,
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           sequence: command.sequence,
         };
         settleNanoHostHarnessOperation(coreDb, {
@@ -1870,7 +1884,36 @@ describe('createConfiguredTurnExecutor', () => {
       });
       await launch;
 
-      runtime.requestHumanGateStop(environmentPackage.snapshotId);
+      const stop =
+        purpose === 'interrupt'
+          ? backend.interruptTurn(environmentPackage.snapshotId)
+          : Promise.resolve(runtime.requestHumanGateStop(environmentPackage.snapshotId));
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-09-06T00:00:01.000Z',
+        lineage: {
+          ...environmentPackage.scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+        },
+        operation: 'final_status',
+        record: { sequence: 1, status: 'interrupted', stopReason: 'aborted' },
+        recordKey: '1',
+        sequence: 1,
+      });
+      let inspectionState = 'pending';
+      const inspection = backend
+        .inspectTerminalHarnessSession(backend.sessions.get(environmentPackage.snapshotId))
+        .then(
+          () => {
+            inspectionState = 'resolved';
+          },
+          (error) => {
+            inspectionState = 'rejected';
+            throw error;
+          }
+        );
+      void inspection.catch(() => undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectionState).toBe('pending');
       const interrupt = await settleNext('turn.interrupt', {
         childState: 'absent',
         state: 'interrupted',
@@ -1878,32 +1921,114 @@ describe('createConfiguredTurnExecutor', () => {
       expect(interrupt.body).toMatchObject({
         agentSessionId: 'as_human_gate',
         leaseId: 'lease_human_gate',
-        purpose: 'human-gate',
+        purpose,
         turnId: 'turn_human_gate',
       });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT operation, operation_state AS operationState
-             FROM harness_instance_records
-             WHERE harness_instance_id = ?`
-          )
-          .get(interrupt.harnessInstanceId)
-      ).toEqual({ operation: 'turn.interrupt', operationState: 'settled' });
-
-      await runtime.cleanupBackendSession(backend.planSession(environmentPackage));
+      await stop;
+      const inspected = await settleNext('session.inspect', {
+        childState: 'absent',
+        cleanupState: 'clean',
+        nativeHandleDigest: null,
+        nativeHandleState: 'pending',
+        state: 'open',
+      });
+      expect(inspected.sequence).toBe(interrupt.sequence + 1);
+      await inspection;
+      expect(inspectionState).toBe('resolved');
+      const cleanup = runtime.cleanupBackendSession(backend.planSession(environmentPackage));
+      await settleNext('session.close', {
+        childState: 'absent',
+        privateState: 'absent',
+        state: 'closed',
+      });
+      await cleanup;
       expect(effects.map((effect) => effect.kind)).toEqual([
         'image.acquire',
         'sandbox.create',
         'bridge.open',
         'reference.import',
         'reference.import',
-        'bridge.close',
-        'sandbox.delete',
       ]);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
-      ).toEqual({ count: 0 });
+      ).toEqual({ count: 1 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('selects durable interrupt and terminal close for a bounded-turn NanoHost binding', async () => {
+    const coreDb = createFactoryCoreDb();
+    try {
+      const workerControlGateway = new WorkerControlGateway();
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        workerControlGateway,
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: {
+            inspectTerminalHarnessSession(session: unknown): Promise<void>;
+            interruptTurn(packageSnapshotId: string): Promise<void>;
+            queueAndWaitForHarnessOperation(
+              session: unknown,
+              operation: string,
+              body: Readonly<Record<string, unknown>>
+            ): Promise<Readonly<Record<string, unknown>>>;
+            readonly sessions: Map<string, unknown>;
+          };
+        }
+      ).backend;
+      const environmentPackage = {
+        scope: {
+          agentSessionId: 'as_factory_opencode',
+          requestId: null,
+          threadId: 'thread_factory_opencode',
+          turnId: 'turn_factory_opencode',
+          workspaceId: 'workspace_factory_opencode',
+        },
+        snapshotId: 'aepsnap_factory_opencode',
+      } as AgentEnvironmentPackage;
+      const bindings = new Map([
+        [
+          environmentPackage.scope.agentSessionId,
+          {
+            agentSessionCompatibilityKey: 'compatibility',
+            agentSessionRuntimeBindingId: 'binding_factory_opencode',
+            nativeHandleDigest: null,
+            nextTurnSequence: 1,
+          },
+        ],
+      ]);
+      const session = {
+        agentSessionRuntimeBindingId: 'binding_factory_opencode',
+        environmentPackage,
+        leaseId: 'lease_factory_opencode',
+        nativeSessionReusable: false,
+        sharedHarness: { adapterId: 'opencode', bindings },
+        terminalInspectionComplete: false,
+      };
+      workerControlGateway.registerSession(environmentPackage);
+      backend.sessions.set(environmentPackage.snapshotId, session);
+
+      await backend.interruptTurn(environmentPackage.snapshotId);
+      expect(
+        workerControlGateway.getSessionSnapshot(environmentPackage.snapshotId)?.commands
+      ).toMatchObject([{ kind: 'interrupt' }]);
+
+      const operations: string[] = [];
+      backend.queueAndWaitForHarnessOperation = async (_session, operation) => {
+        operations.push(operation);
+        return { childState: 'absent', privateState: 'absent', state: 'closed' };
+      };
+      await backend.inspectTerminalHarnessSession(session);
+      expect(operations).toEqual(['session.close']);
+      expect(bindings.size).toBe(0);
+      expect(session).toMatchObject({
+        nativeSessionReusable: false,
+        terminalInspectionComplete: true,
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -2370,7 +2495,7 @@ describe('createConfiguredTurnExecutor', () => {
           disposition: 'succeeded' as const,
           harnessInstanceId: command.harnessInstanceId,
           operationId: command.operationId,
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           sequence: command.sequence,
         };
         settleNanoHostHarnessOperation(coreDb, {

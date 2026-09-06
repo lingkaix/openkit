@@ -12,6 +12,7 @@ mod image_acquisition;
 mod image_store;
 mod nanocore_session;
 mod openshell_client;
+mod openshell_release;
 mod sandbox_bridge;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -27,7 +28,8 @@ use epoch_coordinator::{
 };
 use epoch_evidence::{
     AbsentEpochTrigger, EVIDENCE_ROOT, EpochEvidenceWriter, EpochInvalidationTrigger,
-    observe_recovery, record_fence_started,
+    REBUILD_HARD_LIMIT, clear_fence_started, measure_fence_to_ready, observe_recovery,
+    record_fence_started,
 };
 use image_acquisition::BuildDefinition;
 use image_store::ImageStore;
@@ -207,6 +209,13 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
             .map(str::to_string)
             .ok_or("sandbox policy string invalid")
     };
+    let absolute_path = |value: &serde_json::Value| {
+        let path = text(value)?;
+        if !path.starts_with('/') {
+            return Err("sandbox policy path must be absolute");
+        }
+        Ok(path)
+    };
     let object = value.as_object().ok_or("sandbox policy invalid")?;
     if !exact_keys(
         object,
@@ -235,14 +244,14 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
         .and_then(serde_json::Value::as_array)
         .ok_or("sandbox filesystem policy invalid")?
         .iter()
-        .map(&text)
+        .map(&absolute_path)
         .collect::<Result<Vec<_>, _>>()?;
     let read_write = filesystem
         .get("readWrite")
         .and_then(serde_json::Value::as_array)
         .ok_or("sandbox filesystem policy invalid")?
         .iter()
-        .map(&text)
+        .map(&absolute_path)
         .collect::<Result<Vec<_>, _>>()?;
     let include_workdir = filesystem
         .get("includeWorkdir")
@@ -297,7 +306,13 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
             .filter(|value| exact_keys(value, &["binaries", "endpoints", "name"]))
             .ok_or("sandbox network policy invalid")?;
         let name = text(policy.get("name").ok_or("sandbox network policy invalid")?)?;
-        if name != *key {
+        let mut identifier = name.bytes();
+        if name != *key
+            || !identifier
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            || !identifier.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
             return Err("sandbox network policy identity invalid");
         }
         let binaries = policy
@@ -312,7 +327,7 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
                     .filter(|value| exact_keys(value, &["path"]))
                     .ok_or("sandbox network policy binary invalid")?;
                 Ok(NetworkBinary {
-                    path: text(
+                    path: absolute_path(
                         binary
                             .get("path")
                             .ok_or("sandbox network policy binary invalid")?,
@@ -411,23 +426,31 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
             .filter(|value| *value > 0 && *value <= u16::MAX as u64)
             .and_then(|value| u32::try_from(value).ok())
             .ok_or("sandbox network policy endpoint invalid")?;
+        let protocol = text(
+            endpoint
+                .get("protocol")
+                .ok_or("sandbox network policy endpoint invalid")?,
+        )?;
+        if protocol != "rest" {
+            return Err("sandbox network policy protocol invalid");
+        }
+        let host = text(
+            endpoint
+                .get("host")
+                .ok_or("sandbox network policy endpoint invalid")?,
+        )?;
+        if host.trim().is_empty() {
+            return Err("sandbox network policy host invalid");
+        }
         network_policies.insert(
             key.clone(),
             NetworkPolicyRule {
                 name,
                 binaries,
                 endpoints: vec![NetworkEndpoint {
-                    host: text(
-                        endpoint
-                            .get("host")
-                            .ok_or("sandbox network policy endpoint invalid")?,
-                    )?,
+                    host,
                     port,
-                    protocol: text(
-                        endpoint
-                            .get("protocol")
-                            .ok_or("sandbox network policy endpoint invalid")?,
-                    )?,
+                    protocol,
                     enforcement,
                     access,
                     rules,
@@ -860,7 +883,6 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         &plan,
         client,
         evidence,
-        fence_started,
         &mut image_store,
         &required_deployment,
         &mut image_backend,
@@ -929,19 +951,56 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                 }
             }
         };
+        let readiness_fence = fence_started;
         let session_result = nanocore_session::run_outer_session(
             io,
             &session_inputs.rendezvous_url,
             &selection_context,
             &presentation,
             reconnect_after,
+            move || {
+                let Some(started) = readiness_fence else {
+                    return Ok(None);
+                };
+                SystemTime::now()
+                    .duration_since(started)
+                    .ok()
+                    .filter(|elapsed| measure_fence_to_ready(*elapsed, true).ready)
+                    .and_then(|elapsed| REBUILD_HARD_LIMIT.checked_sub(elapsed))
+                    .and_then(|remaining| tokio::time::Instant::now().checked_add(remaining))
+                    .map(Some)
+                    .ok_or_else(|| {
+                        OuterSessionFailure::terminal(
+                            OuterSessionStage::Readiness,
+                            OuterSessionOperation::None,
+                            None,
+                            "epoch rebuild hard bound exceeded",
+                        )
+                    })
+            },
             |generation, mut sender| {
+                let readiness_commit = if fence_started.is_some() {
+                    clear_fence_started().map_err(|_| {
+                        OuterSessionFailure::terminal(
+                            OuterSessionStage::Readiness,
+                            OuterSessionOperation::None,
+                            None,
+                            "epoch rebuild marker could not be consumed",
+                        )
+                    })
+                } else {
+                    Ok(())
+                };
+                if readiness_commit.is_ok() {
+                    fence_started = None;
+                }
                 let coordinator = &mut coordinator;
                 let pending_result = &mut pending_result;
                 let reconnect_started_at = &mut reconnect_started_at;
                 let authority = session_inputs.rendezvous_url.as_str();
                 let route_projection = route_projection.clone();
                 async move {
+                    readiness_commit?;
                     route_projection.bind(authority, sender.clone()).await;
                     *reconnect_started_at = None;
                     let mut cursor =
@@ -1186,7 +1245,16 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                     reconnect_after = failure.reconnect_after();
                     reconnect_started_at.get_or_insert_with(Instant::now);
                 }
-                OuterSessionDisposition::Terminal => return Err(failure.into()),
+                OuterSessionDisposition::Terminal => {
+                    if matches!(
+                        failure.reason(),
+                        "epoch rebuild hard bound exceeded"
+                            | "epoch rebuild marker could not be consumed"
+                    ) {
+                        coordinator.invalidate_startup();
+                    }
+                    return Err(failure.into());
+                }
             },
         }
     }
@@ -1218,6 +1286,9 @@ fn main() {
 }
 
 #[cfg(test)]
+mod openshell_upgrade_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
@@ -1225,10 +1296,88 @@ mod tests {
     use super::{
         OUTER_SESSION_RECONNECT_BOUND, OUTER_SESSION_RECONNECT_DELAY,
         parse_nanohost_session_inputs, parse_required_deployment_image_digests,
-        parse_sandbox_environment, successor_connect_remaining,
+        parse_sandbox_environment, parse_sandbox_policy, successor_connect_remaining,
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
+
+    #[test]
+    fn nanocore_authored_policy_reaches_current_sdk_and_rejects_invalid_grants() {
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/support/openshell-worker-policy.json"
+        ))
+        .expect("shared NanoCore-authored policy fixture");
+        let policy = parse_sandbox_policy(&value).expect("NanoCore policy must reach the SDK");
+        let filesystem = policy.filesystem.expect("filesystem grants");
+        assert!(
+            filesystem
+                .read_only
+                .contains(&"/opt/toolchains".to_string())
+        );
+        assert!(
+            filesystem
+                .read_write
+                .contains(&"/sandbox/.cache/npm".to_string())
+        );
+        let direct = &policy.network_policies["direct_api"];
+        assert_eq!(direct.binaries[0].path, "/usr/local/bin/codex");
+        assert_eq!(direct.endpoints[0].access, "read-only");
+        assert_eq!(direct.endpoints[0].enforcement, "enforce");
+        let git = &policy.network_policies["github_git_read"].endpoints[0];
+        assert!(git.access.is_empty());
+        assert_eq!(git.rules.len(), 2);
+        let read = git.rules[0].allow.as_ref().expect("exact GET rule");
+        assert_eq!(
+            (read.method.as_str(), read.path.as_str()),
+            ("GET", "/**/info/refs*")
+        );
+        let upload = git.rules[1].allow.as_ref().expect("exact POST rule");
+        assert_eq!(
+            (upload.method.as_str(), upload.path.as_str()),
+            ("POST", "/**/git-upload-pack")
+        );
+
+        let mut empty_binaries = value.clone();
+        empty_binaries["networkPolicies"]["direct_api"]["binaries"] = serde_json::json!([]);
+        assert!(parse_sandbox_policy(&empty_binaries).is_err());
+        let mut ambiguous = value.clone();
+        ambiguous["networkPolicies"]["github_git_read"]["endpoints"][0]["access"] =
+            serde_json::json!("read-write");
+        assert!(parse_sandbox_policy(&ambiguous).is_err());
+        for (pointer, unsupported) in [
+            ("/filesystem/readOnly/0", "relative/path"),
+            ("/filesystem/readWrite/0", "relative/path"),
+            (
+                "/networkPolicies/direct_api/binaries/0/path",
+                "relative/path",
+            ),
+            (
+                "/networkPolicies/direct_api/endpoints/0/protocol",
+                "unsupported",
+            ),
+            ("/networkPolicies/direct_api/endpoints/0/host", "   "),
+        ] {
+            let mut invalid = value.clone();
+            *invalid.pointer_mut(pointer).expect("fixture grant exists") =
+                serde_json::json!(unsupported);
+            assert!(
+                parse_sandbox_policy(&invalid).is_err(),
+                "unsupported grant at {pointer}"
+            );
+        }
+        let mut bad_name = value.clone();
+        let mut entry = bad_name["networkPolicies"]
+            .as_object_mut()
+            .expect("policy map")
+            .remove("direct_api")
+            .expect("named policy");
+        entry["name"] = serde_json::json!("bad/name");
+        bad_name["networkPolicies"]["bad/name"] = entry;
+        assert!(parse_sandbox_policy(&bad_name).is_err());
+        let mut unknown = value;
+        unknown["unrecognized"] = serde_json::json!(true);
+        assert!(parse_sandbox_policy(&unknown).is_err());
+    }
 
     /// Returns the exact non-secret execution-host environment projection.
     fn valid_nanohost_environment() -> BTreeMap<String, String> {
@@ -1560,7 +1709,7 @@ mod tests {
             .split_once("async fn run()")
             .expect("NanoHost async run path")
             .1
-            .split_once("/// Starts the fixed NanoHost")
+            .split_once("\nfn main()")
             .expect("end of NanoHost run path")
             .0;
         let resolver_source = run
@@ -1597,7 +1746,7 @@ mod tests {
             .split_once("async fn run()")
             .expect("NanoHost async run path")
             .1
-            .split_once("/// Starts the fixed NanoHost")
+            .split_once("\nfn main()")
             .expect("end of NanoHost run path")
             .0;
         let coordinator = run
@@ -1614,12 +1763,15 @@ mod tests {
             .map(|offset| classified + offset)
             .expect("silent reconnect disposition");
         let terminal = run[classified..]
-            .find("OuterSessionDisposition::Terminal => return Err(failure.into())")
+            .find("OuterSessionDisposition::Terminal => {")
             .map(|offset| classified + offset)
             .expect("original terminal classification return");
         assert!(coordinator < session && session < classified);
         assert!(classified <= reconnect && reconnect < terminal);
         assert!(run[reconnect..terminal].contains("reconnect_after = failure.reconnect_after();"));
+        let terminal_path = &run[terminal..];
+        assert!(terminal_path.contains("coordinator.invalidate_startup();"));
+        assert!(terminal_path.contains("return Err(failure.into());"));
         assert!(!run[reconnect..terminal].contains("eprintln!"));
         assert!(!run.contains("nanohost outer session failed"));
         assert!(!run.contains("std::mem::forget(coordinator)"));
@@ -1638,10 +1790,9 @@ mod tests {
         );
 
         let main = production
-            .split_once("async fn main()")
-            .expect("Tokio process entry")
+            .split_once("if let Err(message) = runtime.block_on(run())")
+            .expect("Tokio runtime failure branch")
             .1;
-        assert!(main.contains("if let Err(message) = run().await"));
         assert!(main.contains("eprintln!(\"{message}\")"));
     }
 
@@ -1675,7 +1826,7 @@ mod tests {
             .split_once("async fn run()")
             .expect("NanoHost run path")
             .1
-            .split_once("/// Starts the fixed NanoHost")
+            .split_once("\nfn main()")
             .expect("end of NanoHost run path")
             .0;
         let poll = run
@@ -1715,7 +1866,7 @@ mod tests {
             .split_once("async fn run()")
             .expect("NanoHost run path")
             .1
-            .split_once("/// Starts the fixed NanoHost")
+            .split_once("\nfn main()")
             .expect("end of NanoHost run path")
             .0;
         let connect_failure = OuterSessionFailure::terminal(
@@ -1784,8 +1935,8 @@ mod tests {
         assert!(reconnect < terminal);
         assert!(!run[reconnect..terminal].contains("eprintln!"));
         let main = production
-            .split_once("async fn main()")
-            .expect("one process exit path")
+            .split_once("if let Err(message) = runtime.block_on(run())")
+            .expect("one runtime failure exit path")
             .1;
         assert_eq!(main.matches("eprintln!(").count(), 1);
         assert_eq!(main.matches("std::process::exit(1)").count(), 1);

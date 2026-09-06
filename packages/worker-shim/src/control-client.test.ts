@@ -82,7 +82,7 @@ describe('WorkerControlClient', () => {
           },
           lineage,
           operation: 'heartbeat',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 0,
         },
         headers: expect.objectContaining({ authorization: 'Bearer token_control_1' }),
@@ -155,7 +155,7 @@ describe('WorkerControlClient', () => {
 
   it('appends canonical events with sandbox bearer lineage', async () => {
     const { fetch, requests } = createFetchFixture([
-      { body: { accepted: true, diagnostics: [], nextExpectedSequence: 4, schemaVersion: 1 } },
+      { body: { accepted: true, diagnostics: [], nextExpectedSequence: 4, schemaVersion: 2 } },
     ]);
     const client = new WorkerControlClient({
       fetch,
@@ -173,7 +173,7 @@ describe('WorkerControlClient', () => {
       },
       kind: 'event',
       lineage,
-      schemaVersion: 1,
+      schemaVersion: 2,
       sequence: 3,
     };
 
@@ -209,7 +209,7 @@ describe('WorkerControlClient', () => {
     {
       expectedCode: 'worker_control_not_accepted',
       label: 'an explicit rejection',
-      response: { body: { accepted: false, diagnostics: [], schemaVersion: 1 } },
+      response: { body: { accepted: false, diagnostics: [], schemaVersion: 2 } },
     },
   ])('rejects canonical event append with $label', async ({ expectedCode, response }) => {
     const { fetch, requests } = createFetchFixture([response]);
@@ -226,7 +226,7 @@ describe('WorkerControlClient', () => {
       },
       kind: 'event',
       lineage,
-      schemaVersion: 1,
+      schemaVersion: 2,
       sequence: 3,
     };
 
@@ -239,7 +239,7 @@ describe('WorkerControlClient', () => {
 
   it('posts final status as a canonical control envelope', async () => {
     const { fetch, requests } = createFetchFixture([
-      { body: { accepted: true, diagnostics: [], nextExpectedSequence: 5, schemaVersion: 1 } },
+      { body: { accepted: true, diagnostics: [], nextExpectedSequence: 5, schemaVersion: 2 } },
     ]);
     const client = new WorkerControlClient({
       baseUrl: '/worker-control',
@@ -268,7 +268,7 @@ describe('WorkerControlClient', () => {
           },
           lineage,
           operation: 'final_status',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 4,
         },
         headers: {
@@ -299,7 +299,7 @@ describe('WorkerControlClient', () => {
     {
       expectedCode: 'worker_control_not_accepted',
       label: 'an explicit rejection',
-      response: { body: { accepted: false, diagnostics: [], schemaVersion: 1 } },
+      response: { body: { accepted: false, diagnostics: [], schemaVersion: 2 } },
     },
   ])('rejects final status delivery with $label', async ({ expectedCode, response }) => {
     const { fetch, requests } = createFetchFixture([response, response, response]);
@@ -339,7 +339,7 @@ describe('WorkerControlClient', () => {
               accepted: true,
               diagnostics: [],
               nextExpectedSequence: 5,
-              schemaVersion: 1,
+              schemaVersion: 2,
             }),
         };
       },
@@ -371,7 +371,7 @@ describe('WorkerControlClient', () => {
         ok: false,
         status: 409,
       },
-      { body: { accepted: true, diagnostics: [], schemaVersion: 1 } },
+      { body: { accepted: true, diagnostics: [], schemaVersion: 2 } },
     ]);
     const client = new WorkerControlClient({
       baseUrl: '/worker-control',

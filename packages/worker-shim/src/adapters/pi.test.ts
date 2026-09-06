@@ -8,7 +8,7 @@ import { piAdapter } from './pi.js';
 /**
  * Creates one isolated Pi adapter input.
  *
- * @returns Adapter input with one already resolved LLM route.
+ * @returns Adapter input with one Shim-selected LLM route.
  */
 function piInput(): WorkerAdapterPrepareInput {
   const root = mkdtempSync(join(tmpdir(), 'openkit-pi-adapter-'));

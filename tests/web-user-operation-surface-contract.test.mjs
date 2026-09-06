@@ -3,17 +3,22 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 190;
+const EXPECTED_CATALOG_SIZE = 195;
 const EXPECTED_SERVER_SIZE = 46;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 142;
+const EXPECTED_INCLUDED_SIZE = 147;
 
-/** Included operations whose current backend reads cannot support a truthful restart-safe Web workflow. */
+/** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
   ['createAutomation', 'R092'],
   ['deleteAutomation', 'R092'],
+  ['deleteWorkspace', 'R049'],
+  ['downloadWorkspaceExportArchive', 'R008'],
   ['draftKnowledgeProposal', 'R070'],
+  ['dryRunWorkspaceArchiveImport', 'R008'],
+  ['importWorkspaceArchive', 'R008'],
   ['listAutomations', 'R092'],
+  ['recoverDeletedWorkspace', 'R049'],
   ['reverseKnowledgeProposal', 'R072'],
   ['updateAutomation', 'R092'],
 ]);
@@ -140,8 +145,11 @@ const WEB_OPERATION_GROUPS = {
     submitKnowledgeProposalDecision: { disposition: 'live', surface: 'Knowledge' },
   },
   Portability: {
+    downloadWorkspaceExportArchive: { disposition: 'roadmap', roadmap: 'R008' },
+    dryRunWorkspaceArchiveImport: { disposition: 'roadmap', roadmap: 'R008' },
     dryRunWorkspaceImport: { disposition: 'live', surface: 'Portability' },
     exportWorkspace: { disposition: 'live', surface: 'Portability' },
+    importWorkspaceArchive: { disposition: 'roadmap', roadmap: 'R008' },
     importWorkspace: { disposition: 'live', surface: 'Portability' },
   },
   Vault: {
@@ -157,12 +165,14 @@ const WEB_OPERATION_GROUPS = {
     changeWorkspaceMemberAccess: { disposition: 'live', surface: 'Account' },
     createWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
     declineWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
+    deleteWorkspace: { disposition: 'roadmap', roadmap: 'R049' },
     leaveWorkspace: { disposition: 'live', surface: 'Account' },
     listAuthorizedWorkspaces: { disposition: 'live', surface: 'Account' },
     listMyWorkspaceInvitations: { disposition: 'live', surface: 'Account' },
     listWorkspaceInvitations: { disposition: 'live', surface: 'Account' },
     listWorkspaceMembers: { disposition: 'live', surface: 'Account' },
     removeWorkspaceMember: { disposition: 'live', surface: 'Account' },
+    recoverDeletedWorkspace: { disposition: 'roadmap', roadmap: 'R049' },
     revokeWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
     transferWorkspaceOwnership: { disposition: 'live', surface: 'Account' },
   },
@@ -321,7 +331,7 @@ function flattenInventory(groups) {
 }
 
 /**
- * Asserts one inventory row is live/workflow with a known surface, or the Automation R092 exception.
+ * Asserts one inventory row is live/workflow with a known surface, or an accepted Roadmap exception.
  *
  * @param {string} operationKey Catalog operation key.
  * @param {WebOperationDisposition} disposition Inventory row.
@@ -352,7 +362,7 @@ function assertDisposition(operationKey, disposition) {
   );
   assert.ok(
     NON_RELEASE_READY_ROADMAP.has(operationKey),
-    `${operationKey} is release-ready and cannot be roadmap-only`
+    `${operationKey} has no accepted roadmap-only disposition`
   );
   assert.equal(
     disposition.roadmap,

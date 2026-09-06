@@ -1,7 +1,11 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -13,6 +17,8 @@ import {
 describe('workspace materializer records', () => {
   it('builds product-safe input snapshots from an Agent Environment Package', () => {
     const store = createDemoStore();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-materializer-snapshot-'));
+    seedWritableGitRepository(repositoryPath);
     const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs', {
       kind: 'user',
       id: 'user_local',
@@ -35,7 +41,7 @@ describe('workspace materializer records', () => {
           access: 'read-write',
           id: 'repo',
           sourceKind: 'host-dir',
-          sourcePath: process.cwd(),
+          sourcePath: repositoryPath,
           workerPath: '/workspace/openkit',
         },
       ],
@@ -198,6 +204,8 @@ describe('workspace materializer records', () => {
 
   it('carries catalog source ids into workspace lineage records', () => {
     const store = createDemoStore();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-materializer-source-'));
+    seedWritableGitRepository(repositoryPath);
     const turn = store.createTurn('ws_demo', 'th_demo', 'Update docs from catalog source', {
       kind: 'user',
       id: 'user_local',
@@ -234,7 +242,7 @@ describe('workspace materializer records', () => {
           access: 'read-write',
           id: 'repo_default',
           sourceKind: 'host-dir',
-          sourcePath: process.cwd(),
+          sourcePath: repositoryPath,
           workerPath: '/workspace/openkit',
         },
       ],

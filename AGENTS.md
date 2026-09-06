@@ -80,11 +80,11 @@ Apply these twelve principles as judgments, not as a mandatory workflow:
 
 ## Program Governance
 
-- [GOV-ACTIVATE-001] Material coordination applies to cross-owner or cross-package work, public contracts, durable data or lifecycle, product workflow, architecture, deployment topology, governing authority, strict risk, multi-agent or long-running execution, likely future audit, or an explicit change plan. Ordinary scoped tasks execute directly.
+- [GOV-ACTIVATE-001] Judge materiality from consequence, uncertainty, reversibility, and coordination need. Cross-owner scope, public contracts, durable lifecycle, product workflow, architecture, deployment, governing authority, strict risk, and long-running or delegated work are signals, not a complete classifier. Material work follows `docs/change-execution.md`; create a change record when context must survive or the engineer requires a plan. Ordinary scoped tasks execute directly. The Safety Kernel always applies.
 - [GOV-001] For material work load and follow `docs/change-execution.md`. The primary agent coordinates work and may choose probes, decomposition, roles, and review depth. It may not change user intent, governing authority, or a strict-risk boundary, and it may not adjudicate an authority-bearing artifact it produced.
 - [GOV-013] Spawn only registered `.codex/agents/` capabilities. Use independence according to consequence and uncertainty rather than a fixed role sequence.
 - [GOV-016] No producer may weaken, delete, skip, or bypass a contract-derived failing check to obtain green. Where a check and contract conflict, return the conflict to their owner.
-- [GOV-023] A finding or failed review normally causes a local correction or reframe, not an engineer interruption. Ask the engineer only for a real intent, trade-off, authority, strict-effect, or residual-risk decision.
+- [GOV-023] Correct or reframe ordinary findings locally. Actively invite the engineer for an intent, trade-off, authority, strict-effect, or residual-risk decision, an unresolved consequential disagreement, or no credible next route after a useful probe or independent intervention. Do not prolong empty work to avoid asking. Pause only dependent work; missing authorization pauses its effect immediately.
 
 ## Local Guides & References
 

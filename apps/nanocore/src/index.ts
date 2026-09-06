@@ -289,24 +289,16 @@ const bootResult = await runBootPhases({
       },
     },
     {
-      name: 'workspace-deletion-fence-recovery',
-      subsystem: 'storage',
-      critical: true,
-      run: () => {
-        restoreWorkspaceDeletionMutationAdmission({
-          coreDb: requireBootValue(coreDb, 'Core database was not initialized.'),
-          dataRoot,
-          workspaceMutationAdmission,
-        });
-        return { status: 'ok' };
-      },
-    },
-    {
       name: 'scheduler-restart-recovery',
       subsystem: 'scheduler',
       critical: true,
       run: async () => {
         const recoveryCoreDb = requireBootValue(coreDb, 'Core database was not initialized.');
+        restoreWorkspaceDeletionMutationAdmission({
+          coreDb: recoveryCoreDb,
+          dataRoot,
+          workspaceMutationAdmission,
+        });
         fenceNanoHostRuntimeTargetAfterRestart(recoveryCoreDb, new Date().toISOString());
         sharedStore ??= new FsStore({ dataRoot });
         const recoveryStore = sharedStore;

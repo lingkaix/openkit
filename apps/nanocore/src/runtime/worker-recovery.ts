@@ -341,7 +341,7 @@ export function recoverWorkerCheckpointStopReason(
       ? 'closed'
       : expectedTurnStatus === 'completed'
         ? 'idle'
-        : expectedTurnStatus === 'cancelled' || expectedTurnStatus === 'interrupted'
+        : expectedTurnStatus === 'interrupted'
           ? 'interrupted'
           : 'failed';
   const terminalEvents = store

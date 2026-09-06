@@ -10,14 +10,10 @@ This specification owns the repository's verification calibration program: the t
 
 ## Does Not Own
 
-- The single-instrument discriminating-power record that admits one harness as an oracle;
-  `docs/verification-instruments.md` Harness Admission owns it. This specification owns the
-  ongoing programme and its audit records, which measure detection power across the suite
-  over time; it does not own the one-off record that lets a particular instrument decide a
-  particular gate.
+- The single-instrument discriminating-power record that admits one harness as an oracle; `docs/verification-instruments.md` Harness Admission owns it. Focused negative proof during work is not a calibration cycle. This specification owns sparse, task-external measurement across instruments over time.
 - The L0-L6 test taxonomy and gate policy; `docs/specs/20260529-test_strategy.md` owns them.
 - L6 story acceptance semantics, roles, and evidence packages; `docs/specs/20260529-l6_story_acceptance.md` owns them.
-- Adaptive coordination and the composition of implementation, testing, verification, review, and audit functions; `docs/change-execution.md` owns that coordination. This specification calibrates those functions but does not authorize or replace everyday execution rules.
+- Adaptive coordination and the composition of implementation, testing, consultation, review, and audit functions; `docs/change-execution.md` owns that coordination. This specification calibrates those functions but does not authorize or replace everyday execution rules.
 - The audit-record document type; `docs/documentation-model.md` owns it.
 - The product's runtime self-improvement and evaluation loop; `docs/specs/20260710-self_improvement_evaluation_loop.md` owns it. This program calibrates repository engineering, not product runtime behavior, and product audit records under `docs/core/audit.md` are a different domain.
 - Mutation tooling internals, CI job definitions, and reviewer prompt content; implementation slices own them under their own change plans.
@@ -62,9 +58,9 @@ The program covers this repository's engineering system at its current shape: on
 
 Code mutation calibrates the L1/L2 test suites by planting syntactic faults and counting survivors.
 
-Per material change touching a strict surface, an incremental mutation run covers only the changed code. Every surviving mutant is either killed by a new test or given an equivalence argument; the disposition list enters the change's evidence in its change record. This diff-level killed-or-justified rule is the only mutation gate. Triage effort per change is bounded; an exhausted budget is recorded, not silently absorbed.
+An audit-selected cycle samples changed code or strict-surface modules; a material change does not automatically trigger a mutation run. Record each sampled survivor as a detected gap, an evidence-backed equivalent, or unresolved, without forcing completion of unrelated production work. Required safety regressions and deliberate harness failure under `docs/verification-instruments.md` remain applicable independently of calibration.
 
-Periodically, a sampled full run covers strict-surface modules and reports per-module detection trends to the audit side. Global scores are diagnostic only and MUST NOT appear as builder targets, prompts, or gates.
+Sparse sampled runs report per-module detection trends to the audit side. Global scores are diagnostic only and MUST NOT appear as builder targets, prompts, or gates.
 
 ## Layer 2: Seeded Defects
 
@@ -73,6 +69,8 @@ Seeded defects calibrate the adaptive review and adjudication path by measuring 
 A saboteur agent derives variants of real changes with planted defects indexed by the shared fault taxonomy, and the variants pass through the standard adversarial review blind. The output is a catch-rate matrix by defect class and reviewer configuration; a blind class drives reviewer prompt, context-discipline, or model-family changes.
 
 The zero-merge invariant is strict: seeds exist only on designated sandbox branches, every seed is registered before planting, teardown is verified, and no seeded change may reach an integration branch under any outcome.
+
+Samples may also plant an omission or distortion between a retained source instruction and its recorded decision to test intent-fidelity detection. The detector receives the genuine source and candidate record without the seed answer. This does not infer unavailable user intent.
 
 The same layer calibrates adjudication: re-adjudicating retained L6 evidence packages with a second clean judge yields an agreement rate, and tampered-evidence probes measure judge discrimination. This depends on the L6 role separation and evidence retention already specified in `docs/specs/20260529-l6_story_acceptance.md`.
 
@@ -92,7 +90,7 @@ Defect classes are indexed to the five decision classes for material concepts in
 
 ## Calibration Records
 
-Every calibration action produces one record with: what was injected, where, when, the expected detector, the actual detectors with detection latency, the disposition, and links to the affected change records and documents. Records are audit records under `docs/audits/` and follow that type's rules. Each cycle ends with one trend report comparing the cycle's rates to prior cycles.
+Each cycle retains one dated audit record with per-intervention entries naming: what was injected, where, when, the expected detector, the actual detectors with detection latency, the disposition, and links to the affected change records and documents. The record follows `docs/audits/` rules and compares available trends with prior cycles; raw per-attempt output stays under `temp/`. Ordinary task findings and focused negative checks do not each require an audit record.
 
 ## Ownership And Separation
 
@@ -111,7 +109,7 @@ Any sustained violation triggers a recorded scoping-down discussion of the deleg
 
 ## Rollout
 
-1. Layer 1 pilot on one small strict-surface package, proving cost and the killed-or-justified evidence flow; then extend to strict NanoCore modules.
+1. Layer 1 pilot on one small strict-surface package, measuring cost and retaining sampled-survivor dispositions; then extend to strict NanoCore modules.
 2. Layer 3 static pilot on one high-stakes specification, hand-run by an audit agent, publishing the first load-bearing map.
 3. Layer 2 pilot after L6 role separation lands in runner practice: three to five seeds in one cycle plus the first judge agreement rate.
 4. After two manual cycles, decide per the evidence-first rule whether any shared tooling is justified.
@@ -120,7 +118,7 @@ Each pilot runs under its own change plan; this specification authorizes no impl
 
 ## Acceptance Predicates
 
-- No calibration metric appears as a builder target, prompt content, or gate, except the diff-level killed-or-justified rule.
+- No calibration metric appears as a builder target, prompt content, or gate, and no per-change mutation obligation is inferred from this program.
 - Every planted seed is registered, torn down, and provably absent from integration branches.
 - Every calibration output is a dated audit record linking this specification.
 - A second clean-context judge reproduces calibration verdicts from the recorded evidence alone.

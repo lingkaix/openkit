@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
 import {
+  assertCodexResponsesRequestAdmission,
   createDefaultPiAiGatewayModels,
   PiAiGatewayClient,
   PiAiGatewayConfigurationError,
@@ -50,6 +51,15 @@ function providerConfig(input: Partial<ResolvedLLMProviderConfig> = {}): Resolve
 }
 
 describe('PiAiGatewayClient', () => {
+  it('accepts the empty include list and null reasoning emitted by Codex', () => {
+    expect(() =>
+      assertCodexResponsesRequestAdmission(
+        { include: [], input: [], model: 'reasoning', reasoning: null, stream: true },
+        true
+      )
+    ).not.toThrow();
+  });
+
   it('keeps the pi-ai dependency exact-pinned and importable inside nanocore', async () => {
     const packageJson = JSON.parse(
       readFileSync(new URL('../../package.json', import.meta.url), 'utf8')

@@ -554,6 +554,41 @@ describe('worker inference routes', () => {
     ]);
   });
 
+  it('normalizes pinned Codex Responses tools into the message-anchored prefix', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    const tools = [
+      {
+        description: 'Apply one patch.',
+        format: { definition: 'start: /[\\s\\S]+/', syntax: 'lark', type: 'grammar' },
+        name: 'apply_patch',
+        type: 'custom',
+      },
+      {
+        description: 'Run one command.',
+        name: 'exec_command',
+        parameters: { properties: { cmd: { type: 'string' } }, type: 'object' },
+        strict: false,
+        type: 'function',
+      },
+    ];
+    const input = [
+      { content: [{ text: 'Run the bounded task.', type: 'input_text' }], role: 'user' },
+    ];
+    const response = await postWorkerResponses(fixture, {
+      input,
+      model: WORKER_LOGICAL_MODEL_ID,
+      tools,
+    });
+
+    expect(response.status).toBe(200);
+    expect(fixture.dispatcher.responseCalls[0]?.request).toEqual(
+      expect.objectContaining({
+        input: [{ role: 'developer', tools, type: 'additional_tools' }, ...input],
+        tools: [],
+      })
+    );
+  });
+
   it('does not recover missing adapter authority from descriptive runtime kind', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     Reflect.deleteProperty(fixture.environmentPackage.control, 'adapter');

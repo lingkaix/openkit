@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   type AgentEnvironmentPackage,
@@ -9,10 +11,23 @@ import type {
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+  markSchedulerSessionLeaseReleasing,
+} from '../scheduler-records.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
+  createWorkerControlCommandDeliveryRecorder,
+  recordWorkerControlQueuedCommand,
+} from './worker-control-commands.js';
+import {
+  deriveWorkerControlCommandId,
   hashWorkerRouteToken,
   WorkerControlGateway,
   type WorkerControlGatewayError,
@@ -22,26 +37,34 @@ import {
 /**
  * Creates an OpenShell-targeted package fixture for worker control tests.
  *
+ * @param suffix Stable suffix used to create a distinct complete lineage.
  * @returns Package fixture and lineage expected by the control gateway.
  */
-function createWorkerControlFixture(): {
+function createWorkerControlFixture(suffix = '1'): {
   environmentPackage: AgentEnvironmentPackage;
   lineage: WorkerControlLineage;
 } {
   const store = createDemoStore();
-  const turn = store.createTurn('ws_demo', 'th_demo', 'Control worker', {
-    kind: 'user',
-    id: 'user_local',
-  });
+  const turn = store.createTurn(
+    'ws_demo',
+    'th_demo',
+    'Control worker',
+    {
+      kind: 'user',
+      id: 'user_local',
+    },
+    null,
+    { turnId: `tu_control_${suffix}` }
+  );
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup(),
-    agentSessionId: 'as_control_1',
+    agentSessionId: `as_control_${suffix}`,
     triggerActor: { kind: 'user', id: 'user_local' },
     backend: {
       kind: 'openshell',
     },
     createdAt: '2026-06-16T00:00:00.000Z',
-    requestId: 'req_control_1',
+    requestId: `req_control_${suffix}`,
     turn,
     workspaceCwd: '/workspace/repo',
     workspaceRoots: [],
@@ -50,9 +73,9 @@ function createWorkerControlFixture(): {
   return {
     environmentPackage: AgentEnvironmentPackageSchema.parse(environmentPackage),
     lineage: {
-      agentSessionId: 'as_control_1',
+      agentSessionId: `as_control_${suffix}`,
       packageSnapshotId: environmentPackage.snapshotId,
-      requestId: 'req_control_1',
+      requestId: `req_control_${suffix}`,
       threadId: 'th_demo',
       turnId: turn.id,
       workspaceId: 'ws_demo',
@@ -76,6 +99,57 @@ function registerAcceptedWorkerSession(
     workerControlToken: WORKER_CONTROL_TOKEN,
     workerInferenceToken: WORKER_INFERENCE_TOKEN,
   });
+}
+
+/** Creates the exact live scheduler lease required by durable command admission. */
+function createLiveCommandLease(
+  coreDb: CoreDb,
+  environmentPackage: AgentEnvironmentPackage,
+  suffix: string
+): string {
+  const scope = environmentPackage.scope;
+  createSchedulerAdmissionEntry(coreDb, {
+    triggerActor: scope.triggerActor,
+    now: () => '2026-06-16T00:00:00.000Z',
+    priorityClass: 'interactive',
+    queueEntryId: `queue_command_${suffix}`,
+    requestId: scope.requestId,
+    requestedAgentId: environmentPackage.agent.agentId,
+    requiredPoolConstraints: ['openshell.local'],
+    threadId: scope.threadId,
+    turnId: scope.turnId,
+    turnInput: 'Control worker',
+    workspaceId: scope.workspaceId,
+  });
+  createSchedulerPlacementPlan(coreDb, {
+    capacitySnapshotRef: null,
+    degradedOptionalFeatures: [],
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    failoverTargetId: null,
+    heartbeatIntervalMs: 10_000,
+    heartbeatTimeoutMs: 30_000,
+    now: () => '2026-06-16T00:00:00.000Z',
+    planId: `plan_command_${suffix}`,
+    plannedLeaseDurationMs: 900_000,
+    policyDecisionIds: [],
+    queueEntryId: `queue_command_${suffix}`,
+    schedulerEpoch: 1,
+    selectedPoolId: 'pool_local',
+    selectedTargetId: 'target_local',
+  });
+  createSchedulerSessionLease(coreDb, {
+    agentSessionId: scope.agentSessionId,
+    expiresAt: '2026-06-16T00:15:00.000Z',
+    heartbeatDeadline: '2026-06-16T00:00:30.000Z',
+    leaseId: `lease_command_${suffix}`,
+    now: () => '2026-06-16T00:00:00.000Z',
+    packageSnapshotId: environmentPackage.snapshotId,
+    planId: `plan_command_${suffix}`,
+    sandboxTokenBindingRef: `lease-binding:command_${suffix}`,
+    startupDeadline: '2026-06-16T00:02:00.000Z',
+  });
+  return `lease_command_${suffix}`;
 }
 
 /**
@@ -142,7 +216,7 @@ function heartbeatRequest(
     body: { ...(message ? { message } : {}), status: 'running' as const },
     lineage,
     operation: 'heartbeat' as const,
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     sequence,
   };
 }
@@ -258,6 +332,339 @@ describe('WorkerControlGateway', () => {
     ).toEqual([]);
   });
 
+  it('rejects a second interrupt for the same Turn without another process-local command', () => {
+    const { environmentPackage } = createWorkerControlFixture('second_interrupt');
+    const gateway = new WorkerControlGateway();
+    gateway.registerSession(environmentPackage);
+    const first = gateway.enqueueInterrupt(environmentPackage.snapshotId, 'first');
+
+    expect(() => gateway.enqueueInterrupt(environmentPackage.snapshotId, 'second')).toThrow(
+      'Worker interrupt already admitted for Turn'
+    );
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.commands).toEqual([first]);
+  });
+
+  it('derives globally unique durable command ids from complete lineage', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-command-id-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const first = createWorkerControlFixture('durable_1');
+      const second = createWorkerControlFixture('durable_2');
+      createLiveCommandLease(coreDb, first.environmentPackage, 'durable_1');
+      createLiveCommandLease(coreDb, second.environmentPackage, 'durable_2');
+      const gateway = new WorkerControlGateway({
+        commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
+        now: () => '2026-06-16T00:00:01.000Z',
+      });
+      gateway.registerSession(first.environmentPackage);
+      gateway.registerSession(second.environmentPackage);
+
+      const firstCommand = gateway.enqueueInterrupt(first.environmentPackage.snapshotId, null);
+      const secondCommand = gateway.enqueueInterrupt(second.environmentPackage.snapshotId, null);
+      expect(firstCommand.commandId).toBe(deriveWorkerControlCommandId(first.lineage, 1));
+      expect(secondCommand.commandId).toBe(deriveWorkerControlCommandId(second.lineage, 1));
+      expect(secondCommand.commandId).not.toBe(firstCommand.commandId);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT command_id AS commandId FROM worker_control_commands ORDER BY command_id'
+          )
+          .all()
+      ).toEqual([{ commandId: firstCommand.commandId }, { commandId: secondCommand.commandId }]);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('canonicalizes an omitted command request id to explicit null', () => {
+    const fixture = createWorkerControlFixture('nullable_request');
+    const base = {
+      registeredAt: '2026-06-16T00:00:00.000Z',
+      sandboxBindingRef: 'binding_nullable_request',
+      workerCapabilityTokenHash: 'c'.repeat(64),
+      workerControlTokenHash: 'a'.repeat(64),
+      workerInferenceTokenHash: 'b'.repeat(64),
+    } as const;
+    const omittedGateway = new WorkerControlGateway();
+    const nullGateway = new WorkerControlGateway();
+    const { requestId: _requestId, ...lineageWithoutRequest } = fixture.lineage;
+    omittedGateway.restoreSession({ ...base, lineage: lineageWithoutRequest });
+    nullGateway.restoreSession({ ...base, lineage: { ...lineageWithoutRequest, requestId: null } });
+
+    expect(omittedGateway.enqueueInterrupt(fixture.environmentPackage.snapshotId).commandId).toBe(
+      nullGateway.enqueueInterrupt(fixture.environmentPackage.snapshotId).commandId
+    );
+  });
+
+  it('replays an exact durable command without replacing timestamps and rejects changed payload', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-command-replay-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const fixture = createWorkerControlFixture('replay');
+      createLiveCommandLease(coreDb, fixture.environmentPackage, 'replay');
+      const gateway = new WorkerControlGateway({
+        commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
+        now: () => '2026-06-16T00:00:01.000Z',
+      });
+      gateway.registerSession(fixture.environmentPackage);
+      const command = gateway.enqueueInterrupt(fixture.environmentPackage.snapshotId, 'Stop now');
+
+      expect(
+        recordWorkerControlQueuedCommand(coreDb, {
+          command: { ...command, queuedAt: '2026-06-16T00:00:09.000Z' },
+          lineage: fixture.lineage,
+        })
+      ).toEqual({ command, status: 'queued' });
+      expect(() =>
+        recordWorkerControlQueuedCommand(coreDb, {
+          command: { ...command, reason: 'Changed replay' },
+          lineage: fixture.lineage,
+        })
+      ).toThrow(`Worker command identity conflict: ${command.commandId}`);
+      expect(() =>
+        recordWorkerControlQueuedCommand(coreDb, {
+          command: {
+            ...command,
+            commandId: deriveWorkerControlCommandId(fixture.lineage, 2),
+            reason: 'Second interrupt',
+            sequence: 2,
+          },
+          lineage: fixture.lineage,
+        })
+      ).toThrow('Worker interrupt already admitted for Turn');
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT payload_json AS payloadJson, queued_at AS queuedAt FROM worker_control_commands'
+          )
+          .get()
+      ).toEqual({
+        payloadJson: '{"reason":"Stop now"}',
+        queuedAt: '2026-06-16T00:00:01.000Z',
+      });
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('rolls back delivery and acknowledgement when a durable command becomes malformed', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-command-malformed-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const fixture = createWorkerControlFixture('malformed');
+      createLiveCommandLease(coreDb, fixture.environmentPackage, 'malformed');
+      const gateway = new WorkerControlGateway({
+        commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
+      });
+      const registration = gateway.registerSession(fixture.environmentPackage);
+      const command = gateway.enqueueInterrupt(fixture.environmentPackage.snapshotId, 'Stop');
+      const setPayload = coreDb.sqlite.prepare(
+        'UPDATE worker_control_commands SET payload_json = ? WHERE command_id = ?'
+      );
+
+      setPayload.run('{"reason":"Stop","extra":true}', command.commandId);
+      expect(() =>
+        gateway.pollCommands({
+          authorization: `Bearer ${registration.token}`,
+          lineage: fixture.lineage,
+        })
+      ).toThrow(`Invalid durable worker command payload: ${command.commandId}`);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM worker_control_commands WHERE command_id = ?')
+          .get(command.commandId)
+      ).toEqual({ status: 'queued' });
+
+      setPayload.run('{"reason":"Stop"}', command.commandId);
+      gateway.pollCommands({
+        authorization: `Bearer ${registration.token}`,
+        lineage: fixture.lineage,
+      });
+      setPayload.run('{"reason":"Stop","extra":true}', command.commandId);
+      expect(() =>
+        gateway.acknowledgeCommand({
+          authorization: `Bearer ${registration.token}`,
+          commandId: command.commandId,
+          lineage: fixture.lineage,
+        })
+      ).toThrow(`Invalid durable worker command payload: ${command.commandId}`);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM worker_control_commands WHERE command_id = ?')
+          .get(command.commandId)
+      ).toEqual({ status: 'delivered' });
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects a noncanonical command identity before durable insertion', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-command-invalid-id-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const fixture = createWorkerControlFixture('invalid_id');
+      createLiveCommandLease(coreDb, fixture.environmentPackage, 'invalid_id');
+
+      expect(() =>
+        recordWorkerControlQueuedCommand(coreDb, {
+          command: {
+            commandId: 'worker-command-1',
+            deliveredAt: null,
+            kind: 'interrupt',
+            queuedAt: '2026-06-16T00:00:01.000Z',
+            reason: null,
+            sequence: 1,
+          },
+          lineage: fixture.lineage,
+        })
+      ).toThrow('Invalid durable worker command row: worker-command-1');
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_control_commands').get()
+      ).toEqual({ count: 0 });
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('does not advance command memory or sequence when durable insert fails', () => {
+    const fixture = createWorkerControlFixture('insert_failure');
+    const attemptedSequences: number[] = [];
+    const gateway = new WorkerControlGateway({
+      commandDeliveryRecorder: {
+        markAcknowledged: () => null,
+        markDelivered: () => null,
+        recordQueued: ({ command }) => {
+          attemptedSequences.push(command.sequence);
+          throw new Error('injected durable insert failure');
+        },
+      },
+    });
+    gateway.registerSession(fixture.environmentPackage);
+
+    expect(() => gateway.enqueueInterrupt(fixture.environmentPackage.snapshotId)).toThrow(
+      'injected durable insert failure'
+    );
+    expect(() => gateway.enqueueInterrupt(fixture.environmentPackage.snapshotId)).toThrow(
+      'injected durable insert failure'
+    );
+    expect(attemptedSequences).toEqual([1, 1]);
+    expect(gateway.getSessionSnapshot(fixture.environmentPackage.snapshotId)?.commands).toEqual([]);
+  });
+
+  it('does not expose or acknowledge commands after lease terminalization wins', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-command-terminal-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const fixture = createWorkerControlFixture('terminal');
+      const leaseId = createLiveCommandLease(coreDb, fixture.environmentPackage, 'terminal');
+      const gateway = new WorkerControlGateway({
+        commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
+        now: () => '2026-06-16T00:00:01.000Z',
+      });
+      const registration = gateway.registerSession(fixture.environmentPackage);
+      const command = gateway.enqueueInterrupt(fixture.environmentPackage.snapshotId);
+
+      markSchedulerSessionLeaseReleasing(coreDb, {
+        leaseId,
+        now: () => '2026-06-16T00:00:02.000Z',
+        releaseReason: 'turn-terminal',
+      });
+
+      expect(
+        gateway.pollCommands({
+          authorization: `Bearer ${registration.token}`,
+          lineage: fixture.lineage,
+        }).commands
+      ).toEqual([]);
+      expect(() =>
+        gateway.acknowledgeCommand({
+          authorization: `Bearer ${registration.token}`,
+          commandId: command.commandId,
+          lineage: fixture.lineage,
+        })
+      ).toThrow('Worker command cannot be acknowledged');
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM worker_control_commands WHERE command_id = ?')
+          .get(command.commandId)
+      ).toEqual({ status: 'undeliverable' });
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('preserves only the durable winner when delivery or acknowledgement precedes terminalization', () => {
+    for (const acknowledged of [false, true]) {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-command-race-'));
+      const coreDb = openCoreDb(dataRoot);
+
+      try {
+        applyMigrations(coreDb);
+        const suffix = acknowledged ? 'ack_wins' : 'delivery_wins';
+        const fixture = createWorkerControlFixture(suffix);
+        const leaseId = createLiveCommandLease(coreDb, fixture.environmentPackage, suffix);
+        const gateway = new WorkerControlGateway({
+          commandDeliveryRecorder: createWorkerControlCommandDeliveryRecorder(coreDb),
+          now: () => '2026-06-16T00:00:01.000Z',
+        });
+        const registration = gateway.registerSession(fixture.environmentPackage);
+        const command = gateway.enqueueInterrupt(fixture.environmentPackage.snapshotId);
+        expect(
+          gateway.pollCommands({
+            authorization: `Bearer ${registration.token}`,
+            lineage: fixture.lineage,
+          }).commands
+        ).toHaveLength(1);
+        if (acknowledged) {
+          gateway.acknowledgeCommand({
+            authorization: `Bearer ${registration.token}`,
+            commandId: command.commandId,
+            lineage: fixture.lineage,
+          });
+        }
+
+        markSchedulerSessionLeaseReleasing(coreDb, {
+          leaseId,
+          now: () => '2026-06-16T00:00:02.000Z',
+          releaseReason: 'turn-terminal',
+        });
+
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT status FROM worker_control_commands WHERE command_id = ?')
+            .get(command.commandId)
+        ).toEqual({ status: acknowledged ? 'acknowledged' : 'undeliverable' });
+        if (!acknowledged) {
+          expect(() =>
+            gateway.acknowledgeCommand({
+              authorization: `Bearer ${registration.token}`,
+              commandId: command.commandId,
+              lineage: fixture.lineage,
+            })
+          ).toThrow('Worker command cannot be acknowledged');
+        }
+      } finally {
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('does not expose retired approval commands', () => {
     expect(new WorkerControlGateway()).not.toHaveProperty('enqueueApprovalResult');
   });
@@ -281,7 +688,7 @@ describe('WorkerControlGateway', () => {
       accepted: true,
       diagnostics: [],
       nextExpectedSequence: 4,
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
     expect(snapshot?.events).toEqual([
       expect.objectContaining({
@@ -333,7 +740,7 @@ describe('WorkerControlGateway', () => {
       accepted: true,
       diagnostics: [],
       nextExpectedSequence: 6,
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
     expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.capabilitySummaries).toEqual([
       expect.objectContaining({ capabilityCallId: 'capability_1', status: 'succeeded' }),

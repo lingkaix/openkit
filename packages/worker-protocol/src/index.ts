@@ -5,6 +5,9 @@ import { z } from 'zod';
  */
 export const WorkerProtocolSchemaVersionSchema = z.literal(1);
 
+/** Direct worker-control envelope version, independent from canonical worker records. */
+export const WorkerControlSchemaVersionSchema = z.literal(2);
+
 /**
  * Opaque worker-facing id.
  */
@@ -498,7 +501,7 @@ export const WorkerControlHeartbeatBodySchema = z
 
 const WorkerControlHeartbeatEnvelopeBaseSchema = z
   .object({
-    schemaVersion: WorkerProtocolSchemaVersionSchema,
+    schemaVersion: WorkerControlSchemaVersionSchema,
     lineage: WorkerLineageSchema,
     sequence: WorkerSequenceSchema,
     operation: z.literal('heartbeat'),
@@ -516,7 +519,7 @@ export const WorkerControlHeartbeatRequestSchema = WorkerControlHeartbeatEnvelop
  */
 export const WorkerControlRequestEnvelopeSchema = z
   .object({
-    schemaVersion: WorkerProtocolSchemaVersionSchema,
+    schemaVersion: WorkerControlSchemaVersionSchema,
     lineage: WorkerLineageSchema,
     sequence: WorkerSequenceSchema,
     operation: WorkerControlOperationSchema,
@@ -529,7 +532,7 @@ export const WorkerControlRequestEnvelopeSchema = z
  */
 export const WorkerControlResponseEnvelopeSchema = z
   .object({
-    schemaVersion: WorkerProtocolSchemaVersionSchema,
+    schemaVersion: WorkerControlSchemaVersionSchema,
     accepted: z.boolean(),
     nextExpectedSequence: WorkerSequenceSchema.nullable().optional(),
     diagnostics: z.array(WorkerDiagnosticSchema).default([]),

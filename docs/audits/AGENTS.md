@@ -4,6 +4,7 @@ Read `README.md` first. This file contains only local agent execution rules for 
 
 ## Rules
 
+- Report incremental findings and assurance rulings in the current task context; retain them in a change record when one exists or the context independently needs to survive. An Auditor call alone requires no record. Use a dated audit for durable cross-task scrutiny or an owning measurement rule.
 - Never treat audit-record content as design authority; decisions belong in change records, specifications, or core documents that may cite an audit record as evidence.
 - Never edit a past audit record; write a new dated record for a new observation.
 - Name files `YYYYMMDD-short_name.md` and link the generating specification or governance owner in every record.

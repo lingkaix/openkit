@@ -164,6 +164,34 @@ test('release packager and shared verifier prove the reproducible NanoHost arm64
   assert.equal(verified.status, 0, verified.stderr);
   assert.match(verified.stdout, /staged-only/);
 
+  const cargoTomlPath = join(fixture.repoRoot, 'apps', 'nanohost', 'Cargo.toml');
+  const cargoToml = readFileSync(cargoTomlPath, 'utf8');
+  writeFileSync(cargoTomlPath, cargoToml.replace(/[a-f0-9]{40}/u, '1'.repeat(40)));
+  const driftedRoot = join(fixture.repoRoot, 'drifted-stage');
+  const drifted = spawnSync(
+    process.execPath,
+    [
+      verifier,
+      '--archive',
+      firstArchive,
+      '--checksum-file',
+      join(firstOutput, 'SHA256SUMS'),
+      '--destdir',
+      driftedRoot,
+      '--repo-root',
+      fixture.repoRoot,
+    ],
+    { encoding: 'utf8' }
+  );
+  assert.notEqual(drifted.status, 0);
+  assert.match(drifted.stderr, /Cargo SDK revision and lockfile/);
+  assert.equal(
+    existsSync(driftedRoot),
+    false,
+    'SDK revision drift must fail before staging writes'
+  );
+  writeFileSync(cargoTomlPath, cargoToml);
+
   const corruptOutput = join(fixture.repoRoot, 'dist', 'corrupt');
   mkdirSync(corruptOutput);
   const corruptArchive = join(corruptOutput, archiveName);
@@ -191,10 +219,10 @@ test('release packager and shared verifier prove the reproducible NanoHost arm64
   assert.notEqual(rejected.status, 0);
   assert.equal(existsSync(rejectedRoot), false, 'corruption must fail before staging writes');
 
-  const substitutedOutput = join(fixture.repoRoot, 'dist', 'pin-substituted');
+  const substitutedOutput = join(fixture.repoRoot, 'dist', 'release-substituted');
   mkdirSync(substitutedOutput);
   const substitutedArchive = join(substitutedOutput, archiveName);
-  substituteBundlePin(firstArchive, substitutedArchive, prefix);
+  substituteBundleReleaseIdentity(firstArchive, substitutedArchive, prefix);
   const substitutedDigest = createHash('sha256')
     .update(readFileSync(substitutedArchive))
     .digest('hex');
@@ -205,7 +233,7 @@ test('release packager and shared verifier prove the reproducible NanoHost arm64
       `${substitutedDigest}  ${archiveName}\n`
     )
   );
-  const substitutedRoot = join(fixture.repoRoot, 'pin-substituted-stage');
+  const substitutedRoot = join(fixture.repoRoot, 'release-substituted-stage');
   const substituted = spawnSync(
     process.execPath,
     [
@@ -222,11 +250,11 @@ test('release packager and shared verifier prove the reproducible NanoHost arm64
     { encoding: 'utf8' }
   );
   assert.notEqual(substituted.status, 0);
-  assert.match(substituted.stderr, /OpenShell pin/i);
+  assert.match(substituted.stderr, /OpenShell release/i);
   assert.equal(
     existsSync(substitutedRoot),
     false,
-    'a self-consistent substituted bundle pin must fail before staging writes'
+    'a self-consistent substituted release identity must fail before staging writes'
   );
 
   const wrongArchitecture = join(fixture.repoRoot, 'wrong-architecture');
@@ -521,7 +549,7 @@ function makeNanoHostReleaseFixture() {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-release-'));
   mkdirSync(join(repoRoot, 'skills', 'openkit', 'scripts'), { recursive: true });
   mkdirSync(join(repoRoot, 'apps', 'nanohost', 'deploy'), { recursive: true });
-  mkdirSync(join(repoRoot, 'apps', 'nanohost', 'openshell-pin'), { recursive: true });
+  mkdirSync(join(repoRoot, 'apps', 'nanohost', 'openshell'), { recursive: true });
   writeFileSync(join(repoRoot, 'LICENSE'), 'OpenKit license fixture\n');
   writeFileSync(join(repoRoot, 'skills', 'openkit', 'SKILL.md'), '# Fixture Skill\n');
   const cliPath = join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit');
@@ -581,56 +609,55 @@ function makeNanoHostReleaseFixture() {
   const openshellNoticesPath = join(repoRoot, 'openshell-THIRD-PARTY-NOTICES-input');
   writeFileSync(openshellLicensePath, 'OpenShell license fixture\n');
   writeFileSync(openshellNoticesPath, 'OpenShell notices fixture\n');
-  const checksum = (path) =>
-    `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
+  const checksum = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
   const commit = '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032';
-  const pin = {
-    source: { tag: 'v0.0.99', commit },
-    artifacts: [
-      {
-        kind: 'gateway-executable',
+  const release = {
+    schemaVersion: 1,
+    version: '0.0.99',
+    source: { commit },
+    gateway: {
+      archive: {
         name: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
-        representation: 'release-archive',
-        platform: 'linux/arm64',
-        checksum: checksum(gatewayArchivePath),
-        tag: 'v0.0.99',
-        commit,
+        target: 'linux/arm64',
+        sha256: checksum(gatewayArchivePath),
       },
-      {
-        kind: 'gateway-executable',
+      executable: {
         name: 'openshell-gateway',
-        representation: 'extracted-executable',
-        platform: 'linux/arm64',
         derivedFrom: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
-        checksum: checksum(gatewayPath),
-        tag: 'v0.0.99',
-        commit,
+        sha256: checksum(gatewayPath),
       },
-      {
-        kind: 'redistribution-license',
-        name: 'LICENSE',
-        representation: 'source-file',
+    },
+    supervisor: {
+      repository: 'ghcr.io/nvidia/openshell/supervisor',
+      platformDigests: {
+        'linux/amd64': `sha256:${'1'.repeat(64)}`,
+        'linux/arm64': `sha256:${'2'.repeat(64)}`,
+      },
+    },
+    redistribution: {
+      license: {
         sourcePath: 'LICENSE',
         bundlePath: 'licenses/openshell-LICENSE',
-        checksum: checksum(openshellLicensePath),
-        tag: 'v0.0.99',
-        commit,
+        sha256: checksum(openshellLicensePath),
       },
-      {
-        kind: 'redistribution-notices',
-        name: 'THIRD-PARTY-NOTICES',
-        representation: 'source-file',
+      notices: {
         sourcePath: 'THIRD-PARTY-NOTICES',
         bundlePath: 'licenses/openshell-THIRD-PARTY-NOTICES',
-        checksum: checksum(openshellNoticesPath),
-        tag: 'v0.0.99',
-        commit,
+        sha256: checksum(openshellNoticesPath),
       },
-    ],
+    },
   };
   writeFileSync(
-    join(repoRoot, 'apps', 'nanohost', 'openshell-pin', 'manifest.md'),
-    `# OpenShell Pin Manifest\n\n\`\`\`json\n${JSON.stringify(pin, null, 2)}\n\`\`\`\n`
+    join(repoRoot, 'apps', 'nanohost', 'openshell', 'release.json'),
+    `${JSON.stringify(release, null, 2)}\n`
+  );
+  writeFileSync(
+    join(repoRoot, 'apps', 'nanohost', 'Cargo.toml'),
+    `[dependencies]\nopenshell-sdk = { git = "https://github.com/NVIDIA/OpenShell.git", rev = "${commit}" }\n`
+  );
+  writeFileSync(
+    join(repoRoot, 'apps', 'nanohost', 'Cargo.lock'),
+    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/NVIDIA/OpenShell.git?rev=${commit}#${commit}"\n`
   );
 
   git(repoRoot, ['init', '-q']);
@@ -865,7 +892,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
-function substituteBundlePin(sourceArchive, targetArchive, prefix) {
+function substituteBundleReleaseIdentity(sourceArchive, targetArchive, prefix) {
   rewriteArchive(sourceArchive, targetArchive, prefix, {
     mutateRoot(root) {
       const gatewayPath = join(root, 'openshell-gateway');
@@ -874,7 +901,7 @@ function substituteBundlePin(sourceArchive, targetArchive, prefix) {
       writeFileSync(gatewayPath, gateway);
       const manifestPath = join(root, 'MANIFEST.json');
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-      manifest.openshellPin.gateway.sha256 = createHash('sha256').update(gateway).digest('hex');
+      manifest.openshellRelease.gateway.sha256 = createHash('sha256').update(gateway).digest('hex');
       writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       refreshInnerChecksums(root);
     },

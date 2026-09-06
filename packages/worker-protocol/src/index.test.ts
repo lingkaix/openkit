@@ -376,7 +376,7 @@ describe('worker protocol schemas', () => {
   it('accepts bounded worker-control request and response envelopes', () => {
     expect(
       WorkerControlRequestEnvelopeSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         lineage,
         sequence: 11,
         operation: 'heartbeat',
@@ -388,7 +388,7 @@ describe('worker protocol schemas', () => {
 
     expect(() =>
       WorkerControlRequestEnvelopeSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         lineage,
         sequence: 12,
         operation: 'shell.exec',
@@ -400,7 +400,7 @@ describe('worker protocol schemas', () => {
 
     expect(
       WorkerControlRequestEnvelopeSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         lineage,
         sequence: 13,
         operation: 'command_ack',
@@ -412,12 +412,36 @@ describe('worker protocol schemas', () => {
 
     expect(
       WorkerControlResponseEnvelopeSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         accepted: true,
         nextExpectedSequence: 12,
         diagnostics: [],
       }).accepted
     ).toBe(true);
+  });
+
+  it('uses version 2 only for control envelopes while canonical records remain version 1', () => {
+    const control = {
+      schemaVersion: 2,
+      lineage,
+      sequence: 14,
+      operation: 'command_poll' as const,
+      body: {},
+    };
+    const record = {
+      schemaVersion: 1,
+      lineage,
+      sequence: 14,
+      kind: 'event' as const,
+      event: { type: 'worker.heartbeat' as const, data: {} },
+    };
+
+    expect(WorkerControlRequestEnvelopeSchema.parse(control)).toEqual(control);
+    expect(() =>
+      WorkerControlRequestEnvelopeSchema.parse({ ...control, schemaVersion: 1 })
+    ).toThrow();
+    expect(WorkerCanonicalEventRecordSchema.parse(record)).toEqual(record);
+    expect(() => WorkerCanonicalEventRecordSchema.parse({ ...record, schemaVersion: 2 })).toThrow();
   });
 
   it('rejects retired control operations', () => {
@@ -436,7 +460,7 @@ describe('worker protocol schemas', () => {
       },
       lineage,
       operation: 'heartbeat' as const,
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       sequence: 0,
     };
 
@@ -455,7 +479,7 @@ describe('worker protocol schemas', () => {
       body: { message: null, status: 'running' as const },
       lineage,
       operation: 'heartbeat' as const,
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       sequence: 7,
     };
     const reconnect = {

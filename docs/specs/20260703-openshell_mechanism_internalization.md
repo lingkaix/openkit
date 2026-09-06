@@ -10,7 +10,7 @@ implementation: Partial
 - The derivation contract from NanoCore vault grants, injection plans, and NGAC-derived `PermissionDecision` records to OpenShell provider profiles, provider instances, and `_provider_*` policy layers.
 - The credential injection semantics OpenKit adopts from OpenShell Providers v2, including placeholder environment variables with gateway rewrite, fail-closed expiry, and the split of refresh strategy ownership between NanoCore and the OpenShell gateway refresh worker.
 - The rule that successful OpenShell-side injection and refresh-material delegation are imported as `VaultInjectionReceipt` records, while resolution, refresh, attachment, revocation, affected-sandbox termination, and runtime-cleanup outcomes use the applicable `VaultUse` and `AuditEvent` evidence with lineage to the backend session.
-- The pinned-boundary and drift-control contract for the OpenShell surface OpenKit depends on, including the schema snapshot package and the conformance check over generated artifacts.
+- The validation and upgrade-regression contract for the OpenShell surface OpenKit consumes.
 - The equivalence requirements for credential and network enforcement on non-OpenShell container backends.
 
 ## Does Not Own
@@ -21,7 +21,6 @@ implementation: Partial
 - Audit, usage, and evidence record schemas and retention classes, which belong to `docs/specs/20260703-audit_usage_evidence_records.md`.
 - Runtime Epoch placement, OpenShell lifecycle, cleanup, readiness, and transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`. The deprecated Cell specification describes only the deleted historical implementation.
 - Workspace synchronization, session-static workspace layout, and review gating, which belong to `docs/specs/20260704-session_static_workspace_materialization.md` and `docs/specs/20260703-workspace_synchronization.md`.
-- The general vendor snapshot packaging contract, which belongs to `docs/specs/20260522-vendor_snapshot_packages.md`; this spec applies that pattern to a new boundary.
 - OpenShell-internal behavior, CLI design, or upstream roadmap.
 
 ## Core References
@@ -37,7 +36,7 @@ implementation: Partial
 
 OpenKit will borrow NVIDIA OpenShell's Providers v2 mechanisms as the first enforcement backend for credential injection, injection-related audit, and the mechanism layer of policy enforcement. The core policy model remains NGAC through `@openkit/policy-kernel`; OpenShell enforces, it does not decide.
 
-The clean target is a strict derivation flow: NanoCore-owned records (`VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, `VaultUse`, `PermissionDecision`) remain the source of truth. The NanoHost materializes OpenShell provider profiles, provider instances, and provider-contributed `_provider_*` network policy layers locally from those records at sandbox launch or attach time. The OpenShell surface OpenKit depends on is treated as a pinned, versioned external boundary with a schema snapshot package and a conformance check, so the OpenKit standard does not drift with OpenShell changes. OpenShell-native records and logs are imported back as NanoCore audit, usage, and evidence records; they are never read in place as product truth.
+The clean target is a strict derivation flow: NanoCore-owned records (`VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, `VaultUse`, `PermissionDecision`) remain the source of truth. The NanoHost materializes OpenShell provider profiles, provider instances, and provider-contributed `_provider_*` network policy layers locally from those records at sandbox launch or attach time. OpenKit trusts an official matched OpenShell release set for SDK, Gateway, and Supervisor compatibility, validates its own authored intent at the NanoCore-to-NanoHost boundary, and tests the behavior of its integration when following a new release. OpenShell-native records and logs are imported back as NanoCore audit, usage, and evidence records; they are never read in place as product truth.
 
 ## Goals / Non-goals
 
@@ -45,9 +44,9 @@ The clean target is a strict derivation flow: NanoCore-owned records (`VaultRefe
 
 - Reuse OpenShell's hardened credential mechanisms: provider profiles, provider instances, placeholder environment variables resolved in outbound HTTP traffic at the gateway, secret-safe refresh, and fail-closed expiry handling.
 - Keep NanoCore schemas canonical and make every OpenShell artifact regenerable from NanoCore records.
-- Compile NGAC access decisions into OpenShell base sandbox policy and provider-derived policy layers without making OpenShell policy YAML canonical.
+- Compile NGAC access decisions into OpenShell base sandbox policy and provider-derived policy layers without making OpenShell artifacts canonical.
 - Reflect every product-relevant successful OpenShell injection as a NanoCore `VaultInjectionReceipt`, and reflect resolution, refresh, attachment, revocation, affected-sandbox termination, and runtime-cleanup outcomes as the applicable `VaultUse` and `AuditEvent` evidence with backend session lineage.
-- Pin the OpenShell profile and policy schema surface as a versioned snapshot and detect upstream drift before it silently changes OpenKit behavior.
+- Detect integration regressions and invalid OpenKit-authored artifacts before an OpenShell release upgrade can silently change OpenKit behavior.
 - Define what equivalent enforcement means for local non-OpenShell container backends.
 
 ### Non-goals
@@ -56,7 +55,7 @@ The clean target is a strict derivation flow: NanoCore-owned records (`VaultRefe
 - Do not adopt OpenShell roadmap items that are not current behavior. Profile-driven explicit credential placement and endpoint- or binary-scoped static credential injection MUST be treated as unavailable.
 - Do not make OpenShell provider profiles, provider instances, policy YAML, gateway names, or sandbox ids part of public App API, unified Skill operation catalog, bundled CLI, or Web UI contracts.
 - Do not preserve compatibility layers for earlier OpenKit-internal credential upload shapes; the explicit Codex credential file upload path is replaced, not aliased.
-- Do not fork or patch OpenShell. The backend supports only official unmodified CLI and Gateway artifacts at the exact version pinned by the snapshot package.
+- Do not fork or patch OpenShell. The backend supports only the official matched SDK, Gateway, and Supervisor release selected by the NanoHost runtime owner.
 - Do not define the encrypted vault backend; that remains owned by the vault spec.
 
 ## Background
@@ -73,7 +72,7 @@ OpenKit internalizes the definition layer and borrows the mechanism layer.
 
 1. NanoCore-owned schemas are the source of truth: `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` from the vault spec, and `PermissionDecision` from the policy enforcement mapping spec. No OpenShell-native shape may become durable OpenKit product state or public protocol shape.
 2. OpenShell provider profiles, provider instances, and provider policy layers are derived artifacts. The NanoHost generates them locally from NanoCore-owned records at sandbox launch or provider attach time, and they MUST be regenerable from NanoCore state at any time.
-3. The OpenShell surface OpenKit depends on is a pinned external boundary: a versioned mapping layer in NanoCore plus a schema snapshot package following the vendor snapshot pattern in `docs/specs/20260522-vendor_snapshot_packages.md`.
+3. The OpenShell surface OpenKit depends on is an external integration boundary: OpenKit validates its own structured derivation, NanoHost strictly parses it into the selected SDK types, and the runtime owner's upgrade gate exercises the official matched release set under real integration behavior.
 4. OpenShell-native records and logs (provider records, refresh status, refresh logs, effective policy, network deny events) are evidence inputs. NanoCore imports them into its own audit, usage, and evidence records per the storage lineage rules; product surfaces read only NanoCore records.
 5. `@openkit/policy-kernel` NGAC decisions remain the only authorization decision source. OpenShell enforcement is a derived mechanism, and a backend enforcement event never rewrites the policy graph by itself.
 
@@ -84,7 +83,7 @@ OpenKit internalizes the definition layer and borrows the mechanism layer.
 - NanoCore MUST be able to regenerate every OpenShell provider profile, provider instance definition, and derived policy artifact from `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `PermissionDecision`, AEP snapshot, and workspace records alone.
 - Generated OpenShell artifacts MUST NOT be edited in place on the gateway as a way of changing OpenKit behavior. The change path is: change NanoCore records, regenerate, re-derive.
 - Public App API, unified Skill, bundled CLI, Web UI, and Action Center surfaces MUST expose only NanoCore record ids and redacted summaries, never OpenShell profile ids, instance names, policy YAML, gateway internals, or placeholder variable values.
-- The mapping layer (the code that renders NanoCore records into OpenShell artifacts and imports OpenShell evidence back) MUST carry an explicit mapping version, and every derived artifact and imported record MUST record the mapping version and the schema snapshot id used.
+- The mapping layer (the code that renders NanoCore records into OpenShell artifacts and imports OpenShell evidence back) MUST carry an explicit mapping version, and every derived artifact and imported record MUST record that mapping version and the actual OpenShell release identity used by the runtime.
 
 ### Derivation Contract
 
@@ -99,7 +98,7 @@ Outputs are:
 
 - zero or more generated provider profiles (custom profile YAML imported to the gateway), one per OpenKit-defined provider access shape,
 - zero or more provider instances created from those profiles, holding concrete credential values resolved from vault backends at creation time,
-- the sandbox base policy YAML already owned by the policy enforcement mapping spec,
+- the structured sandbox base policy already owned by the policy enforcement mapping spec,
 - attach operations binding provider instances to the sandbox.
 
 Rules:
@@ -109,7 +108,7 @@ Rules:
 - Gateway-side namespace ownership: each configured NanoHost owns a reserved identifier prefix on its loopback-only stock Gateway, derived from a stable deployment id (`okp-<deployment>-` for profiles, `oki-<deployment>-` for instances). Generated profiles are scoped one per provider access shape per deployment (`okp-<deployment>-<shape>-v<mappingMajor>`); provider instances are scoped one per vault grant (`oki-<deployment>-<workspace>-<grant>`), so instance credentials never cross workspace boundaries. The NanoHost MUST NOT mutate Gateway artifacts outside its own prefix, MUST treat foreign `okp-`/`oki-` prefixed artifacts as invalid epoch state, and MUST record a drift diagnostic when artifacts inside its own prefix do not match regenerated state. Because a profile carries no secret material and serves exactly one shape for one deployment, a profile update propagates only to that deployment's instances of that one shape; a shape change that should not propagate to all its instances is a new shape id, never an in-place edit.
 - Credential values MUST flow from the vault backend directly into the OpenShell provider create or update operation. They MUST NOT be persisted in NanoCore records, AEP snapshots, generated task files, logs, or diagnostics on the way through.
 - Credential expiry known to NanoCore rotation metadata MUST be projected into OpenShell credential expiry metadata (`--credential-expires-at`) so OpenShell's fail-closed expiry behavior tracks NanoCore truth.
-- Derivation MUST be deterministic for the non-secret parts: the same NanoCore inputs and mapping version produce byte-identical profile YAML and policy YAML. Digests of generated artifacts MUST be recorded as runtime evidence.
+- Derivation MUST be deterministic for the non-secret parts: the same NanoCore inputs and mapping version produce byte-identical profile and structured policy artifacts. Digests of generated artifacts MUST be recorded as runtime evidence.
 - When a grant is revoked or expires, NanoCore MUST revoke the corresponding package authority and the NanoHost MUST terminate the affected sandbox. A runtime provider detach MAY reduce access before termination completes, but it is not teardown proof and MUST NOT release scheduler capacity. If sandbox deletion cannot be proved, the NanoHost invalidates the complete Runtime Epoch and capacity remains fenced until the fresh-empty readiness proof owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`; cleanup never proves recall of material already exposed.
 - Provider profile updates on the gateway affect every instance of that profile type. NanoCore MUST therefore scope generated profiles so that one profile serves exactly one OpenKit provider access shape under NanoCore control, and MUST NOT reuse or mutate profiles owned by another deployment or by hand-managed gateway state.
 
@@ -160,7 +159,7 @@ Known enforcement gaps to design around (OpenShell roadmap items treated as unav
 
 - Profile-driven explicit credential placement: `auth_style`, `header_name`, `query_param`, and `path_template` are stored and validated but do not drive static injection. NanoCore MUST still populate them in generated profiles as declared intent, and MUST NOT rely on them for enforcement.
 - Endpoint- and binary-scoped static credential injection: not real; see the injection constraints above.
-- Policy prover on startup: not run automatically; OpenKit's own conformance check and effective-policy verification fill this role.
+- Policy prover on startup: not run automatically; OpenKit's local artifact validation, NanoHost SDK parsing, and effective-policy verification fill this role.
 - Refresh telemetry as OCSF events: not available; NanoCore imports refresh status and secret-safe logs instead.
 - Inference mounting from `inference_capable` profiles: not wired; inference routing remains NanoCore-owned and out of scope here.
 
@@ -172,40 +171,40 @@ Non-OpenShell container backends MUST provide equivalent enforcement through the
 
 ### Drift Control
 
-- A schema snapshot package pins the OpenShell surface this spec depends on: the provider profile schema (fields, credential declaration shape, refresh strategy enum and material keys, category enum, token grant fields), the sandbox policy schema (version `1`, `filesystem_policy`, `landlock`, `process`, `network_policies`, endpoint and rule objects), composition rules (`_provider_*` reservation, base-versus-effective policy semantics, global override suppression), reserved namespaces (`v<digits>_` env prefix, built-in profile ids), and the CLI subcommand surface the mapping layer invokes. The legacy package carries metadata, checksums, and a package-local `test` script and is not refreshed; the target records that pinned surface in the `apps/nanohost` pin manifest instead. Runtime MUST NOT live-fetch it under either form.
-- A conformance check MUST validate every generated provider profile and policy artifact against the pinned snapshot before it is sent to a gateway. Generation-time validation failure blocks the launch or attach, fails closed, and produces a redacted diagnostic. `openshell provider profile lint` MAY be used as a secondary check but MUST NOT replace the snapshot validation.
-- The target mapping layer MUST detect upstream drift signals at runtime: any CLI or Gateway version other than exact stock `0.0.99`, gateway rejection of previously valid artifacts, unknown fields or enum values in imported evidence, or missing expected `_provider_*` layers. Drift signals MUST be surfaced as diagnostics and, when enforcement-relevant, MUST fail closed rather than degrade silently.
-- Adopting an upstream OpenShell change is an explicit maintenance act: re-pin the boundary under its owning re-pin obligation, review the diff as an external boundary update, bump the mapping version, and only then change dependent NanoCore behavior. Silent adaptation to upstream changes is not allowed.
+- NanoCore MUST validate every OpenKit-authored provider profile and structured sandbox policy before requesting a runtime effect. NanoHost MUST reject missing, unknown, malformed, or unsupported structured policy fields while parsing the request into the selected OpenShell SDK types. Either failure blocks launch or attach and produces a redacted diagnostic.
+- OpenKit trusts the official matched SDK, Gateway, and Supervisor release set for mutual compatibility. Upgrade acceptance therefore tests OpenKit-owned behavior: structured-policy carriage, credential and network enforcement, expected provider layers, denial behavior, lifecycle cleanup, and the failure and load cases owned by the NanoHost runtime specification. It does not recertify OpenShell's internal component compatibility.
+- An upgrade candidate MUST first run with the currently accepted OpenKit parameters. A failure report MUST identify the candidate artifacts, actual parameters and load, expected boundary, observed value, and failing stage. When diagnosis requires calibration, change one parameter at a time and rerun the affected behavior; changing an acceptance boundary requires an owner update rather than a test-only relaxation.
+- Gateway rejection of an OpenKit-authored artifact, unknown fields or enum values in imported evidence, or missing expected `_provider_*` layers are integration-regression signals. They MUST be surfaced as diagnostics and, when enforcement-relevant, MUST fail closed rather than degrade silently. An upstream internal constant is diagnostic evidence, never an OpenKit compatibility contract by itself.
+- Adopting an upstream OpenShell release remains an explicit dependency update under the NanoHost runtime owner's upgrade gate. Silent adaptation to upstream changes is not allowed, and runtime MUST NOT live-fetch upstream schemas or compatibility metadata.
 
 ## Accepted Design
 
-The canonical renderer and evidence normalizer live in NanoCore, while NanoHost-local Sandbox Integration applies their bounded derived inputs to the stock loopback Gateway. The mechanism boundary has three parts:
+The canonical projector and evidence normalizer live in NanoCore, while NanoHost-local Sandbox Integration applies their bounded derived inputs to the stock loopback Gateway. The mechanism boundary has three parts:
 
-1. A renderer that turns NanoCore provider access shapes, grants, plans, and decisions into profile JSON plus bounded instance and attachment instructions tagged with mapping version and snapshot id; the NanoHost alone executes the OpenShell lifecycle operations.
+1. A projector that turns NanoCore provider access shapes, grants, plans, and decisions into profile JSON plus bounded instance and attachment instructions tagged with mapping version and actual runtime release identity; the NanoHost alone executes the OpenShell lifecycle operations.
 2. An importer that polls or collects provider records, refresh status, secret-safe refresh logs, and effective policy digests, normalizes completed injection facts into `VaultInjectionReceipt` and applicable outcomes into `VaultUse`, `AuditEvent`, and runtime evidence records, and quarantines unrecognized payloads as restricted evidence.
-3. A conformance checker that validates rendered artifacts against the snapshot package and asserts runtime invariants (expected provider layers present, no reserved-key violations, no secret-shaped values in rendered non-secret fields).
+3. Local input validation plus upgrade and runtime checks that assert current SDK parse acceptance and runtime invariants (expected provider layers present, no reserved-key violations, no secret-shaped values in rendered non-secret fields).
 
 NanoCore-owned provider access shape definitions (credential declaration, endpoint policy, binaries, refresh strategy selection) are configuration-schema records referenced by vault references and AEP snapshots. They are the internalized replacement for reading OpenShell built-in profiles as truth.
 
-The snapshot package is `packages/openshell-schema-snapshot`, exported as `@openkit/openshell-schema-snapshot`, following `docs/specs/20260522-vendor_snapshot_packages.md` (dated snapshot directories, metadata, checksums, package-local validation). NanoHost pins exact stock OpenShell `0.0.99` in its app-local manifest; deployment configuration cannot widen that boundary. The historical `0.0.80` package remains only because the current NanoCore policy renderer consumes its conformance helper. It is not refreshed or relabeled as the current runtime pin and is deleted when that policy consumer migrates.
+The NanoHost runtime owner selects the exact official matched OpenShell release set and owns its dependency identity and upgrade gate. No separate OpenShell schema-snapshot package participates in current policy validation.
 
 ## Current Implementation Projection
 
-- `packages/openshell-schema-snapshot` pins exact stock OpenShell `0.0.80` release provenance, provider profile surface, sandbox policy surface, NanoCore-consumed CLI surface, reserved namespaces, checksums, and package-local conformance tests. The snapshot separates the complete tagged upstream categories, built-in profile ids, protocols, access modes, and enforcement modes from the narrower OpenKit-emitted mapping.
-- `apps/nanocore/src/runtime/openshell-policy.ts` renders derived OpenShell filesystem, process, and network policy YAML from runtime inputs and validates generated policy YAML through `@openkit/openshell-schema-snapshot` before a sandbox launch can use it. The V1 path binds worker launch to NanoCore policy snapshot lineage and uses durable permission decisions for the implemented gateway and vault enforcement points; richer NGAC-to-policy-row compilation for every OpenShell policy fragment remains future hardening.
+- `apps/nanocore/src/runtime/openshell-policy.ts` validates derived filesystem and network intent and projects the structured OpenShell sandbox policy carried to NanoHost. NanoHost strictly parses that object into the current SDK type before a sandbox launch can use it. The V1 path binds worker launch to NanoCore policy snapshot lineage and uses durable permission decisions for the implemented gateway and vault enforcement points; richer NGAC-to-policy-row compilation for every OpenShell policy fragment remains future hardening.
 - OpenShell worker materialization does not project host-native runtime configuration. Runtime credentials and files may enter a sandbox only through manifest-declared AEP credential authority and backend-private materialization.
 - `packages/policy-kernel` returns `allow`/`deny` with traces, and NanoCore has durable `PermissionDecision` rows for the current boot, gateway, vault, and worker enforcement slices used by the V1 OpenShell-backed path.
 - `VaultReference` and `VaultGrant` exist as first-slice durable non-secret NanoCore metadata, and the current AEP carries their resolved non-secret credential requirements; `VaultInjectionPlan`, `VaultInjectionReceipt`, and `VaultUse` also exist as durable non-secret metadata. Worker-side GitHub MCP package resolution can derive one backend-private credential input from a durable `VaultGrant`, but current OpenShell materialization rejects that input before provider or Sandbox effects because the current package does not yet prove the exact Providers v2 endpoint and binary policy. The current resolver prematurely writes a receipt before that rejection; the row is non-conforming and cannot be treated as a completed injection fact. Runtime-file and runtime-environment declarations remain materializable. NanoHost revokes process-local authority, terminates the affected Sandbox, and invalidates the Runtime Epoch when exact deletion cannot be proved.
 - The deleted TypeScript CLI adapter used only the official platform path (`/usr/bin/openshell` on Linux and `/opt/homebrew/bin/openshell` on macOS) and exact version `0.0.80`. Across that adapter and the fixed Cell helper, the historical stock CLI surface was version and Gateway inspection; Providers v2 get/set; provider profile export/import; provider get/create/update/refresh-status; and sandbox create/list/exec/download. This is retained evidence, not a current execution path.
 - The deleted Cell implementation reached its Gateway at fixed `http://127.0.0.1:17670` locally and used an operator-managed SSH local-forward plus fixed SSH lifecycle helper remotely. NanoHost now owns one loopback-only stock Gateway and the transport in `docs/specs/20260802-nanohost_runtime_and_transport.md`; the historical routes are absent.
-- The current OpenShell launcher passes `--provider` only for the internally generated transient trusted-inference enforcement artifact; it rejects backend-private non-transient provider credentials, while runtime-file and runtime-environment credentials remain file or environment materialization. The target AEP carries no Provider attachment or concrete inference route.
-- The V1 mechanism-internalization boundary is partially implemented on the legacy path. Exact trusted-inference profile generation, generated artifact validation, transient provider upsert and attachment, product-safe provider evidence, and whole-Cell teardown are implemented there. Non-transient Providers v2 attachment remains disabled until the AEP can prove exact effective policy equality; refresh-log import remains unavailable because stock `0.0.80` exposes no stable refresh-log export surface. The separate historical Codex `0.144.1` root-plus-two-child acceptance on A1 does not prove the accepted RelayStream plus nested standard HTTP/2 transport, its stock feasibility, or the Runtime Epoch target.
+- The current OpenShell launcher passes a provider only for the internally generated transient trusted-inference enforcement artifact; it rejects backend-private non-transient provider credentials, while runtime-file and runtime-environment credentials remain file or environment materialization. The target AEP carries no Provider attachment or concrete inference route.
+- The V1 mechanism-internalization boundary remains partial. Non-transient Providers v2 attachment stays disabled until the AEP can prove exact effective policy equality; refresh-log import also remains unavailable until the selected official release exposes a stable observable surface. Those gaps do not authorize a historical schema snapshot to stand in for current runtime behavior.
 
 ## Alternatives Considered
 
 ### Build An OpenKit-Owned Injection Proxy Now
 
-OpenKit could implement its own egress proxy with credential rewrite, refresh workers, and L7 policy, giving full control of the standard, endpoint-scoped injection from day one, and zero upstream drift exposure. Rejected for now: this is a large, security-critical build (TLS termination, HTTP rewriting, OAuth2 and service-account minting, expiry handling, secret-safe logging) that duplicates a hardened mechanism OpenShell already provides, and it would delay the product slices that need injection working. The honest cost of not building it is accepting OpenShell's current granularity limits and carrying a pinned external boundary. The internalized definition layer is designed so that a future OpenKit proxy can replace the OpenShell mechanism behind the same NanoCore records; this alternative is deferred, not dismissed.
+OpenKit could implement its own egress proxy with credential rewrite, refresh workers, and L7 policy, giving full control of the standard, endpoint-scoped injection from day one, and zero upstream drift exposure. Rejected for now: this is a large, security-critical build (TLS termination, HTTP rewriting, OAuth2 and service-account minting, expiry handling, secret-safe logging) that duplicates a hardened mechanism OpenShell already provides, and it would delay the product slices that need injection working. The honest cost of not building it is accepting OpenShell's current granularity limits and testing OpenKit's integration whenever its official dependency set changes. The internalized definition layer is designed so that a future OpenKit proxy can replace the OpenShell mechanism behind the same NanoCore records; this alternative is deferred, not dismissed.
 
 ### Use OpenShell Definitions Directly As Source Of Truth
 
@@ -217,51 +216,51 @@ OpenKit could postpone credential integration until OpenShell ships profile-driv
 
 ## Consequences
 
-- OpenKit gets working, hardened credential injection and provider-scoped network policy quickly, at the cost of maintaining a mapping layer and a snapshot package.
+- OpenKit gets working, hardened credential injection and provider-scoped network policy quickly, at the cost of maintaining the mapping and behavior tests at its own integration boundary.
 - Credential exposure granularity in the first slice is sandbox-times-provider, not endpoint-scoped, and this limit is recorded honestly in `VaultInjectionPlan` records rather than papered over.
 - Every OpenShell artifact becomes disposable: gateways can be rebuilt from NanoCore records, which simplifies recovery and multi-gateway placement later.
 - Refresh material delegation to the gateway is an explicit, audited cross-boundary decision instead of an implicit side effect.
-- Upstream OpenShell changes become scheduled boundary maintenance instead of surprise behavior changes.
+- Upstream OpenShell changes become explicit dependency upgrades whose behavior regressions are diagnosed before adoption.
 - A future OpenKit-owned proxy or a non-OpenShell backend can be introduced behind the same NanoCore records without changing public contracts.
 
 ## Rollout / Migration Plan
 
 1. Land durable `VaultGrant`, `VaultInjectionPlan`, `VaultInjectionReceipt`, `VaultUse`, and `PermissionDecision` records (owned by their specs) far enough to serve as derivation inputs.
-2. Create the OpenShell schema snapshot package with the profile schema, policy schema, composition rules, reserved namespaces, and CLI surface, plus package-local validation.
-3. Implement the renderer and conformance checker; generate provider profiles, instances, and attachments for one provider access shape end to end, gated on `vault.use` decisions.
+2. Implement structured policy and provider-profile projection with local validation of OpenKit-authored intent.
+3. Generate provider profiles, instances, and attachments for one provider access shape end to end, gated on `vault.use` decisions, and admit them through the selected official SDK and Gateway behavior checks.
 4. Implement the importer: receipts only after successful create, credential update, refresh configuration, or credential-bearing attachment; `VaultUse` and `AuditEvent` evidence for revocation, refresh status, attachment lifecycle, affected-sandbox termination, and epoch invalidation; and effective-policy digest verification with fail-closed provider-layer checks.
 5. Replace the explicit Codex credential file upload path with grant-derived backend-private credential materialization in the same change; remove the old path without a compatibility reader.
 6. Extend to gateway-managed refresh strategies with delegated-material receipts, then to non-OpenShell backend equivalence checks.
 
 ## Testing Strategy / Acceptance Criteria
 
-- L0: repository checks ensure the snapshot package carries `AGENTS.md`, `README.md`, metadata, checksums, and a `test` script; lint rejects OpenShell-native types leaking into `@openkit/protocol` or public schemas.
-- L1: unit tests for the renderer (deterministic YAML output for fixed inputs, kebab-case id derivation, reserved-namespace rejection, expiry projection) and the importer (normalization, quarantine of unknown fields); redaction tests proving rendered artifacts and imported records never contain secret-shaped values, tokens, or raw account ids.
-- L2: contract and conformance tests validating generated profile and policy artifacts against the pinned snapshot; schema tests for `VaultInjectionReceipt`, `VaultUse`, and `AuditEvent` lineage fields; drift tests where a mutated snapshot or an artifact with unknown fields fails the conformance check closed.
+- L0: lint rejects OpenShell-native types leaking into `@openkit/protocol` or public schemas.
+- L1: unit tests for the projector (deterministic structured output for fixed inputs, invalid filesystem and network intent rejection, kebab-case id derivation, reserved-namespace rejection, expiry projection) and the importer (normalization, quarantine of unknown fields); redaction tests proving rendered artifacts and imported records never contain secret-shaped values, tokens, or raw account ids.
+- L2: contract tests validate generated structured policy at the NanoCore boundary and through NanoHost's current SDK parser; schema tests cover `VaultInjectionReceipt`, `VaultUse`, and `AuditEvent` lineage fields; malformed or unknown artifact fields fail closed.
 - L3: NanoCore black-box tests with a deterministic OpenShell stub covering: denied `vault.use` produces no credential injection; allowed grants produce one backend-private attachment plus receipt plus audit rows with backend session lineage; expired credential produces fail-closed launch with redacted diagnostic; suppressed `_provider_*` layers block launch; revocation invalidates package authority and runtime detach does not substitute for affected-sandbox termination or required epoch invalidation after unproved deletion.
 - L4: not applicable beyond existing Web surfaces showing redacted audit summaries; any Web assertions stay at existing audit views.
-- L5: smoke checks that built artifacts embed the expected mapping version and snapshot id.
+- L5: smoke checks that built artifacts report the expected mapping version and actual OpenShell release identity.
 - L6: one opt-in story: launch a worker with a granted provider credential through a real OpenShell gateway, observe the worker call the provider endpoint via placeholder rewrite, and verify NanoCore holds the receipt, vault-use, audit, and effective-policy evidence chain without secret material anywhere in product records.
 
-Acceptance requires: derivation is deterministic and regenerable; every injection-relevant OpenShell event class in the contract has an importer producing NanoCore records or an explicit incompleteness diagnostic; the conformance check blocks non-conforming artifacts; and the Codex file upload path is gone.
+Acceptance requires: derivation is deterministic and regenerable; every injection-relevant OpenShell event class in the contract has an importer producing NanoCore records or an explicit incompleteness diagnostic; local validation and NanoHost parsing block non-conforming artifacts; the current official matched release passes the required integration behavior; and the Codex file upload path is gone.
 
 ## Risks & Mitigations
 
-- Risk: the mapping layer quietly becomes a second definition layer. Mitigation: mapping code owns no schema; it consumes NanoCore records and the snapshot, and conformance tests fail when it invents fields.
+- Risk: the mapping layer quietly becomes a second definition layer. Mitigation: mapping code owns no product schema; it consumes NanoCore records, and structured-boundary plus current-release integration tests fail when it emits unsupported fields.
 - Risk: sandbox-times-provider exposure granularity is treated as endpoint scoping. Mitigation: `VaultInjectionPlan` visibility rules above, plus tests asserting plans never claim scoping the mechanism cannot deliver.
 - Risk: delegated refresh material makes the Gateway a shadow vault. Mitigation: delegation requires its own plan, receipt, and policy decision, and revocation terminates the affected sandbox; unproved deletion invalidates the complete epoch so no retained refresh state is trusted.
-- Risk: upstream schema changes break launches at inconvenient times. Mitigation: pinned snapshot with fail-closed drift detection converts breakage into a diagnosed boundary maintenance task.
+- Risk: an upstream change breaks an OpenKit-owned assumption. Mitigation: the upgrade gate runs the accepted structured, enforcement, lifecycle, load, and failure scenarios and reports the first failing boundary before adoption.
 - Risk: importer gaps silently under-report vault use. Mitigation: audit completeness is asserted per event class; unobservable classes must be reported as incomplete per the audit core doc.
 
 ## Resolved Decisions
 
-Previously blocking questions are resolved in the contract above: Gateway namespace ownership uses per-deployment reserved prefixes with per-shape-per-deployment profiles and per-grant instances, and Gateway-delegated refresh is default-deny behind approval-gated `vault.delegate-refresh` decisions for all three Gateway-mintable strategies. SPIFFE dynamic token grants are excluded from the first slice, refresh evidence import uses status polling on the scheduler probe cadence when observable, and the target `@openkit/openshell-schema-snapshot` pins exact stock OpenShell `0.0.99` rather than a version range.
+Previously blocking questions are resolved in the contract above: Gateway namespace ownership uses per-deployment reserved prefixes with per-shape-per-deployment profiles and per-grant instances, and Gateway-delegated refresh is default-deny behind approval-gated `vault.delegate-refresh` decisions for all three Gateway-mintable strategies. SPIFFE dynamic token grants are excluded from the first slice, refresh evidence import uses status polling on the scheduler probe cadence when observable, and NanoHost follows one exact official matched OpenShell release set at a time through its dependency and behavior-upgrade gate.
 
 ## Deferred / Future Work
 
 - An OpenKit-owned injection proxy replacing the OpenShell mechanism behind the same NanoCore records, if scoping gaps or deployment needs make it worthwhile.
 - Adopting SPIFFE dynamic token grants as the endpoint-scoped injection path for deployments that can provide a Workload API.
-- Adopting released stock upstream features (profile-driven placement, endpoint-scoped static injection, OCSF refresh events, policy prover integration) through a reviewed exact-version snapshot refresh and mapping version bump. OpenKit will not fork or patch OpenShell to obtain them.
+- Adopting released stock upstream features (profile-driven placement, endpoint-scoped static injection, OCSF refresh events, policy prover integration) through a reviewed dependency upgrade, mapping version bump when OpenKit-authored semantics change, and the required behavior regressions. OpenKit will not fork or patch OpenShell to obtain them.
 - Multi-gateway derivation and placement-aware provider instance management.
 - Equivalent-enforcement adapters for Docker, Kubernetes, and managed sandbox backends beyond the capability-gating rules defined here.
 
@@ -274,9 +273,8 @@ Previously blocking questions are resolved in the contract above: Gateway namesp
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260704-session_static_workspace_materialization.md`
-- `docs/specs/20260522-vendor_snapshot_packages.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/core/vault.md`
 - `docs/core/permissions.md`
 - `docs/core/audit.md`
-- External: NVIDIA OpenShell "Providers v2" and "Policy Schema Reference" documentation (pinned via the snapshot package, not linked as live truth).
+- External: NVIDIA OpenShell "Providers v2" and "Policy Schema Reference" documentation; upgrade evidence comes from the selected official release and its observed integration behavior rather than live runtime fetching.

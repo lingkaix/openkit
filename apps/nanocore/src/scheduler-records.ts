@@ -1723,6 +1723,7 @@ export function markExpiredSchedulerLeasesStale(
           WHERE lease_id = ? AND status IN ('acquired', 'starting', 'active', 'idle')`
         )
         .run(releaseReason, lease.leaseId);
+      drainPendingWorkerControlCommandsForLease(coreDb, lease);
     }
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
@@ -2195,31 +2196,42 @@ export function markSchedulerSessionLeaseReleasing(
   coreDb: CoreDb,
   input: MarkSchedulerSessionLeaseReleasingInput
 ): SchedulerSessionLeaseRecord {
-  const lease = requireSchedulerSessionLease(coreDb, input.leaseId);
-  const timestamp = input.now?.() ?? new Date().toISOString();
-
-  if (!canAcceptHeartbeat(lease.status)) {
-    throw new Error(`Scheduler session lease ${input.leaseId} is not live.`);
-  }
-
   if (input.releaseReason.trim() === '') {
     throw new Error(`Scheduler session lease ${input.leaseId} requires a release reason.`);
   }
 
-  const releaseDeadline = addMilliseconds(timestamp, SCHEDULER_RELEASE_GRACE_MS);
-  const expiresAt = lease.expiresAt <= releaseDeadline ? lease.expiresAt : releaseDeadline;
-
+  const timestamp = input.now?.() ?? new Date().toISOString();
   coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_session_leases
-      SET status = 'releasing',
-          expires_at = ?,
-          release_reason = ?,
-          recovery_state = ?,
-          recovery_deadline = NULL
-      WHERE lease_id = ?`
-    )
-    .run(expiresAt, input.releaseReason, input.recoveryState ?? 'needs-evidence', input.leaseId);
+    .transaction(() => {
+      const lease = requireSchedulerSessionLease(coreDb, input.leaseId);
+      if (!canAcceptHeartbeat(lease.status)) {
+        throw new Error(`Scheduler session lease ${input.leaseId} is not live.`);
+      }
+      const releaseDeadline = addMilliseconds(timestamp, SCHEDULER_RELEASE_GRACE_MS);
+      const expiresAt = lease.expiresAt <= releaseDeadline ? lease.expiresAt : releaseDeadline;
+      const updated = coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases
+        SET status = 'releasing',
+            expires_at = ?,
+            release_reason = ?,
+            recovery_state = ?,
+            recovery_deadline = NULL
+        WHERE lease_id = ? AND status = ?`
+        )
+        .run(
+          expiresAt,
+          input.releaseReason,
+          input.recoveryState ?? 'needs-evidence',
+          input.leaseId,
+          lease.status
+        );
+      if (updated.changes !== 1) {
+        throw new Error(`Scheduler session lease ${input.leaseId} is not live.`);
+      }
+      drainPendingWorkerControlCommandsForLease(coreDb, lease);
+    })
+    .immediate();
 
   return requireSchedulerSessionLease(coreDb, input.leaseId);
 }
@@ -2403,6 +2415,31 @@ function completeSchedulerSessionLeaseInTransaction(
   if (poolTransition.changes !== 1) {
     throw new Error(`Scheduler pool ${lease.poolId} changed before completion.`);
   }
+  drainPendingWorkerControlCommandsForLease(coreDb, lease);
+}
+
+/** Drains queued or delivered worker commands for one exact scheduler lease lineage. */
+function drainPendingWorkerControlCommandsForLease(
+  coreDb: CoreDb,
+  lease: SchedulerSessionLeaseRecord
+): void {
+  const admission = requireSchedulerSessionLeaseAdmissionContext(coreDb, lease.leaseId);
+  coreDb.sqlite
+    .prepare(
+      `UPDATE worker_control_commands
+       SET status = 'undeliverable'
+       WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+         AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?
+         AND command_kind = 'interrupt' AND status IN ('queued', 'delivered')`
+    )
+    .run(
+      lease.workspaceId,
+      lease.threadId,
+      lease.turnId,
+      lease.agentSessionId,
+      lease.packageSnapshotId,
+      admission.requestId
+    );
 }
 
 /**

@@ -6,7 +6,7 @@ NanoHost is the OpenKit execution-host service: one Rust binary crate that owns 
 
 - One binary crate named `nanohost` under `apps/nanohost`
 - App-local Rust toolchain pin `1.97.1` via `mise.toml`
-- OpenShell pin evidence and protobuf snapshot under `openshell-pin/` (owned separately from this scaffold)
+- The official OpenShell SDK fixed by Cargo, external release identities under `openshell/release.json`, and three source-backed transport assumptions under `openshell/`
 - One controlled `linux/arm64` distribution with a verified installer that never manages service lifecycle
 
 ## Internal roles
@@ -47,7 +47,7 @@ The two data effects use one fixed file-data stream on the same authoritative ou
 
 After accepted byte-free build metadata, NanoHost fetches the exact 1-through-268,435,456-byte inline Dockerfile once on fixed `POST /api/nanohost/transport/effects/image.build/input` as the third use of that file-data reservation, matches request identity, both lengths, digest, complete UTF-8 body, and at-most-64-KiB releases before any build effect, while pre-verification failure and post-admission reconnect retain only the correlated unchanged result and never refetch or replay input bytes.
 
-Private epoch invalidation evidence is appended under `/var/lib/openkit/nanohost-evidence` before every initiated fence. One bounded worker isolates each report write from the fence, which proceeds after at most two seconds without waiting for slow filesystem work. Reports and observable-state prior-epoch disposition notes are redacted, bounded to 8 MiB, mode `0600` under a mode-`0700` root, and pruned to the newest 20 owned artifacts. Startup records one disposition note before fresh epoch creation when residual epoch roots prove NanoHost-absent recovery. Reports and notes remain forensic output only: recovery, readiness, and capacity never read them. A separate temporary prior-fence timestamp carries the 90-second target and inclusive 300-second hard-limit measurement across one process restart, is consumed after successful readiness, and is absent on a true fresh start.
+Private epoch invalidation evidence is appended under `/var/lib/openkit/nanohost-evidence` before every initiated fence. One bounded worker isolates each report write from the fence, which proceeds after at most two seconds without waiting for slow filesystem work. Uncertain sandbox create reports retain only the operation, sandbox and attempt lineage, elapsed time, and one closed certainty-loss point from the request, response, typed Ready observation, Error phase, or fixed Ready deadline; a Ready identity mismatch remains a distinct member identity change. Reports and observable-state prior-epoch disposition notes are redacted, bounded to 8 MiB, mode `0600` under a mode-`0700` root, and pruned together to the newest 20 owned artifacts by their validated timestamp-sequence suffix. Startup records one disposition note before fresh epoch creation when residual epoch roots prove NanoHost-absent recovery. Reports and notes remain forensic output only: recovery, readiness, and capacity never read them. A separate temporary first-fence timestamp carries the 90-second target and inclusive 300-second hard-limit measurement across process restarts, every later failure path preserves it, and authoritative admission derives one absolute monotonic deadline from the remaining interval that covers readiness request construction, send, and the complete exact empty `204` response. Only an acknowledgement completed within that deadline consumes the marker, and a true fresh start has no marker.
 
 ## Distribution
 
@@ -111,4 +111,5 @@ cargo fmt
 
 - Spec: [docs/specs/20260802-nanohost_runtime_and_transport.md](../../docs/specs/20260802-nanohost_runtime_and_transport.md)
 - Rust setup: [docs/cookbooks/rust-setup.md](../../docs/cookbooks/rust-setup.md)
+- OpenShell upgrades and failure diagnosis: [docs/cookbooks/openshell-upgrade.md](../../docs/cookbooks/openshell-upgrade.md)
 - Apps index: [apps/README.md](../README.md)

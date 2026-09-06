@@ -12,6 +12,17 @@ import {
   verifyNanoHostTransportTokenRecord,
 } from './nanohost-transport-token-store.js';
 
+/** Inserts the exact active identity required by Token issuance fixtures. */
+function insertActiveIdentity(coreDb: ReturnType<typeof openCoreDb>): void {
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO nanohost_integration_identities (
+        identity_id, deployment_id, status, created_at
+      ) VALUES ('integration_nanohost_primary', 'deploy_primary', 'active', ?)`
+    )
+    .run('2026-08-08T00:00:00.000Z');
+}
+
 /**
  * S-2b-1 Unit 2 red: NanoHost transport token store lifecycle.
  *
@@ -29,6 +40,7 @@ describe('NanoHost transport token store', () => {
 
     try {
       applyMigrations(coreDb);
+      insertActiveIdentity(coreDb);
 
       const issued = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: 'deploy_primary',
@@ -72,6 +84,7 @@ describe('NanoHost transport token store', () => {
 
     try {
       applyMigrations(coreDb);
+      insertActiveIdentity(coreDb);
 
       const issued = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: 'deploy_primary',

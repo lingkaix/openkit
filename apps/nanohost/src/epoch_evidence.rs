@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 /// Fixed epoch-external directory for private NanoHost evidence.
 pub const EVIDENCE_ROOT: &str = "/var/lib/openkit/nanohost-evidence";
 
-/// Temporary fence timestamp carried across one NanoHost process restart.
+/// Temporary first-fence timestamp carried across NanoHost process restarts until readiness.
 pub const REBUILD_FENCE_STARTED_PATH: &str = "/var/lib/openkit/nanohost/.rebuild-fence-started";
 
 /// Maximum encoded size of one report or disposition note.
@@ -267,13 +267,14 @@ impl EpochEvidenceWriter {
         let mut artifacts = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
-            if owned_artifact(entry.path().as_path()) {
-                artifacts.push(entry);
+            let path = entry.path();
+            if let Some(sequence) = artifact_sequence(&path) {
+                artifacts.push((sequence.to_owned(), entry));
             }
         }
-        artifacts.sort_by_key(|entry| entry.file_name());
+        artifacts.sort_by(|left, right| left.0.cmp(&right.0));
         let remove_count = artifacts.len().saturating_sub(RETAINED_ARTIFACTS);
-        for entry in artifacts.into_iter().take(remove_count) {
+        for (_, entry) in artifacts.into_iter().take(remove_count) {
             fs::remove_file(entry.path())?;
         }
         Ok(())
@@ -332,16 +333,12 @@ impl RecoveryObservation {
 ///
 /// Returns an I/O or invalid-data error when observable recovery state cannot be read safely.
 pub fn observe_recovery(state_root: &Path) -> io::Result<RecoveryObservation> {
-    let fence_started = match fs::read_to_string(REBUILD_FENCE_STARTED_PATH) {
-        Ok(value) => {
-            let nanos = value.parse::<u64>().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "invalid fence timestamp")
-            })?;
-            Some(UNIX_EPOCH + Duration::from_nanos(nanos))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
+    observe_recovery_at(state_root, Path::new(REBUILD_FENCE_STARTED_PATH))
+}
+
+/// Observes recovery roots against one explicit first-fence marker path.
+fn observe_recovery_at(state_root: &Path, fence_path: &Path) -> io::Result<RecoveryObservation> {
+    let fence_started = read_fence_started(fence_path)?;
     let mut prior_epochs = Vec::new();
     match fs::read_dir(state_root) {
         Ok(entries) => {
@@ -369,12 +366,31 @@ pub fn observe_recovery(state_root: &Path) -> io::Result<RecoveryObservation> {
     })
 }
 
-/// Persists one temporary wall-clock fence timestamp outside forensic artifacts.
+/// Reads one optional first-fence timestamp without consulting forensic artifacts.
+fn read_fence_started(path: &Path) -> io::Result<Option<SystemTime>> {
+    match fs::read_to_string(path) {
+        Ok(value) => {
+            let nanos = value.parse::<u64>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid fence timestamp")
+            })?;
+            Ok(Some(UNIX_EPOCH + Duration::from_nanos(nanos)))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Persists the first temporary wall-clock fence timestamp outside forensic artifacts.
 ///
 /// # Errors
 ///
 /// Returns an I/O or clock error when the marker cannot be written durably.
 pub fn record_fence_started(fence_started: SystemTime) -> io::Result<()> {
+    record_fence_started_at(Path::new(REBUILD_FENCE_STARTED_PATH), fence_started)
+}
+
+/// Creates one marker atomically and preserves an existing first-fence timestamp.
+pub(crate) fn record_fence_started_at(path: &Path, fence_started: SystemTime) -> io::Result<()> {
     let nanos = u64::try_from(
         fence_started
             .duration_since(UNIX_EPOCH)
@@ -382,12 +398,16 @@ pub fn record_fence_started(fence_started: SystemTime) -> io::Result<()> {
             .as_nanos(),
     )
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "fence timestamp overflow"))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
+    let mut file = match OpenOptions::new()
+        .create_new(true)
         .write(true)
         .mode(0o600)
-        .open(REBUILD_FENCE_STARTED_PATH)?;
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error),
+    };
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     write!(file, "{nanos}")?;
     file.sync_all()
@@ -399,7 +419,12 @@ pub fn record_fence_started(fence_started: SystemTime) -> io::Result<()> {
 ///
 /// Returns an I/O error when an existing marker cannot be removed.
 pub fn clear_fence_started() -> io::Result<()> {
-    match fs::remove_file(REBUILD_FENCE_STARTED_PATH) {
+    clear_fence_started_at(Path::new(REBUILD_FENCE_STARTED_PATH))
+}
+
+/// Removes one consumed marker at an explicit path while preserving removal failures.
+pub(crate) fn clear_fence_started_at(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -504,16 +529,14 @@ fn artifact_name(kind: &str) -> String {
     format!("{kind}-{timestamp:039}-{sequence:020}.json")
 }
 
-/// Returns whether a path names only an artifact format owned by this module.
-fn owned_artifact(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
+/// Returns the sortable sequence from an artifact format owned by this module.
+fn artifact_sequence(path: &Path) -> Option<&str> {
+    let name = path.file_name().and_then(|name| name.to_str())?;
     let sequence = name
         .strip_prefix("epoch-invalidation-")
         .or_else(|| name.strip_prefix("prior-epoch-disposition-"))
         .and_then(|name| name.strip_suffix(".json"));
-    sequence.is_some_and(|sequence| {
+    sequence.filter(|sequence| {
         let bytes = sequence.as_bytes();
         bytes.len() == 60
             && bytes[39] == b'-'
@@ -525,18 +548,100 @@ fn owned_artifact(path: &Path) -> bool {
 #[cfg(all(test, unix))]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, UNIX_EPOCH};
 
     use super::{
         AbsentEpochTrigger, EVIDENCE_ROOT, EXPORT_TIMEOUT, EpochEvidenceWriter,
         EpochInvalidationTrigger, MAX_ARTIFACT_BYTES, REBUILD_HARD_LIMIT, REBUILD_TARGET,
-        RETAINED_ARTIFACTS, RebuildMeasurement, measure_fence_to_ready, observe_recovery,
+        RETAINED_ARTIFACTS, RebuildMeasurement, artifact_sequence, measure_fence_to_ready,
+        observe_recovery_at, record_fence_started_at,
     };
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn preserves_first_fence_timestamp_across_repeated_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "openkit-fence-marker-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).expect("marker root");
+        let marker = root.join("fence-started");
+        let first = UNIX_EPOCH + Duration::from_secs(1);
+        let later = UNIX_EPOCH + Duration::from_secs(2);
+
+        record_fence_started_at(&marker, first).expect("first fence marker");
+        let first_bytes = fs::read(&marker).expect("first marker bytes");
+        let first_metadata = fs::metadata(&marker).expect("first marker metadata");
+        record_fence_started_at(&marker, later).expect("repeated fence marker");
+        let final_metadata = fs::metadata(&marker).expect("final marker metadata");
+
+        assert_eq!(fs::read(&marker).expect("final marker bytes"), first_bytes);
+        assert_eq!(final_metadata.ino(), first_metadata.ino());
+        assert_eq!(final_metadata.mtime(), first_metadata.mtime());
+        assert_eq!(final_metadata.mtime_nsec(), first_metadata.mtime_nsec());
+        assert_eq!(
+            observe_recovery_at(&root.join("state"), &marker)
+                .expect("recovery observation")
+                .fence_started,
+            Some(first)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retains_newest_artifact_across_kinds() {
+        const VALID_SEQUENCE: &str = "000000000000000000000000000000000000001-00000000000000000001";
+        for kind in ["epoch-invalidation", "prior-epoch-disposition"] {
+            let name = format!("{kind}-{VALID_SEQUENCE}.json");
+            assert_eq!(artifact_sequence(Path::new(&name)), Some(VALID_SEQUENCE));
+        }
+        assert!(artifact_sequence(Path::new("epoch-invalidation-invalid.json")).is_none());
+        assert!(artifact_sequence(Path::new("unrelated.json")).is_none());
+
+        for first_is_note in [true, false] {
+            let root = std::env::temp_dir().join(format!(
+                "openkit-epoch-retention-{}-{}",
+                std::process::id(),
+                NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut writer = EpochEvidenceWriter::new(root.clone()).expect("private evidence root");
+            let mut export = |note| {
+                if note {
+                    writer.export_absent_disposition(
+                        AbsentEpochTrigger::NanoHostCrash,
+                        &[],
+                        Instant::now(),
+                    )
+                } else {
+                    writer.export_invalidation(
+                        EpochInvalidationTrigger::UncertainCreate,
+                        &[],
+                        Instant::now(),
+                    )
+                }
+                .expect("retained artifact")
+            };
+            let first = export(first_is_note);
+            for _ in 1..RETAINED_ARTIFACTS {
+                export(first_is_note);
+            }
+            let newest = export(!first_is_note);
+
+            assert!(newest.path.exists());
+            assert!(!first.path.exists());
+            assert_eq!(
+                fs::read_dir(&root).expect("retained evidence").count(),
+                RETAINED_ARTIFACTS
+            );
+            let _ = fs::remove_dir_all(root);
+        }
+    }
 
     #[test]
     fn removes_only_observed_prior_epoch_roots_before_fresh_start() {
@@ -558,7 +663,8 @@ mod tests {
         fs::create_dir_all(state_root.join("preserved")).expect("unrelated state root");
         fs::create_dir_all(run_root.join("preserved")).expect("unrelated run root");
 
-        let recovery = observe_recovery(&state_root).expect("prior epoch observation");
+        let marker = root.join("fence-started");
+        let recovery = observe_recovery_at(&state_root, &marker).expect("prior epoch observation");
         assert_eq!(recovery.residual_roots, 1);
         recovery
             .remove_prior_epoch_roots(&state_root, &run_root)
@@ -571,7 +677,8 @@ mod tests {
 
         let replaced_epoch = "epoch-123-456-1";
         fs::create_dir_all(state_root.join(replaced_epoch)).expect("second prior state root");
-        let recovery = observe_recovery(&state_root).expect("second prior epoch observation");
+        let recovery =
+            observe_recovery_at(&state_root, &marker).expect("second prior epoch observation");
         fs::remove_dir(state_root.join(replaced_epoch)).expect("replace observed epoch root");
         symlink(
             state_root.join("preserved"),

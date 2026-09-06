@@ -40,6 +40,13 @@ function openMigratedCoreDb(): CoreDb {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-lifecycle-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO nanohost_integration_identities (
+        identity_id, deployment_id, status, created_at
+      ) VALUES (?, ?, 'active', ?)`
+    )
+    .run(IDENTITY, DEPLOYMENT, '2026-08-08T00:00:00.000Z');
   return coreDb;
 }
 
@@ -244,6 +251,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         responsibleServerAdminActorId: 'user_admin',
       });
       const revoked = decommissionNanoHostTransportAndFence(coreDb, authority, {
+        deploymentId: DEPLOYMENT,
         identityId: IDENTITY,
         now: new Date('2026-08-08T02:00:00.000Z'),
       });

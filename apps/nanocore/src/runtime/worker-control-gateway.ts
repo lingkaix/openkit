@@ -203,6 +203,8 @@ export interface WorkerControlSessionRestoreInput {
   readonly artifacts?: readonly WorkerControlArtifactNotice[];
   /** Durable worker commands. */
   readonly commands?: readonly WorkerControlInterruptCommand[];
+  /** Highest durable command sequence across active and terminal rows. */
+  readonly commandSequenceHighWatermark?: number | null;
   /** Durable supply refresh acknowledgements. */
   readonly supplyRefreshAcks?: readonly WorkerControlSupplyRefreshAck[];
   /** Durable capability summaries. */
@@ -424,8 +426,25 @@ export interface WorkerControlCommandDeliveryRecorderInput {
 export interface WorkerControlCommandDeliveryStatusInput {
   /** Worker-control command id. */
   readonly commandId: string;
+  /** Complete worker lineage that owns the command. */
+  readonly lineage: WorkerControlLineage;
   /** ISO timestamp for the status transition. */
   readonly at: string;
+}
+
+/** Durable worker-control command delivery states. */
+export type WorkerControlCommandDeliveryStatus =
+  | 'queued'
+  | 'delivered'
+  | 'acknowledged'
+  | 'undeliverable';
+
+/** Durable command row returned after an insert, replay, or status compare-and-set. */
+export interface WorkerControlCommandDeliveryRecord {
+  /** Canonical interrupt command reconstructed from durable columns. */
+  readonly command: WorkerControlInterruptCommand;
+  /** Current durable delivery status. */
+  readonly status: WorkerControlCommandDeliveryStatus;
 }
 
 /** Records durable worker-control command delivery state. */
@@ -435,19 +454,25 @@ export interface WorkerControlCommandDeliveryRecorder {
    *
    * @param input Queued command input.
    */
-  recordQueued(input: WorkerControlCommandDeliveryRecorderInput): void;
+  recordQueued(
+    input: WorkerControlCommandDeliveryRecorderInput
+  ): WorkerControlCommandDeliveryRecord;
   /**
    * Marks one command as delivered.
    *
    * @param input Delivery status input.
    */
-  markDelivered(input: WorkerControlCommandDeliveryStatusInput): void;
+  markDelivered(
+    input: WorkerControlCommandDeliveryStatusInput
+  ): WorkerControlCommandDeliveryRecord | null;
   /**
    * Marks one command as acknowledged.
    *
    * @param input Acknowledgement status input.
    */
-  markAcknowledged(input: WorkerControlCommandDeliveryStatusInput): void;
+  markAcknowledged(
+    input: WorkerControlCommandDeliveryStatusInput
+  ): WorkerControlCommandDeliveryRecord | null;
 }
 
 /** Input passed to final-status lifecycle hooks. */
@@ -505,6 +530,8 @@ interface WorkerControlSessionState {
   readonly operationFingerprintsBySequence: Map<string, Map<number, string>>;
   /** Next command sequence number. */
   nextCommandSequence: number;
+  /** Whether this Turn already owns any interrupt command history. */
+  hasInterruptCommand: boolean;
   /** Highest canonical event sequence accepted on the event append channel. */
   highestEventSequence: number | null;
   /** Highest worker sequence accepted per sequenced control operation. */
@@ -640,6 +667,7 @@ export class WorkerControlGateway {
       eventFingerprintsBySequence: new Map(),
       highestEventSequence: null,
       highestOperationSequenceByOperation: new Map(),
+      hasInterruptCommand: false,
       nextCommandSequence: 1,
       operationFingerprintsBySequence: new Map(),
       sandboxBindingRef: options.sandboxBindingRef ?? null,
@@ -758,9 +786,16 @@ export class WorkerControlGateway {
       highestEventSequence:
         events.length === 0 ? null : Math.max(...events.map((event) => event.sequence)),
       highestOperationSequenceByOperation: new Map(),
+      hasInterruptCommand:
+        commands.length > 0 ||
+        (input.commandSequenceHighWatermark !== null &&
+          input.commandSequenceHighWatermark !== undefined),
       lineage: input.lineage,
       nextCommandSequence:
-        commands.length === 0 ? 1 : Math.max(...commands.map((command) => command.sequence)) + 1,
+        Math.max(
+          input.commandSequenceHighWatermark ?? 0,
+          ...commands.map((command) => command.sequence)
+        ) + 1,
       operationFingerprintsBySequence: new Map(),
       sandboxBindingRef: input.sandboxBindingRef,
       snapshot,
@@ -947,8 +982,16 @@ export class WorkerControlGateway {
     reason: string | null = null
   ): WorkerControlInterruptCommand {
     const state = this.requirePackageSession(packageSnapshotId);
+    if (state.hasInterruptCommand) {
+      throw new WorkerControlGatewayError(
+        'worker_control_interrupt_conflict',
+        `Worker interrupt already admitted for Turn: ${state.lineage.turnId}`,
+        409
+      );
+    }
+    const lineage = lineageFromState(state);
     const command: WorkerControlInterruptCommand = {
-      commandId: `worker-command-${state.nextCommandSequence}`,
+      commandId: deriveWorkerControlCommandId(lineage, state.nextCommandSequence),
       deliveredAt: null,
       kind: 'interrupt',
       queuedAt: this.now(),
@@ -956,11 +999,20 @@ export class WorkerControlGateway {
       sequence: state.nextCommandSequence,
     };
 
-    state.nextCommandSequence += 1;
-    state.snapshot.commands.push(command);
-    this.recordQueuedCommand(state, command);
+    const durable = this.recordQueuedCommand(state, command);
 
-    return cloneCommand(command);
+    state.hasInterruptCommand = true;
+    state.nextCommandSequence = Math.max(state.nextCommandSequence, durable.command.sequence + 1);
+    if (
+      (durable.status === 'queued' || durable.status === 'delivered') &&
+      !state.snapshot.commands.some(
+        (candidate) => candidate.commandId === durable.command.commandId
+      )
+    ) {
+      state.snapshot.commands.push(cloneCommand(durable.command));
+    }
+
+    return cloneCommand(durable.command);
   }
 
   /**
@@ -978,18 +1030,28 @@ export class WorkerControlGateway {
     const state = this.requireSession(input);
     const polledAt = this.now();
 
+    const commands: WorkerControlInterruptCommand[] = [];
+
     for (const command of state.snapshot.commands) {
-      if (!command.deliveredAt) {
-        command.deliveredAt = polledAt;
-        this.commandDeliveryRecorder?.markDelivered({
-          at: polledAt,
-          commandId: command.commandId,
-        });
+      const durable = this.commandDeliveryRecorder?.markDelivered({
+        at: polledAt,
+        commandId: command.commandId,
+        lineage: lineageFromState(state),
+      });
+      if (this.commandDeliveryRecorder && durable?.status !== 'delivered') {
+        continue;
       }
+      const delivered = durable?.command ?? {
+        ...command,
+        deliveredAt: command.deliveredAt ?? polledAt,
+      };
+      command.deliveredAt = delivered.deliveredAt;
+      commands.push(cloneCommand(delivered));
     }
+    state.snapshot.commands = commands.map(cloneCommand);
 
     return {
-      commands: state.snapshot.commands.map(cloneCommand),
+      commands,
       polledAt,
     };
   }
@@ -1011,7 +1073,7 @@ export class WorkerControlGateway {
       (candidate) => candidate.commandId === input.commandId
     );
 
-    if (!command) {
+    if (!command && !this.commandDeliveryRecorder) {
       throw new WorkerControlGatewayError(
         'worker_control_command_not_found',
         `Worker command not found: ${input.commandId}`,
@@ -1019,7 +1081,7 @@ export class WorkerControlGateway {
       );
     }
 
-    if (!command.deliveredAt) {
+    if (command && !command.deliveredAt) {
       throw new WorkerControlGatewayError(
         'worker_control_command_not_delivered',
         `Worker command has not been delivered: ${input.commandId}`,
@@ -1027,13 +1089,25 @@ export class WorkerControlGateway {
       );
     }
 
-    this.commandDeliveryRecorder?.markAcknowledged({
+    const durable = this.commandDeliveryRecorder?.markAcknowledged({
       at: this.now(),
       commandId: input.commandId,
+      lineage: lineageFromState(state),
     });
-    state.snapshot.commands.splice(state.snapshot.commands.indexOf(command), 1);
+    if (this.commandDeliveryRecorder && durable?.status !== 'acknowledged') {
+      throw new WorkerControlGatewayError(
+        durable?.status === 'queued'
+          ? 'worker_control_command_not_delivered'
+          : 'worker_control_command_not_found',
+        `Worker command cannot be acknowledged: ${input.commandId}`,
+        durable?.status === 'queued' ? 409 : 404
+      );
+    }
+    if (command) {
+      state.snapshot.commands.splice(state.snapshot.commands.indexOf(command), 1);
+    }
 
-    return cloneCommand(command);
+    return cloneCommand(durable?.command ?? command!);
   }
 
   /**
@@ -1146,7 +1220,7 @@ export class WorkerControlGateway {
         accepted: true,
         diagnostics: [],
         nextExpectedSequence: sequence.nextExpectedSequence,
-        schemaVersion: 1,
+        schemaVersion: 2,
       });
     }
 
@@ -1164,7 +1238,7 @@ export class WorkerControlGateway {
       accepted: true,
       diagnostics: [],
       nextExpectedSequence: sequence.nextExpectedSequence,
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
   }
 
@@ -1264,7 +1338,7 @@ export class WorkerControlGateway {
       accepted: true,
       diagnostics: [],
       nextExpectedSequence: nextExpectedEventSequence(state),
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
   }
 
@@ -1402,7 +1476,7 @@ export class WorkerControlGateway {
       accepted: true,
       diagnostics: [],
       nextExpectedSequence: nextExpectedEventSequence(state),
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
   }
 
@@ -1668,11 +1742,13 @@ export class WorkerControlGateway {
   private recordQueuedCommand(
     state: WorkerControlSessionState,
     command: WorkerControlInterruptCommand
-  ): void {
-    this.commandDeliveryRecorder?.recordQueued({
-      command,
-      lineage: lineageFromState(state),
-    });
+  ): WorkerControlCommandDeliveryRecord {
+    return (
+      this.commandDeliveryRecorder?.recordQueued({
+        command,
+        lineage: lineageFromState(state),
+      }) ?? { command, status: 'queued' }
+    );
   }
 
   /**
@@ -1784,6 +1860,28 @@ function createRandomToken(): string {
  */
 export function hashWorkerRouteToken(token: string): string {
   return createHash('sha256').update(Buffer.from(token, 'base64url')).digest('hex');
+}
+
+/** Derives the collision-resistant global identity for one durable interrupt command. */
+export function deriveWorkerControlCommandId(
+  lineage: WorkerControlLineage,
+  sequence: number
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        domain: 'openkit.worker-command.v2',
+        workspaceId: lineage.workspaceId,
+        threadId: lineage.threadId,
+        turnId: lineage.turnId,
+        agentSessionId: lineage.agentSessionId,
+        packageSnapshotId: lineage.packageSnapshotId,
+        requestId: lineage.requestId ?? null,
+        kind: 'interrupt',
+        sequence,
+      })
+    )
+    .digest('hex');
 }
 
 /**

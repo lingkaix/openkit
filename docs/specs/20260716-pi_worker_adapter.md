@@ -168,6 +168,8 @@ The Pi `0.85.1` bounded-turn adapter, static registry entry, authored manifest, 
 
 This local unique-tag smoke proves image contents and adapter dry-run for the current pin. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
 
+On 2026-09-06, the final Worker source `6bf9bfbc01eb4d8903dc71a45fb51e63646f5fb6` passed the catalog image build and smoke on both `linux/amd64` and `linux/arm64`. Its Pi leaf also passed stock OpenShell `0.0.99` create, AEP upload, generic shim dry-run, and delete on A2. These observations close image-content checks for Pi `0.85.1`; Pi remains disabled for the target NanoHost route, with real-provider, lifecycle, session-continuity, and `inference.local` obligations unchanged.
+
 Consumed-surface dispositions for the 0.85.1 pin change: JSON-mode flags, `claude-sonnet-4-5`, `agent_settled`, and published bin `dist/bundle/cli.js` are unchanged from `0.85.0` (`compatible`); `inference.local` / `models.json` / Gateway relay remain unavailable (`blocking` for the target route, unchanged from `0.80.7` and not invented by this refresh). The 0.85.1 upstream delta (GPT-6 Astra, TUI/mouse/keybinding fixes, unpublished experimental client/plugin dist, GPT-5.6+ prompt-cache option) does not touch the consumed Worker contract.
 
 ## Acceptance

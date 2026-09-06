@@ -22,7 +22,7 @@ export type NanoHostHarnessOperation = (typeof NANO_HOST_HARNESS_OPERATIONS)[num
 export interface NanoHostHarnessCommand {
   readonly adapterId: 'codex' | 'opencode' | 'pi';
   readonly harnessInstanceId: string;
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly operationId: string;
   readonly sequence: number;
   readonly operation: NanoHostHarnessOperation;
@@ -32,7 +32,7 @@ export interface NanoHostHarnessCommand {
 /** One exact private Harness operation result. */
 export interface NanoHostHarnessResult {
   readonly harnessInstanceId: string;
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly operationId: string;
   readonly sequence: number;
   readonly disposition: 'succeeded' | 'refused' | 'unknown';
@@ -728,7 +728,7 @@ export function dispatchNanoHostHarnessOperation(
       harnessInstanceId: harness.harness_instance_id,
       operation: harness.operation,
       operationId,
-      schemaVersion: 1,
+      schemaVersion: 2,
       sequence: harness.next_sequence,
     };
   } catch (error) {
@@ -1168,7 +1168,7 @@ function requireHarnessResult(
     'Harness result'
   );
   if (
-    result.schemaVersion !== 1 ||
+    result.schemaVersion !== 2 ||
     !Number.isSafeInteger(result.sequence) ||
     result.sequence < 0 ||
     !['succeeded', 'refused', 'unknown'].includes(result.disposition)

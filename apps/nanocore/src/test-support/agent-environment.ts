@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackage,
@@ -10,6 +13,7 @@ import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import { seedWritableGitRepository } from './git-repository.js';
 
 /**
  * Creates one complete setup fixture for tests whose subject is not manifest resolution.
@@ -153,6 +157,8 @@ export function recordTestAgentEnvironmentPackage(
   workspaceDb: WorkspaceDb,
   input: RecordTestAgentEnvironmentPackageInput
 ): AgentEnvironmentPackage {
+  const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-agent-environment-'));
+  seedWritableGitRepository(repositoryPath);
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
@@ -182,7 +188,7 @@ export function recordTestAgentEnvironmentPackage(
         access: 'read-write' as const,
         id: inputId,
         sourceKind: 'host-dir' as const,
-        sourcePath: process.cwd(),
+        sourcePath: repositoryPath,
         workerPath: `/workspace/${inputId}`,
       })),
     })

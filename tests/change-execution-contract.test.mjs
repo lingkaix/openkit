@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 /**
@@ -14,7 +14,8 @@ function read(path) {
 
 const contract = read('docs/change-execution.md');
 const documentationModel = read('docs/documentation-model.md');
-const verifierRole = read('.codex/agents/verifier.toml');
+const consultantRole = read('.codex/agents/consultant.toml');
+const auditorRole = read('.codex/agents/auditor.toml');
 const roleRegistry = read('.codex/config.toml');
 const changesReadme = read('docs/changes/README.md');
 const changesGuide = read('docs/changes/AGENTS.md');
@@ -72,95 +73,65 @@ test('predeclares what a material Next Action must change and observe', () => {
   );
 });
 
-test('requires fresh-context direction review at its three drift triggers', () => {
-  const reorientation = paragraphWith(contract, [
-    /fresh context/iu,
-    /compaction/iu,
-    /resume/iu,
-    /direction/iu,
-  ]);
+test('keeps fresh direction scrutiny at consequential commitments rather than routine dispatch', () => {
+  const recovery = paragraphWith(contract, ['fresh context MUST', 'primary-context identity']);
+  assert.notEqual(recovery, '');
+  for (const marker of [
+    'compacted since its own last check',
+    'direction-bearing commitment',
+    'changing scope or accepted design',
+    'substantial investment in a new route',
+    'an irreversible or external effect',
+    'closure whose delivered scheme materially differs',
+    'An ordinary commit or cross-owner delegation within that direction is not sufficient by itself',
+    'After a Reframe, a long pause and resume, or primary-agent replacement',
+    'before renewed material investment',
+    "a delegated context's own compaction is not the primary's",
+    'clears the obligation of the primary context whose Intent, checkpoint, and evidence it read',
+    'not of the fresh context that performed it',
+    'Ordinary mid-slice compaction is not a dispatch trigger',
+    'where the plan keeps a route log, record one line',
+  ])
+    assert.ok(recovery.includes(marker), `missing recovery boundary: ${marker}`);
 
-  assert.notEqual(reorientation, '', 'missing fresh-context direction review');
-  for (const outcome of OUTCOMES) assert.ok(reorientation.includes(`\`${outcome}\``));
+  const checkpoint = paragraphWith(contract, ['A Consultant may name', 'MUST obtain']);
+  assert.match(checkpoint, /before dependent work continues, even if it sees no drift itself/u);
+  assert.match(checkpoint, /without a meaningful observable/u);
+  assert.match(checkpoint, /cannot prove freshness or guarantee an undispatched intervention/u);
+  for (const outcome of OUTCOMES) assert.ok(checkpoint.includes(`\`${outcome}\``));
 
-  // One pilot compacted 107 times against 28 total subagent spawns and left no
-  // record either way. Keying the check to compaction measured token volume;
-  // keying it to commitment measures where a wrong belief is actually spent.
-  // Each member of the commitment set is load-bearing: an independent review
-  // found that dropping `Close` and commit leaves post-compaction drift that
-  // produces only reversible edits entirely uncaught.
-  assert.match(reorientation, /MUST perform the direction check/u);
-  for (const trigger of [
-    /before a durable commitment/iu,
-    /compacted since its own last check/iu,
-    /after a Reframe/u,
-    /long pause and resume or a change of primary-agent identity/iu,
-  ]) {
-    assert.match(reorientation, trigger);
-  }
-  for (const commitment of [
-    /a commit/u,
-    /a `Close`/u,
-    /a cross-owner delegation/u,
-    /irreversible, externally effectful, or real-environment action/u,
-  ]) {
-    assert.match(reorientation, commitment);
-  }
+  for (const marker of [
+    'before renewed material investment',
+    'Ordinary mid-slice compaction does not dispatch this role',
+    'compacted since its own last check',
+    'before dependent work continues even if it sees no drift',
+    'Instruction checks cannot prove freshness or guarantee actual dispatch',
+  ])
+    assert.ok(consultantRole.includes(marker), `missing Consultant boundary: ${marker}`);
+  for (const outcome of OUTCOMES) assert.ok(consultantRole.includes(outcome));
+});
 
-  // Without the lineage sentence, "compacted since its own last check" has no
-  // reading once work is delegated: a subagent's compaction would silently
-  // satisfy or silently violate the primary context's obligation.
-  assert.ok(
-    /Coverage is per plan and per primary-context identity/u.test(reorientation),
-    'the obligation must name whose compaction and whose check it counts'
+test('registers Consultant and preserves bounded Auditor judgment and human invitation', () => {
+  assert.match(roleRegistry, /\[agents\.consultant\]/u);
+  assert.match(roleRegistry, /config_file = "agents\/consultant\.toml"/u);
+  assert.match(consultantRole, /^name = "consultant"/mu);
+  assert.doesNotMatch(roleRegistry, /\[agents\.verifier\]/u);
+  assert.equal(existsSync(new URL('../.codex/agents/verifier.toml', import.meta.url)), false);
+  assert.match(consultantRole, /Do not duplicate Reviewer implementation acceptance/u);
+  assert.match(
+    consultantRole,
+    /Co-designing a proposal does not qualify you as its independent final acceptor/u
   );
-  assert.ok(
-    /delegated context's own compaction is not the primary's/u.test(reorientation),
-    'a delegated compaction must not be conflated with the primary context'
+  assert.match(consultantRole, /missing authorization/u);
+  assert.match(consultantRole, /no credible next route/u);
+  assert.match(auditorRole, /Within discretion left by existing authority/u);
+  assert.match(
+    auditorRole,
+    /Never waive a MUST, the Safety Kernel, an owner, or an engineer decision/u
   );
-  // The fresh context performs the check but the compacted primary owns the
-  // obligation. An earlier draft cleared the performer, which left the primary
-  // permanently obligated and made the rule undischargeable.
-  assert.ok(
-    /clears the obligation of the primary context whose Intent, checkpoint, and evidence it read, not of the fresh context that performed it/u.test(
-      reorientation
-    ),
-    'the check must clear the primary rather than its performer'
-  );
-  // The mid-slice line needs a sink. Requiring it of a plan that owes no route
-  // log would demand a record with nowhere to go.
-  assert.ok(
-    /where the plan keeps a route log, ordinary mid-slice compaction requires only one recorded line/u.test(
-      reorientation
-    ),
-    'the mid-slice line must be scoped to plans that have a sink for it'
-  );
-  assert.ok(
-    /compaction[^.\n]*not a trigger on its own/iu.test(reorientation),
-    'compaction alone must not be stated as a trigger'
-  );
-  assert.ok(
-    /ordinary mid-slice compaction requires only one recorded line/iu.test(reorientation),
-    'skipped mid-slice checks must stay visible as a recorded line'
-  );
-
-  assert.ok(
-    /fresh context[^.\n]*(?:compaction|resume)/iu.test(verifierRole),
-    'verifier must own the fresh-context compaction/resume seam'
-  );
-  // The role projection dropped `externally effectful` once already, so the
-  // operational instruction is pinned to the owner's complete commitment set.
-  assert.ok(
-    /durable commitment is a commit, a Close, a cross-owner delegation, or an irreversible, externally effectful, or real-environment action/u.test(
-      verifierRole
-    ),
-    'the role must carry the owner-complete durable-commitment set'
-  );
-  assert.ok(
-    /mid-slice compaction does not dispatch this role/iu.test(verifierRole),
-    'verifier must not be dispatched on ordinary mid-slice compaction'
-  );
-  for (const outcome of OUTCOMES) assert.ok(verifierRole.includes(outcome));
+  assert.match(auditorRole, /do not each require a dated audit record/u);
+  assert.match(contract, /Never prescribe a passing verdict, hide dissent/u);
+  assert.match(contract, /Stop the previous writer before transferring the same paths/u);
 });
 
 test('mirrors uncommitted plan material onto its committed bundle name', () => {
@@ -202,7 +173,7 @@ test('gives retained pilot material one shape without rebuilding an event log', 
     /The three approved pilot plans keep one; any other plan may, and none is required to\./u
   );
   assert.match(documentationModel, /optional `route-log\.md`/u);
-  assert.match(contract, /optional `findings\.md` and `route-log\.md`/u);
+  assert.match(contract, /optional `proposal\.md`, `findings\.md`, and `route-log\.md`/u);
   // Scope is the three pilots. A projection that universalized this obligation
   // would add a durable record no repeated evidence has yet asked for.
   // Three committed bundle members, three distinct standings. Collapsing any
@@ -360,23 +331,10 @@ test('keeps every route-log and trigger projection aligned with its owner', () =
   // records only that a check happened settles nothing.
   assert.match(contract, /with its outcome and reason/u);
 
-  // The registry description is what a dispatcher reads first.
-  for (const projection of [verifierRole, roleRegistry]) {
-    assert.ok(
-      /durable commitment/u.test(projection),
-      'both role projections must name the commitment trigger'
-    );
+  for (const projection of [consultantRole, roleRegistry]) {
+    assert.match(projection, /direction-bearing commitment/u);
   }
-  // Without the reset condition the role reads as owing a check before every
-  // later commitment, which is the cadence this change exists to replace.
-  assert.ok(
-    /compacted since its own last check/u.test(verifierRole),
-    'the role must carry the owner reset condition'
-  );
-  assert.ok(
-    /clears the obligation of the primary context you read, not of your own/u.test(verifierRole),
-    'the role must clear the primary rather than itself'
-  );
+  assert.match(consultantRole, /Coverage belongs to the primary-context identity and plan/u);
 });
 
 test('appends Intent epochs and rewrites the working checkpoint', () => {

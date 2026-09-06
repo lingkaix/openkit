@@ -87,7 +87,7 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
     body,
     operation,
     operationId: sequence.toString(16).padStart(64, '0'),
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     sequence,
   };
 }
@@ -123,7 +123,9 @@ describe('shared Worker Harness', () => {
       close: async () => {
         loopFixture.events.push('close');
       },
-      harnessControlFetch: async () => {
+      harnessControlFetch: async (path: string, init: { body: string }) => {
+        expect(path).toBe('/worker-control/harness/poll');
+        expect(JSON.parse(init.body)).toEqual({ schemaVersion: 2 });
         loopFixture.events.push('poll');
         controller.abort(new Error('fixture-complete'));
         return { ok: true, status: 204, text: async () => '' };
@@ -133,6 +135,43 @@ describe('shared Worker Harness', () => {
 
     await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(/abort/i);
     expect(loopFixture.events).toEqual(['listener', 'marker', 'poll', 'close']);
+  });
+
+  it('keeps empty private Harness polls between 250 and 1000 milliseconds', async () => {
+    const controller = new AbortController();
+    const performanceNow = vi.spyOn(performance, 'now');
+    let pollCount = 0;
+    const harnessControlFetch = vi.fn(async () => {
+      pollCount += 1;
+      return pollCount === 4
+        ? { ok: false, status: 500, text: async () => '' }
+        : { ok: true, status: 204, text: async () => '' };
+    });
+    loopFixture.client = {
+      close: async () => undefined,
+      harnessControlFetch,
+      ready: Promise.resolve(),
+    } as unknown as SandboxIntegrationClient;
+    const run = runWorkerHarness({ signal: controller.signal });
+    try {
+      await expect(run).rejects.toThrow(/Harness poll failed with HTTP 500/u);
+      // Observe the poll-start sample before synchronous request preparation.
+      const pollStarts = harnessControlFetch.mock.invocationCallOrder.map((invocationOrder) => {
+        const sampleIndex = performanceNow.mock.invocationCallOrder.findLastIndex(
+          (sampleOrder) => sampleOrder < invocationOrder
+        );
+        const sample = performanceNow.mock.results[sampleIndex];
+        expect(sample?.type).toBe('return');
+        return Number(sample?.value);
+      });
+      const intervals = pollStarts.slice(1).map((time, index) => time - pollStarts[index]!);
+
+      expect(Math.min(...intervals)).toBeGreaterThanOrEqual(250);
+      expect(Math.max(...intervals)).toBeLessThanOrEqual(1_000);
+    } finally {
+      controller.abort();
+      await run.catch(() => undefined);
+    }
   });
 
   it('routes one Integration poll loop to two independent Harness instances', async () => {
@@ -172,6 +211,66 @@ describe('shared Worker Harness', () => {
       { disposition: 'succeeded', harnessInstanceId: 'harness-codex', sequence: 0 },
       { disposition: 'succeeded', harnessInstanceId: 'harness-opencode', sequence: 0 },
     ]);
+  });
+
+  it('does not request another private poll while a bounded Turn remains selected', async () => {
+    const controller = new AbortController();
+    let pollCount = 0;
+    let resultCount = 0;
+    let releaseTurn: (() => void) | undefined;
+    const turnSettlement = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    vi.spyOn(WorkerHarness.prototype, 'handle').mockImplementation(async (selected) => ({
+      body: { state: 'started' },
+      disposition: 'succeeded',
+      operationId: selected.operationId,
+      schemaVersion: 2,
+      sequence: selected.sequence,
+    }));
+    vi.spyOn(WorkerHarness.prototype, 'waitForBoundedTurnSettlement').mockImplementation(
+      async () => turnSettlement
+    );
+    loopFixture.client = {
+      close: async () => undefined,
+      harnessControlFetch: async (path: string) => {
+        if (path.endsWith('/result')) {
+          resultCount += 1;
+          return { ok: true, status: 204, text: async () => '' };
+        }
+        pollCount += 1;
+        if (pollCount === 1) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                ...command('turn.start', 0, {}),
+                adapterId: 'opencode',
+                harnessInstanceId: 'harness-opencode',
+              }),
+          };
+        }
+        controller.abort(new Error('fixture-complete'));
+        return { ok: true, status: 204, text: async () => '' };
+      },
+      ready: Promise.resolve(),
+    } as unknown as SandboxIntegrationClient;
+    const run = runWorkerHarness({ signal: controller.signal });
+    void run.catch(() => undefined);
+
+    try {
+      await vi.waitFor(() => expect(resultCount).toBe(1));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(pollCount).toBe(1);
+      releaseTurn?.();
+      await vi.waitFor(() => expect(pollCount).toBe(2));
+      await run.catch(() => undefined);
+    } finally {
+      releaseTurn?.();
+      controller.abort();
+      await run.catch(() => undefined);
+    }
   });
 
   it('runs sequential Turns by resuming the exact first Codex UUID', async () => {
@@ -226,6 +325,8 @@ describe('shared Worker Harness', () => {
           },
           extensions: { openkit: { turnInput: 'Continue the exact conversation.' } },
           llm: {
+            mode: 'gateway',
+            preferredLogicalModelId: 'gpt-5',
             routes: [
               {
                 credentialVisibility: 'placeholder',
@@ -304,7 +405,7 @@ describe('shared Worker Harness', () => {
               url.endsWith('/commands/poll')
                 ? { commands: [] }
                 : url.endsWith('/events/append') || url.endsWith('/final-status')
-                  ? { accepted: true, diagnostics: [], schemaVersion: 1 }
+                  ? { accepted: true, diagnostics: [], schemaVersion: 2 }
                   : {}
             ),
         };
@@ -718,6 +819,183 @@ describe('shared Worker Harness', () => {
       )
     ).resolves.toMatchObject({
       body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+      disposition: 'succeeded',
+    });
+  });
+
+  it('keeps a bounded-turn OpenCode binding private to one Turn', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-opencode-turn-'));
+    const sandboxRoot = join(root, 'openkit');
+    const inputRoot = join(sandboxRoot, 'sessions', 'as-opencode');
+    const packagePath = join(inputRoot, 'config', 'package.json');
+    const contextPath = join(inputRoot, 'context');
+    mkdirSync(join(inputRoot, 'config'), { recursive: true });
+    mkdirSync(contextPath, { recursive: true });
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: {
+              pathPrefix: '/inference/',
+              tokenRef: 'runtime://openkit/inference-token',
+            },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+          mode: 'sandbox-integration',
+        },
+        extensions: { openkit: { turnInput: 'Answer once.' } },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'test-model',
+          routes: [
+            {
+              credentialVisibility: 'placeholder',
+              endpoint: {
+                kind: 'openai-compatible',
+                upstream: { kind: 'nanocore-gateway' },
+              },
+              id: 'worker-inference',
+              model: 'test-model',
+              providerInstanceId: 'provider-test',
+            },
+          ],
+        },
+        runtime: {
+          command: {
+            argv: ['openkit-worker-shim'],
+            workingDirectory: sandboxRoot,
+          },
+        },
+      }),
+      'utf8'
+    );
+    let finalStatuses = 0;
+    let releaseTurn: (() => void) | undefined;
+    const turnSettlement = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const integration = {
+      bindTurnRouteTokens() {},
+      clearTurnRouteTokens() {},
+      ready: Promise.resolve(),
+      workerControlFetch: async (url: string) => {
+        if (url.endsWith('/final-status')) {
+          finalStatuses += 1;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify(
+              url.endsWith('/commands/poll')
+                ? { commands: [] }
+                : url.endsWith('/events/append') || url.endsWith('/final-status')
+                  ? { accepted: true, diagnostics: [], schemaVersion: 2 }
+                  : {}
+            ),
+        };
+      },
+    } as unknown as SandboxIntegrationClient;
+    const harness = new WorkerHarness({
+      adapterId: 'opencode',
+      integration,
+      rootDirectory: join(root, 'private'),
+      runner: {
+        async run(input) {
+          input.onStart?.();
+          await turnSettlement;
+          return {
+            exitCode: 0,
+            signal: null,
+            stderr: '',
+            stdout: [
+              { part: { messageID: 'message-1', type: 'step-start' }, type: 'step_start' },
+              {
+                part: {
+                  messageID: 'message-1',
+                  text: 'Bounded answer.',
+                  time: { end: 2, start: 1 },
+                  type: 'text',
+                },
+                type: 'text',
+              },
+              { part: { messageID: 'message-1', type: 'step-finish' }, type: 'step_finish' },
+            ]
+              .map((record) => JSON.stringify(record))
+              .join('\n'),
+          };
+        },
+      },
+      sandboxRoot,
+      turnOutputDirectory: join(sandboxRoot, 'session'),
+    });
+    const binding = {
+      agentSessionId: 'as-opencode',
+      agentSessionRuntimeBindingId: 'binding-opencode',
+    };
+    await harness.handle(
+      command('session.open', 0, {
+        ...openBody(binding.agentSessionRuntimeBindingId, binding.agentSessionId),
+        adapterId: 'opencode',
+      })
+    );
+    const turn = {
+      aepRef: packagePath,
+      ...binding,
+      capabilityToken: 'a'.repeat(43),
+      contextPackageId: 'ctxpkg_turn-opencode',
+      contextRef: contextPath,
+      deadline: '2026-08-21T01:00:00.000Z',
+      inferenceToken: 'i'.repeat(43),
+      leaseId: 'lease-opencode',
+      packageSnapshotId: 'package-opencode',
+      threadId: 'thread-as-opencode',
+      turnId: 'turn-opencode',
+      turnSequence: 0,
+      workerControlToken: 'c'.repeat(43),
+      workspaceId: 'workspace-one',
+    };
+
+    await expect(harness.handle(command('turn.start', 1, turn))).resolves.toMatchObject({
+      disposition: 'succeeded',
+    });
+    let settled = false;
+    const settlement = harness.waitForBoundedTurnSettlement().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseTurn?.();
+    await settlement;
+    expect(finalStatuses).toBe(1);
+    await expect(harness.handle(command('session.inspect', 2, binding))).resolves.toMatchObject({
+      body: { reasonCode: 'unsupported' },
+      disposition: 'refused',
+    });
+    await expect(harness.handle(command('turn.start', 3, turn))).resolves.toMatchObject({
+      body: { reasonCode: 'conflict' },
+      disposition: 'refused',
+    });
+    await expect(
+      harness.handle(
+        command('turn.interrupt', 4, {
+          ...binding,
+          leaseId: turn.leaseId,
+          turnId: turn.turnId,
+        })
+      )
+    ).resolves.toMatchObject({ body: { reasonCode: 'unsupported' }, disposition: 'refused' });
+    await expect(harness.handle(command('session.close', 5, binding))).resolves.toMatchObject({
+      body: { privateState: 'absent', state: 'closed' },
       disposition: 'succeeded',
     });
   });

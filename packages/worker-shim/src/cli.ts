@@ -260,7 +260,11 @@ interface WorkerShimPackageManifest {
   };
   /** Resolved worker inference declaration. */
   llm?: {
-    /** Exactly one already resolved route. */
+    /** Closed routing mode governing the allowed route set. */
+    mode?: unknown;
+    /** Logical model selected from the allowed route set. */
+    preferredLogicalModelId?: unknown;
+    /** Non-empty allowed route set. */
     routes?: unknown;
   };
   /** Generic shim process declaration. */
@@ -622,10 +626,12 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
 
     let initialCommandPoll: WorkerControlCommandPoll | null = null;
     try {
-      initialCommandPoll = await waitForWorkerControlReadiness(
-        () => pollWorkerControl(session, writer, 'starting', controlAbortController.signal),
-        controlAbortController
-      );
+      initialCommandPoll = await waitForWorkerControlReadiness(async () => {
+        await recordWorkerHeartbeat(session, writer, 'starting', controlAbortController.signal);
+        return adapter.mode === 'bounded-turn'
+          ? session.pollCommands(controlAbortController.signal)
+          : null;
+      }, controlAbortController);
       workerControlReady = true;
     } catch (error) {
       if (!(options.signal?.aborted && error === options.signal.reason)) {
@@ -720,6 +726,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
         session,
         writer,
         controlAbortController.signal,
+        adapter.mode === 'bounded-turn',
         seenCommandIds,
         () => acceptsWorkerCommands,
         interruptWorker
@@ -1598,19 +1605,38 @@ function resolveWorkerAdapterId(packageManifest: WorkerShimPackageManifest): str
 }
 
 /**
- * Resolves the package's single already selected LLM route.
+ * Selects the package's unique preferred LLM route.
  *
  * @param packageManifest Worker-visible AEP.
  * @returns Valid runtime-neutral route.
- * @throws Error when the route count or shape is invalid.
+ * @throws Error when the mode, selection, route count, or selected shape is invalid.
  */
 function resolveWorkerLlmRoute(packageManifest: WorkerShimPackageManifest): WorkerAdapterLlmRoute {
+  const mode = packageManifest.llm?.mode;
+  const preferredLogicalModelId = packageManifest.llm?.preferredLogicalModelId;
   const routes = packageManifest.llm?.routes;
 
-  if (!Array.isArray(routes) || routes.length !== 1 || !isRecord(routes[0])) {
+  if (mode !== 'gateway' && mode !== 'backend-local' && mode !== 'direct-external') {
+    throw new Error('Worker shim requires a supported LLM routing mode.');
+  }
+  if (typeof preferredLogicalModelId !== 'string' || preferredLogicalModelId.length === 0) {
+    throw new Error('Worker shim requires one preferred logical model.');
+  }
+  if (
+    !Array.isArray(routes) ||
+    routes.length === 0 ||
+    (mode !== 'gateway' && routes.length !== 1)
+  ) {
     throw new Error('Worker shim requires exactly one resolved LLM route.');
   }
-  const route = routes[0];
+  const preferredRoutes = routes.filter(
+    (route): route is Record<string, unknown> =>
+      isRecord(route) && route.model === preferredLogicalModelId
+  );
+  const [route] = preferredRoutes;
+  if (preferredRoutes.length !== 1 || !route) {
+    throw new Error('Worker shim requires exactly one resolved LLM route for the preferred model.');
+  }
   const endpoint = route.endpoint;
   if (
     typeof route.id !== 'string' ||
@@ -1826,7 +1852,7 @@ function readRemoteGitWorkspaceSource(value: unknown): WorkspaceGitInput['source
  *
  * @param packageManifest Worker-visible AEP.
  * @param environment Supervisor environment candidate.
- * @param route The package's single resolved LLM route.
+ * @param route The Shim-selected LLM route.
  * @returns Safe base environment plus only route-authorized credential bindings.
  */
 function workerChildEnvironment(
@@ -1864,7 +1890,7 @@ function workerChildEnvironment(
  * Resolves only the credential environment names authorized by the selected route.
  *
  * @param packageManifest Worker-visible AEP.
- * @param route The package's single resolved LLM route.
+ * @param route The Shim-selected LLM route.
  * @returns Exact child credential environment names.
  */
 function workerCredentialNames(
@@ -1892,7 +1918,7 @@ function workerCredentialNames(
  *
  * @param packageManifest Worker-visible AEP.
  * @param childEnvironment Already allowlisted native-process environment.
- * @param route The package's single resolved LLM route.
+ * @param route The Shim-selected LLM route.
  * @returns Non-empty exact secret values without logging them.
  */
 function workerCredentialValues(
@@ -2027,30 +2053,12 @@ function redactDiagnosticOutput(output: string, credentialValues: readonly strin
 }
 
 /**
- * Records one heartbeat and polls NanoCore for worker commands.
- *
- * @param client Session-level worker-control coordinator.
- * @param transcript Shared worker transcript writer.
- * @param status Logical worker heartbeat status.
- * @param signal Supervisor cancellation signal.
- * @returns Commands returned by NanoCore after the heartbeat is accepted.
- */
-async function pollWorkerControl(
-  client: WorkerControlClient,
-  transcript: WorkerTranscriptWriter,
-  status: 'running' | 'starting',
-  signal: AbortSignal
-): Promise<WorkerControlCommandPoll> {
-  await recordWorkerHeartbeat(client, transcript, status, signal);
-  return client.pollCommands(signal);
-}
-
-/**
  * Runs periodic worker-control cycles until the supervisor cancels them.
  *
  * @param client Session-level worker-control coordinator.
  * @param transcript Shared transcript writer owned by the worker supervisor.
  * @param signal Supervisor cancellation signal.
+ * @param pollsWorkerCommands Whether this adapter selects the durable Worker command path.
  * @param seenCommandIds Command ids already queued or handled.
  * @param acceptsCommands Returns whether new commands may still affect terminal classification.
  * @param onInterrupt Optional worker interrupt callback.
@@ -2059,28 +2067,75 @@ async function runWorkerControlLoop(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
   signal: AbortSignal,
+  pollsWorkerCommands: boolean,
+  seenCommandIds: Set<string>,
+  acceptsCommands: () => boolean,
+  onInterrupt?: () => void
+): Promise<void> {
+  const loops = [runWorkerHeartbeatLoop(client, transcript, signal)];
+  if (pollsWorkerCommands) {
+    loops.push(
+      runWorkerCommandPollLoop(
+        client,
+        transcript,
+        signal,
+        seenCommandIds,
+        acceptsCommands,
+        onInterrupt
+      )
+    );
+  }
+  await Promise.all(loops);
+}
+
+/** Polls interrupt commands on a request-start anchored cadence independent of heartbeat. */
+async function runWorkerCommandPollLoop(
+  client: WorkerControlClient,
+  transcript: WorkerTranscriptWriter,
+  signal: AbortSignal,
   seenCommandIds: Set<string>,
   acceptsCommands: () => boolean,
   onInterrupt?: () => void
 ): Promise<void> {
   while (!signal.aborted) {
+    const pollStartedAt = performance.now();
     try {
-      await delay(1000, undefined, { signal });
-      if (signal.aborted) {
+      const commandPoll = await client.pollCommands(signal);
+      if (!transcript.eventTranscriptSealed && acceptsCommands()) {
+        await handleWorkerControlCommands(
+          client,
+          transcript,
+          commandPoll.commands,
+          signal,
+          seenCommandIds,
+          onInterrupt
+        );
+      }
+      const remaining = 1000 - (performance.now() - pollStartedAt);
+      if (remaining > 0) {
+        await delay(remaining, undefined, { signal });
+      }
+    } catch (error) {
+      if (isSupervisorAbort(error, signal)) {
         return;
       }
-      const commandPoll = await pollWorkerControl(client, transcript, 'running', signal);
-      if (transcript.eventTranscriptSealed || !acceptsCommands()) {
-        continue;
+      throw error;
+    }
+  }
+}
+
+/** Keeps the live worker lease heartbeat on its independent periodic schedule. */
+async function runWorkerHeartbeatLoop(
+  client: WorkerControlClient,
+  transcript: WorkerTranscriptWriter,
+  signal: AbortSignal
+): Promise<void> {
+  while (!signal.aborted) {
+    try {
+      await delay(1000, undefined, { signal });
+      if (!signal.aborted) {
+        await recordWorkerHeartbeat(client, transcript, 'running', signal);
       }
-      await handleWorkerControlCommands(
-        client,
-        transcript,
-        commandPoll.commands,
-        signal,
-        seenCommandIds,
-        onInterrupt
-      );
     } catch (error) {
       if (isSupervisorAbort(error, signal)) {
         return;

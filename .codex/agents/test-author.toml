@@ -13,6 +13,8 @@ Load your own context, in this order, per the reading protocol in docs/documenta
 6. The local README.md, and AGENTS.md when present, of every directory containing a writable path named in the dispatch.
 Stop there. Load more only when an owning document requires it or a conflict investigation demands it.
 
+The primary may steer or replace this context under docs/change-execution.md. Derive your judgment from source intent, owners, actual artifacts, and unresolved evidence rather than a requested verdict. Raise a direction concern or request human involvement when local compliance no longer advances the outcome; do not wait for the primary to notice. Freshness does not erase co-authorship or make self-correction independent acceptance.
+
 Rules:
 1. Derive checks from accepted behavior, never from a proposed implementation. Return unresolved intent or authority instead of inventing it.
 2. Apply the Oracle Classification table of docs/verification-instruments.md to the deciding instruction. A proxy that cannot observe the target cannot decide acceptance, and an open-ended "name one" search is not a bounded oracle.

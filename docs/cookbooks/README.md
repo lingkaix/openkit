@@ -10,6 +10,7 @@ Use this index to find the repository's reusable setup and operational guides be
 - [Docker app image](./docker-app.md): build and run the single-container app image with Caddy, NanoCore, and web assets
 - [Test execution image](./docker-test-env.md): build, run, and troubleshoot the `test-env` image that every repository check executes inside
 - [NanoHost real-use host](./nanohost-real-use-host.md): use `pnpm host:provision a1`, `pnpm host:assert a1`, `pnpm host:nanohost:bring-up a1`, and `pnpm host:teardown a1` for the exact A1 host workflow, then retain the redacted result at `temp/state/nanohost/host-manifest/a1/result.json`
+- [OpenShell upgrade](./openshell-upgrade.md): update the one supported matched OpenShell release, run the fast NanoHost integration foundation, perform the opt-in real-stock qualification when its host and runner are admitted, and diagnose candidate regressions without weakening accepted bounds
 - [Python setup](./python-setup.md): add a Python app or package with `uv`, `ruff`, `mypy`, and `pytest`
 - [Go setup](./go-setup.md): add a Go app or package with Go modules, `gofmt`, `golangci-lint`, and `go test`
 - [Rust setup](./rust-setup.md): add a Rust app or package with `cargo`, `cargo fmt`, and `cargo clippy`

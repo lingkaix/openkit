@@ -62,6 +62,7 @@ const normalLifecycleContract = {
   stoppedBaseline: 'service-stopped-baseline',
   systemDocker: 'system-docker-baseline-exact-equal',
 };
+const baselineComponentNames = ['bridge', 'containers', 'docker0', 'nft'];
 
 const publicIdentity = {
   hostManifestDigest: 'a'.repeat(64),
@@ -101,6 +102,15 @@ test('scopes network namespace residue to one host boot', () => {
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function hostBaseline(label) {
+  return {
+    components: Object.fromEntries(
+      baselineComponentNames.map((name) => [name, digest(`${label}:${name}`)])
+    ),
+    digest: digest(label),
+  };
 }
 
 test('kills a real verification child when its bounded command deadline expires', async () => {
@@ -442,7 +452,7 @@ function sequencedF1Fixture() {
     },
   ];
   evidence.before.runtimeTarget = structuredClone(runtimeTargets[0]);
-  const epochs = [evidence.epochBefore, evidence.epochAfter];
+  const epochs = [evidence.epochBefore, evidence.epochBefore, evidence.epochAfter];
   const cleanupSnapshot = structuredClone(evidence.final);
   cleanupSnapshot.backends[0].state = 'cleaned';
   cleanupSnapshot.backends[0].physicalCleanedAt = '2026-08-23T00:00:04.000Z';
@@ -562,6 +572,39 @@ test('sequences one complete F1 restart and derives lineage and proof from owner
   assert.equal(fixture.actions.at(-1), 'startNanoHost');
 });
 
+test('F1 captures restart continuity after replacing the prior Task sandbox', async () => {
+  const fixture = sequencedF1Fixture();
+  const initial = structuredClone(fixture.evidence.epochBefore);
+  const priorShim = {
+    exe: '/usr/bin/containerd-shim-runc-v2',
+    netns: 'net:[unit-f]',
+    pid: 201,
+    starttime: '2001',
+  };
+  const currentShim = { ...priorShim, pid: 202, starttime: '2002' };
+  initial.members.push(priorShim);
+  fixture.epochs[0] = initial;
+  fixture.evidence.epochBefore.members.push(currentShim);
+  fixture.evidence.epochAfter.members.push(structuredClone(currentShim));
+  const readEpoch = fixture.ports.readEpoch;
+  fixture.ports.readEpoch = async () => {
+    fixture.actions.push(`readEpoch:${fixture.reads.epoch}`);
+    return readEpoch();
+  };
+  const readOwnerSnapshot = fixture.ports.readOwnerSnapshot;
+  fixture.ports.readOwnerSnapshot = async () => {
+    fixture.actions.push('readOwnerSnapshot');
+    return readOwnerSnapshot();
+  };
+
+  await sequenceNanoHostF1(fixture.ports);
+
+  const order = ['startTask', 'readOwnerSnapshot', 'readEpoch:1', 'killNanoCore'];
+  for (let index = 1; index < order.length; index += 1) {
+    assert.ok(fixture.actions.indexOf(order[index - 1]) < fixture.actions.indexOf(order[index]));
+  }
+});
+
 for (const intervention of [
   {
     mutate(fixture) {
@@ -647,6 +690,11 @@ for (const intervention of [
 
 test('F1 without resolved lineage fences the whole epoch before starting NanoHost', async () => {
   const fixture = sequencedF1Fixture();
+  const observedEpochs = [];
+  fixture.ports.readEpochEffects = async (epoch) => {
+    observedEpochs.push(epoch);
+    return { absent: true };
+  };
   fixture.ports.resolveLineage = async () => {
     fixture.actions.push('resolveLineage');
     return null;
@@ -656,6 +704,7 @@ test('F1 without resolved lineage fences the whole epoch before starting NanoHos
   assert.equal(fixture.actions.includes('killNanoCore'), false);
   assert.ok(fixture.actions.indexOf('stopNanoHost') < fixture.actions.indexOf('startNanoHost'));
   assert.equal(fixture.actions.includes('interruptTurn'), false);
+  assert.deepEqual(observedEpochs, [fixture.epochs[0]]);
 });
 
 function sequencedBlockedFixture(scenarioId) {
@@ -676,26 +725,33 @@ function sequencedBlockedFixture(scenarioId) {
     turnId: 'turn-blocked',
     workspaceId: 'workspace-blocked',
   };
-  const nanohost = observation.fixture.nanohost;
   const initialEpoch = {
     activeState: 'active',
     bootId: observation.current.bootId,
     invocationId: observation.current.invocationId,
     members: observation.current.members,
+    unitFileState: 'static',
+  };
+  const preparedEpoch = {
+    ...initialEpoch,
+    invocationId: 'invocation-unit-f-prepared',
+    members: initialEpoch.members.map((member) => ({
+      ...member,
+      args: [...member.args],
+      pid: member.pid + 50,
+      starttime: String(Number(member.starttime) + 500),
+    })),
   };
   const firstEpoch = {
     activeState: 'active',
     bootId: scenarioId === 'F3' ? 'boot-unit-f-rebooted' : initialEpoch.bootId,
     invocationId: 'invocation-unit-f-first-recovery',
-    members: [
-      { ...nanohost, pid: 201, starttime: '2001' },
-      ...observation.current.members.map((member) => ({
-        ...member,
-        args: [...member.args],
-        pid: member.pid + 100,
-        starttime: String(Number(member.starttime) + 1_000),
-      })),
-    ],
+    members: preparedEpoch.members.map((member) => ({
+      ...member,
+      args: [...member.args],
+      pid: member.pid + 100,
+      starttime: String(Number(member.starttime) + 1_000),
+    })),
   };
   const successorEpoch = {
     ...firstEpoch,
@@ -731,7 +787,7 @@ function sequencedBlockedFixture(scenarioId) {
     ],
     runtimeTarget: {
       ...runtimeTarget,
-      connectionGeneration: 7,
+      connectionGeneration: 8,
       freshEmpty: true,
       predecessorFenced: true,
       ready: true,
@@ -759,7 +815,10 @@ function sequencedBlockedFixture(scenarioId) {
   };
   const actions = [];
   const barrierJournalPids = [];
-  const journalEntries = structuredClone(observation.entries);
+  const journalEntries = structuredClone(observation.entries).map((entry) => ({
+    ...entry,
+    _SYSTEMD_INVOCATION_ID: preparedEpoch.invocationId,
+  }));
   const ports = {
     instrumentDigest,
     nanoCoreContainer: 'openkit-nanocore-unit-f',
@@ -768,6 +827,10 @@ function sequencedBlockedFixture(scenarioId) {
     async interruptTurn() {
       actions.push('interruptTurn');
       state.interrupted = true;
+    },
+    async killNanoCore() {
+      actions.push('killNanoCore');
+      state.coreStarted = false;
     },
     async pause() {},
     async readEpoch() {
@@ -779,8 +842,11 @@ function sequencedBlockedFixture(scenarioId) {
           members: [],
         };
       }
-      if (!state.faultDelivered && !state.stopped) return structuredClone(initialEpoch);
-      if (state.hostStarts === 0) {
+      if (!state.faultDelivered && !state.stopped) {
+        return structuredClone(state.hostStarts === 0 ? initialEpoch : preparedEpoch);
+      }
+      const recoveryStarts = Math.max(0, state.hostStarts - 1);
+      if (recoveryStarts === 0) {
         return {
           activeState: 'inactive',
           bootId: state.rebooted ? 'boot-unit-f-rebooted' : initialEpoch.bootId,
@@ -788,23 +854,23 @@ function sequencedBlockedFixture(scenarioId) {
           members: [],
         };
       }
-      if (state.hostStarts === 1) {
+      if (recoveryStarts === 1) {
         if (scenarioId === 'F3') return structuredClone(firstEpoch);
         state.firstEpochReads += 1;
         return state.firstEpochReads === 1
           ? structuredClone(firstEpoch)
           : { ...structuredClone(firstEpoch), activeState: 'inactive', members: [] };
       }
-      if (state.hostStarts === 2 && !state.successorFailed) {
+      if (recoveryStarts === 2 && !state.successorFailed) {
         state.successorEpochReads += 1;
         if (state.successorEpochReads === 1) {
           return { ...structuredClone(successorEpoch), members: [successorEpoch.members[0]] };
         }
       }
-      if (state.hostStarts === 2 && state.successorFailed) {
+      if (recoveryStarts === 2 && state.successorFailed) {
         return { ...structuredClone(successorEpoch), activeState: 'inactive', members: [] };
       }
-      return structuredClone(state.hostStarts > 2 ? finalEpoch : successorEpoch);
+      return structuredClone(recoveryStarts > 2 ? finalEpoch : successorEpoch);
     },
     async readEpochEffects(epoch) {
       if (!epoch.members.some((member) => member.exe.endsWith('/openshell-gateway'))) {
@@ -849,10 +915,11 @@ function sequencedBlockedFixture(scenarioId) {
     async readOwnerSnapshot() {
       actions.push('readOwnerSnapshot');
       if (state.interrupted) return structuredClone(cleanedOwner);
-      if (scenarioId === 'F3' && state.hostStarts === 1) {
+      const recoveryStarts = Math.max(0, state.hostStarts - 1);
+      if (scenarioId === 'F3' && recoveryStarts === 1) {
         return structuredClone(fencedOwner);
       }
-      if (state.hostStarts === 2) {
+      if (recoveryStarts === 2) {
         state.successorFailed = true;
         return structuredClone(scenarioId === 'F4' ? fencedOwner : capacityReleasedOwner);
       }
@@ -866,28 +933,29 @@ function sequencedBlockedFixture(scenarioId) {
       if (!state.faultDelivered && !state.stopped) {
         return {
           ...runtimeTarget,
-          connectionGeneration: 7,
+          connectionGeneration: state.hostStarts === 0 ? (state.coreStarted ? 7 : 6) : 8,
           freshEmpty: true,
           predecessorFenced: true,
           ready: true,
         };
       }
-      if (state.hostStarts < 2) {
+      const recoveryStarts = Math.max(0, state.hostStarts - 1);
+      if (recoveryStarts < 2) {
         const firstRecoveryReadiness =
-          state.hostStarts === 1 && (scenarioId === 'F3' || state.firstEpochReads === 1);
+          recoveryStarts === 1 && (scenarioId === 'F3' || state.firstEpochReads === 1);
         return {
           ...runtimeTarget,
-          connectionGeneration: 8,
+          connectionGeneration: 9,
           freshEmpty: firstRecoveryReadiness,
           predecessorFenced: true,
           ready: firstRecoveryReadiness,
         };
       }
-      if (state.hostStarts === 2) {
+      if (recoveryStarts === 2) {
         state.successorFailed = true;
         return {
           ...runtimeTarget,
-          connectionGeneration: 9,
+          connectionGeneration: 10,
           freshEmpty: false,
           predecessorFenced: true,
           ready: false,
@@ -895,7 +963,7 @@ function sequencedBlockedFixture(scenarioId) {
       }
       return {
         ...runtimeTarget,
-        connectionGeneration: state.hostStarts > 2 ? 10 : 9,
+        connectionGeneration: recoveryStarts > 2 ? 11 : 10,
         freshEmpty: true,
         predecessorFenced: true,
         ready: true,
@@ -908,6 +976,7 @@ function sequencedBlockedFixture(scenarioId) {
       actions.push('rebootHost');
       state.faultDelivered = true;
       state.rebooted = true;
+      state.coreStarted = false;
     },
     async resolveLineage() {
       actions.push('resolveLineage');
@@ -918,7 +987,7 @@ function sequencedBlockedFixture(scenarioId) {
     },
     async signalMember(member, signal) {
       actions.push(`signal:${member.pid}:${signal}`);
-      state.faultDelivered = true;
+      if (signal === 'SIGKILL') state.faultDelivered = true;
       return { signalled: true };
     },
     async startNanoCore() {
@@ -969,6 +1038,7 @@ function sequencedBlockedFixture(scenarioId) {
     journalEntries,
     lineage,
     ownerBefore,
+    preparedEpoch,
     ports,
     runtimeTarget,
     state,
@@ -991,9 +1061,9 @@ for (const scenarioId of ['F2', 'F3', 'F4']) {
       turnId: fixture.lineage.turnId,
     });
     assert.equal(result.proof.instrument, instrumentDigest);
-    assert.equal(result.proof.priorGeneration, 7);
-    assert.equal(result.proof.fenceGeneration, scenarioId === 'F3' ? null : 8);
-    assert.equal(result.proof.successorGeneration, scenarioId === 'F3' ? 8 : 10);
+    assert.equal(result.proof.priorGeneration, 8);
+    assert.equal(result.proof.fenceGeneration, scenarioId === 'F3' ? null : 9);
+    assert.equal(result.proof.successorGeneration, scenarioId === 'F3' ? 9 : 11);
     assert.equal(
       result.proof.effectRequest,
       digest(`${fixture.lineage.requestId}\0sandbox.create`)
@@ -1001,11 +1071,14 @@ for (const scenarioId of ['F2', 'F3', 'F4']) {
     assert.equal(result.proof.sandbox, digest(fixture.backendSessionId));
     assert.ok(fixture.actions.indexOf('startTask') < fixture.actions.indexOf('resolveLineage'));
     assert.ok(fixture.actions.indexOf('resolveLineage') < fixture.actions.indexOf(faultAction));
-    assert.ok(fixture.actions.indexOf(faultAction) < fixture.actions.indexOf('startNanoHost'));
+    assert.ok(fixture.actions.indexOf('stopNanoHost') < fixture.actions.indexOf('startNanoHost'));
+    assert.ok(fixture.actions.indexOf('startNanoHost') < fixture.actions.indexOf('startTask'));
+    assert.ok(fixture.actions.indexOf(faultAction) < fixture.actions.lastIndexOf('startNanoHost'));
     assert.equal(
       fixture.actions.filter((action) => action === 'startNanoHost').length,
-      scenarioId === 'F3' ? 1 : 3
+      scenarioId === 'F3' ? 2 : 4
     );
+    assert.equal(fixture.actions.filter((action) => action === 'runDockerSmoke').length, 1);
     assert.ok(
       fixture.actions.lastIndexOf('startNanoHost') < fixture.actions.indexOf('interruptTurn')
     );
@@ -1021,6 +1094,47 @@ for (const scenarioId of ['F2', 'F3', 'F4']) {
   });
 }
 
+test('F2 proves a fresh epoch before stopping dockerd when readiness may retain an idle Sandbox', async () => {
+  const fixture = sequencedBlockedFixture('F2');
+  const dockerd = fixture.initialEpoch.members.find((member) => member.exe.endsWith('/dockerd'));
+  dockerd.state = 'S';
+  let dockerdStopped = false;
+  const readEpoch = fixture.ports.readEpoch;
+  fixture.ports.readEpoch = async () => {
+    const epoch = await readEpoch();
+    const member = epoch.members.find((candidate) => candidate.exe.endsWith('/dockerd'));
+    if (member && !fixture.state.faultDelivered) member.state = dockerdStopped ? 'T' : 'S';
+    return epoch;
+  };
+  fixture.ports.signalMember = async (member, signal) => {
+    fixture.actions.push(`signal:${member.pid}:${signal}`);
+    if (signal === 'SIGSTOP') dockerdStopped = true;
+    else fixture.state.faultDelivered = true;
+    return { signalled: true };
+  };
+
+  const startTask = fixture.ports.startTask;
+  fixture.ports.startTask = async () => {
+    assert.ok(
+      fixture.actions.includes('killNanoCore'),
+      'blocked-create admission must not retain the previous Harness process-local continuity'
+    );
+    return startTask();
+  };
+
+  await sequenceNanoHostBlockedCreate('F2', fixture.ports);
+
+  const ordinaryStop = fixture.actions.indexOf('stopNanoHost');
+  const freshStart = fixture.actions.indexOf('startNanoHost');
+  const dockerdStop = fixture.actions.findIndex((action) => action.endsWith(':SIGSTOP'));
+  const taskStart = fixture.actions.indexOf('startTask');
+  assert.ok(fixture.actions.indexOf('killNanoCore') < fixture.actions.indexOf('startNanoCore'));
+  assert.ok(fixture.actions.indexOf('startNanoCore') < ordinaryStop);
+  assert.ok(ordinaryStop < freshStart);
+  assert.ok(freshStart < dockerdStop);
+  assert.ok(dockerdStop < taskStart);
+});
+
 test('F3 accepts a healthy proof successor only after its cleanup owner is terminal', async () => {
   const fixture = sequencedBlockedFixture('F3');
   const readEpoch = fixture.ports.readEpoch;
@@ -1029,38 +1143,38 @@ test('F3 accepts a healthy proof successor only after its cleanup owner is termi
   let recoveryEpochReads = 0;
   fixture.ports.readEpoch = async () => {
     const epoch = await readEpoch();
-    if (fixture.state.hostStarts !== 1) return epoch;
+    if (fixture.state.hostStarts !== 2) return epoch;
     recoveryEpochReads += 1;
     return recoveryEpochReads === 1
       ? epoch
       : { ...structuredClone(epoch), activeState: 'inactive', members: [] };
   };
   fixture.ports.readOwnerSnapshot = async () => {
-    if (fixture.state.hostStarts === 1) return structuredClone(fixture.ownerBefore);
-    if (fixture.state.hostStarts === 2) return structuredClone(fixture.fencedOwner);
+    if (fixture.state.hostStarts === 2) return structuredClone(fixture.ownerBefore);
+    if (fixture.state.hostStarts === 3) return structuredClone(fixture.fencedOwner);
     return readOwnerSnapshot();
   };
   fixture.ports.readRuntimeTarget = async () => {
-    if (fixture.state.hostStarts === 2) {
+    if (fixture.state.hostStarts === 3) {
       return {
         ...structuredClone(fixture.runtimeTarget),
-        connectionGeneration: 9,
+        connectionGeneration: 10,
         freshEmpty: true,
         predecessorFenced: true,
         ready: true,
       };
     }
     const target = await readRuntimeTarget();
-    return fixture.state.hostStarts === 1 && recoveryEpochReads > 1
+    return fixture.state.hostStarts === 2 && recoveryEpochReads > 1
       ? { ...target, freshEmpty: false, ready: false }
       : target;
   };
 
   const result = await sequenceNanoHostBlockedCreate('F3', fixture.ports);
 
-  assert.equal(result.proof.fenceGeneration, 8);
-  assert.equal(result.proof.successorGeneration, 9);
-  assert.equal(fixture.actions.filter((action) => action === 'startNanoHost').length, 2);
+  assert.equal(result.proof.fenceGeneration, 9);
+  assert.equal(result.proof.successorGeneration, 10);
+  assert.equal(fixture.actions.filter((action) => action === 'startNanoHost').length, 3);
 });
 
 test('F3 tolerates one transient cgroup read after starting recovery', async () => {
@@ -1068,7 +1182,7 @@ test('F3 tolerates one transient cgroup read after starting recovery', async () 
   const readEpoch = fixture.ports.readEpoch;
   let injected = false;
   fixture.ports.readEpoch = async () => {
-    if (!injected && fixture.state.hostStarts === 1) {
+    if (!injected && fixture.state.hostStarts === 2) {
       injected = true;
       throw new Error('transient cgroup member disappeared');
     }
@@ -1077,8 +1191,45 @@ test('F3 tolerates one transient cgroup read after starting recovery', async () 
 
   const result = await sequenceNanoHostBlockedCreate('F3', fixture.ports);
 
-  assert.equal(result.proof.successorGeneration, 8);
+  assert.equal(result.proof.successorGeneration, 9);
   assert.equal(injected, true);
+});
+
+test('F3 stabilizes system Docker after reboot recovery before returning', async () => {
+  const fixture = sequencedBlockedFixture('F3');
+
+  await sequenceNanoHostBlockedCreate('F3', fixture.ports);
+
+  const smoke = fixture.actions.indexOf('runDockerSmoke');
+  const cleanup = fixture.actions.lastIndexOf('readOwnerSnapshot');
+  assert.equal(fixture.actions.filter((action) => action === 'runDockerSmoke').length, 1);
+  assert.ok(fixture.actions.indexOf('interruptTurn') < cleanup);
+  assert.ok(cleanup < smoke);
+});
+
+test('F3 recovery failure does not reach the system Docker smoke', async () => {
+  const fixture = sequencedBlockedFixture('F3');
+  fixture.ports.interruptTurn = async () => {
+    fixture.actions.push('interruptTurn');
+    throw new Error('cleanup failed');
+  };
+
+  await assert.rejects(sequenceNanoHostBlockedCreate('F3', fixture.ports), /cleanup failed/u);
+  assert.equal(fixture.actions.includes('runDockerSmoke'), false);
+  assert.ok(fixture.actions.lastIndexOf('stopNanoHost') > fixture.actions.indexOf('interruptTurn'));
+});
+
+test('F3 smoke failure rejects the scenario and fail-stops NanoHost', async () => {
+  const fixture = sequencedBlockedFixture('F3');
+  fixture.ports.runDockerSmoke = async () => {
+    fixture.actions.push('runDockerSmoke');
+    throw new Error('smoke failed');
+  };
+
+  await assert.rejects(sequenceNanoHostBlockedCreate('F3', fixture.ports), /smoke failed/u);
+  assert.ok(
+    fixture.actions.lastIndexOf('stopNanoHost') > fixture.actions.indexOf('runDockerSmoke')
+  );
 });
 
 test('blocked-create sequencing rechecks the exact owner before dispatching a fault', async () => {
@@ -1127,6 +1278,26 @@ test('F3 rejects an automatic NanoCore restart before dispatching host reboot', 
   await assert.rejects(sequenceNanoHostBlockedCreate('F3', fixture.ports));
   assert.equal(fixture.actions.includes('rebootHost'), false);
   assert.equal(fixture.actions.includes('interruptTurn'), false);
+  assert.equal(fixture.actions.includes('runDockerSmoke'), false);
+});
+
+test('F3 rejects NanoHost boot activation before creating a Task or delivering a fault', async () => {
+  const fixture = sequencedBlockedFixture('F3');
+  fixture.initialEpoch.unitFileState = 'enabled';
+
+  await assert.rejects(
+    sequenceNanoHostBlockedCreate('F3', fixture.ports),
+    /requires one static NanoHost unit/u
+  );
+  assert.equal(fixture.actions.includes('killNanoCore'), false);
+  assert.equal(fixture.actions.includes('startTask'), false);
+  assert.equal(fixture.actions.includes('rebootHost'), false);
+  assert.equal(fixture.actions.includes('stopNanoHost'), false);
+  assert.equal(fixture.actions.includes('runDockerSmoke'), false);
+  assert.equal(
+    fixture.actions.some((action) => action.startsWith('signal:')),
+    false
+  );
 });
 
 test('F4 recovers the fenced epoch before its pending Turn cleanup settles', async () => {
@@ -1599,6 +1770,12 @@ test('accepts mutable sandbox descendants within one stable F1 epoch', () => {
 for (const intervention of [
   {
     mutate(evidence) {
+      evidence.final.finalStatus.status = 'failed';
+    },
+    name: 'failed terminal status',
+  },
+  {
+    mutate(evidence) {
       evidence.epochAfter.members = [];
     },
     name: 'baseline epoch member loss',
@@ -1694,7 +1871,7 @@ for (const intervention of [
 
 function completeScenarioEvidence() {
   return scenarioIds.map((id, index) => {
-    const baseline = { digest: digest(`baseline:${id}`) };
+    const baseline = hostBaseline(`baseline:${id}`);
     return {
       evidence: {
         action: { code: contracts[id].action, observed: true },
@@ -1708,8 +1885,8 @@ function completeScenarioEvidence() {
         verdict: 'PASS',
       },
       id,
-      postBaseline: { ...baseline },
-      preBaseline: { ...baseline },
+      postBaseline: { ...baseline, components: { ...baseline.components } },
+      preBaseline: { ...baseline, components: { ...baseline.components } },
     };
   });
 }
@@ -1748,8 +1925,13 @@ function adjudicateAttempt(overrides = {}) {
     if (invalid.kind === 'not-observed') evidence[invalid.field].observed = false;
   }
   if (overrides.baselineMismatch) {
-    scenarioEvidence.find(({ id }) => id === overrides.baselineMismatch).postBaseline.digest =
-      digest(`changed:${overrides.baselineMismatch}`);
+    const baseline = scenarioEvidence.find(
+      ({ id }) => id === overrides.baselineMismatch
+    ).postBaseline;
+    baseline.digest = digest(`changed:${overrides.baselineMismatch}`);
+    if (overrides.baselineMismatch === 'F1' || overrides.baselineMismatch === 'F3') {
+      baseline.components.nft = digest(`changed:${overrides.baselineMismatch}:nft`);
+    }
   }
   const normalLifecycleEvidence = completeNormalLifecycleEvidence();
   if (overrides.invalidNormalLifecycle) {
@@ -1757,7 +1939,7 @@ function adjudicateAttempt(overrides = {}) {
   }
   return adjudicateNanoHostUnitFResult({
     attemptId: privateAttemptId,
-    identity: publicIdentity,
+    identity: overrides.identity ?? publicIdentity,
     instrumentDigest,
     normalLifecycleEvidence,
     scenarioEvidence,
@@ -1801,11 +1983,27 @@ test('adjudicates the exact four Unit F scenarios and one aggregate from complet
   }
 });
 
+test('adjudication rejects a raw image ID as the retained NanoCore image reference', () => {
+  assert.throws(
+    () =>
+      adjudicateAttempt({
+        identity: {
+          ...publicIdentity,
+          nanoCoreImageId: `sha256:${'e'.repeat(64)}`,
+          nanoCoreImageRef: `sha256:${'e'.repeat(64)}`,
+          nanoHostExecutableSha256: 'f'.repeat(64),
+        },
+      }),
+    /runtime byte identity is incomplete or invalid/u
+  );
+});
+
 test('accepts distinct valid F3 baselines across the execution-server reboot', () => {
   const result = adjudicateAttempt({ baselineMismatch: 'F3' });
   const scenario = result.scenarios.find(({ id }) => id === 'F3');
 
   assert.notEqual(scenario.baseline.pre, scenario.baseline.post);
+  assert.notEqual(scenario.baseline.components.pre.nft, scenario.baseline.components.post.nft);
   assert.equal(scenario.status, 'PASS');
   assert.equal(result.aggregate.status, 'PASS');
 });
@@ -1815,8 +2013,87 @@ test('accepts distinct valid F1 baselines across the NanoCore restart', () => {
   const scenario = result.scenarios.find(({ id }) => id === 'F1');
 
   assert.notEqual(scenario.baseline.pre, scenario.baseline.post);
+  assert.notEqual(scenario.baseline.components.pre.nft, scenario.baseline.components.post.nft);
   assert.equal(scenario.status, 'PASS');
   assert.equal(result.aggregate.status, 'PASS');
+});
+
+test('retains product-safe component hashes when a scenario baseline changes', () => {
+  const scenarioEvidence = completeScenarioEvidence();
+  const row = scenarioEvidence.find(({ id }) => id === 'F4');
+  const pre = Object.fromEntries(
+    baselineComponentNames.map((name) => [name, digest(`pre:${name}`)])
+  );
+  const post = { ...pre, nft: digest('post:nft') };
+  row.preBaseline.components = pre;
+  row.postBaseline = { components: post, digest: digest('changed:F4') };
+
+  const result = adjudicateNanoHostUnitFResult({
+    attemptId: privateAttemptId,
+    identity: publicIdentity,
+    instrumentDigest,
+    normalLifecycleEvidence: completeNormalLifecycleEvidence(),
+    scenarioEvidence,
+  });
+  const scenario = result.scenarios.find(({ id }) => id === 'F4');
+
+  assert.equal(scenario.status, 'FAIL');
+  assert.deepEqual(scenario.baseline.components, { post, pre });
+});
+
+for (const intervention of [
+  { name: 'missing', mutate: (components) => delete components.nft },
+  { name: 'malformed', mutate: (components) => (components.nft = rawErrorCanary) },
+  { name: 'extra', mutate: (components) => (components.extra = digest('extra')) },
+  {
+    name: 'inherited',
+    mutate: (components) => {
+      const bridge = components.bridge;
+      delete components.bridge;
+      components.extra = digest('extra');
+      Object.setPrototypeOf(components, { bridge });
+    },
+  },
+]) {
+  test(`fails closed when a baseline component hash is ${intervention.name}`, () => {
+    const scenarioEvidence = completeScenarioEvidence();
+    intervention.mutate(scenarioEvidence.find(({ id }) => id === 'F2').postBaseline.components);
+
+    const result = adjudicateNanoHostUnitFResult({
+      attemptId: privateAttemptId,
+      identity: publicIdentity,
+      instrumentDigest,
+      normalLifecycleEvidence: completeNormalLifecycleEvidence(),
+      scenarioEvidence,
+    });
+
+    assert.deepEqual(
+      result.scenarios.map(({ id, status }) => ({ id, status })),
+      scenarioIds.map((id) => ({ id, status: id === 'F2' ? 'FAIL' : 'PASS' }))
+    );
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(rawErrorCanary, 'u'));
+    assert.equal(result.aggregate.status, 'FAIL');
+  });
+}
+
+test('fails only F4 when one retained component changes', () => {
+  const scenarioEvidence = completeScenarioEvidence();
+  scenarioEvidence.find(({ id }) => id === 'F4').postBaseline.components.nft =
+    digest('changed:F4:nft');
+
+  const result = adjudicateNanoHostUnitFResult({
+    attemptId: privateAttemptId,
+    identity: publicIdentity,
+    instrumentDigest,
+    normalLifecycleEvidence: completeNormalLifecycleEvidence(),
+    scenarioEvidence,
+  });
+
+  assert.deepEqual(
+    result.scenarios.map(({ id, status }) => ({ id, status })),
+    scenarioIds.map((id) => ({ id, status: id === 'F4' ? 'FAIL' : 'PASS' }))
+  );
+  assert.equal(result.aggregate.status, 'FAIL');
 });
 
 test('rejects retained evidence whose scenario instrument differs from the actual runner', () => {
@@ -1886,7 +2163,7 @@ test('coordinates exact F1 through F4 order before the normal lifecycle without 
   const coordinated = await executeNanoHostUnitFCoordinator({
     captureBaseline: async () => {
       calls.push('baseline');
-      return { digest: digest('coordinator-baseline') };
+      return hostBaseline('coordinator-baseline');
     },
     executeScenarioEffect: async ({ scenarioId }) => {
       calls.push(`effect:${scenarioId}`);
@@ -1992,6 +2269,62 @@ function defaultDriverOptions(overrides = {}) {
     ...overrides,
   };
 }
+
+test('default driver requires a Dockerfile-resolvable NanoCore image reference', () => {
+  assert.throws(
+    () =>
+      createDefaultDriver(defaultDriverOptions({ nanoCoreImageRef: `sha256:${'e'.repeat(64)}` })),
+    /Dockerfile-resolvable/u
+  );
+});
+
+test('default driver proves the running image ID and candidate image reference independently', async () => {
+  const calls = [];
+  const imageId = `sha256:${'e'.repeat(64)}`;
+  const manifestDigest = defaultDriverOptions().hostManifestDigest;
+  let sshCalls = 0;
+  const driver = createDefaultDriver(
+    defaultDriverOptions({
+      runCommand: async (command, args) => {
+        calls.push({ args, command });
+        if (command === '/usr/bin/env') return { stdout: `manifestDigest=${manifestDigest}\n` };
+        if (command !== '/usr/bin/ssh') throw new Error('unexpected command owner boundary');
+        sshCalls += 1;
+        if (sshCalls === 1) return { stdout: JSON.stringify({ imageId }) };
+        if (sshCalls === 2) return { stdout: JSON.stringify({ imageId }) };
+        throw new Error('NanoHost identity boundary reached');
+      },
+    })
+  );
+
+  await assert.rejects(driver.captureBaseline(), /NanoHost identity boundary reached/u);
+  assert.deepEqual(calls[2], {
+    args: [
+      'a1',
+      "'/usr/bin/sudo' '-n' '/usr/bin/docker' 'image' 'inspect' '--format' '{\"imageId\":\"{{.Id}}\"}' 'openkit/app:unit-f'",
+    ],
+    command: '/usr/bin/ssh',
+  });
+});
+
+test('default driver rejects a candidate image reference for different bytes', async () => {
+  const imageId = `sha256:${'e'.repeat(64)}`;
+  const manifestDigest = defaultDriverOptions().hostManifestDigest;
+  let sshCalls = 0;
+  const driver = createDefaultDriver(
+    defaultDriverOptions({
+      runCommand: async (command) => {
+        if (command === '/usr/bin/env') return { stdout: `manifestDigest=${manifestDigest}\n` };
+        sshCalls += 1;
+        return sshCalls === 1
+          ? { stdout: JSON.stringify({ imageId }) }
+          : { stdout: JSON.stringify({ imageId: `sha256:${'c'.repeat(64)}` }) };
+      },
+    })
+  );
+
+  await assert.rejects(driver.captureBaseline(), /candidate image reference changed/u);
+});
 
 test('default driver admits only exact F1 through F4 identities into their real executor boundary', async () => {
   const calls = [];
@@ -2140,7 +2473,7 @@ test('top-level Unit F uses the same default-driver baseline boundary before sce
   assert.deepEqual(topLevelCalls[1], {
     args: [
       'a1',
-      "'/usr/bin/sudo' '-n' '/usr/bin/docker' 'inspect' '--format' '{\"imageId\":\"{{.Image}}\",\"imageRef\":\"{{.Config.Image}}\"}' 'openkit-nanocore-unit-f'",
+      "'/usr/bin/sudo' '-n' '/usr/bin/docker' 'inspect' '--format' '{\"imageId\":\"{{.Image}}\"}' 'openkit-nanocore-unit-f'",
     ],
     command: '/usr/bin/ssh',
   });

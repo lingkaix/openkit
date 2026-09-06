@@ -8,7 +8,7 @@ import { opencodeAdapter } from './opencode.js';
 /**
  * Creates one isolated OpenCode adapter input.
  *
- * @returns Adapter input with one already resolved LLM route.
+ * @returns Adapter input with one Shim-selected LLM route.
  */
 function opencodeInput(): WorkerAdapterPrepareInput {
   const root = mkdtempSync(join(tmpdir(), 'openkit-opencode-adapter-'));

@@ -121,7 +121,7 @@
     },
     {
       "surface": "Codex Responses Lite local tool declarations and client tool-search history consumed by the NanoCore Gateway",
-      "difference": "Codex 0.153.4 emits an optional canonical at_ UUIDv5 additional_tools id, custom tools inside one namespace level, optional defer_loading:true, and client tool_search declarations with description and parameters. The Gateway preserves admitted native namespace and call-kind history through its existing pi-ai payload callback and lowers native client search through one reserved function because stock pi-ai 0.84.2 and 0.85.1 do not parse tool_search_call. Public reconstruction remains native; current real-provider F1 and interruption gates remain pending in the refresh change record.",
+      "difference": "Codex 0.153.4 emits an optional canonical at_ UUIDv5 additional_tools id, custom tools inside one namespace level, optional defer_loading:true, and client tool_search declarations with description and parameters. The Gateway preserves admitted native namespace and call-kind history through its existing pi-ai payload callback and lowers native client search through one reserved function because stock pi-ai 0.84.2 and 0.85.1 do not parse tool_search_call. Public reconstruction remains native.",
       "disposition": "adapted"
     },
     {

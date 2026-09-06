@@ -77,22 +77,23 @@ export function canonicalStopReasonForAcceptedWorkerFinalStatus(
  * @param stopReason Canonical Core stop reason.
  * @returns Product Turn status required by that reason.
  */
+export function turnStatusForCanonicalWorkerStopReason(stopReason: 'aborted'): 'interrupted';
 export function turnStatusForCanonicalWorkerStopReason(
   stopReason: Exclude<StopReason, 'ask_user'>
-): Extract<TurnStatus, 'cancelled' | 'completed' | 'failed'>;
+): Extract<TurnStatus, 'interrupted' | 'completed' | 'failed'>;
 export function turnStatusForCanonicalWorkerStopReason(
   stopReason: StopReason
-): Extract<TurnStatus, 'awaiting_human' | 'cancelled' | 'completed' | 'failed'>;
+): Extract<TurnStatus, 'awaiting_human' | 'interrupted' | 'completed' | 'failed'>;
 export function turnStatusForCanonicalWorkerStopReason(
   stopReason: StopReason
-): Extract<TurnStatus, 'awaiting_human' | 'cancelled' | 'completed' | 'failed'> {
+): Extract<TurnStatus, 'awaiting_human' | 'interrupted' | 'completed' | 'failed'> {
   if (stopReason === 'completed' || stopReason === 'length' || stopReason === 'budget_exhausted') {
     return 'completed';
   }
   if (stopReason === 'ask_user') {
     return 'awaiting_human';
   }
-  return stopReason === 'aborted' ? 'cancelled' : 'failed';
+  return stopReason === 'aborted' ? 'interrupted' : 'failed';
 }
 
 /**

@@ -31,7 +31,7 @@ type HarnessOperation =
   | 'harness.drain';
 
 interface HarnessCommand {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly operationId: string;
   readonly sequence: number;
   readonly operation: string;
@@ -44,7 +44,7 @@ interface RoutedHarnessCommand extends HarnessCommand {
 }
 
 interface HarnessResult {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly operationId: string;
   readonly sequence: number;
   readonly disposition: 'succeeded' | 'refused' | 'unknown';
@@ -67,6 +67,7 @@ interface HarnessSession {
   readonly sessionDirectory: string;
   readonly stateRoot: string;
   readonly threadId: string;
+  turnStarted: boolean;
   readonly workspaceId: string;
   cleanupState: 'clean' | 'pending' | 'failed';
 }
@@ -157,6 +158,20 @@ export class WorkerHarness {
     }
   }
 
+  /** Waits for the selected bounded Turn before the private Harness may poll again. */
+  public async waitForBoundedTurnSettlement(): Promise<void> {
+    if (this.adapter.mode !== 'bounded-turn') {
+      return;
+    }
+    for (const session of this.sessions.values()) {
+      const active = session.activeTurn;
+      if (active) {
+        await active.promise.catch(() => undefined);
+        return;
+      }
+    }
+  }
+
   /** Opens one pending AgentSession in an independently derived private root. */
   private async openSession(body: Readonly<Record<string, unknown>>) {
     requireExactFields(body, [
@@ -218,6 +233,7 @@ export class WorkerHarness {
       threadId,
       workspaceId,
       cleanupState: 'clean',
+      turnStarted: false,
     });
     return {
       maxActiveTurns: 1,
@@ -231,13 +247,13 @@ export class WorkerHarness {
   private async inspectSession(body: Readonly<Record<string, unknown>>) {
     requireExactFields(body, ['agentSessionId', 'agentSessionRuntimeBindingId']);
     const session = this.requireSession(body);
+    if (this.adapter.mode === 'bounded-turn') {
+      throw harnessError('unsupported');
+    }
     if (session.activeTurn?.barrierReached) {
       await session.activeTurn.promise.catch(() => undefined);
     }
-    const inspected =
-      this.adapter.mode === 'session-continuity'
-        ? await this.adapter.inspectSession({ stateRoot: session.stateRoot })
-        : { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
+    const inspected = await this.adapter.inspectSession({ stateRoot: session.stateRoot });
     return {
       childState: session.activeTurn && !session.activeTurn.barrierReached ? 'running' : 'absent',
       cleanupState: session.cleanupState,
@@ -270,6 +286,9 @@ export class WorkerHarness {
       'capabilityToken',
     ]);
     const session = this.requireSession(body);
+    if (this.adapter.mode === 'bounded-turn' && session.turnStarted) {
+      throw harnessError('conflict');
+    }
     if (
       this.draining ||
       session.activeTurn ||
@@ -311,6 +330,7 @@ export class WorkerHarness {
       this.adapter.mode === 'session-continuity'
         ? await this.adapter.inspectSession({ stateRoot: session.stateRoot })
         : { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
+    session.turnStarted = true;
     const abort = new AbortController();
     const nativeTurnDirectory = resolve(
       session.sessionDirectory,
@@ -399,6 +419,9 @@ export class WorkerHarness {
       throw harnessError('unsupported');
     }
     const session = this.requireSession(body);
+    if (this.adapter.mode === 'bounded-turn') {
+      throw harnessError('unsupported');
+    }
     const active = session.activeTurn;
     if (
       !active ||
@@ -481,17 +504,20 @@ export async function runWorkerHarness(
     process.stdout.write('OPENKIT_WORKER_SHIM_ENTRY_V1\n');
     await integration.ready;
     while (!options.signal?.aborted) {
-      const pollStartedAt = Date.now();
+      const pollStartedAt = performance.now();
       const response = await requestWithOutageBudget(
         integration,
         HARNESS_POLL_PATH,
-        JSON.stringify({ schemaVersion: 1 }),
+        JSON.stringify({ schemaVersion: 2 }),
         options.signal
       );
       if (response.status === 204) {
-        const remaining = HARNESS_POLL_MINIMUM_MS - (Date.now() - pollStartedAt);
-        if (remaining > 0) {
-          await delay(remaining, undefined, { signal: options.signal });
+        for (;;) {
+          const remaining = HARNESS_POLL_MINIMUM_MS - (performance.now() - pollStartedAt);
+          if (remaining <= 0) {
+            break;
+          }
+          await delay(Math.ceil(remaining), undefined, { signal: options.signal });
         }
         continue;
       }
@@ -529,6 +555,7 @@ export async function runWorkerHarness(
         throw new Error('Harness result was not accepted with an empty 204.');
       }
       owner.nextExpectedSequence += 1;
+      await owner.harness.waitForBoundedTurnSettlement();
     }
   } finally {
     await integration.close();
@@ -579,7 +606,7 @@ function parseHarnessCommand(text: string): RoutedHarnessCommand {
     'harnessInstanceId',
   ]);
   if (
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     !isNonnegativeSafeInteger(value.sequence) ||
     !HEX_64_PATTERN.test(String(value.operationId)) ||
     typeof value.operation !== 'string' ||
@@ -595,7 +622,7 @@ function parseHarnessCommand(text: string): RoutedHarnessCommand {
 /** Requires the already parsed envelope identity used by every result. */
 function requireCommandEnvelope(command: HarnessCommand): void {
   if (
-    command.schemaVersion !== 1 ||
+    command.schemaVersion !== 2 ||
     !HEX_64_PATTERN.test(command.operationId) ||
     !isNonnegativeSafeInteger(command.sequence) ||
     !isRecord(command.body)
@@ -677,7 +704,7 @@ function succeeded(
     body,
     disposition: 'succeeded',
     operationId: command.operationId,
-    schemaVersion: 1,
+    schemaVersion: 2,
     sequence: command.sequence,
   };
 }
@@ -688,7 +715,7 @@ function refused(command: HarnessCommand, code: string): HarnessResult {
     body: { reasonCode: code },
     disposition: 'refused',
     operationId: command.operationId,
-    schemaVersion: 1,
+    schemaVersion: 2,
     sequence: command.sequence,
   };
 }

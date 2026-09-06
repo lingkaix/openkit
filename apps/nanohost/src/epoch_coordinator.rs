@@ -27,8 +27,7 @@ use tokio::runtime::Handle;
 use tokio::time::{sleep, timeout};
 
 use crate::epoch_evidence::{
-    EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, clear_fence_started,
-    measure_fence_to_ready, record_fence_started,
+    EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, record_fence_started,
 };
 use crate::image_acquisition::{
     AcquisitionTrigger, BuildDefinition, BuildPlan, EMPTY_BUILD_CONTEXT_DIGEST,
@@ -40,6 +39,7 @@ use crate::openshell_client::{
     LifecycleEffectKind, LifecycleEffectRequest, LifecycleEffectResult, NanoHostOpenShellClient,
     WorkerBootstrapMonitor, WorkerBootstrapRequest,
 };
+use crate::openshell_release;
 use crate::sandbox_bridge::{
     EffectCarriage, FILE_EFFECT_CHUNK_BYTES, FileEffectKind, FileEffectPresence, FileEffectRequest,
     OpenSandboxBridge, RetainedExportResult, read_import_staging, stage_export,
@@ -50,12 +50,6 @@ pub const OPENKIT_NANOHOST_SLICE: &str = "openkit-nanohost.slice";
 
 /// Fixed loopback port for the closed V1 epoch-local Gateway.
 const GATEWAY_PORT: &str = "17670";
-
-#[cfg(target_arch = "x86_64")]
-const SUPERVISOR_IMAGE: &str = "ghcr.io/nvidia/openshell/supervisor:0.0.99@sha256:4adea8392a81ef34b3cc3284e693ac3cc6c13362fad84a492d95b53b3eb403b9";
-
-#[cfg(target_arch = "aarch64")]
-const SUPERVISOR_IMAGE: &str = "ghcr.io/nvidia/openshell/supervisor:0.0.99@sha256:b548fd939331d830cd9197f20fca9a5d95383c5e67f64929d632a37403115f38";
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("NanoHost supports only linux/amd64 and linux/arm64 Supervisor images");
@@ -277,7 +271,7 @@ impl EpochPlan {
         let gateway_config_path = epoch_root.join("gateway.toml");
         let gateway_database_path = epoch_root.join("gateway.db");
         let gateway_program = gateway.to_path_buf();
-        let gateway_config_contents = gateway_config(&docker_socket, &gateway_auth_path);
+        let gateway_config_contents = gateway_config(&docker_socket, &gateway_auth_path)?;
         let containerd_namespace = format!("openkit-{epoch_name}");
         let containerd_plugins_namespace = format!("openkit-plugins-{epoch_name}");
         let members = vec![
@@ -415,12 +409,12 @@ impl EpochPlan {
         &self.gateway_auth_path
     }
 
-    /// Returns the exact pinned Gateway TOML projection.
+    /// Returns the Gateway TOML projection for the supported OpenShell release.
     pub fn gateway_config_contents(&self) -> &str {
         &self.gateway_config_contents
     }
 
-    /// Returns the epoch-local pinned Gateway endpoint.
+    /// Returns the fixed epoch-local Gateway endpoint.
     pub fn gateway_endpoint(&self) -> String {
         format!("https://127.0.0.1:{GATEWAY_PORT}")
     }
@@ -431,8 +425,62 @@ impl EpochPlan {
     }
 }
 
-/// Failure classes that invalidate the entire Runtime Epoch.
+/// Closed certainty-loss points retained for an accepted sandbox create.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateCertaintyLossPoint {
+    /// The Gateway create request did not produce a proved response.
+    CreateRequestUnproved,
+    /// The Gateway create response omitted a usable accepted identity.
+    CreateResponseInvalid,
+    /// A typed Ready observation could not be obtained.
+    ReadyObservationUnproved,
+    /// The accepted Sandbox entered the terminal Error phase.
+    ReadyErrorPhase,
+    /// The accepted Sandbox did not become Ready before the fixed deadline.
+    ReadyTimeout,
+}
+
+impl CreateCertaintyLossPoint {
+    /// Returns the exact private evidence literal for this certainty-loss point.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateRequestUnproved => "create-request-unproved",
+            Self::CreateResponseInvalid => "create-response-invalid",
+            Self::ReadyObservationUnproved => "ready-observation-unproved",
+            Self::ReadyErrorPhase => "ready-error-phase",
+            Self::ReadyTimeout => "ready-timeout",
+        }
+    }
+}
+
+/// Bounded private context for one uncertain sandbox create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateUncertainty {
+    certainty_loss: CreateCertaintyLossPoint,
+    sandbox_lineage: String,
+    attempt_lineage: String,
+    elapsed_ms: u64,
+}
+
+impl CreateUncertainty {
+    /// Captures only the specification-owned create invalidation fields.
+    pub fn new(
+        certainty_loss: CreateCertaintyLossPoint,
+        sandbox_lineage: &str,
+        attempt_lineage: &str,
+        elapsed: Duration,
+    ) -> Self {
+        Self {
+            certainty_loss,
+            sandbox_lineage: sandbox_lineage.to_string(),
+            attempt_lineage: attempt_lineage.to_string(),
+            elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+/// Failure classes that invalidate the entire Runtime Epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub enum EpochFault {
     /// At least one member failed during dependency-ordered startup.
@@ -442,7 +490,7 @@ pub enum EpochFault {
     /// Observed runtime identity does not match the active epoch.
     IdentityMismatch,
     /// Sandbox creation outcome cannot be proved.
-    CreateOutcomeUncertain,
+    CreateOutcomeUncertain(CreateUncertainty),
     /// Sandbox deletion outcome cannot be proved.
     DeleteOutcomeUncertain,
 }
@@ -502,7 +550,7 @@ pub enum EpochAction {
 impl EpochFault {
     /// Returns the fail-closed action for this fault.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn action(self) -> EpochAction {
+    pub fn action(&self) -> EpochAction {
         EpochAction::TerminateProcess
     }
 }
@@ -845,14 +893,14 @@ impl EpochMemberMonitor {
                     fence_initiated(
                         &mut evidence,
                         &mut children.children,
-                        EpochFault::MemberExited,
+                        &EpochFault::MemberExited,
                     );
                     let _ = failure_tx.send(EpochFault::MemberExited);
                     return;
                 }
                 match fence_rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(Some(fault)) => {
-                        fence_initiated(&mut evidence, &mut children.children, fault);
+                        fence_initiated(&mut evidence, &mut children.children, &fault);
                         let _ = failure_tx.send(fault);
                         return;
                     }
@@ -888,6 +936,11 @@ impl EpochMemberMonitor {
             let _ = worker.join();
         }
     }
+
+    /// Requests the existing partial-start invalidation path before readiness.
+    fn invalidate_startup(&mut self) {
+        self.fence(EpochFault::PartialStart);
+    }
 }
 
 impl Drop for EpochMemberMonitor {
@@ -913,7 +966,6 @@ impl EpochCoordinator {
         plan: &EpochPlan,
         mut client: NanoHostOpenShellClient,
         evidence: EpochEvidenceWriter,
-        fence_started: Option<SystemTime>,
         image_store: &mut Option<ImageStore>,
         required_images: &BTreeSet<String>,
         image_backend: &mut Option<DockerImageBackend>,
@@ -922,7 +974,7 @@ impl EpochCoordinator {
         let mut image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
         let mut children = Vec::with_capacity(plan.members().len());
         let runtime = {
-            let export_before_fence = |fault| {
+            let export_before_fence = |fault: EpochFault| {
                 let mut writer = evidence.clone();
                 let (completed_tx, completed_rx) = mpsc::sync_channel(1);
                 let fence_started = SystemTime::now();
@@ -930,9 +982,14 @@ impl EpochCoordinator {
                     thread::spawn(move || {
                         let started = Instant::now();
                         let _ = record_fence_started(fence_started);
+                        let fields = invalidation_report_fields(&fault);
+                        let field_refs = fields
+                            .iter()
+                            .map(|(name, value)| (*name, value.as_str()))
+                            .collect::<Vec<_>>();
                         let _ = writer.export_invalidation(
-                            invalidation_trigger(fault),
-                            &[("fence", "initiated")],
+                            invalidation_trigger(&fault),
+                            &field_refs,
                             started,
                         );
                         let _ = completed_tx.send(());
@@ -976,7 +1033,7 @@ impl EpochCoordinator {
                 }) {
                 Ok(descriptor) => descriptor,
                 Err(fault) => {
-                    export_before_fence(fault);
+                    export_before_fence(fault.clone());
                     terminate_children(&mut children);
                     return Err(fault);
                 }
@@ -1087,19 +1144,9 @@ impl EpochCoordinator {
                     Ok(Err(fault)) => fault,
                     Err(_) | Ok(Ok(())) => EpochFault::PartialStart,
                 };
-                export_before_fence(fault);
+                export_before_fence(fault.clone());
                 terminate_children(&mut children);
                 return Err(fault);
-            }
-            let rebuild_ready = fence_started.is_none_or(|fence_started| {
-                SystemTime::now()
-                    .duration_since(fence_started)
-                    .is_ok_and(|elapsed| measure_fence_to_ready(elapsed, true).ready)
-            });
-            if !rebuild_ready || (fence_started.is_some() && clear_fence_started().is_err()) {
-                export_before_fence(EpochFault::PartialStart);
-                terminate_children(&mut children);
-                return Err(EpochFault::PartialStart);
             }
             (runtime, namespace_descriptor)
         };
@@ -1177,10 +1224,11 @@ impl EpochCoordinator {
         &mut self,
         spec: SandboxSpec,
         policy: SandboxPolicy,
+        attempt_lineage: &str,
     ) -> Result<SandboxRef, EpochFault> {
         let result = tokio::task::block_in_place(|| {
             self.runtime
-                .block_on(self.client.create_sandbox(spec, policy))
+                .block_on(self.client.create_sandbox(spec, policy, attempt_lineage))
         });
         self.settle(result)
     }
@@ -1725,17 +1773,22 @@ impl EpochCoordinator {
         self.member_failure().await
     }
 
+    /// Exports one partial-start invalidation and fences the locally healthy but non-admitted epoch.
+    pub fn invalidate_startup(&mut self) {
+        self.monitor.invalidate_startup();
+    }
+
     /// Settles a typed lifecycle result or terminates the invalid epoch.
     #[allow(dead_code)]
     fn settle<T>(&mut self, result: Result<T, EpochFault>) -> Result<T, EpochFault> {
         if let Err(fault) = result {
-            match fault {
+            match &fault {
                 EpochFault::IdentityMismatch
-                | EpochFault::CreateOutcomeUncertain
+                | EpochFault::CreateOutcomeUncertain(_)
                 | EpochFault::DeleteOutcomeUncertain
                 | EpochFault::PartialStart
                 | EpochFault::MemberExited => {
-                    self.monitor.fence(fault);
+                    self.monitor.fence(fault.clone());
                 }
             }
             return Err(fault);
@@ -1745,19 +1798,21 @@ impl EpochCoordinator {
 }
 
 /// Starts exactly one bounded invalidation export before fencing owned children.
-fn fence_initiated(evidence: &mut EpochEvidenceWriter, children: &mut [Child], fault: EpochFault) {
+fn fence_initiated(evidence: &mut EpochEvidenceWriter, children: &mut [Child], fault: &EpochFault) {
     let mut writer = evidence.clone();
+    let fault = fault.clone();
     let (completed_tx, completed_rx) = mpsc::sync_channel(1);
     let fence_started = SystemTime::now();
     let worker = catch_unwind(AssertUnwindSafe(|| {
         thread::spawn(move || {
             let started = Instant::now();
             let _ = record_fence_started(fence_started);
-            let _ = writer.export_invalidation(
-                invalidation_trigger(fault),
-                &[("fence", "initiated")],
-                started,
-            );
+            let fields = invalidation_report_fields(&fault);
+            let field_refs = fields
+                .iter()
+                .map(|(name, value)| (*name, value.as_str()))
+                .collect::<Vec<_>>();
+            let _ = writer.export_invalidation(invalidation_trigger(&fault), &field_refs, started);
             let _ = completed_tx.send(());
         })
     }));
@@ -1768,13 +1823,31 @@ fn fence_initiated(evidence: &mut EpochEvidenceWriter, children: &mut [Child], f
 }
 
 /// Maps one existing epoch fault to its accepted invalidation classification.
-fn invalidation_trigger(fault: EpochFault) -> EpochInvalidationTrigger {
+fn invalidation_trigger(fault: &EpochFault) -> EpochInvalidationTrigger {
     match fault {
         EpochFault::PartialStart => EpochInvalidationTrigger::EpochCreationFailure,
         EpochFault::MemberExited => EpochInvalidationTrigger::MemberExit,
         EpochFault::IdentityMismatch => EpochInvalidationTrigger::MemberIdentityChange,
-        EpochFault::CreateOutcomeUncertain => EpochInvalidationTrigger::UncertainCreate,
+        EpochFault::CreateOutcomeUncertain(_) => EpochInvalidationTrigger::UncertainCreate,
         EpochFault::DeleteOutcomeUncertain => EpochInvalidationTrigger::UncertainDelete,
+    }
+}
+
+/// Projects one fault into the closed private invalidation-report fields.
+fn invalidation_report_fields(fault: &EpochFault) -> Vec<(&'static str, String)> {
+    match fault {
+        EpochFault::CreateOutcomeUncertain(context) => vec![
+            ("operation", "sandbox.create".to_string()),
+            ("sandbox", context.sandbox_lineage.clone()),
+            ("attempt", context.attempt_lineage.clone()),
+            (
+                "certainty_loss",
+                context.certainty_loss.as_str().to_string(),
+            ),
+            ("timing", format!("elapsed_ms={}", context.elapsed_ms)),
+            ("fence", "initiated".to_string()),
+        ],
+        _ => vec![("fence", "initiated".to_string())],
     }
 }
 
@@ -1783,13 +1856,15 @@ fn path_arg(path: &Path) -> String {
     path.as_os_str().to_string_lossy().into_owned()
 }
 
-/// Renders the exact pinned Gateway configuration for one private epoch.
-fn gateway_config(docker_socket: &Path, auth_path: &Path) -> String {
-    format!(
-        "[openshell]\nversion = 1\n\n[openshell.gateway.tls]\ncert_path = \"{auth}/server/tls.crt\"\nkey_path = \"{auth}/server/tls.key\"\nclient_ca_path = \"{auth}/ca.crt\"\nrequire_client_auth = true\n\n[openshell.gateway.mtls_auth]\nenabled = true\n\n[openshell.gateway.gateway_jwt]\nsigning_key_path = \"{auth}/jwt/signing.pem\"\npublic_key_path = \"{auth}/jwt/public.pem\"\nkid_path = \"{auth}/jwt/kid\"\ngateway_id = \"openkit-nanohost\"\nttl_secs = 3600\n\n[openshell.drivers.docker]\nsocket_path = \"{}\"\nsupervisor_image = \"{SUPERVISOR_IMAGE}\"\n",
+/// Renders the Gateway configuration for one private epoch.
+fn gateway_config(docker_socket: &Path, auth_path: &Path) -> io::Result<String> {
+    let supervisor_image = openshell_release::supervisor_image()
+        .ok_or_else(|| io::Error::other("OpenShell release metadata is invalid"))?;
+    Ok(format!(
+        "[openshell]\nversion = 1\n\n[openshell.gateway.tls]\ncert_path = \"{auth}/server/tls.crt\"\nkey_path = \"{auth}/server/tls.key\"\nclient_ca_path = \"{auth}/ca.crt\"\nrequire_client_auth = true\n\n[openshell.gateway.mtls_auth]\nenabled = true\n\n[openshell.gateway.gateway_jwt]\nsigning_key_path = \"{auth}/jwt/signing.pem\"\npublic_key_path = \"{auth}/jwt/public.pem\"\nkid_path = \"{auth}/jwt/kid\"\ngateway_id = \"openkit-nanohost\"\nttl_secs = 3600\n\n[openshell.drivers.docker]\nsocket_path = \"{}\"\nsupervisor_image = \"{supervisor_image}\"\n",
         docker_socket.display(),
         auth = auth_path.display(),
-    )
+    ))
 }
 
 /// Creates one new private directory and refuses an existing epoch root.
@@ -2162,12 +2237,14 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AttemptImportOutcome, EpochAction, EpochEvidenceWriter, EpochFault, EpochMemberMonitor,
+        AttemptImportOutcome, CreateCertaintyLossPoint, CreateUncertainty, EpochAction,
+        EpochEvidenceWriter, EpochFault, EpochInvalidationTrigger, EpochMemberMonitor,
         EpochNetworkNamespaceMode, EpochPlan, EpochProcessRole, ImageBackend, ImageImportError,
-        MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, SUPERVISOR_IMAGE,
-        capacity_ready, dockerd_dns_arguments, gateway_cert_command, has_up_tap0_default_route,
-        import_attempt_image, import_required_images, preflight_lifecycle_result,
-        resolve_epoch_nameservers, wait_for_success,
+        MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, capacity_ready,
+        dockerd_dns_arguments, gateway_cert_command, has_up_tap0_default_route,
+        import_attempt_image, import_required_images, invalidation_report_fields,
+        invalidation_trigger, preflight_lifecycle_result, resolve_epoch_nameservers,
+        wait_for_success,
     };
     #[cfg(target_os = "linux")]
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
@@ -2643,7 +2720,8 @@ mod tests {
         let gateway_config = first.gateway_config_contents();
         assert!(gateway_config.contains(&first.docker_socket().display().to_string()));
         assert!(gateway_config.contains(&first.gateway_auth_path().display().to_string()));
-        assert!(gateway_config.contains(&format!("supervisor_image = \"{SUPERVISOR_IMAGE}\"")));
+        let supervisor_image = crate::openshell_release::supervisor_image().unwrap();
+        assert!(gateway_config.contains(&format!("supervisor_image = \"{supervisor_image}\"")));
         assert!(
             !gateway_config.contains(
                 "sha256:ea3632b6e9528e2309103af5b6949606fcdc83ca1f69e8db81482a25bea84bb6"
@@ -2732,12 +2810,63 @@ mod tests {
             EpochFault::PartialStart,
             EpochFault::MemberExited,
             EpochFault::IdentityMismatch,
-            EpochFault::CreateOutcomeUncertain,
+            EpochFault::CreateOutcomeUncertain(CreateUncertainty::new(
+                CreateCertaintyLossPoint::ReadyErrorPhase,
+                "sandbox-lineage",
+                "attempt-lineage",
+                Duration::from_millis(17),
+            )),
             EpochFault::DeleteOutcomeUncertain,
         ] {
             assert_eq!(fault.action(), EpochAction::TerminateProcess);
         }
         assert!(!capacity_ready(false));
+    }
+
+    #[test]
+    fn uncertain_create_report_retains_only_owned_bounded_context() {
+        for (point, expected) in [
+            (
+                CreateCertaintyLossPoint::CreateRequestUnproved,
+                "create-request-unproved",
+            ),
+            (
+                CreateCertaintyLossPoint::CreateResponseInvalid,
+                "create-response-invalid",
+            ),
+            (
+                CreateCertaintyLossPoint::ReadyObservationUnproved,
+                "ready-observation-unproved",
+            ),
+            (
+                CreateCertaintyLossPoint::ReadyErrorPhase,
+                "ready-error-phase",
+            ),
+            (CreateCertaintyLossPoint::ReadyTimeout, "ready-timeout"),
+        ] {
+            assert_eq!(point.as_str(), expected);
+        }
+        let fault = EpochFault::CreateOutcomeUncertain(CreateUncertainty::new(
+            CreateCertaintyLossPoint::ReadyErrorPhase,
+            "sandbox-lineage",
+            "attempt-lineage",
+            Duration::from_millis(17),
+        ));
+        assert_eq!(
+            invalidation_trigger(&fault),
+            EpochInvalidationTrigger::UncertainCreate
+        );
+        assert_eq!(
+            invalidation_report_fields(&fault),
+            vec![
+                ("operation", "sandbox.create".to_string()),
+                ("sandbox", "sandbox-lineage".to_string()),
+                ("attempt", "attempt-lineage".to_string()),
+                ("certainty_loss", "ready-error-phase".to_string()),
+                ("timing", "elapsed_ms=17".to_string()),
+                ("fence", "initiated".to_string()),
+            ]
+        );
     }
 
     #[test]

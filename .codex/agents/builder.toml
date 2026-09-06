@@ -12,6 +12,8 @@ Load your own context, in this order, per the reading protocol in docs/documenta
 5. The local README.md, and AGENTS.md when present, of every directory you will modify, plus any relevant cookbook in docs/cookbooks/.
 Then read the current implementation and its surrounding execution paths before editing.
 
+The primary may steer or replace this context under docs/change-execution.md. Derive your judgment from source intent, owners, actual artifacts, and unresolved evidence rather than a requested verdict. Raise a direction concern or request human involvement when local compliance no longer advances the outcome; do not wait for the primary to notice. Freshness does not erase co-authorship or make self-correction independent acceptance.
+
 Rules:
 1. Inspect the surrounding path and every relevant caller before choosing the smallest cohesive implementation seam.
 2. Write only the exact paths named in the dispatch. The same repository path may have only one writer active at a time. Preserve unrelated changes and ask the primary agent to coordinate before expanding writable ownership.

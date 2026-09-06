@@ -530,14 +530,13 @@ jobs:
         run: |
           node --input-type=module <<'NODE' >> "${GITHUB_OUTPUT}"
           import { readFileSync } from 'node:fs';
-          import { parseNanoHostPin } from './scripts/release-preflight.mjs';
-          const pin = parseNanoHostPin(readFileSync('apps/nanohost/openshell-pin/manifest.md', 'utf8'));
-          const archive = pin.artifacts.find(
-            (artifact) => artifact.kind === 'gateway-executable' && artifact.representation === 'release-archive'
+          import { parseOpenShellRelease } from './scripts/release-preflight.mjs';
+          const release = parseOpenShellRelease(
+            readFileSync('apps/nanohost/openshell/release.json', 'utf8')
           );
-          process.stdout.write(`tag=${pin.source.tag}\n`);
-          process.stdout.write(`commit=${pin.source.commit}\n`);
-          process.stdout.write(`archive=${archive.name}\n`);
+          process.stdout.write(`tag=v${release.version}\n`);
+          process.stdout.write(`commit=${release.source.commit}\n`);
+          process.stdout.write(`archive=${release.gateway.archive.name}\n`);
           NODE
 
       - name: Package and verify portable release assets

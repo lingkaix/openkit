@@ -43,7 +43,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 /**
  * Creates one isolated Codex adapter input.
  *
- * @returns Adapter input with one already resolved LLM route.
+ * @returns Adapter input with one Shim-selected LLM route.
  */
 function codexInput(): WorkerAdapterPrepareInput {
   const root = mkdtempSync(join(tmpdir(), 'openkit-codex-adapter-'));

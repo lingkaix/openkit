@@ -13257,6 +13257,13 @@ describe('nanocore server', () => {
   it('binds authority generations only to native HTTP/2 accepted connections and server close', async () => {
     const coreDb = createCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO nanohost_integration_identities (
+          identity_id, deployment_id, status, created_at
+        ) VALUES ('integration_nanohost_main', 'deployment-main', 'active', ?)`
+      )
+      .run('2026-08-10T00:00:00.000Z');
     const issued = createNanoHostTransportTokenRecord(coreDb, {
       deploymentId: 'deployment-main',
       expiresAt: '2026-09-10T00:00:00.000Z',

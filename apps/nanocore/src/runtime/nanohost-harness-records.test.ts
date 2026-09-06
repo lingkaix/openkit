@@ -239,7 +239,7 @@ describe('private NanoHost Harness records', () => {
           workerControlToken,
         },
         operation: 'turn.start',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 0,
       });
       expect(command?.operationId).toMatch(/^[0-9a-f]{64}$/);
@@ -277,7 +277,7 @@ describe('private NanoHost Harness records', () => {
         disposition: 'succeeded' as const,
         harnessInstanceId: 'harness-1',
         operationId: command!.operationId,
-        schemaVersion: 1 as const,
+        schemaVersion: 2 as const,
         sequence: 0,
       };
       settleNanoHostHarnessOperation(coreDb, {
@@ -393,7 +393,7 @@ describe('private NanoHost Harness records', () => {
             disposition: 'succeeded',
             harnessInstanceId: 'harness-1',
             operationId: command!.operationId,
-            schemaVersion: 1,
+            schemaVersion: 2,
             sequence: 0,
           },
           timestamp: now,
@@ -493,7 +493,7 @@ describe('private NanoHost Harness records', () => {
           disposition: 'unknown',
           harnessInstanceId: 'harness-1',
           operationId: command!.operationId,
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 0,
         },
         timestamp: now,
@@ -610,7 +610,7 @@ describe('private NanoHost Harness records', () => {
           disposition: 'succeeded',
           harnessInstanceId: 'harness-1',
           operationId: sessionOpenCommand!.operationId,
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 0,
         },
         timestamp: now,
@@ -875,7 +875,7 @@ function openActiveTurnDb(prefix: string): ReturnType<typeof openCoreDb> {
       disposition: 'succeeded',
       harnessInstanceId: 'harness-1',
       operationId: command!.operationId,
-      schemaVersion: 1,
+      schemaVersion: 2,
       sequence: 0,
     },
     timestamp: now,

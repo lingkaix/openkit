@@ -47,7 +47,7 @@ const GOVERNANCE_CORPORA = [
       '.codex/agents/researcher.toml',
       '.codex/agents/reviewer.toml',
       '.codex/agents/test-author.toml',
-      '.codex/agents/verifier.toml',
+      '.codex/agents/consultant.toml',
       'tests/AGENTS.md',
       'tests/agents-root-contract.test.mjs',
       'tests/change-execution-contract.test.mjs',
@@ -1168,12 +1168,25 @@ describe('change record bundles', () => {
 
     assert.equal(types.get(`docs/changes/${bundle}/plan.md`), 'change');
     assert.equal(types.get(`docs/changes/${bundle}/findings.md`), 'change-findings');
-    // A route log carries no induced type of its own. Type Induction admits a
-    // type only where behavior is already repeated across existing members, and
-    // no route log exists yet, so it classifies under the closest existing type
-    // and is reclassified when a second member justifies the split.
+    // Optional evidence shares metadata without inheriting the findings body.
     assert.equal(types.get(`docs/changes/${bundle}/route-log.md`), 'change-findings');
     assert.deepEqual(validateDocModel(root), []);
+  });
+
+  it('admits an optional proposal as non-authorizing evidence without indexing it', () => {
+    const root = createFixture();
+    const directory = writeBundle(root);
+    // The plan is valid both without and with a curated proposal; the proposal
+    // needs neither plan metadata nor findings fields.
+    assert.deepEqual(validateDocModel(root), []);
+    writeFileSync(
+      join(directory, 'proposal.md'),
+      '# Proposal\n\nUse the existing owner; a parallel lifecycle adds no value.\n'
+    );
+    const proposal = classifyDocuments(root).find((entry) => entry.path.endsWith('/proposal.md'));
+    assert.equal(proposal?.type, 'change-findings');
+    assert.deepEqual(validateDocModel(root), []);
+    assert.doesNotMatch(generateDocIndex(root), /proposal\.md/u);
   });
 
   it('rejects malformed findings structure at each contract boundary', () => {

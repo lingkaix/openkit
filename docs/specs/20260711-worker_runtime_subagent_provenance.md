@@ -70,7 +70,7 @@ The implementation reuses the existing worker protocol, capability ledger, Evide
 - Do not build a provider-neutral trace query service before a concrete product need exists.
 - Do not guarantee provider cache hits; OpenKit can preserve routing lineage and measure cache usage, but the upstream provider decides actual cache eligibility.
 - Do not redesign EvidenceBundle, RuntimeEvidence, UsageRecord, or AuditEvent.
-- Do not fork or patch OpenShell. NanoHost consumes only the stock `0.0.99` client and Gateway boundary pinned by its app-local manifest; `@openkit/openshell-schema-snapshot` is a historical `0.0.80` policy-conformance input and owns no current runtime pin.
+- Do not fork or patch OpenShell. NanoHost consumes only the exact official matched OpenShell release set selected by its runtime owner and admitted through the upgrade behavior gate.
 
 ## Background
 

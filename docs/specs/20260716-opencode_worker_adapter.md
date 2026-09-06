@@ -1,7 +1,7 @@
 ---
 status: Accepted
-implementation: Implemented
-updated: 2026-08-21
+implementation: Partial
+updated: 2026-09-06
 ---
 # OpenCode Worker Adapter
 
@@ -11,7 +11,7 @@ The OpenCode Worker Adapter translates one resolved Agent Environment Package in
 
 The current product path uses OpenCode's one-shot run surface. The OpenCode HTTP server is not a second OpenKit control plane and is not required for one bounded worker turn.
 
-This adapter remains in the shared registry's `bounded-turn` mode. It is not eligible for the multi-AgentSession shared-Harness RuntimeTarget until this owning specification accepts and the pinned runtime proves the complete `session-continuity` contract; the Codex implementation does not implicitly broaden OpenCode.
+This adapter remains in the shared registry's `bounded-turn` mode. It may use the existing NanoHost and Harness transport only through one fresh Turn-private non-reusable binding; it is not eligible for reusable multi-AgentSession continuity until this owning specification accepts and the pinned runtime proves the complete `session-continuity` contract. The Codex implementation does not implicitly broaden OpenCode.
 
 ## Owns
 
@@ -58,7 +58,7 @@ The shared harness supplies the adapter with:
 - turn input
 - worker working directory
 - session directory
-- the provider, model, endpoint, and credential bindings from the AEP's one already resolved LLM route
+- the provider, model, endpoint, and credential bindings from the unique preferred LLM route selected by the shared shim
 - a safe child environment without the worker-control token
 
 The adapter does not resolve providers, credentials, models, permissions, Skills, MCP authorization, or workspace policy.
@@ -99,7 +99,7 @@ NanoCore may resolve approved static Skill and MCP supply into the AEP, but the 
 
 ## Provider And Credentials
 
-The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. Credential attachments are materialized through the governed backend and vault declarations. The adapter consumes the AEP's one resolved route, expresses OpenCode-native setup only through argv and safe environment additions, rejects zero or multiple routes, and never introduces a provider default or fallback into NanoCore or the shared harness.
+The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the preferred logical model, exact allowed route set, credential bindings, and effective launch policy. Credential attachments are materialized through the governed backend and vault declarations. The shared shim requires one unique route for the preferred model and passes only that route to the adapter. The adapter expresses OpenCode-native setup only through argv and safe environment additions, rejects an unsupported selected route, and never introduces a provider default or fallback into NanoCore or the shared harness.
 
 Native route projection is adapter-specific. For the trusted relay, argv selects the fixed slash-free adapter-owned model name `openkit-worker-inference/<exact-model-id>`, while `OPENCODE_CONFIG_CONTENT` is the JSON serialization of this non-secret shape:
 
@@ -181,9 +181,9 @@ Required image smoke covers the pinned `opencode --version`, JSON run mode help,
 
 ## Implementation Evidence And Limit
 
-The OpenCode `1.18.1` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, and refreshed image smoke are implemented. OpenCode is intentionally ineligible for the target shared-Harness RuntimeTarget because no accepted or implemented session-continuity adapter exists. The refreshed 2026-07-21 arm64 image builds locally and passes its complete smoke. The earlier minimal arm64 image passed stock unpatched OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, but that historical run is not refreshed-image OpenShell evidence.
+The OpenCode `1.18.1` bounded-turn adapter, static registry entry, authored manifest, pinned worker image, bounded `prepare`/`collect` tests, mode-selected durable interrupt, one-start Harness guard, inspection and private-interrupt rejection, terminal binding close, and refreshed image smoke are implemented. This establishes the local Turn-private command-poll-only path but not session continuity or exact-candidate real-host acceptance. The refreshed 2026-07-21 arm64 image builds locally and passes its complete smoke. The earlier minimal arm64 image passed stock unpatched OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, but that historical run is not refreshed-image OpenShell evidence.
 
-This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
+This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. R005 additionally requires one exact-candidate A2 real-provider OpenCode success and one bounded Turn whose durable interrupt crosses NanoCore restart/reconnect, reaches the shared supervisor, is acknowledged, and closes truthfully without native reuse or private Harness interruption. The earlier dry run does not prove those obligations.
 
 ## Acceptance
 

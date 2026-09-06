@@ -1,3 +1,0 @@
-640d204dc3c6bc28bffa1f3d870897fc23bbc5ec0151a6c642083e958455cb49  openshell-gateway-x86_64-unknown-linux-gnu.tar.gz
-3a5d3092ae34356beb0ff2a920f9a87af4233c7a1086a53cd9429d48358f5c09  openshell-gateway-aarch64-unknown-linux-gnu.tar.gz
-4340619292ecb565f90eb2250db504baa37dd410361b366b42e174d34512cb6c  openshell-gateway-aarch64-apple-darwin.tar.gz
