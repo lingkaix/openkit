@@ -121,7 +121,7 @@ Every active Knowledge Page and every draft Knowledge Page validated for possibl
 - `type`
 - `title`
 - `schema_version`
-- `status`
+- `openkit_status`
 - `scope`
 - `source_refs`
 - `review_state`
@@ -135,7 +135,7 @@ Field behavior:
 - `type` MUST be an OpenKit base type or an allowed Workspace Schema extension.
 - `title` MUST be human-readable and non-empty.
 - `schema_version` MUST identify the validating Workspace Schema.
-- `status` MUST distinguish draft, active, archived, superseded, invalid, and deleted records.
+- `openkit_status` is the unique OpenKit lifecycle authority and MUST distinguish draft, active, archived, superseded, invalid, and deleted records. Standard OKF `status` is a deterministic projection: draft maps to `draft`, active maps to `stable`, and the other four states map to `deprecated`. A missing standard status means `stable`; a conflicting projection is invalid. Standard status alone never activates an external page.
 - `scope` MUST identify the Workspace and any narrower authorized scope.
 - `source_refs` MUST exist even when empty; empty references are allowed only for direct user-authored notes, indexes, or policy-approved seed pages.
 - `review_state` MUST distinguish unreviewed, user-authored, accepted, rejected, deferred, and needs-review records; there is no provisional active state.
@@ -145,7 +145,7 @@ Field behavior:
 
 Reusable base types are `SourceSummary`, `KnowledgePage`, `Entity`, `Topic`, `Observation`, `Claim`, `Procedure`, `Decision`, `Lesson`, `Proposal`, `Index`, and `Log`.
 
-Workspace Schemas MAY add domain types, but consumers MUST preserve the base governance fields even when they do not understand an extension.
+Workspace Schemas MAY add domain types, but consumers MUST preserve the base governance fields even when they do not understand an extension. OpenKit Knowledge Profile v2 uses `openkit_status`; the standard OKF lifecycle does not add a second state machine, retry policy, or recovery owner. Unknown nested YAML metadata is retained as data, including provenance, trust, and Attested Computation fields; reading or saving it never executes code, performs attestation, accesses a network, or grants authority. Secret-like field and value rejection applies recursively, including arrays; cyclic or excessive alias expansion is rejected before traversal.
 
 ## Save-Time Enforcement
 
@@ -153,7 +153,7 @@ All governed writes MUST pass through the Knowledge Store validation boundary.
 
 Code MUST reject an invalid active write or retain it only as an invalid draft excluded from active retrieval.
 
-Validation MUST cover malformed frontmatter, missing fields, disallowed types, invalid status or review state, invalid source references, forbidden secret-like fields, missing sensitivity, invalid freshness or expiration metadata, and attempts to weaken OpenKit-required fields.
+Validation MUST cover malformed frontmatter, missing fields, disallowed types, invalid `openkit_status`, conflicting standard OKF `status` projection, invalid review state or source references, forbidden secret-like fields, missing sensitivity, invalid freshness or expiration metadata, and attempts to weaken OpenKit-required fields.
 
 An invalid edit MUST NOT overwrite the latest valid active page.
 

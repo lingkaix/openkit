@@ -19855,7 +19855,7 @@
           "knowledgePageId": {
             "type": "string",
             "maxLength": 240,
-            "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+            "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
           },
           "canonicalPageBytes": {
             "type": "string",
@@ -19935,7 +19935,7 @@
               "knowledgePageId": {
                 "type": "string",
                 "maxLength": 240,
-                "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
               },
               "canonicalPageBytes": {
                 "type": "string",
@@ -69090,7 +69090,7 @@
               "knowledgePageId": {
                 "type": "string",
                 "maxLength": 240,
-                "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
               },
               "contentDigest": {
                 "type": "string",
@@ -69134,7 +69134,7 @@
                   "knowledgePageId": {
                     "type": "string",
                     "maxLength": 240,
-                    "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                    "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
                   },
                   "contentDigest": {
                     "type": "string",
@@ -69179,7 +69179,7 @@
           "knowledgePageId": {
             "type": "string",
             "maxLength": 240,
-            "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+            "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
           },
           "expectedContentDigest": {
             "type": "string",
@@ -69212,7 +69212,7 @@
               "knowledgePageId": {
                 "type": "string",
                 "maxLength": 240,
-                "pattern": "^(?!index$|log$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
+                "pattern": "^(?!(?:.*\\/)?(?:index|log)$)[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*$"
               },
               "contentDigest": {
                 "type": "string",
@@ -85919,5 +85919,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:f0d1b501580affa991294ff066abc05957d53c6287d8d0671c8cae61a3c31655"
+  "x-openkit-source-digest": "sha256:2d9f10e3dbc6541b2fa4e2da6223af1cccae6f42a2e21558d2b3da93a6482934"
 }

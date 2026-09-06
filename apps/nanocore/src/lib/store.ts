@@ -45,6 +45,7 @@ import {
   type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
   parseOkfDocument,
+  stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
@@ -87,6 +88,7 @@ import {
   serializeKnowledgeProposalReviewFile,
   serializeUserAuthoredKnowledgePage,
   TURN_STREAM_EVENT_WINDOW_SIZE,
+  updateUserAuthoredKnowledgePage,
   type WorkspaceFileRecords,
   writeWorkspaceFileRecords,
 } from '../storage/workspace-file-records.js';
@@ -1014,14 +1016,25 @@ export class FsStore {
    * Projects one workspace's in-memory state into its canonical file records.
    *
    * @param workspaceId Workspace to persist.
+   * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
+   * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
    */
-  private persist(workspaceId: string, updateWorkspaceConfigName = false): void {
+  private persist(
+    workspaceId: string,
+    updateWorkspaceConfigName = false,
+    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
+  ): void {
     if (!this.dataRoot) {
       return;
     }
 
     const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
-    this.writeWorkspaceFileRecordsToRoot(workspaceId, workspaceRoot, updateWorkspaceConfigName);
+    this.writeWorkspaceFileRecordsToRoot(
+      workspaceId,
+      workspaceRoot,
+      updateWorkspaceConfigName,
+      exactKnowledgePageBytes
+    );
   }
 
   /**
@@ -1073,11 +1086,14 @@ export class FsStore {
    *
    * @param workspaceId Workspace to write.
    * @param workspaceRoot Resolved workspace root.
+   * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
+   * @param exactKnowledgePageBytes Final validated direct-edit bytes keyed by Page id.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
-    updateWorkspaceConfigName = false
+    updateWorkspaceConfigName = false,
+    exactKnowledgePageBytes: ReadonlyMap<string, string> = new Map()
   ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
@@ -1111,7 +1127,8 @@ export class FsStore {
           .filter(([turnId]) => turnIds.has(turnId))
           .map(([turnId, stream]) => [turnId, stream.events]),
       },
-      updateWorkspaceConfigName
+      updateWorkspaceConfigName,
+      exactKnowledgePageBytes
     );
   }
 
@@ -1136,12 +1153,14 @@ export class FsStore {
    * @param workspaceId Workspace that owns the candidate page.
    * @param candidate Candidate entry about to be written.
    * @param knowledge Knowledge entries that will exist after the write.
+   * @param candidateContent Exact final page bytes to validate.
    * @throws KnowledgePageValidationError when the candidate or current schema is invalid.
    */
   private assertValidKnowledgeEntryCandidate(
     workspaceId: string,
     candidate: KnowledgeEntry,
-    knowledge: readonly KnowledgeEntry[]
+    knowledge: readonly KnowledgeEntry[],
+    candidateContent = serializeUserAuthoredKnowledgePage(candidate)
   ): void {
     let workspaceSchemaText: string | undefined;
     let resolvedReferences: ReadonlySet<string> = new Set();
@@ -1175,7 +1194,7 @@ export class FsStore {
 
     const report = validateKnowledgePageCandidate({
       path: `knowledge/pages/${candidate.id}.md`,
-      content: serializeUserAuthoredKnowledgePage(candidate),
+      content: candidateContent,
       ...(workspaceSchemaText === undefined ? {} : { workspaceSchemaText }),
       registeredSourceIds: new Set(
         [...this.knowledgeSources.values()]
@@ -1223,15 +1242,19 @@ export class FsStore {
 
     const candidatePath = `knowledge/pages/${proposal.knowledgePageId}.md`;
     const parsed = parseOkfDocument({ path: candidatePath, content: proposal.canonicalPageBytes });
+    const sourceReferences = parsed.document
+      ? stringListFrontmatterField(parsed.document, 'source_refs')
+      : null;
     if (
       proposal.contentDigest !== contentDigest(proposal.canonicalPageBytes) ||
       !parsed.ok ||
       parsed.document.conceptId !== proposal.knowledgePageId ||
       parsed.document.frontmatter.type !== 'KnowledgePage' ||
-      parsed.document.frontmatter.status !== 'active' ||
+      parsed.document.frontmatter.openkit_status !== 'active' ||
+      (parsed.document.frontmatter.status !== undefined &&
+        parsed.document.frontmatter.status !== 'stable') ||
       parsed.document.frontmatter.review_state !== 'accepted' ||
-      JSON.stringify(parsed.document.frontmatter.source_refs) !==
-        JSON.stringify(proposal.sourceReferences)
+      JSON.stringify(sourceReferences) !== JSON.stringify(proposal.sourceReferences)
     ) {
       throw new KnowledgePageValidationError();
     }
@@ -1352,7 +1375,9 @@ export class FsStore {
         parsed.document.conceptId !== ownerId ||
         parsed.document.frontmatter.openkit_entry_id !== ownerId ||
         parsed.document.frontmatter.type !== 'KnowledgePage' ||
-        parsed.document.frontmatter.status !== 'active' ||
+        parsed.document.frontmatter.openkit_status !== 'active' ||
+        (parsed.document.frontmatter.status !== undefined &&
+          parsed.document.frontmatter.status !== 'stable') ||
         parsed.document.frontmatter.review_state !== 'user-authored'
       ) {
         throw new KnowledgePageValidationError();
@@ -2108,13 +2133,19 @@ export class FsStore {
     const knowledge = resources.knowledge.map((entry) =>
       entry.id === knowledgeEntryId ? updated : entry
     );
-    this.assertValidKnowledgeEntryCandidate(workspaceId, updated, knowledge);
+    const path = `knowledge/pages/${knowledgeEntryId}.md`;
+    const currentPageBytes = this.dataRoot
+      ? (readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), knowledgeEntryId) ??
+        serializeUserAuthoredKnowledgePage(existing))
+      : serializeUserAuthoredKnowledgePage(existing);
+    const candidatePageBytes = updateUserAuthoredKnowledgePage(path, currentPageBytes, updated);
+    this.assertValidKnowledgeEntryCandidate(workspaceId, updated, knowledge, candidatePageBytes);
     this.workspaceResources.set(workspaceId, {
       ...resources,
       knowledge,
     });
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
+    this.persist(workspaceId, false, new Map([[knowledgeEntryId, candidatePageBytes]]));
     return updated;
   }
 
@@ -3264,15 +3295,19 @@ export class FsStore {
 
     const path = `knowledge/pages/${knowledgePageId}.md`;
     const parsed = parseOkfDocument({ path, content });
-    const sourceReferences = parsed.document?.frontmatter.source_refs;
+    const sourceReferences = parsed.document
+      ? stringListFrontmatterField(parsed.document, 'source_refs')
+      : null;
     if (
       !parsed.ok ||
       parsed.document.conceptId !== knowledgePageId ||
       parsed.document.frontmatter.openkit_entry_id !== knowledgePageId ||
       parsed.document.frontmatter.type !== 'KnowledgePage' ||
-      parsed.document.frontmatter.status !== 'active' ||
+      parsed.document.frontmatter.openkit_status !== 'active' ||
+      (parsed.document.frontmatter.status !== undefined &&
+        parsed.document.frontmatter.status !== 'stable') ||
       parsed.document.frontmatter.review_state !== 'accepted' ||
-      !Array.isArray(sourceReferences) ||
+      sourceReferences === null ||
       !KnowledgeManagerDraftProposalRequestSchema.shape.sourceReferences.safeParse(sourceReferences)
         .success
     ) {

@@ -474,8 +474,9 @@ async function draftKnowledgeProposalFixture(
     '---',
     'type: "KnowledgePage"',
     `title: "Proposal ${suffix}"`,
-    'schema_version: "openkit-workspace-knowledge-schema-v1"',
-    'status: "active"',
+    'schema_version: "openkit-workspace-knowledge-schema-v2"',
+    'openkit_status: "active"',
+    'status: "stable"',
     'scope: "workspace"',
     `openkit_entry_id: "${knowledgePageId}"`,
     'openkit_entry_kind: "project-context"',
@@ -1441,7 +1442,7 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 21,
+      fileCount: 22,
       checkedFiles: [
         'records/agent-sessions.jsonl',
         'records/artifact-reviews.jsonl',
@@ -1461,6 +1462,7 @@ describe('nanocore server', () => {
         'records/workspace-materials.jsonl',
         'records/workspace-record.json',
         'workspace-files/config/workspace.jsonc',
+        'workspace-files/knowledge/pages/index.md',
         'workspace-files/knowledge/pages/mem_2.md',
         'workspace-files/knowledge/pages/mem_project.md',
         'workspace-files/knowledge/schema/workspace-schema.yaml',
@@ -1501,7 +1503,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_demo',
       exportedWorkspaceId: 'ws_demo',
       collision: { status: 'collides', workspaceId: 'ws_demo' },
-      verification: { fileCount: 20 },
+      verification: { fileCount: 21 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -10311,8 +10313,9 @@ describe('nanocore server', () => {
         '---',
         'type: "KnowledgePage"',
         `title: "Unsafe proposal ${index}"`,
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         `openkit_entry_id: "${knowledgePageId}"`,
         'openkit_entry_kind: "project-context"',

@@ -24,8 +24,9 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
     '---',
     'type: "KnowledgePage"',
     'title: "Canonical proposal"',
-    'schema_version: "openkit-workspace-knowledge-schema-v1"',
-    'status: "active"',
+    'schema_version: "openkit-workspace-knowledge-schema-v2"',
+    'openkit_status: "active"',
+    'status: "stable"',
     'scope: "workspace"',
     'openkit_entry_id: "canonical-proposal"',
     'openkit_entry_kind: "project-context"',
@@ -81,6 +82,19 @@ function createCanonicalRecordFixture() {
 }
 
 describe('workspace canonical record schemas', () => {
+  it('reloads native proposal metadata without changing its canonical bytes', () => {
+    const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
+    const proposal = createStrictKnowledgeProposal(store, workspace.id);
+    const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
+    const content = readFileSync(path, 'utf8');
+
+    const restarted = new FsStore({ dataRoot });
+    restarted.createThread(workspace.id, 'Persist native proposal metadata');
+
+    expect(restarted.getKnowledgeProposal(proposal.id)).toEqual(proposal);
+    expect(readFileSync(path, 'utf8')).toBe(content);
+  });
+
   it('rejects a knowledge proposal missing its required created_at field', () => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
     const proposal = createStrictKnowledgeProposal(store, workspace.id);

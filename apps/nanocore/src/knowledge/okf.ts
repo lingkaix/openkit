@@ -1,15 +1,15 @@
-import { basename } from 'node:path';
+import { type Document, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 
-export const OKF_SNAPSHOT_ID = 'docs/okf-spec-v0.1-snapshot.md#v0.1';
-export const OPENKIT_KNOWLEDGE_PROFILE_VERSION = 'openkit-knowledge-profile-v1';
-export const DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-workspace-knowledge-schema-v1';
+export const OKF_SNAPSHOT_ID = 'docs/okf-spec-v0.2-snapshot.md#v0.2';
+export const OPENKIT_KNOWLEDGE_PROFILE_VERSION = 'openkit-knowledge-profile-v2';
+export const DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-workspace-knowledge-schema-v2';
 
 const RESERVED_MARKDOWN_FILES = new Set(['index.md', 'log.md']);
 const REQUIRED_PROFILE_FIELDS = [
   'type',
   'title',
   'schema_version',
-  'status',
+  'openkit_status',
   'scope',
   'source_refs',
   'review_state',
@@ -18,6 +18,21 @@ const REQUIRED_PROFILE_FIELDS = [
   'created_at',
   'updated_at',
 ] as const;
+const PROFILE_STRING_FIELDS = [
+  'type',
+  'title',
+  'schema_version',
+  'openkit_status',
+  'scope',
+  'review_state',
+  'sensitivity',
+  'freshness',
+  'created_at',
+  'updated_at',
+] as const;
+const PROFILE_TIMESTAMP_FIELDS = ['created_at', 'updated_at'] as const;
+const ISO_8601_OFFSET_DATETIME_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 const SECRET_FIELD_PATTERN =
   /(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|private[_-]?key|secret|token)/i;
 const OPENKIT_BASE_TYPES = new Set([
@@ -35,6 +50,15 @@ const OPENKIT_BASE_TYPES = new Set([
   'Log',
 ]);
 const DEFAULT_STATUS_VALUES = ['draft', 'active', 'archived', 'superseded', 'invalid', 'deleted'];
+const STANDARD_STATUS_BY_OPENKIT_STATUS = {
+  active: 'stable',
+  archived: 'deprecated',
+  deleted: 'deprecated',
+  draft: 'draft',
+  invalid: 'deprecated',
+  superseded: 'deprecated',
+} as const;
+const YAML_ALIAS_LIMIT = 50;
 const DEFAULT_REVIEW_STATE_VALUES = [
   'unreviewed',
   'user-authored',
@@ -64,8 +88,8 @@ export const DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_TEXT = [
   '',
 ].join('\n');
 
-/** Scalar and simple list values supported by the first-slice OKF parser. */
-export type OkfFrontmatterValue = string | string[];
+/** Native YAML value retained from one OKF frontmatter mapping. */
+export type OkfFrontmatterValue = unknown;
 
 /** One parsed OKF Markdown document. */
 export interface OkfDocument {
@@ -180,21 +204,19 @@ export class KnowledgePageValidationError extends Error {
  * @returns Parsed document or validation errors.
  */
 export function parseOkfDocument(input: { path: string; content: string }): ParseOkfDocumentResult {
-  const reserved = RESERVED_MARKDOWN_FILES.has(basename(input.path));
+  const reserved = RESERVED_MARKDOWN_FILES.has(normalizedBasename(input.path));
   const conceptId = deriveConceptId(input.path);
   const errors: KnowledgeValidationError[] = [];
+  const framing = splitOkfDocument(input.content);
 
-  if (!input.content.startsWith('---\n')) {
+  if (!reserved && framing.frontmatter === null) {
     errors.push({
       code: 'okf.missing_frontmatter',
       message: 'OKF concept documents must start with a YAML frontmatter block.',
     });
     return { ok: false, document: null, errors };
   }
-
-  const end = input.content.indexOf('\n---\n', 4);
-
-  if (end === -1) {
+  if (framing.unclosed) {
     errors.push({
       code: 'okf.unclosed_frontmatter',
       message: 'OKF frontmatter blocks must be closed before the Markdown body.',
@@ -202,16 +224,19 @@ export function parseOkfDocument(input: { path: string; content: string }): Pars
     return { ok: false, document: null, errors };
   }
 
-  const frontmatter = parseSimpleFrontmatter(input.content.slice(4, end), errors);
+  const frontmatter =
+    framing.frontmatter === null ? {} : parseYamlMapping(framing.frontmatter, errors).value;
   const document: OkfDocument = {
     path: input.path,
     conceptId,
     frontmatter,
-    body: input.content.slice(end + '\n---\n'.length),
+    body: framing.body,
     reserved,
   };
 
-  if (!reserved && !nonEmptyString(frontmatter.type)) {
+  if (reserved) {
+    validateReservedDocument(document, framing.frontmatter !== null, errors);
+  } else if (!nonEmptyString(frontmatter.type)) {
     errors.push({
       code: 'okf.missing_type',
       field: 'type',
@@ -226,7 +251,6 @@ export function parseOkfDocument(input: { path: string; content: string }): Pars
  * Validates one parsed OKF document against the OpenKit Knowledge Profile.
  *
  * @param document Parsed OKF document.
- * @returns Profile validation report.
  */
 export function validateOpenKitKnowledgeProfile(
   document: OkfDocument
@@ -247,7 +271,7 @@ export function validateOpenKitKnowledgeProfile(
     }
   }
 
-  for (const field of ['type', 'title', 'schema_version', 'status', 'scope']) {
+  for (const field of PROFILE_STRING_FIELDS) {
     const value = document.frontmatter[field];
 
     if (value !== undefined && !nonEmptyString(value)) {
@@ -259,9 +283,22 @@ export function validateOpenKitKnowledgeProfile(
     }
   }
 
+  for (const field of PROFILE_TIMESTAMP_FIELDS) {
+    const value = document.frontmatter[field];
+
+    if (nonEmptyString(value) && !isMachineReadableTimestamp(value)) {
+      errors.push({
+        code: 'profile.invalid_timestamp',
+        field,
+        message: `OpenKit Knowledge Profile field ${field} must be a machine-readable timestamp.`,
+      });
+    }
+  }
+
   if (
     document.frontmatter.source_refs !== undefined &&
-    !Array.isArray(document.frontmatter.source_refs)
+    (!Array.isArray(document.frontmatter.source_refs) ||
+      !document.frontmatter.source_refs.every((reference) => typeof reference === 'string'))
   ) {
     errors.push({
       code: 'profile.invalid_source_refs',
@@ -270,23 +307,38 @@ export function validateOpenKitKnowledgeProfile(
     });
   }
 
-  for (const [field, value] of Object.entries(document.frontmatter)) {
-    if (SECRET_FIELD_PATTERN.test(field)) {
+  const openkitStatus = document.frontmatter.openkit_status;
+  if (
+    typeof openkitStatus === 'string' &&
+    !Object.hasOwn(STANDARD_STATUS_BY_OPENKIT_STATUS, openkitStatus)
+  ) {
+    errors.push({
+      code: 'profile.invalid_openkit_status',
+      field: 'openkit_status',
+      message:
+        'OpenKit Knowledge Profile field openkit_status must use a governed lifecycle value.',
+    });
+  }
+  if (
+    typeof openkitStatus === 'string' &&
+    Object.hasOwn(STANDARD_STATUS_BY_OPENKIT_STATUS, openkitStatus)
+  ) {
+    const expectedStatus =
+      STANDARD_STATUS_BY_OPENKIT_STATUS[
+        openkitStatus as keyof typeof STANDARD_STATUS_BY_OPENKIT_STATUS
+      ];
+    const standardStatus =
+      document.frontmatter.status === undefined ? 'stable' : document.frontmatter.status;
+    if (standardStatus !== expectedStatus) {
       errors.push({
-        code: 'profile.secret_like_field',
-        field,
-        message: `Knowledge pages must not carry secret-like field ${field}.`,
-      });
-    }
-
-    if (typeof value === 'string' && SECRET_FIELD_PATTERN.test(value)) {
-      errors.push({
-        code: 'profile.secret_like_value',
-        field,
-        message: `Knowledge pages must not carry secret-like value in ${field}.`,
+        code: 'profile.status_projection_mismatch',
+        field: 'status',
+        message: `Standard OKF status must project openkit_status ${openkitStatus} as ${expectedStatus}.`,
       });
     }
   }
+
+  collectSecretLikeErrors(document.frontmatter, errors);
 
   return buildReport(errors.length === 0 ? 'OpenKit-profile-valid' : 'OKF-compatible', errors);
 }
@@ -301,7 +353,7 @@ export function parseWorkspaceKnowledgeSchema(
   content: string
 ): ParseWorkspaceKnowledgeSchemaResult {
   const errors: KnowledgeValidationError[] = [];
-  const fields = parseSimpleFrontmatter(content, errors);
+  const fields = parseYamlMapping(content, errors).value;
   const schemaVersion = fields.schema_version;
 
   if (!nonEmptyString(schemaVersion)) {
@@ -371,7 +423,7 @@ export function validateWorkspaceKnowledgeSchema(
   expectAllowedValue(
     document,
     schema.allowedStatuses,
-    'status',
+    'openkit_status',
     'workspace_schema.status_not_allowed',
     errors
   );
@@ -479,7 +531,7 @@ export function isActiveOpenKitKnowledgePage(
   document: OkfDocument,
   schema: WorkspaceKnowledgeSchema = DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA
 ): boolean {
-  if (document.frontmatter.status !== 'active') {
+  if (document.frontmatter.openkit_status !== 'active') {
     return false;
   }
 
@@ -501,6 +553,46 @@ export function stringFrontmatterField(document: OkfDocument, field: string): st
 }
 
 /**
+ * Reads one frontmatter field only when every sequence member is a string.
+ *
+ * @param document Parsed OKF document.
+ * @param field Field to read.
+ */
+export function stringListFrontmatterField(document: OkfDocument, field: string): string[] | null {
+  const value = document.frontmatter[field];
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string') ? value : null;
+}
+
+/**
+ * Updates native YAML frontmatter once while retaining unknown metadata and exact body bytes.
+ *
+ * @param input Existing OKF bytes, replacement fields, and an optional exact body.
+ * @returns One final serialized OKF document.
+ */
+export function updateOkfFrontmatter(input: {
+  readonly path: string;
+  readonly content: string;
+  readonly updates: Readonly<Record<string, unknown>>;
+  readonly body?: string;
+}): string {
+  const parsed = parseOkfDocument({ path: input.path, content: input.content });
+  const framing = splitOkfDocument(input.content);
+  if (!parsed.ok || framing.frontmatter === null || framing.unclosed) {
+    throw new Error('OKF frontmatter cannot be updated because the document is invalid.');
+  }
+  const errors: KnowledgeValidationError[] = [];
+  const yaml = parseYamlMapping(framing.frontmatter, errors);
+  if (errors.length > 0 || !yaml.document) {
+    throw new Error('OKF frontmatter cannot be updated because its YAML mapping is invalid.');
+  }
+  for (const [field, value] of Object.entries(input.updates)) {
+    yaml.document.set(field, value);
+  }
+  const serialized = yaml.document.toString({ lineWidth: 0 });
+  return `---\n${serialized}---\n${input.body ?? framing.body}`;
+}
+
+/**
  * Validates local and external references declared by one Knowledge Page.
  *
  * @param document Parsed candidate document.
@@ -517,7 +609,10 @@ export function knowledgeReferenceErrors(
 ): KnowledgeValidationError[] {
   const sourceRefs = document.frontmatter.source_refs;
 
-  if (!Array.isArray(sourceRefs)) {
+  if (
+    !Array.isArray(sourceRefs) ||
+    !sourceRefs.every((reference) => typeof reference === 'string')
+  ) {
     return [];
   }
 
@@ -583,14 +678,14 @@ function expectAllowedValue(
 ): void {
   const value = document.frontmatter[field];
 
-  if (typeof value !== 'string' || allowedValues.includes(value)) {
+  if (typeof value === 'string' && allowedValues.includes(value)) {
     return;
   }
 
   errors.push({
     code,
     field,
-    message: `Workspace knowledge schema does not allow ${field} value ${value}.`,
+    message: `Workspace knowledge schema does not allow the ${field} value.`,
   });
 }
 
@@ -598,79 +693,245 @@ function deriveConceptId(path: string): string {
   const normalized = path.replaceAll('\\', '/');
   const withoutPrefix = normalized.includes('/pages/')
     ? normalized.slice(normalized.indexOf('/pages/') + '/pages/'.length)
-    : (normalized.split('/').at(-1) ?? normalized);
+    : normalized.replace(/^\.\//, '');
 
   return withoutPrefix.endsWith('.md') ? withoutPrefix.slice(0, -'.md'.length) : withoutPrefix;
 }
 
-function parseSimpleFrontmatter(
-  frontmatter: string,
-  errors: KnowledgeValidationError[]
-): Record<string, OkfFrontmatterValue> {
-  const fields: Record<string, OkfFrontmatterValue> = {};
-
-  for (const line of frontmatter.split('\n')) {
-    const trimmed = line.trim();
-
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue;
-    }
-
-    const separator = trimmed.indexOf(':');
-
-    if (separator === -1) {
-      errors.push({
-        code: 'okf.invalid_frontmatter_line',
-        message: `Unsupported frontmatter line: ${trimmed}`,
-      });
-      continue;
-    }
-
-    const key = trimmed.slice(0, separator).trim();
-    const rawValue = trimmed.slice(separator + 1).trim();
-
-    if (!key) {
-      errors.push({
-        code: 'okf.invalid_frontmatter_key',
-        message: `Unsupported frontmatter key in line: ${trimmed}`,
-      });
-      continue;
-    }
-
-    fields[key] = parseFrontmatterValue(rawValue);
-  }
-
-  return fields;
+function normalizedBasename(path: string): string {
+  const normalized = path.replaceAll('\\', '/');
+  return normalized.split('/').at(-1) ?? normalized;
 }
 
-function parseFrontmatterValue(value: string): OkfFrontmatterValue {
+interface OkfDocumentFraming {
+  readonly body: string;
+  readonly frontmatter: string | null;
+  readonly unclosed: boolean;
+}
+
+interface ParsedYamlMapping {
+  readonly document: Document | null;
+  readonly value: Record<string, unknown>;
+}
+
+function splitOkfDocument(content: string): OkfDocumentFraming {
+  if (!content.startsWith('---\n')) {
+    return { body: content, frontmatter: null, unclosed: false };
+  }
+  const end = content.indexOf('\n---\n', 4);
+  if (end === -1) {
+    return { body: '', frontmatter: '', unclosed: true };
+  }
+  return {
+    body: content.slice(end + '\n---\n'.length),
+    frontmatter: content.slice(4, end),
+    unclosed: false,
+  };
+}
+
+function parseYamlMapping(source: string, errors: KnowledgeValidationError[]): ParsedYamlMapping {
+  const document = parseDocument(source, { uniqueKeys: true });
+  if (document.errors.length > 0) {
+    errors.push({
+      code: 'okf.invalid_yaml',
+      message: 'OKF YAML is invalid.',
+    });
+    return { document: null, value: {} };
+  }
+  if (!isMap(document.contents)) {
+    errors.push({
+      code: 'okf.frontmatter_not_mapping',
+      message: 'OKF YAML must contain one mapping.',
+    });
+    return { document: null, value: {} };
+  }
+  const errorCount = errors.length;
+  validateYamlStringKeys(document.contents, errors);
+  if (errors.length > errorCount) {
+    return { document: null, value: {} };
+  }
+  let value: unknown;
   try {
-    const parsed = JSON.parse(value) as unknown;
+    value = document.toJS({ maxAliasCount: YAML_ALIAS_LIMIT });
+  } catch (error) {
+    const aliasLimit = error instanceof Error && /alias count/i.test(error.message);
+    errors.push({
+      code: aliasLimit ? 'okf.alias_limit' : 'okf.invalid_yaml',
+      message: aliasLimit
+        ? 'OKF YAML aliases exceed the safe expansion limit.'
+        : 'OKF YAML cannot be converted to a native value safely.',
+    });
+    return { document: null, value: {} };
+  }
+  if (hasObjectCycle(value)) {
+    errors.push({
+      code: 'okf.cyclic_frontmatter',
+      message: 'OKF YAML must not contain cyclic aliases.',
+    });
+    return { document: null, value: {} };
+  }
+  if (!isPlainRecord(value)) {
+    errors.push({
+      code: 'okf.frontmatter_not_mapping',
+      message: 'OKF YAML must contain one mapping.',
+    });
+    return { document: null, value: {} };
+  }
+  return { document, value };
+}
 
-    if (typeof parsed === 'string') {
-      return parsed;
+function validateYamlStringKeys(
+  node: unknown,
+  errors: KnowledgeValidationError[],
+  visited: Set<unknown> = new Set()
+): void {
+  if (visited.has(node)) return;
+  visited.add(node);
+  if (isMap(node)) {
+    for (const pair of node.items) {
+      if (!isScalar(pair.key) || typeof pair.key.value !== 'string') {
+        errors.push({
+          code: 'okf.non_string_key',
+          message: 'OKF YAML mappings must use string keys.',
+        });
+      }
+      validateYamlStringKeys(pair.value, errors, visited);
     }
+  } else if (isSeq(node)) {
+    for (const item of node.items) validateYamlStringKeys(item, errors, visited);
+  }
+}
 
-    if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
-      return parsed;
+function hasObjectCycle(value: unknown, ancestors: Set<object> = new Set()): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  if (ancestors.has(value)) return true;
+  ancestors.add(value);
+  const children = Array.isArray(value) ? value : Object.values(value);
+  const cyclic = children.some((child) => hasObjectCycle(child, ancestors));
+  ancestors.delete(value);
+  return cyclic;
+}
+
+function validateReservedDocument(
+  document: OkfDocument,
+  hasFrontmatter: boolean,
+  errors: KnowledgeValidationError[]
+): void {
+  const filename = normalizedBasename(document.path);
+  if (filename === 'index.md') {
+    const rootIndex = document.conceptId === 'index';
+    if (hasFrontmatter) {
+      const keys = Object.keys(document.frontmatter);
+      if (!rootIndex) {
+        errors.push({
+          code: 'okf.reserved_frontmatter',
+          message: 'Only the bundle-root index.md may contain frontmatter.',
+        });
+      } else if (
+        keys.length !== 1 ||
+        keys[0] !== 'okf_version' ||
+        document.frontmatter.okf_version !== '0.2'
+      ) {
+        errors.push({
+          code: 'okf.invalid_index_frontmatter',
+          field: 'okf_version',
+          message: 'Bundle-root index.md frontmatter must declare only okf_version 0.2.',
+        });
+      }
     }
-  } catch {
-    // Fall through to the plain YAML-ish scalar form below.
+    if (!/^#{1,6}\s+\S.*$/m.test(document.body)) {
+      errors.push({
+        code: 'okf.invalid_index_structure',
+        message: 'OKF index.md must contain at least one section heading.',
+      });
+    }
+    return;
   }
 
-  if (value === '[]') {
-    return [];
+  if (hasFrontmatter) {
+    errors.push({
+      code: 'okf.reserved_frontmatter',
+      message: 'OKF log.md files must not contain frontmatter.',
+    });
   }
-
-  if (value.startsWith('[') && value.endsWith(']')) {
-    return value
-      .slice(1, -1)
-      .split(',')
-      .map((item) => parseFrontmatterValue(item.trim()))
-      .filter((item): item is string => typeof item === 'string' && item.length > 0);
+  const logSections: Array<{ date: string; hasEntry: boolean }> = [];
+  for (const line of document.body.split('\n')) {
+    const dateHeading = /^##\s+(.+)$/.exec(line);
+    if (dateHeading) {
+      logSections.push({ date: dateHeading[1] ?? '', hasEntry: false });
+    } else if (/^\*\s+\S.*$/.test(line) && logSections.length > 0) {
+      logSections[logSections.length - 1]!.hasEntry = true;
+    }
   }
+  const dateHeadings = logSections.map((section) => section.date);
+  const validDates = dateHeadings.every(isIsoDate);
+  const newestFirst = dateHeadings.every(
+    (date, index) => index === 0 || (dateHeadings[index - 1] ?? '') >= date
+  );
+  if (
+    !/^#\s+\S.*$/m.test(document.body) ||
+    dateHeadings.length === 0 ||
+    !validDates ||
+    !newestFirst ||
+    !logSections.every((section) => section.hasEntry)
+  ) {
+    errors.push({
+      code: 'okf.invalid_log_structure',
+      message: 'OKF log.md must contain newest-first ISO date groups with list entries.',
+    });
+  }
+}
 
-  return value.replace(/^['"]|['"]$/g, '');
+function isIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+}
+
+function isMachineReadableTimestamp(value: string): boolean {
+  return ISO_8601_OFFSET_DATETIME_PATTERN.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+function collectSecretLikeErrors(
+  value: unknown,
+  errors: KnowledgeValidationError[],
+  ancestors: Set<object> = new Set()
+): void {
+  if (typeof value === 'string') {
+    if (SECRET_FIELD_PATTERN.test(value)) {
+      errors.push({
+        code: 'profile.secret_like_value',
+        field: 'frontmatter',
+        message: 'Knowledge pages must not carry secret-like values.',
+      });
+    }
+    return;
+  }
+  if (typeof value !== 'object' || value === null || ancestors.has(value)) return;
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      collectSecretLikeErrors(entry, errors, ancestors);
+    });
+  } else {
+    for (const [field, entry] of Object.entries(value)) {
+      if (SECRET_FIELD_PATTERN.test(field)) {
+        errors.push({
+          code: 'profile.secret_like_field',
+          field: 'frontmatter',
+          message: 'Knowledge pages must not carry secret-like fields.',
+        });
+      }
+      collectSecretLikeErrors(entry, errors, ancestors);
+    }
+  }
+  ancestors.delete(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function hasFrontmatterField(
@@ -691,7 +952,7 @@ function readStringList(
 ): readonly string[] {
   const value = fields[field];
 
-  if (Array.isArray(value)) {
+  if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) {
     return value;
   }
 

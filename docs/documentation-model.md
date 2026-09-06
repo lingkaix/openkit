@@ -128,7 +128,7 @@ A translated page is a projection of its canonical English page, never an indepe
 
 ### External Snapshots
 
-Verbatim pinned captures of upstream material, currently `docs/okf-spec-v0.1-snapshot.md`. They record provenance and capture date and carry no OpenKit authority.
+Verbatim pinned captures of upstream material, currently `docs/okf-spec-v0.1-snapshot.md` and `docs/okf-spec-v0.2-snapshot.md`. They record provenance and capture date and carry no OpenKit authority.
 
 ### Cookbooks
 

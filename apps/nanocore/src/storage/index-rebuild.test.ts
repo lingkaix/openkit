@@ -42,6 +42,32 @@ function sha256Digest(content: string): string {
 }
 
 describe('workspace derived index rebuild', () => {
+  it('excludes reserved index and log files at every Knowledge bundle depth', () => {
+    const dataRoot = createDataRoot();
+    createDemoStore({ dataRoot });
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
+    const nestedRoot = join(workspaceRoot, 'knowledge', 'pages', 'nested');
+    mkdirSync(nestedRoot, { recursive: true });
+    writeFileSync(join(nestedRoot, 'index.md'), '# Nested index\n\nNavigation only.\n');
+    writeFileSync(join(nestedRoot, 'log.md'), '# Nested log\n\n## 2026-09-06\n* Update.\n');
+
+    expect(() =>
+      rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' })
+    ).not.toThrow();
+
+    const validation = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
+    ) as { records: Array<{ path: string }> };
+    const references = JSON.parse(
+      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-source-refs.json'), 'utf8')
+    ) as { references: Array<{ path: string }> };
+    expect(validation.records.map((record) => record.path)).not.toEqual(
+      expect.arrayContaining(['knowledge/pages/nested/index.md', 'knowledge/pages/nested/log.md'])
+    );
+    expect(references.references.map((record) => record.path)).not.toEqual(
+      expect.arrayContaining(['knowledge/pages/nested/index.md', 'knowledge/pages/nested/log.md'])
+    );
+  });
   it('rebuilds the search index from file-backed workspace records', () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
@@ -417,8 +443,9 @@ describe('workspace derived index rebuild', () => {
       '---',
       'type: "KnowledgePage"',
       'title: "Reviewed task proof"',
-      'schema_version: "openkit-workspace-knowledge-schema-v1"',
-      'status: "active"',
+      'schema_version: "openkit-workspace-knowledge-schema-v2"',
+      'openkit_status: "active"',
+      'status: "stable"',
       'scope: "workspace"',
       `source_refs: ${JSON.stringify(sourceReferences)}`,
       'review_state: "accepted"',
@@ -485,8 +512,9 @@ describe('workspace derived index rebuild', () => {
       '---',
       'type: "KnowledgePage"',
       'title: "Accepted page without proof"',
-      'schema_version: "openkit-workspace-knowledge-schema-v1"',
-      'status: "active"',
+      'schema_version: "openkit-workspace-knowledge-schema-v2"',
+      'openkit_status: "active"',
+      'status: "stable"',
       'scope: "workspace"',
       'source_refs: []',
       'review_state: "accepted"',
@@ -749,8 +777,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Release Cadence"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: []',
         'review_state: "user-authored"',
@@ -769,8 +798,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Blocked Cadence"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: ["source:ks_missing"]',
         'review_state: "user-authored"',
@@ -846,7 +876,8 @@ describe('workspace derived index rebuild', () => {
         'type: "KnowledgePage"',
         'title: "Invalid knowledge"',
         'schema_version: "openkit-knowledge-entry-v1"',
-        'status: "active"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: []',
         'review_state: "user-authored"',
@@ -886,8 +917,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Valid knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: []',
         'review_state: "user-authored"',
@@ -906,8 +938,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Missing field knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: []',
         'review_state: "accepted"',
@@ -925,8 +958,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Missing source knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: ["source:ks_missing"]',
         'review_state: "accepted"',
@@ -995,7 +1029,7 @@ describe('workspace derived index rebuild', () => {
     writeFileSync(
       join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
       [
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
         'status: "active"',
         'allowed_types: ["KnowledgePage", "RepoConvention"]',
         'allowed_statuses: ["active"]',
@@ -1011,8 +1045,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "RepoConvention"',
         'title: "Repo convention"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: []',
         'review_state: "user-authored"',
@@ -1052,7 +1087,7 @@ describe('workspace derived index rebuild', () => {
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_demo');
     writeFileSync(
       join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml'),
-      'schema_version: "openkit-workspace-knowledge-schema-v1"\n'
+      'schema_version: "openkit-workspace-knowledge-schema-v2"\n'
     );
 
     rebuildWorkspaceDerivedIndexes({
@@ -1101,8 +1136,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Source-backed knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: ["source:ks_registered"]',
         'review_state: "user-authored"',
@@ -1121,8 +1157,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Knowledge-backed knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         `source_refs: ["knowledge:${knowledge.id}"]`,
         'review_state: "user-authored"',
@@ -1141,8 +1178,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Missing source knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: ["source:ks_missing"]',
         'review_state: "user-authored"',
@@ -1161,8 +1199,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Missing knowledge source"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: ["knowledge:kn_missing"]',
         'review_state: "user-authored"',
@@ -1181,8 +1220,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "External URL knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: ["https://example.com/source"]',
         'review_state: "user-authored"',
@@ -1201,8 +1241,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Invalid external source"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: ["not-a-valid-external-reference"]',
         'review_state: "user-authored"',
@@ -1290,8 +1331,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Source reference index"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         `source_refs: ${JSON.stringify([
           'source:ks_registered',
@@ -1423,8 +1465,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Alpha knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: []',
         'review_state: "user-authored"',
@@ -1443,8 +1486,9 @@ describe('workspace derived index rebuild', () => {
         '---',
         'type: "KnowledgePage"',
         'title: "Beta knowledge"',
-        'schema_version: "openkit-workspace-knowledge-schema-v1"',
-        'status: "active"',
+        'schema_version: "openkit-workspace-knowledge-schema-v2"',
+        'openkit_status: "active"',
+        'status: "stable"',
         'scope: "workspace"',
         'source_refs: []',
         'review_state: "user-authored"',

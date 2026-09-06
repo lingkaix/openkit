@@ -71,7 +71,12 @@ import {
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
+import {
+  parseOkfDocument,
+  stringFrontmatterField,
+  stringListFrontmatterField,
+  updateOkfFrontmatter,
+} from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -3878,21 +3883,20 @@ function rewriteNativePageReferences(
   replacements: readonly (readonly [string, string])[]
 ): string {
   const parsed = parseOkfDocument({ path, content });
-  const sourceReferences = parsed.document?.frontmatter.source_refs;
-  if (sourceReferences === undefined) {
+  if (parsed.document?.frontmatter.source_refs === undefined) {
     return content;
   }
-  if (!Array.isArray(sourceReferences)) {
+  const sourceReferences = parsed.document
+    ? stringListFrontmatterField(parsed.document, 'source_refs')
+    : null;
+  if (sourceReferences === null) {
     throw new Error(`Native OKF page has invalid source_refs: ${path}`);
   }
   const rewritten = rewritePortableReferences(sourceReferences, replacements);
   if (rewritten.every((reference, index) => reference === sourceReferences[index])) {
     return content;
   }
-  if (!/^source_refs:\s*.+$/m.test(content)) {
-    throw new Error(`Native OKF page source_refs cannot be rewritten: ${path}`);
-  }
-  return content.replace(/^source_refs:\s*.+$/m, `source_refs: ${JSON.stringify(rewritten)}`);
+  return updateOkfFrontmatter({ path, content, updates: { source_refs: rewritten } });
 }
 
 /**

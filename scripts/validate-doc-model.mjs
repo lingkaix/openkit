@@ -30,7 +30,10 @@ const PLATFORM_REFERENCE_FILES = new Set([
   'docs/app-api.md',
   'docs/toolchain.md',
 ]);
-const SNAPSHOT_FILES = new Set(['docs/okf-spec-v0.1-snapshot.md']);
+const SNAPSHOT_FILES = new Set([
+  'docs/okf-spec-v0.1-snapshot.md',
+  'docs/okf-spec-v0.2-snapshot.md',
+]);
 const INDEX_FILE = 'docs/INDEX.md';
 const TERMINAL_SPEC_DIRECTORIES = new Set(['superseded', 'retired', 'rejected']);
 const MANUAL_FILE_PATTERN = /^.+\.(?:en|zh)\.md$/u;

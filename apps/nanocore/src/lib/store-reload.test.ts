@@ -23,6 +23,7 @@ import {
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
+import { parseOkfDocument } from '../knowledge/okf.js';
 import { FsStore } from './store.js';
 
 const timestamp = '2026-07-06T00:00:00.000Z';
@@ -561,6 +562,74 @@ describe('FsStore canonical reload', () => {
     store.deleteKnowledgeEntry(workspace.id, knowledge.id);
 
     expect(existsSync(knowledgePath)).toBe(false);
+  });
+
+  it('preserves unknown nested OKF metadata when a user edits a Knowledge Page', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-okf-edit-'));
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('OKF metadata workspace');
+    const knowledge = store.createKnowledgeEntry(workspace.id, {
+      kind: 'project-context',
+      title: 'Original title',
+      content: 'Original body.',
+    });
+    const pagePath = join(
+      dataRoot,
+      'workspaces',
+      workspace.id,
+      'knowledge',
+      'pages',
+      `${knowledge.id}.md`
+    );
+    const original = readFileSync(pagePath, 'utf8');
+    writeFileSync(
+      pagePath,
+      original.replace(
+        'scope: "workspace"',
+        [
+          'scope: "workspace"',
+          'sources:',
+          '  - id: upstream',
+          '    credibility:',
+          '      author: human:owner',
+          'generated:',
+          '  by: reference_agent/test',
+          '  at: 2026-09-06T00:00:00Z',
+        ].join('\n')
+      )
+    );
+
+    const restarted = new FsStore({ dataRoot });
+    restarted.updateKnowledgeEntry(workspace.id, knowledge.id, {
+      title: 'Updated title',
+      content: 'Updated body.',
+    });
+
+    const content = readFileSync(pagePath, 'utf8');
+    const parsed = parseOkfDocument({ path: `knowledge/pages/${knowledge.id}.md`, content });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.document.frontmatter.sources).toEqual([
+      { id: 'upstream', credibility: { author: 'human:owner' } },
+    ]);
+    expect(parsed.document.frontmatter.generated).toEqual({
+      by: 'reference_agent/test',
+      at: '2026-09-06T00:00:00Z',
+    });
+    expect(parsed.document.frontmatter.title).toBe('Updated title');
+    expect(parsed.document.body).toBe('Updated body.\n');
+
+    const secondRestart = new FsStore({ dataRoot });
+    expect(secondRestart.getWorkspaceResources(workspace.id).knowledge).toContainEqual(
+      expect.objectContaining({
+        id: knowledge.id,
+        title: 'Updated title',
+        content: 'Updated body.',
+      })
+    );
+    expect(readFileSync(pagePath, 'utf8')).toBe(content);
   });
 
   it('preserves a workspace-authored knowledge schema during unrelated persistence', () => {
