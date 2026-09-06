@@ -43,7 +43,7 @@ function openshellPackageFixture(): unknown {
       profileId: 'coder',
       displayName: 'Codex Worker',
       runtimeKind: 'codex',
-      runtimeVersion: '0.144.1',
+      runtimeVersion: '0.153.4',
       profileKind: 'coder',
       instructions: [],
       capabilityRequests: ['llm', 'shell', 'filesystem', 'network', 'artifacts'],

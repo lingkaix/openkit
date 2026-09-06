@@ -31,7 +31,7 @@ describe('private NanoHost Harness records', () => {
       applyMigrations(coreDb);
       seedRuntimeTarget(coreDb);
       for (const [adapterId, adapterVersion, harnessInstanceId, compatibilityKey] of [
-        ['codex', '0.144.1', 'harness-codex', 'b'.repeat(64)],
+        ['codex', '0.153.4', 'harness-codex', 'b'.repeat(64)],
         ['opencode', '1.18.1', 'harness-opencode', 'c'.repeat(64)],
       ] as const) {
         createNanoHostHarnessRuntime(coreDb, {
@@ -75,7 +75,7 @@ describe('private NanoHost Harness records', () => {
       seedRuntimeTarget(coreDb);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
@@ -180,7 +180,7 @@ describe('private NanoHost Harness records', () => {
       seedRuntimeTarget(coreDb);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
@@ -341,7 +341,7 @@ describe('private NanoHost Harness records', () => {
       seedRuntimeTarget(coreDb);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
@@ -442,7 +442,7 @@ describe('private NanoHost Harness records', () => {
       seedRuntimeTarget(coreDb);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
@@ -551,7 +551,7 @@ describe('private NanoHost Harness records', () => {
 
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
@@ -820,7 +820,7 @@ function openActiveTurnDb(prefix: string): ReturnType<typeof openCoreDb> {
   seedRuntimeTarget(coreDb);
   createNanoHostHarnessRuntime(coreDb, {
     adapterId: 'codex',
-    adapterVersion: '0.144.1',
+    adapterVersion: '0.153.4',
     harnessBindingRef: 'harness-binding-1',
     harnessCompatibilityKey: 'd'.repeat(64),
     harnessInstanceId: 'harness-1',

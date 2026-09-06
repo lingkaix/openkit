@@ -5630,7 +5630,7 @@ function createTurnRuntimeProvenanceCapture(
     ]),
   ];
   const manifest = WorkerRuntimeRawStreamManifestSchema.parse({
-    adapterVersion: '0.144.1',
+    adapterVersion: '0.153.4',
     captureStatus: 'complete',
     lineage,
     primaryStreamRef: 'stream-0000.jsonl',
@@ -5729,7 +5729,7 @@ function createTurnRuntimeStream(
     chunks.push(bytes);
     entries.push(
       WorkerRuntimeNativeOriginIndexEntrySchema.parse({
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         byteLength: bytes.byteLength,
         byteOffset,
         eventKind: frame.record.type,

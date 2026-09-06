@@ -11,15 +11,17 @@ export function isWorkerInferenceToolList(
 
 /** Exact message-anchored Codex additional-tools prefix accepted from a Worker. */
 export function isWorkerAdditionalToolsItem(value: unknown): value is {
+  readonly id?: string;
   readonly role: 'developer';
   readonly tools: readonly Record<string, unknown>[];
   readonly type: 'additional_tools';
 } {
   const item = record(value);
   return (
+    (item?.id === undefined || isCanonicalAdditionalToolsId(item.id)) &&
     item?.role === 'developer' &&
     item.type === 'additional_tools' &&
-    exactKeys(item, ['role', 'tools', 'type']) &&
+    exactKeys(item, ['id', 'role', 'tools', 'type']) &&
     Array.isArray(item.tools) &&
     item.tools.every((tool) => isWorkerInferenceTool(tool, false)) &&
     hasUniqueToolKeys(item.tools)
@@ -37,6 +39,7 @@ function isChatFunctionTool(value: unknown): boolean {
     exactKeys(definition, ['description', 'name', 'parameters', 'strict']) &&
     typeof definition.name === 'string' &&
     definition.name.length > 0 &&
+    definition.name !== WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
     optionalString(definition.description) &&
     (definition.parameters === undefined || record(definition.parameters) !== undefined) &&
     (definition.strict === undefined || typeof definition.strict === 'boolean')
@@ -47,21 +50,33 @@ function isChatFunctionTool(value: unknown): boolean {
 function isWorkerInferenceTool(value: unknown, nested: boolean): boolean {
   const tool = record(value);
   if (!tool || typeof tool.name !== 'string' || tool.name.length === 0) {
-    return tool?.type === 'tool_search' && !nested && exactKeys(tool, ['type']);
+    return (
+      tool?.type === 'tool_search' &&
+      !nested &&
+      exactKeys(tool, ['description', 'execution', 'parameters', 'type']) &&
+      tool.execution === 'client' &&
+      typeof tool.description === 'string' &&
+      tool.description.length > 0 &&
+      record(tool.parameters) !== undefined
+    );
   }
   if (tool.type === 'function') {
     return (
-      exactKeys(tool, ['description', 'name', 'parameters', 'strict', 'type']) &&
+      tool.name !== WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
+      exactKeys(tool, ['defer_loading', 'description', 'name', 'parameters', 'strict', 'type']) &&
       optionalString(tool.description) &&
       record(tool.parameters) !== undefined &&
+      (tool.defer_loading === undefined || tool.defer_loading === true) &&
       (tool.strict === undefined || typeof tool.strict === 'boolean')
     );
   }
-  if (tool.type === 'custom' && !nested) {
+  if (tool.type === 'custom') {
     const format = record(tool.format);
     return (
-      exactKeys(tool, ['description', 'format', 'name', 'type']) &&
+      tool.name !== WORKER_CLIENT_TOOL_SEARCH_FUNCTION &&
+      exactKeys(tool, ['defer_loading', 'description', 'format', 'name', 'type']) &&
       optionalString(tool.description) &&
+      (tool.defer_loading === undefined || tool.defer_loading === true) &&
       ((format?.type === 'text' && exactKeys(format, ['type'])) ||
         (format?.type === 'grammar' &&
           format.syntax === 'lark' &&
@@ -80,6 +95,14 @@ function isWorkerInferenceTool(value: unknown, nested: boolean): boolean {
     );
   }
   return false;
+}
+
+/** Validates the transport-only Codex additional-tools item identity. */
+function isCanonicalAdditionalToolsId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^at_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+  );
 }
 
 /** Rejects ambiguous callable names before they reach one provider request. */
@@ -101,7 +124,11 @@ function hasUniqueToolKeys(tools: readonly unknown[]): boolean {
       if (typeof name !== 'string') {
         continue;
       }
-      const key = `${namespace ?? ''}\0${name}`;
+      const canonicalNamespace =
+        namespace === undefined || namespace === '' || namespace === 'functions'
+          ? 'functions'
+          : namespace;
+      const key = `${canonicalNamespace}\0${name}`;
       if (keys.has(key)) {
         return false;
       }
@@ -127,3 +154,5 @@ function record(value: unknown): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined;
 }
+/** Provider-private function name reserved for client tool-search lowering. */
+export const WORKER_CLIENT_TOOL_SEARCH_FUNCTION = '__openkit_client_tool_search';

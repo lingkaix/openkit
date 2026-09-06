@@ -87,7 +87,7 @@ function quoteTomlString(value: string): string {
 }
 
 /**
- * Builds one bounded Codex 0.144.1 launch plan.
+ * Builds one bounded Codex 0.153.4 launch plan.
  *
  * @param input Resolved adapter input.
  * @returns Native Codex launch plan.
@@ -117,7 +117,7 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
   });
   const provenance = input.runtimeProvenance
     ? new CodexRuntimeProvenanceCapture({
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         codexHome: input.stateRoot,
         lineage: input.runtimeProvenance.lineage,
         maxStreamCount: input.runtimeProvenance.maxStreamCount,
@@ -138,6 +138,8 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
     : null;
   const nativeHandle = await readNativeHandle(input.stateRoot);
   const command = nativeHandle ? ['codex', 'exec', 'resume'] : ['codex', 'exec'];
+  // Resume has no --cd; the Harness spawn cwd is the working-directory owner.
+  const cwdArgs = nativeHandle ? [] : ['--cd', input.workingDirectory];
 
   return {
     argv: [
@@ -148,8 +150,7 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
       '--strict-config',
       '--output-last-message',
       finalMessagePath,
-      '--cd',
-      input.workingDirectory,
+      ...cwdArgs,
       '-c',
       `model_provider=${quoteTomlString(RELAY_PROVIDER_ID)}`,
       '-c',
@@ -433,7 +434,7 @@ async function collectCodexTurn(input: WorkerAdapterCollectInput & { readonly st
     };
   }
   const proof = await proveCodexNativeConversation({
-    adapterVersion: '0.144.1',
+    adapterVersion: '0.153.4',
     codexHome: input.stateRoot,
     stdout: input.processResult.stdout,
   });
@@ -448,7 +449,7 @@ async function inspectCodexSession(input: { readonly stateRoot: string }) {
     return { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
   }
   const proof = await proveCodexNativeConversation({
-    adapterVersion: '0.144.1',
+    adapterVersion: '0.153.4',
     codexHome: input.stateRoot,
     stdout: Buffer.from(`${JSON.stringify({ thread_id: nativeHandle, type: 'thread.started' })}\n`),
   });
@@ -465,7 +466,7 @@ async function closeCodexSession(input: {
   return { privateState: 'absent' as const };
 }
 
-/** Codex 0.144.1 session-continuity worker adapter. */
+/** Codex 0.153.4 session-continuity worker adapter. */
 export const codexAdapter = {
   closeSession: closeCodexSession,
   collectTurn: collectCodexTurn,

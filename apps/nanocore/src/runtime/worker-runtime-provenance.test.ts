@@ -974,7 +974,7 @@ function createRuntimeCaptureFixture(
       ? { ...lineage, requestId: 'req_runtime_provenance_mismatch' }
       : lineage,
     runtimeFamily: 'codex',
-    adapterVersion: '0.144.1',
+    adapterVersion: '0.153.4',
     primaryStreamRef: 'stream-0000.jsonl',
     captureStatus: options.truncated
       ? 'truncated'
@@ -1089,7 +1089,7 @@ function createRuntimeStream(
         schemaVersion: 1,
         lineage,
         runtimeFamily: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         streamRef,
         frameSequence,
         byteOffset,
@@ -1139,7 +1139,7 @@ function sessionMeta(
       timestamp: '2026-07-13T00:00:00.000Z',
       cwd: PRIVATE_HOST_PATH,
       originator: 'codex_exec',
-      cli_version: '0.144.1',
+      cli_version: '0.153.4',
       source: child
         ? {
             subagent: {

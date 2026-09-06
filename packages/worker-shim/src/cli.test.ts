@@ -1909,7 +1909,7 @@ describe('worker shim CLI parsing', () => {
     const firstNewline = primary.indexOf('\n'.charCodeAt(0));
     const utf8Split = primary.indexOf(Buffer.from('é')) + 1;
     const rollout = [
-      `{"timestamp":"2026-07-13T00:00:00.000Z","type":"session_meta","payload":{"session_id":"${CODEX_TEST_UUID}","id":"${CODEX_TEST_UUID}","timestamp":"2026-07-13T00:00:00.000Z","cwd":"/workspace/openkit","originator":"codex_cli_rs","cli_version":"0.144.1","source":"exec"}}`,
+      `{"timestamp":"2026-07-13T00:00:00.000Z","type":"session_meta","payload":{"session_id":"${CODEX_TEST_UUID}","id":"${CODEX_TEST_UUID}","timestamp":"2026-07-13T00:00:00.000Z","cwd":"/workspace/openkit","originator":"codex_cli_rs","cli_version":"0.153.4","source":"exec"}}`,
       '{"timestamp":"2026-07-13T00:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-native-root"}}',
       '{"timestamp":"2026-07-13T00:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}',
       '',
@@ -1972,7 +1972,7 @@ describe('worker shim CLI parsing', () => {
       JSON.parse(readFileSync(join(sessionDir, 'runtime', 'raw-streams.json'), 'utf8'))
     ).toEqual(
       expect.objectContaining({
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         captureStatus: 'complete',
         lineage: {
           agentSessionId: 'as_codex_1',
@@ -2081,7 +2081,7 @@ describe('worker shim CLI parsing', () => {
     const primary = Buffer.from(`{"type":"thread.started","thread_id":"${CODEX_TEST_UUID}"}\n`);
     const rollout = `${JSON.stringify({
       payload: {
-        cli_version: '0.144.1',
+        cli_version: '0.153.4',
         cwd: sessionDir,
         id: CODEX_TEST_UUID,
         originator: 'codex_exec',
@@ -3008,7 +3008,7 @@ describe('worker shim CLI parsing', () => {
     );
     const rollout = `${JSON.stringify({
       payload: {
-        cli_version: '0.144.1',
+        cli_version: '0.153.4',
         cwd: sessionDir,
         id: nativeThreadId,
         originator: 'codex_exec',

@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-21
+updated: 2026-09-05
 ---
 # Codex Worker Adapter
 
@@ -39,7 +39,7 @@ The adapter is worker-side integration code. It is not a NanoCore runtime, trans
 
 ## Upstream Contract
 
-The accepted implementation pin is Codex CLI `0.144.1`, matching the real worker image and runtime-provenance fixtures.
+The accepted implementation pin is Codex CLI `0.153.4`, matching the real worker image and runtime-provenance fixtures.
 
 The first bounded native command is equivalent to:
 
@@ -53,7 +53,7 @@ Every later Turn uses the same accepted safe flags and provider and selected-MCP
 codex exec resume --json --ignore-user-config --ignore-rules --strict-config --output-last-message <turn-final-message-path> <adapter-owned -c provider and selected-MCP projections> --model <model> --dangerously-bypass-approvals-and-sandbox <exact-native-thread-id> <turn-input>
 ```
 
-Codex `0.144.1` exposes `exec resume [SESSION_ID] [PROMPT]`; a UUID selects the exact thread and neither `--last`, title search, cwd search, nor another discovery fallback is permitted. Session-continuity mode never uses `--ephemeral`, because persistence beneath the AgentSession-private `CODEX_HOME` is the native mechanism that a later process instance resumes. Every invocation uses `--ignore-user-config` and `--ignore-rules`.
+Codex `0.153.4` exposes `exec resume [SESSION_ID] [PROMPT]`; a UUID selects the exact thread and neither `--last`, title search, cwd search, nor another discovery fallback is permitted. Session-continuity mode never uses `--ephemeral`, because persistence beneath the AgentSession-private `CODEX_HOME` is the native mechanism that a later process instance resumes. Every invocation uses `--ignore-user-config` and `--ignore-rules`.
 
 The approval and sandbox bypass flag is permitted only because the authored AgentManifest and resolved AEP declare the filesystem, network, credential, image, and binary authority that stock OpenShell enforces around the process, while NanoCore retains canonical review and external-side-effect decisions. It must never be used to create a host runtime path.
 
@@ -117,7 +117,7 @@ NanoCore resolves approved static Skill and selected MCP supply into the AEP. Wh
 
 The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. NanoCore performs that resolution but does not own a second native-runtime configuration.
 
-The AEP remains authoritative for the selected route, but native route projection is adapter-specific. NanoCore and the shared harness must not infer Codex provider configuration. The adapter rejects zero or multiple routes and any route whose exact endpoint, credential binding, model, or wire protocol Codex `0.144.1` cannot represent.
+The AEP remains authoritative for the selected route, but native route projection is adapter-specific. NanoCore and the shared harness must not infer Codex provider configuration. The adapter rejects zero or multiple routes and any route whose exact endpoint, credential binding, model, or wire protocol Codex `0.153.4` cannot represent.
 
 For the trusted NanoCore relay, the adapter uses the fixed adapter-owned provider id `openkit-worker-inference`; it never projects an arbitrary AEP provider id into Codex. Its argv contains TOML-quoted `-c` values equivalent to:
 
@@ -131,15 +131,15 @@ model_providers.openkit-worker-inference.wire_api="responses"
 model_providers.openkit-worker-inference.requires_openai_auth=false
 ```
 
-The child environment always carries the OpenShell-injected `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder and carries `OPENKIT_WORKER_CAPABILITY_TOKEN` only when the exact AEP-selected MCP supply enables the capability route. No worker-control or other route token enters the native environment, and neither value may appear in argv, native configuration text, diagnostics, or evidence. Codex `0.144.1` supports only the Responses wire API through the inference projection, so a Chat-Completions-only relay is unsupported.
+The child environment always carries the OpenShell-injected `OPENKIT_WORKER_INFERENCE_TOKEN` placeholder and carries `OPENKIT_WORKER_CAPABILITY_TOKEN` only when the exact AEP-selected MCP supply enables the capability route. No worker-control or other route token enters the native environment, and neither value may appear in argv, native configuration text, diagnostics, or evidence. Codex `0.153.4` supports only the Responses wire API through the inference projection, so a Chat-Completions-only relay is unsupported.
 
 Direct-provider routes are unsupported in this change because the current AEP route does not carry a separately proved Responses wire protocol and exact credential target for truthful Codex projection. Direct, Chat Completions, Anthropic Messages, Gemini, and other non-relay routes fail closed before spawn. The adapter never substitutes a direct route for the trusted relay, and neither NanoCore nor the shared harness knows a Codex config-file schema.
 
 ## Manifest And Image Contract
 
-The repository-owned Codex AgentManifest selects adapter id `codex`, the Codex worker image, pinned runtime version `0.144.1`, native executable paths used by network policy, trusted-relay requirements, and only capabilities proven by this specification.
+The repository-owned Codex AgentManifest selects adapter id `codex`, the Codex worker image, pinned runtime version `0.153.4`, native executable paths used by network policy, trusted-relay requirements, and only capabilities proven by this specification.
 
-The Codex image installs the generic worker shim and Codex `0.144.1`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no OpenCode or Pi runtime. Its smoke check verifies the exact native version, `codex exec` machine-readable flags, generic shim dry run, non-root identity, and expected worker filesystem layout.
+The Codex image installs the generic worker shim and Codex `0.153.4`, sets the generic shim as its entrypoint, runs as a non-root worker user, and contains no OpenCode or Pi runtime. Its smoke check verifies the exact native version, `codex exec` machine-readable flags, generic shim dry run, non-root identity, and expected worker filesystem layout.
 
 Codex-specific install commands, binary paths, state directories, auth paths, and version pins live only in the Codex AgentManifest, adapter, image, specification, and tests.
 
@@ -182,6 +182,7 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 Required adapter tests cover:
 
 - exact command construction, TOML quoting, fixed native provider id, model, base URL, environment-key reference, and Responses-only rejection from an adapter input
+- first-turn `--cd` retaining `workingDirectory` and resume omitting `--cd` in the session-continuity test, because the shared Harness spawn cwd is `runtime.command.workingDirectory`; complete native argv parse remains independent external contract evidence
 - proof that credential values never enter argv or evidence and direct routes fail before spawn
 - rejection of retired environment and AEP-extension command overrides
 - final-message success, absence, non-file, and size-bound behavior
@@ -197,9 +198,9 @@ Required image smoke covers the pinned `codex --version`, machine-readable `code
 
 ## Implementation Evidence And Limit
 
-The Codex `0.144.1` session-continuity adapter, static registry entry, authored manifest, pinned worker image definition, five-operation adapter tests, retained AgentSession-private state, exact first-Turn handle binding, exact-UUID resume, inspection, close, and multi-AgentSession Harness integration are implemented and pass local checks. OpenCode and Pi retain their bounded `prepare`/`collect` paths. The earlier 2026-07-21 arm64 image build passed its complete smoke, and the earlier minimal arm64 image passed stock unpatched OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1; the current image bytes plus refreshed stock OpenShell, provider, interrupt, reconnect, and recovery evidence are still required.
+The Codex `0.153.4` session-continuity adapter, static registry entry, authored manifest, pinned worker image definition, five-operation adapter tests, retained AgentSession-private state, exact first-Turn handle binding, exact-UUID resume, inspection, close, and multi-AgentSession Harness integration are implemented and pass local checks. OpenCode and Pi retain their bounded `prepare`/`collect` paths. The 2026-07-21 arm64 image build and complete smoke, and the earlier minimal arm64 OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, are historical evidence for the previous Codex `0.144.1` image contents. On 2026-09-05 this worktree built and smoked unique local tag `openkit/worker-codex:codex-pi-refresh-20260905` on Docker Engine 29.5.2 linux/aarch64 (image id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`, smoke exit 0, native version `codex-cli 0.153.4`). Refreshed stock OpenShell, provider, interrupt, reconnect, recovery, amd64 cross-build, and worker-lifecycle evidence for these 0.153.4 image bytes remain unobserved.
 
-This dry run proves image contents, adapter preparation, stock OpenShell containment, upload, and cleanup. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages.
+This local unique-tag smoke proves image contents and adapter dry-run for the 0.153.4 pin. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages. Consumed-surface dispositions and per-file generated-schema checksums for this pin live in `packages/codex-app-server-schema/metadata.json`. Codex `0.153.4` `exec resume` does not accept `--cd`; first-turn still passes `--cd`, and resume relies on the Harness child working directory. That argv difference is an `adapted` consumed-surface disposition, not a selectable-pin closure.
 
 ## Acceptance
 

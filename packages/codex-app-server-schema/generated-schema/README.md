@@ -12,7 +12,7 @@ codex app-server generate-json-schema --out generated-schema
 Current generator version:
 
 ```text
-codex-cli 0.134.0
+codex-cli 0.153.4
 ```
 
 Keep these files inside `@openkit/codex-app-server-schema`. They document the external worker runtime boundary and should not be moved into `packages/protocol`, which remains the UI-to-Core protocol package.

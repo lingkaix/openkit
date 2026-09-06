@@ -26,6 +26,7 @@ import {
   PiAiGatewayClient,
   PiAiGatewayConfigurationError,
 } from './pi-ai-client.js';
+import { WORKER_CLIENT_TOOL_SEARCH_FUNCTION } from './worker-inference-tool-policy.js';
 
 /**
  * Creates a pi-ai-backed provider config for adapter tests.
@@ -932,19 +933,7 @@ describe('PiAiGatewayClient', () => {
     expect(seenContext).toMatchObject({
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Delegate this task.' }] }],
     });
-    expect(seenContext?.tools).toEqual([
-      {
-        constrainedSampling: { type: 'grammar', variants: { openai_regex: '.*' } },
-        description: 'Run a command.',
-        name: 'exec',
-        parameters: {
-          additionalProperties: false,
-          properties: { input: { type: 'string' } },
-          required: ['input'],
-          type: 'object',
-        },
-      },
-    ]);
+    expect(seenContext?.tools).toBeUndefined();
     expect(seenPayload).toEqual({
       input: [additionalTools, userInput],
       model: 'gpt-5.6-sol',
@@ -952,7 +941,534 @@ describe('PiAiGatewayClient', () => {
     });
   });
 
-  it('bridges Codex Responses Lite custom tools through Chat Completions', async () => {
+  it('preserves the Codex 0.153.4 canonical prefix and namespaced custom-tool semantics', async () => {
+    let seenContext: Context | undefined;
+    let seenPayload: unknown;
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol', reasoning: true }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    const additionalTools = {
+      id: 'at_01234567-89ab-5def-8abc-0123456789ab',
+      role: 'developer',
+      tools: [
+        {
+          description: 'Local callable tools.',
+          name: 'functions',
+          tools: [
+            {
+              description: 'Run a command.',
+              format: { type: 'text' },
+              name: 'exec',
+              type: 'custom',
+            },
+          ],
+          type: 'namespace',
+        },
+      ],
+      type: 'additional_tools',
+    } as const;
+    const userInput = {
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Run the check.' }],
+    } as const;
+    faux.setResponses([
+      async (context, options, _state, model) => {
+        seenContext = context;
+        seenPayload = await options?.onPayload?.(
+          { input: [userInput], model: 'gpt-5.6-sol' },
+          model
+        );
+        return fauxAssistantMessage(
+          { ...fauxToolCall('exec', { input: 'text(true);' }), namespace: 'functions' },
+          { stopReason: 'toolUse' }
+        );
+      },
+    ]);
+
+    const response = await new PiAiGatewayClient().createResponses(
+      providerConfig({
+        accountSlotId: 'team',
+        adapterId: 'openai-codex',
+        apiKey: null,
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        id: 'codex-team',
+        models: ['openai-codex/gpt-5.6-sol'],
+        requiresApiKey: false,
+        subscriptionProviderId: 'openai-codex',
+      } as Partial<ResolvedLLMProviderConfig>),
+      {
+        input: [additionalTools, userInput],
+        model: 'openai-codex/gpt-5.6-sol',
+        tools: [],
+      },
+      undefined,
+      {},
+      models
+    );
+
+    expect(seenContext?.tools).toBeUndefined();
+    expect(seenPayload).toEqual({
+      input: [additionalTools, userInput],
+      model: 'gpt-5.6-sol',
+      tools: additionalTools.tools,
+    });
+    expect(response.output).toContainEqual(
+      expect.objectContaining({
+        input: 'text(true);',
+        name: 'exec',
+        namespace: 'functions',
+        type: 'custom_tool_call',
+      })
+    );
+  });
+
+  it('rejects an undeclared provider tool call instead of publishing it', async () => {
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol', reasoning: true }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall('undeclared', {}), { stopReason: 'toolUse' }),
+    ]);
+
+    await expect(
+      new PiAiGatewayClient().createResponses(
+        providerConfig({
+          accountSlotId: 'team',
+          adapterId: 'openai-codex',
+          apiKey: null,
+          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+          id: 'codex-team',
+          models: ['openai-codex/gpt-5.6-sol'],
+          requiresApiKey: false,
+          subscriptionProviderId: 'openai-codex',
+        } as Partial<ResolvedLLMProviderConfig>),
+        {
+          input: [
+            {
+              role: 'developer',
+              tools: [{ name: 'declared', parameters: { type: 'object' }, type: 'function' }],
+              type: 'additional_tools',
+            },
+            { content: 'Call one tool.', role: 'user' },
+          ],
+          model: 'openai-codex/gpt-5.6-sol',
+          tools: [],
+        },
+        undefined,
+        {},
+        models
+      )
+    ).rejects.toBeInstanceOf(GatewayUnsupportedFeatureError);
+  });
+
+  it('lowers client tool search through the stock Codex parser and activates discovered tools', async () => {
+    const accessToken = [
+      'e30',
+      Buffer.from(
+        JSON.stringify({
+          'https://api.openai.com/auth': { chatgpt_account_id: 'account-search' },
+        })
+      ).toString('base64url'),
+      'signature',
+    ].join('.');
+    const credential: OAuthCredential = {
+      access: accessToken,
+      expires: Date.now() + 60 * 60_000,
+      refresh: 'refresh-search',
+      type: 'oauth',
+    };
+    const credentials: CredentialStore = {
+      async delete() {},
+      async list() {
+        return [{ providerId: 'openai-codex', type: 'oauth' }];
+      },
+      async modify(_providerId, fn) {
+        return fn(credential);
+      },
+      async read() {
+        return credential;
+      },
+    };
+    const models = createModels({ credentials });
+    models.setProvider(openaiCodexProvider());
+    const searchCall = {
+      arguments: '{"query":"local tools","limit":2}',
+      call_id: 'call_search',
+      id: 'fc_search',
+      name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+      namespace: 'functions',
+      status: 'completed',
+      type: 'function_call',
+    } as const;
+    const secondSearchCall = {
+      arguments: '{"query":"more local tools","limit":1}',
+      call_id: 'call_search_again',
+      id: 'fc_search_again',
+      name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+      status: 'completed',
+      type: 'function_call',
+    } as const;
+    const discoveredFunctionCall = {
+      arguments: '{"task_name":"inspect"}',
+      call_id: 'call_discovered_function',
+      id: 'fc_discovered_function',
+      name: 'send_message',
+      namespace: 'collaboration',
+      status: 'completed',
+      type: 'function_call',
+    } as const;
+    const discoveredCustomCall = {
+      call_id: 'call_discovered_custom',
+      id: 'ctc_discovered_custom',
+      input: 'text(true);',
+      name: 'run',
+      namespace: 'shell',
+      status: 'completed',
+      type: 'custom_tool_call',
+    } as const;
+    const responseBody = (items: readonly Record<string, unknown>[]): string => {
+      const events: Record<string, unknown>[] = [
+        {
+          response: { id: 'resp_search', model: 'gpt-5.6-sol', output: [], status: 'in_progress' },
+          type: 'response.created',
+        },
+      ];
+      items.forEach((item, outputIndex) => {
+        if (item.type === 'function_call') {
+          events.push(
+            {
+              item: { ...item, arguments: '', status: 'in_progress' },
+              output_index: outputIndex,
+              type: 'response.output_item.added',
+            },
+            {
+              call_id: item.call_id,
+              delta: item.arguments,
+              output_index: outputIndex,
+              type: 'response.function_call_arguments.delta',
+            },
+            { item, output_index: outputIndex, type: 'response.output_item.done' }
+          );
+        } else {
+          events.push(
+            {
+              item: { ...item, input: '', status: 'in_progress' },
+              output_index: outputIndex,
+              type: 'response.output_item.added',
+            },
+            {
+              delta: item.input,
+              output_index: outputIndex,
+              type: 'response.custom_tool_call_input.delta',
+            },
+            { item, output_index: outputIndex, type: 'response.output_item.done' }
+          );
+        }
+      });
+      events.push({
+        response: {
+          id: 'resp_search',
+          model: 'gpt-5.6-sol',
+          output: items,
+          status: 'completed',
+          usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
+        },
+        type: 'response.completed',
+      });
+      return `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`;
+    };
+    const upstreamRequests: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const requestBody = Buffer.from(init?.body as Uint8Array);
+      const decodedBody =
+        new Headers(init?.headers).get('content-encoding') === 'zstd'
+          ? zstdDecompressSync(requestBody)
+          : requestBody;
+      upstreamRequests.push(JSON.parse(decodedBody.toString()) as Record<string, unknown>);
+      const callIndex = upstreamRequests.length - 1;
+      return new Response(
+        callIndex === 0
+          ? responseBody([searchCall])
+          : responseBody([secondSearchCall, discoveredFunctionCall, discoveredCustomCall]),
+        { headers: { 'content-type': 'text/event-stream' }, status: 200 }
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const rootFunction = {
+      description: 'Root function sharing the exec name.',
+      name: 'exec',
+      parameters: { type: 'object', properties: { command: { type: 'string' } } },
+      type: 'function',
+    } as const;
+    const namespacedCustom = {
+      description: 'Namespaced custom tool sharing the exec name.',
+      format: { type: 'text' },
+      name: 'exec',
+      type: 'custom',
+    } as const;
+    const additionalTools = {
+      id: 'at_01234567-89ab-5def-8abc-0123456789ab',
+      role: 'developer',
+      tools: [
+        {
+          description: 'Search local callable tools.',
+          execution: 'client',
+          parameters: {
+            type: 'object',
+            properties: { query: { type: 'string' }, limit: { type: 'number' } },
+            required: ['query'],
+          },
+          type: 'tool_search',
+        },
+        rootFunction,
+        {
+          description: 'Namespaced local callable tools.',
+          name: 'shell',
+          tools: [namespacedCustom],
+          type: 'namespace',
+        },
+      ],
+      type: 'additional_tools',
+    } as const;
+    const discoveredTools = [
+      {
+        description: 'Coordinate discovered work.',
+        name: 'collaboration',
+        tools: [
+          {
+            defer_loading: true,
+            description: 'Send one message.',
+            name: 'send_message',
+            parameters: { type: 'object', properties: { task_name: { type: 'string' } } },
+            type: 'function',
+          },
+        ],
+        type: 'namespace',
+      },
+      {
+        description: 'Discovered shell tools.',
+        name: 'shell',
+        tools: [
+          {
+            defer_loading: true,
+            description: 'Run source text.',
+            format: { type: 'text' },
+            name: 'run',
+            type: 'custom',
+          },
+        ],
+        type: 'namespace',
+      },
+    ] as const;
+    const nullableReasoning = {
+      content: null,
+      encrypted_content: null,
+      id: 'rs_nullable_content',
+      summary: [{ text: 'Retain the native reasoning item.', type: 'summary_text' }],
+      type: 'reasoning',
+    } as const;
+    const phasedMessage = {
+      content: [{ text: 'Preserve this output phase.', type: 'output_text' }],
+      id: 'msg_phase',
+      phase: 'commentary',
+      role: 'assistant',
+      type: 'message',
+    } as const;
+    const provider = providerConfig({
+      accountSlotId: 'team',
+      adapterId: 'openai-codex',
+      apiKey: null,
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+      id: 'codex-team',
+      models: ['openai-codex/gpt-5.6-sol'],
+      requiresApiKey: false,
+      subscriptionProviderId: 'openai-codex',
+    } as Partial<ResolvedLLMProviderConfig>);
+    const client = new PiAiGatewayClient();
+
+    try {
+      const first = await client.createResponses(
+        provider,
+        {
+          input: [
+            additionalTools,
+            { content: 'Retain this input-scoped instruction.', role: 'developer' },
+            { content: 'Find local tools.', role: 'user' },
+          ],
+          instructions: 'Retain this request instruction.',
+          model: 'openai-codex/gpt-5.6-sol',
+          tools: [],
+        },
+        undefined,
+        {},
+        models
+      );
+      const publicSearchCall = first.output?.[0];
+      expect(publicSearchCall).toEqual({
+        arguments: { query: 'local tools', limit: 2 },
+        call_id: 'call_search',
+        execution: 'client',
+        id: 'fc_search',
+        status: 'completed',
+        type: 'tool_search_call',
+      });
+
+      const stream = await client.createResponsesStream(
+        provider,
+        {
+          input: [
+            additionalTools,
+            { content: 'Use the discovered tools.', role: 'user' },
+            nullableReasoning,
+            phasedMessage,
+            {
+              arguments: '{"command":"pwd"}',
+              call_id: 'call_root_exec',
+              id: 'fc_root_exec',
+              name: 'exec',
+              type: 'function_call',
+            },
+            { call_id: 'call_root_exec', output: '/workspace', type: 'function_call_output' },
+            {
+              call_id: 'call_namespaced_exec',
+              id: 'ctc_namespaced_exec',
+              input: 'text(false);',
+              name: 'exec',
+              namespace: 'shell',
+              type: 'custom_tool_call',
+            },
+            {
+              call_id: 'call_namespaced_exec',
+              output: 'false',
+              type: 'custom_tool_call_output',
+            },
+            publicSearchCall,
+            {
+              call_id: 'call_search',
+              execution: 'client',
+              status: 'completed',
+              tools: discoveredTools,
+              type: 'tool_search_output',
+            },
+          ],
+          model: 'openai-codex/gpt-5.6-sol',
+          stream: true,
+          tools: [],
+        },
+        undefined,
+        {},
+        models
+      );
+      const body = await new Response(stream).text();
+      const events = body
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            item: expect.objectContaining({
+              arguments: { query: 'more local tools', limit: 1 },
+              call_id: 'call_search_again',
+              execution: 'client',
+              type: 'tool_search_call',
+            }),
+            type: 'response.output_item.done',
+          }),
+          expect.objectContaining({
+            item: expect.objectContaining({
+              arguments: '{"task_name":"inspect"}',
+              name: 'send_message',
+              namespace: 'collaboration',
+              type: 'function_call',
+            }),
+            type: 'response.output_item.done',
+          }),
+          expect.objectContaining({
+            item: expect.objectContaining({
+              input: 'text(true);',
+              name: 'run',
+              namespace: 'shell',
+              type: 'custom_tool_call',
+            }),
+            type: 'response.output_item.done',
+          }),
+        ])
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const firstRequest = upstreamRequests[0];
+      const firstInput = firstRequest?.input as readonly Record<string, unknown>[];
+      const secondInput = upstreamRequests[1]?.input as readonly Record<string, unknown>[];
+      expect(firstRequest?.instructions).toBe('Retain this request instruction.');
+      expect(firstInput).toEqual([
+        {
+          ...additionalTools,
+          tools: [
+            {
+              description: 'Search local callable tools.',
+              name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+              parameters: additionalTools.tools[0].parameters,
+              type: 'function',
+            },
+            rootFunction,
+            {
+              description: 'Namespaced local callable tools.',
+              name: 'shell',
+              tools: [namespacedCustom],
+              type: 'namespace',
+            },
+          ],
+        },
+        { content: 'Retain this input-scoped instruction.', role: 'developer' },
+        { content: 'Find local tools.', role: 'user' },
+      ]);
+      expect(secondInput).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            call_id: 'call_root_exec',
+            name: 'exec',
+            type: 'function_call',
+          }),
+          expect.objectContaining({
+            call_id: 'call_namespaced_exec',
+            name: 'exec',
+            namespace: 'shell',
+            type: 'custom_tool_call',
+          }),
+          expect.objectContaining({
+            call_id: 'call_search',
+            name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+            type: 'function_call',
+          }),
+          nullableReasoning,
+          phasedMessage,
+        ])
+      );
+      const searchResultIndex = secondInput.findIndex(
+        (item) => item.type === 'function_call_output' && item.call_id === 'call_search'
+      );
+      expect(secondInput[searchResultIndex + 1]).toEqual({
+        role: 'developer',
+        tools: discoveredTools.map((namespace) => ({
+          ...namespace,
+          tools: namespace.tools.map(({ defer_loading: _deferLoading, ...tool }) => tool),
+        })),
+        type: 'additional_tools',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('preserves custom response projection when bridging Responses through Chat Completions', async () => {
     let seenContext: Context | undefined;
     let seenOptions: (StreamOptions & Record<string, unknown>) | undefined;
     let seenPayload: unknown;
@@ -1021,17 +1537,8 @@ describe('PiAiGatewayClient', () => {
     const body = await new Response(stream).text();
     expect(seenContext).toMatchObject({
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Run the check.' }] }],
-      tools: [
-        {
-          name: 'exec',
-          parameters: {
-            properties: { input: { type: 'string' } },
-            required: ['input'],
-            type: 'object',
-          },
-        },
-      ],
     });
+    expect(seenContext?.tools).toBeUndefined();
     expect(seenOptions).toMatchObject({
       apiKey: 'openrouter-secret',
       reasoningEffort: 'high',
@@ -1135,32 +1642,41 @@ describe('PiAiGatewayClient', () => {
       summary: [{ text: 'Current reasoning.', type: 'summary_text' }],
       type: 'reasoning',
     } as const;
-    const upstreamBody = [
-      `data: ${JSON.stringify({
-        response: { id: 'resp_lite', model: 'gpt-5.6-sol', output: [], status: 'in_progress' },
-        type: 'response.created',
-      })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null, status: 'in_progress', summary: [] }, output_index: 0, type: 'response.output_item.added' })}\n\n`,
-      `data: ${JSON.stringify({ delta: 'Current reasoning.', item_id: currentReasoning.id, output_index: 0, summary_index: 0, type: 'response.reasoning_summary_text.delta' })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null }, output_index: 0, type: 'response.output_item.done' })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...functionCall, arguments: '', status: 'in_progress' }, output_index: 1, type: 'response.output_item.added' })}\n\n`,
-      `data: ${JSON.stringify({ call_id: functionCall.call_id, delta: functionCall.arguments, output_index: 1, type: 'response.function_call_arguments.delta' })}\n\n`,
-      `data: ${JSON.stringify({ item: functionCall, output_index: 1, type: 'response.output_item.done' })}\n\n`,
-      `data: ${JSON.stringify({ item: { ...customCall, input: '', status: 'in_progress' }, output_index: 2, type: 'response.output_item.added' })}\n\n`,
-      `data: ${JSON.stringify({ delta: customCall.input, output_index: 2, type: 'response.custom_tool_call_input.delta' })}\n\n`,
-      `data: ${JSON.stringify({ item: customCall, output_index: 2, type: 'response.output_item.done' })}\n\n`,
-      `data: ${JSON.stringify({
-        response: {
-          id: 'resp_lite',
-          model: 'gpt-5.6-sol',
-          output: [currentReasoning, functionCall, customCall],
-          status: 'completed',
-          usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
-        },
-        type: 'response.completed',
-      })}\n\n`,
-      'data: [DONE]\n\n',
-    ].join('');
+    const upstreamChunks = [
+      [
+        `data: ${JSON.stringify({
+          response: {
+            id: 'resp_lite',
+            model: 'gpt-5.6-sol',
+            output: [],
+            status: 'in_progress',
+          },
+          type: 'response.created',
+        })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null, status: 'in_progress', summary: [] }, output_index: 0, type: 'response.output_item.added' })}\n\n`,
+        `data: ${JSON.stringify({ delta: 'Current reasoning.', item_id: currentReasoning.id, output_index: 0, summary_index: 0, type: 'response.reasoning_summary_text.delta' })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...currentReasoning, encrypted_content: null }, output_index: 0, type: 'response.output_item.done' })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...functionCall, arguments: '', namespace: undefined, status: 'in_progress' }, output_index: 1, type: 'response.output_item.added' })}\n\n`,
+        `data: ${JSON.stringify({ call_id: functionCall.call_id, delta: functionCall.arguments, output_index: 1, type: 'response.function_call_arguments.delta' })}\n\n`,
+      ].join(''),
+      [
+        `data: ${JSON.stringify({ item: functionCall, output_index: 1, type: 'response.output_item.done' })}\n\n`,
+        `data: ${JSON.stringify({ item: { ...customCall, input: '', status: 'in_progress' }, output_index: 2, type: 'response.output_item.added' })}\n\n`,
+        `data: ${JSON.stringify({ delta: customCall.input, output_index: 2, type: 'response.custom_tool_call_input.delta' })}\n\n`,
+        `data: ${JSON.stringify({ item: customCall, output_index: 2, type: 'response.output_item.done' })}\n\n`,
+        `data: ${JSON.stringify({
+          response: {
+            id: 'resp_lite',
+            model: 'gpt-5.6-sol',
+            output: [currentReasoning, functionCall, customCall],
+            status: 'completed',
+            usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+          },
+          type: 'response.completed',
+        })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join(''),
+    ] as const;
     let observedUpstreamInput: unknown;
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const requestBody = Buffer.from(init?.body as Uint8Array);
@@ -1169,13 +1685,31 @@ describe('PiAiGatewayClient', () => {
           ? zstdDecompressSync(requestBody)
           : requestBody;
       observedUpstreamInput = (JSON.parse(decodedBody.toString()) as { input?: unknown }).input;
-      return new Response(upstreamBody, {
-        headers: {
-          'content-type': 'text/event-stream',
-          'x-codex-turn-state': 'next-turn-state',
-        },
-        status: 200,
-      });
+      const encoder = new TextEncoder();
+      let upstreamCancelled = false;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(upstreamChunks[0]));
+            setImmediate(() => {
+              if (!upstreamCancelled) {
+                controller.enqueue(encoder.encode(upstreamChunks[1]));
+                controller.close();
+              }
+            });
+          },
+          cancel() {
+            upstreamCancelled = true;
+          },
+        }),
+        {
+          headers: {
+            'content-type': 'text/event-stream',
+            'x-codex-turn-state': 'next-turn-state',
+          },
+          status: 200,
+        }
+      );
     });
     vi.stubGlobal('fetch', fetchMock);
     const observedUsage: unknown[] = [];
@@ -1184,10 +1718,17 @@ describe('PiAiGatewayClient', () => {
       role: 'developer',
       tools: [
         {
-          description: 'Run code.',
-          format: { type: 'text' },
-          name: 'exec',
-          type: 'custom',
+          description: 'Default local tools.',
+          name: 'functions',
+          tools: [
+            {
+              description: 'Run code.',
+              format: { type: 'text' },
+              name: 'exec',
+              type: 'custom',
+            },
+          ],
+          type: 'namespace',
         },
         {
           description: 'Coordinate agents.',
@@ -1242,6 +1783,7 @@ describe('PiAiGatewayClient', () => {
               id: 'ctc_previous_exec',
               input: 'text(true);',
               name: 'exec',
+              namespace: '',
               type: 'custom_tool_call',
             },
             {
@@ -1300,6 +1842,15 @@ describe('PiAiGatewayClient', () => {
           type: 'function_call',
         },
       });
+      expect(events[7]).toMatchObject({
+        call_id: functionCall.call_id,
+        item_id: functionCall.id,
+        delta: functionCall.arguments,
+      });
+      expect(events[8]).toMatchObject({
+        item_id: functionCall.id,
+        arguments: functionCall.arguments,
+      });
       expect(events[9]).toMatchObject({ item: functionCall });
       expect(events[10]).toMatchObject({
         item: {
@@ -1340,6 +1891,7 @@ describe('PiAiGatewayClient', () => {
           id: 'ctc_previous_exec',
           input: 'text(true);',
           name: 'exec',
+          namespace: '',
           type: 'custom_tool_call',
         },
         {
@@ -1818,7 +2370,7 @@ describe('PiAiGatewayClient', () => {
       },
     ],
     [
-      'a namespaced custom tool',
+      'a nested namespace',
       {
         input: [
           {
@@ -1826,13 +2378,84 @@ describe('PiAiGatewayClient', () => {
             tools: [
               {
                 name: 'local',
-                tools: [{ format: { type: 'text' }, name: 'exec', type: 'custom' }],
+                tools: [
+                  {
+                    name: 'nested',
+                    tools: [{ name: 'exec', parameters: { type: 'object' }, type: 'function' }],
+                    type: 'namespace',
+                  },
+                ],
                 type: 'namespace',
               },
             ],
             type: 'additional_tools',
           },
           { content: 'Hello', role: 'user' },
+        ],
+      },
+    ],
+    [
+      'a null additional-tools id',
+      {
+        input: [
+          {
+            id: null,
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'a non-additional-tools id prefix',
+      {
+        input: [
+          {
+            id: 'msg_01234567-89ab-5def-8abc-0123456789ab',
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'a malformed additional-tools UUIDv5',
+      {
+        input: [
+          {
+            id: 'at_01234567-89ab-4def-8abc-0123456789ab',
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'an unknown additional-tools field',
+      {
+        input: [
+          {
+            extra: true,
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'a misplaced additional-tools prefix',
+      {
+        input: [
+          { content: 'Hello', role: 'user' },
+          {
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
         ],
       },
     ],
@@ -1853,6 +2476,26 @@ describe('PiAiGatewayClient', () => {
       },
     ],
     [
+      'a root and default-namespace callable collision',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              { name: 'exec', parameters: { type: 'object' }, type: 'function' },
+              {
+                name: 'functions',
+                tools: [{ format: { type: 'text' }, name: 'exec', type: 'custom' }],
+                type: 'namespace',
+              },
+            ],
+            type: 'additional_tools',
+          },
+          { content: 'Hello', role: 'user' },
+        ],
+      },
+    ],
+    [
       'duplicate tool-search declarations',
       {
         input: [
@@ -1862,6 +2505,230 @@ describe('PiAiGatewayClient', () => {
             type: 'additional_tools',
           },
           { content: 'Hello', role: 'user' },
+        ],
+      },
+    ],
+    [
+      'a provider-executed tool-search declaration',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              {
+                description: 'Search local tools.',
+                execution: 'server',
+                parameters: { type: 'object' },
+                type: 'tool_search',
+              },
+            ],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'a tool-search declaration without object parameters',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              {
+                description: 'Search local tools.',
+                execution: 'client',
+                parameters: 'not-a-schema',
+                type: 'tool_search',
+              },
+            ],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'a false defer-loading marker',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              {
+                defer_loading: false,
+                name: 'wait',
+                parameters: { type: 'object' },
+                type: 'function',
+              },
+            ],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'a caller-declared reserved search function',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              {
+                name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+                parameters: { type: 'object' },
+                type: 'function',
+              },
+            ],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'an unmatched client tool-search output',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              {
+                description: 'Search local tools.',
+                execution: 'client',
+                parameters: { type: 'object' },
+                type: 'tool_search',
+              },
+            ],
+            type: 'additional_tools',
+          },
+          {
+            call_id: 'call_missing',
+            execution: 'client',
+            status: 'completed',
+            tools: [],
+            type: 'tool_search_output',
+          },
+        ],
+      },
+    ],
+    [
+      'a conflicting discovered tool definition',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              {
+                description: 'Search local tools.',
+                execution: 'client',
+                parameters: { type: 'object' },
+                type: 'tool_search',
+              },
+              { name: 'wait', parameters: { type: 'object' }, type: 'function' },
+            ],
+            type: 'additional_tools',
+          },
+          {
+            arguments: {},
+            call_id: 'call_search',
+            execution: 'client',
+            type: 'tool_search_call',
+          },
+          {
+            call_id: 'call_search',
+            execution: 'client',
+            status: 'completed',
+            tools: [
+              {
+                name: 'wait',
+                parameters: { properties: { reason: { type: 'string' } }, type: 'object' },
+                type: 'function',
+              },
+            ],
+            type: 'tool_search_output',
+          },
+        ],
+      },
+    ],
+    [
+      'duplicate native call carriers',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+          {
+            arguments: '{}',
+            call_id: 'call_wait',
+            id: 'fc_wait',
+            name: 'wait',
+            type: 'function_call',
+          },
+          {
+            arguments: '{}',
+            call_id: 'call_wait',
+            id: 'fc_wait',
+            name: 'wait',
+            type: 'function_call',
+          },
+        ],
+      },
+    ],
+    [
+      'an unmatched native function call',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+          {
+            arguments: '{}',
+            call_id: 'call_wait',
+            id: 'fc_wait',
+            name: 'wait',
+            type: 'function_call',
+          },
+        ],
+      },
+    ],
+    [
+      'an unknown native message field',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+          { content: 'Hello', private_extension: true, role: 'user', type: 'message' },
+        ],
+      },
+    ],
+    [
+      'a null native message phase',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+          { content: 'Hello', phase: null, role: 'assistant', type: 'message' },
+        ],
+      },
+    ],
+    [
+      'an unknown native message phase',
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+          { content: 'Hello', phase: 'analysis', role: 'assistant', type: 'message' },
         ],
       },
     ],

@@ -393,7 +393,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     createNanoHostHarnessRuntime(coreDb, {
       adapterId: 'codex',
-      adapterVersion: '0.144.1',
+      adapterVersion: '0.153.4',
       harnessBindingRef: 'harness-binding-unready-admission',
       harnessCompatibilityKey: 'd'.repeat(64),
       harnessInstanceId: 'harness-unready-admission',
@@ -554,7 +554,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-08-21T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-factory-restore',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-factory-restore',
@@ -604,7 +604,7 @@ describe('createConfiguredTurnExecutor', () => {
             'd'.repeat(64),
             'target_factory_restore',
             'codex',
-            '0.144.1'
+            '0.153.4'
           )!.bindings,
         ]
           .map(([agentSessionId]) => agentSessionId)
@@ -620,7 +620,7 @@ describe('createConfiguredTurnExecutor', () => {
     const sessionCompatibilityKey = `sha256:${'a'.repeat(64)}`;
     const runtimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
       adapterId: 'codex',
-      adapterVersion: '0.144.1',
+      adapterVersion: '0.153.4',
       harnessCompatibilityKey: 'd'.repeat(64),
       sessionCompatibilityKey,
       threadId: 'thread-continuity-key',
@@ -636,7 +636,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-08-21T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-continuity-key',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-continuity-key',
@@ -719,7 +719,7 @@ describe('createConfiguredTurnExecutor', () => {
         'd'.repeat(64),
         'target_continuity_key',
         'codex',
-        '0.144.1'
+        '0.153.4'
       );
       const input = {
         agentSessionCompatibilityKey: sessionCompatibilityKey,
@@ -880,7 +880,7 @@ describe('createConfiguredTurnExecutor', () => {
       const identity = backend.planSession(environmentPackage);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-absent-cleanup',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-absent-cleanup',
@@ -991,7 +991,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-post-fence',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-post-fence',
@@ -1033,7 +1033,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect('lease-binding:post-fence').not.toBe('sandbox-binding-post-fence');
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-post-fence-sibling',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-post-fence-sibling',
@@ -1284,7 +1284,7 @@ describe('createConfiguredTurnExecutor', () => {
       const projectingPrefix = 'a'.repeat(16);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-lookup-a',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-a',
@@ -1310,7 +1310,7 @@ describe('createConfiguredTurnExecutor', () => {
 
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-lookup-dup',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-dup',
@@ -1334,7 +1334,7 @@ describe('createConfiguredTurnExecutor', () => {
 
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-lookup-worker',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-worker',
@@ -1376,7 +1376,7 @@ describe('createConfiguredTurnExecutor', () => {
 
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-lookup-agent',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-agent',
@@ -1438,7 +1438,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-08-21T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-unknown',
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-unknown',
@@ -1519,7 +1519,7 @@ describe('createConfiguredTurnExecutor', () => {
         } = {}
       ) =>
         ({
-          agent: { runtimeKind: 'codex', runtimeVersion: '0.144.1' },
+          agent: { runtimeKind: 'codex', runtimeVersion: '0.153.4' },
           backend: {},
           capabilities: {},
           control: { adapter: { targetRuntime: 'codex' } },
@@ -2529,7 +2529,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-09-06T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.144.1',
+        adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-capacity-guard',
         harnessCompatibilityKey: 'c'.repeat(64),
         harnessInstanceId: 'harness-capacity-guard',

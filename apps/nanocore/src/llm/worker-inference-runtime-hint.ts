@@ -32,7 +32,7 @@ const MAX_RUNTIME_HINT_LENGTH = 16 * 1024;
 const CODEX_TURN_METADATA_KEY = 'x-codex-turn-metadata';
 
 /**
- * Reads and cross-checks the pinned Codex 0.144.1 inference hint projection.
+ * Reads and cross-checks the pinned Codex 0.153.4 inference hint projection.
  *
  * The returned object is intentionally ephemeral.
  * Callers must consume it before shared provider dispatch and must not persist it or forward its raw values upstream.
