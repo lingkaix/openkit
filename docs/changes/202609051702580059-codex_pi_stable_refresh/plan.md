@@ -1,7 +1,8 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 started: 2026-09-05
+completed: 2026-09-06
 branch: codex/codex-pi-stable-refresh
 ---
 # Codex And PI Agent Stable Refresh
@@ -147,10 +148,10 @@ This refresh does not create a new real-resume gate, a full release-qualificatio
 - **Accepted artifacts:** A2 Run9 App index is `sha256:5cd666ef358a138f404d4b3abf4da0041e27493faf818ee06780258654040203`, native leaf `sha256:1f14441fe1a9279c945bf32090fea189ed5780083c2ae1c2feb397f408f63d79`, and Web SHA-256 `f06f58101c88fb50467f0e8c6e2bc04775b0bd3a8bf34d78a8161173cad23327`. Worker images and NanoHost bytes remain unchanged from the accepted `6bf9bfbc` builds.
 - **Runtime acceptance:** All four current refresh gates pass: eight Worker/platform smokes; three-leaf stock OpenShell packaging; Codex F1 attempt 9; and final public interruption `ws_24` / `th_27`, receipt SHA-256 `40ed7f8be04812ababededfa23102136426f4602a418419ec3b92808c94f5691`. OKF migration and public use remain accepted. Earlier failed attempts retain their actual FAIL dispositions.
 - **Checks:** Complete Linux L0-L2 run `34001207497` passes. Final runtime corrections pass 289 focused cases, exact abort regressions, typecheck, lint, and build; full NanoCore reports 2645 passes and only the unchanged macOS `/proc/self/fd` failure already proved on Linux. Exact runtime-head CI `34014415157` passes.
-- **Next action:** Freeze the accepted combined tree and receiver map, squash PR5, rebase only the two OKF commits onto that main and squash PR6, then create PR7's single commit from its accepted tree atop the new main and squash it. Verify each parent/tree and final content before the authorized finite local, GitHub, and A2 development-ref/worktree cleanup.
+- **Next action:** None for this refresh. Runtime acceptance, ordered integration, and preservation-checked Git cleanup are complete; later roadmap work remains paused.
 - **Retention and exclusions:** Retain normal A2 data, failed records, users, credentials, subscriptions, services, and evidence. Generic NanoHost F2-F4, separate OpenCode acceptance, optional provenance advertisement, future Pi selectability, and later roadmap features are outside this refresh closure and remain unclaimed. No next feature starts.
 
-## Verification Observed
+## Verification
 
 Toolchain: `node -v` = `v24.18.0`; `pnpm -v` = `10.33.3`; PATH used `/Users/m5pro/.local/share/mise/shims`.
 
@@ -269,3 +270,9 @@ Post-PR integration checks on 2026-09-06:
 ### Final Runtime Acceptance
 
 The final public interruption on `ws_24` / `th_27` passed using normal existing credentials and configuration. Root inspected the complete same-lineage receipt with successful inference and readiness before interruption, accepted native `interrupted` / `aborted`, eventual Core Turn `interrupted`, Task state `cancelled`, lease `released` with reason `turn-interrupted`, same backend `cleaned`, and generation 36 ready/fenced/fresh-empty. Receipt SHA-256 is `40ed7f8be04812ababededfa23102136426f4602a418419ec3b92808c94f5691`. App build and canonical smoke passed; replacement receipt SHA-256 is `b7041bbcaf8872e96dab96759a72400c322d5c2efc64a5cfb58bf372e6eabad3`. No further runtime test or product correction is required for this refresh.
+
+## Closeout
+
+PR #5 merged as `68f096eab48b405d098fbb89d9a127e0b6c75ac9`, PR #6 as `adef9dccd79d6ca89744b7c049d4c06ee2c51dd7`, and PR #7 as `6acf1c5a2d720e8ac6c4a8a82ae25cdae9ce8dca`. Every expected squash parent/tree was verified; final merged tree `a2cc06e45368ee4b29ef147a5b228d23a006e16d` is byte-identical to independently accepted candidate `aa3d5abcc817af1c0479400014976c7adc422934`. The frozen receiver map proves preservation of the shared-root, Phase1, old-CI, and 43-path stash content without relying on post-squash ancestry.
+
+All OpenKit PRs are resolved. Six local auxiliary worktrees, eight local development branches, five GitHub development branches, and 29 auxiliary A2 Git checkouts were removed after preservation and dependency checks. Local and GitHub retain only `main`; A2 retains only canonical `/home/ubuntu/openkit/source` on `main`. The exact already-integrated stash was dropped last. Four local evidence mirrors, all A2 evidence-bearing parents, normal staging data, schema history, users, credentials, subscriptions, CLI homes, images, and running services remain. Exact receipts and the preserved receiver map are under canonical `temp/changes/202609031230162442-r058_worker_mcp/final-preservation/` and `final-git-inventory.md`. This final documentation update records completed effects and changes no runtime bytes. Later roadmap features remain paused.
