@@ -148,7 +148,7 @@ describe('Sandbox Integration', () => {
       await integration.ready;
 
       const harnessPoll = await integration.harnessControlFetch('/worker-control/harness/poll', {
-        body: '{"schemaVersion":1,"nextExpectedSequence":0}',
+        body: '{"schemaVersion":2,"nextExpectedSequence":0}',
         headers: { 'content-type': 'application/json' },
         method: 'POST',
       });

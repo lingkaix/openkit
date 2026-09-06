@@ -65,6 +65,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -1193,7 +1194,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         createAgentSessionId: () => agentSessionId,
         now: () => '2026-08-21T12:00:00.000Z',
       });
-      const workspaceCwd = process.cwd();
+      const workspaceCwd = mkdtempSync(join(tmpdir(), 'openkit-governance-preview-'));
+      seedWritableGitRepository(workspaceCwd);
       const workspaceRoots = [
         {
           access: 'read-write' as const,
@@ -1278,7 +1280,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(enqueueInterrupt).toHaveBeenCalledWith(packageSnapshotId, null);
     expect(workerControlGateway.getSessionSnapshot(packageSnapshotId)?.commands).toEqual([
       {
-        commandId: 'worker-command-1',
+        commandId: expect.stringMatching(/^[0-9a-f]{64}$/),
         deliveredAt: null,
         kind: 'interrupt',
         queuedAt: '2026-08-12T00:00:00.000Z',
@@ -1620,6 +1622,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = createDemoStore();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-transcript-'));
+    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run in OpenShell');
     store.updateTurn(turn.id, { agentId: 'agent_opencode_host' });
     const completedAt = new Date(
@@ -1653,13 +1657,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         id: 'automation_governance_test',
         responsibleUserId: 'user_local',
       },
-      workspaceCwd: process.cwd(),
+      workspaceCwd: repositoryPath,
       workspaceRoots: [
         {
           access: 'read-write',
           id: 'repo',
           sourceKind: 'host-dir',
-          sourcePath: process.cwd(),
+          sourcePath: repositoryPath,
           workerPath: '/workspace/openkit',
         },
       ],
@@ -1696,7 +1700,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(backend.lastContext?.workspaceRoots).toEqual([
       expect.objectContaining({
         id: 'repo',
-        sourcePath: process.cwd(),
+        sourcePath: repositoryPath,
         workerPath: '/workspace/openkit',
       }),
     ]);
@@ -1955,12 +1959,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     {
       finalStatus: 'cancelled',
       stopReason: 'aborted',
-      turnStatus: 'cancelled',
+      turnStatus: 'interrupted',
     },
     {
       finalStatus: 'interrupted',
       stopReason: 'aborted',
-      turnStatus: 'cancelled',
+      turnStatus: 'interrupted',
     },
     {
       finalStatus: 'blocked',
@@ -2217,6 +2221,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       agentSessionId,
       status: turnStatus,
     });
+    if (stopReason === 'aborted') {
+      expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
+    }
     expect(
       store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
     ).toMatchObject({ data: { stopReason: stopReason === 'ask_user' ? 'aborted' : stopReason } });
@@ -3455,6 +3462,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = createDemoStore();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-teardown-fail-repo-'));
+    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run in OpenShell');
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_fail_1' });
     backend.failTeardown = true;
@@ -3478,7 +3487,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             access: 'read-write',
             id: 'repo',
             sourceKind: 'host-dir',
-            sourcePath: process.cwd(),
+            sourcePath: repositoryPath,
             workerPath: '/workspace/openkit',
           },
         ],
@@ -3508,6 +3517,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = createDemoStore();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-teardown-retry-repo-'));
+    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Retry OpenShell teardown');
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_retry_1' });
     backend.teardownFailuresRemaining = 1;
@@ -3530,7 +3541,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             access: 'read-write',
             id: 'repo',
             sourceKind: 'host-dir',
-            sourcePath: process.cwd(),
+            sourcePath: repositoryPath,
             workerPath: '/workspace/openkit',
           },
         ],
@@ -3587,6 +3598,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     closeSpy.mockClear();
 
     const store = createDemoStore();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-cleanup-status-repo-'));
+    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Fail cleanup status persistence');
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -3609,7 +3622,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
               access: 'read-write',
               id: 'repo',
               sourceKind: 'host-dir',
-              sourcePath: process.cwd(),
+              sourcePath: repositoryPath,
               workerPath: '/workspace/openkit',
             },
           ],
@@ -4062,6 +4075,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = createDemoStore();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-source-ref-repo-'));
+    seedWritableGitRepository(repositoryPath);
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Run with source catalog');
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -4097,7 +4112,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           access: 'read-write',
           id: 'repo_default',
           sourceKind: 'host-dir',
-          sourcePath: process.cwd(),
+          sourcePath: repositoryPath,
           workerPath: '/workspace/openkit',
         },
       ],

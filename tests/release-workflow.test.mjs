@@ -209,7 +209,7 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
   assert.match(portableCommands, /verify-nanohost-release\.mjs/);
   assert.match(portableCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
   assert.match(portableCommands, /sha256sum -c SHA256SUMS/);
-  const pinStep = portable.steps.find(
+  const releaseStep = portable.steps.find(
     (candidate) =>
       candidate.id &&
       /GITHUB_OUTPUT/u.test(candidate.run ?? '') &&
@@ -217,24 +217,24 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
         new RegExp(`(?:^|[^A-Za-z0-9_])${name}=`, 'u').test(candidate.run)
       )
   );
-  assert.ok(pinStep, 'Portable packaging must parse the accepted OpenShell pin once');
+  assert.ok(releaseStep, 'Portable packaging must parse the supported OpenShell release once');
   assert.doesNotMatch(portableCommands, /v0\.0\.99|8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032/u);
   assert.doesNotMatch(portableCommands, /openshell-gateway-aarch64-unknown-linux-gnu\.tar\.gz/u);
-  const pinConsumer = portable.steps.find((candidate) =>
+  const releaseConsumer = portable.steps.find((candidate) =>
     /github\.com\/NVIDIA\/OpenShell\/releases\/download/u.test(candidate.run ?? '')
   );
-  assert.ok(pinConsumer, 'Portable packaging must download the parsed OpenShell coordinates');
-  const releaseCoordinate = pinConsumer.run
+  assert.ok(releaseConsumer, 'Portable packaging must download the parsed OpenShell coordinates');
+  const releaseCoordinate = releaseConsumer.run
     .split('\n')
     .find((line) => line.includes('github.com/NVIDIA/OpenShell/releases/download'));
-  const sourceCoordinate = pinConsumer.run
+  const sourceCoordinate = releaseConsumer.run
     .split('\n')
     .find((line) => line.includes('raw.githubusercontent.com/NVIDIA/OpenShell'));
   assert.ok(releaseCoordinate, 'Missing OpenShell release download coordinate');
   assert.ok(sourceCoordinate, 'Missing OpenShell source download coordinate');
-  assert.match(releaseCoordinate, outputReference(pinStep, pinConsumer, 'tag'));
-  assert.match(releaseCoordinate, outputReference(pinStep, pinConsumer, 'archive'));
-  assert.match(sourceCoordinate, outputReference(pinStep, pinConsumer, 'commit'));
+  assert.match(releaseCoordinate, outputReference(releaseStep, releaseConsumer, 'tag'));
+  assert.match(releaseCoordinate, outputReference(releaseStep, releaseConsumer, 'archive'));
+  assert.match(sourceCoordinate, outputReference(releaseStep, releaseConsumer, 'commit'));
 
   const releaseCommands = workflow.jobs['github-release'].steps
     .map((candidate) => candidate.run)

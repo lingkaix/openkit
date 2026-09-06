@@ -32,6 +32,13 @@ function issueTransportToken(coreDb: CoreDb): {
 } {
   const identityId = 'integration_nanohost_primary';
   const deploymentId = 'deploy_primary';
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO nanohost_integration_identities (
+        identity_id, deployment_id, status, created_at
+      ) VALUES (?, ?, 'active', ?)`
+    )
+    .run(identityId, deploymentId, '2026-08-08T00:00:00.000Z');
   const issued = createNanoHostTransportTokenRecord(coreDb, {
     deploymentId,
     expiresAt: '2026-09-08T00:00:00.000Z',

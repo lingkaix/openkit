@@ -16,7 +16,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 - `PermissionDecision` as the durable bridge between policy evaluation, product workflow, approvals, audit, and backend policy derivation.
 - Mapping policy decisions to product behavior, approval gates, Action Center rows, launch blocking, degraded readiness, and fail-closed errors.
 - Deriving runtime backend policy from canonical NanoCore decisions without making backend policy canonical.
-- Current implementation projection across `@openkit/policy-kernel`, config policy, AEP policy blocks, gateway policy, OpenShell policy YAML, and approval lifecycle records.
+- Current implementation projection across `@openkit/policy-kernel`, config policy, AEP policy blocks, gateway policy, structured OpenShell policy, and approval lifecycle records.
 
 ## Does Not Own
 
@@ -50,7 +50,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 
 - Do not change the policy kernel theory or package design in this spec.
 - Do not redefine NGAC concepts through NanoCore product vocabulary.
-- Do not make OpenShell policy YAML canonical.
+- Do not make OpenShell policy artifacts canonical.
 - Do not define UI copy for policy decisions.
 - Do not add organizations, tenants, custom roles, groups, or a second RBAC engine; the first implementation projects the fixed owner/editor/viewer product roles into the policy kernel.
 - Do not preserve runtime-native approval prompts as the long-term permission model.
@@ -269,7 +269,7 @@ The V1 enforcement bridge exists, but full alignment with the standard-aligned p
 - The local deterministic Goal Mode supervise route records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` before starting its worker turn through `startGoalTaskWorkerTurn`, giving the worker-launch path its first product permission-decision producer.
 - `runWorkerTurnLoop` now records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` after creating the worker turn and before starting the worker boundary, so the real bounded worker loop also leaves a product permission-decision row.
 - The governed worker executor stores the same first worker-launch policy snapshot id on the created AgentSession and the resolved AEP policy block, binding the durable session lineage and backend launch snapshot to the `runtime.launch` decision snapshot for that turn.
-- `apps/nanocore/src/runtime/openshell-policy.ts` renders derived OpenShell filesystem, process, and network policy YAML from NanoCore runtime inputs.
+- `apps/nanocore/src/runtime/openshell-policy.ts` validates NanoCore-authored filesystem and network intent and projects it as the structured policy consumed by NanoHost. NanoHost strictly parses that input into the current OpenShell SDK type before requesting a sandbox, so malformed, unknown, or unsupported policy fails before an OpenShell effect.
 - `recordProductPermissionDecision` persists the accepted seven-value product decision result set, including `require_approval` and `require_escalation`, fails closed when a `require_approval` decision does not name the required approval kind, and emits linked server- or workspace-scoped `AuditEvent` rows with `permissionDecisionId` filled. Current producers record individual outcomes; no shared implementation currently combines multiple mandatory results under the Core precedence, so a future multi-input enforcement point must add that conformance before admitting effects. Server-owned decisions are exposed through `GET /api/app/permission-decisions`, `client.app.listServerPermissionDecisions`, and the unified Skill/CLI `permission.server-list` operation; workspace-owned decisions are exposed through `GET /api/app/workspaces/:workspaceId/permission-decisions`, `client.app.listWorkspacePermissionDecisions`, and the unified Skill/CLI `permission.workspace-list` operation.
 - `apps/nanocore/src/policy/approval-gates.ts` creates the first policy-originated approval gate by recording a `require_approval` permission decision, creating the matching `ApprovalRequest`, creating the item-backed `approval-request`, and pausing the turn with `humanGate.kind: "approval"` so the existing Action Center projection can surface it. No current enforcement point produces a `require_escalation` workflow or higher-authority Action Center row.
 - The Git push executor now treats durable target-issued `repo.push` permission decisions as target-bound authority. Before invoking the Git command runner, `executeGitPushAttempt` requires an immutable workspace-scoped `allow` decision whose resource summary matches the current workspace id, repository resource id, and target branch and whose linked Approval id is not the portable-import remint; it records a terminal `refused-policy` push record when the selected decision is missing, imported, or belongs to a different push target. Secret-injection plan creation applies the same target-issuance predicate to the VaultGrant id, so Vault-reference re-binding cannot reactivate an imported grant.
@@ -290,7 +290,7 @@ NanoCore compiles derived backend policy from:
 - sandbox requirements
 - runtime placement
 
-For OpenShell, derived policy may become OpenShell policy YAML, credential injections, network rules, and file rules.
+For OpenShell, derived policy may become structured sandbox policy, credential injections, network rules, and file rules.
 
 Derived backend policy is evidence and enforcement material. It is not canonical OpenKit policy.
 
@@ -346,7 +346,7 @@ The fixed product roles are adapter vocabulary. The centralized resolver convert
 
 - Permission decision result names use underscores: `require_approval`, `require_escalation`, and `not_applicable`.
 - Approval is not the permission engine. Approval may satisfy a policy requirement only when linked to a specific permission decision.
-- Backend-native policy, including OpenShell policy YAML, is derived enforcement material and evidence. It is not canonical OpenKit policy.
+- Backend-native policy, including structured OpenShell sandbox policy, is derived enforcement material and evidence. It is not canonical OpenKit policy.
 - Policy snapshots should be file-backed for inspectability and replay, while immutable `PermissionDecision` rows may be SQLite source-of-truth ledgers for query and transactional enforcement.
 - Launch must be blocked for denied runtime placement, workspace root access, secret injection, vault grant, sandbox containment, or required capability routing. Optional capability degradation may produce degraded readiness instead of blocking launch when policy marks the capability optional.
 - Product diagnostics may include decision id, result, reason code, enforcement point, redacted subject/resource/context summaries, policy snapshot id, and matched policy ids. They must not expose secret values, unrestricted path lists, raw membership graphs, raw provider payloads, or sensitive source contents.
@@ -372,7 +372,7 @@ The fixed product roles are adapter vocabulary. The centralized resolver convert
 - Approval linkage tests proving only a target-issued approval satisfies a specific policy requirement and imported authority remains readable but effect-inert after repository or Vault re-binding.
 - Capability gateway policy tests.
 - Vault grant policy tests.
-- OpenShell derived policy fixture tests.
+- OpenShell derived-policy tests that assert NanoCore-authored intent, trust-boundary rejection, and acceptance of the structured fixture by NanoHost's current SDK parse boundary.
 - Fail-closed tests for policy engine errors.
 - Audit linkage tests for every decision.
 - Role-matrix tests for owner, editor, viewer, removed member, invitee, unrelated user, token-bound actor, and deployment administrator.

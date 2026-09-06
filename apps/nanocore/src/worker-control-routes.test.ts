@@ -301,7 +301,7 @@ function heartbeatEnvelope(
     body: { message, ...(processKeyHash ? { processKeyHash } : {}), status },
     lineage,
     operation: 'heartbeat' as const,
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     sequence,
   };
 }
@@ -722,14 +722,14 @@ describe('worker control routes', () => {
             body: { message: 'refreshed', refreshId: 'refresh_token_redaction', status: 'applied' },
             lineage,
             operation: 'supply_refresh_ack',
-            schemaVersion: 1,
+            schemaVersion: 2,
             sequence: 3,
           },
           conflict: {
             body: { message: 'changed', refreshId: 'refresh_token_redaction', status: 'applied' },
             lineage,
             operation: 'supply_refresh_ack',
-            schemaVersion: 1,
+            schemaVersion: 2,
             sequence: 3,
           },
           operation: 'supply_refresh_ack',
@@ -1214,7 +1214,7 @@ describe('worker control routes', () => {
         body: { status: 'completed', ...bodyOverride },
         lineage,
         operation: 'final_status',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 7,
       }),
       headers: {
@@ -1242,7 +1242,7 @@ describe('worker control routes', () => {
         },
         lineage,
         operation: 'final_status',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 7,
       }),
       headers: {
@@ -1460,7 +1460,7 @@ describe('worker control routes', () => {
     );
     const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
     const finalStatusBody = JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       lineage,
       operation: 'final_status',
       sequence: 7,
@@ -1688,7 +1688,7 @@ describe('worker control routes', () => {
           body: { status: 'completed', stopReason: 'completed' },
           lineage,
           operation: 'final_status',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 7,
         }),
         headers: {
@@ -1786,7 +1786,7 @@ describe('worker control routes', () => {
           body: { status: 'completed', stopReason: 'completed' },
           lineage,
           operation: 'final_status',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 7,
         }),
         headers: {
@@ -1901,7 +1901,7 @@ describe('worker control routes', () => {
           body: { status: 'completed', stopReason: 'completed' },
           lineage,
           operation: 'final_status',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 7,
         }),
         headers: {
@@ -2001,7 +2001,7 @@ describe('worker control routes', () => {
         body: { status: 'completed', stopReason: 'completed' },
         lineage,
         operation: 'final_status',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 7,
       });
       const accepted = await app.request('/api/worker-control/final-status', {
@@ -2100,7 +2100,7 @@ describe('worker control routes', () => {
         },
         lineage,
         operation: 'supply_refresh_ack',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 8,
       }),
       headers: {
@@ -2121,7 +2121,7 @@ describe('worker control routes', () => {
         body: { refreshId: 'refresh_2', status: 'applied' },
         lineage,
         operation: 'final_status',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 9,
       }),
       headers: {
@@ -2259,7 +2259,7 @@ describe('worker control routes', () => {
           },
           lineage,
           operation: 'supply_refresh_ack',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 4,
         }),
         headers: {
@@ -2299,7 +2299,7 @@ describe('worker control routes', () => {
         },
         lineage,
         operation: 'capability_summary',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 10,
       }),
       headers: {

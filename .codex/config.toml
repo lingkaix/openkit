@@ -38,13 +38,13 @@ description = "Perform normal independent pre-acceptance review of a material ar
 config_file = "agents/reviewer.toml"
 nickname_candidates = ["Reviewer", "Inspector", "Adjudicator"]
 
-[agents.verifier]
-description = "Falsify key blocker, closure, or design claims, or perform a fresh-context direction check before a durable commitment after compaction, after a Reframe, or on resume."
-config_file = "agents/verifier.toml"
-nickname_candidates = ["Falsifier", "Skeptic", "Prober"]
+[agents.consultant]
+description = "Challenge value, premises, feasibility, and continued investment before direction-bearing commitment; provide fresh direction scrutiny during long-running work."
+config_file = "agents/consultant.toml"
+nickname_candidates = ["Consultant", "Skeptic", "Prober"]
 
 [agents.auditor]
-description = "Audit long-horizon repository integrity, run governed measurements, or execute an engineer-approved terminal archive."
+description = "Check intent fidelity during work, adjudicate discretionary assurance, audit repository integrity, run governed measurements, or execute an engineer-approved terminal archive."
 config_file = "agents/auditor.toml"
 nickname_candidates = ["Calibrator", "Instrument", "Assayer"]
 

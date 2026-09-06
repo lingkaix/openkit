@@ -8,7 +8,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hyper_util::rt::TokioIo;
 use openshell_sdk::raw::proto::{
@@ -18,7 +18,8 @@ use openshell_sdk::raw::proto::{
     TcpRelayTarget, exec_sandbox_event, exec_sandbox_input, tcp_forward_frame, tcp_forward_init,
 };
 use openshell_sdk::{
-    EdgeAuthInterceptor, ListOptions, OpenShellClient, SandboxRef, SandboxSpec, ServiceStatus,
+    EdgeAuthInterceptor, ListOptions, OpenShellClient, SandboxPhase, SandboxRef, SandboxSpec,
+    ServiceStatus,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -28,8 +29,9 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tower::service_fn;
 
-use crate::epoch_coordinator::EpochFault;
+use crate::epoch_coordinator::{CreateCertaintyLossPoint, CreateUncertainty, EpochFault};
 use crate::nanocore_session::OuterRouteProjection;
+use crate::openshell_release;
 use crate::sandbox_bridge::{
     BRIDGE_REESTABLISH_HARD_BOUND, FORWARD_FRAME_CHANNEL_CAPACITY, OpenSandboxBridge,
     SANDBOX_INTEGRATION_TARGET, TcpForwardByteStream, serve_sandbox_http2,
@@ -43,6 +45,49 @@ const FILE_EFFECT_MAX_BYTES: usize = 256 * 1024 * 1024;
 
 /// Exact value-free worker-entry evidence accepted before bridge establishment.
 const WORKER_ENTRY_MARKER: &[u8] = b"OPENKIT_WORKER_SHIM_ENTRY_V1\n";
+
+/// Fixed first delay for typed Sandbox Ready observations.
+const READY_POLL_INITIAL_DELAY: Duration = Duration::from_millis(250);
+
+/// Fixed maximum delay between typed Sandbox Ready observations.
+const READY_POLL_MAX_DELAY: Duration = Duration::from_secs(2);
+
+/// Fixed Sandbox Ready deadline retained from the pinned SDK behavior.
+const READY_POLL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Bounded internal result of classifying one typed Ready observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadinessFailure {
+    /// The observation lost certainty at one closed point.
+    Uncertain(CreateCertaintyLossPoint),
+    /// A Ready identity differed from the accepted create identity.
+    IdentityMismatch,
+}
+
+/// Classifies one typed Ready observation without retaining SDK diagnostics.
+fn classify_ready_observation(
+    observation: Result<(SandboxPhase, &str, &str), ()>,
+    accepted_id: &str,
+    accepted_name: &str,
+    deadline_reached: bool,
+) -> Result<bool, ReadinessFailure> {
+    let (phase, observed_id, observed_name) = observation.map_err(|()| {
+        ReadinessFailure::Uncertain(CreateCertaintyLossPoint::ReadyObservationUnproved)
+    })?;
+    match phase {
+        SandboxPhase::Ready if observed_id != accepted_id || observed_name != accepted_name => {
+            Err(ReadinessFailure::IdentityMismatch)
+        }
+        SandboxPhase::Ready => Ok(true),
+        SandboxPhase::Error => Err(ReadinessFailure::Uncertain(
+            CreateCertaintyLossPoint::ReadyErrorPhase,
+        )),
+        _ if deadline_reached => Err(ReadinessFailure::Uncertain(
+            CreateCertaintyLossPoint::ReadyTimeout,
+        )),
+        _ => Ok(false),
+    }
+}
 
 /// Linux `CLONE_NEWNET` flag used by the Gateway connector thread.
 const CLONE_NEWNET: i32 = 0x4000_0000;
@@ -275,7 +320,7 @@ pub struct WorkerBootstrapCompletion {
     pub exit_status: i32,
 }
 
-/// Owns one pinned typed SDK connection and its fail-stop lifecycle mapping.
+/// Owns one supported-release SDK connection and its fail-stop lifecycle mapping.
 pub struct NanoHostOpenShellClient {
     endpoint: String,
     auth_path: PathBuf,
@@ -379,7 +424,7 @@ impl NanoHostOpenShellClient {
         Ok(())
     }
 
-    /// Proves the connected Gateway is healthy and matches the pinned release.
+    /// Proves the connected Gateway is healthy and matches the supported release.
     ///
     /// # Errors
     ///
@@ -390,7 +435,7 @@ impl NanoHostOpenShellClient {
             .health()
             .await
             .map_err(|_| EpochFault::PartialStart)?;
-        if health.version != "0.0.99" {
+        if Some(health.version.as_str()) != openshell_release::version().as_deref() {
             return Err(EpochFault::IdentityMismatch);
         }
         if health.status != ServiceStatus::Healthy {
@@ -403,14 +448,32 @@ impl NanoHostOpenShellClient {
     ///
     /// # Errors
     ///
-    /// Returns create uncertainty after any unproved SDK outcome, or identity
-    /// mismatch when the accepted sandbox does not match the requested name.
+    /// Returns one bounded create certainty-loss point, or identity mismatch
+    /// when the accepted sandbox does not match the requested name.
     pub async fn create_sandbox(
         &self,
         spec: SandboxSpec,
         policy: SandboxPolicy,
+        attempt_lineage: &str,
     ) -> Result<SandboxRef, EpochFault> {
-        let expected_name = spec.name.clone();
+        let started = Instant::now();
+        let expected_name = spec
+            .name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .ok_or(EpochFault::IdentityMismatch)?
+            .to_string();
+        if attempt_lineage.is_empty() {
+            return Err(EpochFault::IdentityMismatch);
+        }
+        let uncertain = |certainty_loss| {
+            EpochFault::CreateOutcomeUncertain(CreateUncertainty::new(
+                certainty_loss,
+                &expected_name,
+                attempt_lineage,
+                started.elapsed(),
+            ))
+        };
         let client = self.connected()?;
         let request = CreateSandboxRequest {
             spec: Some(RawSandboxSpec {
@@ -426,7 +489,7 @@ impl NanoHostOpenShellClient {
                 }),
                 ..RawSandboxSpec::default()
             }),
-            name: spec.name.unwrap_or_default(),
+            name: expected_name.clone(),
             labels: spec.labels,
             annotations: HashMap::new(),
             workspace: String::new(),
@@ -435,25 +498,44 @@ impl NanoHostOpenShellClient {
             .raw_grpc()
             .create_sandbox(request)
             .await
-            .map_err(|_| EpochFault::CreateOutcomeUncertain)?
+            .map_err(|_| uncertain(CreateCertaintyLossPoint::CreateRequestUnproved))?
             .into_inner()
             .sandbox
             .and_then(|sandbox| sandbox.metadata)
-            .ok_or(EpochFault::CreateOutcomeUncertain)?;
-        if sandbox.id.is_empty()
-            || sandbox.name.is_empty()
-            || expected_name.is_some_and(|name| name != sandbox.name)
-        {
+            .ok_or_else(|| uncertain(CreateCertaintyLossPoint::CreateResponseInvalid))?;
+        if sandbox.id.is_empty() || sandbox.name.is_empty() {
+            return Err(uncertain(CreateCertaintyLossPoint::CreateResponseInvalid));
+        }
+        if expected_name != sandbox.name {
             return Err(EpochFault::IdentityMismatch);
         }
-        let ready = client
-            .wait_ready(&sandbox.name, Duration::from_secs(120))
-            .await
-            .map_err(|_| EpochFault::CreateOutcomeUncertain)?;
-        if ready.id != sandbox.id || ready.name != sandbox.name {
-            return Err(EpochFault::IdentityMismatch);
+        let deadline = Instant::now() + READY_POLL_TIMEOUT;
+        let mut delay = READY_POLL_INITIAL_DELAY;
+        loop {
+            let observation = client.get_sandbox(&sandbox.name).await;
+            let classified = classify_ready_observation(
+                observation
+                    .as_ref()
+                    .map(|ready| (ready.phase, ready.id.as_str(), ready.name.as_str()))
+                    .map_err(|_| ()),
+                &sandbox.id,
+                &sandbox.name,
+                Instant::now() >= deadline,
+            );
+            match classified {
+                Ok(true) => {
+                    return observation.map_err(|_| {
+                        uncertain(CreateCertaintyLossPoint::ReadyObservationUnproved)
+                    });
+                }
+                Ok(false) => tokio::time::sleep(delay).await,
+                Err(ReadinessFailure::Uncertain(point)) => return Err(uncertain(point)),
+                Err(ReadinessFailure::IdentityMismatch) => {
+                    return Err(EpochFault::IdentityMismatch);
+                }
+            }
+            delay = (delay * 2).min(READY_POLL_MAX_DELAY);
         }
-        Ok(ready)
     }
 
     /// Gets one sandbox and verifies the returned name.
@@ -736,7 +818,9 @@ impl NanoHostOpenShellClient {
                 if spec.name.as_deref() != Some(request.sandbox_id()) {
                     return Err(EpochFault::IdentityMismatch);
                 }
-                let sandbox = self.create_sandbox(spec, policy).await?;
+                let sandbox = self
+                    .create_sandbox(spec, policy, request.request_id())
+                    .await?;
                 request
                     .validate_result_identity(request.request_id(), &sandbox.name)
                     .map_err(|_| EpochFault::IdentityMismatch)?;
@@ -998,6 +1082,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use openshell_sdk::SandboxPhase;
     use openshell_sdk::raw::proto::{
         ExecSandboxEvent, ExecSandboxExit, ExecSandboxStderr, ExecSandboxStdout, FilesystemPolicy,
         LandlockPolicy, ProcessPolicy, SandboxPolicy, exec_sandbox_event,
@@ -1008,9 +1093,11 @@ mod tests {
     use tonic::Status;
 
     use super::{
-        CompiledOpenShellClient, LifecycleEffectKind, LifecycleEffectRequest,
-        TypedOpenShellLifecycleClient, WorkerBootstrapMonitor, monitor_worker_bootstrap,
+        CompiledOpenShellClient, LifecycleEffectKind, LifecycleEffectRequest, ReadinessFailure,
+        TypedOpenShellLifecycleClient, WorkerBootstrapMonitor, classify_ready_observation,
+        monitor_worker_bootstrap,
     };
+    use crate::epoch_coordinator::CreateCertaintyLossPoint;
 
     /// Exact fixed worker-entry vocabulary accepted from stdout.
     const WORKER_ENTRY_MARKER: &[u8] = b"OPENKIT_WORKER_SHIM_ENTRY_V1\n";
@@ -1064,6 +1151,72 @@ mod tests {
     #[test]
     fn wp3a_u3a1_uses_the_compiled_typed_openshell_client_boundary() {
         require_typed_client::<CompiledOpenShellClient>();
+    }
+
+    #[test]
+    fn classifies_only_bounded_ready_observations() {
+        let cases = [
+            (
+                "observation failure",
+                Err(()),
+                false,
+                Err(ReadinessFailure::Uncertain(
+                    CreateCertaintyLossPoint::ReadyObservationUnproved,
+                )),
+            ),
+            (
+                "error phase",
+                Ok((SandboxPhase::Error, "sandbox-id", "sandbox-name")),
+                false,
+                Err(ReadinessFailure::Uncertain(
+                    CreateCertaintyLossPoint::ReadyErrorPhase,
+                )),
+            ),
+            (
+                "deadline",
+                Ok((SandboxPhase::Provisioning, "sandbox-id", "sandbox-name")),
+                true,
+                Err(ReadinessFailure::Uncertain(
+                    CreateCertaintyLossPoint::ReadyTimeout,
+                )),
+            ),
+            (
+                "pending",
+                Ok((SandboxPhase::Provisioning, "sandbox-id", "sandbox-name")),
+                false,
+                Ok(false),
+            ),
+            (
+                "ready",
+                Ok((SandboxPhase::Ready, "sandbox-id", "sandbox-name")),
+                false,
+                Ok(true),
+            ),
+            (
+                "ready identity mismatch",
+                Ok((SandboxPhase::Ready, "other-id", "sandbox-name")),
+                false,
+                Err(ReadinessFailure::IdentityMismatch),
+            ),
+            (
+                "ready name mismatch",
+                Ok((SandboxPhase::Ready, "sandbox-id", "other-name")),
+                false,
+                Err(ReadinessFailure::IdentityMismatch),
+            ),
+        ];
+        for (label, observation, deadline_reached, expected) in cases {
+            assert_eq!(
+                classify_ready_observation(
+                    observation,
+                    "sandbox-id",
+                    "sandbox-name",
+                    deadline_reached,
+                ),
+                expected,
+                "unexpected classification for {label}"
+            );
+        }
     }
 
     #[test]
@@ -1639,32 +1792,50 @@ mod tests {
         let raw_create = create_owner
             .find(".create_sandbox(request)")
             .expect("raw create request dispatch");
+        let create_request_unproved = create_owner
+            .find("CreateCertaintyLossPoint::CreateRequestUnproved")
+            .expect("unproved create request classification");
+        let create_response_invalid = create_owner
+            .find("CreateCertaintyLossPoint::CreateResponseInvalid")
+            .expect("invalid create response classification");
         let accepted_identity = create_owner
-            .find("expected_name.is_some_and")
+            .find("expected_name != sandbox.name")
             .expect("accepted create identity validation");
-        let wait_ready = create_owner
-            .find(".wait_ready(")
-            .expect("accepted create must wait for SDK readiness");
-        let ready_id = create_owner
-            .find("ready.id != sandbox.id")
-            .expect("ready id must match the accepted id");
-        let ready_name = create_owner
-            .find("ready.name != sandbox.name")
-            .expect("ready name must match the accepted name");
+        let deadline = create_owner
+            .find("let deadline =")
+            .expect("accepted create must establish the fixed Ready deadline");
+        let get_sandbox = create_owner
+            .find(".get_sandbox(&sandbox.name)")
+            .expect("accepted create must use typed Ready observations");
+        let classify = create_owner
+            .find("classify_ready_observation(")
+            .expect("typed Ready observations must retain closed failure classes");
         let ready_return = create_owner
-            .find("Ok(ready)")
+            .find("return observation.map_err")
             .expect("only the identity-matched ready sandbox may return");
         assert!(
             raw_request < policy
                 && policy < raw_create
-                && raw_create < accepted_identity
-                && accepted_identity < wait_ready
-                && wait_ready < ready_id
-                && wait_ready < ready_name
-                && ready_id < ready_return
-                && ready_name < ready_return,
-            "sandbox create must validate acceptance, await readiness, validate ready identity, then return"
+                && raw_create < create_request_unproved
+                && create_request_unproved < create_response_invalid
+                && create_response_invalid < accepted_identity
+                && accepted_identity < deadline
+                && deadline < get_sandbox
+                && get_sandbox < classify
+                && classify < ready_return,
+            "sandbox create must validate acceptance, classify typed Ready observations, then return"
         );
+        for fixed_bound in [
+            "Duration::from_millis(250)",
+            "Duration::from_secs(2)",
+            "Duration::from_secs(120)",
+        ] {
+            assert!(
+                production.contains(fixed_bound),
+                "missing Ready bound {fixed_bound}"
+            );
+        }
+        assert!(!create_owner.contains(".wait_ready("));
         for required in [
             "exec_sandbox_interactive",
             "64 * 1024",

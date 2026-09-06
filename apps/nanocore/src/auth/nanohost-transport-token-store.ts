@@ -121,7 +121,7 @@ interface NanoHostTransportTokenRow {
 }
 
 /**
- * Creates one durable NanoHost transport Token record in the server Core database.
+ * Creates one durable NanoHost transport Token record for the exact active identity/deployment pair.
  *
  * @param coreDb Open Core database handles.
  * @param input Token issue input.
@@ -131,6 +131,14 @@ export function createNanoHostTransportTokenRecord(
   coreDb: CoreDb,
   input: CreateNanoHostTransportTokenRecordInput
 ): NanoHostTransportTokenIssueResult {
+  if (
+    !isNanoHostTransportIdentityActive(coreDb, input.ownerNanoHostIdentityId, input.deploymentId)
+  ) {
+    throw new Error(
+      'NanoHost transport token issuance requires the exact active identity and deployment pair.'
+    );
+  }
+
   const tokenId = input.tokenId ?? generateUuidV7();
   const secret = input.secret ?? createOpenKitAccessTokenSecret();
   const now = (input.now ?? new Date()).toISOString();
@@ -288,7 +296,7 @@ export function isNanoHostTransportIdentityActive(
 }
 
 /**
- * Verifies one presented NanoHost transport Token against durable server records.
+ * Verifies one presented NanoHost transport Token and its exact active identity/deployment owner.
  *
  * @param coreDb Open Core database handles.
  * @param secret Presented bearer token secret.
@@ -315,7 +323,8 @@ export function verifyNanoHostTransportTokenRecord(
 
   if (
     row.token_type !== NANOHOST_TRANSPORT_TOKEN_TYPE ||
-    row.scope !== NANOHOST_TRANSPORT_TOKEN_SCOPE
+    row.scope !== NANOHOST_TRANSPORT_TOKEN_SCOPE ||
+    !isNanoHostTransportIdentityActive(coreDb, row.owner_nanohost_identity_id, row.deployment_id)
   ) {
     return null;
   }
@@ -480,24 +489,31 @@ export function decommissionNanoHostTransportTokens(
 }
 
 /**
- * Marks the configured NanoHost IntegrationIdentity decommissioned when it exists.
+ * Marks the exact active configured NanoHost IntegrationIdentity decommissioned.
  *
  * @param coreDb Open Core database handles.
  * @param identityId Configured NanoHost identity id.
+ * @param deploymentId Exact deployment bound to the configured NanoHost identity.
  * @param options Optional decommission clock.
  */
 export function decommissionNanoHostIntegrationIdentity(
   coreDb: CoreDb,
   identityId: string,
+  deploymentId: string,
   options: { now?: Date } = {}
 ): void {
-  coreDb.sqlite
+  const updated = coreDb.sqlite
     .prepare(
       `UPDATE nanohost_integration_identities
        SET status = 'decommissioned', decommissioned_at = ?
-       WHERE identity_id = ? AND status = 'active'`
+       WHERE identity_id = ? AND deployment_id = ? AND status = 'active'`
     )
-    .run((options.now ?? new Date()).toISOString(), identityId);
+    .run((options.now ?? new Date()).toISOString(), identityId, deploymentId);
+  if (updated.changes !== 1) {
+    throw new Error(
+      'NanoHost decommission requires the exact active identity and deployment pair.'
+    );
+  }
 }
 
 /**

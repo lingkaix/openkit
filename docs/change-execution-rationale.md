@@ -33,6 +33,16 @@ The current direction preserves the protected concerns and removes the universal
 
 **Findings need a queryable lifecycle; route history does not.** Two existing findings reports accumulated 124 items under two heading levels, two ID forms, sixteen field labels, and dozens of free-form status phrasings; a field named Closure evidence appeared beside both resolved and still-pending work, so a reader could not answer what remained without reinterpreting the whole file. Findings are curated items whose status changes and whose unresolved set is queried after plan close, so a small structural check intercepts an observed retrieval and retention failure. A route log instead appends independent causal lines and derives no current state; imposing a validator there would rebuild the coordination machinery this model removed without intercepting the findings failure.
 
+## Earlier Scrutiny And Intent Fidelity
+
+The engineer's 2026-09-05 direction makes economical human attention the objective, while preserving active invitations for missing authorization, unresolved consequential disagreement, or no credible route. Avoiding every interruption would make a blocked agent hide the very uncertainty the engineer can resolve.
+
+The observed proposal-and-Consultant discussion moved questions of value and feasibility before implementation. It supports early scrutiny proportional to unresolved choices, not a detailed proposal for every task or a Consultant sign-off after every review. The old verifier mixed scheme necessity with implementation defects; separating Consultant direction from Reviewer artifact acceptance removes that overlap. Agreement is still fallible and must expose its evidence and remaining assumptions.
+
+Independent contexts help because the primary may not notice its own local convergence. A concrete observation chosen before that convergence can demand a fresh look; compaction alone and ordinary commits within an examined scheme are poor proxies. Dispatch remains a real operational obligation, not something a prose rule or structural test can prove happened.
+
+Auditor scrutiny is useful during work as well as across completed work. Comparing source intent, recorded decisions, owners, and affected artifacts while they are understood reduces the cost of later repair. Formal blind calibration remains sparse and task-external; a focused negative check need not create another audit cycle. These mechanisms require real-task observation before claims of improved efficiency or drift prevention are warranted.
+
 ## Why No Replacement Framework Is Installed Yet
 
 The proposed replacement vocabulary contained many one-use capitalized concepts. In always-loaded governance, descriptive vocabulary tends to become a checklist and then a mandatory lifecycle. Installing that framework before the pilots would repeat the same pattern under new names.

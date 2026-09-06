@@ -317,7 +317,7 @@ interface NanoHostBackendTurnSession {
   nativeSessionReusable: boolean;
   readonly sharedHarness: NanoHostSharedHarness;
   pendingHarnessOperation: PendingNanoHostHarnessOperation | null;
-  humanGateStopSettlement: Promise<void> | null;
+  turnStopSettlement: Promise<void> | null;
   readonly retainedStagingPaths: string[];
   terminalInspectionComplete: boolean;
   turnStarted: boolean;
@@ -773,7 +773,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       nativeSessionReusable: false,
       pendingImports: [],
       pendingHarnessOperation: null,
-      humanGateStopSettlement: null,
+      turnStopSettlement: null,
       retainedStagingPaths: [],
       sharedHarness,
       terminalInspectionComplete: false,
@@ -981,7 +981,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         return;
       }
       if (session?.turnStarted && session.terminalInspectionComplete) {
-        if (!session.nativeSessionReusable) {
+        if (
+          !session.nativeSessionReusable &&
+          session.sharedHarness.bindings.has(session.environmentPackage.scope.agentSessionId)
+        ) {
           const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {
             agentSessionId: session.environmentPackage.scope.agentSessionId,
             agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -1445,7 +1448,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       nativeSessionReusable: false,
       pendingImports: [],
       pendingHarnessOperation: null,
-      humanGateStopSettlement: null,
+      turnStopSettlement: null,
       retainedStagingPaths: [],
       sharedHarness,
       terminalInspectionComplete: false,
@@ -1554,6 +1557,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
       session.sharedHarness.bindings.set(session.environmentPackage.scope.agentSessionId, binding);
     } else {
+      if (session.sharedHarness.adapterId !== 'codex') {
+        throw new Error('NanoHost bounded-turn AgentSession bindings are not reusable.');
+      }
       const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -1620,19 +1626,29 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return evidence;
   }
 
-  /** Delivers one exact session-continuity interrupt through only the private Harness owner. */
+  /** Delivers one interrupt through the sole owner selected by immutable adapter mode. */
   public async interruptTurn(packageSnapshotId: string): Promise<void> {
     const session = this.requireSession(packageSnapshotId);
-    const result = await this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
+    if (session.sharedHarness.adapterId !== 'codex') {
+      if (!this.workerControlGateway) {
+        throw new Error('NanoHost bounded-turn interruption requires the worker-control gateway.');
+      }
+      this.workerControlGateway.enqueueInterrupt(packageSnapshotId, null);
+      return;
+    }
+    const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
       leaseId: session.leaseId,
       purpose: 'interrupt',
       turnId: session.environmentPackage.scope.turnId,
+    }).then((result) => {
+      if (result.state !== 'interrupted' || result.childState !== 'absent') {
+        throw new Error('NanoHost Harness turn.interrupt result is incompatible.');
+      }
     });
-    if (result.state !== 'interrupted' || result.childState !== 'absent') {
-      throw new Error('NanoHost Harness turn.interrupt result is incompatible.');
-    }
+    session.turnStopSettlement = settlement;
+    await settlement;
   }
 
   /** Queues one Gate-owned stop and leaves result settlement to the existing Harness owner. */
@@ -1652,7 +1668,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost Harness human Gate stop result is incompatible.');
       }
     });
-    session.humanGateStopSettlement = settlement;
+    session.turnStopSettlement = settlement;
     void settlement.catch(() => undefined);
   }
 
@@ -2155,7 +2171,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (session.terminalInspectionComplete) {
       return;
     }
-    await session.humanGateStopSettlement;
+    await session.turnStopSettlement;
+    if (session.sharedHarness.adapterId !== 'codex') {
+      const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {
+        agentSessionId: session.environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+      });
+      if (
+        closed.state !== 'closed' ||
+        closed.childState !== 'absent' ||
+        closed.privateState !== 'absent'
+      ) {
+        throw new Error('NanoHost Harness session.close result is incompatible.');
+      }
+      session.sharedHarness.bindings.delete(session.environmentPackage.scope.agentSessionId);
+      session.nativeSessionReusable = false;
+      session.terminalInspectionComplete = true;
+      return;
+    }
     const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,

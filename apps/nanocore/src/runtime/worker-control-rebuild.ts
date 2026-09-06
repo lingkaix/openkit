@@ -14,6 +14,7 @@ import {
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { commandRecord, type WorkerControlCommandRow } from './worker-control-commands.js';
 import type {
   WorkerControlArtifactNotice,
   WorkerControlGateway,
@@ -27,11 +28,6 @@ interface WorkerControlRecordRow {
   readonly acceptedAt: string;
   readonly operation: string;
   readonly recordJson: string;
-}
-
-interface WorkerControlCommandRow {
-  readonly deliveredAt: string | null;
-  readonly payloadJson: string;
 }
 
 /**
@@ -84,9 +80,10 @@ export function rebuildWorkerControlGatewaySessions(
     };
     const records = readAcceptedRecords(coreDb, lineage);
 
+    const commandState = readCommands(coreDb, lineage);
     gateway.restoreSession({
       ...records,
-      commands: readCommands(coreDb, lineage),
+      ...commandState,
       environmentPackage,
       lineage,
       registeredAt: lease.acquiredAt,
@@ -232,23 +229,44 @@ function readAcceptedRecords(
 function readCommands(
   coreDb: CoreDb,
   lineage: WorkerControlLineage
-): WorkerControlInterruptCommand[] {
-  return (
-    coreDb.sqlite
-      .prepare(
-        `
-        SELECT payload_json AS payloadJson, delivered_at AS deliveredAt
+): {
+  readonly commands: WorkerControlInterruptCommand[];
+  readonly commandSequenceHighWatermark: number | null;
+} {
+  const rows = coreDb.sqlite
+    .prepare(
+      `
+        SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
+          agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
+          request_id AS requestId, command_id AS commandId, command_kind AS commandKind,
+          sequence, payload_json AS payloadJson, status, queued_at AS queuedAt,
+          delivered_at AS deliveredAt
         FROM worker_control_commands
-        WHERE agent_session_id = ?
-          AND package_snapshot_id = ?
+        WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+          AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?
           AND command_kind = 'interrupt'
-          AND acknowledged_at IS NULL
         ORDER BY sequence ASC
         `
-      )
-      .all(lineage.agentSessionId, lineage.packageSnapshotId) as WorkerControlCommandRow[]
-  ).map((row) => ({
-    ...(JSON.parse(row.payloadJson) as WorkerControlInterruptCommand),
-    deliveredAt: row.deliveredAt,
-  }));
+    )
+    .all(
+      lineage.workspaceId,
+      lineage.threadId,
+      lineage.turnId,
+      lineage.agentSessionId,
+      lineage.packageSnapshotId,
+      lineage.requestId ?? null
+    ) as WorkerControlCommandRow[];
+
+  const records = rows.map(commandRecord);
+  if (records.length > 1) {
+    throw new Error(`Multiple worker interrupts exist for Turn: ${lineage.turnId}`);
+  }
+
+  return {
+    commands: records
+      .filter((record) => record.status === 'queued' || record.status === 'delivered')
+      .map((record) => record.command),
+    commandSequenceHighWatermark:
+      records.length === 0 ? null : Math.max(...records.map((record) => record.command.sequence)),
+  };
 }

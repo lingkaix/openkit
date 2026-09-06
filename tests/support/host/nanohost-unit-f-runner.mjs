@@ -39,6 +39,7 @@ const normalLifecycleContract = Object.freeze({
   stoppedBaseline: 'service-stopped-baseline',
   systemDocker: 'system-docker-baseline-exact-equal',
 });
+const baselineComponentIds = Object.freeze(['bridge', 'containers', 'docker0', 'nft']);
 
 const hostRoot = dirname(fileURLToPath(import.meta.url));
 const hostManifestPath = resolve(hostRoot, '../../../apps/nanohost/deploy/host-manifest.json');
@@ -76,6 +77,19 @@ function epochProof(epoch) {
 /** Returns true only for one exact observed contract row. */
 function observedContractRow(value, code) {
   return value?.code === code && value?.observed === true;
+}
+
+/** Accepts only the four hashed normalized host-baseline components. */
+function validBaselineComponents(value) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === baselineComponentIds.length &&
+    baselineComponentIds.every(
+      (name) => Object.hasOwn(value, name) && digest64Pattern.test(value[name] ?? '')
+    )
+  );
 }
 
 /** Adjudicates one F scenario without trusting a producer-supplied verdict. */
@@ -117,7 +131,14 @@ export function adjudicateNanoHostUnitFScenario(
   const baselineComplete =
     digest64Pattern.test(preBaseline?.digest ?? '') &&
     digest64Pattern.test(postBaseline?.digest ?? '') &&
-    (id === 'F1' || id === 'F3' || preBaseline.digest === postBaseline.digest);
+    validBaselineComponents(preBaseline?.components) &&
+    validBaselineComponents(postBaseline?.components) &&
+    (id === 'F1' ||
+      id === 'F3' ||
+      (preBaseline.digest === postBaseline.digest &&
+        baselineComponentIds.every(
+          (name) => preBaseline.components[name] === postBaseline.components[name]
+        )));
   const complete =
     baselineComplete &&
     observedContractRow(evidence?.barrier, contract.barrier) &&
@@ -129,6 +150,24 @@ export function adjudicateNanoHostUnitFScenario(
 
   return {
     baseline: {
+      components: {
+        post: Object.fromEntries(
+          baselineComponentIds.map((name) => [
+            name,
+            digest64Pattern.test(postBaseline?.components?.[name] ?? '')
+              ? postBaseline.components[name]
+              : null,
+          ])
+        ),
+        pre: Object.fromEntries(
+          baselineComponentIds.map((name) => [
+            name,
+            digest64Pattern.test(preBaseline?.components?.[name] ?? '')
+              ? preBaseline.components[name]
+              : null,
+          ])
+        ),
+      },
       post: postBaseline?.digest ?? null,
       pre: preBaseline?.digest ?? null,
     },
@@ -372,22 +411,34 @@ async function assertHostManifest(sshAlias, expectedDigest, execute = runCommand
   }
 }
 
-/** Proves the running NanoCore container uses its exact configured image digest. */
+/** Proves the running container and candidate reference resolve to one admitted image ID. */
 async function assertNanoCoreImageIdentity(config) {
   const observed = parseCommandJson(
     await runSudo(config.execute, config.sshAlias, [
       '/usr/bin/docker',
       'inspect',
       '--format',
-      '{"imageId":"{{.Image}}","imageRef":"{{.Config.Image}}"}',
+      '{"imageId":"{{.Image}}"}',
       config.nanoCoreContainer,
     ])
   );
-  if (
-    observed.imageId !== config.nanoCoreImageId ||
-    observed.imageRef !== config.nanoCoreImageRef
-  ) {
+  if (observed.imageId !== config.nanoCoreImageId) {
     throw new Error('Unit F NanoCore image identity changed from the admitted deployment.');
+  }
+  const candidate = parseCommandJson(
+    await runSudo(config.execute, config.sshAlias, [
+      '/usr/bin/docker',
+      'image',
+      'inspect',
+      '--format',
+      '{"imageId":"{{.Id}}"}',
+      config.nanoCoreImageRef,
+    ])
+  );
+  if (candidate.imageId !== config.nanoCoreImageId) {
+    throw new Error(
+      'Unit F NanoCore candidate image reference changed from the admitted image ID.'
+    );
   }
 }
 
@@ -488,7 +539,8 @@ async function captureA1Baseline(config) {
     };
     const nft = stable(JSON.parse(run('/usr/sbin/nft', ['-j', 'list', 'ruleset'])));
     const payload = stable({ bridge, containers: projectedContainers, docker0, nft });
-    process.stdout.write(JSON.stringify({ digest: createHash('sha256').update(JSON.stringify(payload)).digest('hex') }));
+    const componentDigests = Object.fromEntries(Object.entries(payload).map(([name, value]) => [name, createHash('sha256').update(JSON.stringify(value)).digest('hex')]));
+    process.stdout.write(JSON.stringify({ components: componentDigests, digest: createHash('sha256').update(JSON.stringify(payload)).digest('hex') }));
   `;
   return parseCommandJson(
     await runSudo(config.execute, config.sshAlias, ['/usr/bin/node', '-e', script])
@@ -812,10 +864,10 @@ async function readEpochMembers(config) {
   const script = String.raw`
     const { readFileSync, readdirSync, readlinkSync } = require('node:fs');
     const { spawnSync } = require('node:child_process');
-    const show = spawnSync('/usr/bin/systemctl', ['show', 'openkit-nanohost.service', '--property=ActiveState,SubState,ControlGroup,InvocationID'], { encoding: 'utf8' });
+    const show = spawnSync('/usr/bin/systemctl', ['show', 'openkit-nanohost.service', '--property=ActiveState,SubState,ControlGroup,InvocationID,UnitFileState'], { encoding: 'utf8' });
     if (show.status !== 0) process.exit(1);
     const fields = Object.fromEntries(show.stdout.trim().split(/\r?\n/u).map((line) => line.split(/=(.*)/su).slice(0, 2)));
-    const { ActiveState: activeState, ControlGroup: controlGroup, InvocationID: invocationId, SubState: subState } = fields;
+    const { ActiveState: activeState, ControlGroup: controlGroup, InvocationID: invocationId, SubState: subState, UnitFileState: unitFileState } = fields;
     const root = controlGroup ? '/sys/fs/cgroup' + controlGroup : null;
     const collect = (directory) => {
       let pids = [];
@@ -835,13 +887,14 @@ async function readEpochMembers(config) {
       };
     });
     const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-    process.stdout.write(JSON.stringify({ activeState, bootId, controlGroup, invocationId, members, subState }));
+    process.stdout.write(JSON.stringify({ activeState, bootId, controlGroup, invocationId, members, subState, unitFileState }));
   `;
   const value = parseCommandJson(
     await runSudo(config.execute, config.sshAlias, ['/usr/bin/node', '-e', script])
   );
   if (
     !value.bootId ||
+    !value.unitFileState ||
     !Array.isArray(value.members) ||
     (value.activeState === 'active' && (!value.controlGroup || !value.invocationId))
   ) {
@@ -1288,7 +1341,7 @@ export function adjudicateNanoHostF1Continuation({
     adopted.projectionCounts.workerReady !== 1 ||
     adopted.projectionCounts.activeBackend !== 1 ||
     adopted.projectionCounts.activeLease !== 1 ||
-    final.finalStatus === null ||
+    final.finalStatus?.status !== 'completed' ||
     finalTuple.backend.backendSessionId !== beforeTuple.backend.backendSessionId ||
     finalTuple.lease.leaseId !== beforeTuple.lease.leaseId ||
     !Number.isSafeInteger(finalTuple.lease.lastWorkerSequence) ||
@@ -1695,6 +1748,7 @@ export async function sequenceNanoHostF1(ports) {
     ) {
       throw new Error('Unit F F1 post-launch sequence barrier is incomplete.');
     }
+    epochBefore = await ports.readEpoch();
     const cursor = await ports.readJournalCursor();
     await ports.killNanoCore();
     await ports.startNanoCore();
@@ -1811,7 +1865,7 @@ export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
   if (!['F2', 'F3', 'F4'].includes(scenarioId)) {
     throw new Error('Unit F blocked-create scenario identity is invalid.');
   }
-  const priorTarget = await waitForSequencedRuntimeTarget(
+  const projectedTarget = await waitForSequencedRuntimeTarget(
     ports,
     (target) =>
       Number.isSafeInteger(target.connectionGeneration) &&
@@ -1819,7 +1873,32 @@ export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
       target.ready === true &&
       target.freshEmpty === true
   );
-  let epoch = await ports.readEpoch();
+  const projectedEpoch = await ports.readEpoch();
+  if (scenarioId === 'F3' && projectedEpoch.unitFileState !== 'static') {
+    throw new Error('Unit F F3 requires one static NanoHost unit before Task creation.');
+  }
+  // Drop the prior Harness's process-local continuity before its physical epoch is replaced.
+  await ports.killNanoCore();
+  await ports.startNanoCore();
+  await ports.startTunnel();
+  const reconnectedTarget = await waitForSequencedRuntimeTarget(
+    ports,
+    (target) =>
+      isExactNextGeneration(projectedTarget.connectionGeneration, target.connectionGeneration) &&
+      target.predecessorFenced === true &&
+      target.ready === true &&
+      target.freshEmpty === true
+  );
+  await ports.stopNanoHost();
+  await proveSequencedEpochAbsent(ports, projectedEpoch);
+  const prepared = await recoverFreshEpochSequence(
+    ports,
+    reconnectedTarget.connectionGeneration,
+    projectedEpoch
+  );
+  await proveSequencedPriorRootsRemoved(ports, projectedEpoch);
+  const priorTarget = prepared.target;
+  let epoch = prepared.epoch;
   let nanohost = selectEpochMember(epoch, 'nanohost');
   let gateway = selectEpochMember(epoch, 'gateway');
   let dockerd = selectEpochMember(epoch, 'dockerd');
@@ -1990,7 +2069,7 @@ export async function sequenceNanoHostBlockedCreate(scenarioId, ports) {
     await proveSequencedPriorRootsRemoved(ports, epoch);
     await ports.interruptTurn(lineage);
     await proveSequencedTurnCleanup(ports, lineage);
-    if (scenarioId === 'F2' || scenarioId === 'F4') await ports.runDockerSmoke();
+    await ports.runDockerSmoke();
     return {
       lineage: {
         agentSessionId: lineage.agentSessionId,
@@ -2236,9 +2315,12 @@ export function createDefaultDriver(options) {
   }
   if (
     !/^sha256:[a-f0-9]{64}$/u.test(nanoCoreImageId) ||
+    nanoCoreImageRef.startsWith('sha256:') ||
     !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(nanoCoreImageRef)
   ) {
-    throw new Error('Unit F requires the admitted NanoCore image ref and image ID.');
+    throw new Error(
+      'Unit F requires the admitted NanoCore image ID and one Dockerfile-resolvable image reference.'
+    );
   }
   if (
     !Number.isSafeInteger(localPort) ||
@@ -2379,6 +2461,7 @@ function publicIdentity(options) {
   if (
     runtimeIdentity.some((value) => value !== undefined) &&
     (!/^sha256:[a-f0-9]{64}$/u.test(options.nanoCoreImageId ?? '') ||
+      options.nanoCoreImageRef?.startsWith('sha256:') ||
       !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(
         options.nanoCoreImageRef ?? ''
       ) ||

@@ -849,6 +849,7 @@ describe('vault admin app API', () => {
   it('inherits server-mode authentication for vault admin routes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-auth-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const app = createApp({
       auth: createSignedOutAuthStub(),
       coreDb,

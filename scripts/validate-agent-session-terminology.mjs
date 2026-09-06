@@ -52,7 +52,6 @@ const excludedDirectories = new Set([
   'generated',
   'node_modules',
   'openapi',
-  'openshell-pin',
   'target',
   'temp',
   'third_party',

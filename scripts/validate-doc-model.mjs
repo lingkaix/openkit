@@ -45,6 +45,7 @@ const BUNDLE_PLAN_NAME = 'plan.md';
 const BUNDLE_STATE_NAME = 'state.json';
 const BUNDLE_FINDINGS_NAME = 'findings.md';
 const BUNDLE_ROUTE_LOG_NAME = 'route-log.md';
+const BUNDLE_PROPOSAL_NAME = 'proposal.md';
 const FINDING_ITEM_HEADING_PATTERN =
   /^## \[(open|deferred|closed)\] ((?:[A-Z][A-Z0-9]*-FND-\d{3})|F-\d+) — (\S.*)$/u;
 const FINDING_FIELD_PATTERN = /^- \*\*([^*:\n]+):\*\* (\S.*)$/u;
@@ -141,9 +142,8 @@ function classifyPath(path) {
     return 'spec-terminal';
   }
   // Change records take two forms. A flat file is the original form and stays
-  // valid; a bundle may also retain findings, a route log, and opaque legacy
-  // state evidence beside its plan. JSON evidence is admitted by bundle membership below and
-  // is intentionally not classified as a Markdown document.
+  // valid; a bundle may retain a proposal, findings, a route log, and opaque
+  // legacy state. JSON evidence is admitted by bundle membership below.
   if (segments[1] === 'changes') {
     if (segments.length === 3) {
       return 'change';
@@ -151,14 +151,13 @@ function classifyPath(path) {
     if (segments.length === 4 && name === BUNDLE_PLAN_NAME) {
       return 'change';
     }
-    // A route log has no induced type of its own. Type Induction admits a
-    // type only where the behavior is already repeated across members that
-    // exist, so an un-induced document lives under the closest existing type
-    // until a second member justifies the split. Both are optional
-    // non-authorizing bundle evidence with the same field contract.
+    // Optional Markdown evidence shares one field contract. Only findings.md
+    // receives the findings body validator; proposals introduce no lifecycle.
     if (
       segments.length === 4 &&
-      (name === BUNDLE_FINDINGS_NAME || name === BUNDLE_ROUTE_LOG_NAME)
+      (name === BUNDLE_FINDINGS_NAME ||
+        name === BUNDLE_ROUTE_LOG_NAME ||
+        name === BUNDLE_PROPOSAL_NAME)
     ) {
       return 'change-findings';
     }
@@ -403,10 +402,8 @@ function validateFindingsReport(path, content, errors) {
 /**
  * Validates change-record bundle directories and their closed membership.
  *
- * A bundle is named for the change-plan it holds and admits exactly four
- * members with fixed names: `plan.md`, optional opaque legacy `state.json`, and
- * optional `findings.md`. Closed membership keeps other working data under
- * `temp/`; this validator does not interpret historical state bytes.
+ * A bundle holds its plan, optional proposal/findings/route-log evidence, and
+ * optional opaque legacy state. Other working data stays under temp/.
  *
  * @param {string} repoRoot Repository root.
  * @param {string[]} errors Mutable validation error list.
@@ -437,6 +434,7 @@ function validateChangeBundles(repoRoot, errors) {
       BUNDLE_STATE_NAME,
       BUNDLE_FINDINGS_NAME,
       BUNDLE_ROUTE_LOG_NAME,
+      BUNDLE_PROPOSAL_NAME,
     ]);
 
     if (!members.some((member) => member.isFile() && member.name === BUNDLE_PLAN_NAME)) {
@@ -447,7 +445,7 @@ function validateChangeBundles(repoRoot, errors) {
       if (!(member.isFile() && permitted.has(member.name))) {
         errors.push(
           `${path}/${member.name}: a change bundle admits only \`${BUNDLE_PLAN_NAME}\`, ` +
-            `\`${BUNDLE_STATE_NAME}\`, \`${BUNDLE_FINDINGS_NAME}\`, and \`${BUNDLE_ROUTE_LOG_NAME}\`.`
+            `\`${BUNDLE_STATE_NAME}\`, \`${BUNDLE_FINDINGS_NAME}\`, \`${BUNDLE_ROUTE_LOG_NAME}\`, and \`${BUNDLE_PROPOSAL_NAME}\`.`
         );
       }
     }

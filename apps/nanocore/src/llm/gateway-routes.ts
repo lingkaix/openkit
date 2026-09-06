@@ -1585,11 +1585,21 @@ export function registerWorkerInferenceRoutes({
             }
 
             const responsesInput = input as z.infer<typeof GatewayResponsesRequestSchema>;
+            const tools = sanitized.tools;
+            const messageAnchoredTools = Array.isArray(tools) && tools.length > 0;
             const request: OpenAICompatibleResponsesRequest = {
               ...requestBody,
-              input: responsesInput.input,
+              input: messageAnchoredTools
+                ? [
+                    { role: 'developer', tools, type: 'additional_tools' },
+                    ...(Array.isArray(responsesInput.input)
+                      ? responsesInput.input
+                      : [{ content: responsesInput.input, role: 'user' }]),
+                  ]
+                : responsesInput.input,
               model: providerModel,
               stream: responsesInput.stream ?? false,
+              ...(messageAnchoredTools ? { tools: [] } : {}),
             };
             if (request.stream) {
               const stream = await llmGatewayDispatcher.createResponsesStream(

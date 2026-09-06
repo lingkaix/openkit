@@ -1,0 +1,51 @@
+{
+  "filesystem": {
+    "includeWorkdir": true,
+    "readOnly": [
+      "/usr",
+      "/lib",
+      "/proc",
+      "/dev/urandom",
+      "/app",
+      "/etc",
+      "/var/log",
+      "/opt/toolchains"
+    ],
+    "readWrite": ["/sandbox", "/tmp", "/dev/null", "/sandbox/.cache/npm"]
+  },
+  "landlock": { "compatibility": "best_effort" },
+  "networkMiddlewares": {},
+  "networkPolicies": {
+    "direct_api": {
+      "binaries": [{ "path": "/usr/local/bin/codex" }],
+      "endpoints": [
+        {
+          "access": "read-only",
+          "enforcement": "enforce",
+          "host": "api.example.com",
+          "port": 443,
+          "protocol": "rest"
+        }
+      ],
+      "name": "direct_api"
+    },
+    "github_git_read": {
+      "binaries": [{ "path": "/usr/bin/git" }],
+      "endpoints": [
+        {
+          "enforcement": "enforce",
+          "host": "github.com",
+          "port": 443,
+          "protocol": "rest",
+          "rules": [
+            { "allow": { "method": "GET", "path": "/**/info/refs*" } },
+            { "allow": { "method": "POST", "path": "/**/git-upload-pack" } }
+          ]
+        }
+      ],
+      "name": "github_git_read"
+    }
+  },
+  "process": { "runAsGroup": "sandbox", "runAsUser": "sandbox" },
+  "version": 1
+}

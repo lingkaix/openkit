@@ -73,6 +73,8 @@ export interface FenceNanoHostTransportOnTokenUnusableResult {
 export interface DecommissionNanoHostTransportAndFenceInput {
   /** Configured NanoHost identity id. */
   readonly identityId: string;
+  /** Exact deployment bound to the configured NanoHost identity. */
+  readonly deploymentId: string;
   /** Optional decommission clock. */
   readonly now?: Date;
 }
@@ -185,7 +187,7 @@ export function decommissionNanoHostTransportAndFence(
   const revoked = coreDb.sqlite.transaction(() => {
     const options = input.now ? { now: input.now } : {};
     const records = decommissionNanoHostTransportTokens(coreDb, input.identityId, options);
-    decommissionNanoHostIntegrationIdentity(coreDb, input.identityId, options);
+    decommissionNanoHostIntegrationIdentity(coreDb, input.identityId, input.deploymentId, options);
     return records;
   })();
   authority.fenceAuthoritative(input.identityId);

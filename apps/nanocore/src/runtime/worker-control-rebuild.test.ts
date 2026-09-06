@@ -20,7 +20,11 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
-import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
+import {
+  deriveWorkerControlCommandId,
+  hashWorkerRouteToken,
+  WorkerControlGateway,
+} from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
 
 interface RestorableWorkerControlFixture {
@@ -203,7 +207,7 @@ describe('worker control gateway restart hydration', () => {
     }
   });
 
-  it('restores only unacknowledged interrupt commands', () => {
+  it('restores one active interrupt and rejects a second interrupt for the Turn', () => {
     const fixture = createRestorableWorkerControlFixture();
     const gateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
@@ -224,58 +228,41 @@ describe('worker control gateway restart hydration', () => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, NULL, NULL)`
     );
     const interrupt = {
-      commandId: 'worker-command-1',
+      commandId: deriveWorkerControlCommandId(lineage, 1),
       deliveredAt: null,
       kind: 'interrupt',
       queuedAt: '2026-07-13T00:00:05.000Z',
       reason: 'restart test',
       sequence: 1,
     };
-    const legacyTerminal = {
-      argv: ['sh', '-c', 'echo legacy'],
-      commandId: 'legacy-terminal-command',
-      cwd: null,
-      deliveredAt: null,
-      kind: 'terminal-command',
-      queuedAt: '2026-07-13T00:00:06.000Z',
-      sequence: 2,
-    };
-    const acknowledgedInterrupt = {
-      commandId: 'worker-command-acknowledged',
-      deliveredAt: '2026-07-13T00:00:07.000Z',
-      kind: 'interrupt',
-      queuedAt: '2026-07-13T00:00:06.000Z',
-      reason: 'already handled',
-      sequence: 3,
-    };
 
     try {
-      for (const command of [interrupt, legacyTerminal, acknowledgedInterrupt]) {
-        insert.run(
-          lineage.workspaceId,
-          lineage.threadId,
-          lineage.turnId,
-          lineage.agentSessionId,
-          lineage.packageSnapshotId,
-          lineage.requestId,
-          command.commandId,
-          command.kind,
-          command.sequence,
-          JSON.stringify(command),
-          command.queuedAt
-        );
-      }
-      fixture.coreDb.sqlite
-        .prepare(
-          `UPDATE worker_control_commands
-           SET status = 'acknowledged', delivered_at = ?, acknowledged_at = ?
-           WHERE command_id = ?`
-        )
-        .run(
-          acknowledgedInterrupt.deliveredAt,
-          '2026-07-13T00:00:08.000Z',
-          acknowledgedInterrupt.commandId
-        );
+      insert.run(
+        lineage.workspaceId,
+        lineage.threadId,
+        lineage.turnId,
+        lineage.agentSessionId,
+        lineage.packageSnapshotId,
+        lineage.requestId,
+        interrupt.commandId,
+        interrupt.kind,
+        interrupt.sequence,
+        JSON.stringify({ reason: interrupt.reason }),
+        interrupt.queuedAt
+      );
+      insert.run(
+        lineage.workspaceId,
+        lineage.threadId,
+        lineage.turnId,
+        lineage.agentSessionId,
+        lineage.packageSnapshotId,
+        lineage.requestId,
+        'legacy-terminal-command',
+        'terminal-command',
+        2,
+        '{"argv":["sh","-c","echo legacy"]}',
+        '2026-07-13T00:00:06.000Z'
+      );
       rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
 
       expect(
@@ -284,8 +271,134 @@ describe('worker control gateway restart hydration', () => {
           lineage,
         }).commands
       ).toEqual([{ ...interrupt, deliveredAt: expect.any(String) }]);
+      expect(() => gateway.enqueueInterrupt(lineage.packageSnapshotId, 'after restart')).toThrow(
+        'Worker interrupt already admitted for Turn'
+      );
     } finally {
       fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('retains terminal interrupt history across restart', () => {
+    for (const status of ['acknowledged', 'undeliverable'] as const) {
+      const fixture = createRestorableWorkerControlFixture();
+      const gateway = new WorkerControlGateway({
+        resolveTokenBinding: () => ({ status: 'accepted' }),
+      });
+      const lineage = {
+        agentSessionId: fixture.environmentPackage.scope.agentSessionId,
+        packageSnapshotId: fixture.environmentPackage.snapshotId,
+        requestId: fixture.environmentPackage.scope.requestId,
+        threadId: fixture.environmentPackage.scope.threadId,
+        turnId: fixture.environmentPackage.scope.turnId,
+        workspaceId: fixture.environmentPackage.scope.workspaceId,
+      };
+      const commandId = deriveWorkerControlCommandId(lineage, 4);
+
+      try {
+        fixture.coreDb.sqlite
+          .prepare(
+            `INSERT INTO worker_control_commands (
+              workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+              request_id, command_id, command_kind, sequence, payload_json, status,
+              queued_at, delivered_at, acknowledged_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'interrupt', 4, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId,
+            lineage.requestId,
+            commandId,
+            '{"reason":"already terminal"}',
+            status,
+            '2026-07-13T00:00:05.000Z',
+            status === 'acknowledged' ? '2026-07-13T00:00:06.000Z' : null,
+            status === 'acknowledged' ? '2026-07-13T00:00:07.000Z' : null
+          );
+        rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
+
+        expect(
+          gateway.pollCommands({
+            authorization: `Bearer ${fixture.workerControlToken}`,
+            lineage,
+          }).commands
+        ).toEqual([]);
+        expect(() => gateway.enqueueInterrupt(lineage.packageSnapshotId)).toThrow(
+          'Worker interrupt already admitted for Turn'
+        );
+      } finally {
+        fixture.coreDb.sqlite.close();
+      }
+    }
+  });
+
+  it('fails closed on noncanonical durable command rows', () => {
+    for (const malformed of [
+      {
+        commandId: 'worker-command-1',
+        commandKind: 'interrupt',
+        payloadJson: '{"reason":null}',
+        sequence: 1,
+      },
+      {
+        commandId: null,
+        commandKind: 'interrupt',
+        payloadJson: '{"reason":null}',
+        sequence: -1,
+      },
+      {
+        commandId: null,
+        commandKind: 'interrupt',
+        payloadJson: '{"reason":null,"extra":true}',
+        sequence: 1,
+      },
+    ]) {
+      const fixture = createRestorableWorkerControlFixture();
+      const gateway = new WorkerControlGateway();
+      const lineage = {
+        agentSessionId: fixture.environmentPackage.scope.agentSessionId,
+        packageSnapshotId: fixture.environmentPackage.snapshotId,
+        requestId: fixture.environmentPackage.scope.requestId,
+        threadId: fixture.environmentPackage.scope.threadId,
+        turnId: fixture.environmentPackage.scope.turnId,
+        workspaceId: fixture.environmentPackage.scope.workspaceId,
+      };
+      const commandId =
+        malformed.commandId ?? deriveWorkerControlCommandId(lineage, malformed.sequence);
+
+      try {
+        fixture.coreDb.sqlite
+          .prepare(
+            `INSERT INTO worker_control_commands (
+              workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+              request_id, command_id, command_kind, sequence, payload_json, status,
+              queued_at, delivered_at, acknowledged_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, NULL, NULL)`
+          )
+          .run(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId,
+            lineage.requestId,
+            commandId,
+            malformed.commandKind,
+            malformed.sequence,
+            malformed.payloadJson,
+            '2026-07-13T00:00:05.000Z'
+          );
+
+        expect(() => rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway)).toThrow();
+        expect(() =>
+          gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)
+        ).toThrow();
+      } finally {
+        fixture.coreDb.sqlite.close();
+      }
     }
   });
 

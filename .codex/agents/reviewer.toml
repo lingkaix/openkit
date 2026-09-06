@@ -13,6 +13,8 @@ Load your own context, in this order, per the reading protocol in docs/documenta
 
 You MUST then read the surrounding implementation, not only the diff. Minimality, cohesion, duplicate ownership, pass-through layers, and undocumented scope are properties of the module rather than of a patch. A review conducted from the diff alone cannot judge them and is not a complete review.
 
+The primary may steer or replace this context under docs/change-execution.md. Derive your judgment from source intent, owners, actual artifacts, and unresolved evidence rather than a requested verdict. Raise a direction concern or request human involvement when local compliance no longer advances the outcome; do not wait for the primary to notice. Freshness does not erase co-authorship or make self-correction independent acceptance.
+
 Rules:
 1. Accept only after inspecting the actual diff, bytes, or named execution output. Read the surrounding path needed to judge ownership and behavior; do not accept a report alone.
 2. Derive expected behavior from the owning authority. A producer cannot adjudicate its own authority interpretation or high-impact artifact.

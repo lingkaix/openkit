@@ -197,30 +197,42 @@ test('release preflight rejects a missing NanoHost distribution input', () => {
   );
 });
 
-test('release preflight rejects duplicate or target-inconsistent OpenShell pin evidence', () => {
-  const duplicateRoot = makeReleaseFixture({ duplicateNanoHostPinEvidence: true });
-  const wrongTargetRoot = makeReleaseFixture({ nanoHostPinPlatform: 'linux/amd64' });
+test('release preflight rejects an incomplete or target-inconsistent OpenShell release', () => {
+  const incompleteRoot = makeReleaseFixture({ omitNanoHostSupervisorArm64: true });
+  const wrongTargetRoot = makeReleaseFixture({ nanoHostGatewayTarget: 'linux/amd64' });
 
   assert.throws(
-    () => validateReleasePreflight({ repoRoot: duplicateRoot, tag: 'v0.0.1-rc.1' }),
-    /exactly one.*OpenShell pin.*JSON|OpenShell pin.*exactly one/i
+    () => validateReleasePreflight({ repoRoot: incompleteRoot, tag: 'v0.0.1-rc.1' }),
+    /linux\/arm64|supervisor|OpenShell release/i
   );
   assert.throws(
     () => validateReleasePreflight({ repoRoot: wrongTargetRoot, tag: 'v0.0.1-rc.1' }),
-    /linux\/arm64/
+    /linux\/arm64|OpenShell release/i
   );
 });
 
-test('release preflight admits only the exact OpenShell v0.0.99 source identity', () => {
+test('release preflight accepts a coherent OpenShell release update without a hard-coded version', () => {
+  const commit = '1'.repeat(40);
+  const repoRoot = makeReleaseFixture({
+    nanoHostOpenShellVersion: '0.0.100',
+    nanoHostSourceCommit: commit,
+    nanoHostCargoRev: commit,
+    nanoHostLockRev: commit,
+  });
+
+  assert.doesNotThrow(() => validateReleasePreflight({ repoRoot, tag: 'v0.1.0-rc.1' }));
+});
+
+test('release preflight rejects OpenShell release drift from Cargo and its lockfile', () => {
   for (const [label, options] of [
-    ['tag', { nanoHostPinTag: 'v0.0.100' }],
-    ['commit', { nanoHostPinCommit: '1'.repeat(40) }],
+    ['Cargo source revision', { nanoHostCargoRev: '1'.repeat(40) }],
+    ['Cargo lock revision', { nanoHostLockRev: '1'.repeat(40) }],
     ['Gateway archive', { nanoHostGatewayArchiveName: 'openshell-gateway-other.tar.gz' }],
   ]) {
     const repoRoot = makeReleaseFixture(options);
     assert.throws(
       () => validateReleasePreflight({ repoRoot, tag: 'v0.1.0-rc.1' }),
-      /v0\.0\.99|8c7dd148|openshell-gateway-aarch64-unknown-linux-gnu|OpenShell pin/i,
+      /Cargo|revision|openshell-gateway-aarch64-unknown-linux-gnu|OpenShell release/i,
       `preflight accepted substituted ${label}`
     );
   }
@@ -326,10 +338,12 @@ test('release preflight rejects worker images without an explicit build target',
  * @param {boolean} [options.omitWorkerRuntime] Whether to omit the deployment worker runtime.
  * @param {boolean} [options.omitWorkerTarget] Whether to omit the worker Docker target.
  * @param {boolean} [options.omitNanoHostInstaller] Whether to omit the NanoHost installer.
- * @param {boolean} [options.duplicateNanoHostPinEvidence] Whether to append a second pin JSON block.
- * @param {string} [options.nanoHostPinPlatform] Platform projected by the Gateway pin entries.
- * @param {string} [options.nanoHostPinTag] OpenShell source tag.
- * @param {string} [options.nanoHostPinCommit] OpenShell source commit.
+ * @param {string} [options.nanoHostSourceCommit] OpenShell source commit.
+ * @param {string} [options.nanoHostOpenShellVersion] OpenShell release version.
+ * @param {string} [options.nanoHostGatewayTarget] Gateway release target.
+ * @param {string} [options.nanoHostCargoRev] Cargo dependency revision.
+ * @param {string} [options.nanoHostLockRev] Cargo lockfile revision.
+ * @param {boolean} [options.omitNanoHostSupervisorArm64] Whether to omit the arm64 Supervisor digest.
  * @param {string} [options.nanoHostGatewayArchiveName] Gateway release archive name.
  * @param {boolean} [options.omitHostManifest] Whether to omit the promoted execution-host manifest.
  * @param {string} [options.hostDockerPath] Docker path projected by the promoted manifest.
@@ -366,7 +380,7 @@ function makeReleaseFixture(options = {}) {
   chmodSync(cliPath, 0o755);
 
   mkdirSync(join(root, 'apps', 'nanohost', 'deploy'), { recursive: true });
-  mkdirSync(join(root, 'apps', 'nanohost', 'openshell-pin'), { recursive: true });
+  mkdirSync(join(root, 'apps', 'nanohost', 'openshell'), { recursive: true });
   writeFileSync(
     join(root, 'apps', 'nanohost', 'deploy', 'openkit-nanohost.service'),
     '[Service]\nExecStart=/usr/lib/openkit/nanohost\n'
@@ -397,14 +411,17 @@ function makeReleaseFixture(options = {}) {
       schemaVersion: 1,
     });
   }
-  const pin = JSON.stringify(
-    makeNanoHostPin(options.nanoHostPinPlatform ?? 'linux/arm64', options)
+  const release = makeOpenShellRelease(options);
+  writeJson(join(root, 'apps', 'nanohost', 'openshell', 'release.json'), release);
+  const cargoRev = options.nanoHostCargoRev ?? release.source.commit;
+  const lockRev = options.nanoHostLockRev ?? cargoRev;
+  writeFileSync(
+    join(root, 'apps', 'nanohost', 'Cargo.toml'),
+    `[dependencies]\nopenshell-sdk = { git = "https://github.com/NVIDIA/OpenShell.git", rev = "${cargoRev}" }\n`
   );
   writeFileSync(
-    join(root, 'apps', 'nanohost', 'openshell-pin', 'manifest.md'),
-    `# OpenShell Pin Manifest\n\n\`\`\`json\n${pin}\n\`\`\`\n${
-      options.duplicateNanoHostPinEvidence ? `\n\`\`\`json\n${pin}\n\`\`\`\n` : ''
-    }`
+    join(root, 'apps', 'nanohost', 'Cargo.lock'),
+    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/NVIDIA/OpenShell.git?rev=${lockRev}#${lockRev}"\n`
   );
 
   mkdirSync(join(root, 'apps', 'web'), { recursive: true });
@@ -495,54 +512,49 @@ function makeReleaseFixture(options = {}) {
   return root;
 }
 
-function makeNanoHostPin(platform, options = {}) {
-  const checksum = `sha256:${'0'.repeat(64)}`;
-  const commit = options.nanoHostPinCommit ?? '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032';
-  const tag = options.nanoHostPinTag ?? 'v0.0.99';
-  const archiveName =
-    options.nanoHostGatewayArchiveName ?? 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz';
+function makeOpenShellRelease(options = {}) {
+  const checksum = '0'.repeat(64);
+  const commit = options.nanoHostSourceCommit ?? '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032';
+  const version = options.nanoHostOpenShellVersion ?? '0.0.99';
   return {
-    source: { tag, commit },
-    artifacts: [
-      {
-        kind: 'gateway-executable',
-        name: archiveName,
-        representation: 'release-archive',
-        platform,
-        checksum,
-        tag,
-        commit,
+    schemaVersion: 1,
+    version,
+    source: { commit },
+    gateway: {
+      archive: {
+        name:
+          options.nanoHostGatewayArchiveName ??
+          'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
+        target: options.nanoHostGatewayTarget ?? 'linux/arm64',
+        sha256: checksum,
       },
-      {
-        kind: 'gateway-executable',
+      executable: {
         name: 'openshell-gateway',
-        representation: 'extracted-executable',
-        platform,
-        checksum,
-        tag,
-        commit,
+        derivedFrom: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
+        sha256: checksum,
       },
-      {
-        kind: 'redistribution-license',
-        name: 'LICENSE',
-        representation: 'source-file',
+    },
+    supervisor: {
+      repository: 'ghcr.io/nvidia/openshell/supervisor',
+      platformDigests: {
+        'linux/amd64': `sha256:${'1'.repeat(64)}`,
+        ...(options.omitNanoHostSupervisorArm64
+          ? {}
+          : { 'linux/arm64': `sha256:${'2'.repeat(64)}` }),
+      },
+    },
+    redistribution: {
+      license: {
         sourcePath: 'LICENSE',
         bundlePath: 'licenses/openshell-LICENSE',
-        checksum,
-        tag,
-        commit,
+        sha256: checksum,
       },
-      {
-        kind: 'redistribution-notices',
-        name: 'THIRD-PARTY-NOTICES',
-        representation: 'source-file',
+      notices: {
         sourcePath: 'THIRD-PARTY-NOTICES',
         bundlePath: 'licenses/openshell-THIRD-PARTY-NOTICES',
-        checksum,
-        tag,
-        commit,
+        sha256: checksum,
       },
-    ],
+    },
   };
 }
 

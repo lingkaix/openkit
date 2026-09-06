@@ -19,7 +19,7 @@ const SCHEMA_KEYS_BY_TABLE_ROW = new Map([
     ['core', 'governance', 'intent', 'platform-reference', 'manual'],
   ],
   [
-    'Audit record, findings report, cookbook, external snapshot, local guide',
+    'Audit record, change-bundle evidence, cookbook, external snapshot, local guide',
     ['audit', 'change-findings', 'cookbook', 'snapshot', 'local-guide'],
   ],
   ['Generated projection', ['index']],

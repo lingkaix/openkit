@@ -859,7 +859,7 @@ describe('worker MCP routes', () => {
         disposition: 'succeeded' as const,
         harnessInstanceId: dispatched.command.harnessInstanceId,
         operationId: dispatched.command.operationId,
-        schemaVersion: 1 as const,
+        schemaVersion: 2 as const,
         sequence: dispatched.command.sequence,
       };
       settleNanoHostHarnessOperation(coreDb, {
@@ -912,7 +912,7 @@ describe('worker MCP routes', () => {
           },
           lineage,
           operation: 'heartbeat',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 0,
         }),
         headers: {
@@ -973,7 +973,7 @@ describe('worker MCP routes', () => {
           body: terminalBody,
           lineage,
           operation: 'final_status',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: 1,
         }),
         headers: {

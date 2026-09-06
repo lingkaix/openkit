@@ -475,7 +475,7 @@ export function createDefaultWorkerControlGateway(
       }
       return resolution;
     },
-    runFinalStatusTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
+    runFinalStatusTransaction: (operation) => coreDb.sqlite.transaction(operation).immediate(),
     runHeartbeatTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
     sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
   });

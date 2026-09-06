@@ -1,18 +1,11 @@
-import { OPENKIT_WORKER_CONTROL_POST_PATHS } from '@openkit/config-schema';
-import { assertOpenShellPolicyConformant } from '@openkit/openshell-schema-snapshot';
-
 /**
- * Input used to render an OpenShell sandbox policy from resolved AEP grants.
+ * Input used to project one OpenShell sandbox policy from resolved AEP grants.
  */
-export interface RenderOpenShellWorkerPolicyInput {
+export interface ProjectOpenShellWorkerPolicyInput {
   /** Additional filesystem grants derived from the Agent Environment Package policy. */
   additionalFilesystemGrants?: OpenShellFilesystemGrant[] | undefined;
   /** Additional outbound endpoints allowed for selected worker binaries. */
   additionalNetworkEndpoints?: OpenShellNetworkEndpoint[] | undefined;
-  /** Legacy direct worker-control URL, omitted by strict local Integration packages. */
-  controlBaseUrl?: string | undefined;
-  /** Executable paths allowed to use the optional legacy direct endpoint. */
-  binaries?: string[] | undefined;
 }
 
 /**
@@ -51,17 +44,60 @@ export interface OpenShellNetworkEndpoint {
 }
 
 /**
- * Projects the pinned OpenShell sandbox policy as structured create input.
+ * Validates OpenKit-authored grants and projects the structured sandbox policy consumed by NanoHost.
  *
  * @param input Resolved filesystem and network grants.
  * @returns Structured policy accepted by the NanoHost carriage boundary.
+ * @throws Error when OpenKit-authored policy cannot be represented by the supported boundary.
  */
-export function projectOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyInput) {
-  renderOpenShellWorkerPolicy(input);
+export function projectOpenShellWorkerPolicy(input: ProjectOpenShellWorkerPolicyInput) {
+  const filesystemGrants = input.additionalFilesystemGrants ?? [];
+  for (const grant of filesystemGrants) {
+    if (!grant.path.startsWith('/') || /[\r\n\0]/.test(grant.path)) {
+      throw new Error('OpenShell additional filesystem grant path must be absolute.');
+    }
+  }
+
   const networkPolicies = Object.fromEntries(
     (input.additionalNetworkEndpoints ?? []).map((entry) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(entry.name)) {
+        throw new Error('OpenShell additional network endpoint name must be an identifier.');
+      }
+      if (!entry.host.trim() || /[\r\n\0]/.test(entry.host)) {
+        throw new Error('OpenShell additional network endpoint host is required.');
+      }
+      if (!Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535) {
+        throw new Error('OpenShell additional network endpoint port must be between 1 and 65535.');
+      }
+
       const protocol = entry.protocol ?? 'rest';
       const rules = entry.rules ?? [];
+      if (protocol !== 'rest') {
+        throw new Error('OpenShell additional network endpoint protocol must be rest.');
+      }
+      if (
+        entry.binaries.length === 0 ||
+        entry.binaries.some((path) => path.length === 0 || /[\r\n\0]/.test(path))
+      ) {
+        throw new Error('OpenShell additional network endpoint requires non-empty binary paths.');
+      }
+      if (rules.length > 0 && entry.access) {
+        throw new Error('OpenShell network endpoint cannot combine access with exact REST rules.');
+      }
+      if (entry.access && entry.access !== 'read-only' && entry.access !== 'read-write') {
+        throw new Error('OpenShell network endpoint access must be read-only or read-write.');
+      }
+      for (const rule of rules) {
+        if (rule.method !== 'GET' && rule.method !== 'POST') {
+          throw new Error('OpenShell exact REST rules only support GET or POST.');
+        }
+        if (!rule.path.startsWith('/') || /[\r\n\0]/.test(rule.path)) {
+          throw new Error(
+            'OpenShell exact REST rule paths must be absolute and contain no line breaks.'
+          );
+        }
+      }
+
       return [
         entry.name,
         {
@@ -82,7 +118,7 @@ export function projectOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyI
       ];
     })
   );
-  const filesystemGrants = input.additionalFilesystemGrants ?? [];
+
   return {
     filesystem: {
       includeWorkdir: true,
@@ -112,177 +148,5 @@ export function projectOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyI
     networkPolicies,
     process: { runAsGroup: 'sandbox', runAsUser: 'sandbox' },
     version: 1,
-  };
-}
-
-/**
- * Renders the OpenShell policy schema accepted by the installed distribution.
- *
- * @param input Resolved filesystem and network grants.
- * @returns YAML policy text for `openshell sandbox create --policy`.
- */
-export function renderOpenShellWorkerPolicy(input: RenderOpenShellWorkerPolicyInput): string {
-  const directControlEndpoint = input.controlBaseUrl
-    ? resolveControlEndpoint(input.controlBaseUrl)
-    : null;
-  const directControlPolicy = directControlEndpoint
-    ? [
-        '  openkit_worker_control:',
-        '    name: openkit_worker_control',
-        '    binaries:',
-        ...(input.binaries ?? []).map((binary) => `      - path: ${binary}`),
-        '    endpoints:',
-        `      - host: ${directControlEndpoint.host}`,
-        `        port: ${directControlEndpoint.port}`,
-        '        protocol: rest',
-        '        enforcement: enforce',
-        '        rules:',
-        ...OPENKIT_WORKER_CONTROL_POST_PATHS.flatMap((path) => [
-          '          - allow:',
-          '              method: POST',
-          `              path: ${path}`,
-        ]),
-      ]
-    : [];
-  const additionalNetworkPolicies = (input.additionalNetworkEndpoints ?? []).flatMap((entry) =>
-    renderNetworkPolicyEntry(entry)
-  );
-  const additionalReadOnlyPaths = (input.additionalFilesystemGrants ?? [])
-    .filter((grant) => grant.access === 'read-only')
-    .map((grant) => renderFilesystemGrantPath(grant));
-  const additionalReadWritePaths = (input.additionalFilesystemGrants ?? [])
-    .filter((grant) => grant.access === 'read-write')
-    .map((grant) => renderFilesystemGrantPath(grant));
-
-  const policy = [
-    'version: 1',
-    'filesystem_policy:',
-    '  include_workdir: true',
-    '  read_only:',
-    '    - /usr',
-    '    - /lib',
-    '    - /proc',
-    '    - /dev/urandom',
-    '    - /app',
-    '    - /etc',
-    '    - /var/log',
-    ...additionalReadOnlyPaths,
-    '  read_write:',
-    '    - /sandbox',
-    '    - /tmp',
-    '    - /dev/null',
-    ...additionalReadWritePaths,
-    'landlock:',
-    '  compatibility: best_effort',
-    'process:',
-    '  run_as_user: sandbox',
-    '  run_as_group: sandbox',
-    'network_policies:',
-    ...directControlPolicy,
-    ...additionalNetworkPolicies,
-    '',
-  ].join('\n');
-
-  assertOpenShellPolicyConformant(policy);
-
-  return policy;
-}
-
-/**
- * Renders one filesystem grant path and rejects paths OpenShell cannot enforce.
- *
- * @param grant Filesystem grant declaration.
- * @returns YAML list item for the filesystem policy.
- * @throws Error when the path is not absolute.
- */
-function renderFilesystemGrantPath(grant: OpenShellFilesystemGrant): string {
-  if (!grant.path.startsWith('/')) {
-    throw new Error('OpenShell additional filesystem grant path must be absolute.');
-  }
-
-  return `    - ${grant.path}`;
-}
-
-/**
- * Renders one additional OpenShell network policy entry.
- *
- * @param entry Endpoint declaration.
- * @returns YAML lines for the endpoint.
- * @throws Error when the declaration is not valid.
- */
-function renderNetworkPolicyEntry(entry: OpenShellNetworkEndpoint): string[] {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(entry.name)) {
-    throw new Error('OpenShell additional network endpoint name must be an identifier.');
-  }
-
-  if (!entry.host.trim()) {
-    throw new Error('OpenShell additional network endpoint host is required.');
-  }
-
-  if (!Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535) {
-    throw new Error('OpenShell additional network endpoint port must be between 1 and 65535.');
-  }
-
-  const protocol = entry.protocol ?? 'rest';
-  const access = entry.access ?? 'read-only';
-  const rules = entry.rules ?? [];
-
-  if (rules.length > 0 && entry.access) {
-    throw new Error('OpenShell network endpoint cannot combine access with exact REST rules.');
-  }
-  if (rules.length > 0 && protocol !== 'rest') {
-    throw new Error('OpenShell exact HTTP rules require the rest protocol.');
-  }
-  for (const rule of rules) {
-    if (rule.method !== 'GET' && rule.method !== 'POST') {
-      throw new Error('OpenShell exact REST rules only support GET or POST.');
-    }
-    if (!rule.path.startsWith('/') || /[\r\n]/.test(rule.path)) {
-      throw new Error(
-        'OpenShell exact REST rule paths must be absolute and contain no line breaks.'
-      );
-    }
-  }
-
-  return [
-    `  ${entry.name}:`,
-    `    name: ${entry.name}`,
-    '    binaries:',
-    ...entry.binaries.map((binary) => `      - path: ${binary}`),
-    '    endpoints:',
-    `      - host: ${entry.host}`,
-    `        port: ${entry.port}`,
-    `        protocol: ${protocol}`,
-    '        enforcement: enforce',
-    ...(rules.length > 0
-      ? [
-          '        rules:',
-          ...rules.flatMap((rule) => [
-            '          - allow:',
-            `              method: ${rule.method}`,
-            `              path: ${rule.path}`,
-          ]),
-        ]
-      : [`        access: ${access}`]),
-  ];
-}
-
-/**
- * Resolves one explicitly supplied legacy HTTP endpoint into policy coordinates.
- *
- * @param controlBaseUrl Direct worker-control URL retained only for the unselectable legacy path.
- * @returns Host and numeric port used by the OpenShell policy schema.
- * @throws Error when the URL is not HTTP or HTTPS.
- */
-function resolveControlEndpoint(controlBaseUrl: string): { host: string; port: number } {
-  const url = new URL(controlBaseUrl);
-
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('OpenShell worker control endpoint must be an HTTP or HTTPS URL.');
-  }
-
-  return {
-    host: url.hostname,
-    port: Number(url.port || (url.protocol === 'https:' ? '443' : '80')),
   };
 }

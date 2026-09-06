@@ -7,8 +7,9 @@ import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertAarch64Elf } from './lib/nanohost-elf.mjs';
 import {
+  assertOpenShellSdkRevision,
   parseNanoHostHostManifest,
-  parseNanoHostPin,
+  parseOpenShellRelease,
   parseVersionTag,
 } from './release-preflight.mjs';
 
@@ -86,32 +87,33 @@ export function packageReleaseAssets(input) {
 
 /** Packages the exact reproducible linux/arm64 NanoHost distribution. */
 function packageNanoHost(input) {
-  const pin = parseNanoHostPin(
-    gitFile(input.repoRoot, input.ref, 'apps/nanohost/openshell-pin/manifest.md').toString('utf8')
+  const release = parseOpenShellRelease(
+    gitFile(input.repoRoot, input.ref, 'apps/nanohost/openshell/release.json').toString('utf8')
   );
-  const artifact = (kind, representation) =>
-    pin.artifacts.find(
-      (candidate) => candidate.kind === kind && candidate.representation === representation
-    );
-  const archivePin = artifact('gateway-executable', 'release-archive');
-  const gatewayPin = artifact('gateway-executable', 'extracted-executable');
-  const licensePin = artifact('redistribution-license', 'source-file');
-  const noticesPin = artifact('redistribution-notices', 'source-file');
+  assertOpenShellSdkRevision(
+    release,
+    gitFile(input.repoRoot, input.ref, 'apps/nanohost/Cargo.toml').toString('utf8'),
+    gitFile(input.repoRoot, input.ref, 'apps/nanohost/Cargo.lock').toString('utf8')
+  );
+  const archiveRelease = release.gateway.archive;
+  const gatewayRelease = release.gateway.executable;
+  const licenseRelease = release.redistribution.license;
+  const noticesRelease = release.redistribution.notices;
   const hostManifest = parseNanoHostHostManifest(
     gitFile(input.repoRoot, input.ref, 'apps/nanohost/deploy/host-manifest.json').toString('utf8')
   );
   if (
-    archivePin.name !== 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' ||
-    gatewayPin.name !== 'openshell-gateway' ||
-    gatewayPin.derivedFrom !== archivePin.name ||
-    licensePin.sourcePath !== 'LICENSE' ||
-    noticesPin.sourcePath !== 'THIRD-PARTY-NOTICES'
+    archiveRelease.name !== 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' ||
+    gatewayRelease.name !== 'openshell-gateway' ||
+    gatewayRelease.derivedFrom !== archiveRelease.name ||
+    licenseRelease.sourcePath !== 'LICENSE' ||
+    noticesRelease.sourcePath !== 'THIRD-PARTY-NOTICES'
   ) {
-    throw new Error('OpenShell pin artifact lineage is inconsistent.');
+    throw new Error('OpenShell release artifact lineage is inconsistent.');
   }
-  assertChecksum(input.gatewayArchivePath, archivePin.checksum, 'OpenShell Gateway archive');
-  assertChecksum(input.openshellLicensePath, licensePin.checksum, 'OpenShell license');
-  assertChecksum(input.openshellNoticesPath, noticesPin.checksum, 'OpenShell notices');
+  assertChecksum(input.gatewayArchivePath, archiveRelease.sha256, 'OpenShell Gateway archive');
+  assertChecksum(input.openshellLicensePath, licenseRelease.sha256, 'OpenShell license');
+  assertChecksum(input.openshellNoticesPath, noticesRelease.sha256, 'OpenShell notices');
   assertAarch64Elf(readFileSync(input.binaryPath), 'NanoHost binary');
 
   const gatewayList = run('tar', ['-tzf', resolve(input.gatewayArchivePath)], {
@@ -129,7 +131,7 @@ function packageNanoHost(input) {
     ['-xOzf', resolve(input.gatewayArchivePath), '--', gatewayList[0]],
     { encoding: null, maxBuffer: 512 * 1024 * 1024, message: 'Unable to extract OpenShell Gateway' }
   ).stdout;
-  assertDigest(gatewayBytes, gatewayPin.checksum, 'OpenShell Gateway');
+  assertDigest(gatewayBytes, gatewayRelease.sha256, 'OpenShell Gateway');
   assertAarch64Elf(gatewayBytes, 'OpenShell Gateway');
 
   const prefix = `openkit-nanohost-${input.tag}-linux-arm64`;
@@ -157,8 +159,16 @@ function packageNanoHost(input) {
       gitFile(input.repoRoot, input.ref, 'LICENSE'),
       0o644
     );
-    writeMode(join(root, licensePin.bundlePath), readFileSync(input.openshellLicensePath), 0o644);
-    writeMode(join(root, noticesPin.bundlePath), readFileSync(input.openshellNoticesPath), 0o644);
+    writeMode(
+      join(root, licenseRelease.bundlePath),
+      readFileSync(input.openshellLicensePath),
+      0o644
+    );
+    writeMode(
+      join(root, noticesRelease.bundlePath),
+      readFileSync(input.openshellNoticesPath),
+      0o644
+    );
 
     const manifest = {
       schemaVersion: 1,
@@ -184,13 +194,13 @@ function packageNanoHost(input) {
           slirp4netns: hostManifest.commands.slirp4netns,
         },
       },
-      openshellPin: {
-        tag: pin.source.tag,
-        commit: pin.source.commit,
-        gatewayArchive: { name: archivePin.name, sha256: archivePin.checksum.slice(7) },
-        gateway: { sha256: gatewayPin.checksum.slice(7) },
-        license: { sha256: licensePin.checksum.slice(7) },
-        notices: { sha256: noticesPin.checksum.slice(7) },
+      openshellRelease: {
+        version: release.version,
+        sourceCommit: release.source.commit,
+        gatewayArchive: { name: archiveRelease.name, sha256: archiveRelease.sha256 },
+        gateway: { sha256: gatewayRelease.sha256 },
+        license: { sha256: licenseRelease.sha256 },
+        notices: { sha256: noticesRelease.sha256 },
       },
     };
     writeMode(join(root, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`, 0o644);
@@ -252,16 +262,16 @@ function writeMode(path, bytes, mode) {
   chmodSync(path, mode);
 }
 
-/** Rejects one file whose SHA-256 differs from its pin. */
+/** Rejects one file whose SHA-256 differs from its release identity. */
 function assertChecksum(path, expected, label) {
   assertDigest(readFileSync(path), expected, label);
 }
 
-/** Rejects bytes whose SHA-256 differs from its pin. */
+/** Rejects bytes whose SHA-256 differs from its release identity. */
 function assertDigest(bytes, expected, label) {
   const actual = createHash('sha256').update(bytes).digest('hex');
-  if (expected !== `sha256:${actual}`) {
-    throw new Error(`${label} checksum does not match the OpenShell pin.`);
+  if (expected !== actual) {
+    throw new Error(`${label} checksum does not match the OpenShell release.`);
   }
 }
 

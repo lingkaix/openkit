@@ -1158,8 +1158,8 @@ export function assertCodexResponsesRequestAdmission(
   if (
     request.include !== undefined &&
     (!Array.isArray(request.include) ||
-      request.include.length !== 1 ||
-      request.include[0] !== 'reasoning.encrypted_content')
+      request.include.length > 1 ||
+      (request.include.length === 1 && request.include[0] !== 'reasoning.encrypted_content'))
   ) {
     throw new GatewayUnsupportedFeatureError('pi-ai Responses include');
   }
@@ -1177,6 +1177,7 @@ export function assertCodexResponsesRequestAdmission(
   const summaries = new Set(['auto', 'concise', 'detailed', 'off', 'on']);
   if (
     request.reasoning !== undefined &&
+    request.reasoning !== null &&
     (!reasoning ||
       Object.keys(reasoning).some(
         (key) => key !== 'context' && key !== 'effort' && key !== 'summary'

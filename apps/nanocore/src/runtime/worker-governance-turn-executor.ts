@@ -2613,7 +2613,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         completedAt: this.now(),
         errorCode: 'worker_governance_turn_cancelled',
         message: 'Worker reported an aborted terminal status.',
-        outcome: 'cancelled',
+        outcome: turnStatusForCanonicalWorkerStopReason(stopReason),
         requestId,
         store,
         turnId: turnScope.id,

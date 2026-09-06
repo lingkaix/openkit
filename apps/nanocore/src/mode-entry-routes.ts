@@ -1614,6 +1614,7 @@ function taskModeStateForTurn(status: z.infer<typeof TurnSchema>['status']) {
  * @returns Task Mode state owned by that outcome.
  */
 function taskModeStateForStopReason(stopReason: StopReason) {
+  if (stopReason === 'aborted') return 'cancelled';
   return stopReason === 'length' || stopReason === 'budget_exhausted'
     ? 'blocked'
     : taskModeStateForTurn(turnStatusForCanonicalWorkerStopReason(stopReason));

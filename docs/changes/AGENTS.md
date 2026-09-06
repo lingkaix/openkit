@@ -7,6 +7,7 @@ Read `README.md` first. This file adds only directory-local execution rules.
 - Keep one concise record per material lifecycle and link the current owners.
 - For long-running material work, append Intent Epochs and rewrite only the marked working checkpoint.
 - Update the checkpoint when evidence changes a fact, unknown, method, frontier, or predicted Next Action; do not log routine commands or role transitions.
+- Preserve worthwhile scheme rationale in optional `proposal.md` under `docs/change-execution.md`; let `plan.md` reference it, and keep lasting design in its accepted owner.
 - Inspect actual artifacts and named execution evidence before recording acceptance.
 - Keep raw transcripts, tool output, timing, and intermediate evidence uncommitted under `temp/changes/`, in a directory named exactly like this plan's bundle, and still use other `temp/` paths where the work needs them.
 - In an approved pilot plan only, append to this bundle's `route-log.md` rather than to `plan.md`: a `Reframe` with its defeating evidence, a failed attempt or refuted hypothesis with its missing fact, each fresh-context direction check with its outcome and reason written by the context that performed it, and the one line recording an ordinary mid-slice compaction where no fresh check ran. A commit already records its `Continue` outcome; the causal evidence of a committing turn is still an entry.

@@ -597,6 +597,7 @@ export function registerNanoHostTransportRoutes({
       );
     }
     const records = decommissionNanoHostTransportAndFence(coreDb!, sessionAuthority, {
+      deploymentId: config.deploymentId,
       identityId: config.identityId,
     });
     clearNanoHostCredentialSlot(config.credentialSlots.A);

@@ -148,7 +148,7 @@ describe('worker shim CLI parsing', () => {
           url.endsWith('/commands/poll')
             ? { commands: [] }
             : url.endsWith('/events/append') || url.endsWith('/final-status')
-              ? { accepted: true, diagnostics: [], schemaVersion: 1 }
+              ? { accepted: true, diagnostics: [], schemaVersion: 2 }
               : {}
         ),
         { status: 200 }
@@ -246,7 +246,11 @@ describe('worker shim CLI parsing', () => {
           mode: 'sandbox-integration',
         },
         extensions: { openkit: { turnInput: 'Validate the image.' } },
-        llm: { routes: [workerLlmRoute()] },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'gpt-5',
+          routes: [workerLlmRoute()],
+        },
         runtime: {
           command: {
             argv: ['openkit-worker-shim'],
@@ -395,6 +399,148 @@ describe('worker shim CLI parsing', () => {
     expect(runner.calls).toHaveLength(expectedRunnerCalls);
   });
 
+  it('selects the preferred route from a multi-route Gateway package', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-preferred-route-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const requests: string[] = [];
+    const runner = new FakeWorkerProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    const preferredModel = 'openrouter/free';
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
+        },
+        extensions: { openkit: { turnInput: 'Use the preferred model.' } },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: preferredModel,
+          routes: [
+            workerLlmRoute(),
+            { ...workerLlmRoute(), id: 'preferred', model: preferredModel },
+            { ...workerLlmRoute(), id: 'third', model: 'anthropic/claude-sonnet-4-5' },
+            { ...workerLlmRoute(), id: 'fourth', model: 'google/gemini-2.5-pro' },
+          ],
+        },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: workerShimEnvironment(),
+        fetch: async (url) => {
+          requests.push(url);
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(workerControlSuccessBody(url)),
+          };
+        },
+        runner,
+      })
+    ).resolves.toMatchObject({ status: 'failed' });
+
+    expect(requests.some((url) => url.endsWith('/heartbeat'))).toBe(true);
+    expect(requests.some((url) => url.endsWith('/commands/poll'))).toBe(true);
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.argv).toContain(`openkit-worker-inference/${preferredModel}`);
+  });
+
+  it.each([
+    {
+      llm: {
+        mode: 'unsupported',
+        preferredLogicalModelId: 'gpt-5',
+        routes: [workerLlmRoute()],
+      },
+      name: 'an unsupported routing mode',
+    },
+    {
+      llm: {
+        mode: ['gateway'],
+        preferredLogicalModelId: 'gpt-5',
+        routes: [workerLlmRoute()],
+      },
+      name: 'a non-string routing mode',
+    },
+    {
+      llm: { mode: 'gateway', routes: [workerLlmRoute()] },
+      name: 'a missing preferred logical model',
+    },
+    {
+      llm: { mode: 'gateway', preferredLogicalModelId: 'gpt-5', routes: [] },
+      name: 'an empty Gateway route set',
+    },
+    {
+      llm: {
+        mode: 'gateway',
+        preferredLogicalModelId: 'missing-model',
+        routes: [workerLlmRoute()],
+      },
+      name: 'a preferred logical model absent from the route set',
+    },
+    {
+      llm: {
+        mode: 'gateway',
+        preferredLogicalModelId: 'gpt-5',
+        routes: [workerLlmRoute(), { ...workerLlmRoute(), id: 'duplicate-model' }],
+      },
+      name: 'multiple routes for the preferred logical model',
+    },
+    {
+      llm: {
+        mode: 'direct-external',
+        preferredLogicalModelId: 'gpt-5',
+        routes: [workerLlmRoute(), { ...workerLlmRoute(), id: 'extra-route', model: 'gpt-4.1' }],
+      },
+      name: 'multiple routes outside Gateway mode',
+    },
+  ])('rejects $name before Integration or native effects', async ({ llm }) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-invalid-route-selection-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const runner = new FakeWorkerProcessRunner({
+      exitCode: 0,
+      signal: null,
+      stderr: '',
+      stdout: '',
+    });
+    writeRawFileSync(
+      packagePath,
+      JSON.stringify({
+        control: workerIntegrationControl(),
+        extensions: { openkit: { turnInput: 'Do not launch.' } },
+        llm,
+        runtime: {
+          command: {
+            argv: ['openkit-worker-shim'],
+            workingDirectory: sessionDir,
+          },
+        },
+      }),
+      'utf8'
+    );
+
+    await expect(
+      runWorkerShim({
+        args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+        environment: workerShimEnvironment(),
+        runner,
+      })
+    ).rejects.toThrow(
+      /supported LLM routing mode|preferred logical model|exactly one resolved LLM route/
+    );
+    expect(integrationFixtureLifecycle.opens).toBe(0);
+    expect(runner.calls).toHaveLength(0);
+  });
+
   it('waits for worker-control readiness before starting the native process', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-control-ready-'));
     const packagePath = join(sessionDir, 'package.json');
@@ -434,15 +580,9 @@ describe('worker shim CLI parsing', () => {
       runner,
     });
 
-    expect(order).toEqual([
-      'heartbeat',
-      'event-append',
-      'poll',
-      'worker',
-      'event-append',
-      'event-append',
-      'final-status',
-    ]);
+    expect(order.slice(0, 4)).toEqual(['heartbeat', 'event-append', 'poll', 'worker']);
+    expect(order.filter((entry) => entry === 'event-append')).toHaveLength(3);
+    expect(order.at(-1)).toBe('final-status');
     expect(
       readJsonl(join(sessionDir, 'events.jsonl')).map(
         (record) => (record as { sequence: number }).sequence
@@ -656,6 +796,157 @@ describe('worker shim CLI parsing', () => {
         },
       })
     ).rejects.toThrow('process-first');
+  });
+
+  it('keeps command polls independent from a blocked periodic heartbeat', async () => {
+    vi.useFakeTimers();
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-command-cadence-'));
+    const packagePath = join(sessionDir, 'package.json');
+    let heartbeatCount = 0;
+    let commandPollCount = 0;
+    const commandPollTimes: number[] = [];
+    let releaseHeartbeat: (() => void) | undefined;
+    let releaseWorker: (() => void) | undefined;
+    let markPeriodicHeartbeatStarted: (() => void) | undefined;
+    const periodicHeartbeatStarted = new Promise<void>((resolve) => {
+      markPeriodicHeartbeatStarted = resolve;
+    });
+    const blockedHeartbeat = new Promise<void>((resolve) => {
+      releaseHeartbeat = resolve;
+    });
+    const workerRelease = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+    writeFileSync(
+      packagePath,
+      JSON.stringify({ runtime: { command: { workingDirectory: sessionDir } } }),
+      'utf8'
+    );
+    const run = runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: workerShimEnvironment(),
+      fetch: async (url) => {
+        if (url.endsWith('/heartbeat')) {
+          heartbeatCount += 1;
+          if (heartbeatCount === 2) {
+            markPeriodicHeartbeatStarted?.();
+            await blockedHeartbeat;
+          }
+        }
+        if (url.endsWith('/commands/poll')) {
+          commandPollCount += 1;
+          commandPollTimes.push(Date.now());
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(workerControlSuccessBody(url)),
+        };
+      },
+      runner: {
+        async run(input) {
+          input.onStart?.();
+          await workerRelease;
+          return { exitCode: 0, signal: null, stderr: '', stdout: '' };
+        },
+      },
+    });
+    void run.catch(() => undefined);
+
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await periodicHeartbeatStarted;
+      await vi.advanceTimersByTimeAsync(2_100);
+
+      expect(commandPollCount).toBeGreaterThanOrEqual(3);
+      expect(
+        commandPollTimes.slice(1).every((time, index) => time - commandPollTimes[index]! <= 1_000)
+      ).toBe(true);
+    } finally {
+      releaseHeartbeat?.();
+      releaseWorker?.();
+      await vi.runAllTimersAsync();
+      await run.catch(() => undefined);
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps Worker command polling absent during a session-continuity Turn', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-codex-poll-mode-'));
+    const packagePath = join(sessionDir, 'package.json');
+    const controller = new AbortController();
+    let heartbeatCount = 0;
+    let commandPollCount = 0;
+    let eventAppendCount = 0;
+    let markNativeStarted: (() => void) | undefined;
+    let markWorkerReady: (() => void) | undefined;
+    const nativeStarted = new Promise<void>((resolve) => {
+      markNativeStarted = resolve;
+    });
+    const workerReady = new Promise<void>((resolve) => {
+      markWorkerReady = resolve;
+    });
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: { adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' } },
+        runtime: { command: { workingDirectory: sessionDir } },
+      }),
+      'utf8'
+    );
+    const run = runWorkerShim({
+      args: parseWorkerShimArgs(['--package', packagePath, '--session-dir', sessionDir]),
+      environment: workerShimEnvironment(),
+      fetch: async (url) => {
+        if (url.endsWith('/heartbeat')) {
+          heartbeatCount += 1;
+        }
+        if (url.endsWith('/commands/poll')) {
+          commandPollCount += 1;
+        }
+        if (url.endsWith('/events/append')) {
+          eventAppendCount += 1;
+          if (eventAppendCount === 2) {
+            markWorkerReady?.();
+          }
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(workerControlSuccessBody(url)),
+        };
+      },
+      runner: {
+        async run(input) {
+          input.onStart?.();
+          markNativeStarted?.();
+          await new Promise<void>((resolve) => {
+            if (input.signal.aborted) {
+              resolve();
+              return;
+            }
+            input.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          return { exitCode: null, signal: 'SIGTERM', stderr: '', stdout: '' };
+        },
+      },
+      signal: controller.signal,
+    });
+    void run.catch(() => undefined);
+
+    try {
+      await nativeStarted;
+      await workerReady;
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+      expect(heartbeatCount).toBeGreaterThanOrEqual(2);
+      expect(commandPollCount).toBe(0);
+      controller.abort(new Error('fixture-complete'));
+      await expect(run).resolves.toMatchObject({ status: 'interrupted' });
+    } finally {
+      controller.abort();
+      await run.catch(() => undefined);
+    }
   });
 
   it('preserves a process failure while the sibling control stops from supervisor abort', async () => {
@@ -1360,7 +1651,7 @@ describe('worker shim CLI parsing', () => {
           JSON.stringify(
             url.endsWith('/commands/poll')
               ? { commands: [] }
-              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+              : { accepted: true, diagnostics: [], schemaVersion: 2 }
           ),
       };
     };
@@ -1422,7 +1713,7 @@ describe('worker shim CLI parsing', () => {
             workspaceId: 'ws_codex',
           },
           operation: 'final_status',
-          schemaVersion: 1,
+          schemaVersion: 2,
           sequence: terminalRecord?.sequence,
         },
         url: '/worker-control/final-status',
@@ -1458,7 +1749,7 @@ describe('worker shim CLI parsing', () => {
           JSON.stringify(
             url.endsWith('/commands/poll')
               ? { commands: [] }
-              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+              : { accepted: true, diagnostics: [], schemaVersion: 2 }
           ),
       };
     };
@@ -1519,7 +1810,7 @@ describe('worker shim CLI parsing', () => {
           JSON.stringify(
             url.endsWith('/commands/poll')
               ? { commands: [] }
-              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+              : { accepted: true, diagnostics: [], schemaVersion: 2 }
           ),
       };
     };
@@ -1642,7 +1933,7 @@ describe('worker shim CLI parsing', () => {
           JSON.stringify(
             url.endsWith('/commands/poll')
               ? { commands: [] }
-              : { accepted: true, diagnostics: [], schemaVersion: 1 }
+              : { accepted: true, diagnostics: [], schemaVersion: 2 }
           ),
       };
     };
@@ -3209,7 +3500,7 @@ function writeGitWorkspacePackage(
 }
 
 /**
- * Creates the single already resolved LLM route consumed by worker adapter tests.
+ * Creates one Shim-selected LLM route consumed by worker adapter tests.
  *
  * @returns Worker-visible route with no adapter-owned selection or fallback.
  */
@@ -3278,7 +3569,7 @@ function workerControlSuccessBody(url: string): Record<string, unknown> {
     return { commands: [] };
   }
   if (url.endsWith('/events/append') || url.endsWith('/final-status')) {
-    return { accepted: true, diagnostics: [], schemaVersion: 1 };
+    return { accepted: true, diagnostics: [], schemaVersion: 2 };
   }
 
   return {};
@@ -3322,6 +3613,15 @@ function writeFileSync(path: string, data: string | Buffer, encoding?: BufferEnc
         !Array.isArray(extensions.openkit)
           ? (extensions.openkit as Record<string, unknown>)
           : {};
+      const llm =
+        parsed.llm && typeof parsed.llm === 'object' && !Array.isArray(parsed.llm)
+          ? (parsed.llm as Record<string, unknown>)
+          : { routes: [workerLlmRoute()] };
+      const firstRoute = Array.isArray(llm.routes) ? llm.routes[0] : undefined;
+      const preferredLogicalModelId =
+        firstRoute && typeof firstRoute === 'object' && !Array.isArray(firstRoute)
+          ? (firstRoute as Record<string, unknown>).model
+          : 'gpt-5';
       data = JSON.stringify({
         ...parsed,
         control: {
@@ -3337,7 +3637,7 @@ function writeFileSync(path: string, data: string | Buffer, encoding?: BufferEnc
           ...extensions,
           openkit: { turnInput: 'void 0', ...openkit },
         },
-        llm: parsed.llm ?? { mode: 'gateway', routes: [workerLlmRoute()] },
+        llm: { mode: 'gateway', preferredLogicalModelId, ...llm },
         runtime: {
           ...(parsed.runtime as Record<string, unknown>),
           command: {

@@ -75,81 +75,92 @@ function validatePortableReleaseInputs(repoRoot) {
   }
 }
 
-/**
- * Reads and validates the unique specification-owned OpenShell pin projection.
- *
- * @param {string} source Markdown source.
- * @returns {Record<string, unknown>} Validated pin projection.
- */
-export function parseNanoHostPin(source) {
-  const blocks = [...source.matchAll(/```json\s*\n([\s\S]*?)\n```/g)];
-  if (blocks.length !== 1) {
-    throw new Error('OpenShell pin manifest must contain exactly one fenced JSON block.');
-  }
-  const pin = JSON.parse(blocks[0][1]);
-  const sourceIdentity = pin.source;
+/** Parses the supported OpenShell release and its external artifact identities. */
+export function parseOpenShellRelease(source) {
+  const release = JSON.parse(source);
+  const sha256 = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
+  const digest = (value) => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/u.test(value);
+  const exactKeys = (value, keys) =>
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
+  const archive = release?.gateway?.archive;
+  const executable = release?.gateway?.executable;
+  const license = release?.redistribution?.license;
+  const notices = release?.redistribution?.notices;
+  const platformDigests = release?.supervisor?.platformDigests;
   if (
-    typeof sourceIdentity?.tag !== 'string' ||
-    !/^v\d+\.\d+\.\d+$/.test(sourceIdentity.tag) ||
-    typeof sourceIdentity?.commit !== 'string' ||
-    !/^[a-f0-9]{40}$/.test(sourceIdentity.commit) ||
-    !Array.isArray(pin.artifacts)
+    !exactKeys(release, [
+      'schemaVersion',
+      'version',
+      'source',
+      'gateway',
+      'supervisor',
+      'redistribution',
+    ]) ||
+    release.schemaVersion !== 1 ||
+    typeof release.version !== 'string' ||
+    !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(release.version) ||
+    !exactKeys(release.source, ['commit']) ||
+    typeof release.source.commit !== 'string' ||
+    !/^[a-f0-9]{40}$/u.test(release.source.commit) ||
+    !exactKeys(release.gateway, ['archive', 'executable']) ||
+    !exactKeys(archive, ['name', 'target', 'sha256']) ||
+    archive.name !== 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' ||
+    archive.target !== 'linux/arm64' ||
+    !sha256(archive.sha256) ||
+    !exactKeys(executable, ['name', 'derivedFrom', 'sha256']) ||
+    executable.name !== 'openshell-gateway' ||
+    executable.derivedFrom !== archive.name ||
+    !sha256(executable.sha256) ||
+    !exactKeys(release.supervisor, ['repository', 'platformDigests']) ||
+    release.supervisor.repository !== 'ghcr.io/nvidia/openshell/supervisor' ||
+    !exactKeys(platformDigests, ['linux/amd64', 'linux/arm64']) ||
+    !digest(platformDigests['linux/amd64']) ||
+    !digest(platformDigests['linux/arm64']) ||
+    !exactKeys(release.redistribution, ['license', 'notices']) ||
+    !exactKeys(license, ['sourcePath', 'bundlePath', 'sha256']) ||
+    license.sourcePath !== 'LICENSE' ||
+    license.bundlePath !== 'licenses/openshell-LICENSE' ||
+    !sha256(license.sha256) ||
+    !exactKeys(notices, ['sourcePath', 'bundlePath', 'sha256']) ||
+    notices.sourcePath !== 'THIRD-PARTY-NOTICES' ||
+    notices.bundlePath !== 'licenses/openshell-THIRD-PARTY-NOTICES' ||
+    !sha256(notices.sha256)
   ) {
-    throw new Error('OpenShell pin source identity is invalid.');
+    throw new Error('OpenShell release metadata is invalid.');
   }
+  return release;
+}
+
+/** Requires Cargo dependency and lockfile identities to match one OpenShell release. */
+export function assertOpenShellSdkRevision(release, cargoToml, cargoLock) {
+  const dependencyBlock = /openshell-sdk\s*=\s*\{([^}]*)\}/su.exec(cargoToml)?.[1];
+  const dependencyRev = dependencyBlock
+    ? /(?:^|,)\s*rev\s*=\s*"([a-f0-9]{40})"\s*(?:,|$)/u.exec(dependencyBlock)?.[1]
+    : undefined;
+  const officialDependency = dependencyBlock
+    ? /(?:^|,)\s*git\s*=\s*"https:\/\/github\.com\/NVIDIA\/OpenShell\.git"\s*(?:,|$)/u.test(
+        dependencyBlock
+      )
+    : false;
+  const packages = cargoLock
+    .split('[[package]]')
+    .slice(1)
+    .filter((block) => /^\s*name\s*=\s*"openshell-sdk"\s*$/mu.test(block));
+  const lockedSource =
+    packages.length === 1 ? /^source\s*=\s*"([^"]+)"\s*$/mu.exec(packages[0])?.[1] : undefined;
+  const commit = release.source.commit;
   if (
-    sourceIdentity.tag !== 'v0.0.99' ||
-    sourceIdentity.commit !== '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032'
+    !officialDependency ||
+    dependencyRev !== commit ||
+    lockedSource !== `git+https://github.com/NVIDIA/OpenShell.git?rev=${commit}#${commit}`
   ) {
-    throw new Error('OpenShell pin must identify the accepted v0.0.99 source commit.');
-  }
-  const selectors = [
-    ['gateway-executable', 'release-archive'],
-    ['gateway-executable', 'extracted-executable'],
-    ['redistribution-license', 'source-file'],
-    ['redistribution-notices', 'source-file'],
-  ];
-  const selected = selectors.map(([kind, representation]) => {
-    const matches = pin.artifacts.filter(
-      (artifact) => artifact.kind === kind && artifact.representation === representation
+    throw new Error(
+      'OpenShell release source commit must match the Cargo SDK revision and lockfile.'
     );
-    if (matches.length !== 1) {
-      throw new Error(`OpenShell pin must contain exactly one ${kind} ${representation} artifact.`);
-    }
-    return matches[0];
-  });
-  for (const artifact of selected) {
-    if (
-      artifact.tag !== sourceIdentity.tag ||
-      artifact.commit !== sourceIdentity.commit ||
-      typeof artifact.checksum !== 'string' ||
-      !/^sha256:[a-f0-9]{64}$/.test(artifact.checksum)
-    ) {
-      throw new Error('OpenShell pin artifact identity is invalid.');
-    }
   }
-  for (const artifact of selected.slice(0, 2)) {
-    if (artifact.platform !== 'linux/arm64') {
-      throw new Error('OpenShell Gateway pin artifacts must target linux/arm64.');
-    }
-  }
-  const bundlePaths = selected.slice(2).map((artifact) => artifact.bundlePath);
-  if (
-    selected[0].name !== 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' ||
-    selected[1].name !== 'openshell-gateway'
-  ) {
-    throw new Error('OpenShell pin Gateway archive identity is invalid.');
-  }
-  if (
-    selected[2].sourcePath !== 'LICENSE' ||
-    selected[3].sourcePath !== 'THIRD-PARTY-NOTICES' ||
-    bundlePaths[0] !== 'licenses/openshell-LICENSE' ||
-    bundlePaths[1] !== 'licenses/openshell-THIRD-PARTY-NOTICES' ||
-    new Set(bundlePaths).size !== bundlePaths.length
-  ) {
-    throw new Error('OpenShell redistribution license bundle paths must be distinct and fixed.');
-  }
-  return pin;
 }
 
 /** Parses the promoted execution-host manifest fields consumed by the release bundle. */
@@ -176,13 +187,15 @@ export function parseNanoHostHostManifest(source) {
   return manifest;
 }
 
-/** Validates the fixed NanoHost installer, unit, and pin inputs. */
+/** Validates the fixed NanoHost installer, unit, and OpenShell release inputs. */
 function validateNanoHostReleaseInputs(repoRoot) {
   for (const path of [
     'apps/nanohost/deploy/install.sh',
     'apps/nanohost/deploy/openkit-nanohost.service',
     'apps/nanohost/deploy/host-manifest.json',
-    'apps/nanohost/openshell-pin/manifest.md',
+    'apps/nanohost/openshell/release.json',
+    'apps/nanohost/Cargo.toml',
+    'apps/nanohost/Cargo.lock',
   ]) {
     assertRelativeExistingPath(repoRoot, path, 'NanoHost release input');
   }
@@ -200,7 +213,14 @@ function validateNanoHostReleaseInputs(repoRoot) {
   parseNanoHostHostManifest(
     readFileSync(join(repoRoot, 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
   );
-  parseNanoHostPin(readFileSync(join(repoRoot, 'apps/nanohost/openshell-pin/manifest.md'), 'utf8'));
+  const release = parseOpenShellRelease(
+    readFileSync(join(repoRoot, 'apps/nanohost/openshell/release.json'), 'utf8')
+  );
+  assertOpenShellSdkRevision(
+    release,
+    readFileSync(join(repoRoot, 'apps/nanohost/Cargo.toml'), 'utf8'),
+    readFileSync(join(repoRoot, 'apps/nanohost/Cargo.lock'), 'utf8')
+  );
 }
 
 /**

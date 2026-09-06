@@ -187,6 +187,9 @@ test('any placement runs the command directly by default', () => {
 });
 
 test('any placement labels host and image environments distinctly', () => {
+  const hostEnvironment = { ...process.env };
+  delete hostEnvironment.OPENKIT_TEST_EXECUTOR;
+  delete hostEnvironment.OPENKIT_TEST_USE_IMAGE;
   const hostRun = spawnSync(
     'bash',
     [
@@ -196,7 +199,7 @@ test('any placement labels host and image environments distinctly', () => {
       '-c',
       'printf %s "$OPENKIT_TEST_ENVIRONMENT"',
     ],
-    { encoding: 'utf8', cwd: repoRoot }
+    { encoding: 'utf8', cwd: repoRoot, env: hostEnvironment }
   );
   const imageFixture = prepareInImageFixture();
 

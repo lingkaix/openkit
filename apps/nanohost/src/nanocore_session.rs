@@ -288,7 +288,7 @@ fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, bod
                     && object
                         .get("schemaVersion")
                         .and_then(serde_json::Value::as_u64)
-                        == Some(1)
+                        == Some(2)
             })
         })
 }
@@ -1143,17 +1143,21 @@ impl std::fmt::Display for OuterSessionFailure {
 ///
 /// # Errors
 ///
+/// Invokes the caller-owned readiness gate after admission and immediately before publication.
+///
 /// Returns one bounded closed classification when the fixed session cannot continue.
-pub async fn run_outer_session<IO, D, F>(
+pub async fn run_outer_session<IO, R, D, F>(
     io: IO,
     authority: &str,
     context: &CredentialSelectionContext,
     presentation: &CredentialPresentationOutcome,
     reconnect_after: Option<u64>,
+    readiness_gate: R,
     dispatch: D,
 ) -> Result<u64, OuterSessionFailure>
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    R: FnOnce() -> Result<Option<tokio::time::Instant>, OuterSessionFailure>,
     D: FnOnce(u64, h2::client::SendRequest<Bytes>) -> F,
     F: Future<Output = Result<(), OuterSessionFailure>>,
 {
@@ -1356,94 +1360,122 @@ where
                 Some(connection_generation),
             )
         })?;
-        let readiness_uri = format!(
-            "{}/api/nanohost/transport/session/readiness",
-            authority.trim_end_matches('/')
-        );
-        let readiness = Request::builder()
-            .method(Method::POST)
-            .uri(readiness_uri)
-            .header("content-type", "application/json")
-            .body(())
-            .map_err(|_| {
-                OuterSessionFailure::terminal(
-                    OuterSessionStage::Readiness,
-                    OuterSessionOperation::None,
-                    None,
-                    "outer-session readiness request invalid",
-                )
-                .with_reconnect_after(Some(connection_generation))
-            })?;
-        let (response, mut request_body) = sender.send_request(readiness, false).map_err(|_| {
-            OuterSessionFailure::reconnect(
+        let readiness_deadline = readiness_gate()
+            .map_err(|failure| failure.with_reconnect_after(Some(connection_generation)))?;
+        let hard_bound_failure = || {
+            OuterSessionFailure::terminal(
                 OuterSessionStage::Readiness,
                 OuterSessionOperation::None,
                 None,
-                "outer-session physical connection closed",
-                Some(connection_generation),
+                "epoch rebuild hard bound exceeded",
             )
-        })?;
-        request_body
-            .send_data(Bytes::from_static(b"{}"), true)
-            .map_err(|_| {
-                OuterSessionFailure::reconnect(
-                    OuterSessionStage::Readiness,
-                    OuterSessionOperation::None,
-                    None,
-                    "outer-session physical connection closed",
-                    Some(connection_generation),
-                )
-            })?;
-        let response = response.await.map_err(|_| {
-            OuterSessionFailure::reconnect(
-                OuterSessionStage::Readiness,
-                OuterSessionOperation::None,
-                None,
-                "outer-session physical connection closed",
-                Some(connection_generation),
-            )
-        })?;
-        if response.status() != StatusCode::NO_CONTENT {
-            return Err(OuterSessionFailure::terminal(
-                OuterSessionStage::Readiness,
-                OuterSessionOperation::None,
-                Some(response.status().as_u16()),
-                "outer-session readiness rejected",
-            )
-            .with_reconnect_after(Some(connection_generation)));
-        }
-        let mut response_body = response.into_body();
-        while let Some(chunk) = response_body.data().await {
-            let chunk = chunk.map_err(|_| {
-                OuterSessionFailure::reconnect(
-                    OuterSessionStage::Readiness,
-                    OuterSessionOperation::None,
-                    Some(StatusCode::NO_CONTENT.as_u16()),
-                    "outer-session physical connection closed",
-                    Some(connection_generation),
-                )
-            })?;
-            if !chunk.is_empty() {
-                return Err(OuterSessionFailure::terminal(
-                    OuterSessionStage::Readiness,
-                    OuterSessionOperation::None,
-                    Some(StatusCode::NO_CONTENT.as_u16()),
-                    "outer-session readiness response invalid",
-                )
-                .with_reconnect_after(Some(connection_generation)));
-            }
-            response_body
-                .flow_control()
-                .release_capacity(chunk.len())
+            .with_reconnect_after(Some(connection_generation))
+        };
+        let readiness_exchange = async {
+            let readiness_uri = format!(
+                "{}/api/nanohost/transport/session/readiness",
+                authority.trim_end_matches('/')
+            );
+            let readiness = Request::builder()
+                .method(Method::POST)
+                .uri(readiness_uri)
+                .header("content-type", "application/json")
+                .body(())
                 .map_err(|_| {
                     OuterSessionFailure::terminal(
                         OuterSessionStage::Readiness,
                         OuterSessionOperation::None,
-                        Some(StatusCode::NO_CONTENT.as_u16()),
-                        "outer-session readiness flow control failed",
+                        None,
+                        "outer-session readiness request invalid",
                     )
                     .with_reconnect_after(Some(connection_generation))
                 })?;
+            if readiness_deadline.is_some_and(|deadline| tokio::time::Instant::now() > deadline) {
+                return Err(hard_bound_failure());
+            }
+            let (response, mut request_body) =
+                sender.send_request(readiness, false).map_err(|_| {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        None,
+                        "outer-session physical connection closed",
+                        Some(connection_generation),
+                    )
+                })?;
+            request_body
+                .send_data(Bytes::from_static(b"{}"), true)
+                .map_err(|_| {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        None,
+                        "outer-session physical connection closed",
+                        Some(connection_generation),
+                    )
+                })?;
+            let response = response.await.map_err(|_| {
+                OuterSessionFailure::reconnect(
+                    OuterSessionStage::Readiness,
+                    OuterSessionOperation::None,
+                    None,
+                    "outer-session physical connection closed",
+                    Some(connection_generation),
+                )
+            })?;
+            if response.status() != StatusCode::NO_CONTENT {
+                return Err(OuterSessionFailure::terminal(
+                    OuterSessionStage::Readiness,
+                    OuterSessionOperation::None,
+                    Some(response.status().as_u16()),
+                    "outer-session readiness rejected",
+                )
+                .with_reconnect_after(Some(connection_generation)));
+            }
+            let mut response_body = response.into_body();
+            while let Some(chunk) = response_body.data().await {
+                let chunk = chunk.map_err(|_| {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        Some(StatusCode::NO_CONTENT.as_u16()),
+                        "outer-session physical connection closed",
+                        Some(connection_generation),
+                    )
+                })?;
+                if !chunk.is_empty() {
+                    return Err(OuterSessionFailure::terminal(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        Some(StatusCode::NO_CONTENT.as_u16()),
+                        "outer-session readiness response invalid",
+                    )
+                    .with_reconnect_after(Some(connection_generation)));
+                }
+                response_body
+                    .flow_control()
+                    .release_capacity(chunk.len())
+                    .map_err(|_| {
+                        OuterSessionFailure::terminal(
+                            OuterSessionStage::Readiness,
+                            OuterSessionOperation::None,
+                            Some(StatusCode::NO_CONTENT.as_u16()),
+                            "outer-session readiness flow control failed",
+                        )
+                        .with_reconnect_after(Some(connection_generation))
+                    })?;
+            }
+            if readiness_deadline.is_some_and(|deadline| tokio::time::Instant::now() > deadline) {
+                return Err(hard_bound_failure());
+            }
+            Ok(())
+        };
+        if let Some(deadline) = readiness_deadline {
+            tokio::time::timeout_at(deadline, readiness_exchange)
+                .await
+                .map_err(|_| hard_bound_failure())??;
+        } else {
+            readiness_exchange.await?;
         }
 
         dispatch(connection_generation, sender)
@@ -2490,18 +2522,33 @@ mod tests {
         let admission = source
             .find("/api/nanohost/transport/session/admit")
             .expect("authoritative admission request");
+        let readiness_gate = source
+            .find("readiness_gate()")
+            .expect("caller-owned readiness gate");
         let readiness = source
             .find("/api/nanohost/transport/session/readiness")
             .expect("durable readiness request");
         let dispatch = source
             .find("dispatch(connection_generation, sender)")
             .expect("first effect dispatcher boundary");
-        assert!(admission < readiness && readiness < dispatch);
+        assert!(admission < readiness_gate && readiness_gate < readiness && readiness < dispatch);
         let readiness_exchange = &source[readiness..dispatch];
         assert!(readiness_exchange.contains("send_data(Bytes::from_static(b\"{}\"), true)"));
         assert!(readiness_exchange.contains("StatusCode::NO_CONTENT"));
         assert!(readiness_exchange.contains("return Err"));
         assert!(readiness_exchange.contains("response.into_body()"));
+        let timed_exchange = source
+            .split_once("let readiness_exchange = async {")
+            .expect("complete readiness exchange future")
+            .1
+            .split_once("if let Some(deadline) = readiness_deadline")
+            .expect("absolute readiness deadline")
+            .0;
+        assert!(timed_exchange.contains("is_some_and"));
+        assert!(timed_exchange.contains("sender.send_request(readiness, false)"));
+        assert!(timed_exchange.contains("send_data(Bytes::from_static(b\"{}\"), true)"));
+        assert!(timed_exchange.contains("response.into_body()"));
+        assert!(readiness_exchange.contains("tokio::time::timeout_at"));
 
         let main_source = include_str!("main.rs")
             .split_once("#[cfg(test)]")
@@ -2519,7 +2566,7 @@ mod tests {
     #[test]
     fn initial_harness_poll_is_exact_and_credential_free() {
         let headers = http::HeaderMap::new();
-        let body = br#"{"schemaVersion":1}"#;
+        let body = br#"{"schemaVersion":2}"#;
         assert!(is_initial_harness_poll(
             &Method::POST,
             "/worker-control/harness/poll",
@@ -2536,13 +2583,13 @@ mod tests {
             &Method::POST,
             "/worker-control/harness/poll",
             &headers,
-            br#"{"schemaVersion":1,"nextExpectedSequence":1}"#,
+            br#"{"schemaVersion":2,"nextExpectedSequence":1}"#,
         ));
         assert!(!is_initial_harness_poll(
             &Method::POST,
             "/worker-control/harness/poll",
             &headers,
-            br#"{"schemaVersion":1,"nextExpectedSequence":0}"#,
+            br#"{"schemaVersion":2,"nextExpectedSequence":0}"#,
         ));
         let mut credential_headers = http::HeaderMap::new();
         credential_headers.insert(
@@ -2628,7 +2675,7 @@ mod tests {
             .expect("nested request send");
         nested_body
             .send_data(
-                Bytes::from_static(br#"{"schemaVersion":1,"nextExpectedSequence":2}"#),
+                Bytes::from_static(br#"{"schemaVersion":2,"nextExpectedSequence":2}"#),
                 true,
             )
             .expect("nested body send");
@@ -3074,6 +3121,8 @@ mod tests {
 
     fn scripted_outer_server(
         generation: u64,
+        readiness_status: StatusCode,
+        readiness_delay: Option<std::time::Duration>,
         effects: Vec<(&'static str, TestEffectResponse)>,
     ) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<()>) {
         let (client_io, server_io) = tokio::io::duplex(4096);
@@ -3128,15 +3177,20 @@ mod tests {
                             .expect("admission response body");
                     }
                     "/api/nanohost/transport/session/readiness" => {
-                        respond
-                            .send_response(
-                                Response::builder()
-                                    .status(StatusCode::NO_CONTENT)
-                                    .body(())
-                                    .expect("readiness response"),
-                                true,
-                            )
-                            .expect("readiness response send");
+                        if let Some(delay) = readiness_delay {
+                            tokio::time::sleep(delay).await;
+                        }
+                        let response = respond.send_response(
+                            Response::builder()
+                                .status(readiness_status)
+                                .body(())
+                                .expect("readiness response"),
+                            true,
+                        );
+                        if readiness_delay.is_some() && response.is_err() {
+                            return;
+                        }
+                        response.expect("readiness response send");
                     }
                     _ => unreachable!("closed request list"),
                 }
@@ -3196,12 +3250,94 @@ mod tests {
         (context, presentation)
     }
 
+    #[tokio::test]
+    async fn consumes_rebuild_marker_only_after_exact_readiness_acknowledgement() {
+        static NEXT_MARKER: AtomicU64 = AtomicU64::new(0);
+
+        for (readiness_status, readiness_timeout, readiness_delay, consumed) in [
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                std::time::Duration::from_secs(1),
+                None,
+                false,
+            ),
+            (
+                StatusCode::NO_CONTENT,
+                std::time::Duration::from_secs(1),
+                None,
+                true,
+            ),
+            (
+                StatusCode::NO_CONTENT,
+                std::time::Duration::from_millis(1),
+                Some(std::time::Duration::from_millis(20)),
+                false,
+            ),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "openkit-readiness-marker-{}-{}",
+                std::process::id(),
+                NEXT_MARKER.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&root).expect("readiness marker root");
+            let marker = root.join("fence-started");
+            std::fs::write(&marker, b"first").expect("first-fence marker");
+            let dispatch_marker = marker.clone();
+            let gate_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let gate_observation = Arc::clone(&gate_called);
+            let (client_io, server) =
+                scripted_outer_server(1, readiness_status, readiness_delay, vec![]);
+            let (context, presentation) = test_outer_credentials();
+
+            let failure = run_outer_session(
+                client_io,
+                "http://nanocore.test",
+                &context,
+                &presentation,
+                None,
+                move || {
+                    gate_observation.store(true, Ordering::Relaxed);
+                    Ok(Some(tokio::time::Instant::now() + readiness_timeout))
+                },
+                move |_, _| async move {
+                    std::fs::remove_file(dispatch_marker).expect("consume first-fence marker");
+                    Err(OuterSessionFailure::terminal(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        None,
+                        "test readiness settled",
+                    ))
+                },
+            )
+            .await
+            .expect_err("scripted readiness boundary must terminate");
+            server.await.expect("readiness server task");
+
+            assert!(gate_called.load(Ordering::Relaxed));
+            assert_eq!(marker.exists(), !consumed);
+            if !consumed {
+                assert_eq!(failure.stage, OuterSessionStage::Readiness);
+                if readiness_delay.is_some() {
+                    assert_eq!(failure.reason(), "epoch rebuild hard bound exceeded");
+                } else {
+                    assert_eq!(
+                        failure.status,
+                        Some(StatusCode::SERVICE_UNAVAILABLE.as_u16())
+                    );
+                }
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
     async fn first_poll_physical_close_after_readiness(
         reconnect_after: Option<u64>,
     ) -> OuterSessionFailure {
         let generation = reconnect_after.map_or(1, |predecessor| predecessor + 1);
         let (client_io, server) = scripted_outer_server(
             generation,
+            StatusCode::NO_CONTENT,
+            None,
             vec![(
                 "/api/nanohost/transport/effects/sandbox.create",
                 TestEffectResponse::PhysicalClose,
@@ -3214,6 +3350,7 @@ mod tests {
             &context,
             &presentation,
             reconnect_after,
+            || Ok(None),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
@@ -3257,6 +3394,8 @@ mod tests {
         };
         let (client_io, server) = scripted_outer_server(
             8,
+            StatusCode::NO_CONTENT,
+            None,
             vec![
                 (
                     "/api/nanohost/transport/effects/sandbox.create/result",
@@ -3274,6 +3413,7 @@ mod tests {
             &context,
             &presentation,
             Some(7),
+            || Ok(None),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(true);
                 submit_effect_result(
@@ -3299,6 +3439,8 @@ mod tests {
 
         let (client_io, server) = scripted_outer_server(
             8,
+            StatusCode::NO_CONTENT,
+            None,
             vec![
                 (
                     "/api/nanohost/transport/effects/sandbox.create",
@@ -3316,6 +3458,7 @@ mod tests {
             &context,
             &presentation,
             Some(7),
+            || Ok(None),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 assert!(
@@ -3342,6 +3485,8 @@ mod tests {
     async fn nhc_fnd_059_live_bridge_poll_close_remains_reconnectable() {
         let (client_io, server) = scripted_outer_server(
             1,
+            StatusCode::NO_CONTENT,
+            None,
             vec![(
                 "/api/nanohost/transport/effects/bridge.open",
                 TestEffectResponse::PhysicalClose,
@@ -3354,6 +3499,7 @@ mod tests {
             &context,
             &presentation,
             None,
+            || Ok(None),
             |_, mut sender| async move {
                 let mut cursor = 2;
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, true)

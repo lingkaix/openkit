@@ -33,6 +33,16 @@ describe('NanoCore boot phase order', () => {
       'local-identity',
       'scheduler-restart-recovery',
     ]);
+
+    const source = readEntrypointSource();
+    const restartPhase = source.indexOf("name: 'scheduler-restart-recovery'");
+    const deletionFence = source.indexOf(
+      'restoreWorkspaceDeletionMutationAdmission({',
+      restartPhase
+    );
+    const runtimeFence = source.indexOf('fenceNanoHostRuntimeTargetAfterRestart(', restartPhase);
+    expect(deletionFence).toBeGreaterThan(restartPhase);
+    expect(runtimeFence).toBeGreaterThan(deletionFence);
   });
 
   it('preserves stopped scheduler hooks when shutdown hits the deadline', () => {

@@ -38,7 +38,7 @@ Legacy committed state files and findings reports remain valid inputs under the 
 
 - Do not require a state file, event schema, workflow engine, dashboard, scheduler, or live breaker.
 - Do not define targets or thresholds before repeated completed-work observations exist.
-- Do not score or advise an active primary agent, builder, test author, reviewer, or verifier.
+- Do not score or advise an active primary agent, builder, test author, reviewer, or consultant.
 - Do not infer omitted events from narrative summaries.
 
 ## Observation Panel

@@ -246,7 +246,7 @@ export class WorkerControlClient {
     const envelope = {
       body: WorkerCanonicalTerminalEventDataSchema.parse(terminalData),
       operation: 'final_status',
-      schemaVersion: 1,
+      schemaVersion: 2,
       sequence,
     };
 
@@ -322,7 +322,7 @@ export class WorkerControlClient {
         },
         operation: 'heartbeat',
         ...(reconnect ? { reconnectKey: this.processKey } : {}),
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: heartbeat.sequence,
       },
       signal

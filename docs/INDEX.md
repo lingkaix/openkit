@@ -105,7 +105,7 @@ and are not listed here.
 - `docs/specs/20260715-multi_user_workspace_system.md` — Accepted, Partial — The target design for several authenticated users sharing one canonical Workspace inside one NanoCore deployment.
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md` — Deprecated, Partial — The per-AgentSession disposable Cell contract is deprecated because the accepted target moves all OpenShell lifecycle effects onto one configured NanoHost and…
 - `docs/specs/20260716-codex_worker_adapter.md` — Accepted, Partial — Codex session-local state and restricted native conversation-handle lifecycle
-- `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Implemented — OpenCode command construction for one bounded worker turn
+- `docs/specs/20260716-opencode_worker_adapter.md` — Accepted, Partial — OpenCode command construction for one bounded worker turn
 - `docs/specs/20260716-pi_worker_adapter.md` — Accepted, Partial — Pi command construction for one bounded worker turn
 - `docs/specs/20260719-verification_calibration.md` — Accepted, Not Started — This specification owns the repository's verification calibration program: the three fault-injection layers that measure detection power at the three engineeri…
 - `docs/specs/20260721-provider_subscription_accounts.md` — Accepted, Partial — This spec owns deployment-admin management of server-owned LLM subscription account slots, the binding from one provider profile to one slot, the slot-scoped b…
@@ -191,6 +191,7 @@ Change plans are not indexed. List `docs/changes/` to see them.
 ## Audit Records
 
 - `docs/audits/20260821-agent_coordination_playbook.md` — Agent Coordination Playbook Audit
+- `docs/audits/20260905-delegated_engineering_governance.md` — Delegated Engineering Governance Audit
 
 ## Platform References
 
@@ -219,6 +220,7 @@ Change plans are not indexed. List `docs/changes/` to see them.
 - `docs/cookbooks/docker-test-env.md` — Test Execution Image
 - `docs/cookbooks/go-setup.md` — Go Setup Cookbook
 - `docs/cookbooks/nanohost-real-use-host.md` — NanoHost Real-Use Host
+- `docs/cookbooks/openshell-upgrade.md` — OpenShell Upgrade
 - `docs/cookbooks/python-setup.md` — Python Setup Cookbook
 - `docs/cookbooks/release.md` — Release Cookbook
 - `docs/cookbooks/rust-setup.md` — Rust Setup Cookbook

@@ -72,6 +72,21 @@ function insertTokenOwnerUser(coreDb: CoreDb): void {
     .run(now, now);
 }
 
+/** Inserts one exact active NanoHost identity fixture. */
+function insertActiveNanoHostIdentity(
+  coreDb: CoreDb,
+  identityId: string,
+  deploymentId: string
+): void {
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO nanohost_integration_identities (
+        identity_id, deployment_id, status, created_at
+      ) VALUES (?, ?, 'active', ?)`
+    )
+    .run(identityId, deploymentId, '2026-08-08T00:00:00.000Z');
+}
+
 /** Builds the single configured NanoHost projection used by route-flow tests. */
 function configuredNanoHost(slotRoot: string) {
   return {
@@ -702,17 +717,25 @@ describe('NanoHost transport App API safe-sink routes', () => {
       }>;
       expect(retainedTokens).toHaveLength(2);
       const foreignDeploymentToken = createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: 'deploy_foreign',
+        deploymentId: config.deploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
         ownerNanoHostIdentityId: config.identityId,
         responsibleServerAdminActorId: 'user_owner',
       });
+      coreDb.sqlite
+        .prepare('UPDATE nanohost_transport_tokens SET deployment_id = ? WHERE token_id = ?')
+        .run('deploy_foreign', foreignDeploymentToken.tokenId);
       const foreignIdentityToken = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: config.deploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
-        ownerNanoHostIdentityId: 'integration_nanohost_foreign',
+        ownerNanoHostIdentityId: config.identityId,
         responsibleServerAdminActorId: 'user_owner',
       });
+      coreDb.sqlite
+        .prepare(
+          'UPDATE nanohost_transport_tokens SET owner_nanohost_identity_id = ? WHERE token_id = ?'
+        )
+        .run('integration_nanohost_foreign', foreignIdentityToken.tokenId);
       expect(
         revokeNanoHostTransportTokenRecord(coreDb, foreignDeploymentToken.tokenId)?.status
       ).toBe('revoked');
@@ -794,6 +817,165 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(auditJson).not.toContain(slotRoot);
       expect(existsSync(config.credentialSlots.A.secretPath)).toBe(false);
       expect(existsSync(config.credentialSlots.B.secretPath)).toBe(false);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not revoke an orphan Token when the configured identity is missing', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-decommission-orphan-'));
+    const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-decommission-orphan-slots-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const config = configuredNanoHost(slotRoot);
+      insertActiveNanoHostIdentity(coreDb, config.identityId, config.deploymentId);
+      const token = createNanoHostTransportTokenRecord(coreDb, {
+        deploymentId: config.deploymentId,
+        expiresAt: '2026-09-08T00:00:00.000Z',
+        ownerNanoHostIdentityId: config.identityId,
+        responsibleServerAdminActorId: 'user_owner',
+      });
+      coreDb.sqlite
+        .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
+        .run(config.identityId);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const authority = createNanoHostTransportSessionAuthority();
+      const app = createApp({
+        auth: ownerSessionAuth(),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        nanohostTransportSessionAuthority: authority,
+        openKitConfig: { nanohost: config },
+      });
+
+      expect(
+        verifyNanoHostTransportTokenRecord(coreDb, token.secret, {
+          channel: 'nanohost-transport',
+          now: new Date('2026-08-08T00:01:00.000Z'),
+          source: 'session-admit',
+        })
+      ).toBeNull();
+      const admission = await app.request('/api/nanohost/transport/session/admit', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      expect(admission.status).toBe(401);
+      expect(authority.authoritativeGeneration(config.identityId)).toBeNull();
+      expect(coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual([]);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT last_used_at, last_used_channel, last_used_source
+             FROM nanohost_transport_tokens WHERE token_id = ?`
+          )
+          .get(token.tokenId)
+      ).toEqual({ last_used_at: null, last_used_channel: null, last_used_source: null });
+
+      const response = await app.request('/api/app/nanohost/decommission', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${admin.secret}` },
+      });
+
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(coreDb.sqlite.prepare('SELECT * FROM nanohost_integration_identities').all()).toEqual(
+        []
+      );
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT token_id, status, revoked_at FROM nanohost_transport_tokens')
+          .all()
+      ).toEqual([{ revoked_at: null, status: 'active', token_id: token.tokenId }]);
+      expect(
+        listServerAuditEvents(coreDb).filter(
+          (event) => event.action === 'nanohost.transport.decommission'
+        )
+      ).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('does not issue another Token when the configured identity is missing', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-issue-orphan-'));
+    const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-issue-orphan-slots-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const config = configuredNanoHost(slotRoot);
+      insertActiveNanoHostIdentity(coreDb, config.identityId, config.deploymentId);
+      const retained = createNanoHostTransportTokenRecord(coreDb, {
+        deploymentId: config.deploymentId,
+        expiresAt: '2026-09-08T00:00:00.000Z',
+        ownerNanoHostIdentityId: config.identityId,
+        responsibleServerAdminActorId: 'user_owner',
+      });
+      coreDb.sqlite
+        .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
+        .run(config.identityId);
+      const tokensBefore = coreDb.sqlite
+        .prepare(
+          `SELECT token_id, status, revoked_at
+           FROM nanohost_transport_tokens ORDER BY token_id`
+        )
+        .all();
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: ownerSessionAuth(),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        openKitConfig: { nanohost: config },
+      });
+
+      const response = await app.request('/api/app/nanohost/tokens', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${admin.secret}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          targetSlot: 'B',
+          expiresAt: '2026-09-08T00:00:00.000Z',
+        }),
+      });
+
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT token_id, status, revoked_at
+             FROM nanohost_transport_tokens ORDER BY token_id`
+          )
+          .all()
+      ).toEqual(tokensBefore);
+      expect(tokensBefore).toEqual([
+        { revoked_at: null, status: 'active', token_id: retained.tokenId },
+      ]);
+      expect(existsSync(config.credentialSlots.B.secretPath)).toBe(false);
+      expect(existsSync(config.credentialSlots.B.companionPath)).toBe(false);
+      expect(
+        listServerAuditEvents(coreDb).filter((event) => event.action === 'nanohost.transport.issue')
+      ).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -894,6 +1076,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
       writeFileSync(blocked, 'not-a-directory');
+      insertActiveNanoHostIdentity(coreDb, 'integration_nanohost_primary', 'deploy_primary');
       const admin = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
         ownerUserId: 'user_owner',
@@ -959,12 +1142,18 @@ describe('NanoHost transport App API safe-sink routes', () => {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
       const config = configuredNanoHost(slotRoot);
+      const retainedIdentityId = otherIdentity ? 'integration_nanohost_other' : config.identityId;
+      const retainedDeploymentId = otherDeployment ? 'deploy_other' : config.deploymentId;
+      insertActiveNanoHostIdentity(coreDb, retainedIdentityId, retainedDeploymentId);
       const retained = createNanoHostTransportTokenRecord(coreDb, {
-        deploymentId: otherDeployment ? 'deploy_other' : config.deploymentId,
+        deploymentId: retainedDeploymentId,
         expiresAt: '2026-09-08T00:00:00.000Z',
-        ownerNanoHostIdentityId: otherIdentity ? 'integration_nanohost_other' : config.identityId,
+        ownerNanoHostIdentityId: retainedIdentityId,
         responsibleServerAdminActorId: 'user_owner',
       });
+      coreDb.sqlite
+        .prepare('DELETE FROM nanohost_integration_identities WHERE identity_id = ?')
+        .run(retainedIdentityId);
       const historyBefore = coreDb.sqlite
         .prepare(
           `SELECT token_id, status, owner_nanohost_identity_id, deployment_id
@@ -1013,9 +1202,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(historyBefore).toEqual([
         {
           deployment_id: otherDeployment ? 'deploy_other' : config.deploymentId,
-          owner_nanohost_identity_id: otherIdentity
-            ? 'integration_nanohost_other'
-            : config.identityId,
+          owner_nanohost_identity_id: retainedIdentityId,
           status: 'active',
           token_id: retained.tokenId,
         },

@@ -54,7 +54,7 @@ function workerControlResponse(url: string): Record<string, unknown> {
     return { commands: [] };
   }
   if (url.endsWith('/events/append') || url.endsWith('/final-status')) {
-    return { accepted: true, diagnostics: [], schemaVersion: 1 };
+    return { accepted: true, diagnostics: [], schemaVersion: 2 };
   }
 
   return {};
@@ -95,6 +95,7 @@ describe('fourth worker runtime fixture', () => {
         extensions: { openkit: { turnInput: 'Run the fixture.' } },
         llm: {
           mode: 'gateway',
+          preferredLogicalModelId: 'fixture-model',
           routes: [
             {
               credentialVisibility: 'none',

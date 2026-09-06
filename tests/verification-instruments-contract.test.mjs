@@ -187,12 +187,12 @@ test('keeps the three responses and both limits that bound them', () => {
       '**Declare.**',
       '**Demote.**',
       '**Convert.**',
-      'A gate that cannot say which of the four properties its oracle holds does not have a sufficient entry condition',
-      'A weak oracle informs and does not gate.',
+      "A gate claiming deterministic proof states its oracle's class from running each property's falsifier",
+      'A weak oracle informs and does not establish a deterministic predicate.',
       // Without the admissibility bar, Convert licenses any mechanical proxy
       // that looks strong, which is the failure mode Convert itself creates.
       '**a necessary condition is admissible only when its violation has actually been observed.**',
-      'Some judgements have no strong oracle and will not acquire one',
+      'Agents may decide within delegated authority using reasons and evidence.',
       '**Portability is never a reason to weaken an oracle.**',
     ],
     'the oracle responses'
@@ -296,37 +296,18 @@ test('anchors evidence acquisition and the two instrument rules this change adde
   );
 });
 
-test('keeps the effect-domain rule and the observation-channel repair', () => {
+test('keeps effect boundaries while allowing temporary evidence without permanent infrastructure', () => {
   assertRetains(
     section(contract, 'Effect Domains And Observation Channels'),
     [
-      'is a finding against the architecture rather than against the check',
-      'is not repaired by granting the check access to that domain',
-      'the repair is a named observation channel owned with the subject rather than an instrument owned by the check',
-      // Without the timing clause, an acceptance unit may build the channel
-      // inside the gate, which is the expensive path the rule exists to stop.
-      'is decided before the acceptance gate that needs it rather than inside it',
-      'building the instrument inside the gate is the expensive path this rule exists to prevent',
-      // The rule was already stated and still violated in one pilot, because
-      // nothing told an agent it was inside the rule. The detector must key on
-      // the deciding observation, not on how the probe reaches the machine: an
-      // earlier draft exempted any probe naming an environment fact, and every
-      // real probe names one, so it fired on nothing. Recurrence is identified
-      // by subject and missing observation, since a rename would otherwise
-      // reset the count.
-      "deciding observation comes from the subject's own records, schemas, or interfaces",
-      // Without this, an existing owned channel would itself classify as
-      // forbidden outside instrumentation.
-      'where no owned channel already carries it',
-      'however it locates them',
-      // The detector is a backstop, not a budget of two: an earlier draft read
-      // as licensing the first reconstruction, which weakened the very rule it
-      // was added to enforce.
-      'The repair is owed on the first occurrence',
-      "reconstructing the same subject's same missing observation a second time",
-      'whatever the probe is named',
-      'is the signal that it was missed',
-      'promoted to that owner before a third',
+      'is an architectural finding recorded under `docs/change-execution.md`',
+      'not repaired by granting the check access to that domain',
+      'Use an existing owned observation channel first',
+      "preserves the subject's semantics and stays within authorized effect domains",
+      'A one-off probe does not by itself require a permanent channel',
+      'before relying on that reconstruction as a standing gate',
+      'its owning specification names a verification-only channel and its semantics before gate admission',
+      'A proxy cannot establish an unobserved effect',
     ],
     'the effect-domain rule'
   );
@@ -368,7 +349,7 @@ test('keeps the real-use host manifest invariants', () => {
       'The manifest is addressed by a digest of its own content',
       'manifestDigest=<64-lowercase-hex>',
       'followed by one newline',
-      'the value is the SHA-256 of the exact asserted `manifest.json` bytes',
+      'the value is the SHA-256 of the exact raw `apps/nanohost/deploy/host-manifest.json` bytes',
       'Fixture and remote assertion modes collect their observations separately and submit the same normalized fact object to one shared comparator.',
       'The assertion half runs through the existing `pnpm host:assert <alias>` command before real use rather than from a parallel preflight or wrapper.',
       // A recommendation stated as a precondition would forbid the shared host
@@ -461,6 +442,15 @@ test('keeps both sides of the calibration boundary stated', () => {
       CONTRACT_PATH,
     ],
     'docs/specs/20260719-verification_calibration.md Does Not Own'
+  );
+  assertRetains(
+    calibration,
+    [
+      'a material change does not automatically trigger a mutation run',
+      'Required safety regressions and deliberate harness failure',
+      'no per-change mutation obligation is inferred from this program',
+    ],
+    'task-external calibration'
   );
 });
 

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "version": "0.0.99",
+  "source": {
+    "commit": "8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032"
+  },
+  "gateway": {
+    "archive": {
+      "name": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
+      "target": "linux/arm64",
+      "sha256": "3a5d3092ae34356beb0ff2a920f9a87af4233c7a1086a53cd9429d48358f5c09"
+    },
+    "executable": {
+      "name": "openshell-gateway",
+      "derivedFrom": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
+      "sha256": "35c1e1be9c8766de2bfd457e54918d6b2019c16da815ec4c45ce9ebb45aaa571"
+    }
+  },
+  "supervisor": {
+    "repository": "ghcr.io/nvidia/openshell/supervisor",
+    "platformDigests": {
+      "linux/amd64": "sha256:4adea8392a81ef34b3cc3284e693ac3cc6c13362fad84a492d95b53b3eb403b9",
+      "linux/arm64": "sha256:b548fd939331d830cd9197f20fca9a5d95383c5e67f64929d632a37403115f38"
+    }
+  },
+  "redistribution": {
+    "license": {
+      "sourcePath": "LICENSE",
+      "bundlePath": "licenses/openshell-LICENSE",
+      "sha256": "b967d1c87b93b7d61ebcf4f8737e6ad79e5433e743e49dff395a36fb3c327047"
+    },
+    "notices": {
+      "sourcePath": "THIRD-PARTY-NOTICES",
+      "bundlePath": "licenses/openshell-THIRD-PARTY-NOTICES",
+      "sha256": "8c35aead093cbdfb3e11345d88cf2cb179f86391e859e4a7bc11539a0cc601f8"
+    }
+  }
+}

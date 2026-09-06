@@ -74,6 +74,13 @@ describe('NanoHost transport named safe-sink delivery', () => {
     try {
       applyMigrations(coreDb);
       writeFileSync(blocked, 'not-a-directory');
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_integration_identities (
+            identity_id, deployment_id, status, created_at
+          ) VALUES ('integration_nanohost_primary', 'deploy_primary', 'active', ?)`
+        )
+        .run('2026-08-08T00:00:00.000Z');
       const issued = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: 'deploy_primary',
         expiresAt: '2026-09-08T00:00:00.000Z',

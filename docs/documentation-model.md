@@ -11,7 +11,7 @@ This document does not own the content rules inside the body of any single type:
 
 ## Purpose
 
-Engineers own current user intent. Documentation is the durable record of recorded intent and accepted decisions in this repository, and agents are its primary readers. A type system with closed membership, explicit authority, and a generated index lets an agent load exactly the context a task needs: no omission, because owning chains are complete; no waste, because discovery is one index lookup instead of corpus excavation. Rationale for this regime lives in `docs/engineering-doctrine.md`.
+Engineers own current user intent. Documentation durably records interpreted intent and accepted decisions; it does not prove that the interpretation matches its source. Preserve consequential source statements and decision provenance, distinguish agent inference from engineer acceptance, and compare affected authority with those sources during work. Code and running systems establish implementation facts, not permission to redefine intent. Rationale lives in `docs/engineering-doctrine.md`.
 
 ## Document Types
 
@@ -37,19 +37,19 @@ An active Core document uses `status: Accepted`. When an accepted retirement dec
 
 ### Specifications
 
-`docs/specs/YYYYMMDD-short_name.md`. Precise, narrow design decisions with a validated lifecycle, whose values and per-type field requirements are stated under Field Contract below. A `Draft` specification is the proposal form of this repository; design exploration that has not converged to one candidate stays in uncommitted working space. `scripts/validate-spec-lifecycle.mjs` enforces header and lifecycle rules.
+`docs/specs/YYYYMMDD-short_name.md`. Precise, narrow design decisions with a validated lifecycle, whose values and per-type field requirements are stated under Field Contract below. A `Draft` specification proposes a design contract; it is distinct from an optional change-bundle `proposal.md`, which records a work scheme's rationale without design authority. Exploration that has not converged stays in uncommitted working space. `scripts/validate-spec-lifecycle.mjs` enforces header and lifecycle rules.
 
 ### Change Records
 
 `docs/changes/[datetime]-short_name.md`, or for a new change-plan `docs/changes/[datetime]-short_name/`, with types `change-plan`, `pr-summary`, `standalone-change`, and `release-summary`. They own delegation and execution context: plans before significant work, curated checkpoints during it, implementation summaries after it. Execution history never becomes design or governance authority, and a durable rule is incomplete while any authoritative document depends on a specific change record to supply it. Content rules live in `docs/change-execution.md`.
 
-A change record takes one of two forms. A change-plan is a directory `docs/changes/[datetime]-short_name/` containing required `plan.md`, optional `findings.md`, optional `route-log.md`, and, only for programs that used the retired controller, optional legacy `state.json`. The directory carries the identity. Raw transcripts, checkpoints, and intermediate evidence stay uncommitted under `temp/`; other record types remain flat files.
+A change record takes one of two forms. A change-plan is a directory `docs/changes/[datetime]-short_name/` containing required `plan.md`, optional `proposal.md`, optional `findings.md`, optional `route-log.md`, and, only for programs that used the retired controller, optional legacy `state.json`. The directory carries the identity. Raw transcripts, checkpoints, and intermediate evidence stay uncommitted under `temp/`; other record types remain flat files.
 
-Optional members are evidence, not authority. A legacy state file is retained unchanged and interpreted only under the historical framework that produced it; no active owner requires or appends to it. A findings report records observations, their current dispositions, and one follow-up index under the body contract in `docs/change-execution.md`; each finding remains non-authorizing until user intent or an accepted owner admits the work. A route log records the plan's route history under `docs/change-execution.md`; it has no induced type of its own and classifies under the findings type until a second such member justifies a split. No optional member is an audit record.
+Optional members are evidence, not authority. A legacy state file is retained unchanged and interpreted only under the historical framework that produced it; no active owner requires or appends to it. A findings report records observations, their current dispositions, and one follow-up index under the body contract in `docs/change-execution.md`; each finding remains non-authorizing until user intent or an accepted owner admits the work. A proposal records the scheme's reasons, alternatives, assumptions, evidence, and material objections; a route log records route history. Both follow `docs/change-execution.md` and share the findings type's optional field contract and non-authorizing status; only `findings.md` receives the findings body validator. No new proposal type or lifecycle is introduced, and no optional member is an audit record.
 
 ### Audit Records
 
-`docs/audits/YYYYMMDD-short_name.md`. Dated observation records produced by an owning rule: calibration reports, drift findings, load-bearing maps, detection-rate trends, Core retirement records, and specification terminal-archive records. They carry no authority of any kind; they are evidence that informs decisions recorded elsewhere. Each audit record links the specification or governance document whose rule produced it. Past records are never edited; a new observation is a new record.
+`docs/audits/YYYYMMDD-short_name.md`. Dated observation records for durable cross-task integrity audits, calibration, load-bearing maps, detection trends, Core retirement, and specification terminal archives. Incremental Auditor findings and case-local assurance rulings use the current task context, retained in a change record when one exists or the context independently needs to survive under `docs/change-execution.md`; invoking the role alone requires neither record. Records carry no authority; any permitted ruling derives from existing governance, never from its report. Each dated audit links its owning rule. Past records are never edited; a new observation is a new record.
 
 ### Terminal Archive Audit And Archive Immutability
 
@@ -170,7 +170,7 @@ Per-type requirements:
 | Specification, Deprecated-or-terminal | `status`, `implementation`, `status-changed`, `current-guidance`, `decision-evidence` | `date`, `updated` |
 | Change record | `type`, `status` | `date`, `started`, `completed`, `branch` |
 | Core model, active; governance; intent; platform reference; manual | `status` | `date`, `updated` |
-| Audit record, findings report, cookbook, external snapshot, local guide | none | `status`, `date` |
+| Audit record, change-bundle evidence, cookbook, external snapshot, local guide | none | `status`, `date` |
 | Generated projection | none | none |
 
 A field is optional only where its absence changes no decision. Adding a field, changing a canonical value set, or moving a field between required and optional is an amendment to this document, made before the module changes.
@@ -181,11 +181,13 @@ Authority is inversely proportional to change rate. When documents conflict, pre
 
 Intent documents do not compete in this ordering: they govern direction and premises, and a behavioral question must resolve to a core document or specification. The `## Judgments` section of a platform reference holds premises under the same terms, so citing one is not a claim of contract authority. Its `## Owns` section is different: a narrow repository-operation decision marked there is authoritative for that decision, outranked by no document because none other owns it, and it never reaches product behavior or architecture.
 
-A conflict between documents is a defect, not a judgment call: the discovering agent records it as a drift finding in `docs/audits/` or a change record and the resolution updates the lower-authority document or escalates the design question. Agents do not silently pick a side.
+A conflict between documents is a defect: report it in the current task context and retain it under `docs/change-execution.md` when the context must survive. Correct a lower-authority projection when the accepted decision is clear; a same-concern authority conflict or ambiguous governing intent goes to the engineer under root `AGENTS.md`. An Auditor may adjudicate assurance within existing discretion, but cannot amend design, waive a requirement, or settle that governing conflict through a report.
 
 ## Reading Protocol
 
 At task start an agent loads root `AGENTS.md`, then `docs/change-execution.md` for material coordination or a change record, and `docs/INDEX.md` to locate the owner. It loads `docs/verification-instruments.md` only when an instrument will decide acceptance or a harness must be admitted. It then reads the owning specification, its Core References, and local guides for modified directories. Wider loading occurs only when an owner, documentation-governance task, or conflict investigation requires it.
+
+An independent context receives the question, source intent and decisions, relevant owners, artifact and evidence references, and unresolved objections. It loads the material needed to form its own judgment rather than inheriting the producer's full implementation narrative. A proposal explains the candidate route; a change plan records execution; neither replaces an accepted owner. Routine work and incremental fidelity checks do not require a new document type or a full-corpus reading.
 
 ## Cross-Reference Rules
 

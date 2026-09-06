@@ -3,7 +3,7 @@ import { codexAdapter } from './adapters/codex.js';
 import { opencodeAdapter } from './adapters/opencode.js';
 import { piAdapter } from './adapters/pi.js';
 
-/** One already resolved worker LLM route passed unchanged to an adapter. */
+/** One Shim-selected worker LLM route passed unchanged to an adapter. */
 export interface WorkerAdapterLlmRoute {
   /** Credential visibility selected by NanoCore. */
   readonly credentialVisibility: 'none' | 'placeholder' | 'environment';
@@ -53,7 +53,7 @@ export interface WorkerAdapterPrepareInput {
   readonly childEnvironment: Record<string, string>;
   /** Catalog-selected MCP server ids exposed through the fixed local capability route. */
   readonly mcpServerIds?: readonly string[] | undefined;
-  /** The package's single already resolved LLM route. */
+  /** The package's unique preferred LLM route selected by the Shim. */
   readonly llmRoute: WorkerAdapterLlmRoute;
   /** Durable OpenKit session directory. */
   readonly sessionDirectory: string;

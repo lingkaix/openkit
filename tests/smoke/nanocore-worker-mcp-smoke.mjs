@@ -272,7 +272,7 @@ async function main() {
         },
         lineage,
         operation: 'heartbeat',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 0,
       }),
       { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
@@ -330,7 +330,7 @@ async function main() {
         body: terminalBody,
         lineage,
         operation: 'final_status',
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 1,
       }),
       { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
@@ -686,7 +686,7 @@ async function seedFixture(dataRoot, repositoryPath, callFile, nanoHostPort) {
   await seedDemoWorkspaceAuthority(dataRoot);
 }
 
-/** Issues the one temporary secret used only for native transport admission. */
+/** Seeds the exact active NanoHost identity and issues its temporary admission secret. */
 async function issueNanoHostToken(dataRoot) {
   const [{ createNanoHostTransportTokenRecord }, { openCoreDb }] = await Promise.all([
     import('../../apps/nanocore/dist/auth/nanohost-transport-token-store.js'),
@@ -694,6 +694,13 @@ async function issueNanoHostToken(dataRoot) {
   ]);
   const coreDb = openCoreDb(dataRoot);
   try {
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO nanohost_integration_identities (
+          identity_id, deployment_id, status, created_at
+        ) VALUES (?, ?, 'active', ?)`
+      )
+      .run('nanohost-worker-mcp-smoke', 'deployment-worker-mcp-smoke', '2026-09-05T00:00:00.000Z');
     return createNanoHostTransportTokenRecord(coreDb, {
       deploymentId: 'deployment-worker-mcp-smoke',
       expiresAt: '2999-01-01T00:00:00.000Z',
@@ -891,7 +898,7 @@ async function waitForHarnessOperation(client, binding, operation, child, output
 
 /** Polls the private Harness without presenting a bearer token. */
 function pollHarness(client, binding) {
-  return requestHttp2(client, 'POST', '/worker-control/harness/poll', '{"schemaVersion":1}', {
+  return requestHttp2(client, 'POST', '/worker-control/harness/poll', '{"schemaVersion":2}', {
     'content-type': 'application/json',
     [integrationHeader]: binding,
   });
@@ -908,7 +915,7 @@ async function settleHarness(client, binding, command, body) {
       disposition: 'succeeded',
       harnessInstanceId: command.harnessInstanceId,
       operationId: command.operationId,
-      schemaVersion: 1,
+      schemaVersion: 2,
       sequence: command.sequence,
     }),
     { 'content-type': 'application/json', [integrationHeader]: binding }

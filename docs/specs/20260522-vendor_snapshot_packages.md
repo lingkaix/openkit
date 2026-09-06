@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-04
+updated: 2026-09-05
 ---
 # Vendor Snapshot Packages
 
@@ -11,15 +11,13 @@ This spec owns the repository packaging contract for externally sourced runtime 
 
 It owns the rule that external boundary snapshots must be packaged, validated, refreshed, and reviewed separately from OpenKit-owned protocol and runtime source.
 
-It owns what a snapshot must contain when a consuming specification depends on the upstream project's protocol-level behaviour, and the evidence quality a snapshot refresh requires.
-
-It also owns the standing obligation that changing a pinned upstream release re-runs whatever feasibility or realization gate its consuming specification defines. That obligation is deliberately broader than this packaging contract: it follows the pin, not the directory. A pinned external boundary recorded in an application's own pin manifest rather than in a `packages/` snapshot carries the same obligation, and its owning specification states where the manifest lives.
+It owns what a snapshot package must contain when its consumer deliberately uses checked-in upstream interface files as runtime or generated-code input, and the evidence quality a snapshot refresh requires.
 
 ## Does Not Own
 
-This spec does not own OpenKit protocol schemas, NanoCore provider-template behavior, live catalog fetching, dynamic provider marketplaces, model-routing policy, package-local refresh procedures, external upstream release cadence, NanoHost lifecycle, or stock transport feasibility.
+This spec does not own OpenKit protocol schemas, NanoCore provider-template behavior, live catalog fetching, dynamic provider marketplaces, model-routing policy, package-local refresh procedures, external upstream release cadence, NanoHost lifecycle, app-local Cargo dependencies, app-local release metadata, or stock transport qualification.
 
-It does not decide which upstream release a consumer should pin, and it does not define the content of any consumer's feasibility or realization gate. It owns only the rule that such a gate must be re-run when the pin changes.
+It does not decide which upstream release an application supports, what evidence that application keeps beside its code, or which integration checks qualify a dependency update. `docs/specs/20260802-nanohost_runtime_and_transport.md` owns those decisions for NanoHost and OpenShell.
 
 ## Core References
 
@@ -34,8 +32,6 @@ OpenKit keeps externally sourced runtime and catalog artifacts in dedicated work
 `@openkit/codex-app-server-schema` owns the generated Codex app-server JSON Schema snapshot as an external worker runtime boundary.
 
 `@openkit/models-dev-catalog` owns vendored `models.dev` API snapshots and provider-template traceability checks as an external model-catalog boundary.
-
-`@openkit/openshell-schema-snapshot` owns the vendored exact-version OpenShell provider profile, sandbox policy, CLI surface, reserved namespace, and checksum snapshot as an external sandbox-mechanism boundary. The current boundary is the unmodified stock `0.0.80` release, not a compatibility range.
 
 The core rule is that these artifacts are read-only boundary snapshots at runtime, not OpenKit canonical protocol definitions and not live network dependencies.
 
@@ -65,10 +61,6 @@ models.dev API snapshots live in `packages/models-dev-catalog/snapshots/YYYY-MM-
 
 The models.dev package includes package-local validation that checks snapshot metadata, checksum, parseability, and NanoCore provider-template mappings.
 
-OpenShell schema snapshots live in `packages/openshell-schema-snapshot/snapshots/YYYY-MM-DD/`.
-
-The OpenShell package includes package-local conformance helpers and validation tests for snapshot metadata, checksums, provider profile reserved namespaces, sandbox policy enum values, the exact NanoCore-consumed CLI command surface, and the exact required CLI and Gateway version.
-
 `@openkit/protocol` remains limited to OpenKit's own `UI <-> Core` contract.
 
 NanoCore may consume these packages as external boundary snapshots, but NanoCore must not own their refresh procedures.
@@ -87,9 +79,9 @@ OpenKit-owned protocol schemas must remain in `@openkit/protocol`, not in extern
 
 ### Consumed Interface Definitions
 
-When a consuming specification depends on an upstream project's protocol-level behaviour rather than only its command-line or configuration surface, the snapshot MUST vendor the consumed machine-readable interface definitions themselves — protobuf files, JSON Schema, IDL, or the equivalent — and its checksums MUST cover those files individually. A hand-authored surface document is a useful summary and is never a substitute: a summary cannot be diffed against the next upstream release at the level the consumer depends on.
+When a package consumer deliberately compiles, generates from, or loads checked-in upstream machine-readable interface definitions, the snapshot MUST vendor those consumed protobuf files, JSON Schemas, IDLs, or equivalent inputs, and its checksums MUST cover each consumed file. A hand-authored summary is never a substitute for an input the application actually consumes.
 
-A snapshot MUST also record, in its metadata, every value the consumer depends on that exists only in upstream implementation rather than in the interface definition. Timeouts, chunk sizes, buffer sizes, pending-claim deadlines, and flow-control window behaviour are such values. Recording them is what makes them reviewable when the pin moves; a consumer MUST NOT assume a value the snapshot has not recorded at the pin.
+This requirement does not make every external library dependency a snapshot package. A package manager lockfile, compiler, official runtime artifact, and consuming application's focused tests remain their ordinary owners. Source evidence retained only to prove one application-specific property belongs beside that application under its consuming specification.
 
 ### Snapshot Evidence Quality
 
@@ -97,13 +89,11 @@ Snapshot refresh evidence MUST come from a complete non-shallow checkout of the 
 
 An upstream artifact set is complete for a pin only when every consumed component resolves to that same tag. A mixed, relabelled, or partially resolved set is invalid.
 
-### Standing Re-Pin Obligation
+### Snapshot Refresh Obligation
 
-This subsection applies to every pinned external boundary, wherever its pin is recorded.
+This subsection applies only to an external snapshot package governed by this specification. A refresh MUST resolve its committed inputs from the exact immutable upstream version and record their source identity and checksums under the package-local contract. Generated or vendored diffs receive separate review from any consuming OpenKit behavior change.
 
-Changing the pinned upstream release of a consumed external boundary is not a version bump. Before the new pin becomes selectable, the change MUST refresh the snapshot from the new immutable tag under the rules above, give every consumed-surface difference an explicit compatible, adapted, or blocking disposition, and re-run every feasibility or realization gate the consuming specification defines over that boundary.
-
-An upstream release published after the pin creates no obligation to adopt it and no permission to adopt it without that gate. This obligation is standing rather than one-time, and it applies whether the pin change is initiated by a consumer or by ordinary snapshot maintenance.
+An upstream release creates no obligation to refresh a snapshot. An application dependency update is governed by that application's owner even when both changes happen in one repository slice.
 
 NanoCore adapter logic and provider-template logic must remain in NanoCore-owned packages, not in external snapshot packages.
 
@@ -121,13 +111,7 @@ Reviewers should treat generated or vendored artifact diffs as source updates fr
 
 `packages/models-dev-catalog/` contains dated `models.dev` snapshots, snapshot metadata, checksum validation, provider-template traceability validation, package-local maintenance guidance, and package-local agent rules.
 
-`packages/openshell-schema-snapshot/` contains dated OpenShell schema snapshots, snapshot metadata, checksum validation, provider profile and sandbox policy conformance helpers, package-local maintenance guidance, and package-local agent rules.
-
-The OpenShell snapshot is scheduled for removal rather than repair. It was created because NanoCore drove OpenShell through its command-line surface and needed a frozen record of a presentation surface it was parsing, which is exactly the case a hand-vendored surface document serves. The accepted execution-runtime design replaces that with a compiled exact-tag client, so the boundary becomes code that must compile and link, and its pin moves into the consuming application's own pin manifest under `docs/specs/20260802-nanohost_runtime_and_transport.md`. Its remaining non-protocol contents — the OpenKit-to-OpenShell sandbox policy and provider-profile mappings — are OpenKit semantic contracts that were never vendor material and return to their existing enforcement-mapping and provider owners. Removal happens with the retired path, not before, because the current TypeScript consumers are part of that path.
-
-Until then, the active OpenShell snapshot does not satisfy the consumed-interface-definition rule above. It vendors hand-authored CLI, policy, and provider-profile surface documents and its checksums cover only those three documents; it vendors no protobuf file, and it records none of the upstream implementation values a protocol-level consumer depends on. That gap is why this specification's implementation status is `Partial`, and closing it is the refresh work owned by the consuming NanoHost program rather than a defect in the packaging contract.
-
-The retained historical OpenShell snapshot pins the official unmodified `0.0.80` release and the exact CLI surface consumed by the deleted NanoCore adapter and fixed Cell helper. It contains no sandbox-delete, provider-delete, host-doctor, custom-binary, insecure-Gateway, or version-range contract. Current resource teardown belongs to `docs/specs/20260802-nanohost_runtime_and_transport.md`; the NanoHost app-local `0.0.99` pin and retained A1 gate now prove the stock RelayStream plus nested standard HTTP/2 path.
+The legacy `packages/openshell-schema-snapshot/` package has been deleted after its remaining policy consumer moved to the existing policy owner. It was created for the deleted NanoCore CLI adapter and Cell path; NanoHost now compiles the official SDK and uses app-local release metadata and integration tests under `docs/specs/20260802-nanohost_runtime_and_transport.md`. Its former hand-authored CLI, policy, and provider-profile summaries are not a required snapshot of the current NanoHost boundary and MUST NOT be recreated, copied into `apps/nanohost`, or used as OpenShell upgrade evidence.
 
 `@openkit/codex-app-server-schema` and `@openkit/models-dev-catalog` remain ordinary snapshot packages under this contract; neither is affected by the OpenShell removal.
 
@@ -161,7 +145,7 @@ Codex generated schemas were moved out of NanoCore-owned source and into `packag
 
 `models.dev` snapshots were moved out of the repository-level vendor area and into `packages/models-dev-catalog/`.
 
-OpenShell schema surfaces were added under `packages/openshell-schema-snapshot/` for NanoCore OpenShell artifact conformance.
+The historical OpenShell schema package was removed after its last policy projection moved into the existing NanoCore policy owner; NanoHost dependency qualification remains app-local under its owning specification.
 
 Active docs, package scripts, ignore rules, and validation tests now point at the package paths.
 
@@ -173,11 +157,7 @@ Future snapshot refreshes should follow the package-local refresh procedures rat
 
 `@openkit/models-dev-catalog` validates metadata, checksum, snapshot parseability, and provider-template traceability.
 
-`@openkit/openshell-schema-snapshot` validates metadata, checksums, provider profile namespace rules, sandbox policy enum values, the retained non-delete CLI command surface, and exact stock OpenShell `0.0.80` identity.
-
-A snapshot whose consuming specification depends on protocol-level behaviour additionally validates that the consumed interface definitions are present, individually checksummed, and resolved from the recorded tag and commit, and that every upstream implementation value the consumer depends on is recorded in metadata.
-
-A pin change validates that the re-pin obligation ran: refreshed snapshot from the new immutable tag, an explicit disposition for every consumed-surface difference, and a recorded result for every feasibility or realization gate the consuming specification defines.
+A snapshot that supplies machine-readable inputs validates that every consumed definition is present, individually checksummed, and resolved from the recorded immutable upstream version.
 
 NanoCore tests continue to validate runtime behavior against provider templates and Codex adapter code.
 
@@ -204,6 +184,5 @@ No unresolved decisions remain.
 
 - `packages/codex-app-server-schema/README.md`
 - `packages/models-dev-catalog/README.md`
-- `packages/openshell-schema-snapshot/README.md`
 - `packages/protocol/README.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`

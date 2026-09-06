@@ -188,6 +188,8 @@ impl TcpForwardByteStream {
     pub fn cancel(&mut self) {
         self.cancelled = true;
         self.inbound.close();
+        self.buffered = Vec::new();
+        self.buffered_offset = 0;
         self.pending_permit = None;
     }
 
@@ -954,37 +956,59 @@ impl ProducedFactBuffer {
 mod tests {
     use std::io::ErrorKind;
     use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Waker};
     use std::time::Duration;
 
     use http::{Method, Request, Response, StatusCode};
     use openshell_sdk::raw::proto::{TcpForwardFrame, tcp_forward_frame};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::sync::mpsc;
+    use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    use tokio::sync::{Notify, mpsc};
 
     use super::{
         BRIDGE_REESTABLISH_HARD_BOUND, BRIDGE_REESTABLISH_TARGET, BridgeBinding,
         BridgePredecessorFence, CAPABILITY_IN_FLIGHT_BYTES, CONNECTION_RECEIVE_WINDOW_BYTES,
         EffectCarriage, FILE_EFFECT_MAX_BYTES, FileEffectKind, FileEffectPresence,
         FileEffectRequest, HTTP2_PRIORITY_ENABLED, INFERENCE_IN_FLIGHT_BYTES,
-        MAX_INFERENCE_WRITE_BYTES, NESTED_MAX_CONCURRENT_STREAMS, OUTER_MAX_CONCURRENT_STREAMS,
-        PER_STREAM_RECEIVE_WINDOW_BYTES, ProducedFactBuffer, RouteFamily, TcpForwardByteStream,
-        WORKER_CONTROL_IN_FLIGHT_BYTES, route_family, route_stream_limit, serve_sandbox_http2,
+        MAX_INFERENCE_WRITE_BYTES, NANOHOST_CONTROL_IN_FLIGHT_BYTES, NESTED_MAX_CONCURRENT_STREAMS,
+        OUTER_MAX_CONCURRENT_STREAMS, PER_STREAM_RECEIVE_WINDOW_BYTES, ProducedFactBuffer,
+        RouteFamily, TcpForwardByteStream, WORKER_CONTROL_IN_FLIGHT_BYTES, route_family,
+        route_stream_limit, serve_sandbox_http2,
     };
 
     #[test]
-    fn wp4_transport_constants_and_route_table_match_the_fixed_integration_projection() {
-        assert_eq!(CONNECTION_RECEIVE_WINDOW_BYTES, 5 * 1024 * 1024);
-        assert_eq!(PER_STREAM_RECEIVE_WINDOW_BYTES, 256 * 1024);
-        assert_eq!(NESTED_MAX_CONCURRENT_STREAMS, 14);
-        assert_eq!(OUTER_MAX_CONCURRENT_STREAMS, 16);
-        assert_eq!(WORKER_CONTROL_IN_FLIGHT_BYTES, 1024 * 1024);
-        assert_eq!(INFERENCE_IN_FLIGHT_BYTES, 2 * 1024 * 1024);
-        assert_eq!(CAPABILITY_IN_FLIGHT_BYTES, 512 * 1024);
-        assert_eq!(MAX_INFERENCE_WRITE_BYTES, 64 * 1024);
+    fn wp4_transport_capacity_composes_and_routes_only_declared_families() {
+        for (family, family_ceiling) in [
+            (RouteFamily::WorkerControl, WORKER_CONTROL_IN_FLIGHT_BYTES),
+            (RouteFamily::Inference, INFERENCE_IN_FLIGHT_BYTES),
+            (RouteFamily::Capabilities, CAPABILITY_IN_FLIGHT_BYTES),
+        ] {
+            assert_eq!(family_ceiling % PER_STREAM_RECEIVE_WINDOW_BYTES, 0);
+            assert_eq!(
+                route_stream_limit(family),
+                family_ceiling / PER_STREAM_RECEIVE_WINDOW_BYTES
+            );
+        }
+        let nested_reserved =
+            WORKER_CONTROL_IN_FLIGHT_BYTES + INFERENCE_IN_FLIGHT_BYTES + CAPABILITY_IN_FLIGHT_BYTES;
+        assert_eq!(
+            NESTED_MAX_CONCURRENT_STREAMS as usize,
+            route_stream_limit(RouteFamily::WorkerControl)
+                + route_stream_limit(RouteFamily::Inference)
+                + route_stream_limit(RouteFamily::Capabilities)
+        );
+        assert!(nested_reserved < CONNECTION_RECEIVE_WINDOW_BYTES);
+        assert_eq!(
+            OUTER_MAX_CONCURRENT_STREAMS as usize,
+            NESTED_MAX_CONCURRENT_STREAMS as usize
+                + NANOHOST_CONTROL_IN_FLIGHT_BYTES / PER_STREAM_RECEIVE_WINDOW_BYTES
+        );
+        assert!(
+            nested_reserved + NANOHOST_CONTROL_IN_FLIGHT_BYTES < CONNECTION_RECEIVE_WINDOW_BYTES
+        );
+        assert!(MAX_INFERENCE_WRITE_BYTES <= PER_STREAM_RECEIVE_WINDOW_BYTES);
         assert!(!HTTP2_PRIORITY_ENABLED);
-        assert_eq!(route_stream_limit(RouteFamily::WorkerControl), 4);
-        assert_eq!(route_stream_limit(RouteFamily::Inference), 8);
-        assert_eq!(route_stream_limit(RouteFamily::Capabilities), 2);
         assert_eq!(
             route_family("/worker-control/heartbeat"),
             Ok(RouteFamily::WorkerControl)
@@ -999,212 +1023,366 @@ mod tests {
         );
         assert!(route_family("https://nanocore.example/worker-control/heartbeat").is_err());
         assert!(route_family("/gateway/forward").is_err());
-
-        let integration_source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../packages/worker-shim/src/integration-client.ts"
-        ))
-        .expect("the released U-4-1 Integration owner must exist");
-        assert!(integration_source.contains("export const SANDBOX_INTEGRATION_TARGET"));
-        assert!(integration_source.contains(super::SANDBOX_INTEGRATION_TARGET));
-        assert!(!integration_source.contains("OPENKIT_CONTROL_BASE_URL"));
-
-        let bridge_source = include_str!("sandbox_bridge.rs");
-        let serve_source = bridge_source
-            .split_once("pub async fn serve_sandbox_http2")
-            .expect("the nested H2 owner must exist")
-            .1
-            .split_once("fn send_empty_response")
-            .expect("the nested H2 owner must end before its response helper")
-            .0;
-        let active_limit = serve_source
-            .find("route_stream_limit(")
-            .expect("serve_sandbox_http2 must actively acquire the family DATA-derived limit");
-        let handler = serve_source
-            .find("handler(family, request, respond).await")
-            .expect("the semantic handler call must remain explicit");
-        assert!(active_limit < handler);
-        assert!(
-            serve_source.contains("initial_connection_window_size(CONNECTION_RECEIVE_WINDOW_BYTES")
-        );
-        assert!(serve_source.contains("initial_window_size(PER_STREAM_RECEIVE_WINDOW_BYTES"));
     }
 
     #[tokio::test]
-    async fn wp4_fixed_node_h2_origin_reaches_only_the_declared_handler() {
-        let (inbound_tx, inbound_rx) = mpsc::channel(16);
-        let (outbound_tx, mut outbound_rx) = mpsc::channel::<TcpForwardFrame>(16);
-        let (client_io, wire_io) = tokio::io::duplex(256 * 1024);
-        let (mut wire_read, mut wire_write) = tokio::io::split(wire_io);
-        let inbound_pump = tokio::spawn(async move {
-            let mut buffer = vec![0_u8; 64 * 1024];
-            loop {
-                let count = wire_read
-                    .read(&mut buffer)
+    async fn wp4_fixed_node_h2_reserves_worker_control_under_inference_saturation() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (inbound_tx, inbound_rx) = mpsc::channel(16);
+            let (outbound_tx, mut outbound_rx) = mpsc::channel::<TcpForwardFrame>(16);
+            let (client_io, wire_io) = tokio::io::duplex(256 * 1024);
+            let (mut wire_read, mut wire_write) = tokio::io::split(wire_io);
+            let inbound_pump = tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 64 * 1024];
+                loop {
+                    let count = wire_read
+                        .read(&mut buffer)
+                        .await
+                        .expect("in-memory client bytes must remain readable");
+                    if count == 0 {
+                        break;
+                    }
+                    inbound_tx
+                        .send(Ok(TcpForwardFrame {
+                            payload: Some(tcp_forward_frame::Payload::Data(
+                                buffer[..count].to_vec(),
+                            )),
+                        }))
+                        .await
+                        .expect("client bytes must enter the stock frame adapter");
+                }
+            });
+            let outbound_pump = tokio::spawn(async move {
+                while let Some(frame) = outbound_rx.recv().await {
+                    if let Some(tcp_forward_frame::Payload::Data(data)) = frame.payload {
+                        wire_write
+                            .write_all(&data)
+                            .await
+                            .expect("server bytes must reach the in-memory client");
+                    }
+                }
+            });
+            let (handled_tx, mut handled_rx) = mpsc::unbounded_channel();
+            let release_inference = Arc::new(Notify::new());
+            let server_release_inference = Arc::clone(&release_inference);
+            let server = tokio::spawn(async move {
+                let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
+                serve_sandbox_http2(&mut stream, move |family, request, mut respond| {
+                    let handled_tx = handled_tx.clone();
+                    let release_inference = Arc::clone(&server_release_inference);
+                    async move {
+                        handled_tx
+                            .send((family, request.uri().to_string()))
+                            .expect("handler observation channel must remain open");
+                        if family == RouteFamily::Inference {
+                            release_inference.notified().await;
+                        }
+                        respond
+                            .send_response(
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .body(())
+                                    .expect("fixed response must build"),
+                                true,
+                            )
+                            .expect("handler response must remain writable");
+                    }
+                })
+                .await
+            });
+            let (mut client, connection) = h2::client::handshake(client_io)
+                .await
+                .expect("in-memory standard H2 handshake must succeed");
+            let client_driver = tokio::spawn(connection);
+
+            let accepted = Request::builder()
+                .method(Method::GET)
+                .uri("http://sandbox-integration:80/worker-control/heartbeat")
+                .body(())
+                .expect("fixed Node H2 request must build");
+            let (accepted, _) = client
+                .send_request(accepted, true)
+                .expect("fixed Node H2 request must be sent");
+            assert_eq!(
+                accepted.await.expect("fixed Node H2 response").status(),
+                StatusCode::OK
+            );
+            assert_eq!(
+                handled_rx.recv().await,
+                Some((
+                    RouteFamily::WorkerControl,
+                    "http://sandbox-integration:80/worker-control/heartbeat".into()
+                ))
+            );
+
+            let mut saturated_inference = Vec::new();
+            for request_index in 0..route_stream_limit(RouteFamily::Inference) {
+                let request = Request::builder()
+                    .method(Method::POST)
+                    .uri(format!(
+                        "http://sandbox-integration:80/inference/v1/responses/{request_index}"
+                    ))
+                    .body(())
+                    .expect("inference request must build");
+                let (response, _) = client
+                    .send_request(request, true)
+                    .expect("reserved inference request must be sent");
+                saturated_inference.push(response);
+            }
+            for request_index in 0..route_stream_limit(RouteFamily::Inference) {
+                assert_eq!(
+                    handled_rx.recv().await,
+                    Some((
+                        RouteFamily::Inference,
+                        format!(
+                            "http://sandbox-integration:80/inference/v1/responses/{request_index}"
+                        )
+                    ))
+                );
+            }
+
+            let overflow = Request::builder()
+                .method(Method::POST)
+                .uri("http://sandbox-integration:80/inference/v1/responses/overflow")
+                .body(())
+                .expect("overflow inference request must build");
+            let (overflow, _) = client
+                .send_request(overflow, true)
+                .expect("overflow inference request must reach family admission");
+            assert_eq!(
+                overflow
                     .await
-                    .expect("in-memory client bytes must remain readable");
+                    .expect("overflow inference response")
+                    .status(),
+                StatusCode::TOO_MANY_REQUESTS
+            );
+
+            let reserved_worker_control = Request::builder()
+                .method(Method::POST)
+                .uri("http://sandbox-integration:80/worker-control/harness/poll")
+                .body(())
+                .expect("worker-control request must build");
+            let (reserved_worker_control, _) = client
+                .send_request(reserved_worker_control, true)
+                .expect("worker-control request must remain sendable");
+            assert_eq!(
+                reserved_worker_control
+                    .await
+                    .expect("reserved worker-control response")
+                    .status(),
+                StatusCode::OK
+            );
+            assert_eq!(
+                handled_rx.recv().await,
+                Some((
+                    RouteFamily::WorkerControl,
+                    "http://sandbox-integration:80/worker-control/harness/poll".into()
+                ))
+            );
+
+            release_inference.notify_waiters();
+            for response in saturated_inference {
+                assert_eq!(
+                    response
+                        .await
+                        .expect("admitted inference response")
+                        .status(),
+                    StatusCode::OK
+                );
+            }
+
+            let capability = Request::builder()
+                .method(Method::POST)
+                .uri("http://sandbox-integration:80/capabilities/mcp/echo")
+                .body(())
+                .expect("fixed capability request must build");
+            let (capability, _) = client
+                .send_request(capability, true)
+                .expect("fixed capability request must be sent");
+            assert_eq!(
+                capability
+                    .await
+                    .expect("fixed capability response")
+                    .status(),
+                StatusCode::OK
+            );
+            assert_eq!(
+                handled_rx.recv().await,
+                Some((
+                    RouteFamily::Capabilities,
+                    "http://sandbox-integration:80/capabilities/mcp/echo".into()
+                ))
+            );
+
+            for request in [
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("https://sandbox-integration:80/worker-control/heartbeat")
+                    .body(())
+                    .expect("wrong-scheme request must build"),
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("http://wrong-integration:80/worker-control/heartbeat")
+                    .body(())
+                    .expect("wrong-authority request must build"),
+                Request::builder()
+                    .method(Method::CONNECT)
+                    .uri("sandbox-integration:80")
+                    .body(())
+                    .expect("CONNECT request must build"),
+            ] {
+                let (rejected, _) = client
+                    .send_request(request, true)
+                    .expect("fail-closed request must reach the H2 route guard");
+                assert_eq!(
+                    rejected.await.expect("fail-closed H2 response").status(),
+                    StatusCode::BAD_REQUEST
+                );
+                assert!(handled_rx.try_recv().is_err());
+            }
+
+            drop(client);
+            client_driver.abort();
+            server.abort();
+            inbound_pump.abort();
+            outbound_pump.abort();
+        })
+        .await
+        .expect("nested H2 family admission must settle within five seconds");
+    }
+
+    #[tokio::test]
+    async fn wp4_tcp_forward_data_segmentation_preserves_bytes_and_definite_eof() {
+        let expected = b"arbitrary DATA boundaries remain transport-transparent";
+        for segments in [
+            vec![expected.to_vec()],
+            expected.iter().map(|byte| vec![*byte]).collect(),
+            vec![
+                Vec::new(),
+                expected[..3].to_vec(),
+                expected[3..17].to_vec(),
+                Vec::new(),
+                expected[17..].to_vec(),
+            ],
+        ] {
+            let (inbound_tx, inbound_rx) = mpsc::channel(segments.len() + 1);
+            let (outbound_tx, _outbound_rx) = mpsc::channel(1);
+            let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
+            for data in segments {
+                inbound_tx
+                    .send(Ok(TcpForwardFrame {
+                        payload: Some(tcp_forward_frame::Payload::Data(data)),
+                    }))
+                    .await
+                    .expect("legal DATA frame must enter the adapter");
+            }
+            drop(inbound_tx);
+
+            let mut actual = Vec::new();
+            let mut read_buffer = [0_u8; 3];
+            loop {
+                let count = stream
+                    .read(&mut read_buffer)
+                    .await
+                    .expect("legal DATA segmentation must remain readable");
                 if count == 0 {
                     break;
                 }
-                inbound_tx
-                    .send(Ok(TcpForwardFrame {
-                        payload: Some(tcp_forward_frame::Payload::Data(buffer[..count].to_vec())),
-                    }))
-                    .await
-                    .expect("client bytes must enter the stock frame adapter");
+                actual.extend_from_slice(&read_buffer[..count]);
             }
-        });
-        let outbound_pump = tokio::spawn(async move {
-            while let Some(frame) = outbound_rx.recv().await {
-                if let Some(tcp_forward_frame::Payload::Data(data)) = frame.payload {
-                    wire_write
-                        .write_all(&data)
-                        .await
-                        .expect("server bytes must reach the in-memory client");
-                }
-            }
-        });
-        let (handled_tx, mut handled_rx) = mpsc::unbounded_channel();
-        let server = tokio::spawn(async move {
-            let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
-            serve_sandbox_http2(&mut stream, move |family, request, mut respond| {
-                let handled_tx = handled_tx.clone();
-                async move {
-                    handled_tx
-                        .send((family, request.uri().to_string()))
-                        .expect("handler observation channel must remain open");
-                    respond
-                        .send_response(
-                            Response::builder()
-                                .status(StatusCode::OK)
-                                .body(())
-                                .expect("fixed response must build"),
-                            true,
-                        )
-                        .expect("handler response must remain writable");
-                }
-            })
-            .await
-        });
-        let (mut client, connection) = h2::client::handshake(client_io)
-            .await
-            .expect("in-memory standard H2 handshake must succeed");
-        let client_driver = tokio::spawn(connection);
-
-        let accepted = Request::builder()
-            .method(Method::GET)
-            .uri("http://sandbox-integration:80/worker-control/heartbeat")
-            .body(())
-            .expect("fixed Node H2 request must build");
-        let (accepted, _) = client
-            .send_request(accepted, true)
-            .expect("fixed Node H2 request must be sent");
-        assert_eq!(
-            accepted.await.expect("fixed Node H2 response").status(),
-            StatusCode::OK
-        );
-        assert_eq!(
-            handled_rx.recv().await,
-            Some((
-                RouteFamily::WorkerControl,
-                "http://sandbox-integration:80/worker-control/heartbeat".into()
-            ))
-        );
-
-        let capability = Request::builder()
-            .method(Method::POST)
-            .uri("http://sandbox-integration:80/capabilities/mcp/echo")
-            .body(())
-            .expect("fixed capability request must build");
-        let (capability, _) = client
-            .send_request(capability, true)
-            .expect("fixed capability request must be sent");
-        assert_eq!(
-            capability
-                .await
-                .expect("fixed capability response")
-                .status(),
-            StatusCode::OK
-        );
-        assert_eq!(
-            handled_rx.recv().await,
-            Some((
-                RouteFamily::Capabilities,
-                "http://sandbox-integration:80/capabilities/mcp/echo".into()
-            ))
-        );
-
-        for request in [
-            Request::builder()
-                .method(Method::GET)
-                .uri("https://sandbox-integration:80/worker-control/heartbeat")
-                .body(())
-                .expect("wrong-scheme request must build"),
-            Request::builder()
-                .method(Method::GET)
-                .uri("http://wrong-integration:80/worker-control/heartbeat")
-                .body(())
-                .expect("wrong-authority request must build"),
-            Request::builder()
-                .method(Method::CONNECT)
-                .uri("sandbox-integration:80")
-                .body(())
-                .expect("CONNECT request must build"),
-        ] {
-            let (rejected, _) = client
-                .send_request(request, true)
-                .expect("fail-closed request must reach the H2 route guard");
-            assert_eq!(
-                rejected.await.expect("fail-closed H2 response").status(),
-                StatusCode::BAD_REQUEST
-            );
-            assert!(handled_rx.try_recv().is_err());
+            assert_eq!(actual, expected);
         }
-
-        drop(client);
-        client_driver.abort();
-        server.abort();
-        inbound_pump.abort();
-        outbound_pump.abort();
     }
 
     #[tokio::test]
-    async fn wp4_tcp_forward_frames_are_async_bytes_with_eof_status_and_cancellation() {
-        let (inbound_tx, inbound_rx) = mpsc::channel(4);
-        let (outbound_tx, mut outbound_rx) = mpsc::channel(4);
-        let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
-        inbound_tx
-            .send(Ok(TcpForwardFrame {
-                payload: Some(tcp_forward_frame::Payload::Data(b"inbound".to_vec())),
-            }))
+    async fn wp4_tcp_forward_write_waits_for_capacity_then_resumes_and_cancels_cleanly() {
+        let (inbound_tx, inbound_rx) = mpsc::channel(1);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(1);
+        outbound_tx
+            .send(TcpForwardFrame {
+                payload: Some(tcp_forward_frame::Payload::Data(b"occupied".to_vec())),
+            })
             .await
-            .expect("inbound frame must enter the adapter");
-        let mut inbound = [0_u8; 7];
-        stream
-            .read_exact(&mut inbound)
-            .await
-            .expect("DATA must become async bytes");
-        assert_eq!(&inbound, b"inbound");
-
-        stream
-            .write_all(b"outbound")
-            .await
-            .expect("async bytes must become DATA");
-        let outbound = outbound_rx.recv().await.expect("one outbound DATA frame");
+            .expect("fixture must fill the bounded outbound channel");
+        let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx.clone());
+        let mut context = Context::from_waker(Waker::noop());
         assert!(matches!(
-            outbound.payload,
-            Some(tcp_forward_frame::Payload::Data(data)) if data == b"outbound"
+            Pin::new(&mut stream).poll_write(&mut context, b"resumed"),
+            Poll::Pending
         ));
 
-        drop(inbound_tx);
+        assert!(outbound_rx.recv().await.is_some());
+        assert!(matches!(
+            Pin::new(&mut stream).poll_write(&mut context, b"resumed"),
+            Poll::Ready(Ok(7))
+        ));
+        assert!(matches!(
+            outbound_rx.recv().await.and_then(|frame| frame.payload),
+            Some(tcp_forward_frame::Payload::Data(data)) if data == b"resumed"
+        ));
+
+        outbound_tx
+            .send(TcpForwardFrame {
+                payload: Some(tcp_forward_frame::Payload::Data(b"occupied-again".to_vec())),
+            })
+            .await
+            .expect("fixture must refill the bounded outbound channel");
+        assert!(matches!(
+            Pin::new(&mut stream).poll_write(&mut context, b"blocked"),
+            Poll::Pending
+        ));
+        stream.cancel();
+        assert!(stream.is_cancelled());
+        assert!(
+            inbound_tx
+                .send(Ok(TcpForwardFrame {
+                    payload: Some(tcp_forward_frame::Payload::Data(b"late".to_vec())),
+                }))
+                .await
+                .is_err()
+        );
         assert_eq!(
             stream
                 .read(&mut [0_u8; 1])
                 .await
-                .expect("EOF must be definite"),
+                .expect("cancelled reads must close definitively"),
             0
         );
+        assert_eq!(
+            stream
+                .write(b"late")
+                .await
+                .expect_err("cancelled writes must fail definitively")
+                .kind(),
+            ErrorKind::BrokenPipe
+        );
 
+        let (buffered_tx, buffered_rx) = mpsc::channel(1);
+        let (discard_tx, _discard_rx) = mpsc::channel(1);
+        let mut buffered = TcpForwardByteStream::new(buffered_rx, discard_tx);
+        buffered_tx
+            .send(Ok(TcpForwardFrame {
+                payload: Some(tcp_forward_frame::Payload::Data(b"buffered".to_vec())),
+            }))
+            .await
+            .expect("fixture DATA must enter the adapter");
+        let mut first = [0_u8; 1];
+        buffered
+            .read_exact(&mut first)
+            .await
+            .expect("fixture must leave unread DATA buffered");
+        buffered.cancel();
+        assert_eq!(
+            buffered
+                .read(&mut [0_u8; 1])
+                .await
+                .expect("cancellation must discard unread DATA"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn wp4_tcp_forward_status_error_is_not_misreported_as_eof() {
         let (error_tx, error_rx) = mpsc::channel(1);
         let (discard_tx, _discard_rx) = mpsc::channel(1);
         let mut failed = TcpForwardByteStream::new(error_rx, discard_tx);
@@ -1220,8 +1398,6 @@ mod tests {
                 .kind(),
             ErrorKind::ConnectionAborted
         );
-        failed.cancel();
-        assert!(failed.is_cancelled());
     }
 
     #[test]

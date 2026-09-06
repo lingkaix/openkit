@@ -65,7 +65,7 @@ The shared harness supplies the adapter with:
 - turn input
 - worker working directory
 - AgentSession-private state directory and Turn-private final-message path
-- the provider, model, endpoint, and credential bindings from the AEP's one already resolved LLM route
+- the provider, model, endpoint, and credential bindings from the unique preferred LLM route selected by the shared shim
 - the exact selected MCP server ids from AEP supply and the Turn-local capability token only through the safe `OPENKIT_WORKER_CAPABILITY_TOKEN` environment binding
 - optional native provenance declaration
 - a safe child environment that excludes the worker-control credential and contains only the separately authorized inference and enabled capability route tokens
@@ -115,9 +115,9 @@ NanoCore resolves approved static Skill and selected MCP supply into the AEP. Wh
 
 ## Provider And Credentials
 
-The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the exact selected route, credential binding, and effective launch policy. NanoCore performs that resolution but does not own a second native-runtime configuration.
+The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements; the resolved AEP owns the preferred logical model, exact allowed route set, credential bindings, and effective launch policy. NanoCore performs that resolution but does not own a second native-runtime configuration.
 
-The AEP remains authoritative for the selected route, but native route projection is adapter-specific. NanoCore and the shared harness must not infer Codex provider configuration. The adapter rejects zero or multiple routes and any route whose exact endpoint, credential binding, model, or wire protocol Codex `0.153.4` cannot represent.
+The shared shim requires one unique AEP route for the preferred model and passes only that route to the adapter, while native route projection remains adapter-specific. Neither NanoCore nor the shared harness infers Codex provider configuration or falls back to another model. The adapter rejects any selected route whose exact endpoint, credential binding, model, or wire protocol Codex `0.153.4` cannot represent.
 
 For the trusted NanoCore relay, the adapter uses the fixed adapter-owned provider id `openkit-worker-inference`; it never projects an arbitrary AEP provider id into Codex. Its argv contains TOML-quoted `-c` values equivalent to:
 
@@ -198,9 +198,11 @@ Required image smoke covers the pinned `codex --version`, machine-readable `code
 
 ## Implementation Evidence And Limit
 
-The Codex `0.153.4` session-continuity adapter, static registry entry, authored manifest, pinned worker image definition, five-operation adapter tests, retained AgentSession-private state, exact first-Turn handle binding, exact-UUID resume, inspection, close, and multi-AgentSession Harness integration are implemented and pass local checks. OpenCode and Pi retain their bounded `prepare`/`collect` paths. The 2026-07-21 arm64 image build and complete smoke, and the earlier minimal arm64 OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, are historical evidence for the previous Codex `0.144.1` image contents. On 2026-09-05 this worktree built and smoked unique local tag `openkit/worker-codex:codex-pi-refresh-20260905` on Docker Engine 29.5.2 linux/aarch64 (image id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`, smoke exit 0, native version `codex-cli 0.153.4`). Refreshed stock OpenShell, provider, interrupt, reconnect, recovery, amd64 cross-build, and worker-lifecycle evidence for these 0.153.4 image bytes remain unobserved.
+The Codex `0.153.4` session-continuity adapter, static registry entry, authored manifest, pinned worker image definition, five-operation adapter tests, retained AgentSession-private state, exact first-Turn handle binding, exact-UUID resume, inspection, close, and multi-AgentSession Harness integration are implemented and pass local checks. OpenCode and Pi retain their bounded `prepare`/`collect` paths. The 2026-07-21 arm64 image build and complete smoke, and the earlier minimal arm64 OpenShell `0.0.80` create, upload, generic-shim dry-run, and delete on A1, are historical evidence for the previous Codex `0.144.1` image contents. On 2026-09-05 this worktree built and smoked unique local tag `openkit/worker-codex:codex-pi-refresh-20260905` on Docker Engine 29.5.2 linux/aarch64 (image id `sha256:2fdd17abc6d39b87227ee0a6dbbf1890d63949b909a3e9758f576f932fca161d`, smoke exit 0, native version `codex-cli 0.153.4`). For that unique-tag observation, refreshed stock OpenShell, provider, interrupt, reconnect, recovery, amd64 cross-build, and worker-lifecycle evidence for those image bytes remained unobserved.
 
 This local unique-tag smoke proves image contents and adapter dry-run for the 0.153.4 pin. It does not prove a real-provider turn, worker-control readiness, heartbeat, interruption, reconnect, or recovery lifecycle; those remain acceptance obligations of their owning specifications and change packages. Consumed-surface dispositions and per-file generated-schema checksums for this pin live in `packages/codex-app-server-schema/metadata.json`. Codex `0.153.4` `exec resume` does not accept `--cd`; first-turn still passes `--cd`, and resume relies on the Harness child working directory. That argv difference is an `adapted` consumed-surface disposition, not a selectable-pin closure.
+
+On 2026-09-06 the current `0.153.4` pin passed both-architecture catalog image builds/smokes and three-leaf stock OpenShell packaging. Exact A2 Codex image `sha256:8bc5033350edebe85293e8528452c09ac78637ea55915bed7878cdc3b72387a9` passed real-provider readiness, heartbeat progress, same-lineage NanoCore restart/reconnect and completion in F1 attempt 9 (receipt SHA-256 `0e02678943b2b70e526bdf217b32c0fa4e3dcafcc3c01697cc8c58c3cf54b97b`). Public interruption on corrected App source `ec9490e6a6d53f2b9d19e968754f754938b98c9e`, App image `sha256:5cd666ef358a138f404d4b3abf4da0041e27493faf818ee06780258654040203`, passed on `ws_24` / `th_27`: native `interrupted` / `aborted`, Core Turn `interrupted`, Task `cancelled`, exact lease released, backend cleaned, and generation 36 ready/fenced/fresh-empty. Its receipt SHA-256 is `40ed7f8be04812ababededfa23102136426f4602a418419ec3b92808c94f5691`. These observations close the current refresh gates; optional provenance advertisement and general NanoHost release qualification remain separately owned.
 
 ## Acceptance
 
