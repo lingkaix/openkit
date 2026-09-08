@@ -442,6 +442,29 @@ export const AgentEnvironmentSkillSchema = z
     policyRefIds: z.array(z.string().min(1)).default([]),
     reviewStatus: AgentEnvironmentSupplyReviewStatusSchema.optional(),
     secretRefIds: z.array(z.string().min(1)).default([]),
+    digestFormat: z.literal('openkit-tree-v1').optional(),
+    inventory: z
+      .array(
+        z
+          .object({
+            executable: z.boolean(),
+            kind: z.enum(['directory', 'file']),
+            path: z.string().min(1),
+            sha256: z.string().min(1).nullable(),
+            size: z.number().int().nonnegative(),
+          })
+          .strict()
+      )
+      .optional(),
+    lineage: z
+      .object({
+        baseDigest: z.string().min(1).nullable(),
+        pluginMemberKey: z.string().min(1).nullable(),
+        pluginVersionDigest: z.string().min(1).nullable(),
+      })
+      .strict()
+      .optional(),
+    selectionSource: z.enum(['current', 'pin']).optional(),
   })
   .strict();
 

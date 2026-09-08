@@ -15,6 +15,8 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './auth/identity.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
  * Creates a temporary NanoCore data root for config file API tests.
@@ -286,80 +288,43 @@ describe('runtime config file API', () => {
     }
   });
 
-  it('validates and audits deployment-admin MCP catalog edits', async () => {
+  it('creates Workspace MCP configurations through the catalog App API instead of runtime config files', async () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     writeServerConfig(dataRoot);
     const store = createDemoStore({ dataRoot });
-    const configRoot = join(dataRoot, 'workspaces', 'ws_demo', 'config');
-    mkdirSync(configRoot, { recursive: true });
-    writeFileSync(
-      join(configRoot, 'mcp-servers.jsonc'),
-      `${JSON.stringify(
-        {
-          schemaVersion: 1,
-          servers: [
-            {
-              allowedTools: ['echo'],
-              enabled: true,
-              id: 'echo',
-              schemaPolicy: 'tracking',
-              transport: { command: 'node', kind: 'stdio' },
-            },
-          ],
-        },
-        null,
-        2
-      )}\n`
-    );
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: 'ws_demo',
+    });
 
     try {
       const app = createApp({ coreDb, dataRoot, store });
-      const fileId = 'workspaces/ws_demo/mcp-servers.jsonc';
-      const listRes = await app.request('/api/admin/config/files');
-      const list = (await listRes.json()) as { files: Array<{ id: string; kind: string }> };
-      const readRes = await app.request(`/api/admin/config/file?id=${encodeURIComponent(fileId)}`);
-      const read = (await readRes.json()) as { file: { revision: string }; content: string };
-      const updateRes = await app.request('/api/admin/config/file', {
-        method: 'PUT',
+      const created = await app.request('/api/app/workspaces/ws_demo/catalog/mcp', {
+        method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          id: fileId,
-          kind: 'mcp-server',
-          content: read.content.replace(
-            '"allowedTools": [\n        "echo"\n      ]',
-            '"allowedTools": ["echo", "ping"]'
-          ),
-          expectedRevision: read.file.revision,
+          allowedTools: ['echo'],
+          declaration: { args: [], command: 'node', kind: 'stdio' },
+          displayName: 'Echo',
+          expectedRevision: 0,
+          id: 'echo',
+          requestId: '00000000-0000-4000-8000-000000000101',
         }),
       });
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-      applyScopedMigrations(workspaceDb);
+      const listed = await app.request('/api/app/workspaces/ws_demo/catalog/mcp');
+      const files = await app.request('/api/admin/config/files');
+      const fileList = (await files.json()) as { files: Array<{ id: string; kind: string }> };
 
-      try {
-        const row = workspaceDb.sqlite
-          .prepare(
-            "SELECT * FROM audit_events WHERE action = 'mcp_server_catalog.authority.update'"
-          )
-          .get() as Record<string, unknown> | undefined;
-
-        expect(list.files).toContainEqual(
-          expect.objectContaining({ id: fileId, kind: 'mcp-server' })
-        );
-        expect(readRes.status).toBe(200);
-        expect(updateRes.status).toBe(200);
-        expect(row).toMatchObject({
-          workspace_id: 'ws_demo',
-          category: 'system',
-          resource: 'mcp-server-catalog:echo',
-          outcome: 'succeeded',
-          severity: 'info',
-          summary: 'Workspace MCP server catalog authority changed for echo: allowedTools.',
-        });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+      expect(created.status).toBe(201);
+      expect(listed.status).toBe(200);
+      expect((await listed.json()) as { items: Array<{ id: string }> }).toMatchObject({
+        items: [expect.objectContaining({ id: 'echo', enabled: false })],
+      });
+      expect(fileList.files.some((file) => file.id.includes('mcp-servers.jsonc'))).toBe(false);
     } finally {
       coreDb.sqlite.close();
     }

@@ -8,6 +8,8 @@ import type { EmailAuthClient } from './auth.js';
 import { createEmailAuthClient } from './auth.js';
 import type { CapabilitiesClient } from './capabilities.js';
 import { createCapabilitiesClient } from './capabilities.js';
+import type { ResourceCatalogClient } from './catalog.js';
+import { createResourceCatalogClient } from './catalog.js';
 import type { CoreProjectionClient } from './core.js';
 import { createCoreProjectionClient } from './core.js';
 import type { ProviderSubscriptionsClient } from './provider-subscriptions.js';
@@ -49,6 +51,8 @@ export interface CoreClient {
   readonly agents: AgentCatalogClient;
   /** Product-facing Action Center read-model client. */
   readonly actionCenter: ActionCenterClient;
+  /** Product-facing Workspace Skill, MCP, and Agent Plugin catalog client. */
+  readonly catalog: ResourceCatalogClient;
   /** Product-facing workspace repository resource client. */
   readonly repositories: WorkspaceRepositoryClient;
 }
@@ -64,6 +68,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const capabilities = createCapabilitiesClient(core.meta);
   const agents = createAgentCatalogClient(transport);
   const actionCenter = createActionCenterClient(transport);
+  const catalog = createResourceCatalogClient(transport);
   const repositories = createWorkspaceRepositoryClient(transport);
 
   return {
@@ -72,6 +77,7 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
     app,
     auth: { email },
     capabilities,
+    catalog,
     core,
     providerSubscriptions,
     repositories,

@@ -6,7 +6,7 @@ This package is intentionally protocol-only. Public worker-control request, resp
 
 The runtime provenance contract keeps `WorkerLineageSchema` unchanged and adds only the restricted raw-stream manifest, synthetic stream references, exact frame coordinates and digests, capture/parse states, and native-origin index entries required by `worker.runtime-provenance.v1`. Cross-stream completeness, graph closure, origin normalization, and evidence promotion remain NanoCore responsibilities.
 
-`workerSessionInputPaths` derives canonical AgentSession-private AEP and Context input paths for NanoCore, config-schema, and the Harness without adding a transport field or runtime dependency.
+`workerSessionInputPaths` derives canonical AgentSession-private AEP, worker-supply, and Context input paths for NanoCore, config-schema, and the Harness without adding a transport field or runtime dependency.
 
 ## Commands
 

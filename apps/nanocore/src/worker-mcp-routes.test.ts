@@ -158,7 +158,7 @@ describe('worker MCP routes', () => {
       dataRoot,
       agentManifests: [],
       workspaceMcpServerCatalogs: [
-        { catalog, path: join(dataRoot, 'mcp-servers.jsonc'), workspaceId: 'ws_demo' },
+        { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId: 'ws_demo' },
       ],
     });
     registerWorkerMcpRoutes({
@@ -732,7 +732,7 @@ describe('worker MCP routes', () => {
         workspaceMcpServerCatalogs: [
           {
             catalog,
-            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'mcp-servers.jsonc'),
+            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'catalog/catalog.json'),
             workspaceId: 'ws_demo',
           },
         ],
@@ -1263,7 +1263,7 @@ describe('worker MCP routes', () => {
         workspaceMcpServerCatalogs: [
           {
             catalog,
-            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'mcp-servers.jsonc'),
+            path: join(dataRoot, 'workspaces', 'ws_demo', 'config', 'catalog/catalog.json'),
             workspaceId: 'ws_demo',
           },
         ],
@@ -1826,7 +1826,7 @@ describe('worker MCP routes', () => {
           agentManifests: [],
           dataRoot,
           workspaceMcpServerCatalogs: [
-            { catalog, path: join(dataRoot, 'mcp-servers.jsonc'), workspaceId: 'ws_demo' },
+            { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId: 'ws_demo' },
           ],
         }),
       store,
@@ -2474,7 +2474,7 @@ describe('worker MCP routes', () => {
           workspaceMcpServerCatalogs: [
             {
               catalog: activeCatalog,
-              path: join(dataRoot, 'mcp-servers.jsonc'),
+              path: join(dataRoot, 'catalog/catalog.json'),
               workspaceId: 'ws_demo',
             },
           ],

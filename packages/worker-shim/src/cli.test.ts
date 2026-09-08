@@ -2967,6 +2967,8 @@ describe('worker shim CLI parsing', () => {
     const packagePath = join(sessionDir, 'package.json');
     const skillTargetPath = join(sessionDir, 'skills', 'repo-guidelines');
     const mcpTargetPath = join(sessionDir, 'mcp', 'github.json');
+    mkdirSync(skillTargetPath, { recursive: true });
+    writeFileSync(join(skillTargetPath, 'SKILL.md'), '# Repo guidelines\n');
     const runner = new FakeWorkerProcessRunner(
       {
         exitCode: 0,
@@ -2975,9 +2977,8 @@ describe('worker shim CLI parsing', () => {
         stdout: '{"type":"session.completed"}\n',
       },
       () => {
-        expect(readFileSync(join(skillTargetPath, 'openkit-supply.json'), 'utf8')).toContain(
-          'repo-guidelines'
-        );
+        expect(readFileSync(join(skillTargetPath, 'SKILL.md'), 'utf8')).toContain('Repo guidelines');
+        expect(existsSync(join(skillTargetPath, 'openkit-supply.json'))).toBe(false);
         expect(existsSync(mcpTargetPath)).toBe(false);
       }
     );
@@ -3040,8 +3041,8 @@ describe('worker shim CLI parsing', () => {
       })
     ).resolves.toMatchObject({ status: 'completed' });
 
-    const skillMetadata = readFileSync(join(skillTargetPath, 'openkit-supply.json'), 'utf8');
-    expect(skillMetadata).toContain('sha256-repo-guidelines-v1');
+    expect(readFileSync(join(skillTargetPath, 'SKILL.md'), 'utf8')).toContain('Repo guidelines');
+    expect(existsSync(join(skillTargetPath, 'openkit-supply.json'))).toBe(false);
     expect(existsSync(mcpTargetPath)).toBe(false);
   });
 

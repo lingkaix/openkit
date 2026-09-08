@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  digestMcpConfig,
   getConfigPolicyCatalog,
   getConfigSchemaCatalog,
   parseWorkspaceMcpServerCatalog,
@@ -314,5 +315,14 @@ describe('workspace MCP server catalog', () => {
         secretPolicy: 'secret-ref-only',
       })
     );
+  });
+
+  it('keeps MCP configuration identity stable across key order and changes with package roots', () => {
+    const declaration = { args: ['a'], command: 'node', kind: 'stdio' };
+    const left = digestMcpConfig({ command: 'node', kind: 'stdio', args: ['a'] }, null);
+    const right = digestMcpConfig(declaration, null);
+    expect(left).toBe(right);
+    expect(left).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(digestMcpConfig(declaration, 'sha256:' + 'a'.repeat(64))).not.toBe(left);
   });
 });

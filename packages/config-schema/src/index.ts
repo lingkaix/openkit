@@ -4,6 +4,8 @@ export * from './catalog.js';
 export * from './gateway.js';
 export * from './internal-role.js';
 export * from './mcp-catalog.js';
+export * from './resource-catalog.js';
+export * from './tree-digest.js';
 export * from './policy.js';
 export * from './provider.js';
 export * from './provider-subscription.js';

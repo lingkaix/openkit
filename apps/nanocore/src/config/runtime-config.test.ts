@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
+
+import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
 
 import {
   createRuntimeConfigManager,
@@ -178,9 +181,11 @@ function writeWorkspaceDataSources(dataRoot: string, workspaceId: string, body: 
 
 /** Writes one Workspace MCP server catalog to its canonical config path. */
 function writeWorkspaceMcpServers(dataRoot: string, workspaceId: string, body: string): void {
-  const configRoot = join(dataRoot, 'workspaces', workspaceId, 'config');
-  mkdirSync(configRoot, { recursive: true });
-  writeFileSync(join(configRoot, 'mcp-servers.jsonc'), body);
+  replaceWorkspaceEffectiveMcpCatalog({
+    catalog: parseWorkspaceMcpServerCatalog(JSON.parse(body)),
+    dataRoot,
+    workspaceId,
+  });
 }
 
 describe('runtime config loading and reload planning', () => {

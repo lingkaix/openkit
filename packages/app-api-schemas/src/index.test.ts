@@ -3441,12 +3441,12 @@ describe('app api schemas', () => {
       }).schemas[0]?.kind
     ).toBe('data-source');
     expect(
-      RuntimeConfigFileWriteRequestSchema.parse({
+      RuntimeConfigFileWriteRequestSchema.safeParse({
         id: 'workspaces/ws_demo/mcp-servers.jsonc',
         kind: 'mcp-server',
         content: '{"schemaVersion":1,"servers":[]}',
-      }).kind
-    ).toBe('mcp-server');
+      }).success
+    ).toBe(false);
   });
 
   it('accepts owner-derived Task Mode state without exposing the launch decision', () => {

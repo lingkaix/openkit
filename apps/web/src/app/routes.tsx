@@ -23,6 +23,7 @@ import {
 import {
   AgentsScreen,
   ArchivedThreadsScreen,
+  CatalogScreen,
   FirstRunScreen,
   KnowledgeScreen,
   NewWorkspaceScreen,
@@ -70,6 +71,7 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   material: <MaterialScreen />,
   overview: <OverviewScreen />,
   agents: <AgentsScreen />,
+  catalog: <CatalogScreen />,
   knowledge: <KnowledgeScreen />,
   artifacts: <ArtifactsScreen />,
   'first-run': <FirstRunScreen />,

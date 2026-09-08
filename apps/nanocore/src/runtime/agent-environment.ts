@@ -24,6 +24,7 @@ import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
+import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
@@ -38,47 +39,6 @@ type Turn = z.infer<typeof TurnSchema>;
 
 /** Session-static policy label for the Turn-specific Context Package workspace root. */
 const CONTEXT_PACKAGE_FILESYSTEM_RULE_ID = 'openkit-context-package';
-
-/**
- * Worker Skill catalog entry owned by NanoCore.
- */
-interface WorkerSkillCatalogEntry {
-  /** Stable catalog id. */
-  id: string;
-  /** Cataloged supply version. */
-  version: string;
-  /** NanoCore-owned source reference. */
-  sourceRef: string;
-  /** Digest for the materialized supply content. */
-  sha256: string;
-  /** Runtime adapters allowed to consume this supply. */
-  allowedRuntimeAdapters: string[];
-  /** Workspace scopes where this supply may be used. */
-  allowedWorkspaceScopes: string[];
-  /** Worker-local materialization target. */
-  targetPath: string;
-  /** Policy annotations attached to the resolved snapshot. */
-  policyRefIds: string[];
-  /** Review status of this catalog entry. */
-  reviewStatus: 'approved' | 'pending' | 'rejected';
-  /** Secret references required by this supply, never secret values. */
-  secretRefIds: string[];
-}
-
-const WORKER_SKILL_CATALOG: Record<string, WorkerSkillCatalogEntry> = {
-  'repo-guidelines': {
-    allowedRuntimeAdapters: ['codex'],
-    allowedWorkspaceScopes: ['workspace'],
-    id: 'repo-guidelines',
-    policyRefIds: ['policy_worker_skill_repo_guidelines'],
-    reviewStatus: 'approved',
-    secretRefIds: [],
-    sha256: 'sha256-repo-guidelines-v1',
-    sourceRef: 'server:skills/repo-guidelines',
-    targetPath: '/openkit/supply/skills/repo-guidelines',
-    version: '1.0.0',
-  },
-};
 
 /**
  * OpenShell package target for real sandbox materialization.
@@ -353,7 +313,10 @@ function resolveOpenShellAgentEnvironmentPackage(
 
   const workerSkills = resolveWorkerSkillSupply(
     (manifest.skills ?? []).map((skill) => skill.id),
-    manifest.runtime.adapter
+    manifest.runtime.adapter,
+    input.turn.workspaceId,
+    input.coreDb?.dataRoot,
+    input.agentSessionId
   );
   const workerMcpServers = resolveWorkerMcpServerSupply(
     (manifest.mcp ?? []).map((server) => server.id),
@@ -946,32 +909,54 @@ function readWorkspaceGitCommit(sourcePath: string): string {
  * @param adapter Runtime adapter that will consume the supply.
  * @returns Catalog-resolved Skill supply entries.
  */
-function resolveWorkerSkillSupply(skillIds: string[], adapter: string) {
+function resolveWorkerSkillSupply(
+  skillIds: string[],
+  adapter: string,
+  workspaceId: string,
+  dataRoot: string | undefined,
+  agentSessionId: string
+) {
+  if (skillIds.length === 0) return [];
+  if (!dataRoot) {
+    throw new Error('Workspace Skill catalog requires a data root.');
+  }
+  const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
+  const { supplyRoot } = workerSessionInputPaths(agentSessionId);
   return skillIds.map((skillId) => {
-    const entry = WORKER_SKILL_CATALOG[skillId];
-
-    if (!entry) {
+    const entry = catalog.skills.entries.find((item) => item.id === skillId);
+    const pin = catalog.skills.pins.find((item) => item.entryId === skillId);
+    const digest = pin?.digest ?? entry?.currentDigest;
+    const version = catalog.skills.versions.find(
+      (item) => item.entryId === skillId && item.digest === digest
+    );
+    if (!entry || entry.availability !== 'available' || !digest || !version) {
       throw new Error(`Worker supply catalog entry not found: skill:${skillId}`);
     }
-
-    assertSupplyApproved(entry.id, entry.reviewStatus);
-    assertRuntimeAdapterAllowed(entry.id, adapter, entry.allowedRuntimeAdapters);
-
+    assertRuntimeAdapterAllowed(entry.id, adapter, ['codex']);
+    const targetPath = `${supplyRoot}/${entry.id}`;
     return {
-      allowedRuntimeAdapters: [...entry.allowedRuntimeAdapters],
-      allowedWorkspaceScopes: [...entry.allowedWorkspaceScopes],
+      allowedRuntimeAdapters: ['codex'],
+      allowedWorkspaceScopes: ['workspace'],
+      digestFormat: 'openkit-tree-v1' as const,
       id: entry.id,
-      integrity: { sha256: entry.sha256 },
+      integrity: { sha256: digest },
+      inventory: version.inventory,
+      lineage: {
+        baseDigest: version.provenance.baseDigest,
+        pluginMemberKey: version.provenance.pluginMemberKey,
+        pluginVersionDigest: version.provenance.pluginVersionDigest,
+      },
       materialization: {
         kind: 'filesystem-copy' as const,
-        targetPath: entry.targetPath,
+        targetPath,
       },
-      policyRefIds: [...entry.policyRefIds],
-      reviewStatus: entry.reviewStatus,
-      secretRefIds: [...entry.secretRefIds],
-      sourceRef: entry.sourceRef,
-      target: entry.targetPath,
-      version: entry.version,
+      policyRefIds: [],
+      reviewStatus: 'approved' as const,
+      secretRefIds: [],
+      selectionSource: pin?.digest ? ('pin' as const) : ('current' as const),
+      sourceRef: `catalog:skill:${entry.id}:${digest}`,
+      target: targetPath,
+      version: version.publisherVersion ?? digest,
     };
   });
 }
@@ -1513,23 +1498,7 @@ function requireVaultBackend(input: { readonly vaultBackend?: () => VaultBackend
 }
 
 /**
- * Fails closed when a catalog entry has not been approved for worker supply.
- *
- * @param id Catalog entry id.
- * @param reviewStatus Catalog review status.
- */
-function assertSupplyApproved(id: string, reviewStatus: 'approved' | 'pending' | 'rejected'): void {
-  if (reviewStatus !== 'approved') {
-    throw new Error(`Worker skill catalog entry is not approved: ${id}`);
-  }
-}
-
-/**
  * Fails closed when a catalog entry is not allowed for the selected runtime adapter.
- *
- * @param id Catalog entry id.
- * @param adapter Selected runtime adapter.
- * @param allowedRuntimeAdapters Runtime adapters allowed by the catalog entry.
  */
 function assertRuntimeAdapterAllowed(
   id: string,

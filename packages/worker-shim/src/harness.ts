@@ -379,7 +379,7 @@ export class WorkerHarness {
           this.sandboxRoot
         );
         await Promise.all(
-          ['config', 'context'].map((slot) =>
+          ['config', 'context', 'supply'].map((slot) =>
             rm(resolve(inputRoot, slot), { force: true, recursive: true })
           )
         );

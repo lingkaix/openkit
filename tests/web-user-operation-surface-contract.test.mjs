@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 195;
+const EXPECTED_CATALOG_SIZE = 208;
 const EXPECTED_SERVER_SIZE = 46;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 147;
+const EXPECTED_INCLUDED_SIZE = 160;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -66,6 +66,21 @@ const WEB_OPERATION_GROUPS = {
     deleteAutomation: { disposition: 'roadmap', roadmap: 'R092' },
     listAutomations: { disposition: 'roadmap', roadmap: 'R092' },
     updateAutomation: { disposition: 'roadmap', roadmap: 'R092' },
+  },
+  Catalog: {
+    createMcpConfig: { disposition: 'live', surface: 'Catalog' },
+    decideSkillCandidate: { disposition: 'live', surface: 'Catalog' },
+    getWorkspaceCatalog: { disposition: 'live', surface: 'Catalog' },
+    importPlugin: { disposition: 'live', surface: 'Catalog' },
+    importSkill: { disposition: 'live', surface: 'Catalog' },
+    listMcpCatalog: { disposition: 'live', surface: 'Catalog' },
+    listPluginCatalog: { disposition: 'live', surface: 'Catalog' },
+    listSkillCatalog: { disposition: 'live', surface: 'Catalog' },
+    selectMcpVersion: { disposition: 'live', surface: 'Catalog' },
+    selectSkillDefault: { disposition: 'live', surface: 'Catalog' },
+    setSkillPin: { disposition: 'live', surface: 'Catalog' },
+    submitSkillCandidate: { disposition: 'workflow', surface: 'Catalog' },
+    updateMcpBinding: { disposition: 'live', surface: 'Catalog' },
   },
   Dashboards: {
     getConversationTargets: { disposition: 'live', surface: 'Chat' },

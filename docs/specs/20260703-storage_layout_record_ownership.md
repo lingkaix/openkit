@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+updated: 2026-09-08
 ---
 # Storage Layout And Record Ownership
 
@@ -88,6 +89,7 @@ DATA_ROOT/
     agents/
   server/
     db/core.sqlite
+    catalog/
     files/
       oauth/
       provider-accounts/
@@ -107,6 +109,7 @@ DATA_ROOT/
       db/workspace.sqlite
       config/workspace.jsonc
       config/data-sources.jsonc
+      catalog/
       threads/
       artifacts/
       knowledge/
@@ -138,6 +141,7 @@ File-backed source-of-truth records:
 - knowledge pages, sources, derived representations, proposals, and Knowledge reviews
 - context package manifests, traces, and their exact worker-visible package files
 - agent environment package snapshots
+- scope-owned Skill, MCP, and Plugin catalog metadata and immutable installed Skill/Plugin snapshot bytes
 - normalized runtime transcript files
 - redacted evidence bundle manifests
 - generated files that must be inspectable or replayable
@@ -289,6 +293,11 @@ Boot, direct access, derived-index rebuild, backup, export, and import accept on
 Each workspace owns:
 
 ```text
+catalog/
+  catalog.json
+  skill-snapshots/<skillId>/<digestHex>/
+  plugin-snapshots/<pluginId>/<digestHex>/
+  mcp-data/<packageDataKey>/
 threads/
   <threadId>/
     thread.json
@@ -333,6 +342,18 @@ indexes/
 
 The workspace may keep raw source material or references depending on source type and policy. External systems remain systems of record for their own domain data.
 
+### Installed Agent Resource Storage
+
+`server/catalog/` and each `workspaces/<workspaceId>/catalog/` use the same catalog layout above, except mutable MCP data belongs only to the effective Workspace binding. One `catalog.json` per scope is the file-backed authority for Skill, MCP, and Plugin metadata, immutable version references, candidates, selections, and bindings. Component modules own their records within that one publication boundary; SQLite catalog indexes remain rebuildable projections. Server supply is read-only to Workspace consumers, and no user-global catalog or cross-scope payload alias is created.
+
+`skill-snapshots/` contains complete independently versioned Skill trees; `plugin-snapshots/` contains original package trees, each uniquely owned by its PluginVersion. A package-dependent MCP version references that original root without duplicating it. Snapshot paths are scoped to their catalog entry and use the verified digest's lowercase hexadecimal portion as a Core-derived leaf. Entry ids are validated single path segments, never caller-selected paths; identical bytes in different entries do not create shared payload ownership or a deduplication service. Metadata retains the named digest format, exact source revision or uploaded-source lineage, and retained-content availability. Original package roots retain their restricted configuration-read boundary even when ordinary catalog metadata is visible.
+
+`mcp-data/<packageDataKey>/` is mutable binding-owned process data, separate from immutable snapshots. It survives configuration rollback and independent adoption under the MCP catalog owner; plugin uninstall, runtime cleanup, and snapshot purge cannot delete it while any live binding retains the key. It is neither a versioned package payload nor a source of catalog authority, and is not included in package export. Its explicit deletion and any deployment backup follow current data authority.
+
+Publish and verify bounded snapshot bytes before one compare-and-set catalog revision exposes the complete metadata graph. Partial required audit or receipt publication uses existing `recovery_required` semantics; storage inspection never reconstructs authority from directories or promotes an orphan. Missing or corrupt referenced content fails explicitly. The catalog owners define resource limits, retention dependencies, removal, and explicit purge; this layout adds no cache, garbage collector, repository service, or repair engine. Authorized launch and rollback use retained local snapshots without upstream reacquisition, while access revocation still applies immediately.
+
+Catalog storage and versioned resource delivery are accepted targets and are not implemented by the current static Skill metadata and mutable MCP configuration. Their lifecycle owners are `docs/specs/20260711-skill_catalog_versioning_pinning.md`, `docs/specs/20260907-mcp_catalog_management.md`, and `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
+
 ## Source Copy Versus Reference Policy
 
 Workspace `sources/` should preserve enough evidence for replay, citation, and review without turning OpenKit into every external system's storage backend.
@@ -354,6 +375,8 @@ Store a reference plus metadata instead of copying raw material when:
 - policy allows citation by stable external id, URI, version, digest, or query locator
 
 Reference-only sources should still store non-secret metadata: source id, source kind, owner scope, external locator or redacted locator, captured timestamp, access policy, freshness metadata, digest or version when available, and derived representation links when any are retained.
+
+Installed catalog snapshots are ordinary bounded product resources under `catalog/`, not imported Workspace repositories under `sources/`. Original-source links preserve provenance without requiring a source lookup for each use; editable source repositories and Git history remain external under Storage Core.
 
 ## OpenShell And Worker Output Ingestion
 
@@ -486,6 +509,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - Import tests should reject worker records with missing lineage or mismatched digests.
 - Backup tests should prove a workspace can be copied with its `workspace.sqlite`, files, and evidence manifests.
 - Recovery tests should rebuild derived indexes after deleting `indexes/`.
+- Catalog storage tests must prove one scope-local metadata publication, immutable digest-verified snapshots, launch and rollback without upstream access, rejection of corrupt authority, restricted original-package reads, and retention of referenced snapshots and independently adopted MCP data through uninstall.
 - Integrity tests should prove table-wise that corrupt Core, User, and Workspace authority fails boot validation, preserves the original bytes at the canonical path, and creates neither a migrated replacement nor a quarantine copy.
 - Schema evolution tests should prove unknown optional storage metadata is tolerated and unsupported required features fail closed.
 - Material transaction tests should prove create, save, bind, unbind, exclude, and restore commit their authoritative rows and completed command receipt together; conflict and injected failure should leave neither a partial mutation nor a receipt.

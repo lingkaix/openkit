@@ -53,6 +53,8 @@ export interface WorkerAdapterPrepareInput {
   readonly childEnvironment: Record<string, string>;
   /** Catalog-selected MCP server ids exposed through the fixed local capability route. */
   readonly mcpServerIds?: readonly string[] | undefined;
+  /** Worker-local Skill trees already imported for this Turn. */
+  readonly skillTargetPaths?: readonly { readonly id: string; readonly targetPath: string }[] | undefined;
   /** The package's unique preferred LLM route selected by the Shim. */
   readonly llmRoute: WorkerAdapterLlmRoute;
   /** Durable OpenKit session directory. */

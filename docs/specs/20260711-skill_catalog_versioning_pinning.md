@@ -1,115 +1,173 @@
 ---
-status: Draft
-implementation: Not Started
+status: Accepted
+implementation: Partial
+updated: 2026-09-08
 ---
 # Skill Catalog Versioning And Pinning
 
 ## Owns
 
-- The entry conditions and minimum integrity boundaries for a possible future worker Skill catalog.
-- The future minimum of immutable content identity, one current pointer, one workspace pin, exact package-snapshot lineage, verified materialization, and pointer-only rollback.
+- Independent worker Skill identity, immutable content versions, provenance, candidate submission, exact selection, promotion, pinning, rollback, and removal.
+- Deterministic bounded-tree identity for installed resource snapshots.
+- Skill delivery integrity and the version lineage needed for comparisons through existing work and evidence records.
 
 ## Does Not Own
 
-- Any current V1 capability, implementation, schema, route, operation catalog entry, runner, test obligation, or release gate.
-- The current Knowledge and self-improvement flows. Neither depends on a Skill Catalog.
-- The end-user `openkit` Skill, worker Skill authoring UX, Skill execution semantics, allowed-tool enforcement, or sandbox behavior.
-- A registry, marketplace, import/export service, deprecation lifecycle, garbage collector, backup format, dependency resolver, or cross-deployment distribution platform.
-- Agent Environment Package resolution or materialization mechanics beyond the future integrity constraints stated here.
+- Agent Plugin packaging or MCP configuration versions, which have separate specifications.
+- Skill execution, model obedience, sandbox privileges, network access, credentials, or tool permission.
+- An experiment scheduler, Judge, scoring system, autonomous promotion policy, generic improvement framework, or business-model implementation.
+- Knowledge Proposal or Review semantics, the end-user `openkit` Skill, Git hosting, or source-development workflows.
+- AEP, AgentSession, transport, command-ledger, audit, or evidence lifecycles already owned elsewhere.
 
 ## Core References
 
 - `docs/core/foundation.md`
 - `docs/core/agent-supply.md`
+- `docs/core/storage.md`
 - `docs/core/permissions.md`
 - `docs/core/audit.md`
 
 ## Summary
 
-This Draft is a non-authorizing future boundary. OpenKit does not currently materialize a real worker Skill for a real worker consumer, so a catalog, version store, pinning API, and promotion platform have no demonstrated present owner. The static worker-supply metadata in NanoCore is not a materialized Skill catalog and must not be used to justify building one.
+Skills are first-class, independently versioned worker resources. A Skill may arrive alone, through an Agent Plugin, or as an agent-submitted candidate; its version and selection must not depend on publishing a new community plugin. OpenKit retains exact immutable content so a later comparison, promotion, or rollback identifies the actual instructions, scripts, and supporting files supplied to a worker.
 
-Design work may resume only when a real worker Skill is supplied as files to a real consumer and a concrete need exists to advance that Skill while one workspace remains on an exact earlier version. Until then, current static metadata may remain a narrow implementation detail, and this Draft authorizes no production or test work.
+This contract replaces the earlier future-only entry conditions with the requested target. Real Skill consumption and version changes are acceptance observations to deliver, not prerequisites preventing design work. The existing MCP Gateway is an available dependency; catalog and native Skill loading implementation remains Not Started.
 
 ## Goals / Non-goals
 
-### Goals
+Cover creation, import, enumeration, inspection, content comparison, candidate submission, exact selection, promotion, rollback, and removal through one NanoCore owner. Enable future A/B evaluation and agent improvement proposals through immutable inputs and attributable work. Do not build an evaluation platform or make current Knowledge reflection depend on this catalog.
 
-- Preserve the minimum content-integrity, authority, pinning, rollback, failure, and observability decisions required before a catalog could be accepted.
-- Prevent package snapshots or worker materialization from silently resolving mutable or unverified Skill content.
-- Avoid turning a future version-selection need into a general Skill platform.
+## Background
 
-### Non-goals
-
-- Do not authorize catalog APIs, persistence, bootstrap seeding, repository import, Git integration, export, backup, deprecation, garbage collection, labels, semantic versions, version ranges, dependencies, or discovery.
-- Do not create a prerequisite for current Knowledge, self-improvement, reflection, evaluation, or proposal workflows.
-- Do not preserve or replace the hardcoded metadata table through a compatibility layer.
+The earlier Draft preserved useful integrity, pointer, pin, AEP, and restart constraints but excluded a current catalog. The present product requirement establishes the need for real worker Skills and independent evolution. Plugin packaging distributes resources; it is not their version authority.
 
 ## Decision
 
-No implementation may be derived from this Draft. Promotion to an accepted, implementation-ready contract requires all of the following evidence:
+- Every Skill has a stable scoped identity and immutable versions identified by a locally computed digest, regardless of optional publisher version labels.
+- The complete self-contained Skill directory is the version unit. Sibling Skills, MCP declarations, plugin metadata, and extension directories do not enter its digest.
+- Candidate creation does not change active selection. Promotion, pinning, exact test selection, and rollback require their own current authority.
+- NanoCore resolves exact versions before AEP creation. Integration verifies and installs those files through the selected runtime adapter.
+- Bounded immutable installed snapshots are ordinary catalog-owned product resources under Storage Core; source-development repositories and Git history remain external.
 
-- at least one real worker Skill is materialized as a bounded file tree and consumed by a supported worker path;
-- at least two distinct contents for that Skill create a real selection or rollback need;
-- at least one workspace needs to remain on an exact version while the default advances;
-- the accepted change plan names the responsible authority, current consumer, storage owner, and smallest public or private mutation surface.
+## Contract / Expected Behavior
 
-The first accepted slice must implement only identity, immutable versions, one current pointer, one workspace pin, exact AEP lineage, verified materialization, and pointer rollback. Any broader catalog concern requires separate accepted scope.
+### Identity, scope, and provenance
 
-## Contract / Expected Behavior Before Promotion
+A `SkillEntry` has an owner scope, stable catalog id, display metadata, availability, and one nullable current digest. User imports and local creation target one Workspace. Server-owned entries may be projected read-only into authorized Workspaces; editing one creates a Workspace entry with source lineage. Display names and public package names confer neither uniqueness nor ownership.
 
-### Content identity and security
+A `SkillVersion` records entry identity, exact digest and format, file inventory, optional publisher version, producer, creation time, and immutable provenance: source commit/subpath when available, uploaded-source identity otherwise, originating plugin membership when applicable, and the exact base version for local improvements. A Skill revision never rewrites its original PluginVersion membership.
 
-- Version identity must be a deterministic, algorithm-versioned digest computed locally over the bounded Skill tree's root-relative paths and exact regular-file bytes in a canonical order with unambiguous framing.
-- Path traversal, path escape, symbolic links, and non-regular files must be rejected before identity or materialization. The same verified tree must not be able to write outside its assigned materialization root.
-- Version content is immutable. Changing, adding, deleting, or renaming a file creates a different digest; timestamps and host-specific traversal order do not affect identity.
-- The exact digest framing and string form are blocking decisions for a future accepted spec and must be fixed before implementation, not improvised in code.
+Identical bytes in the same entry reuse content identity; a separate import observation may retain additional provenance without rewriting the version. Same-label different content has different digests and is visibly distinguishable. Tags, branches, `latest`, timestamps, and remote tree hashes are not executable identities.
 
-### Authority, pointer, and pin
+### Payload and deterministic digest
 
-- An immutable version record is the authority for content identified by a digest. One catalog entry pointer is the sole authority for the current default digest.
-- One workspace pin per entry is the sole authority for that workspace's selected digest. A pin names an exact existing version; it is not a range, label, or mutable alias.
-- Resolution uses the workspace pin when present and otherwise the entry's current pointer. Moving the current pointer must never mutate or release workspace pins.
-- Promotion and rollback are compare-and-set pointer moves to existing verified versions. They never mutate version content. Rollback may select an explicitly named prior digest; it does not require a second rollback workflow or mutable response history.
-- Current authority must govern every pointer and pin mutation, and every successful behavior-changing mutation must produce the existing audit evidence with actor, entry, prior digest, and resulting digest. No ambient-system or inferred-owner fallback is allowed.
+The payload is a directory with valid root `SKILL.md` under the Agent Skills format. Every regular file below it participates, including scripts, references, assets, dotfiles, and licenses. File references resolve from the Skill root. Do not scan Markdown to guess dependencies or silently supply files outside that root. External prerequisites remain authored runtime requirements; a non-self-contained Skill must be repackaged or explicitly report its missing prerequisite.
 
-### Package snapshot and materialization
+Initial limits are 16 MiB of file bytes, 1,024 filesystem entries including directories, and 32 directory levels per Skill. Reject oversized trees, absolute paths, empty/dot/parent path segments, backslashes, NUL, ill-formed UTF-8 paths, duplicate paths, symlinks, archive hard links, and entries other than ordinary directories or regular files. Paths use `/` and must already be Unicode NFC; reject rather than rename nonconforming paths. Target-filesystem collisions also fail before launch. Extraction stays inside a fresh assigned root. Admission, hashing, and publication observe the same staged bytes without a source-mutation race. Repository administrative `.git` entries are excluded from the installable tree: Git acquisition selects committed package content, and an uploaded tree containing a `.git` path segment is rejected rather than storing repository history.
 
-- A resolved Agent Environment Package snapshot records the exact entry identity and version digest. It never records `current`, a mutable source path, or a host-provided revision as the executable identity.
-- Materialization recomputes and verifies the version digest before exposing Skill files to the worker. Missing or mismatched content fails launch typed and closed; it must not fall back to a static catalog row, repository working tree, another version, or unverified files.
-- After restart, durable pointers and pins remain the only selection authority. Materialization may be retried from the same exact digest, but catalog code must not auto-repair, republish, or advance selection.
+`digestFormat` is `openkit-tree-v1`. Hash the ASCII domain `openkit-tree-v1` followed by a zero byte, a four-byte unsigned big-endian entry count, then every directory and regular file below the implicit root ordered lexicographically by unsigned UTF-8 path bytes. Each record contains a four-byte unsigned big-endian path-byte length, path bytes without a trailing slash, one kind byte (`0` for a directory, `1` for a non-executable file, `2` for a file with any executable permission bit), eight-byte unsigned big-endian content length, and exact content bytes. Directories have zero length and no content; include empty directories because a packaged working directory can depend on them. The result is `sha256:` plus 64 lowercase hexadecimal digits. Adapters preserve directories and normalized executability. Ownership, other mode bits, timestamps, and traversal order do not participate; extraction strips special permission bits. Content newlines and Unicode are never normalized. Changing bytes, path, kind, or executability changes identity. A future encoding requires a different named digest format.
+
+### Candidates and review
+
+Authoring happens in normal user or worker work areas. Submission provides a complete bounded tree, entry, exact base digest (null only for a new entry), bounded summary, and optional existing authorized work/evidence references. Producer identity comes from authenticated lineage. An agent submission retains its producing Workspace and Turn and available Artifact references; these explain origin, not improvement quality.
+
+A `SkillCandidate` is a bounded Skill-owner request to select an immutable version. It records exact base/candidate digests, producer, summary, evidence references, and disposition `proposed`, `withdrawn`, `rejected`, or `promoted`. It is not a Knowledge Proposal. Creation changes no default and starts no work. Different bytes or a new base require a new candidate. Rejecting or withdrawing retains lineage; successful promotion fixes its decision actor and audit reference together with the pointer effect. Normal command idempotency handles repeated submission; no candidate queue, runner, or recovery workflow exists.
+
+Only a proposed candidate can be withdrawn, rejected, or promoted; those decisions are terminal and compare the expected candidate/catalog revision. Withdrawal requires the submitting actor's current write authority or the configuration owner; rejection and promotion require current configuration authority. References must resolve to authorized same-Workspace sources, or explicitly visible Server supply, and retain exact ids/digests without copying secret or restricted source payloads into summaries.
+
+An authorized agent may submit under delegated `workspace.write`; this grants no `workspace.configure`, review, launch, or external-effect authority. Imports and direct human edits also produce immutable versions with explicit activation. Content comparison reads exact base/candidate inventories; binary differences show path, size, and digest rather than guessed text. Missing evidence remains visibly unavailable or inconclusive.
+
+The submitting caller is an authorized user or coordinator using the ordinary public operation. A worker without catalog-management authority produces an existing bounded JSON Artifact containing the complete proposed tree, with root-relative directory/file entries, normalized executable flags, and base64 file bytes. The submission request names that Artifact's exact Workspace/id/version/content digest plus the candidate base and summary; the owner validates current access, decodes within both Artifact and Skill bounds, and applies the same tree validation. Original producer lineage comes from the retained Artifact owner; the authenticated submitter is recorded separately. No host path or model-reported digest substitutes for retained bytes. An explicitly authorized coordinator step may submit it; Artifact appearance alone triggers nothing. This adds no worker management token, private submission route, new output event, or background evaluator.
+
+### Selection, promotion, and rollback
+
+Each entry has one current default; each Workspace has at most one exact pin for an available entry. No current digest means unavailable for ordinary default selection. A pin remains fixed when the entry default advances.
+
+Resolution order is an explicitly authorized exact run selection, an exact version in the composed Agent setup, the Workspace pin, then the entry current digest. A run override may differ from a pin only for that run, must name a Skill already included by the composed setup, must appear in the selection explanation, and changes no pin. Conflicting exact references within composed setup fail `conflict`, not last-writer-wins. An unpromoted candidate requires explicit exact selection and current launch authority; default selection never chooses it automatically.
+
+Promotion and rollback are compare-and-set moves to an existing verified digest, naming expected current digest (including null) and target digest. Candidate promotion also requires its base to equal expected current; stale candidates fail `conflict` without rebasing. Pin set/clear compares the expected prior pin. Clearing a pin returns future resolution to the then-current default. No ranges, implicit upgrades, or automatic promotion policy exist.
+
+Workspace default/pin/activation decisions require `workspace.configure`; Server defaults require deployment-admin authority. Existing audit records retain actor, request, entry, prior/next digest, and candidate/evidence references. Submission is not promotion authority. Any automation requires explicit delegation and current policy rather than a special self-improvement exemption.
+
+### Evaluation and session lineage
+
+Resolved selection records scoped entry id, exact digest and format, selection source, and source plugin membership where applicable. AEP and accepted materialization evidence retain exact inputs; a model naming a Skill is not delivery proof.
+
+Two ordinary authorized work requests may select different versions without moving the shared default. Existing Turn, AEP, Context Package, Artifact, review, audit, and usage owners retain inputs and outcomes. A comparison references both Skill versions and relevant model/runtime/context inputs. This enables A/B analysis without claiming statistical validity or reproducibility of a remote model, external data, or MCP implementation. Evaluation orchestration, held-back checks, scoring, and Judges remain separately deferred.
+
+Selection changes affect later AEP resolution, never files inside an active AgentSession. Changed supply follows the existing new-session/compatibility path. Rollback restores selected Skill content, not external effects, Knowledge, permissions, credentials, or mutable process state.
+
+### Storage, publication, and recovery
+
+The installed snapshot is canonical for retained content; a source locator is provenance and a refresh input, not a mutable launch lookup. It contains no repository history or development working tree. Scope-owned catalog files hold entries, immutable version metadata, candidates, defaults, and Workspace pins. Payload directories are immutable; SQLite indexes are projections, not selection authority. Repeated authorized loads and rollback read retained local bytes without contacting Git or the upstream publisher, preserving loading speed and availability while still verifying integrity and current access. This does not require a separate cache, source mirror, or background preloader.
+
+Use existing single-writer and atomic-file-publication discipline. Mutations carry the normal request id and expected catalog revision. Verify and publish complete payloads before one catalog revision makes their references visible. Never expose partial payloads. Success requires durable required audit and command-receipt evidence; interruption across those stores reports `recovery_required` and preserves actual completed effects. Restart must not choose the newest directory, reset missing authority to empty, reconstruct a receipt from a pointer, or auto-promote. Same-request changed input conflicts; complete stored receipts replay only after current access checks.
+
+Missing/corrupt catalog authority fails closed. Missing/tampered content returns a typed unavailable/integrity result, never another digest, an upstream branch, a developer checkout, or the old static row. Inspection and a new authorized request may retry admission of the same source. Storage exhaustion rejects publication without deleting retained versions automatically.
+
+### Removal and retention
+
+Removal immediately blocks future selection and materialization, including old pins, but retains historical lineage. A normal pointer change leaves admitted sessions fixed. Urgent revocation uses existing stop/access owners and reports uncertainty if teardown cannot be proved; removing a catalog entry cannot erase already read instructions from a process.
+
+Physical purge is distinct from removal. A version required by a live default or pin, proposed candidate, installed or explicitly retained plugin version, unexpired retained AEP/evidence, or legal hold cannot be purged. Terminal candidate and removed-package metadata may retain digest-only history after its content retention obligation ends; that history does not retain bytes forever or claim they remain available. Purge respects existing retention owners and retains minimum unavailable-content lineage. Plugin uninstall does not cascade-delete an independently referenced Skill. No garbage-collection daemon or historical-work rewrite is added.
+
+Portable Workspace export preserves independently readable Skill version bytes, base and candidate history through `docs/specs/20260704-workspace_backup_export_import.md`; it restores no source default, pin, or review authority. Imported candidate content requires a fresh target submission before a decision. Complete data-root backup preserves same-deployment state.
+
+### Management surface
+
+The transport-neutral operation catalog exposes entry/version list and read, exact content/diff reads, create/import, candidate submit/withdraw/decide, default selection, pin set/clear, remove, and explicit unreferenced purge. App API, Core Client, OpenAPI, and the unified `openkit` Skill/CLI project those same operations. Workspace reads require `workspace.read`; candidate submission and its validated inactive payload require `workspace.write`; ordinary catalog creation/import, activation, promotion, pins, removal, and purge require `workspace.configure`. Withdrawal follows the candidate rule above. Resource sensitivity may further restrict reads. Server mutation, other Workspaces, Vault use, and worker launch never follow implicitly.
+
+## Proposed Design
+
+Reuse NanoCore storage, command, permission, audit, composed setup, AEP, and runtime adapter owners. One Skill catalog module owns its records and selection; payload admission is shared with package import using the digest above. A bounded candidate record preserves exact base, bytes, and decision without another evaluation lifecycle. Do not duplicate file validation or create a Skill runtime.
 
 ## Current Implementation Projection
 
-`apps/nanocore/src/runtime/agent-environment.ts` contains a static `WORKER_SKILL_CATALOG` metadata row, and the worker shim projects inert supply metadata rather than materializing a worker Skill tree. The repository's `skills/openkit/SKILL.md` is the end-user Agent Skill interface, not proof of a worker Skill catalog consumer. No current record, pin, content store, digest-verified worker Skill materialization, or catalog mutation surface implements this Draft.
+Workspace Skill versions, candidates, pins, and current selection live in `workspaces/<id>/catalog/catalog.json` with immutable snapshot trees under `catalog/skill-snapshots/`. App API, Core Client, CLI, and the Web Catalog screen expose ordinary-user import, candidate, pin, and selection operations. AEP supply resolves catalog pins or current digests onto the AgentSession-private `worker-supply` root; the Codex thin adapter projects those imported trees into `$CODEX_HOME/skills`. Native plugin loading and a retained real-worker combined Skill/MCP story are not yet advertised.
+
+The target uses the existing server and Workspace storage owners with a canonical catalog document per owner scope, immutable installed payload directories, and derived indexes. `docs/specs/20260703-storage_layout_record_ownership.md` owns their physical layout; implementation must project these accepted contracts into the existing schemas and storage modules.
+
+## Alternatives Considered
+
+Plugin-owned versions obstruct independent Skill improvement. Publisher labels alone cannot verify bytes. Git-only locators with an evictable cache make loading and rollback depend on source availability; bounded canonical installed snapshots avoid that dependency within ordinary product storage. A dedicated experiment platform is unnecessary for candidate submission, exact runs, and pointer rollback.
+
+## Consequences
+
+Skill evolution is independent while package provenance and exact worker inputs remain traceable. Retained snapshots consume storage and require explicit purge. A Skill digest identifies supplied files, not all external dependencies or model behavior.
+
+## Rollout / Migration Plan
+
+Implement bounded snapshot storage under `docs/core/storage.md` and `docs/specs/20260703-storage_layout_record_ownership.md`. Retain exact source lineage without importing editable source repositories or Git history, and verify local immutable bytes on supply and rollback.
+
+Replace the hardcoded metadata table directly, implement the setup/AEP exact references, management, and verified publication, and prove real worker consumption. Retain no compatibility reader for the static row. Complete the companion plugin/MCP story before claiming the requested full worker-resource capability.
 
 ## Testing Strategy / Acceptance Criteria
 
-This Draft creates no current test obligation. When the entry gate is met, the accepted first slice must prove only the promoted boundary:
+1. Known vectors prove framing and byte ordering. File, supporting-resource, path, empty-directory, and executable changes change identity; timestamps and traversal order do not. Unsafe, oversized, racing, and target-colliding trees cannot publish or escape.
+2. A plugin-imported Skill gains an independent candidate without changing its original membership or another Skill. Re-import is idempotent; reused labels with different bytes remain distinguishable.
+3. Candidates change no default; unauthorized promotion fails; valid promotion succeeds; stale/concurrent updates conflict; pins survive default advancement.
+4. Two authorized runs use different exact versions with distinguishable AEP/materialization traces and unchanged defaults/pins. Rollback loads retained earlier bytes while upstream is unavailable.
+5. Restart/interruption preserves complete authority or reports `recovery_required`; corrupt content has no fallback. Removal blocks admission and referenced/held bytes cannot be purged.
+6. One real supported worker discovers a Skill, reads a supporting file, and produces an artifact whose content depends on the selected version. Metadata-only copying, model self-report, and a skipped real check are insufficient. The plugin spec supplies the combined Skill/MCP story; no Evaluation Harness is required.
 
-- identical safe trees produce the same digest, every material content or path change changes it, and unsafe paths or file types are rejected;
-- an authorized current-pointer move changes unpinned resolution while an existing workspace pin remains unchanged;
-- rollback moves only the current pointer to an existing verified digest;
-- an AEP snapshot names the exact resolved digest and materialization rejects missing or tampered content;
-- unauthorized pointer or pin mutation fails closed and successful mutations emit the required audit evidence;
-- restart preserves selection from the durable pointer and pin without repair or fallback.
+## Risks & Mitigations
 
-The accepted change should use the lowest sufficient unit and contract tests plus one real worker-path integration proof. It must not create a dedicated catalog runner, import/export harness, exhaustive storage matrix, or self-improvement acceptance platform.
-
-## Open Questions
-
-- [Blocking] Which first real worker Skill and supported consumer establish the catalog's present need?
-- [Blocking] What exact digest framing and string form will be the immutable identity contract?
-- [Blocking] Which existing authority operation governs the first current-pointer and workspace-pin mutations?
-- [Blocking] Where will the minimum immutable content and pointer records live without introducing a second storage authority?
+Skill instructions/scripts remain subordinate to authored setup, current permission, and sandbox controls. Experimental metadata such as `allowed-tools` grants no OpenKit authority. Installed resources are read-only; outputs use declared work areas. Candidate claims, observed outcomes, and authorized promotion remain distinguishable.
 
 ## Deferred / Future Work
 
-Public discovery and mutation APIs, registries, marketplaces, source import, export, backup integration, provenance enrichment, deprecation, garbage collection, semantic labels, dependency resolution, cross-deployment distribution, signing, shared-content deduplication, and self-improvement proposal integration remain unapproved possibilities. None is implied by the minimum future contract.
+Experiment scheduling, statistical analysis, held-back evaluation suites, autonomous promotion policy, business-model representations, generic proposals, registry search, source hosting, version ranges, and cross-deployment distribution remain separate work.
 
-## Links
+## Related Specifications And Sources
 
-
+- `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
+- `docs/specs/20260907-mcp_catalog_management.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
+- `docs/specs/20260703-storage_layout_record_ownership.md`
+- `docs/specs/20260711-evaluation_harness_design.md`
+- `docs/specs/20260710-self_improvement_evaluation_loop.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260529-test_strategy.md`
+- [Agent Skills format](https://agentskills.io/specification).
+- [skills local hash implementation](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts), evidence for content identification rather than OpenKit's encoding or a runtime dependency.

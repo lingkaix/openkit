@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-06
+updated: 2026-09-08
 ---
 # Agent Manifest And AEP Resolution
 
@@ -151,6 +151,7 @@ description
 runtime
 profiles
 models
+plugins
 skills
 mcp
 tools
@@ -184,9 +185,11 @@ The generic authored build arm, resolved build arm, and resolver path implement 
 
 `models` declares one preferred logical model ID and either a non-empty stable-ID allowlist or the exact sentinel `all`. `all` expands once at composition time to the exact logical models currently available to the Workspace through the Gateway catalog, and that closed expansion is recorded in the composed setup and immutable AEP. A later Gateway catalog addition does not mutate an admitted AEP or running process; it enters an `all` setup only when a later composition creates a new AEP. Provider profile IDs, provider-native model IDs, account slots, concrete routes, route members, and fallback order are forbidden in an Agent Manifest and remain Gateway-private.
 
-`skills` declares catalog refs, version constraints, placement mode, and runtime adapter compatibility.
+`plugins` declares scoped installation references and explicit member overrides under `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`. Workspace binding and profile composition expand selected installations into Skill/MCP references before resolution, preserving exact membership and source provenance. Repeated identical references deduplicate; conflicting exact selections fail unless an authored override explicitly resolves the member. Expansion supplies no missing runtime, binary, network, credential, or policy authority.
 
-`mcp` declares only named catalog refs and their requested visibility or tool constraints. It must not contain server transports, commands, endpoints, credentials, or a runtime-native execution route. Resolved entries remain static AEP supply metadata until the governed `capability.local` MCP plane owned by `docs/specs/20260704-worker_mcp_tool_supply.md` is implemented and proven.
+`skills` declares scoped catalog references, optional exact versions, placement mode, and runtime adapter compatibility. Version selection follows the independent Skill owner; ranges and implicit upgrades are outside this target.
+
+`mcp` declares only named catalog references, optional exact configuration constraints, and requested visibility or tool constraints. It must not contain server transports, commands, endpoints, credentials, or a runtime-native execution route. Each exact constraint must match the component owner's current selection; it does not create a per-version server instance. Resolved entries enable only the governed `capability.local` MCP plane owned by `docs/specs/20260704-worker_mcp_tool_supply.md`.
 
 `capabilities` declares required and optional runtime capability ids. It does not declare callable routes; launch advertisement is computed by intersecting these requirements with selected adapter and image proof.
 
@@ -410,7 +413,7 @@ The current implementation follows the composed logical-model contract:
 
 Current production selects only the configured NanoHost RuntimeTarget and resolves capability, worker-control, and inference as sandbox-local Integration bindings. One Sandbox Integration may route commands to multiple compatible Harness Instances in the same Sandbox, while each AgentSession remains owned by exactly one Thread. The authored manifest remains topology-free, and NanoHost transport, Runtime Epoch lifecycle, Sandbox placement, and route realization stay with their narrow owners.
 
-This specification remains `Partial` for the explicitly deferred callable-capability, provider-attachment, image real-use, and readiness evidence named below, not for concrete Provider/model configuration or Workspace/User composition.
+This specification remains `Partial` for the provider-attachment, image real-use, and readiness evidence named below, and for persistent catalog versions, Plugin-reference expansion, exact Skill selection, and verified resource delivery. The MCP capability plane is implemented under its own owner; concrete Provider/model configuration and Workspace/User composition are not those missing catalog features.
 
 Local schema, resolver, AEP, materializer, readiness, redaction, worker-shim, adapter, image-contract, closed-runtime, typecheck, build, and repository gates cover this boundary. The 2026-07-21 refreshed arm64 images build locally and pass their complete image smoke checks. The earlier minimal images passed stock OpenShell `0.0.80` create, upload, adapter `prepare` dry-run, and `--no-keep` cleanup checks on A1, but refreshed-image stock OpenShell verification remains open under `docs/specs/20260721-worker_execution_environment_images.md`. The shared product-visible readiness projection can still report `ready` before provider/model compatibility and the fixed control-binary set are resolved; later AEP resolution fails closed, but this earlier false-ready projection keeps the specification Partial until the existing setup resolver owns both decisions.
 
@@ -450,20 +453,22 @@ Workers must not launch directly from an unreviewed workspace-local file.
 
 ## Skill And MCP Version Resolution
 
-Authored manifests may express Skill and MCP supply with exact versions or policy-approved version constraints.
+Authored setup may select exact Skill versions or leave selection to the Workspace pin and entry default. The precedence is an explicitly authorized one-run exact selection, an exact composed setup reference, the Workspace pin, then the entry current digest. A run override names only an already-included Skill, changes no shared pointer or pin, and retains the selection explanation. Conflicting authored exact references fail before AEP creation. Unpromoted candidates require explicit exact selection and current launch authority under the Skill owner.
+
+An MCP exact configuration constraint must equal its catalog entry's current selection. A mismatch blocks readiness until an authorized catalog operation changes that selection or the authored constraint. Resolution never selects a parallel historic MCP process or restores old Vault grants. Package expansion preserves each component's independent selection rules.
 
 The AEP snapshot must always store exact resolved supply:
 
-- catalog entry id
-- resolved version
-- source revision or package digest
+- owner scope and catalog entry id
+- exact resolved component version, digest format, and selection source
+- source revision and original plugin/member lineage when applicable
 - runtime adapter compatibility result
 - policy decision ids when applicable
 - materialized path for file supply, or a catalog binding for capability-plane supply
 
 An MCP catalog binding is non-executable metadata. It must not carry an upstream command, native config target, direct server endpoint, credential reference, or credential; only exact selected supply enables the fixed governed `capability.local` MCP route after current package, token, catalog, policy, and schema validation.
 
-The first catalog-backed worker-supply implementation should prefer exact pins until the catalog resolver records enough lockfile-style evidence to make ranges deterministic and replayable. Ranges become acceptable only when resolution writes the exact version and digest into the AEP snapshot.
+Version ranges, implicit upgrades, and automatic candidate promotion are outside this target. Changes produce a later AEP and follow session compatibility; they never replace files in an active session. The Skill and MCP catalogs remain the unique version and selection authorities.
 
 ## Alternatives Considered
 
@@ -487,6 +492,7 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - Composition tests proving Workspace bindings can add Workspace-owned identified resources and replace permitted preferences while catalogs, policy, runtime proof, and materialization remain non-authoring and fail closed on unsupported or unauthorized results.
 - Readiness tests for missing provider, missing vault grant, missing MCP catalog entry, and missing backend capability.
 - Snapshot tests proving AEP identity changes when material inputs change.
+- Catalog resolver tests proving package expansion preserves independent Skill/MCP lineage, exact conflicts fail, one-run Skill overrides do not widen membership or change pins, stale MCP constraints block readiness, and unavailable or corrupt retained content has no upstream-latest fallback.
 - Shim tests proving current runtime-native argv, environment, and state paths are derived from AEP inputs without an adapter-authored file envelope.
 - Boundary tests proving `runtime.command.argv` always launches `openkit-worker-shim`, `control.adapter.targetRuntime` is the only adapter selector, and `agent.runtimeKind` never selects code.
 - Resolver tests proving exact authored image and runtime binary declarations reach the AEP without a runtime-specific NanoCore branch.
@@ -504,7 +510,7 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - Risk: Manifest surface becomes too large. Mitigation: keep most fields optional and use catalogs for reusable detail.
 - Risk: Profiles become sub-agents with their own hidden policies. Mitigation: profiles may extend only the identified behavior lists that the manifest marks composable and may reference only resources in the composed catalogs; runtime, network, credential, policy, and backend authority cannot widen through a profile.
 - Risk: Scale settings are mistaken for scheduler commands. Mitigation: manifest declares intent; scheduler records the actual placement plan.
-- Risk: MCP supply bypasses NanoCore. Mitigation: manifests and AEPs carry only static catalog bindings; executable MCP access exists only through the separately governed `capability.local` plane after that plane is implemented and proven.
+- Risk: MCP supply bypasses NanoCore. Mitigation: manifests and AEPs carry only non-executable catalog bindings; executable MCP access exists only through the governed `capability.local` plane.
 
 ## Resolved Decisions
 
@@ -521,14 +527,14 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 - AEP snapshots are immutable launch contracts. Any material supply, policy, workspace, provider, vault, backend, or request change produces a new snapshot.
 - Server Manifest, Workspace binding, selected profile, and User preference compose one authored setup before resolution. Workspace composition may add Workspace-owned resources; catalogs, grants, policy, runtime proof, governance materialization, and adaptation remain non-authoring.
 - Codex `0.153.4` and OpenCode `1.18.1` are relay-only for LLM authority. Direct LLM Provider credentials and endpoints are excluded from dispatchable worker supply. Pi `0.85.1` remains direct-provider-only in the current implementation and is therefore non-ready in the clean logical-model target until an accepted relay-capable adapter replaces that constraint.
-- Current runtime-native launch details are adapter-derived outputs from AEP snapshots and are never stable product contracts; generated native files are not authorized by the current adapter interface.
+- Runtime-native launch details are adapter-derived outputs from AEP snapshots and are never stable product contracts. The current adapter interface does not provide verified Skill/plugin supply; its governed generated-file target is owned by `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
 - Readiness is a redacted pre-launch diagnostic with `ready`, `degraded`, `blocked`, and `stale` target states.
 - Scale fields in manifests are intent. Scheduler records decide actual placement, queueing, reuse, and capacity.
 - Host execution is not a valid worker AEP backend target.
 - Workspace-scoped AEP snapshot metadata belongs in workspace-owned storage. Runtime/session directories may hold generated file-backed materialization copies and backend receipts.
 - Compact or historical manifest shapes do not need compatibility preservation in this internal development phase.
 - Workspace-local agent definitions may exist only as policy-reviewed `AgentManifest` proposals and accepted workspace-scoped `AgentManifest` catalog entries. Unreviewed workspace-local files are never launch contracts.
-- Authored Skill and MCP constraints may use exact pins or policy-approved ranges, but the AEP snapshot must store exact resolved versions and digests. The first catalog-backed implementation should prefer exact pins until deterministic resolver evidence exists.
+- Authored Skill and MCP references resolve to exact versions under their independent catalog owners. Ranges are outside this target; Plugin expansion does not change component authority or the current MCP selection constraint.
 - Scale intent fields remain preferences or upper bounds; scheduler records own concrete placement, queueing, reuse, warm-pool realization, and capacity.
 - Product-visible readiness remediation hints must be redacted and action-oriented.
 - Manifest evolution changes the accepted current schema explicitly. Unknown fields and unsupported required features fail closed; no older-shape compatibility path is required.
@@ -538,11 +544,13 @@ Rejected. Workspace binding and extension of referenced Server supply is accepte
 
 - Policy-reviewed workspace-local agent definitions.
 - Full readiness diagnostics with user-actionable remediation hints.
-- Catalog-backed Skill and MCP resolution outside static in-code fixtures.
-- Non-authorizing future review of generated native files and durable receipts if a concrete runtime later proves the current argv, environment, and state-path contract insufficient.
+- Version ranges and additional native resource kinds beyond the accepted Skill/MCP package target.
 
 ## Links
 
+- `docs/specs/20260711-skill_catalog_versioning_pinning.md`
+- `docs/specs/20260907-mcp_catalog_management.md`
+- `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
 - `docs/core/agent-capability.md`

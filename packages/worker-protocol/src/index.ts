@@ -633,7 +633,9 @@ export function workerSessionInputPaths(agentSessionId: string | undefined) {
     root,
     packagePath: `${root}/config/package.json`,
     contextRoot: `${root}/context`,
+    supplyRoot: `${root}/supply/inputs`,
     packageRelativePath: `${agentSessionId}/config/package.json`,
     contextRelativePath: `${agentSessionId}/context`,
+    supplyRelativePath: `${agentSessionId}/supply/inputs`,
   };
 }

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
@@ -11,7 +13,9 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ResolvedWorkspaceMcpServer } from '@openkit/config-schema';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
+import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
@@ -478,6 +482,11 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     let transport: StdioServerTransport | StreamableHTTPClientTransport;
     let processGroupId: number | null = null;
     if (input.server.transport.kind === 'stdio') {
+      const pluginEnvironment = pluginOwnedEnvironment(this.coreDb, input);
+      if (pluginEnvironment.PLUGIN_DATA) {
+        mkdirSync(pluginEnvironment.PLUGIN_DATA, { recursive: true });
+      }
+      const cwdSource = input.server.transport.cwd ?? pluginEnvironment.PLUGIN_ROOT;
       const child = spawn(
         process.execPath,
         [
@@ -485,11 +494,24 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           MCP_STDIO_SUPERVISOR,
           String(process.pid),
           input.server.transport.command,
-          ...input.server.transport.args,
+          ...input.server.transport.args.map((argument) =>
+            expandPluginPlaceholders(argument, pluginEnvironment)
+          ),
         ],
         {
           detached: true,
-          env: { ...getDefaultEnvironment(), ...input.credentials?.environment },
+          env: {
+            ...getDefaultEnvironment(),
+            ...Object.fromEntries(
+              Object.entries(input.server.transport.environmentValues).map(([name, value]) => [
+                name,
+                expandPluginPlaceholders(value, pluginEnvironment),
+              ])
+            ),
+            ...pluginEnvironment,
+            ...input.credentials?.environment,
+          },
+          ...(cwdSource ? { cwd: expandPluginPlaceholders(cwdSource, pluginEnvironment) } : {}),
           stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
         }
       );
@@ -516,7 +538,12 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     } else {
       transport = new StreamableHTTPClientTransport(httpEndpoint(input), {
         fetch: boundedMcpFetch(input.server.timeoutMs, hasCredentials(input)),
-        requestInit: input.credentials?.headers ? { headers: input.credentials.headers } : {},
+        requestInit: {
+          headers: {
+            ...(input.server.transport.kind === 'http' ? input.server.transport.headers : {}),
+            ...input.credentials?.headers,
+          },
+        },
       });
     }
     // The SDK's optional sessionId declaration conflicts with exactOptionalPropertyTypes.
@@ -820,13 +847,16 @@ class McpHttpResponseTooLargeError extends Error {
 /** Applies the response byte bound and catalog timeout to SDK HTTP effects. */
 function boundedMcpFetch(timeoutMs: number, credentialsMaterialized: boolean): typeof fetch {
   return async (request, init) => {
+    const nextInit = { ...init, redirect: 'error' as RequestRedirect };
+    const target =
+      request instanceof Request ? new Request(request, { redirect: 'error' }) : request;
     if (init?.method !== 'DELETE') {
-      const response = await fetch(request, init);
+      const response = await fetch(target, nextInit);
       return boundMcpHttpResponse(response, credentialsMaterialized);
     }
     const signals = [AbortSignal.timeout(timeoutMs)];
     if (init?.signal) signals.push(init.signal);
-    return fetch(request, { ...init, signal: AbortSignal.any(signals) });
+    return fetch(target, { ...nextInit, signal: AbortSignal.any(signals) });
   };
 }
 
@@ -882,6 +912,54 @@ function containsCredential(result: unknown, credentials?: WorkerMcpGatewayCrede
     }
   }
   return false;
+}
+
+/** Core-owned plugin paths injected after configured env and before Vault. */
+function pluginOwnedEnvironment(
+  coreDb: CoreDb | undefined,
+  input: WorkerMcpGatewayServerInput
+): Record<string, string> {
+  if (!coreDb) return {};
+  const catalog = loadWorkspaceResourceCatalog(coreDb.dataRoot, input.workspaceId);
+  const binding = catalog.mcp.bindings.find((item) => item.entryId === input.server.id);
+  if (!binding) return {};
+  const layout = ensureWorkspaceLayout(coreDb.dataRoot, input.workspaceId);
+  const environment: Record<string, string> = {
+    PLUGIN_DATA: join(layout.catalogMcpData, binding.packageDataKey),
+  };
+  const version = catalog.mcp.versions.find(
+    (item) =>
+      item.entryId === input.server.id &&
+      item.digest ===
+        catalog.mcp.entries.find((entry) => entry.id === input.server.id)?.currentVersionDigest
+  );
+  if (version?.pluginVersionDigest) {
+    const plugin = catalog.plugins.versions.find(
+      (item) => item.digest === version.pluginVersionDigest
+    );
+    if (plugin) {
+      environment.PLUGIN_ROOT = join(
+        layout.catalogPluginSnapshots,
+        plugin.entryId,
+        plugin.digest.slice('sha256:'.length)
+      );
+    }
+  }
+  return environment;
+}
+
+/** Expands `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` once in stdio args, env values, and cwd. */
+function expandPluginPlaceholders(
+  value: string,
+  environment: Readonly<Record<string, string>>
+): string {
+  let expanded = value;
+  for (const name of ['PLUGIN_ROOT', 'PLUGIN_DATA'] as const) {
+    const replacement = environment[name];
+    if (!replacement) continue;
+    expanded = expanded.replaceAll(`\${${name}}`, replacement);
+  }
+  return expanded;
 }
 
 /** Returns true when one server operation carries gateway-only credential material. */

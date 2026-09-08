@@ -97,7 +97,7 @@ and are not listed here.
 - `docs/specs/20260710-web_ui_rebuild_stack.md` — Accepted, Partial — The implementation stack for the rebuilt OpenKit Web UI: UI framework, client state, routing, server-state access pattern, styling engine, design-system source…
 - `docs/specs/20260711-evaluation_harness_design.md` — Draft, Not Started — The activation gates and mandatory safety predicates that any future OpenKit Evaluation Harness proposal must satisfy before it can become an accepted contract.
 - `docs/specs/20260711-scheduler_recurring_event_triggers.md` — Draft, Not Started — The entry conditions and minimum safety boundaries for any future recurring or event-triggered worker admission capability.
-- `docs/specs/20260711-skill_catalog_versioning_pinning.md` — Draft, Not Started — The entry conditions and minimum integrity boundaries for a possible future worker Skill catalog.
+- `docs/specs/20260711-skill_catalog_versioning_pinning.md` — Accepted, Partial — Independent worker Skill identity, immutable content versions, provenance, candidate submission, exact selection, promotion, pinning, rollback, and removal.
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md` — Accepted, Partial — The boundary between one NanoCore-owned worker execution and runtime-internal sub-agents created by Codex or another Worker Agent runtime.
 - `docs/specs/20260713-openkit_agent_skill_interface.md` — Accepted, Partial — This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill, its progressively disclosed reference material, its bundle…
 - `docs/specs/20260713-work_resource_interaction_model.md` — Accepted, Partial — This spec owns the implementation-facing interaction model that lets users express precise intent against work resources without requiring every interaction to…
@@ -119,6 +119,8 @@ and are not listed here.
 - `docs/specs/20260829-release_management.md` — Accepted, Partial — The product-wide release identity and release-channel policy.
 - `docs/specs/20260831-unified_conversation_composer.md` — Accepted, Implemented — This specification owns the Workspace-scoped conversation-target catalog, the shared user-observable Composer interaction contract, and the one structured conv…
 - `docs/specs/20260902-agent_runtime_context_compaction.md` — Accepted, Not Started — This specification owns the Server-scoped active-context policy for logical models, the OpenKit automatic runtime-compaction lifecycle, the Responses-compatibl…
+- `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md` — Accepted, Partial — Agent Plugins as OpenKit's public package and declaration format for standard Skills and MCP components.
+- `docs/specs/20260907-mcp_catalog_management.md` — Accepted, Partial — Independent MCP catalog configuration versions, source provenance, current selection, Workspace bindings, and create/update/remove operations.
 
 ## Terminal Specifications
 

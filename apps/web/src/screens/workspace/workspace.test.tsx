@@ -676,6 +676,7 @@ function makeClient(
     agents?: MethodOverrides;
     actionCenter?: MethodOverrides;
     repositories?: MethodOverrides;
+    catalog?: MethodOverrides;
   } = {}
 ): CoreClient {
   return {
@@ -790,6 +791,21 @@ function makeClient(
       executeGitPush: vi.fn().mockResolvedValue(PUSH_RECORD),
       setDefault: vi.fn(),
       ...overrides.repositories,
+    },
+    catalog: {
+      get: vi
+        .fn()
+        .mockResolvedValue({ revision: 1, candidates: [], skills: [], mcp: [], plugins: [] }),
+      importSkill: vi.fn(),
+      setSkillPin: vi.fn(),
+      submitSkillCandidate: vi.fn(),
+      decideSkillCandidate: vi.fn(),
+      selectSkillDefault: vi.fn(),
+      createMcpConfig: vi.fn(),
+      selectMcpVersion: vi.fn(),
+      updateMcpBinding: vi.fn(),
+      importPlugin: vi.fn(),
+      ...overrides.catalog,
     },
   } as unknown as CoreClient;
 }
@@ -1328,7 +1344,177 @@ describe('Agents (board 08)', () => {
     renderApp('/agents', makeClient());
     expect(await screen.findByText(/No agents yet/i)).toBeInTheDocument();
   });
+});
 
+describe('Catalog', () => {
+  it('lists Skill, MCP, and plugin empty states from the selected Workspace catalog', async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValue({ revision: 2, candidates: [], skills: [], mcp: [], plugins: [] });
+    renderApp('/catalog', makeClient({ catalog: { get } }));
+    expect(await screen.findByText('No skills yet')).toBeInTheDocument();
+    expect(screen.getByText('No MCP servers')).toBeInTheDocument();
+    expect(screen.getByText('No plugins')).toBeInTheDocument();
+    await waitFor(() => expect(get).toHaveBeenCalledWith(WORKSPACE_A.id));
+  });
+
+  it('imports a SKILL.md file through the catalog client', async () => {
+    const user = userEvent.setup();
+    const importSkill = vi.fn().mockResolvedValue({
+      entry: {
+        availability: 'available',
+        currentDigest: 'sha256:' + 'a'.repeat(64),
+        description: null,
+        displayName: 'Repo guidelines',
+        id: 'repo-guidelines',
+      },
+      revision: 3,
+      version: {
+        createdAt: TIMESTAMP_NEW,
+        digest: 'sha256:' + 'a'.repeat(64),
+        digestFormat: 'openkit-tree-v1',
+        entryId: 'repo-guidelines',
+        inventory: [],
+        publisherVersion: null,
+      },
+    });
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({ revision: 2, candidates: [], skills: [], mcp: [], plugins: [] })
+      .mockResolvedValue({
+        revision: 3,
+        candidates: [],
+        skills: [
+          {
+            availability: 'available',
+            currentDigest: 'sha256:' + 'a'.repeat(64),
+            description: null,
+            displayName: 'Repo guidelines',
+            id: 'repo-guidelines',
+            pinDigest: null,
+            versions: [{ createdAt: TIMESTAMP_NEW, digest: 'sha256:' + 'a'.repeat(64) }],
+          },
+        ],
+        mcp: [],
+        plugins: [],
+      });
+    renderApp('/catalog', makeClient({ catalog: { get, importSkill } }));
+    expect(await screen.findByText('Import SKILL.md')).toBeInTheDocument();
+    const file = new File(['# Hello\n'], 'SKILL.md', { type: 'text/markdown' });
+    await user.upload(screen.getByLabelText('Skill markdown file'), file);
+    await waitFor(() => expect(importSkill).toHaveBeenCalled());
+    expect(importSkill.mock.calls[0]?.[0]).toBe(WORKSPACE_A.id);
+    expect(importSkill.mock.calls[0]?.[1]).toMatchObject({
+      activate: true,
+      displayName: 'Repo guidelines',
+      expectedRevision: 2,
+      tree: [
+        expect.objectContaining({
+          contentBase64: btoa('# Hello\n'),
+          kind: 'file',
+          path: 'SKILL.md',
+        }),
+      ],
+    });
+  });
+
+  it('submits a Skill candidate from an existing catalog entry', async () => {
+    const user = userEvent.setup();
+    const digest = 'sha256:' + 'a'.repeat(64);
+    const submitSkillCandidate = vi.fn().mockResolvedValue({
+      candidate: {
+        baseDigest: digest,
+        candidateDigest: 'sha256:' + 'b'.repeat(64),
+        createdAt: TIMESTAMP_NEW,
+        disposition: 'proposed',
+        entryId: 'repo-guidelines',
+        id: 'cand_demo',
+        summary: 'Clarify the rollback section.',
+      },
+      revision: 4,
+    });
+    const get = vi.fn().mockResolvedValue({
+      revision: 3,
+      candidates: [],
+      skills: [
+        {
+          availability: 'available',
+          currentDigest: digest,
+          description: null,
+          displayName: 'Repo guidelines',
+          id: 'repo-guidelines',
+          pinDigest: null,
+          versions: [{ createdAt: TIMESTAMP_NEW, digest }],
+        },
+      ],
+      mcp: [],
+      plugins: [],
+    });
+    renderApp('/catalog', makeClient({ catalog: { get, submitSkillCandidate } }));
+    expect(await screen.findByRole('button', { name: 'Propose update' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Propose update' }));
+    const file = new File(['# v2\n'], 'SKILL.md', { type: 'text/markdown' });
+    await user.upload(screen.getByLabelText('Skill candidate markdown file'), file);
+    await waitFor(() => expect(submitSkillCandidate).toHaveBeenCalled());
+    expect(submitSkillCandidate.mock.calls[0]?.[1]).toBe('repo-guidelines');
+    expect(submitSkillCandidate.mock.calls[0]?.[2]).toMatchObject({
+      baseDigest: digest,
+      summary: 'Clarify the rollback section.',
+    });
+  });
+
+  it('disables catalog writes while disconnected', async () => {
+    const client = makeClient({
+      core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
+    });
+    renderApp('/catalog', client);
+    expect(await screen.findByRole('button', { name: 'Import SKILL.md' })).toBeDisabled();
+    expect(await screen.findByText('Catalog may be stale')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add inactive configuration' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Import plugin package' })).toBeDisabled();
+  });
+
+  it('preserves MCP deny and approval policy when toggling enablement', async () => {
+    const user = userEvent.setup();
+    const digest = 'sha256:' + 'c'.repeat(64);
+    const updateMcpBinding = vi.fn().mockResolvedValue({ revision: 4 });
+    const get = vi.fn().mockResolvedValue({
+      revision: 3,
+      candidates: [],
+      skills: [],
+      mcp: [
+        {
+          availability: 'available',
+          allowedTools: ['echo'],
+          approvalRequiredTools: ['danger'],
+          bindingRevision: 2,
+          currentVersionDigest: digest,
+          deniedTools: ['secret'],
+          displayName: 'Echo',
+          enabled: false,
+          id: 'echo',
+          schemaPolicy: 'tracking',
+          timeoutMs: 60_000,
+          transportKind: 'stdio',
+          versions: [{ createdAt: TIMESTAMP_NEW, digest, transportKind: 'stdio' }],
+        },
+      ],
+      plugins: [],
+    });
+    renderApp('/catalog', makeClient({ catalog: { get, updateMcpBinding } }));
+    expect(await screen.findByRole('button', { name: 'Enable' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(updateMcpBinding).toHaveBeenCalled());
+    expect(updateMcpBinding.mock.calls[0]?.[2]).toMatchObject({
+      allowedTools: ['echo'],
+      approvalRequiredTools: ['danger'],
+      deniedTools: ['secret'],
+      enabled: true,
+    });
+  });
+});
+
+describe('Agents roster continued', () => {
   it('queries only the selected Workspace resources and does not project another Workspace roster', async () => {
     const user = userEvent.setup();
     const getWorkspaceResources = vi.fn().mockImplementation((workspaceId: string) =>

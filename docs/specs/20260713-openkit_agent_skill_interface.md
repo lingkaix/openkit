@@ -1,6 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
+updated: 2026-09-08
 ---
 # OpenKit Agent Skill Interface
 
@@ -14,7 +15,7 @@ It owns the Skill audience and trigger boundary, Skill package shape, progressiv
 
 This spec does not own NanoCore workflow state, App API routes, Core protocol records, worker execution, policy decisions, approvals, idempotency, audit storage, vault internals, runtime supervision, Web UI behavior, worker-side MCP capability supply, or private administration surfaces.
 
-It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_catalog_versioning_pinning.md`, Agent Environment Package Skill supply, public Skill marketplace design, generic shell access, arbitrary HTTP access, or a repository-developer workflow.
+It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_catalog_versioning_pinning.md`, MCP catalog management in `docs/specs/20260907-mcp_catalog_management.md`, Agent Plugin packaging and worker supply in `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`, Agent Environment Package Skill supply, public Skill marketplace design, generic shell access, arbitrary HTTP access, or a repository-developer workflow.
 
 It does not own product-wide release identity, authorization, channels, retry, or completion, which are owned by `docs/specs/20260829-release_management.md`.
 
@@ -75,7 +76,7 @@ The accepted change removes the user-facing `@openkit/mcp` package and the four 
 - Do not move workflow decisions or durable state into Skill text or CLI code.
 - Do not require a human-friendly interactive CLI in the first implementation; the CLI is agent-first and structured-output-only.
 - Do not add an interactive shell, daemon, background service, subscription transport, or streaming CLI mode; each invocation is bounded, and long-running work is followed through durable NanoCore reads.
-- Do not build a public Skill registry, marketplace, plugin system, or cross-Skill dependency manager.
+- Do not build a CLI-owned Skill registry, marketplace, plugin execution framework, or cross-Skill dependency manager. Public NanoCore Skill, MCP, and Agent Plugin catalog operations remain ordinary one-to-one operation projections under their owning contracts.
 - Do not preserve former MCP tool names, resources, prompts, package entrypoints, configuration aliases, or legacy Skill names as compatibility contracts.
 - Do not alter worker-side MCP tool supply or the Agent Capability gateway.
 
@@ -227,7 +228,7 @@ The operation catalog must not duplicate server authorization or workflow transi
 
 One catalog operation maps to one public Core Client operation plus any required local credential-store handling. The CLI must not compose multi-step OpenKit workflows internally; the Skill-guided agent performs that composition through separate bounded calls.
 
-The first implementation uses one cohesive literal inventory and native lookup. It must not introduce a registration framework, plugin system, generated client, second SDK, or catalog-specific workflow layer.
+The first implementation uses one cohesive literal inventory and native lookup. It must not introduce a CLI registration framework, CLI plugin system, generated client, second SDK, or catalog-specific workflow layer. Managing a NanoCore Agent Plugin through a public operation does not install executable extensions into the CLI or duplicate the product catalog.
 
 ### Public capability coverage
 

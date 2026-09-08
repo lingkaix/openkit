@@ -1,13 +1,14 @@
 ---
 status: Accepted
 implementation: Partial
+updated: 2026-09-08
 ---
 # Worker MCP Tool Supply
 
 ## Owns
 
 - The `mcp.*` capability route family on worker-local `capability.local`, projected through `/capabilities/mcp/*`: `mcp.list_servers`, `mcp.list_tools`, `mcp.call_tool`.
-- The workspace MCP server catalog record: named server entries, transports, credential references, and tool allow rules.
+- The effective Workspace MCP server catalog projection: named server entries, transports, credential references, tool rules, and current digest validation for Gateway execution.
 - NanoCore ownership of MCP server lifecycle: spawn, connect, supervise, health, teardown.
 - Gateway-side credential injection binding for MCP server calls.
 - Tool schema retention: `McpToolSchemaSnapshot` records for replay and audit interpretability.
@@ -16,6 +17,8 @@ implementation: Partial
 - Usage and audit emission for MCP capability calls.
 
 ## Does Not Own
+
+- Immutable MCP configuration history, current-version selection, catalog mutations, and binding ownership, which belong to `docs/specs/20260907-mcp_catalog_management.md`; public packaging and grouped installation belong to `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
 
 - The worker capability plane itself: routing, envelopes, lineage, and `CapabilityCall` semantics. `docs/specs/20260703-worker_agent_capability.md` owns those; this spec owns its selected `mcp.*` route family.
 - The end-user `openkit` Skill and bundled CLI. `docs/specs/20260713-openkit_agent_skill_interface.md` owns that surface. The direction matters: that spec is an external coordinator driving NanoCore through public operations, while this spec is NanoCore supplying MCP tools to worker agents. They share no transport contract, code path, record, or policy ownership.
@@ -52,7 +55,7 @@ In the accepted target, MCP servers are declared once in a workspace-scoped cata
 
 - Do not build a general third-party API proxy or network egress plane; those stay roadmap-deferred.
 - Do not sandbox MCP server processes in this slice; server trust is deployment configuration.
-- Do not expose MCP server internals, endpoints, or native errors to product surfaces or workers.
+- Do not expose MCP server internals, endpoints, or native errors to workers or ordinary product summaries. Deployment-admin raw configuration inspection remains a restricted management operation under the MCP catalog owner.
 - Do not stream partial tool results in v1; calls are request/response with bounded payloads.
 - Do not use `memory` vocabulary anywhere; these routes sit beside the future `knowledge.*` routes after the rename.
 
@@ -75,12 +78,12 @@ The workspace data source catalog (`docs/specs/20260704-workspace_data_source_ca
 
 ### MCP server catalog
 
-An `McpServerCatalogEntry` is a workspace-owned record declaring one MCP server. It MUST carry:
+An `McpServerCatalogEntry` is the resolved Workspace-scoped projection of one exact current `McpConfigVersion` and its authorized Workspace binding. Source versions and bindings have one canonical catalog owner; this effective entry is not a separately editable copy. Its deterministic `catalogDigest` binds the effective configuration and binding, while configuration digest, tool-schema snapshot digest, and server-reported software version remain distinct. It MUST carry:
 
 - entry name: a workspace-unique, lowercase kebab-case identifier; the only handle manifests may use
 - transport: `stdio` | `http`
-- for `stdio`: launch command, arguments, environment template (with vault reference placeholders, never secret values)
-- for `http`: endpoint URL and auth binding (vault reference plus injection shape: header or query)
+- for `stdio`: launch command and separate arguments, ordinary non-secret environment, optional verified package-root and package-relative working directory, and Vault injection declarations without secret values
+- for `http`: endpoint URL, ordinary non-secret fixed headers, and auth binding (Vault reference plus injection shape: header or query)
 - credential vault references (zero or more)
 - tool rules: allowlist and/or denylist of tool names, and per-tool `approval-required` marks
 - enablement flag and scope: `workspace` or a read-only projection of a `server` shared entry
@@ -90,7 +93,9 @@ Rules:
 
 - Endpoints, launch commands, and credentials MUST NOT appear inline in agent manifests; manifests reference entries by name only, following the data source catalog pattern.
 - Server-scoped shared entries are deployment configuration projected into workspaces read-only; a workspace MAY disable but not edit them.
-- Catalog entries carry no secret material; credential slots are vault references per `docs/core/vault.md`.
+- Catalog entries carry no secret material; credential slots are Vault references per `docs/core/vault.md`. Vault injection wins over colliding ordinary package headers or environment, and reserved Integration variables cannot be overridden.
+- Imported stdio always uses its exact PluginVersion-owned verified source root, with default working directory, reserved subprocess variables, and restricted placeholder expansion defined by the MCP catalog owner. Mutable package data uses the current MCP binding key. Neither is worker supply or a caller-selected host directory.
+- Every call rechecks current effective selection, binding, authorization, and digest. A changed or removed entry rejects stale AEP supply before upstream contact; an exact historic setup constraint does not create a parallel server version or restore old grants.
 
 ### Routes On `capability.local`
 
@@ -112,8 +117,8 @@ Rules:
 ### Server lifecycle
 
 - NanoCore owns the lifecycle. States: `inactive`, `starting`, `ready`, `degraded`, `failed`. Transitions are recorded as operational diagnostics; health checks run while any live session has the entry enabled.
-- `stdio` servers are spawned and supervised by NanoCore on demand (first call or session start, an implementation choice) and reaped when idle past a bound. Spawned server processes run in NanoCore's host context in this slice; sandboxing them is deferred, and server trust is therefore deployment configuration — the catalog is writable only through governed workspace configuration surfaces.
-- `http` servers are connected from NanoCore with pooled clients.
+- `stdio` servers are spawned and supervised by NanoCore on demand (first call or session start, an implementation choice) and reaped when idle past a bound. Spawned server processes run in NanoCore's host context in this slice; sandboxing them is deferred, and server trust is therefore deployment configuration. Import is inactive and has no spawn or discovery effect. Activation of a new or changed stdio command or package executable requires deployment-admin authority, separately from ordinary Workspace catalog management.
+- `http` servers are connected from NanoCore with pooled clients. The actual fetch boundary rejects every redirect before following it, including same-origin redirects; no fixed header, Vault authentication, or request body reaches a redirect target. Endpoint changes require an explicit authorized configuration revision, without inferred credential forwarding or alternate transport.
 - A `failed` or unreachable server yields typed `mcp-server-unavailable` errors on calls, never hangs; repeated failures mark the entry `degraded` in `mcp.list_servers` output so workers can adapt.
 - The current release permits one active worker slot. One catalog entry may be reused across successive AgentSessions, but this specification does not authorize concurrent worker AgentSessions, a multi-agent harness, or fleet behavior. Per-AgentSession server instances remain a deferred lifecycle option for stateful or isolation-sensitive servers.
 
@@ -160,6 +165,8 @@ The executable plane implements exactly the three selected-MCP routes. NanoCore 
 
 NanoCore loads the strict Workspace-owned `mcp-servers.jsonc` catalog through the deployment-admin runtime-config surface, selects it by the actual dequeued Turn's Workspace at scheduler dispatch, and projects only selected server ids, catalog digests, tool rules, approval marks, and schema policy into AEP supply. Selected supply enables only the three named routes; no selected supply keeps the plane disabled. Focused route, policy, schema, usage, transport, and adapter checks cover the implementation. The built NanoCore L5 smoke starts a disposable public Task, real stdio MCP child, native NanoHost carriage, and official SDK client and proves durable call, schema, policy, usage, audit, Item, backend, lease, process-reaping, listener-close, and temporary-root cleanup outcomes. Release closure separately consumes the admitted real-Codex Web L6 story and its retained multi-run evidence.
 
+Immutable MCP configuration history, current-version/binding resolution, ordinary package environment/working-directory/header fields, package-root materialization, and redirect rejection at the actual HTTP fetch boundary are accepted targets not implemented by the current mutable catalog path. Their management and schema cutover is owned by `docs/specs/20260907-mcp_catalog_management.md`; existing Gateway execution remains implemented and is not demoted to Draft.
+
 ## Alternatives Considered
 
 - Direct worker-to-MCP-server connections with credentials injected into the sandbox. Rejected: it bypasses policy and audit, puts credentials within sandbox reach (exactly what the vault boundary exists to prevent), and makes every backend responsible for MCP transport.
@@ -183,6 +190,7 @@ No compatibility path exists. The implementation follows the accepted order: fai
 Mapped to `docs/specs/20260529-test_strategy.md`, using a deterministic stub MCP server harness:
 
 - L0: schema-drift checks for catalog entry, schema snapshot, and route payload shapes; lint that no `memory` vocabulary and no MCP-native error strings appear in public schemas.
+- Catalog extension checks prove inactive import performs no contact, ordinary Workspace authority cannot activate changed host-executed stdio, non-secret package fields preserve Vault precedence, changed effective versions reject stale AEPs, and HTTP redirects contact neither same-origin nor cross-origin targets and leak no canary credentials.
 - L1: unit tests for argument validation against snapshots, pin-policy drift behavior, error normalization mapping, redaction filters, idle reaping and teardown-on-revocation triggers.
 - L2: contract tests on the capability plane: full lineage on every call record; schema snapshot id stamped; usage rows validate against `UsageRecordSchema` with `category: "tool"` and `unit: "tool_calls"`; denial paths yield only typed codes; canary credential values planted in server environment never appear in any worker-visible payload.
 - L3: NanoCore black-box tests: end-to-end call through a spawned stub server; server crash mid-call fails typed without hanging the turn; grant revocation tears down the spawned server and the next call fails typed; an approval-required first call creates the exact Gate and denied `CapabilityCall`, makes no upstream contact, durably enqueues one non-redelivered `purpose="human-gate"` stop, rejects another same-Turn capability admission, settles the Worker as Gate-owned `blocked/ask_user` only after cleanup and handoff, and lets a different successor AgentSession in a new Turn claim one exact granted effect without an approval id; neither a second call nor changed arguments reuse it; oversized result fails typed; `pinned` entry fails on drifted stub schema until re-pinned.
@@ -193,7 +201,7 @@ Acceptance: no path exposes credentials or endpoints to workers; every call is a
 
 ## Risks & Mitigations
 
-- Risk: trusted MCP server processes become a privilege-escalation vector. Mitigation: catalog writes are governed workspace configuration; server sandboxing is explicit deferred work with the trust posture documented until then.
+- Risk: trusted MCP server processes become a privilege-escalation vector. Mitigation: import is inactive, Workspace catalog writes do not grant host execution, and new or changed stdio activation requires deployment-admin authority; server sandboxing remains explicit deferred work.
 - Risk: schema snapshots bloat storage for churning servers. Mitigation: snapshots are content-addressed by digest; identical schemas dedupe; `tracking` entries cap retained snapshots.
 - Risk: shared server state leaks across sessions. Mitigation: the contract states no per-session isolation guarantee; stateful entries are documented, and the per-session lifecycle option is reserved.
 - Risk: this plane drifts into a general API proxy by accretion. Mitigation: routes are MCP-protocol-only by contract; third-party auth proxying stays roadmap-gated.
@@ -211,6 +219,9 @@ Previously open questions are resolved by accepted V1 defaults: `stdio` MCP serv
 - Rate limits per server/tool once the capability catalog and budget model exist.
 
 ## Links
+
+- `docs/specs/20260907-mcp_catalog_management.md`
+- `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
 
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`

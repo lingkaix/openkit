@@ -1655,6 +1655,7 @@ describe('createCoreClient', () => {
     expect(client.capabilities).toBeDefined();
     expect(client.agents).toBeDefined();
     expect(client.actionCenter).toBeDefined();
+    expect(client.catalog).toBeDefined();
     expect(client.repositories).toBeDefined();
     expect('updateArtifactMetadata' in client.core).toBe(false);
     expect(client.app.listArtifactReviews).toBeTypeOf('function');
