@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 const MCP_SERVER_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const MCP_SLOT_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -95,7 +96,7 @@ export const WorkspaceMcpHttpTransportSchema = z
   })
   .strict();
 
-/** Workspace-owned MCP server entry. */
+/** Workspace-owned MCP server entry, including optional plugin package-root identity. */
 export const WorkspaceMcpServerSchema = z
   .object({
     id: WorkspaceMcpServerIdSchema,
@@ -111,6 +112,7 @@ export const WorkspaceMcpServerSchema = z
     timeoutMs: z.number().int().positive().max(2_147_483_647).default(60_000),
     schemaPolicy: z.enum(['pinned', 'tracking']),
     pinnedSchemaSnapshotId: z.string().min(1).nullable().default(null),
+    packageRootDigest: z.string().regex(SHA256_DIGEST).nullable().default(null),
   })
   .strict()
   .superRefine((server, context) => {
@@ -258,7 +260,7 @@ export function parseWorkspaceMcpServerCatalog(input: unknown): WorkspaceMcpServ
   return WorkspaceMcpServerCatalogSchema.parse(input);
 }
 
-/** Resolves one enabled MCP server and stamps its stable catalog-entry digest. */
+/** Resolves one enabled MCP server and stamps its stable catalog-entry digest, including transport, binding, and package-root identity. */
 export function resolveWorkspaceMcpServer(input: {
   readonly catalog: WorkspaceMcpServerCatalog;
   readonly serverId: string;

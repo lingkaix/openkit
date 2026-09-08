@@ -503,10 +503,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           env: {
             ...getDefaultEnvironment(),
             ...Object.fromEntries(
-              Object.entries(input.server.transport.environmentValues).map(([name, value]) => [
-                name,
-                expandPluginPlaceholders(value, pluginEnvironment),
-              ])
+              Object.entries(input.server.transport.environmentValues ?? {}).map(
+                ([name, value]) => [name, expandPluginPlaceholders(value, pluginEnvironment)]
+              )
             ),
             ...pluginEnvironment,
             ...input.credentials?.environment,
@@ -914,7 +913,7 @@ function containsCredential(result: unknown, credentials?: WorkerMcpGatewayCrede
   return false;
 }
 
-/** Core-owned plugin paths injected after configured env and before Vault. */
+/** Core-owned plugin paths injected after configured env and before Vault, pinned to the resolved package-root digest. */
 function pluginOwnedEnvironment(
   coreDb: CoreDb | undefined,
   input: WorkerMcpGatewayServerInput
@@ -927,15 +926,9 @@ function pluginOwnedEnvironment(
   const environment: Record<string, string> = {
     PLUGIN_DATA: join(layout.catalogMcpData, binding.packageDataKey),
   };
-  const version = catalog.mcp.versions.find(
-    (item) =>
-      item.entryId === input.server.id &&
-      item.digest ===
-        catalog.mcp.entries.find((entry) => entry.id === input.server.id)?.currentVersionDigest
-  );
-  if (version?.pluginVersionDigest) {
+  if (input.server.packageRootDigest) {
     const plugin = catalog.plugins.versions.find(
-      (item) => item.digest === version.pluginVersionDigest
+      (item) => item.digest === input.server.packageRootDigest
     );
     if (plugin) {
       environment.PLUGIN_ROOT = join(

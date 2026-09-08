@@ -325,4 +325,46 @@ describe('workspace MCP server catalog', () => {
     expect(left).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(digestMcpConfig(declaration, 'sha256:' + 'a'.repeat(64))).not.toBe(left);
   });
+
+  it('includes packageRootDigest in the effective catalogDigest', () => {
+    const server = {
+      allowedTools: ['echo'],
+      approvalRequiredTools: [],
+      credentialBindings: [],
+      deniedTools: [],
+      enabled: true,
+      id: 'echo',
+      pinnedSchemaSnapshotId: null,
+      schemaPolicy: 'tracking' as const,
+      timeoutMs: 60_000,
+      transport: {
+        args: [],
+        command: 'node',
+        cwd: null,
+        environment: {},
+        environmentValues: {},
+        kind: 'stdio' as const,
+      },
+    };
+    const digestA = `sha256:${'a'.repeat(64)}`;
+    const digestB = `sha256:${'b'.repeat(64)}`;
+    const catalogA = parseWorkspaceMcpServerCatalog({
+      schemaVersion: 1,
+      servers: [{ ...server, packageRootDigest: digestA }],
+    });
+    const catalogB = parseWorkspaceMcpServerCatalog({
+      schemaVersion: 1,
+      servers: [{ ...server, packageRootDigest: digestB }],
+    });
+    const catalogNone = parseWorkspaceMcpServerCatalog({ schemaVersion: 1, servers: [server] });
+    const digestNone = resolveWorkspaceMcpServer({
+      catalog: catalogNone,
+      serverId: 'echo',
+    });
+    const digestFromA = resolveWorkspaceMcpServer({ catalog: catalogA, serverId: 'echo' });
+    const digestFromB = resolveWorkspaceMcpServer({ catalog: catalogB, serverId: 'echo' });
+    expect(digestNone.packageRootDigest).toBeNull();
+    expect(digestFromA.catalogDigest).not.toBe(digestFromB.catalogDigest);
+    expect(digestFromA.catalogDigest).not.toBe(digestNone.catalogDigest);
+  });
 });

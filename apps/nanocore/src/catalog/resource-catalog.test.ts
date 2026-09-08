@@ -1,6 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import {
   projectWorkspaceCatalogExport,
@@ -30,6 +40,45 @@ function skillTree(body = '# Hello\n'): Array<{
   return [
     { contentBase64: Buffer.from(body, 'utf8').toString('base64'), kind: 'file', path: 'SKILL.md' },
   ];
+}
+
+function writeStdioPluginPackage(packageRoot: string, scriptBody: string): void {
+  mkdirSync(join(packageRoot, 'skills', 'alpha'), { recursive: true });
+  mkdirSync(join(packageRoot, 'scripts'), { recursive: true });
+  writeFileSync(
+    join(packageRoot, 'plugin.json'),
+    JSON.stringify({ name: 'demo-pack', version: '1.0.0' })
+  );
+  writeFileSync(join(packageRoot, 'skills', 'alpha', 'SKILL.md'), '# Alpha\n');
+  writeFileSync(join(packageRoot, 'scripts', 'run.sh'), scriptBody);
+  writeFileSync(
+    join(packageRoot, 'mcp.json'),
+    JSON.stringify({
+      mcpServers: { echo: { args: ['scripts/run.sh'], command: 'node' } },
+    })
+  );
+}
+
+function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolean {
+  const root = join(dataRoot, 'workspaces', workspaceId, 'catalog');
+  if (!existsSync(root)) {
+    return false;
+  }
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) continue;
+    for (const name of readdirSync(current)) {
+      if (name.endsWith('.staging')) {
+        return true;
+      }
+      const path = join(current, name);
+      if (statSync(path).isDirectory()) {
+        pending.push(path);
+      }
+    }
+  }
+  return false;
 }
 
 describe('workspace resource catalog', () => {
@@ -381,6 +430,167 @@ describe('workspace resource catalog', () => {
           workspaceId: 'ws_demo',
         })
       ).toThrow(/raw-secret/);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('changes catalogDigest when plugin scripts change but MCP command arguments stay the same', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-plugin-digest-'));
+    const packageRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-digest-'));
+    try {
+      writeStdioPluginPackage(packageRoot, 'echo v1\n');
+      const first = importWorkspacePlugin({
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        install: true,
+        producer: { id: 'user_local', kind: 'user' },
+        treeRoot: packageRoot,
+        workspaceId: 'ws_demo',
+      });
+      const firstVersion = first.catalog.mcp.versions.find(
+        (item) => item.packageRootDigest === first.version.digest
+      );
+      if (!firstVersion) {
+        throw new Error('expected first plugin MCP version');
+      }
+      const selected = selectWorkspaceMcpVersion({
+        dataRoot,
+        digest: firstVersion.digest,
+        entryId: 'echo',
+        expectedRevision: first.catalog.revision,
+        workspaceId: 'ws_demo',
+      });
+      const bound = updateWorkspaceMcpBinding({
+        binding: {
+          allowedTools: ['echo'],
+          approvalRequiredTools: [],
+          credentialBindings: [],
+          deniedTools: [],
+          enabled: true,
+          revision: 0,
+          schemaPolicy: 'tracking',
+          timeoutMs: 60_000,
+        },
+        dataRoot,
+        entryId: 'echo',
+        expectedRevision: selected.revision,
+        workspaceId: 'ws_demo',
+      });
+      const firstDigest = resolveWorkspaceMcpServer({
+        catalog: projectEffectiveWorkspaceMcpCatalog(bound),
+        serverId: 'echo',
+      }).catalogDigest;
+      writeFileSync(join(packageRoot, 'scripts', 'run.sh'), 'echo v2\n');
+      const second = importWorkspacePlugin({
+        createdAt: '2026-09-08T00:00:01.000Z',
+        dataRoot,
+        expectedRevision: bound.revision,
+        install: true,
+        producer: { id: 'user_local', kind: 'user' },
+        treeRoot: packageRoot,
+        workspaceId: 'ws_demo',
+      });
+      const secondVersion = second.catalog.mcp.versions.find(
+        (item) => item.packageRootDigest === second.version.digest
+      );
+      if (!secondVersion) {
+        throw new Error('expected second plugin MCP version');
+      }
+      expect(secondVersion.digest).not.toBe(firstVersion.digest);
+      const reselected = selectWorkspaceMcpVersion({
+        dataRoot,
+        digest: secondVersion.digest,
+        entryId: 'echo',
+        expectedRevision: second.catalog.revision,
+        stdioHostAuthorized: true,
+        workspaceId: 'ws_demo',
+      });
+      const projected = projectEffectiveWorkspaceMcpCatalog(reselected);
+      expect(projected.servers[0]?.packageRootDigest).toBe(second.version.digest);
+      expect(projected.servers[0]?.transport).toMatchObject({
+        args: ['scripts/run.sh'],
+        command: 'node',
+      });
+      expect(
+        resolveWorkspaceMcpServer({ catalog: projected, serverId: 'echo' }).catalogDigest
+      ).not.toBe(firstDigest);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+      rmSync(packageRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('does not leave failed snapshot staging that blocks later catalog reads', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-staging-'));
+    try {
+      expect(() =>
+        importWorkspaceSkill({
+          activate: false,
+          createdAt: '2026-09-08T00:00:00.000Z',
+          dataRoot,
+          displayName: 'Broken Tree',
+          expectedRevision: 0,
+          producer: { id: 'user_local', kind: 'user' },
+          tree: [
+            {
+              contentBase64: Buffer.from('# Skill\n', 'utf8').toString('base64'),
+              kind: 'file',
+              path: 'SKILL.md',
+            },
+            {
+              contentBase64: Buffer.from('not-a-directory\n', 'utf8').toString('base64'),
+              kind: 'file',
+              path: 'scripts',
+            },
+            {
+              contentBase64: Buffer.from('#!/bin/sh\n', 'utf8').toString('base64'),
+              kind: 'file',
+              path: 'scripts/run.sh',
+            },
+          ],
+          workspaceId: 'ws_demo',
+        })
+      ).toThrow();
+      expect(catalogHasStagingResidue(dataRoot, 'ws_demo')).toBe(false);
+      const afterFailure = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      expect(afterFailure.revision).toBe(0);
+      expect(afterFailure.skills.entries).toEqual([]);
+      const recovered = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        displayName: 'Broken Tree',
+        expectedRevision: 0,
+        producer: { id: 'user_local', kind: 'user' },
+        tree: skillTree('# recovered\n'),
+        workspaceId: 'ws_demo',
+      });
+      expect(recovered.catalog.revision).toBe(1);
+      expect(recovered.catalog.skills.entries[0]?.currentDigest).toBe(recovered.version.digest);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('ignores leftover snapshot staging when catalog.json is unpublished', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-orphan-staging-'));
+    try {
+      const staged = join(
+        dataRoot,
+        'workspaces',
+        'ws_demo',
+        'catalog',
+        'skill-snapshots',
+        'broken',
+        `${'a'.repeat(64)}.staging`
+      );
+      mkdirSync(staged, { recursive: true });
+      writeFileSync(join(staged, 'SKILL.md'), '# leftover\n');
+      const catalog = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      expect(catalog.revision).toBe(0);
+      expect(catalog.skills.entries).toEqual([]);
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });
     }

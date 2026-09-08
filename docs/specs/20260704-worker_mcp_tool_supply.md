@@ -78,7 +78,7 @@ The workspace data source catalog (`docs/specs/20260704-workspace_data_source_ca
 
 ### MCP server catalog
 
-An `McpServerCatalogEntry` is the resolved Workspace-scoped projection of one exact current `McpConfigVersion` and its authorized Workspace binding. Source versions and bindings have one canonical catalog owner; this effective entry is not a separately editable copy. Its deterministic `catalogDigest` binds the effective configuration and binding, while configuration digest, tool-schema snapshot digest, and server-reported software version remain distinct. It MUST carry:
+An `McpServerCatalogEntry` is the resolved Workspace-scoped projection of one exact current `McpConfigVersion` and its authorized Workspace binding. Source versions and bindings have one canonical catalog owner; this effective entry is not a separately editable copy. Its deterministic `catalogDigest` binds the effective configuration, binding, and selected package-root digest, while configuration digest, tool-schema snapshot digest, and server-reported software version remain distinct. It MUST carry:
 
 - entry name: a workspace-unique, lowercase kebab-case identifier; the only handle manifests may use
 - transport: `stdio` | `http`

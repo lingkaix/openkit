@@ -769,7 +769,7 @@ export function materializeCatalogTree(
   return entries;
 }
 
-/** Returns true when any regular file exists under root. */
+/** Returns true when any regular file exists under root, ignoring incomplete `.staging` directories. */
 function directoryContainsFiles(root: string): boolean {
   if (!existsSync(root)) {
     return false;
@@ -781,11 +781,14 @@ function directoryContainsFiles(root: string): boolean {
     for (const name of readdirSync(current)) {
       const path = join(current, name);
       const metadata = statSync(path);
+      if (metadata.isDirectory()) {
+        if (!name.endsWith('.staging')) {
+          pending.push(path);
+        }
+        continue;
+      }
       if (metadata.isFile()) {
         return true;
-      }
-      if (metadata.isDirectory()) {
-        pending.push(path);
       }
     }
   }
@@ -826,7 +829,8 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
             headers: { ...server.transport.headers },
             kind: 'http',
           };
-    const digest = digestMcpConfig(declaration, null);
+    const packageRootDigest = server.packageRootDigest ?? null;
+    const digest = digestMcpConfig(declaration, packageRootDigest);
     const packageDataKey = `mcp_${server.id}`;
     mkdirSync(join(layout.catalogMcpData, packageDataKey), { recursive: true });
     entries.push({
@@ -841,7 +845,7 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
       digest,
       digestFormat: 'openkit-mcp-config-v1',
       entryId: server.id,
-      packageRootDigest: null,
+      packageRootDigest,
       pluginVersionDigest: null,
       provenance: {
         pluginMemberKey: null,
@@ -879,7 +883,7 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
  * Builds the Gateway-facing MCP server from one version and binding.
  *
  * @param binding Current binding.
- * @param version Selected configuration version.
+ * @param version Selected configuration version, including package-root identity.
  * @returns Effective server entry.
  */
 function effectiveMcpServer(
@@ -908,6 +912,7 @@ function effectiveMcpServer(
     deniedTools: [...binding.deniedTools],
     enabled: binding.enabled,
     id: binding.entryId,
+    packageRootDigest: version.packageRootDigest,
     pinnedSchemaSnapshotId: binding.pinnedSchemaSnapshotId,
     schemaPolicy: binding.schemaPolicy,
     timeoutMs: binding.timeoutMs,
@@ -1049,20 +1054,25 @@ function materializeSnapshot(target: string, entries: readonly OpenKitTreeEntry[
   const staged = `${target}.staging`;
   rmSync(staged, { force: true, recursive: true });
   mkdirSync(staged, { recursive: true });
-  for (const entry of entries) {
-    const path = join(staged, entry.path);
-    if (entry.kind === 0) {
-      mkdirSync(path, { recursive: true });
-      continue;
+  try {
+    for (const entry of entries) {
+      const path = join(staged, entry.path);
+      if (entry.kind === 0) {
+        mkdirSync(path, { recursive: true });
+        continue;
+      }
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, entry.content ?? Buffer.alloc(0), { flag: 'wx' });
+      if (entry.kind === 2) {
+        chmodSync(path, 0o755);
+      }
     }
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, entry.content ?? Buffer.alloc(0), { flag: 'wx' });
-    if (entry.kind === 2) {
-      chmodSync(path, 0o755);
-    }
+    mkdirSync(dirname(target), { recursive: true });
+    renameSync(staged, target);
+  } catch (error) {
+    rmSync(staged, { force: true, recursive: true });
+    throw error;
   }
-  mkdirSync(dirname(target), { recursive: true });
-  renameSync(staged, target);
 }
 
 /** Stable catalog id from a display name. */
