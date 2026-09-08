@@ -565,7 +565,7 @@ Ordered by how the D-010 roadmap prioritizes them.
    message carries an **initiator** now ("Approved by SW"); presence, @mentions,
    roles, and conflict resolution are deferred. The Thread view *is* the
    multiplayer surface; single-player is its degenerate case.
-8. **Generative UI = A2UI in-thread** (D-011). Agent sends declarative JSON; the client renders whitelisted OpenKit primitives — no iframes, no arbitrary code. Surfaces are **thread items**; actions flow back as attributed items; three states, no dead ends: **streaming skeleton → rendered → plain-content fallback** (an unknown component degrades to content, never an error card or embedded frame). *The internal review surface remains unpublished until its kernel/policy contract lands (§11).*
+8. **Generative UI = A2UI** (D-011). A producer submits declarative JSON through Core admission; the client renders whitelisted OpenKit primitives by default, with one admitted PluginWidget delegate for isolated MCP Apps HTML. Arbitrary code cannot execute in the host DOM. In-thread presentations are **thread items**; saved reusable views retain separate definition identity under the Generative UI contract; user-visible action outcomes use existing attributed history; three states, no dead ends: **streaming skeleton → rendered → plain-content fallback** (an unknown component degrades to content, never a surprise executable frame; an admitted delegate has its own local failure and safe-load retry state). *The internal review surface remains unpublished until its Generative UI contract and implementation support publication (§11); only Kernel-backed views also depend on Kernel.*
 9. **Reach while away** (D-010 #6, future mechanic): interrupts travel out
    (notifications / email digest) and are actionable in place.
 
@@ -591,7 +591,7 @@ The current 24 reference boards (01–22, with 05b/05c) and their audited build 
 - 09 Automations (the automation facade is non-executing), 16 Channels, and 20 AI interface (provider-subscription status requires a separate server-admin Web authorization path). Retain their internal review implementations, but omit them from published navigation and routing until their contracts stabilize.
 
 **Tier C — deferred (needs prerequisite design first):**
-- 13 Generative UI / A2UI (post-v1: needs the render/safety + Generative-Kernel data-plane design). Retain the in-thread render *shell* and three-state fallback as an internal review implementation, but omit the surface from published navigation and routing.
+- 13 Generative UI / A2UI (needs the independent interaction, persistence, and current-authority contract; Kernel-backed views additionally need the Kernel backend). Retain the in-thread render *shell* and three-state fallback as an internal review implementation, but omit the surface from published navigation and routing.
 - A cross-goal board (D-001): deferred — its job overlaps Overview.
 
 ---
@@ -718,7 +718,7 @@ code layer.
 
 **D-012 · Audit the bounded vision surfaces.** Added artifact review, generative UI, knowledge, vault, channels, usage/audit, and first run; paid the phase-stepper, catch-up-card, inline-decidable-interrupt, and attribution debts on the boards in that audit. *Why:* make the then-current product direction visually inspectable; this bounded audit did not make the board set an admission catalog or require one dedicated board for every future contract-backed surface (D-014).
 
-**D-011 · Generative UI = A2UI.** The agent sends declarative JSON; the client renders only whitelisted OpenKit primitives — no iframes, no arbitrary code. Surfaces are thread items; actions flow back as attributed items; three states, no dead ends (streaming skeleton → rendered → plain-content fallback). *Why:* matches Core security boundaries, keeps the frontend small, and pairs with the NanoCore-first posture. The review shell remains unpublished until its kernel/policy contract lands (§10.8, §11 Tier C).
+**D-011 · Generative UI = A2UI.** A producer submits declarative JSON through Core admission; the client renders whitelisted OpenKit primitives by default and a generic PluginWidget delegates specialized interaction to isolated MCP Apps HTML. Resource identity, bridge capabilities, and Core effects are governed; arbitrary code cannot execute in the host DOM. In-thread presentations are thread items; reusable views retain their own saved definition identity; user-visible action outcomes use existing attributed history; three states, no dead ends (streaming skeleton → rendered → plain-content fallback). *Why:* matches Core security boundaries, keeps the frontend small, and pairs with the NanoCore-first posture. The review shell remains unpublished until the independent Generative UI contract and implementation support publication (§10.8, §11 Tier C). Only Kernel-backed views additionally depend on Kernel. Plugins own specialized maps/canvases/timelines inside the delegate; layout, native siblings, accessibility, and authorized action routing remain with OpenKit. Start with A2UI v0.9 and target eventual v1.0 compatibility without waiting for upstream release.
 
 **D-010 · The weak-interaction roadmap.** Six improvements, priority order:
 Overview as the 1:N supervision home; interrupts decidable without opening the

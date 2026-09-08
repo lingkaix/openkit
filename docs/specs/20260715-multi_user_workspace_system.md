@@ -2,18 +2,18 @@
 status: Accepted
 implementation: Partial
 date: 2026-07-15
-updated: 2026-09-02
+updated: 2026-09-09
 ---
 # Single-Deployment Multi-User Workspace System
 
 ## Owns
 
 - The target design for several authenticated users sharing one canonical Workspace inside one NanoCore deployment.
-- Workspace owner, member, invitation, access-level, leave, removal, transfer, disable, and deletion invariants.
+- Workspace owner identity, member, invitation, equal-member access, leave, removal, transfer, disable, and deletion invariants.
 - The owner-independent canonical workspace storage root and the one-way migration from user-nested workspace roots.
-- Central per-request workspace access resolution and the fixed product-role projection into the existing NGAC-aligned policy kernel.
+- Central per-request workspace access resolution and the active-membership projection into the existing NGAC-aligned policy kernel.
 - Actor attribution, shared-write concurrency, human-decision authority, token intersection, import/export membership behavior, and multi-user acceptance criteria.
-- Owner-authorized Workspace deletion, its single-process mutation-admission fence, file-backed intermediate request lifecycle, registry tombstone, and same-deployment recovery authority.
+- Governed Workspace deletion, its single-process mutation-admission fence, file-backed intermediate request lifecycle, registry tombstone, and same-deployment recovery authority.
 
 ## Does Not Own
 
@@ -51,11 +51,11 @@ updated: 2026-09-02
 
 One NanoCore deployment is one personal or small-team trust domain, not a multi-tenant host. Users share a Workspace through Core-owned membership and policy records, while the Workspace remains one canonical storage and execution boundary independent of its current owner.
 
-The creator becomes the default owner. The owner relationship is stored once in the workspace registry, and every owner is also an active member. Non-owner membership stores only `editor` or `viewer`. Product roles compile into the existing NGAC-aligned policy kernel; OpenKit must not add a second RBAC engine or delegate workspace authorization to Better Auth.
+The creator becomes the default owner. The owner relationship is stored once in the workspace registry for lifecycle continuity and recovery attribution, and every owner is also an active member. Active membership supplies full Workspace operation eligibility through the existing NGAC-aligned Policy Kernel. OpenKit must not add a second RBAC engine or delegate Workspace authorization to Better Auth.
 
 Canonical workspace data moves to `DATA_ROOT/workspaces/<workspaceId>`. `DATA_ROOT/users/<userId>` remains the home for genuinely personal preferences and user-local state. Sharing never creates a copy, a `share/` directory, a reference file, or a filesystem link.
 
-The smallest complete V1 supports registered-user invitations, owner/editor/viewer access, owner transfer, removal and leave, disable-safe user lifecycle, owner-authorized deletion and tombstone recovery, actor attribution, narrow optimistic concurrency for explicitly named mutable shared records, durable first-writer human decisions, and risk-sufficient verification at the lowest layer that proves each invariant plus one representative agent-first story.
+The smallest complete V1 supports registered-user invitations, full active-member eligibility, owner transfer, removal and leave, disable-safe user lifecycle, governed deletion and tombstone recovery, actor attribution, narrow optimistic concurrency for explicitly named mutable shared records, durable first-writer human decisions, and risk-sufficient verification at the lowest layer that proves each invariant plus one representative agent-first story.
 
 ## Goals
 
@@ -96,8 +96,8 @@ The accepted design distills the following primary-source findings:
 
 - Authentication and authorization are separate. Better Auth remains the user/session provider; Workspace authorization remains an OpenKit Core responsibility.
 - Access must deny by default and validate the resolved object on every request, including read, mutation, export, and administration operations.
-- Fixed roles are enough for a small flat team. Role hierarchy and custom-role administration are optional complexity, not V1 requirements.
-- Role membership should become user-attribute assignments and associations in the existing NGAC-aligned policy graph, not parallel role-condition code.
+- Active membership is sufficient for the initial shared-Workspace operation baseline. Role hierarchy, collection/field ACLs, and custom-role administration are outside this cut.
+- Active membership should become user-attribute assignments and associations in the existing NGAC-aligned policy graph, not parallel role-condition code.
 - Ownership must be one canonical relationship with `ON DELETE RESTRICT`, not duplicate owner fields or cascading user deletion.
 - SQLite transactions and conditional updates are sufficient for membership, transfer, invitation, revision, and first-writer decision invariants.
 - Optimistic revision checks belong only on mutable shared records. Append-only history keeps its existing sequence and idempotency discipline.
@@ -111,8 +111,8 @@ OpenKit will implement a Core-owned shared Workspace model with these fixed prop
 2. A Workspace is not a tenant or organization.
 3. A Workspace has exactly one canonical owner.
 4. Every user who accesses a Workspace has one membership row.
-5. The effective product role is exactly one of `owner`, `editor`, or `viewer`.
-6. `owner` is derived from the registry; non-owner access is stored as `editor` or `viewer`.
+5. Every active member has the same membership-derived eligibility for all Workspace and contained Light App operations.
+6. The canonical owner is lifecycle/recovery identity, not a higher operation-permission tier. The target needs no editor/viewer access levels.
 7. Better Auth establishes the human user and credential, but never decides Workspace permission.
 8. The policy kernel is the only policy-evaluation owner; S56 owns the product mapping, durable `PermissionDecision`, approval linkage, and enforcement behavior.
 9. Canonical Workspace storage is independent of every user root.
@@ -169,7 +169,6 @@ Registry status is the sole authority for the coarse destructive lifecycle. `act
 - `workspace_id`
 - `user_id`, referencing `users.id` with `ON DELETE RESTRICT`
 - `status`: `active` or `removed`
-- `access_level`: `editor` or `viewer`
 - `invitation_id`: nullable reference to the accepted invitation
 - `joined_at`
 - `removed_at`: nullable
@@ -177,7 +176,7 @@ Registry status is the sole authority for the coarse destructive lifecycle. `act
 - `created_at`
 - `updated_at`
 
-The canonical owner must have an active membership row. The owner's stored `access_level` is `editor`; the effective `owner` role is derived from `workspace_registry.owner_user_id` and must never be duplicated as a membership enum value.
+The canonical owner must have an active membership row. Ownership is derived only from `workspace_registry.owner_user_id`; the target membership schema has no access-level or effective-role field.
 
 Removed membership rows are tombstones. An explicit later invitation acceptance may reactivate the row; filesystem discovery, sign-in, import, or Workspace creation must not revive it implicitly.
 
@@ -188,7 +187,6 @@ Removed membership rows are tombstones. An explicit later invitation acceptance 
 - `invitation_id`: stable opaque invitation ID and primary key
 - `workspace_id`
 - `invitee_user_id`: one existing active OpenKit user
-- `proposed_access_level`: `editor` or `viewer`
 - `inviter_user_id`
 - `status`: `pending`, `accepted`, `declined`, or `revoked`
 - `expires_at`
@@ -203,11 +201,11 @@ Effective expiry is derived from `status = pending` and `expires_at <= now`; V1 
 
 At most one effective pending invitation may exist for one `(workspace_id, invitee_user_id)` pair. Re-invitation revokes the old pending row and creates a new row in one transaction.
 
-The owner supplies an exact email as the product input. NanoCore normalizes it and resolves one existing active canonical user before creating the invitation. The email is a lookup input, not the durable authority key. Absent, disabled, already-active, and otherwise ineligible targets return the same product-safe `invitee_unavailable` result.
+An authorized active member supplies an exact email as the product input. NanoCore normalizes it and resolves one existing active canonical user before creating the invitation. The email is a lookup input, not the durable authority key. Absent, disabled, already-active, and otherwise ineligible targets return the same product-safe `invitee_unavailable` result.
 
 Invitation acceptance and decline require a Better Auth session or the implicit local identity whose canonical user ID equals `invitee_user_id`. V1 does not accept an OpenKit bearer token for this user-scoped collection, create a bearer invitation secret, send email, create an account, or expose a user directory.
 
-The authenticated invitee discovers invitations through one user-scoped `list my invitations` operation. It selects only rows whose `invitee_user_id` equals the authenticated canonical user, accepts no caller-supplied user filter, requires no active Workspace membership, and denies every OpenKit bearer token including `server-admin`, `workspace`, and `workspace-readonly`. Owner-visible invitation listing remains a separate Workspace-scoped `membership.manage` operation. Both projections reuse the same closed `WorkspaceInvitation` record and expose no email address or bearer secret.
+The authenticated invitee discovers invitations through one user-scoped `list my invitations` operation. It selects only rows whose `invitee_user_id` equals the authenticated canonical user, accepts no caller-supplied user filter, requires no active Workspace membership, and denies every OpenKit bearer token including `server-admin`, `workspace`, and `workspace-readonly`. Workspace-member invitation listing remains a separate Workspace-scoped `membership.manage` operation. Both projections reuse the same closed `WorkspaceInvitation` record and expose no email address or bearer secret.
 
 ## Why Registered-User Invitations Are The V1 Cut
 
@@ -215,84 +213,34 @@ Better Auth and GitHub demonstrate useful invitation lifecycle and email-matchin
 
 The smallest safe V1 therefore requires the teammate to register first and binds the pending invitation directly to their canonical user ID. A future pre-account invitation design may add a separate random one-time secret stored only as a hash, verified-email matching, secure delivery, rotation, and rate limits. It must not overload `invitation_id` as the bearer secret.
 
-## Fixed Product Roles
+## Active-Member Authorization Target
 
-### Owner
+The engineer's 2026-09-09 direction replaces the previous owner/editor/viewer grant ceiling. Every current active member is eligible for the full Workspace operation set, including Light App schema/data operations, agent work, configuration, export, membership management, and governed Workspace lifecycle operations. Current Policy, credential intersection, exact human-gate eligibility, Vault grants, confidentiality, and lifecycle/integrity preconditions still decide whether a particular effect may execute. An active member does not gain another user's private scope or deployment administration.
 
-The owner has all editor rights plus Workspace lifecycle and administration authority.
+Ownership remains one registry relationship for continuity, transfer-before-owner-leave, and the already owned deletion/recovery lineage. It MUST NOT cap ordinary active-Workspace permissions. User-scoped invitation response still belongs only to the bound invitee, and a user-input gate still belongs to its exact responsible user. These are target/principal semantics, not hidden member role tiers. Deleted/deleting Workspace recovery is outside ordinary active-member access and retains its separately owned exact-request/tombstone authority until an explicit lifecycle change defines its replacement.
 
-Owner-only operations include:
+### Projection And Supersession Boundary
 
-- create, revoke, and list Workspace invitations
-- change a non-owner member between editor and viewer
-- remove a non-owner member
-- transfer ownership
-- configure Workspace repositories, data sources, agent supply, policy, and Vault references or grants
-- export the portable Workspace
-- archive or delete the Workspace
-- perform owner-only approval kinds
+[Core Permissions](../core/permissions.md) owns the equal-member eligibility doctrine. This section owns its concrete membership-to-rights projection and Workspace lifecycle integration. The separately labeled Current Implementation Projection and Pre-Cutover API/Deletion projections retain old runtime facts, including access-level fields and owner-only admission; they do not authorize those ceilings in the target. Target schema, lifecycle, and acceptance sections use active membership. All non-role constraints remain in force. No implementation may use this direction alone to remove a data-loss check, switch a deletion recovery principal, broaden a token, bypass an exact human gate, or publish confidential data.
 
-### Editor
+The cutover must remove obsolete editor/viewer fields and access-changing surfaces consistently across storage, public schemas, App API, CLI/Skill, Web, and tests. Replace active-Workspace owner-only eligibility with current-member eligibility, without converting identity conditions such as transfer-before-owner-leave into permissions. A member-created deletion must bind its admitted initiating actor/request to the existing deletion lineage while preserving the exact recovery owner; settle that release-coupled lifecycle payload before changing code. This documentation change does not claim that cutover has run.
 
-An editor may:
+### Access Matrix
 
-- read shared Workspace content and history
-- create and update Threads, Turns, user-authored Items, Knowledge, Artifacts, and ordinary work records
-- start, steer, interrupt, retry, and review agent work when the mapped policy operation allows it
-- respond to ordinary approvals and reviews only when the specific policy association and approval eligibility allow it
-- read redacted Workspace audit and usage projections when policy allows it
-- leave the Workspace
+| Capability family | Active member eligibility | Additional owner constraints |
+| --- | --- | --- |
+| Read, query, and modify Workspace and Light App data | Full operation set | Current Policy, scope, schema, revision, and data-loss contract |
+| Agent work, tools, and external operations | Full operation set | Credential, Vault, capability, runtime, and effect-specific authority |
+| Configuration, membership, export, and Workspace lifecycle | Full operation set | Current Policy, integrity, confirmation, and exact lifecycle transition |
+| Human decisions | Full membership-derived eligibility | Exact gate kind/resource/principal and current Policy |
+| User-private or deployment-scoped resources | No grant from Workspace membership | Their separate scope owner |
+| Removed member, invitee, unrelated user, or server-admin-only credential | No Workspace operation grant | No implicit content bypass |
 
-An editor may not manage members, invitations, ownership, Workspace deletion, export, policy, repositories, data sources, agent supply, or Vault grants by default.
+### Policy Kernel Projection
 
-### Viewer
+NanoCore translates the authenticated human or responsible agent identity, active Workspace membership, target resource, operation, credential restrictions, and current context into the existing NGAC-aligned Policy Kernel. One Workspace-scoped active-member association supplies the registered Workspace access-right set. No role ceiling or separate Light App ACL engine is added; denied, missing, or malformed required facts still fail closed.
 
-A viewer may read ordinary Workspace content, history, Knowledge, Artifacts, and work status.
-
-A viewer may not mutate Workspace content, start or steer agent work, answer human gates, view sensitive audit or usage projections, export data, use Vault-backed authority, or administer the Workspace.
-
-A viewer may leave the Workspace.
-
-## Access Matrix
-
-| Capability family | Owner | Editor | Viewer |
-| --- | --- | --- | --- |
-| Read ordinary Workspace content and history | Yes | Yes | Yes |
-| Create or update ordinary work records | Yes | Yes | No |
-| Start, steer, interrupt, retry, and review agent work | Yes | Yes, when policy permits | No |
-| Respond to ordinary approval or review | Yes | When eligible and policy permits | No |
-| Read redacted Workspace audit and usage | Yes | When policy permits | No |
-| Configure repository, data source, agent supply, policy, or Vault references | Yes | No | No |
-| Invite, revoke invitation, change access, or remove member | Yes | No | No |
-| Export, archive, delete, or transfer ownership | Yes | No | No |
-| Leave Workspace | Only after transfer | Yes | Yes |
-
-This table defines the fixed product projection. The policy kernel remains the enforcement owner and may deny an operation that the table makes eligible. It must not grant an operation outside the effective role's association.
-
-## Policy Kernel Projection
-
-For each authorized request, NanoCore derives one effective role from authoritative registry and membership data and projects it into the existing NGAC-aligned policy model:
-
-- the human or responsible identity becomes the subject
-- `owner`, `editor`, or `viewer` becomes a Workspace-scoped user attribute
-- the target Workspace and its resources become object attributes
-- the server authorization metadata registry maps each concrete public operation to one product operation, and the policy registry maps that operation to one registered access right
-- fixed associations connect each role attribute to the allowed access rights over the Workspace object attributes
-- Workspace policy, user restrictions, token restrictions, approval state, and request context remain additional policy facts
-
-The first implementation may rebuild this small fact set per request. It must not add an authorization cache until profiling demonstrates a need.
-
-Role checks in handlers may validate lifecycle preconditions, but they must not become a second permission engine. A handler must consume the centralized policy result rather than independently deciding that `role === owner` is sufficient.
-
-The exact V1 product-operation and access-right identifiers are owned by `docs/specs/20260703-policy_enforcement_mapping.md`. This specification is the unique owner of the fixed product-role to access-right projection. The centralized Workspace adapter uses these exact maximum associations:
-
-| Effective role | Maximum role association |
-| --- | --- |
-| Owner | `ar:workspace-read`, `ar:workspace-write`, `ar:thread-read`, `ar:turn-run`, `ar:artifact-read`, `ar:artifact-write`, `ar:review-apply`, `ar:approval-respond`, `ar:knowledge-read`, `ar:knowledge-write`, `ar:knowledge-propose`, `ar:audit-read`, `ar:workspace-configure`, `ar:workspace-export`, `ar:workspace-lifecycle`, `ar:membership-manage`, `ar:vault-use`, `ar:vault-admin`, `ar:tool-use`, `ar:tool-grant`, `ar:runtime-launch`, `ar:network-egress`, `ar:llm-gateway-use`, and `ar:repo-push`. |
-| Editor | `ar:workspace-read`, `ar:workspace-write`, `ar:thread-read`, `ar:turn-run`, `ar:artifact-read`, `ar:artifact-write`, `ar:review-apply`, `ar:approval-respond`, `ar:knowledge-read`, `ar:knowledge-write`, `ar:knowledge-propose`, `ar:audit-read`, `ar:vault-use`, `ar:tool-use`, `ar:runtime-launch`, `ar:network-egress`, `ar:llm-gateway-use`, `ar:repo-push`, and `ar:workspace-leave`. |
-| Viewer | `ar:workspace-read`, `ar:thread-read`, `ar:artifact-read`, `ar:knowledge-read`, and `ar:workspace-leave`. |
-
-Invitation response is user-scoped and associated only with the exact bound invitee after the durable invitation owner validates one pending unexpired invitation; it does not require active membership and does not pass through the ordinary Workspace role resolver. Workspace leave is associated only with an active editor or viewer membership. Deployment recovery is associated only with an authenticated deployment administrator and is evaluated outside ordinary content access. The adapter may omit a conditionally eligible editor right when current policy does not grant it; it must never add a right above this table.
+[Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md) remains the unique product-operation/access-right registry. Handlers consume the centralized decision and enforce their owned integrity or lifecycle preconditions. Future narrower Policy associations use the same boundary; they do not require new client-side role logic or a different Kernel API. Do not create authorization caches or per-request durable decision records for ordinary access.
 
 ## Central Workspace Access Resolver
 
@@ -302,7 +250,7 @@ Every Workspace-addressed operation must pass through one structural resolver be
 authenticate credential and canonical actor
   -> resolve operation metadata and target resource lineage
   -> resolve canonical Workspace registry row
-  -> resolve active membership and effective role
+  -> resolve active membership and required lifecycle identity
   -> intersect credential scope and current responsible-user authority
   -> project facts into the policy kernel
   -> deny on missing or invalid facts
@@ -326,7 +274,7 @@ The same-release server authorization metadata registry uses these exact Workspa
 
 An existing in-memory or derived owner may expose a narrow child-to-Workspace lookup for `opaque-child-workspace`; Stage 4 does not authorize a new durable lineage table, global content scan, cache, or recovery owner. Approval and user-input response additionally use the durable request owner to decide the exact eligible principal. Request fields are consistency checks only and never establish decision eligibility.
 
-Server-scoped and user-scoped catalog entries are classified mechanically but do not pass through the Workspace role adapter unless they declare an optional secondary Workspace resolver. Server operations keep their deployment-administration or route-owned bootstrap checks. Ordinary user operations require a canonical authenticated user and cannot be invoked with a Workspace or `server-admin` token unless their owning contract explicitly says otherwise. The public Gateway is the explicit exception described above. Portable import and dry-run remain user-scoped: after parsing the bounded export manifest, an export from the current deployment additionally requires `workspace.read` on its source Workspace before any source content is used; a foreign portable export has no source-deployment authority to reuse.
+Server-scoped and user-scoped catalog entries are classified mechanically but do not pass through the Workspace membership adapter unless they declare an optional secondary Workspace resolver. Server operations keep their deployment-administration or route-owned bootstrap checks. Ordinary user operations require a canonical authenticated user and cannot be invoked with a Workspace or `server-admin` token unless their owning contract explicitly says otherwise. The public Gateway is the explicit exception described above. Portable import and dry-run remain user-scoped: after parsing the bounded export manifest, an export from the current deployment additionally requires `workspace.read` on its source Workspace before any source content is used; a foreign portable export has no source-deployment authority to reuse.
 
 The public bootstrap-consume operation is server-scoped with route-owned bootstrap-secret and secure-transport authentication. Its catalog classification does not make it an authenticated deployment-admin operation and does not route it through Workspace policy.
 
@@ -347,10 +295,10 @@ The effective authority of a Workspace token is the intersection of:
 - active token status
 - token scope
 - token Workspace binding
-- the token owner's current active membership and effective role
+- the token owner's current active membership
 - current policy facts and approval state
 
-`workspace-readonly` further caps the result to read operations. Removing or downgrading a user affects the next request without rewriting every owned token.
+`workspace-readonly` further caps the result to read operations. Removing a member or narrowing their current Policy authority affects the next request without rewriting every owned token.
 
 `server-admin` is deployment administration authority. It may manage users, tokens, configuration, migrations, and explicit Workspace recovery operations, but it does not silently bypass Workspace membership for ordinary content reads or writes. An administrator may use an audited recovery operation to transfer ownership or add themselves as a member, after which normal Workspace authorization applies.
 
@@ -395,7 +343,7 @@ DATA_ROOT/
 
 `users/<userId>` owns personal preferences, user-local files, user-specific Workspace ordering, recent selection, notification state, and other state that must not become shared merely because a Workspace is shared.
 
-`workspaces/<workspaceId>` owns all canonical Workspace data. `workspace-record.json` contains only system-owned identity, ownership relationship, lifecycle, revision, and timestamp facts; `config/workspace.jsonc` contains the shared editable Workspace name, `defaultAgentId`, and other accepted Workspace composition. Owner transfer, access-level change, membership removal, and invitation acceptance update Core records only and never copy, rename, link, or move the Workspace tree.
+`workspaces/<workspaceId>` owns all canonical Workspace data. `workspace-record.json` contains only system-owned identity, ownership relationship, lifecycle, revision, and timestamp facts; `config/workspace.jsonc` contains the shared editable Workspace name, `defaultAgentId`, and other accepted Workspace composition. Owner transfer, membership update, membership removal, and invitation acceptance update Core records only and never copy, rename, link, or move the Workspace tree.
 
 The user-visible Workspace list is a query over identity and policy relationships. It is not a directory listing and does not require a per-user reference file.
 
@@ -406,7 +354,7 @@ Canonical Workspace readers and writers must continue to reject symlinks and uns
 - Workspace Threads, Items, Knowledge, Artifacts, AgentSessions, approvals, policy decisions, audit, usage, repositories, data sources, and Workspace configuration are shared according to policy.
 - User preferences, current Workspace selection, personal notification state, and user-local credentials remain user-scoped.
 - A user's built-in Quick Chat Workspace remains owner-only and non-shareable in V1. Each server user has an independent Quick Chat Workspace and its Knowledge does not become team knowledge.
-- Raw Vault secret material remains in the Vault backend. The owner manages Workspace references and grants; an editor may cause an approved agent use only when policy permits it; a viewer has no Vault-use authority.
+- Raw Vault secret material remains in the Vault backend. Every active member has membership-derived eligibility for Workspace reference/grant administration and governed use; exact Vault grants, current Policy, credential scope, and required approvals still control each operation.
 - No per-member hidden record family is added inside a shared Workspace in V1. Truly personal state belongs to user scope.
 
 ## Actor Attribution
@@ -439,11 +387,10 @@ No `tenantId` field is added.
 Human gates in a shared Workspace need an eligible principal, not merely any authenticated user.
 
 - An `ApprovalRequest` is resolved only by a subject granted `approval.respond` for the specific approval kind and resource.
-- An owner may resolve owner-only sensitive approvals; an editor may resolve ordinary approvals only when the policy mapping makes that editor eligible.
+- Every active member has membership-derived eligibility, while sensitive and ordinary approvals still require the exact kind/resource Policy result.
 - A `UserInputRequest` belongs to the immutable `responsibleUserId` recorded from its owning Turn at request creation. Answer-time authorization rechecks that same user's current Workspace authority; a later owner or automation-responsibility change does not rewrite or substitute the recorded user. Another member cannot silently answer it.
 - When the responsible user is unavailable, a blocked user-input gate remains unresolved or the owning work is explicitly interrupted; V1 adds no gate-takeover workflow.
-- Artifact and Workspace review decisions are available to owner and editor when policy permits them.
-- Viewer access never includes decision authority.
+- Artifact and Workspace review decisions are available to current members when the owning review and Policy contracts permit them.
 
 Every terminal human decision records the winning actor and request ID before any retryable runtime delivery occurs.
 
@@ -465,7 +412,7 @@ SET ..., revision = revision + 1
 WHERE id = ? AND revision = ?;
 ```
 
-Zero changed rows produce the typed outcome defined by the owning transition and return only its current safe summary. The V1 families introduced here are invitation lifecycle, membership access and removal, ownership transfer, administrator recovery, and the two registry transitions of owner-authorized Workspace deletion. Existing Workspace create, import, metadata update, archive, Artifact Review, Material revision, Workspace apply, and append-only owners retain their current transaction, first-writer, expected-base, or idempotency contracts; this specification neither moves them into the sharing transaction nor adds a generic revision framework or new mutable Artifact or Knowledge metadata commands.
+Zero changed rows produce the typed outcome defined by the owning transition and return only its current safe summary. The V1 families introduced here are invitation lifecycle, membership removal and leave, ownership transfer, administrator recovery, and the two registry transitions of member-initiated Workspace deletion. Existing Workspace create, import, metadata update, archive, Artifact Review, Material revision, Workspace apply, and append-only owners retain their current transaction, first-writer, expected-base, or idempotency contracts; this specification neither moves them into the sharing transaction nor adds a generic revision framework or new mutable Artifact or Knowledge metadata commands.
 
 The durable semantic is expected-revision compare-and-swap. A release-coupled HTTP projection may use a body field, ETag/If-Match, or another exact-release representation.
 
@@ -475,11 +422,11 @@ Invitation acceptance, invitation decline or revoke, membership removal or leave
 
 The first winner records the actor, decision, request ID, and timestamp. Repeating the same request ID replays the result. For invitation accept, decline, or revoke, a zero-row conditional write is classified after reading the current safe invitation in this order: a terminal or effectively expired invitation returns `invitation_not_pending`; an invitation that remains pending with a different revision returns `revision_conflict`; a missing or caller-invisible invitation returns the non-enumerating access denial. A contrary or stale transition must not invoke a runtime, policy effect, or external side effect.
 
-Membership access change, removal, and leave first classify an absent or caller-invisible membership as `workspace_access_denied` and an owner-removal or owner-leave attempt as `owner_transfer_required`. A removed membership or an active membership with a different revision returns `revision_conflict` with the current safe membership. Changing an active membership to its existing access level with the exact revision is a receipt-only successful no-op; it does not increment revision or emit another lifecycle audit event. A different request after removal conflicts rather than claiming the prior transition.
+Membership removal and leave first classify an absent or caller-invisible membership as `workspace_access_denied` and an owner-removal or owner-leave attempt as `owner_transfer_required`. A removed membership or an active membership with a different revision returns `revision_conflict` with the current safe membership. A different request after removal conflicts rather than claiming the prior transition.
 
-Ordinary ownership transfer requires the current owner. A missing or inactive target returns non-enumerating `workspace_access_denied`; a different current registry revision returns `revision_conflict`; targeting the current owner with the exact revision is a receipt-only successful no-op. A transfer that changes the owner increments the registry revision exactly once, promotes a viewer target to editor, and retains the former owner as editor. Central current-authority resolution precedes the command ledger, so a former owner retrying even the same transfer request after the role change receives `workspace_access_denied` and re-reads the authorized Workspace set; V1 does not add an authorization-and-idempotency recovery resolver solely to replay that historical success.
+Ordinary ownership transfer requires current active-member authority, an active target, and the expected registry revision. A missing or inactive target returns non-enumerating `workspace_access_denied`; a different registry revision returns `revision_conflict`; targeting the existing owner at that revision is a receipt-only no-op. A changing transfer increments the registry revision once and preserves active membership for both old and new owner. Current-authority resolution precedes replay; loss of membership or another current restriction denies, while merely ceasing to be owner does not revoke operation eligibility. No additional replay authority or resolver is introduced.
 
-Both administrator recovery actions conditionally advance `workspace_registry.revision` exactly once when they change authority. `add-self-as-editor` inserts, reactivates, or promotes the authenticated administrator's membership and `transfer-ownership-to-self` additionally changes the owner; neither accepts another target. When recovery actually grants that administrator membership, the same transaction revokes any pending invitation for that user and Workspace before inserting or reactivating membership, so a later acceptance returns `invitation_not_pending` and cannot overwrite the recovered access level or lineage. That invitation change is part of the one recovery audit and does not create a second revoke command or receipt. A registry revision mismatch returns `revision_conflict` with `WorkspaceAccessRecoveryState`. With the exact current revision, an already achieved action is a receipt-only successful no-op; after another request wins, the stale prior revision conflicts. A missing Workspace returns the non-enumerating access denial.
+Both administrator recovery actions conditionally advance `workspace_registry.revision` exactly once when they change authority. The target `add-self-as-member` action inserts or reactivates the authenticated administrator's membership and `transfer-ownership-to-self` additionally changes the owner; neither accepts another target. When recovery actually grants that administrator membership, the same transaction revokes any pending invitation for that user and Workspace before inserting or reactivating membership, so a later acceptance returns `invitation_not_pending` and cannot overwrite the recovered membership or lineage. That invitation change is part of the one recovery audit and does not create a second revoke command or receipt. A registry revision mismatch returns `revision_conflict` with `WorkspaceAccessRecoveryState`. With the exact current revision, an already achieved action is a receipt-only successful no-op; after another request wins, the stale prior revision conflicts. A missing Workspace returns the non-enumerating access denial.
 
 Approval claims must be durable before any projection or delivery. Stage 6 finishes only deterministic Approval, Item, Turn, receipt, and already-idempotent notification projections from the stored winner. If delivery cannot be proven idempotent after a crash, the command returns `recovery_required` without redelivery, boot scanning, a delivery ledger, or a recovery workflow; governed runtime and external effects remain Stage 7 work.
 
@@ -495,7 +442,7 @@ NanoCore has one concrete in-process mutation-admission fence per Workspace, not
 
 Deletion closes the exact Workspace gate and waits for admitted counters to reach zero. It also requires the existing named nonterminal AgentSessions, scheduler leases, Worker Backend Sessions, pending Workspace apply owners, and other already-registered runtime publication owners for that Workspace to reach their existing terminal or quiescent state. It does not stop NanoCore, cancel a worker, terminate a host service, invent a runtime state, or claim recall of an external effect already submitted. Runtime owners may finish their own non-content terminal cleanup, but the closed gate and publication-time authority check reject new canonical Workspace output.
 
-The file-backed deletion request is created before a closed gate may outlive the initiating HTTP request. Listener-preflight boot reads exact nonterminal requests and rebuilds their closed gates before accepting traffic; it also closes every Workspace whose registry is `deleting` or `deleted`. Boot does not advance a deletion phase, rename or remove a Workspace root, create an export or closure, synthesize a receipt, or reopen a gate. Only the same owner-authorized deletion request may resume a nonterminal phase.
+The file-backed deletion request is created before a closed gate may outlive the initiating HTTP request. Listener-preflight boot reads exact nonterminal requests and rebuilds their closed gates before accepting traffic; it also closes every Workspace whose registry is `deleting` or `deleted`. Boot does not advance a deletion phase, rename or remove a Workspace root, create an export or closure, synthesize a receipt, or reopen a gate. Only the same admitted deletion request may resume a nonterminal phase under its exact non-content retry authority bound at initiation; ordinary active-Workspace eligibility does not authorize another request after deletion begins.
 
 ### Workspace File Apply
 
@@ -511,9 +458,9 @@ The creator always becomes the initial owner. Administrator recovery is a separa
 
 ### Invite
 
-Only the owner may create an invitation. The target must already be an active canonical user and must not already have active membership.
+An authorized active member may create an invitation. The target must already be an active canonical user and must not already have active membership.
 
-Creating the invitation records proposed editor or viewer access, inviter, expiry, request ID, and audit evidence.
+Creating the invitation records full-member eligibility, inviter, expiry, request ID, and audit evidence.
 
 ### Accept Or Decline
 
@@ -521,13 +468,13 @@ Only the bound invitee may accept or decline. Acceptance conditionally consumes 
 
 Accepted, declined, revoked, and expired invitations cannot grant access again. Rejoining after removal requires a new invitation.
 
-### Change Access
+### Membership Access
 
-Only the owner may change a non-owner active member between editor and viewer. The update requires the current membership revision and takes effect on the next request and governed effect boundary.
+The target has no editor/viewer selector or change-access command. Active and removed membership retain conditional revisions; finer future restrictions belong to the existing Policy owner.
 
 ### Remove Or Leave
 
-Only the owner may remove a non-owner member. An editor or viewer may leave through the same removed-tombstone transition.
+An authorized active member may remove a non-owner member. Any non-owner member may leave through the same removed-tombstone transition.
 
 The owner cannot remove themselves or leave while they remain owner. Ownership must be transferred or the Workspace explicitly deleted.
 
@@ -539,12 +486,12 @@ Removal immediately blocks new requests, new turns, new human decisions, and new
 
 Ownership transfer requires:
 
-- the current owner
+- an authorized active member
 - an active target member
 - a current registry revision
 - one transaction that conditionally updates the owner and preserves an active membership for both users
 
-If the target was a viewer, the transaction promotes their stored access level to editor. The former owner remains an editor. Removing that member is a separate later membership command with its own authority and revision predicate.
+Both users retain full active-member eligibility. Removing that member is a separate later membership command with its own authority and revision predicate.
 
 Transfer preserves Workspace ID, storage root, history, policy, references, exports, and worker lineage. It emits one audit event linked to the old owner, new owner, actor, request ID, and registry revision.
 
@@ -556,7 +503,9 @@ V1 keeps Better Auth hard deletion disabled for every user regardless of ownersh
 
 Foreign keys from owner, membership, invitation, and durable actor references must not cascade-delete Workspace data or audit history. Privacy erasure requires a separately accepted retention and pseudonymization design; it is not implemented as raw row cascade.
 
-### Delete Workspace
+### Pre-Cutover Deletion Projection
+
+This subsection records the implemented deletion mechanism, not the target admission ceiling. The active-member target permits any authorized member to initiate deletion; its actor/request payload cutover must preserve every existing phase, hold, mutation fence, data-recovery guarantee, and exact post-deletion recovery principal described here. Until that projection is accepted and implemented, runtime owner-only admission remains an explicit gap. The retained instructions below describe that current implementation and must not be read as requiring owner-only eligibility in the target.
 
 Only the current active owner may create a Workspace deletion request. An administrator without membership must first use explicit recovery to become owner, then invoke the ordinary owner-authorized deletion command; neither `server-admin` nor a closure is a delete bypass. The command requires one `requestId`, the exact positive current `expectedRegistryRevision`, and exact `confirmation` value `permanently-delete-workspace:<workspaceId>:<expectedRegistryRevision>` so the irreversible target and consequence receive a distinct explicit confirmation.
 
@@ -595,7 +544,7 @@ Scheduler admission and AEP schema version `2` worker package scope must carry o
 
 ### Current-Authority Predicate
 
-Every implemented Stage 7 boundary uses one stateless `currentWorkspaceAuthority(workspaceId, actor, productOperation, effectAuthority)` predicate immediately before the NanoCore-owned effect. The predicate derives the responsible user only from `actor`, then requires that user to be non-null and currently `active`, an active member of the exact Workspace, entitled by the current fixed-role mapping to `productOperation`, and allowed by current policy. `effectAuthority` is the existing owner-specific Approval, PermissionDecision, VaultGrant, review, or resource tuple when that boundary already requires one; the caller validates that tuple before passing the predicate, and the predicate does not become a second owner-aware policy engine. The tuple must be complete, target-matching, current-deployment authority and cannot replace the user, membership, role, or policy checks. For Vault use, the durable VaultGrant is the effect-authority owner: it must be target-issued and active, and every non-null user, Workspace, agent, AgentSession, and capability constraint must exactly match the current execution. Its optional Approval and policy-decision identifiers are immutable issuance lineage rather than use-time decision owners; when an Approval id is present it must be target-issued and the policy-decision id must be non-null, but effect execution does not re-run or reconstruct that workflow. A null responsible user, missing or contradictory fact, removed membership, disabled user, insufficient current role, denied policy, or stale effect authority denies with zero governed effect. The predicate reads current Core and owning-domain authority directly for the small single-writer deployment and adds no cache, durable decision row, state, workflow, or recovery owner.
+Every implemented Stage 7 boundary uses one stateless `currentWorkspaceAuthority(workspaceId, actor, productOperation, effectAuthority)` predicate immediately before the NanoCore-owned effect. The predicate derives the responsible user only from `actor`, then requires that user to be non-null and currently `active`, an active member of the exact Workspace, eligible through active membership for `productOperation`, and allowed by current Policy. `effectAuthority` is the existing owner-specific Approval, PermissionDecision, VaultGrant, review, or resource tuple when that boundary already requires one; the caller validates that tuple before passing the predicate, and the predicate does not become a second owner-aware policy engine. The tuple must be complete, target-matching, current-deployment authority and cannot replace the user, membership, or Policy checks. For Vault use, the durable VaultGrant is the effect-authority owner: it must be target-issued and active, and every non-null user, Workspace, agent, AgentSession, and capability constraint must exactly match the current execution. Its optional Approval and policy-decision identifiers are immutable issuance lineage rather than use-time decision owners; when an Approval id is present it must be target-issued and the policy-decision id must be non-null, but effect execution does not re-run or reconstruct that workflow. A null responsible user, missing or contradictory fact, removed membership, disabled user, denied Policy, or stale effect authority denies with zero governed effect. The predicate reads current Core and owning-domain authority directly for the small single-writer deployment and adds no cache, durable decision row, state, workflow, or recovery owner.
 
 The immutable `AEP.scope.triggerActor` is the sole runtime actor authority. Scheduler, lease, worker-control, capability, usage, audit, and runtime-evidence records may link to the Turn, AgentSession, or AEP snapshot and may copy the derived responsible user only where their owning schema requires attribution; they must not duplicate another `ActorRef`, select a replacement actor, or become current-authority records.
 
@@ -644,6 +593,8 @@ A full data-root backup includes the Core database and therefore preserves users
 
 ## Current Implementation Projection
 
+The foundation below implements the preceding role-based contract. The active-member target above is not implemented: current resolver/handler ceilings, access-level fields, public projections, and role-matrix tests still need a coherent cutover. Preserving these facts here does not preserve the old role ceiling as target authority.
+
 The following foundation is already implemented:
 
 - Better Auth email/password users and session authentication
@@ -686,18 +637,20 @@ The existing non-Web multi-user responsibility is implemented: owner-independent
 | --- | --- |
 | `packages/protocol` | Add the smallest durable actor and responsible-user attribution needed by user Items, Turn triggers, decisions, and audit. |
 | `packages/app-api-schemas` | Add release-coupled member, invitation, transfer, leave, expected-revision, and authorized Workspace read models. |
-| `packages/policy-kernel` and policy mapping | Reuse the kernel; add fixed role fact and product-operation mappings without a second engine. |
+| `packages/policy-kernel` and policy mapping | Replace fixed-role ceilings with the active-member association, preserving exact product-operation and additional Policy facts. |
 | NanoCore Core DB | Retain the existing registry statuses and owner-membership invariant; add no deletion schema migration; transactionally apply the two deletion status transitions, retain the non-authorizing original-owner membership, remove non-owner memberships, revoke pending invitations, and write the terminal audit and receipt. |
 | NanoCore storage | Move canonical roots and Workspace databases to top-level Workspace scope; remove user-owned routing. |
-| NanoCore auth and routes | Retain centralized operation and resource resolution; add owner-only deletion, tombstone-only recovery, and one process-local Workspace mutation fence covering catalogued mutations and registered late publishers. |
+| NanoCore auth and routes | Retain centralized operation and resource resolution; implement member-initiated deletion with exact actor lineage, tombstone-only recovery, and one process-local Workspace mutation fence covering catalogued mutations and registered late publishers. |
 | Scheduler, AEP, worker control, Gateway | Keep AEP `triggerActor` as the sole runtime actor authority, derive responsible-user authority independently from owner-free storage resolution, and reauthorize only the implemented governed effects named above. |
 | Audit, permission, approval, Action Center | Persist actor attribution, eligible principals, and atomic terminal claims. |
 | Search and Quick Chat | Derive shared visibility from membership and keep Quick Chat owner-only; automation replacement remains with the recurring-trigger specification. |
 | Export, import, backup, restore | Exclude deployment-local access authority from portable export; create the verified deletion recovery export and independent closure; recover through tombstone authority and existing import collision handling; preserve full-backup identity state. |
 | Core Client, operation catalog, CLI, Skill | Project the complete same-release sharing lifecycle and typed conflicts without creating stable cross-release API promises. |
-| Existing Web baseline and rebuilt Web | Keep the existing baseline compiling and consuming changed shared schemas correctly in the same release; add member and invitation management, role visibility, actor labels, conflict UX, and owner-transfer safeguards only in the post-program S10 rebuild. |
+| Existing Web baseline and rebuilt Web | Keep the existing baseline compiling and consuming changed shared schemas correctly in the same release; add member and invitation management, uniform eligibility, actor labels, conflict UX, and owner-transfer safeguards only in the post-program S10 rebuild. |
 
-## One-Way Storage And Schema Migration
+## Pre-Cutover Storage And Schema Migration
+
+This procedure records the already implemented owner-independent storage migration and its former role-based schema. It is implementation evidence, not the new membership cutover plan or permission to reintroduce access levels. Preserve its storage-integrity and no-data-loss criteria; the new cutover removes obsolete role fields and uses the target schema and acceptance above/below.
 
 The migration is offline, explicit, one-way, and internal-development only. Its invocation owner is one thin dedicated stopped-process operator CLI. The CLI invokes this procedure directly; it is not a boot phase, a restore mode, a reusable migration runner, or a test harness.
 
@@ -744,25 +697,26 @@ The migration report records the failed stage as evidence but is never consulted
 The exact routes and payloads are release-coupled, but the supported behavior must include:
 
 - list current user's authorized Workspaces
-- read effective role and member summary
-- list owner-visible members and invitations
+- read membership status, canonical owner identity, and member summary
+- list Workspace-member-visible members and invitations
 - create invitation for a registered user
 - list the authenticated user's own invitations without a Workspace membership or user filter
 - accept or decline own invitation
 - revoke pending invitation
-- change editor/viewer access with expected revision
 - remove member with expected revision
 - leave Workspace
 - transfer ownership with expected registry revision
 - perform explicit administrator recovery without implicit content access
 - disable one exact user through deployment-admin authority while preserving identity and history
-- delete one exact Workspace through current owner authority with truthful pending and retained-staging projections
+- delete one exact Workspace through current active-member authority with truthful pending and retained-staging projections
 - recover one deleted Workspace through its original-owner tombstone into the existing portable import collision rule
 - return typed access, invitation, terminal-state, and revision conflicts
 
 The Core Client, operation catalog, bundled CLI, and unified Skill project the same operation owners and error semantics in the current program. The rebuilt Web projection must consume those owners in S10 before its release; no temporary Solid implementation is required.
 
-### Exact Release-Coupled Sharing Projection
+### Pre-Cutover API Projection
+
+This is a non-authorizing record of the implemented release-coupled shapes and routes, not the new membership target. The cutover removes `effectiveRole`, `accessLevel`, `proposedAccessLevel`, role-changing commands, and owner-only ordinary admission; it renames administrator self-membership recovery consistently. Existing identity, revision, request-proof, lifecycle, error, and credential constraints remain mandatory. The target behavior is listed above; these old fields and denials MUST NOT be carried forward as acceptance requirements.
 
 The current release uses one closed App API projection over the durable registry, membership, and invitation owners. `AuthorizedWorkspaceSummary` contains exactly the protocol `workspace` record, `ownerUserId`, `effectiveRole`, positive `registryRevision`, and positive `membershipRevision`; the latter lets a non-owner issue `leave` without a separate member lookup. `WorkspaceMember` contains exactly `workspaceId`, `userId`, durable `status`, stored `accessLevel`, nullable `effectiveRole`, nullable `invitationId`, `joinedAt`, nullable `removedAt`, positive `revision`, `createdAt`, and `updatedAt`. An active member has a non-null effective role; a removed member has `effectiveRole=null`; an effective owner is active and has stored `accessLevel=editor`.
 
@@ -819,23 +773,23 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 
 ### L1 Package And App Tests
 
-- Registry owner, active owner membership, restrictive foreign keys, access enums, invitation uniqueness, expiry, and transition constraints.
-- Fixed owner/editor/viewer policy mappings and denial for every missing operation or fact.
-- Token, membership, role downgrade, removal, and server-admin separation.
+- Registry owner, active owner membership, restrictive foreign keys, membership/invitation status enums, invitation uniqueness, expiry, and transition constraints.
+- Equivalent full Workspace operation eligibility for two active members with different owner identity, and denial for every missing operation or required fact.
+- Token restrictions, membership removal, current Policy narrowing, and server-admin separation.
 - Actor attribution and AEP schema version `2` tests accept the exact tagged `ActorRef`, reject legacy scope identity fields, and prove responsible-user derivation without storage ownership.
 - Registry, membership, and invitation compare-and-swap success, stale conflict, retry, and zero-row handling.
-- Workspace deletion tests cover missing or mismatched confirmation, one blocking `EvidenceBundle` and one blocking `WorkspaceQuarantineRecord`, mutation-fence admission and `finally`, one late publication race, natural runtime quiescence pending, same-request replay, same-request changed-input idempotency conflict, a new request after unrelated terminal history, different-request in-progress, multiple-nonterminal or structurally contradictory durable-record recovery failure, each fixed request phase, registry CAS, exact original-owner retry after `deleting`, owner disable before and after that transition, request/registry/path/digest contradiction, the retained original-owner `active` `editor` membership, removed non-owner memberships, revoked pending invitations, `resolveWorkspaceRole = null`, exclusion from `listActiveWorkspaceIdsForActor`, retained staging, cleanup retry, and boot-time fence reconstruction without destructive auto-resume.
+- Workspace deletion tests cover missing or mismatched confirmation, one blocking `EvidenceBundle` and one blocking `WorkspaceQuarantineRecord`, mutation-fence admission and `finally`, one late publication race, natural runtime quiescence pending, same-request replay, same-request changed-input idempotency conflict, a new request after unrelated terminal history, different-request in-progress, multiple-nonterminal or structurally contradictory durable-record recovery failure, each fixed request phase, registry CAS, exact original-owner retry after `deleting`, owner disable before and after that transition, request/registry/path/digest contradiction, the retained original-owner active membership, removed non-owner memberships, revoked pending invitations, ordinary membership authorization denied, exclusion from `listActiveWorkspaceIdsForActor`, retained staging, cleanup retry, and boot-time fence reconstruction without destructive auto-resume.
 - Deleted-Workspace recovery tests prove only the exact active original owner in the registry tombstone can proceed, a closure or `server-admin` credential grants nothing, the original ID remains occupied, import remints a new ID, the caller is its only owner/member, and repository and Vault references remain unbound.
 - Durable first-writer approval and invitation transitions under concurrent requests.
 - Quick Chat non-shareability and the absence of any executable current automation effect path.
-- One table covers the exact current-authority predicate and six Stage 7 boundary mappings without multiplying user, role, effect, restart, or backend combinations.
+- One table covers the exact current-authority predicate and six Stage 7 boundary mappings without multiplying user, effect, restart, or backend combinations.
 - One existing runtime fixture removes or disables the AEP responsible user after launch, proves the next NanoCore-mediated effect and publication are rejected through the existing interrupted or denied owner, and treats any already-submitted worker-native request as the documented bounded compromise.
 
 ### L2 Contract And Conformance Tests
 
 - Every public Workspace operation uses shared schemas and the central access resolver.
 - A two-user fixture proves one canonical Workspace root and identical durable history.
-- One table-driven owner/editor/viewer policy matrix covers the supported operation families without repeating it at higher layers.
+- One table-driven active-member/non-member matrix covers all registered Workspace operation families, with independent token/Policy/Vault/gate restrictions; owner identity alone changes no ordinary operation eligibility.
 - Portable export excludes access relationships and import creates only the target owner membership.
 - Deletion contract tests bind the two public operations, `WorkspaceDeletionState`, request inputs, safe `202` pending result, typed hold and in-progress errors, server-mode credential exclusions, and Core Client/local-mode catalog projections without exposing paths or content.
 - Actor and responsible-user lineage survives export/import without becoming authority.
@@ -843,11 +797,11 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 ### L3 NanoCore Black-Box Tests
 
 - One Core-backed two-user process scenario uses public session and App API operations to prove invitation discovery and acceptance, process restart, owner removal, and a typed non-enumerating denial on the removed user's next request.
-- Viewer, shared-write, `server-admin`, conditional-winner, actor, owner-transfer, and governed-effect predicates remain in the deterministic L1-L2 tables and focused reload tests; L3 does not repeat them or combine them into another scenario.
+- Membership eligibility, shared-write, `server-admin`, conditional-winner, actor, owner-transfer, and governed-effect predicates remain in the deterministic L1-L2 tables and focused reload tests; L3 does not repeat them or combine them into another scenario.
 
 ### L4 Web Browser Tests — deferred to S10
 
-- The rebuilt Web projection later proves authorized Workspace switching, member lifecycle, actor labels, typed conflict handling, and viewer affordances through the already accepted public contract.
+- The rebuilt Web projection later proves authorized Workspace switching, member lifecycle, actor labels, typed conflict handling, and equal-member affordances through the revised public contract.
 
 ### L5 Smoke And Artifact Health
 
@@ -860,8 +814,8 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 
 - The current multi-user baseline adds no new agentic story. The accepted progressive-discovery story proves only that a real Agent can reach the unified Skill, discover and describe an operation, call the bundled CLI, and confirm durable readback.
 - The release acceptance bundle combines that existing Agent/Skill reachability evidence with exact-release catalog and artifact checks for every bearer-reachable sharing operation, the Core-backed two-user L3 invitation/restart/removal path, and deterministic L1-L2 actor-lineage plus current-authority regressions. None of these evidence classes substitutes for another.
-- The L3 path MUST use two canonical users and public session or App API operations to create, invite, discover, accept, restart, remove, and observe a typed non-enumerating denial on the removed user's next request. Deterministic attribution checks MUST preserve the initiating editor's immutable `triggerActor` and responsible-user lineage and the owner's distinct review or decision actor with its existing durable decision and audit linkage.
-- At least one runtime-publication regression MUST revoke or disable the responsible user after worker output exists but before Artifact or Workspace publication, then prove a typed denied or interrupted outcome and zero publication. At least one irreversible-effect regression MUST remove authority after preflight but before the effect and prove that the existing provider, Vault, Git, or equivalent effect owner is not invoked. The exact current-authority table MUST continue to fail closed for a missing, removed, disabled, null-responsibility, insufficient-role, policy-denied, or missing-effect-authority tuple.
+- The L3 path MUST use two canonical users and public session or App API operations to create, invite, discover, accept, restart, remove, and observe a typed non-enumerating denial on the removed user's next request. Deterministic attribution checks MUST preserve the initiating member's immutable `triggerActor` and responsible-user lineage and another eligible member's distinct review or decision actor with its existing durable decision and audit linkage.
+- At least one runtime-publication regression MUST revoke or disable the responsible user after worker output exists but before Artifact or Workspace publication, then prove a typed denied or interrupted outcome and zero publication. At least one irreversible-effect regression MUST remove authority after preflight but before the effect and prove that the existing provider, Vault, Git, or equivalent effect owner is not invoked. The exact current-authority table MUST continue to fail closed for a missing, removed, disabled, null-responsibility, policy-denied, or missing-effect-authority tuple.
 - An already-submitted worker-native request may finish until the next governed check, but its result is non-authorizing evidence and permits no later NanoCore-mediated effect or Workspace publication. Because this package adds or materially revises no L6 story, the repeated-run admission rule in S06 is not triggered.
 
 ## Alternatives Considered
@@ -884,7 +838,7 @@ Rejected because it adds Organization, Team, active-organization session state, 
 
 ### Add A Separate RBAC Engine
 
-Rejected because fixed product roles can be projected into the existing NGAC-aligned kernel. Two authorization engines would drift on every operation.
+Rejected because active membership and any explicit restrictions are projected into the existing NGAC-aligned kernel. Two authorization engines would drift on every operation.
 
 ### Directly Add Members Without Acceptance
 
@@ -908,7 +862,7 @@ Rejected because current shared work needs append ordering, narrow record revisi
 - Owner transfer is cheap and does not touch canonical data.
 - Existing user-nested storage requires one deliberate migration before release.
 - Better Auth remains replaceable and does not become the product authorization model.
-- Fixed roles remain easy to explain while the policy kernel preserves one authority path.
+- Equal active-member eligibility stays simple while the Policy Kernel preserves one authority path.
 - Shared work gains explicit actor and concurrency contracts.
 - Portable Workspace export remains portable because it does not carry target deployment access grants.
 - Pre-account invitation links, email delivery, custom roles, and real-time coediting remain absent until concrete requirements appear.
@@ -918,7 +872,7 @@ Rejected because current shared work needs append ordering, narrow record revisi
 - Risk: authorization is missed on one route. Mitigation: operation metadata and one central resolver are mandatory, with L0 route coverage and multi-user IDOR tests.
 - Risk: owner and membership drift. Mitigation: one canonical owner FK, active owner membership invariant, restrictive deletion, and transactional transfer.
 - Risk: migration leaves mixed paths. Mitigation: offline preflight, exact staging verification, layout marker last, source retention, and no product boot on partial state.
-- Risk: role checks drift outside the policy kernel. Mitigation: fixed role-to-NGAC mappings and tests that handlers consume policy decisions.
+- Risk: obsolete owner/editor/viewer checks survive the cutover. Mitigation: test equal membership eligibility through the central Policy projection and remove old handler ceilings and public access-level fields together.
 - Risk: removed users still act through tokens or workers. Mitigation: intersect current membership on every NanoCore request and governed effect, interrupt stale responsible-user sessions at the next governed boundary, reject their publication, and retain the explicit in-flight worker-native compromise above.
 - Risk: two users overwrite shared state. Mitigation: revision compare-and-swap only on mutable records and existing expected-base file apply.
 - Risk: two users resolve one approval. Mitigation: durable first-writer claim before runtime delivery.
@@ -927,7 +881,7 @@ Rejected because current shared work needs append ordering, narrow record revisi
 
 ## Open Questions
 
-None for V1. Pre-account invitations, verified-email delivery, break-glass access, custom roles, real-time coediting, multi-tenancy, and cross-deployment collaboration require separate accepted designs if concrete demand appears.
+The membership-baseline cutover must freeze removal of access-level fields/operations and member-initiated lifecycle request attribution while preserving deletion retry/recovery, exact human gates, token restrictions, and audit. This is an implementation prerequisite; the equal-member authorization target itself is settled. Pre-account invitations, verified-email delivery, break-glass access, custom roles, real-time coediting, multi-tenancy, and cross-deployment collaboration require separate accepted designs if concrete demand appears.
 
 ## Deferred Work
 

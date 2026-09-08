@@ -96,7 +96,7 @@ Descriptive text can explain intent, but stable protocol, model, ownership, and 
 
 ## Required Core Aspect Set
 
-The current required core aspect set contains 20 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
+The current required core aspect set contains 21 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
 
 ### Foundation
 
@@ -115,6 +115,7 @@ The current required core aspect set contains 20 documents. Future merge or reti
 
 ### Resources And Agent Supply
 
+- `generative-apps.md` — Light Apps, stable data kernels, agent-first understanding and operation, and optional generative presentation.
 - `storage.md` — file-system-first storage layout, SQLite roles, indexes, and workspace data partitioning.
 - `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
@@ -142,7 +143,8 @@ This index routes readers to the owner of each canonical term family. The owner 
 | Human final authority, execution accountability, durable product truth, governed projection, source-traceable learning, explicit trust boundary | `foundation.md` |
 | CoreServer, Workspace, Thread, Turn, Item, Artifact, ApprovalRequest, Channel, TriggerSource | `core-concepts.md` |
 | Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection | `work-model.md` |
-| App, Core, Agent layer boundary, Agent Adapter, workspace service, generative kernel, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
+| App, Core, Agent layer boundary, Agent Adapter, workspace service, Internal Core Role, Core Assistant, Workflow Coordinator, Task Evaluator | `architecture.md` |
+| Light App, Light App Catalog, Generative Kernel, Generative UI, agent-first data and presentation composition | `generative-apps.md` |
 | Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
 | Client/Core communication, Core/agent communication, transport projections, communication planes | `communication.md` |
@@ -185,6 +187,7 @@ Discuss and promote the core docs in this order:
 18. `audit.md`
 19. `metering.md`
 20. `contract-evolution.md`
+21. `generative-apps.md`
 
 ## Promotion And Retirement Rules
 

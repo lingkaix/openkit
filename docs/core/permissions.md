@@ -31,6 +31,14 @@ The permission model gives Core a stable way to decide whether those actions are
 - OpenKit may implement only a subset of NGAC, but every implemented NGAC concept MUST match NGAC definitions, standard terminology, and described semantics. Product adapters MAY expose friendlier names, but Core policy doctrine MUST preserve NGAC as the long-term standard rather than creating a parallel OpenKit-specific authorization model.
 - Workspace authorization is deny-by-default and uses current identity, membership, credential, and resource facts on every governed request.
 
+## Initial Workspace Membership Baseline
+
+An active member is eligible for the full operation set of their Workspace, including every Light App in it. This initial product baseline uses the existing Policy Kernel and does not require owner/editor/viewer grant ceilings, per-app roles, or collection/field ACLs. Membership is evaluated from current authoritative facts; invitations, removed membership, guessed identifiers, and deployment-administrator credentials do not grant Workspace content access.
+
+Eligibility is not unconditional execution. Current credential restrictions, actor responsibility, lifecycle preconditions, disclosure boundaries, Vault grants, explicit Policy restrictions, and required human decisions still apply. Ownership may identify lifecycle continuity and recovery responsibility; it MUST NOT be used as an extra privilege tier for ordinary active-Workspace operations. User-private and deployment-scoped resources do not become Workspace resources through membership.
+
+Future finer permissions use the same subject/action/resource/context and enforcement-point contracts, without requiring a new Light App authorization model or client-side role engine. This is the target authorization baseline; implementation projections must identify any remaining role-based restrictions honestly.
+
 ## Boundary
 
 Permission owns policy and authorization decisions.
@@ -298,7 +306,7 @@ Detailed audit semantics belong to `docs/core/audit.md`.
 - Permission-sensitive actions SHOULD leave audit records or enough metadata for future audit projection.
 - Approval records MUST NOT be treated as a complete permission engine unless a policy requirement explicitly links the approval to an authorization decision.
 - Product UI summaries MUST NOT become the policy source of truth.
-- Workspace product roles MAY be convenient adapter inputs, but their permissions MUST be projected into the policy kernel rather than enforced by a second handler-local role engine.
+- Workspace membership and any future product-role vocabulary MUST be projected into the Policy Kernel rather than enforced by a second handler-local role engine; current fixed roles are pre-cutover adapter facts, not the target membership ceiling.
 - Invitation state, filesystem presence, owner-nested paths, and token scope alone MUST NOT grant Workspace access.
 - Deployment-administrator authority MUST NOT imply ordinary Workspace content authority; explicit audited recovery changes membership or ownership before normal authorization applies.
 - Missing actor, responsible-user, membership, resource, token-binding, or required policy facts MUST fail closed.

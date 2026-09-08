@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 # Agent Plugin Packaging And Worker Supply
 
@@ -37,6 +37,12 @@ The public standard defines packaging and declarations only. OpenKit defines cat
 ## Goals / Non-goals
 
 Cover standalone resource creation plus community package import, grouped management, exact source/version lineage, worker delivery, native discovery, and observable use. Limit portable components to Skills and MCP. Do not implement client-specific extensions merely because a runtime can load them, and do not build or maintain third-party integrations that can be supplied by their existing publishers.
+
+## Generative App Consumer Boundary
+
+[Generative Apps](../core/generative-apps.md) uses the same Agent Plugin and component owners for optional fixed Light App operations. An MCP component may expose UI resources as well as tools; [Generative UI Interaction](20260908-generative_ui_interaction.md) owns native resource admission and exact-byte retention, with isolated HTML hosting remaining a deferred profile without introducing another Plugin format or executable installation lifecycle. A pinned MCP configuration does not prove that a remote server's resource bytes or tool implementation are immutable; consumers must verify their required binding or report it unavailable.
+
+Current supply remains Worker-facing. Selected internal-role consumption requires an explicitly admitted entry path and trusted capability bridge; installation alone never supplies an ordinary Assistant with arbitrary MCP tools or CLI execution. This specification does not implement that bridge or change an internal role's fixed Tool set.
 
 ## Background
 

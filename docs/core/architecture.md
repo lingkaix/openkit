@@ -64,7 +64,11 @@ Runtime durability does not make runtime-native state authoritative. A runtime m
 
 Core may expose governed workspace services for knowledge, artifacts, capabilities, vault mediation, audit, usage, and other workspace-scoped facilities. Each service retains the authority of its owning Core aspect and must not become a raw internal-storage or provider escape hatch.
 
-The Generative Kernel is a reserved future workspace-service boundary for governed durable data used by humans through product projections and by agents through governed interfaces. This boundary does not authorize a current implementation, universal data model, generated application framework, or independent policy and storage plane.
+### Generative Apps
+
+[Generative Apps](generative-apps.md) owns Light App, Generative Kernel, Generative UI, and their agent-first composition. Core services admit schema and data changes, expose semantic discovery and general data operations, and bind presentation actions to their existing owners. Agents understand, compose, and propose; Apps render. A Light App's Kernel is its durable data authority, while UI may also use ordinary product records or external results independently.
+
+These services reuse existing storage, capability, Agent supply, Policy, Vault, and Audit boundaries. Neither Plugin installation nor a generated widget grants authority or creates an execution runtime. Concrete producer allocation, persistence, resource interfaces, and publication are implementation contracts.
 
 ## Internal Core Roles
 

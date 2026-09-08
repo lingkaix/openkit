@@ -228,6 +228,8 @@ The implementation includes package tests for unknown optional field tolerance, 
 
 The `session.concurrent-turns` identifier describes a Harness capability and never authorizes more than one active Turn in one AgentSession or Thread. The current scheduler does not grant this capability.
 
+The accepted initial Generative contracts select `workspace.generative-kernel.v1` for the app/schema/native-record and app-audit portable graph, and `workspace.generative-ui.native-v1` for immutable native presentations and their Item references. These are design-selected identifiers, not claims that current readers or the runtime registry implement them. Add them to the existing shared registry and its executable/spec projection together when implementing those families; until then, writers cannot emit them and unsupported readers must fail closed. The native UI marker does not admit HTML delegates, saved-view lifecycles, or executable Plugin resources.
+
 ## Extension Namespaces
 
 `extensions` fields MUST be namespaced.

@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-02
+updated: 2026-09-09
 ---
 # Audit, Usage, And Evidence Records
 
@@ -110,6 +110,10 @@ Every durable audit, usage, capability-call, permission-decision, and vault-use 
 - Server control-plane rows — auth sessions, server config changes, provider account lifecycle, gateway account rotation, scheduler operations, migrations — home in `core.sqlite`, with evidence under `server/evidence/`.
 - Restart recovery armed, exact adoption, recovery timeout, cleanup CAS fence, and terminal capacity release are scheduler control-plane audit events in `core.sqlite`. They carry product-safe lease, scheduler epoch, process-key-hash reference, backend digest, and workspace lineage, but never the raw process key, bearer token, transcript, or backend credential. There is no challenge or settlement-phase event family.
 - Rows that concern only a user identity — login events, user config changes — home in `user.sqlite`.
+
+The initial Generative Kernel is a named exception within Workspace storage: each successful app/schema/lifecycle/data command writes its existing-schema AuditEvent in that app's `data.sqlite`, in the same transaction as the business change and completed receipt. The event keeps `ownerScope: workspace` and names the app, collection/record IDs or bounded affected-set digest, schema/record revisions, authenticated actor, request and originating Item/Turn/CapabilityCall lineage where present, product operation and outcome. It contains no raw field values or response body. Failure to write this commit evidence rolls back the mutation. Denials and pre-transaction failures follow the existing enforcement owner's audit policy; they do not invent an app authority or emit a fake successful event.
+
+Workspace audit reads aggregate these app-local rows without dual-writing them to `workspace.sqlite`. If a requested complete audit read encounters unavailable app authority, it must report incomplete/unavailable evidence rather than a complete empty history. Portable export inventories each app's audit projection under the existing audit family; the Workspace deletion closure's `records/workspace-audit-events.jsonl` includes app-local events at the same exclusive Workspace cutoff. Legal-hold and retention checks cover the app-local home identically. This is a storage partition of the existing AuditEvent owner, not a new journal or a new permission decision ledger. Native presentation admission AuditEvents stay in Workspace SQLite with their admitted presentation; file-backed Item publication keeps its separate outcome semantics.
 
 When one event spans scopes, the primary row homes at the responsibility subject. A workspace turn consuming a server-owned provider account records its usage row at the workspace, because the workspace is the attribution and billing subject; the server side MAY keep a derived aggregate, and derived aggregates MUST be marked derived and rebuildable, never a second source of truth.
 

@@ -22,7 +22,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 
 - The internal policy-kernel graph algorithm.
 - Authentication, identity session lifecycle, or membership storage.
-- Workspace invitation, owner-transfer, and fixed product-role lifecycle.
+- Workspace invitation, owner-transfer, and active-membership lifecycle.
 - Approval UI copy or Action Center UI layout.
 - Sandbox implementation details beyond derived policy input.
 - Vault secret storage or credential injection mechanics.
@@ -52,7 +52,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 - Do not redefine NGAC concepts through NanoCore product vocabulary.
 - Do not make OpenShell policy artifacts canonical.
 - Do not define UI copy for policy decisions.
-- Do not add organizations, tenants, custom roles, groups, or a second RBAC engine; the first implementation projects the fixed owner/editor/viewer product roles into the policy kernel.
+- Do not add organizations, tenants, custom roles, groups, or a second RBAC engine; the target projects current active membership into the Policy Kernel, with the full registered Workspace operation set and no per-Light-App ACL.
 - Do not preserve runtime-native approval prompts as the long-term permission model.
 
 ## Policy Fact Vocabulary
@@ -119,7 +119,7 @@ Resources:
 Context:
 
 - core mode
-- workspace membership status and fixed access level
+- workspace membership status and required lifecycle identity
 - AgentSession state
 - package snapshot id
 - requested runtime placement
@@ -135,7 +135,7 @@ Context:
 
 ## V1 Product Operation And Access-Right Registry
 
-The following registry is the unique owner of the closed V1 product-operation to access-right mapping for centralized Workspace authorization and the governed effects already named by current specifications. A concrete public operation maps to exactly one primary product operation below. Operation identifiers and access-right identifiers are intentionally distinct. Fixed-role associations are owned separately by `docs/specs/20260715-multi_user_workspace_system.md` and may only narrow through current policy and lifecycle facts.
+The following registry is the unique owner of the closed V1 product-operation to access-right mapping for centralized Workspace authorization and the governed effects already named by current specifications. A concrete public operation maps to exactly one primary product operation below. Operation identifiers and access-right identifiers are intentionally distinct. Active-membership associations are owned separately by `docs/specs/20260715-multi_user_workspace_system.md` and may narrow through current Policy, credentials, gate eligibility, and lifecycle facts. Earlier fixed-role terminology in concrete runtime projections identifies the pre-cutover implementation, not an additional target ceiling.
 
 | Product operation | Required access right | Operation boundary |
 | --- | --- | --- |
@@ -160,7 +160,7 @@ The following registry is the unique owner of the closed V1 product-operation to
 | `workspace.leave` | `ar:workspace-leave` | Active non-owner self-removal. |
 | `deployment.recover` | `ar:deployment-recover` | Explicit deployment-administrator recovery only; never ordinary content access. |
 | `vault.use` | `ar:vault-use` | Target-issued Vault grant use. |
-| `vault.admin` | `ar:vault-admin` | Existing owner-only Workspace Vault reference list/rebind and non-secret grant, injection-plan, and injection-receipt listing. It does not authorize a grant issue/revoke surface. |
+| `vault.admin` | `ar:vault-admin` | Workspace Vault reference list/rebind and non-secret grant, injection-plan, and injection-receipt listing. It does not authorize a grant issue/revoke surface. |
 | `tool.use` | `ar:tool-use` | Governed tool invocation. |
 | `tool.grant` | `ar:tool-grant` | Tool or capability grant administration. |
 | `runtime.launch` | `ar:runtime-launch` | Governed worker launch. |
@@ -172,7 +172,22 @@ A handler may enforce a durable lifecycle precondition such as exact invitee, re
 
 Mutation posture is separate from the product operation. It describes whether a public request may change protected product state or cause an external effect and is the authority for `workspace-readonly` token enforcement. It MUST NOT be inferred from the HTTP method. Incidental redacted audit or usage evidence does not turn an otherwise read-only operation into a content mutation, while an operation such as Knowledge retrieval may be marked mutating when its accepted contract updates authoritative indexes or traces.
 
-Owner-only reads, user-scoped invitation discovery and response, self-leave, and deployment recovery demonstrate why neither HTTP method nor a generic `workspace.read` or `workspace.write` split is sufficient. Owner-visible member and invitation collections map to `membership.manage`; the authenticated invitee's own invitation collection and exact accept or decline map to `invitation.respond`. A new product-operation family or access-right identifier requires an owning-spec update before it is added to runtime metadata. A route-level authorization allow never substitutes for a deeper effect check such as `runtime.launch`, `vault.use`, `network.egress`, or `repo.push`.
+Governed metadata reads, user-scoped invitation discovery and response, self-leave, and deployment recovery demonstrate why neither HTTP method nor a generic `workspace.read` or `workspace.write` split is sufficient. Workspace-member-visible member and invitation collections map to `membership.manage`; the authenticated invitee's own invitation collection and exact accept or decline map to `invitation.respond`. A new product-operation family or access-right identifier requires an owning-spec update before it is added to runtime metadata. A route-level authorization allow never substitutes for a deeper effect check such as `runtime.launch`, `vault.use`, `network.egress`, or `repo.push`.
+
+### Initial Generative Operation Projection
+
+These concrete operation mappings extend the existing registry; they add no access-right identifiers or Light App ACL. Each endpoint/catalog descriptor has one fixed primary product operation and mutation posture. The initial contracts are owned by [Kernel](20260908-generative_kernel_data_operations.md) and [Generative UI](20260908-generative_ui_interaction.md); implementation registration remains required before publication.
+
+| Concrete operation IDs | Primary operation / required right | Mutation posture and additional owner checks |
+| --- | --- | --- |
+| `kernel.apps.list`, `kernel.apps.get`, `kernel.records.list`, `kernel.records.get` | `workspace.read` / `ar:workspace-read` | Read-only; selected Workspace/app identity and schema preconditions. |
+| `kernel.apps.create`, `kernel.schema.update` | `workspace.configure` / `ar:workspace-configure` | Mutating; app/schema CAS, strict schema admission and atomic attributed audit. |
+| `kernel.apps.retire`, `kernel.records.create`, `kernel.records.update`, `kernel.records.batch` | `workspace.write` / `ar:workspace-write` | Mutating; lifecycle/data/revision constraints and app-local receipt. Retiring an app is not deleting the Workspace. |
+| `generative-ui.publish` | `workspace.write` / `ar:workspace-write` | Mutating; exact writable Turn/producer, source read authority and source-to-Thread audience disclosure. |
+| `generative-ui.get`, `generative-ui.resource`, `generative-ui.refresh` | `thread.read` / `ar:thread-read` | Read-only, including the refresh POST; exact destination Thread audience and owning source read authorization. |
+| `generative-ui.action` | `workspace.write` / `ar:workspace-write` | Mutating; only the admitted static Kernel update binding, current Thread/source read eligibility and the owning Kernel mutation checks. |
+
+The refresh and action routes are separate operation descriptors; a client-controlled action name cannot change token mutation posture. The former rejects mutating bindings; the latter rejects refresh bindings. Selected Worker invocation also passes the existing governed `tool.use` route before dispatching the exact owning operation. A shared MCP name cannot collapse these operations into one unclassified grant. The current active-member association supplies these existing rights; authentication, current membership, token intersection, exact Worker lineage, Workspace state, confidentiality and existing effect/gate restrictions still apply. If runtime parent checks still impose legacy roles, reconcile that enforcement seam before publishing these new operations instead of bypassing it at a handler.
 
 ## PermissionDecision
 
@@ -220,7 +235,7 @@ NanoCore should evaluate policy at:
 
 Backend adapters enforce derived runtime policy, but they do not decide product authorization.
 
-The centralized Workspace request resolver uses the low-level kernel only for a transient `allow` or `deny`. Missing registry, membership, role, token, lineage, policy, or dependency facts and any policy-evaluation error fail closed as the same non-enumerating access denial. This ordinary request check never creates `defer`, a pending workflow, an Action Center row, an Approval, or a per-request durable `PermissionDecision`. Existing enforcement points that intentionally own a governed effect may continue to record their accepted durable decisions and linked redacted audit evidence. Stage 4 adds no access-decision ledger or new audit owner.
+The centralized Workspace request resolver uses the low-level kernel only for a transient `allow` or `deny`. Missing registry, membership, token, lineage, policy, or dependency facts and any policy-evaluation error fail closed as the same non-enumerating access denial. This ordinary request check never creates `defer`, a pending workflow, an Action Center row, an Approval, or a per-request durable `PermissionDecision`. Existing enforcement points that intentionally own a governed effect may continue to record their accepted durable decisions and linked redacted audit evidence. Stage 4 adds no access-decision ledger or new audit owner.
 
 ## Outcome Mapping
 
@@ -327,8 +342,8 @@ Minimum facts:
 - responsible user id when an agent, automation, worker shim, or integration acts on behalf of a user
 - workspace id
 - current membership status: active or removed
-- fixed product access: owner, editor, or viewer
-- owner authority derived from the canonical workspace registry rather than a second membership-role copy
+- active Workspace membership as the full operation-eligibility baseline
+- owner lifecycle identity derived from the canonical Workspace registry rather than a second membership-role copy
 - current token workspace binding and scope when a bearer token is used
 - explicit grants and restrictions relevant to the request
 - request origin: app, bundled CLI, Agent Skill, worker tool, internal scheduler, webhook, or integration
@@ -340,7 +355,7 @@ If any required membership fact is unavailable to the ordinary centralized Works
 
 Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential proves deployment-administration authority only; it does not synthesize Workspace membership or an owner/editor/viewer role. Any future break-glass content path requires a separate accepted design, an explicit reason, a bounded grant, and durable audit.
 
-The fixed product roles are adapter vocabulary. The centralized resolver converts the authenticated actor, current membership, owner relationship, token intersection, action, resource, and request context into one policy-kernel request. Handlers consume that decision and must not reimplement role tables or rely on route path/body heuristics.
+The active-member association is adapter vocabulary; fixed owner/editor/viewer ceilings remain only in the pre-cutover runtime. The centralized resolver converts the authenticated actor, current membership, owner relationship, token intersection, action, resource, and request context into one policy-kernel request. Handlers consume that decision and must not reimplement role tables or rely on route path/body heuristics.
 
 ## Resolved Decisions
 
@@ -351,14 +366,14 @@ The fixed product roles are adapter vocabulary. The centralized resolver convert
 - Launch must be blocked for denied runtime placement, workspace root access, secret injection, vault grant, sandbox containment, or required capability routing. Optional capability degradation may produce degraded readiness instead of blocking launch when policy marks the capability optional.
 - Product diagnostics may include decision id, result, reason code, enforcement point, redacted subject/resource/context summaries, policy snapshot id, and matched policy ids. They must not expose secret values, unrestricted path lists, raw membership graphs, raw provider payloads, or sensitive source contents.
 - Policy changes during an active worker session should update future checks when safe, mark the session stale when setup or resource assumptions changed, and interrupt or recycle the session when a newly denied high-risk action would otherwise remain possible.
-- Server mode requires explicit actor, responsible user, Workspace membership, role or principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
-- Owner/editor/viewer are fixed product roles projected into the NGAC-aligned kernel, not a second authorization engine.
+- Server mode requires explicit actor, responsible user, Workspace membership, exact principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
+- Current active membership supplies the full Workspace operation association through the NGAC-aligned kernel; finer constraints use that same owner rather than a second authorization engine.
 - Deployment-administrator authority and Workspace content authority are separate; `server-admin` has no implicit content bypass.
 
 ## Deferred / Future Work
 
 - Extend the accepted V1 product-operation registry only when a new owning specification introduces a materially different authorization family.
-- Add broader product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests outside the fixed-role Workspace authorization slice.
+- Add broader product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests outside the active-membership Workspace authorization slice.
 - Extend or wrap the policy kernel itself to produce `require_approval`, `require_escalation`, `defer`, `not_applicable`, and policy errors instead of mapping those product outcomes in NanoCore helper code.
 - Bind future worker-session families and future AEP snapshot producers to policy snapshot ids as they ship.
 - Replace remaining runtime-native approval prompts with policy-originated approval gates when their owning runtime surfaces are migrated.
@@ -375,7 +390,7 @@ The fixed product roles are adapter vocabulary. The centralized resolver convert
 - OpenShell derived-policy tests that assert NanoCore-authored intent, trust-boundary rejection, and acceptance of the structured fixture by NanoHost's current SDK parse boundary.
 - Fail-closed tests for policy engine errors.
 - Audit linkage tests for every decision.
-- Role-matrix tests for owner, editor, viewer, removed member, invitee, unrelated user, token-bound actor, and deployment administrator.
+- Membership-baseline tests give all active members equivalent eligibility, deny removed members, invitees, unrelated users, and deployment-administrator-only credentials, and preserve token, Policy, Vault, exact-gate, and lifecycle constraints. Current role-matrix tests are pre-cutover evidence and must be replaced coherently with the implementation.
 - Coverage tests proving every workspace-addressed public operation declares the metadata consumed by the centralized resolver.
 
 ## Risks & Mitigations

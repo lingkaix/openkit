@@ -72,7 +72,7 @@ The rebuilt `apps/web` MUST use the following stack.
 - **Design-system source: Adobe Spectrum.** Spectrum design tokens are the source of visual truth. They are projected into a Tailwind theme via the token bridge (below). Component visuals MUST reference semantic theme tokens, never hard-coded palette values.
 - **Accessible behavior layer: React Aria Components** (`react-aria-components`). OpenKit primitives wrap React Aria behavior and apply Spectrum-tokened Tailwind styling. This is the default; the full React Spectrum component library is not the default.
 - **daisyUI: removed.** daisyUI cannot be Spectrum-faithful and conflicts with React Aria. Its "low maintenance" only holds when its generic look is acceptable, which it is not here.
-- **Generative UI: A2UI.** Agent-declared UI is expressed as A2UI declarative JSON and rendered with A2UI's official React renderer over the shared web-core, mapped to OpenKit's Spectrum-tokened component set. Target the stable `v0.9.x` family and track the `v1.0` release candidate.
+- **Generative UI: A2UI.** Agent-declared UI is expressed as A2UI declarative JSON and rendered with A2UI's official React renderer over the shared web-core, mapped to OpenKit's Spectrum-tokened component set. Start on protocol `v0.9` now, inspect `v1.0` candidate improvements, and target eventual `v1.0` compatibility. Neither upstream stable release nor official renderer v1.0 availability gates current work. Package versions and protocol versions are distinct. A2UI organizes native components and one generic PluginWidget for specialized, registered MCP Apps HTML. Web owns isolated iframe hosting and standard bridge integration; Plugin code never runs in the host DOM. Presentation, action, resource identity, host capability boundaries, and saved-view behavior are owned separately by [Generative UI Interaction](20260908-generative_ui_interaction.md); Kernel is not a prerequisite for UI over existing sources.
 - **Icons: Iconify with Remix Icon (unchanged).** Keep the existing icon pattern; do not introduce a new icon stack. Do not handcraft SVG icons when an appropriate Remix Icon exists.
 - **Dependencies are direct.** The Adobe Spectrum token package and the A2UI React renderer are direct dependencies of `apps/web`, not vendored snapshots. A vendored snapshot is a fallback only if a licensing or stability issue later requires it.
 - **Rebuild is in place.** `apps/web` is rebuilt in place on the new stack; no parallel `web-next` app is created.
@@ -92,7 +92,7 @@ The rebuilt `apps/web` MUST use the following stack.
 
 - Server state lives in TanStack Query; UI state lives in Zustand; the two MUST NOT overlap for the same datum.
 - OpenKit component primitives MUST derive interaction and accessibility behavior from React Aria Components rather than reimplementing focus, keyboard, and ARIA semantics by hand.
-- Generative surfaces MUST render through the A2UI renderer + OpenKit component mapping; they MUST NOT execute arbitrary agent-provided code.
+- Generative surfaces MUST render through A2UI and the OpenKit mapping. The admitted PluginWidget component MAY delegate a region to registered MCP Apps HTML through the isolated host and standard bridge; no arbitrary agent-provided code may execute in the host DOM. Unknown components MUST NOT trigger an iframe fallback. Isolation, resource identity, current-authority actions, accessibility, local failure, and bridge conformance require the Generative UI contract before publication.
 - The shared Composer keeps only its editable draft, selected target reference, selected logical model, selected Artifact references, pending local file import, and retry request identity in component or UI state. Target catalogs and accepted submissions are server state owned by TanStack Query and `@openkit/core-client`; neither is copied into Zustand.
 
 ### Unified Composer component boundary
@@ -173,7 +173,7 @@ Internal development: no backward-compatibility layers are preserved; the clean 
 
 ## Open Questions
 
-- [Non-blocking] A2UI version pin and the trigger for adopting the `v1.0` release candidate.
+- [Non-blocking] Exact mutually compatible package pins for the protocol v0.9 implementation and the concrete migration to eventual v1.0 interoperability; no upstream release-wait condition applies.
 - [Non-blocking] Where, if anywhere, to selectively adopt full React Spectrum components for complex widgets instead of custom React Aria + Tailwind.
 
 Resolved target: icons stay on Iconify + Remix Icon; `apps/web` is rebuilt in place; the Spectrum token package and A2UI renderer must become direct dependencies before stack conformance is complete. These decisions are recorded in the Decision section.
@@ -181,7 +181,7 @@ Resolved target: icons stay on Iconify + Remix Icon; `apps/web` is rebuilt in pl
 ## Deferred / Future Work
 
 - Packaging the SPA into the Tauri desktop shell described in `docs/product-vision.md`.
-- A shared A2UI component catalog reused across generative surfaces.
+- Catalog expansion beyond the bounded component mapping needed by the first accepted Generative UI interaction.
 - Selective React Spectrum adoption for the heaviest widgets if custom primitives prove costly.
 
 ## Stack-Conformance Backlog

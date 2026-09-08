@@ -68,6 +68,9 @@ Current specs live at the root of this directory. Read the relevant core documen
 
 Kernel, protocol, and product surfaces:
 
+- [Generative Kernel Data And Operations](./20260908-generative_kernel_data_operations.md) — Accepted; initial MVP contract, implementation not started.
+- [Generative UI Interaction](./20260908-generative_ui_interaction.md) — Accepted; initial native MVP contract, implementation not started.
+
 - [`20260715-contract_stability_baseline.md`](./20260715-contract_stability_baseline.md)
 - [`20260528-core_client_boundary.md`](./20260528-core_client_boundary.md)
 - [`20260628-nanocore_config_identity_contract.md`](./20260628-nanocore_config_identity_contract.md)

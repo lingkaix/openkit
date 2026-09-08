@@ -189,6 +189,12 @@ Workers do not receive arbitrary MCP server command lines, tokens, or remote URL
 
 MCP tool calls must produce `CapabilityCall`, `UsageRecord` where measurable, and `AuditEvent` records.
 
+### Built-In Generative Target
+
+The initial Kernel/native-UI profile selects one built-in `openkit-generative` MCP descriptor through the existing immutable AEP supply boundary. This identity is reserved for the Core-owned adapter and cannot be replaced by a Workspace command, arbitrary remote URL, or Plugin with the same display name. It offers only implemented selected operation-specific tools from [Kernel](20260908-generative_kernel_data_operations.md) and [Generative UI](20260908-generative_ui_interaction.md), using their shared strict request/result schemas. Operation IDs normalize dots and hyphens to underscores for MCP tool names; the descriptor checks uniqueness.
+
+The authenticated package session resolves actor, Workspace, Thread, Turn, AgentSession and selected tools. Claimed scope must agree and cannot override this context. The gateway invokes the owning Core command directly, preserving request ID, exact operation authorization, Audit/CapabilityCall lineage, limits and result admission; it must not recursively call its own MCP HTTP endpoint. No data-root mount, SQLite handle, shell command, capability family, per-app MCP process, or user-facing MCP replacement is introduced. Native UI resources are resolved by the authenticated Core/Web resource path; this slice does not add a Worker `resources/read` family. Missing implementation/selection is unavailable and is not advertised as callable. The end-user AI interface remains the existing unified Skill/CLI, and arbitrary internal-agent MCP loading remains deferred.
+
 ## MCP Schema Retention Baseline
 
 MCP catalog entries should preserve enough schema evidence for replay and debugging without storing raw privileged payloads by default.

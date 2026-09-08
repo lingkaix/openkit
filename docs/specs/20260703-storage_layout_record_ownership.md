@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 # Storage Layout And Record Ownership
 
@@ -70,6 +70,28 @@ The important call is to stop organizing persistence by feature module. Storage 
 `docs/core/storage.md` already establishes that OpenKit is file-system first and that SQLite is a companion store. `docs/product-vision.md` states that SQLite files should be split by ownership scope: `core.sqlite`, `user.sqlite`, and `workspace.sqlite`.
 
 The missing decision is the concrete target layout and record ownership rule, especially for runtime records produced by governed worker containers and OpenShell backends.
+
+## Generative App Storage Contract
+
+The initial [Kernel contract](20260908-generative_kernel_data_operations.md) uses `DATA_ROOT/workspaces/<workspaceId>/light-apps/<appId>/data.sqlite` and immutable `definitions/<sha256>.json` beneath the same app directory. This is a Workspace-owned physical partition, not a new owner scope. Only Core resolves these paths from validated identifiers. Agents receive schema content through governed interfaces, never authoritative filesystem handles. Open existing stores without create-on-read behavior; reject symlinks, wrong Workspace/app identity, missing authority and unsupported layouts while preserving original bytes.
+
+| App database graph | Authoritative content |
+| --- | --- |
+| `app_meta` (singleton) | App/Workspace IDs, app revision, current schema revision, active/retired state, creation/update timestamps, creator and request lineage. Title/purpose project the current definition rather than becoming a second independently mutable value. |
+| `schema_revisions` | Immutable positive revision, parent revision (null for 1), exact admitted schema JSON, its file digest, admission time, actor and request lineage. Collection/field/index metadata belongs to this document; separate catalog or metadata indexes are derived. |
+| `c_<collection UUID without hyphens>` | Native records with fixed metadata and `f_<field UUID without hyphens>` data columns. Initial types, constraints and foreign keys are owned by the Kernel spec. |
+| Existing completed-receipt table | Existing closed metadata schema, routed to this database for Kernel commands. No response bodies or second receipt lifecycle. |
+| Existing `AuditEvent` table projection | Attributed Kernel commits in the same transaction, under the existing Audit owner and Workspace scope. No second audit model. |
+
+Use foreign keys, WAL and `synchronous=FULL`; lock waiting is at most 1,000 ms. Definition admission persists and fsyncs immutable file bytes plus their directories before atomically committing schema/data metadata, DDL, AuditEvent and receipt in the app database. File and database writes are not one transaction. A crash before commit leaves the previous schema active; an unreferenced file is inert. Initial create uses the Kernel's request-derived app identity and exclusive-directory rule. A valid committed app with a missing catalog index remains discoverable; an index with missing/corrupt authority never activates an empty replacement.
+
+The Workspace Light App catalog index is rebuildable by inventorying app directories and valid app metadata; it owns no app revision, membership, installation, or lifecycle. Rebuild must preserve an unavailable indication for a previously discovered app whose authority is now missing. Every physical native table/column must match admitted schema inventory; unexpected business tables/columns or inconsistent metadata require inspection, not silent omission or automatic repair. Current schema bytes and digest are verified on open; historical definition bytes are verified when read and during complete backup/export. Missing required historical bytes make complete export/backup fail rather than fabricating history from the current definition.
+
+[Generative UI](20260908-generative_ui_interaction.md) adds `generative_presentations` in `workspace.sqlite` as its immutable retained-declaration graph; its exact fields are owned by that spec. A unique `(workspaceId,requestId)` constraint prevents duplicate local admission; portable imported presentations have a null request ID and retain source lineage only in the non-authorizing `originRequestId` and existing Workspace imported-history provenance. The existing file-backed Item log owns `generative-ui-reference` Items. Presentation admission and its AuditEvent commit locally; Item publication and the later Workspace completed receipt remain separate effects with the explicit inspect/recovery contract. No saved-view table, material row, automatic Artifact, pinned HTML-resource store, or publication runner is introduced in the native slice.
+
+Kernel data and its receipts/audit never depend on `ATTACH` or a transaction in `workspace.sqlite`. Existing Workspace audit reads may aggregate app-local audit rows, and existing catalog reads may aggregate app metadata; those are projections only. Missing/corrupt app authority marks that app unavailable and preserves its original bytes. Healthy apps remain usable; critical shared Core/User/Workspace corruption retains the existing boot-failure behavior. App/schema creation and every app write acquire the existing Workspace mutation admission so backup/export, deletion and lifecycle fences cover these stores as well.
+
+The required portable graph, captured-definition pairing, app/audit inventory, and import rewriting are fixed by [Workspace Backup, Export, And Import](20260704-workspace_backup_export_import.md). Runtime implementation remains absent; this section fixes ownership and placement rather than claiming the existing store/exporter supports them.
 
 ## Decision
 
@@ -184,9 +206,11 @@ Derived records must be rebuildable from file-backed records or authoritative SQ
 
 ## Authoritative SQLite Integrity Failure
 
-Core, User, and Workspace SQLite databases contain authoritative record families. If an existing authoritative database fails `PRAGMA quick_check` or cannot be opened for the integrity check, NanoCore MUST fail process boot during the critical storage phase and MUST leave the original database file at its canonical path with its bytes unchanged.
+The Core, User, and shared Workspace SQLite stores are process-critical. If an existing database in one of these scopes fails `PRAGMA quick_check` or cannot be opened for the integrity check, NanoCore MUST fail process boot during the critical storage phase and MUST leave the original database file at its canonical path with its bytes unchanged.
 
 Boot MUST NOT move the file to quarantine, delete it, repair it in place, create a fresh replacement, run migrations against a replacement, admit product work, initialize product identity, issue a server bootstrap credential, or bind the product listener. Recovery is an explicit stopped-process operator action such as restoring a verified backup or copying the original for offline inspection; boot does not invent recovery authority.
+
+A Light App SQLite database is an independently contained authority scope. If its open, integrity, app identity, or admitted-definition checks fail, preserve the original bytes and mark that app unavailable; deny its data reads, mutations, schema activation, and dependent effects. Other apps and unrelated Workspace services may start only when their own critical stores are valid. A corrupt app is never treated as empty or rebuilt from discovery/UI projections. App restore is explicit under the existing storage recovery authority. Acceptance requires a corrupt-app fixture to deny that app while an unrelated app remains usable; corruption of Core/User/shared Workspace storage retains the process-boot failure rule above. This app-specific handling is a target extension, not an implemented recovery claim.
 
 This fail-closed rule does not apply to derived SQLite indexes and read models. A corrupt derived store MUST be deleted and rebuilt from its file-backed source of truth or authoritative ledgers, and the owning subsystem remains explicitly degraded until rebuild completes.
 

@@ -1,12 +1,14 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-08
+updated: 2026-09-09
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V2
 
 ## Owns
+
+- The Light App-scoped import/export package envelope, manifest/digest verification, staged admission, selected data/resource closure, and identity rewriting; exact format fields remain proposed by the Generative Kernel specification until frozen here.
 
 - The workspace export format: export tree layout, root manifest shape, content inventory, and offline verifiability rules.
 - Content inclusion, exclusion, and redaction rules for workspace exports.
@@ -216,6 +218,33 @@ Complete data-root backup and same-deployment restore retain canonical catalogs,
 - Hot backup MUST copy the file tree first and then snapshot every SQLite database through the SQLite backup API. The manifest marks the result crash-consistent at the copied-file and individual-database level; it does not claim one transaction or automatic reconciliation across a newer database snapshot and older copied files.
 - A backup MUST carry a manifest with capture timestamps, source deployment id, mode, consistency, exact file inventory, and per-file digests. The implemented offline verifier rejects links, extra or absent files, unsafe paths, digest mismatches, and unsupported required features. Its implemented integrity boundary is the parsed manifest plus the verified per-file inventory; unlike workspace V2 verification, it does not separately recompute the manifest `contentDigest` from that inventory or independently authenticate the manifest.
 - Restore MUST verify before mutation, replace the target data root through same-filesystem staging and rename, then reuse boot-time SQLite integrity recovery, migrations, derived-index rebuild, and runtime restart recovery. Restore remains a stopped-server operator operation rather than a live App API or operation-catalog mutation.
+
+### Generative App And Presentation Coverage
+
+The initial Kernel and native UI extend the existing Workspace V2 record graph; they do not create a binary database export or an app-package transport. Exports containing them declare `workspace.generative-kernel.v1` and/or `workspace.generative-ui.native-v1` and are rejected by readers that do not implement those features. These identifiers must be registered in the existing shared registry before implementation emits them. The following paths are relative to the existing export root and all files use the existing record-envelope, manifest inventory and digest rules.
+
+| Portable path/family | Contents and coverage |
+| --- | --- |
+| `records/light-apps.jsonl` / `light-app` | Every app's identity, Workspace, lifecycle, app/schema revisions and necessary attributed lineage. The derived catalog is excluded. |
+| `records/light-app-definitions.jsonl` / `light-app-definition` | Every retained admitted schema revision, parent relation, exact UTF-8 schema text and SHA-256 digest, with app/revision identity and admission lineage. This carries the definition bytes; no server file path is portable. |
+| `records/light-app-records.jsonl` / `light-app-record` | Complete native-table inventory projected as app/collection/record identity, revisions/timestamps/lineage and typed values keyed by stable field ID. No raw SQL, DDL or database file. |
+| Existing portable AuditEvent family | Includes app-local AuditEvents with app/record lineage; physical database partitioning does not exclude them. |
+| `records/generative-presentations.jsonl` / `generative-presentation` | Every retained immutable native presentation, including request-owned unpublished ones, and its exact messages, source/action bindings, digests, lineage and intended Item identity. |
+| Existing Item-log family | `generative-ui-reference` Items with exact presentation references and text fallback. All references require matching presentation authority. |
+
+Initial source export holds the existing exclusive Workspace mutation fence through snapshot capture of the app inventory, each app database and Workspace presentation graph. It then serializes those captured bytes with the existing exporter. This is a bounded local consistent capture using the existing fence, not a transaction spanning SQLite files or external systems. New app creation and schema/data/UI admission must use that same mutation admission. Do not obtain portable data by paging the public records API. Unknown native tables/columns, missing definitions, unresolved app authority, or dangling presentation/Item references fail export instead of silently dropping data. The existing archive size and verification limits still apply.
+
+On import, verify the complete source graph and exact digests before rewriting any identity. Use the existing staged import/new-identity mapping for Workspace, app, presentation, Item, Turn and AuditEvent identities. Collection, field, schema-revision numbers and record IDs are app-local and remain stable inside the reminted app; all references carrying an app ID are rewritten. Native tables and indexes are reconstructed only from the admitted typed schema, never from source SQL. Load definition revisions before data, enforce all constraints and relation integrity, and validate complete counts/inventory before publication. Each app database is part of the existing staged Workspace directory and becomes visible only with that Workspace's coordinated publication; it needs no separate installer or import lifecycle.
+
+Recompute admitted definition digests after rewriting the schema's app identity. Rewrite only schema-defined internal references in presentation `source`, `actions`, and the retained data-model's record metadata/relation fields, then recompute presentation content digests. Never search-and-replace arbitrary text, external IDs, or user-authored field values. Retained component IDs and surface IDs are local to a presentation and remain unchanged. Preserve source identity/digest under existing imported-history lineage; imported historical content never supplies current execution grants. The imported native form may execute only after normal target authorization, exact schema/record binding, and source checks succeed. Unsupported bindings remain unavailable.
+
+Presentation graph validation preserves interrupted publication: a presentation with an absent reserved Item is valid `unpublished` history and its reserved Item ID is reminted consistently; it is not a dangling-reference failure. An Item pointing to a missing/wrong presentation, a mismatched reference or duplicate publication is `inconsistent` and fails complete export/import/restore. Capture and restore preserve this derived condition without publishing or repairing it.
+
+App-local and Workspace command receipts remain non-portable under the existing idempotency classification. Creator/request lineage and AuditEvents are history, not target replay authority. Imported presentations set their active `requestId` to null, retaining source `originRequestId ?? requestId` as non-authorizing `originRequestId` with the existing Workspace imported-history provenance; they do not participate in target duplicate-admission lookup. Credentials, active grants, selected MCP execution bindings and deployment handles are excluded. Preserve external system/instance identities as data without inventing account access. No new saved-view, Plugin byte, MCP declaration or Skill package family is admitted by this native profile. App-scoped schema/resource package export/import remains deferred to this owner's later explicit package contract.
+
+Cold backup includes every app directory and Workspace presentation store under the existing full-data-root contract. Hot backup inventories all app databases, including apps created after startup, captures each with an SQLite-consistent snapshot, and reads every required definition revision/digest from that captured database, not from the live current pointer. If the earlier file-tree copy lacks matching immutable definition bytes, copy those exact digest-addressed bytes into the capture and verify them there. Missing/corrupt bytes fail capture before success; restore validation independently repeats the check. Capture inventories app directories before and after database capture; an app created or an unavailable authority discovered during capture makes that attempt fail explicitly rather than claim completeness. The unchanged individual-snapshot qualification applies: hot backup is not one cross-store point-in-time transaction. App-local receipts and audits are preserved in full deployment backup.
+
+Restore checks app/Workspace identity, SQLite integrity, schema/data/native-table inventory, each referenced definition digest, and every retained presentation/Item reference. Missing authority is preserved for inspection and is never reconstructed from a view or empty default database. The current exporter/backup/import runtime does not yet implement these families; its implementation must extend the existing inventory, required-feature registry, identity rewriting and coverage checks before publishing these capabilities.
 
 ### Data-Root Migration
 

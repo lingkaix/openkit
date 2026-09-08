@@ -70,6 +70,7 @@ Apply these twelve principles as judgments, not as a mandatory workflow:
 
 ## Change Authority
 
+- [DOC-018] MUST NOT modify `docs/product-vision.md` unless the engineer explicitly requests changes to that document. General design, architecture, implementation, or documentation-alignment requests do not authorize editing it.
 - [AUTH-001] Before changing architecture, design, feature behavior, public contract, or durable lifecycle, identify the owner under `docs/core/` or `docs/specs/`. If none covers the decision, discuss and accept an owner before production code, test infrastructure, or public contract changes.
 - [DOC-002] Non-trivial decisions require a specification. Material execution uses `docs/change-execution.md`; a change record preserves intent and evidence but never supplies design authority.
 - [DOC-017] Every material concept's owning Core or specification set MUST preserve five decision classes: exact definition and exclusions; unique durable authority and projection boundary; creation, update, termination, retry, and recovery lifecycle; conflict, missing, stale, restart, and dependency-failure semantics; and externally observable acceptance predicates. A class that does not apply MUST be stated explicitly.
