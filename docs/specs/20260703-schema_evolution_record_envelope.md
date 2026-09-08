@@ -206,7 +206,7 @@ Fail-closed behavior only works when feature names are canonical and discoverabl
 
 Rules:
 
-- `requiredFeatures` values are lowercase dot-separated identifiers of the form `<domain>.<area>.<feature>`, for example `workspace.mount.fuse`, `workspace.writeback.external`, `session.concurrent-turns`, `vault.injection.query-param`, and `audit.retention.legal-hold`.
+- `requiredFeatures` values are lowercase dot-separated identifiers of the form `<domain>.<area>.<feature>`, for example `workspace.mount.fuse`, `workspace.writeback.external`, `session.concurrent-turns`, `vault.injection.query-param`, `audit.retention.legal-hold`, and `agent.resource-catalog.v1`.
 - All feature identifiers MUST be defined in one shared registry exported from a single implementation package and mirrored as a table in this spec's registry section once implementation begins. Writers MUST NOT invent unregistered identifiers.
 - Readers advertise the feature set they support from the same registry; rejection diagnostics MUST name the unsupported identifier.
 - Feature identifiers are never removed after an externally supported release; a withdrawn feature is marked withdrawn so old records still produce a meaningful diagnostic.
@@ -219,6 +219,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 
 | Feature | Status | Description |
 | --- | --- | --- |
+| `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
 | `session.concurrent-turns` | active | A Harness may process active Turns concurrently only across distinct single-flight AgentSessions and Threads. |
 | `vault.injection.query-param` | active | Vault injection may place secret references into query parameters. |

@@ -16,7 +16,6 @@ import {
   type InternalRoleProfilesConfig,
   InternalRoleProfilesConfigSchema,
   parseWorkspaceDataSourceCatalog,
-  parseWorkspaceMcpServerCatalog,
   type UserConfig,
   UserConfigSchema,
   type WorkspaceConfig,
@@ -32,6 +31,10 @@ import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import {
+  loadWorkspaceResourceCatalog,
+  projectEffectiveWorkspaceMcpCatalog,
+} from '../catalog/resource-catalog.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { parseJsoncObject } from './jsonc.js';
 import {
@@ -323,7 +326,7 @@ export function loadRuntimeConfig(
       },
       {
         kind: 'workspace-mcp-server-catalogs',
-        path: 'DATA_ROOT/workspaces/*/config/mcp-servers.jsonc',
+        path: 'DATA_ROOT/workspaces/*/catalog/catalog.json',
       },
     ],
     ...(options.loadedAt ? { loadedAt: options.loadedAt } : {}),
@@ -1155,13 +1158,13 @@ function loadWorkspaceMcpServerCatalogs(dataRoot: string): LoadedWorkspaceMcpSer
     (left, right) => left.name.localeCompare(right.name)
   )) {
     if (!workspaceEntry.isDirectory()) continue;
-    const catalogPath = join(workspacesRoot, workspaceEntry.name, 'config', 'mcp-servers.jsonc');
+    const catalogPath = join(workspacesRoot, workspaceEntry.name, 'catalog', 'catalog.json');
     if (!existsSync(catalogPath)) continue;
     catalogs.push({
       workspaceId: workspaceEntry.name,
       path: catalogPath,
-      catalog: parseWorkspaceMcpServerCatalog(
-        parseJsoncObject(readFileSync(catalogPath, 'utf8'), catalogPath)
+      catalog: projectEffectiveWorkspaceMcpCatalog(
+        loadWorkspaceResourceCatalog(dataRoot, workspaceEntry.name)
       ),
     });
   }

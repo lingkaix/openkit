@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -24,6 +24,7 @@ import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
 import {
   resolveAgentEnvironmentPackage,
   resolveAgentEnvironmentPackageMetadata,
@@ -431,12 +432,127 @@ describe('agent environment package resolver', () => {
     );
   });
 
+  it('resolves catalog Skill supply onto the AgentSession-private worker-supply root', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-skill-catalog-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    try {
+      const turn = createTurnFixture('Use catalog skill');
+      const created = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        displayName: 'Repo guidelines',
+        expectedRevision: 0,
+        producer: { id: 'user_local', kind: 'user' },
+        tree: [
+          {
+            contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+            kind: 'file',
+            path: 'SKILL.md',
+          },
+        ],
+        workspaceId: turn.workspaceId,
+      });
+      const resolved = resolveAgentEnvironmentPackage({
+        agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
+        agentSessionId: 'session_skill_1',
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        requestId: 'req_skill_1',
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      });
+      expect(resolved.supply.skills).toEqual([
+        expect.objectContaining({
+          id: 'repo-guidelines',
+          integrity: { sha256: created.version.digest },
+          materialization: {
+            kind: 'filesystem-copy',
+            targetPath: '/openkit/sessions/session_skill_1/supply/inputs/repo-guidelines',
+          },
+          target: '/openkit/sessions/session_skill_1/supply/inputs/repo-guidelines',
+        }),
+      ]);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('resolves a pinned Skill digest instead of a later current version', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-skill-pin-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    try {
+      const turn = createTurnFixture('Use pinned skill');
+      const first = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        displayName: 'Repo guidelines',
+        expectedRevision: 0,
+        producer: { id: 'user_local', kind: 'user' },
+        tree: [
+          {
+            contentBase64: Buffer.from('# v1\n', 'utf8').toString('base64'),
+            kind: 'file',
+            path: 'SKILL.md',
+          },
+        ],
+        workspaceId: turn.workspaceId,
+      });
+      const pinned = setWorkspaceSkillPin({
+        dataRoot,
+        digest: first.version.digest,
+        entryId: 'repo-guidelines',
+        expectedRevision: first.catalog.revision,
+        workspaceId: turn.workspaceId,
+      });
+      const second = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:01:00.000Z',
+        dataRoot,
+        displayName: 'Repo guidelines',
+        expectedRevision: pinned.revision,
+        id: 'repo-guidelines',
+        producer: { id: 'user_local', kind: 'user' },
+        tree: [
+          {
+            contentBase64: Buffer.from('# v2\n', 'utf8').toString('base64'),
+            kind: 'file',
+            path: 'SKILL.md',
+          },
+        ],
+        workspaceId: turn.workspaceId,
+      });
+      const resolved = resolveAgentEnvironmentPackage({
+        agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
+        agentSessionId: 'session_skill_pin',
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: '2026-09-08T00:02:00.000Z',
+        requestId: 'req_skill_pin',
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+      });
+      expect(second.catalog.skills.entries[0]?.currentDigest).toBe(second.version.digest);
+      expect(resolved.supply.skills[0]?.integrity).toEqual({ sha256: first.version.digest });
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('resolves selected MCP supply without exposing its server topology', () => {
     const turn = createTurnFixture('Use static supply');
     const resolved = resolveAgentEnvironmentPackage({
       agentSetup: createTestSetup({
         mcpIds: ['github'],
-        skillIds: ['repo-guidelines'],
+        skillIds: [],
       }),
       agentSessionId: 'session_supply_1',
       backend: {
@@ -472,7 +588,7 @@ describe('agent environment package resolver', () => {
       },
     });
 
-    expect(resolved.supply.skills).toEqual([expect.objectContaining({ id: 'repo-guidelines' })]);
+    expect(resolved.supply.skills).toEqual([]);
     expect(resolved.supply.mcpServers).toEqual([
       expect.objectContaining({
         allowedTools: ['echo'],

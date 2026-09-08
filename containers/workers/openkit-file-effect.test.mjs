@@ -38,6 +38,7 @@ const CANONICAL_SLOT_ROOTS = {
   ...CANONICAL_WORKSPACE_SLOT_ROOTS,
   'package-config': '/openkit/sessions',
   'runtime-credential': '/',
+  'worker-supply': '/openkit/sessions',
 };
 
 /** Runs the exported CLI seam with byte input or an exact injected async stream. */
@@ -90,7 +91,8 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
   assert.deepEqual(
     Object.fromEntries(
       Object.entries(installedSlotRoots).filter(
-        ([slot]) => slot !== 'package-config' && slot !== 'runtime-credential'
+        ([slot]) =>
+          slot !== 'package-config' && slot !== 'runtime-credential' && slot !== 'worker-supply'
       )
     ),
     CANONICAL_WORKSPACE_SLOT_ROOTS
@@ -143,6 +145,30 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         assert.equal((await lstat(packageTarget)).mode & 0o777, 0o600);
       }
     }
+
+    const supplyBytes = Buffer.from('# Skill\n');
+    const supplyDigest = `sha256:${createHash('sha256').update(supplyBytes).digest('hex')}`;
+    const supplyPath = 'as-one/supply/inputs/repo-guidelines/SKILL.md';
+    const supplyImport = await invokeFileEffect(
+      runFileEffect,
+      slotRoots,
+      [
+        'reference.import',
+        '--slot',
+        'worker-supply',
+        '--path',
+        supplyPath,
+        '--length',
+        String(supplyBytes.length),
+        '--sha256',
+        supplyDigest,
+      ],
+      supplyBytes
+    );
+    const supplyTarget = join(slotRoots['worker-supply'], supplyPath);
+    assert.equal(supplyImport.exitCode, 0);
+    assert.equal(supplyImport.stderr.length, 0);
+    assert.deepEqual(await readFile(supplyTarget), supplyBytes);
 
     const importedBytes = Buffer.from('immutable context bytes\n');
     const importedDigest = `sha256:${createHash('sha256').update(importedBytes).digest('hex')}`;
@@ -346,6 +372,25 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
         input: importedBytes,
         label: 'adjacent package config path',
         privateValues: ['adjacent.json'],
+      },
+      {
+        argv: validImportArgs('worker-supply', 'as-one/supply/adjacent.md'),
+        input: importedBytes,
+        label: 'adjacent worker-supply path',
+        privateValues: ['as-one/supply/adjacent.md'],
+      },
+      {
+        argv: [
+          'file.export',
+          '--slot',
+          'worker-supply',
+          '--path',
+          supplyPath,
+          '--max-length',
+          String(MAX_FILE_BYTES),
+        ],
+        label: 'worker-supply export',
+        privateValues: [supplyPath],
       },
       {
         argv: [

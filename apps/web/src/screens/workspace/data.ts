@@ -25,6 +25,7 @@ export const workspaceKeys = {
   knowledgeIndexes: (workspaceId: string) => ['knowledge-indexes', workspaceId] as const,
   dashboard: (workspaceId: string) => ['dashboard', workspaceId] as const,
   repositories: (workspaceId: string) => ['repositories', workspaceId] as const,
+  catalog: (workspaceId: string) => ['catalog', workspaceId] as const,
 };
 
 /** Re-export workspace selection for Overview / Agents / Knowledge / First-run. */
@@ -694,6 +695,275 @@ export function agentInitials(name: string): string {
 export function agentHue(index: number): 'scout' | 'quill' | 'ledger' | 'pixel' {
   const hues = ['scout', 'quill', 'ledger', 'pixel'] as const;
   return hues[index % hues.length]!;
+}
+
+/** Workspace catalog summary from `catalog.get`. */
+export type WorkspaceCatalogSummary = Awaited<ReturnType<CoreClient['catalog']['get']>>;
+
+/**
+ * Reads the selected-Workspace Skill, MCP, and plugin catalog.
+ *
+ * @param workspaceId Validated selected Workspace, or null before discovery settles.
+ * @returns One TanStack query over the catalog summary.
+ */
+export function useWorkspaceCatalog(workspaceId: string | null) {
+  const client = useCoreClient();
+  return useQuery({
+    queryKey: workspaceKeys.catalog(workspaceId ?? ''),
+    queryFn: () => client.catalog.get(workspaceId as string),
+    enabled: Boolean(workspaceId),
+    retry: false,
+  });
+}
+
+/** Exact Skill import bound to one Workspace revision. */
+export type ImportSkillCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['catalog']['importSkill']>[1];
+};
+
+/** @returns Mutation that imports one Skill and refreshes the catalog. */
+export function useImportSkill() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: ImportSkillCommand) =>
+      client.catalog.importSkill(command.workspaceId, command.input),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact Skill pin change bound to one Workspace revision. */
+export type SetSkillPinCommand = {
+  digest: string | null;
+  expectedRevision: number;
+  skillId: string;
+  workspaceId: string;
+};
+
+/** @returns Mutation that pins or unpins one Skill. */
+export function useSetSkillPin() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: SetSkillPinCommand) =>
+      client.catalog.setSkillPin(command.workspaceId, command.skillId, {
+        digest: command.digest,
+        expectedRevision: command.expectedRevision,
+        requestId: createRequestId(),
+      }),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact Skill candidate submission bound to one Workspace revision. */
+export type SubmitSkillCandidateCommand = {
+  workspaceId: string;
+  skillId: string;
+  input: Parameters<CoreClient['catalog']['submitSkillCandidate']>[2];
+};
+
+/** @returns Mutation that submits one Skill candidate. */
+export function useSubmitSkillCandidate() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: SubmitSkillCandidateCommand) =>
+      client.catalog.submitSkillCandidate(command.workspaceId, command.skillId, command.input),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact Skill candidate decision bound to one Workspace revision. */
+export type DecideSkillCandidateCommand = {
+  candidateId: string;
+  decision: 'promoted' | 'rejected' | 'withdrawn';
+  expectedRevision: number;
+  workspaceId: string;
+};
+
+/** @returns Mutation that decides one Skill candidate. */
+export function useDecideSkillCandidate() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: DecideSkillCandidateCommand) =>
+      client.catalog.decideSkillCandidate(command.workspaceId, command.candidateId, {
+        decision: command.decision,
+        expectedRevision: command.expectedRevision,
+        requestId: createRequestId(),
+      }),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact Skill default selection bound to one Workspace revision. */
+export type SelectSkillDefaultCommand = {
+  digest: string;
+  expectedRevision: number;
+  skillId: string;
+  workspaceId: string;
+};
+
+/** @returns Mutation that selects one Skill default digest. */
+export function useSelectSkillDefault() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: SelectSkillDefaultCommand) =>
+      client.catalog.selectSkillDefault(command.workspaceId, command.skillId, {
+        digest: command.digest,
+        expectedRevision: command.expectedRevision,
+        requestId: createRequestId(),
+      }),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact MCP version selection bound to one Workspace revision. */
+export type SelectMcpVersionCommand = {
+  digest: string;
+  expectedRevision: number;
+  mcpId: string;
+  workspaceId: string;
+};
+
+/** @returns Mutation that selects one MCP configuration version. */
+export function useSelectMcpVersion() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: SelectMcpVersionCommand) =>
+      client.catalog.selectMcpVersion(command.workspaceId, command.mcpId, {
+        digest: command.digest,
+        expectedRevision: command.expectedRevision,
+        requestId: createRequestId(),
+      }),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact MCP binding change bound to one Workspace revision. */
+export type UpdateMcpBindingCommand = {
+  allowedTools: string[];
+  approvalRequiredTools: string[];
+  bindingRevision: number;
+  deniedTools: string[];
+  enabled: boolean;
+  expectedRevision: number;
+  mcpId: string;
+  schemaPolicy: 'pinned' | 'tracking';
+  timeoutMs: number;
+  workspaceId: string;
+};
+
+/** @returns Mutation that updates one MCP binding. */
+export function useUpdateMcpBinding() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: UpdateMcpBindingCommand) =>
+      client.catalog.updateMcpBinding(command.workspaceId, command.mcpId, {
+        allowedTools: command.allowedTools,
+        approvalRequiredTools: command.approvalRequiredTools,
+        bindingRevision: command.bindingRevision,
+        deniedTools: command.deniedTools,
+        enabled: command.enabled,
+        expectedRevision: command.expectedRevision,
+        requestId: createRequestId(),
+        schemaPolicy: command.schemaPolicy,
+        timeoutMs: command.timeoutMs,
+      }),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact MCP configuration create bound to one Workspace revision. */
+export type CreateMcpConfigCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['catalog']['createMcpConfig']>[1];
+};
+
+/** @returns Mutation that creates one inactive MCP configuration. */
+export function useCreateMcpConfig() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: CreateMcpConfigCommand) =>
+      client.catalog.createMcpConfig(command.workspaceId, command.input),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
+}
+
+/** Exact plugin import bound to one Workspace revision. */
+export type ImportPluginCommand = {
+  workspaceId: string;
+  input: Parameters<CoreClient['catalog']['importPlugin']>[1];
+};
+
+/** @returns Mutation that imports one Agent Plugin package. */
+export function useImportPlugin() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (command: ImportPluginCommand) =>
+      client.catalog.importPlugin(command.workspaceId, command.input),
+    retry: false,
+    onSuccess: async (_response, command) => {
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.catalog(command.workspaceId),
+        exact: true,
+      });
+    },
+  });
 }
 
 /** Human-readable waiting label from an ISO timestamp. */

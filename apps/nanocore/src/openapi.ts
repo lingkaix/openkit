@@ -16,6 +16,7 @@ import {
   CancelProviderSubscriptionAccountLoginRequestSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
+  CatalogMutationResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
@@ -23,6 +24,8 @@ import {
   ConvertGoalSteeringToFollowUpRequestSchema,
   ConvertGoalSteeringToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
+  CreateMcpConfigRequestSchema,
+  CreateMcpConfigResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
   CreateProviderSubscriptionAccountRequestSchema,
@@ -34,6 +37,7 @@ import {
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyRequestSchema,
   DataRootBackupVerifyResponseSchema,
+  DecideSkillCandidateRequestSchema,
   DeclineWorkspaceInvitationRequestSchema,
   DecommissionNanoHostResponseSchema,
   DeleteWorkspaceRequestSchema,
@@ -50,11 +54,16 @@ import {
   GetGitPushRecordResponseSchema,
   GetThreadMaterialResponseSchema,
   GetWorkspaceApplyResultResponseSchema,
+  GetWorkspaceCatalogResponseSchema,
   GetWorkspaceMaterialResponseSchema,
   GetWorkspaceMaterialRevisionResponseSchema,
   GetWorkspaceSyncReviewResponseSchema,
   ImportWorkspaceArtifactRequestSchema,
   ImportWorkspaceArtifactResponseSchema,
+  ImportPluginRequestSchema,
+  ImportPluginResponseSchema,
+  ImportSkillRequestSchema,
+  ImportSkillResponseSchema,
   IntroduceWorkspaceArtifactRequestSchema,
   IntroduceWorkspaceArtifactResponseSchema,
   IssueNanoHostTransportTokenRequestSchema,
@@ -85,13 +94,16 @@ import {
   ListKnowledgeConflictsResponseSchema,
   ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
+  ListMcpCatalogResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
   ListNanoHostTransportTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
+  ListPluginCatalogResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
   ListServerPermissionDecisionsResponseSchema,
   ListServerVaultUseRecordsResponseSchema,
+  ListSkillCatalogResponseSchema,
   ListStagedWorkspaceReviewsResponseSchema,
   ListThreadItemsResponseSchema,
   ListWorkerOutputManifestsResponseSchema,
@@ -174,6 +186,8 @@ import {
   RuntimeConfigValidationResponseSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  SelectMcpVersionRequestSchema,
+  SelectSkillVersionRequestSchema,
   SetMyAdminAccessTokenDefaultRequestSchema,
   SetMyAdminAccessTokenDefaultResponseSchema,
   SetProviderApiKeyRequestSchema,
@@ -186,6 +200,7 @@ import {
   StartTaskModeResponseSchema,
   StartThreadGoalRequestSchema,
   StartThreadGoalResponseSchema,
+  SkillCandidateResponseSchema,
   StorageLayoutReportResponseSchema,
   SubmitArtifactReviewDecisionRequestSchema,
   SubmitArtifactReviewDecisionResponseSchema,
@@ -195,6 +210,7 @@ import {
   SubmitGoalReviewDecisionResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
+  SubmitSkillCandidateRequestSchema,
   SubmitThreadGoalSteeringRequestSchema,
   SubmitThreadGoalSteeringResponseSchema,
   SubmitTurnFeedbackRequestSchema,
@@ -210,6 +226,7 @@ import {
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
   UpdateAutomationRequestSchema,
+  UpdateMcpBindingRequestSchema,
   UpdateProviderSubscriptionAccountRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminBootstrapCodexAuthJsonResponseSchema,
@@ -354,6 +371,24 @@ const ACCOUNT_SLOT_ID_PARAMETER = {
   required: true,
   schema: toInlineJsonSchema(CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId),
 };
+const SKILL_ID_PARAMETER = {
+  name: 'skillId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
+const MCP_ID_PARAMETER = {
+  name: 'mcpId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
+const CANDIDATE_ID_PARAMETER = {
+  name: 'candidateId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', minLength: 1 },
+} as const;
 
 /**
  * Builds one authenticated JSON App API operation with the shared error envelope.
@@ -5170,6 +5205,143 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/workspaces/{workspaceId}/catalog': {
+        get: appJsonOperation({
+          operationId: 'getWorkspaceCatalog',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          responseSchema: 'GetWorkspaceCatalogResponse',
+          responseStatus: '200',
+          summary: 'Read the Workspace Skill, MCP, and plugin catalog summary.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/skills': {
+        get: appJsonOperation({
+          operationId: 'listSkillCatalog',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          responseSchema: 'ListSkillCatalogResponse',
+          responseStatus: '200',
+          summary: 'List Workspace Skill catalog entries.',
+          tag: 'catalog',
+        }),
+        post: appJsonOperation({
+          operationId: 'importSkill',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestSchema: 'ImportSkillRequest',
+          responseDescription: 'Imported Skill version.',
+          responseSchema: 'ImportSkillResponse',
+          responseStatus: '201',
+          summary: 'Import one Skill tree into the Workspace catalog.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/skills/{skillId}/candidates': {
+        post: appJsonOperation({
+          operationId: 'submitSkillCandidate',
+          parameters: [WORKSPACE_ID_PARAMETER, SKILL_ID_PARAMETER],
+          requestSchema: 'SubmitSkillCandidateRequest',
+          responseDescription: 'Submitted Skill candidate.',
+          responseSchema: 'SkillCandidateResponse',
+          responseStatus: '201',
+          summary: 'Submit one Skill candidate without changing the current pointer.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/candidates/{candidateId}/decide': {
+        post: appJsonOperation({
+          operationId: 'decideSkillCandidate',
+          parameters: [WORKSPACE_ID_PARAMETER, CANDIDATE_ID_PARAMETER],
+          requestSchema: 'DecideSkillCandidateRequest',
+          responseSchema: 'CatalogMutationResponse',
+          responseStatus: '200',
+          summary: 'Promote, reject, or withdraw one Skill candidate.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/skills/{skillId}/select': {
+        post: appJsonOperation({
+          operationId: 'selectSkillDefault',
+          parameters: [WORKSPACE_ID_PARAMETER, SKILL_ID_PARAMETER],
+          requestSchema: 'SelectSkillVersionRequest',
+          responseSchema: 'CatalogMutationResponse',
+          responseStatus: '200',
+          summary: 'Select the current Skill default digest.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/skills/{skillId}/pin': {
+        post: appJsonOperation({
+          operationId: 'setSkillPin',
+          parameters: [WORKSPACE_ID_PARAMETER, SKILL_ID_PARAMETER],
+          requestSchema: 'SelectSkillVersionRequest',
+          responseSchema: 'CatalogMutationResponse',
+          responseStatus: '200',
+          summary: 'Set or clear the Workspace pin for one Skill.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/mcp': {
+        get: appJsonOperation({
+          operationId: 'listMcpCatalog',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          responseSchema: 'ListMcpCatalogResponse',
+          responseStatus: '200',
+          summary: 'List Workspace MCP catalog entries.',
+          tag: 'catalog',
+        }),
+        post: appJsonOperation({
+          operationId: 'createMcpConfig',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestSchema: 'CreateMcpConfigRequest',
+          responseDescription: 'Created inactive MCP configuration.',
+          responseSchema: 'CreateMcpConfigResponse',
+          responseStatus: '201',
+          summary: 'Create an inactive MCP configuration version.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/mcp/{mcpId}/select': {
+        post: appJsonOperation({
+          operationId: 'selectMcpVersion',
+          parameters: [WORKSPACE_ID_PARAMETER, MCP_ID_PARAMETER],
+          requestSchema: 'SelectMcpVersionRequest',
+          responseSchema: 'CatalogMutationResponse',
+          responseStatus: '200',
+          summary: 'Select the current MCP configuration version.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/mcp/{mcpId}/binding': {
+        post: appJsonOperation({
+          operationId: 'updateMcpBinding',
+          parameters: [WORKSPACE_ID_PARAMETER, MCP_ID_PARAMETER],
+          requestSchema: 'UpdateMcpBindingRequest',
+          responseSchema: 'CatalogMutationResponse',
+          responseStatus: '200',
+          summary: 'Update MCP enablement, tool policy, and timeout.',
+          tag: 'catalog',
+        }),
+      },
+      '/api/app/workspaces/{workspaceId}/catalog/plugins': {
+        get: appJsonOperation({
+          operationId: 'listPluginCatalog',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          responseSchema: 'ListPluginCatalogResponse',
+          responseStatus: '200',
+          summary: 'List Workspace Agent Plugin catalog entries.',
+          tag: 'catalog',
+        }),
+        post: appJsonOperation({
+          operationId: 'importPlugin',
+          parameters: [WORKSPACE_ID_PARAMETER],
+          requestSchema: 'ImportPluginRequest',
+          responseDescription: 'Imported Agent Plugin version.',
+          responseSchema: 'ImportPluginResponse',
+          responseStatus: '201',
+          summary: 'Import one Agent Plugin package into the Workspace catalog.',
+          tag: 'catalog',
+        }),
+      },
     } as const,
     components: {
       securitySchemes: {
@@ -5227,6 +5399,10 @@ export function createAppOpenApiDocument() {
         GetWorkspaceMaterialRevisionResponse: toJsonSchema(
           GetWorkspaceMaterialRevisionResponseSchema
         ),
+        ImportPluginRequest: toJsonSchema(ImportPluginRequestSchema),
+        ImportPluginResponse: toJsonSchema(ImportPluginResponseSchema),
+        ImportSkillRequest: toJsonSchema(ImportSkillRequestSchema),
+        ImportSkillResponse: toJsonSchema(ImportSkillResponseSchema),
         ImportWorkspaceArtifactRequest: toJsonSchema(ImportWorkspaceArtifactRequestSchema),
         ImportWorkspaceArtifactResponse: toJsonSchema(ImportWorkspaceArtifactResponseSchema),
         IntroduceWorkspaceArtifactRequest: toJsonSchema(IntroduceWorkspaceArtifactRequestSchema),
@@ -5244,6 +5420,8 @@ export function createAppOpenApiDocument() {
         SaveWorkspaceMaterialRevisionResponse: toJsonSchema(
           SaveWorkspaceMaterialRevisionResponseSchema
         ),
+        SelectMcpVersionRequest: toJsonSchema(SelectMcpVersionRequestSchema),
+        SelectSkillVersionRequest: toJsonSchema(SelectSkillVersionRequestSchema),
         SubmitArtifactReviewDecisionRequest: toJsonSchema(
           SubmitArtifactReviewDecisionRequestSchema
         ),
@@ -5268,6 +5446,7 @@ export function createAppOpenApiDocument() {
           RetryInterruptedWorkerCheckpointResponseSchema
         ),
         RetrySchedulerAdmissionResponse: toJsonSchema(RetrySchedulerAdmissionResponseSchema),
+        CatalogMutationResponse: toJsonSchema(CatalogMutationResponseSchema),
         CancelSchedulerAdmissionResponse: toJsonSchema(CancelSchedulerAdmissionResponseSchema),
         ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(
           ConsumeOpenKitBootstrapTokenRequestSchema
@@ -5276,6 +5455,9 @@ export function createAppOpenApiDocument() {
           ConsumeOpenKitBootstrapTokenResponseSchema
         ),
         CreateAutomationRequest: toJsonSchema(CreateAutomationRequestSchema),
+        CreateMcpConfigRequest: toJsonSchema(CreateMcpConfigRequestSchema),
+        CreateMcpConfigResponse: toJsonSchema(CreateMcpConfigResponseSchema),
+        DecideSkillCandidateRequest: toJsonSchema(DecideSkillCandidateRequestSchema),
         CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
         CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
         CreateProviderSubscriptionAccountRequest: toJsonSchema(
@@ -5297,6 +5479,7 @@ export function createAppOpenApiDocument() {
         ),
         GetGitPushRecordResponse: toJsonSchema(GetGitPushRecordResponseSchema),
         GetWorkspaceApplyResultResponse: toJsonSchema(GetWorkspaceApplyResultResponseSchema),
+        GetWorkspaceCatalogResponse: toJsonSchema(GetWorkspaceCatalogResponseSchema),
         GetWorkspaceSyncReviewResponse: toJsonSchema(GetWorkspaceSyncReviewResponseSchema),
         IssueNanoHostTransportTokenRequest: toJsonSchema(IssueNanoHostTransportTokenRequestSchema),
         IssueNanoHostTransportTokenResponse: toJsonSchema(
@@ -5336,6 +5519,7 @@ export function createAppOpenApiDocument() {
         ListKnowledgeConflictsResponse: toJsonSchema(ListKnowledgeConflictsResponseSchema),
         ListKnowledgeObservationsResponse: toJsonSchema(ListKnowledgeObservationsResponseSchema),
         ListKnowledgeSourcesResponse: toJsonSchema(ListKnowledgeSourcesResponseSchema),
+        ListMcpCatalogResponse: toJsonSchema(ListMcpCatalogResponseSchema),
         ListHumanAttentionResponse: toJsonSchema(ListHumanAttentionResponseSchema),
         ListGitPushRecordsResponse: toJsonSchema(ListGitPushRecordsResponseSchema),
         ListInterruptedWorkerStatesResponse: toJsonSchema(
@@ -5348,6 +5532,7 @@ export function createAppOpenApiDocument() {
           NanoHostRuntimeTargetStatusResponseSchema
         ),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
+        ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
         ListMyAdminAccessTokensResponse: toJsonSchema(ListMyAdminAccessTokensResponseSchema),
         ListSchedulerAdmissionsResponse: toJsonSchema(ListSchedulerAdmissionsResponseSchema),
         ListServerAuditEventsResponse: toJsonSchema(ListServerAuditEventsResponseSchema),
@@ -5355,6 +5540,7 @@ export function createAppOpenApiDocument() {
           ListServerPermissionDecisionsResponseSchema
         ),
         ListServerVaultUseRecordsResponse: toJsonSchema(ListServerVaultUseRecordsResponseSchema),
+        ListSkillCatalogResponse: toJsonSchema(ListSkillCatalogResponseSchema),
         ListWorkspaceAuditEventsResponse: toJsonSchema(ListWorkspaceAuditEventsResponseSchema),
         ListWorkspaceEvidenceBundlesResponse: toJsonSchema(
           ListWorkspaceEvidenceBundlesResponseSchema
@@ -5483,6 +5669,7 @@ export function createAppOpenApiDocument() {
         StartTaskModeResponse: toJsonSchema(StartTaskModeResponseSchema),
         StartThreadGoalRequest: toJsonSchema(StartThreadGoalRequestSchema),
         StartThreadGoalResponse: toJsonSchema(StartThreadGoalResponseSchema),
+        SkillCandidateResponse: toJsonSchema(SkillCandidateResponseSchema),
         StorageLayoutReportResponse: toJsonSchema(StorageLayoutReportResponseSchema),
         CancelGoalSteeringRequest: toJsonSchema(CancelGoalSteeringRequestSchema),
         CancelGoalSteeringResponse: toJsonSchema(CancelGoalSteeringResponseSchema),
@@ -5500,6 +5687,7 @@ export function createAppOpenApiDocument() {
         SubmitKnowledgeProposalDecisionResponse: toJsonSchema(
           SubmitKnowledgeProposalDecisionResponseSchema
         ),
+        SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
         ReverseKnowledgeProposalRequest: toJsonSchema(ReverseKnowledgeProposalRequestSchema),
         ReverseKnowledgeProposalResponse: toJsonSchema(ReverseKnowledgeProposalResponseSchema),
         SubmitThreadGoalSteeringRequest: toJsonSchema(SubmitThreadGoalSteeringRequestSchema),
@@ -5511,6 +5699,7 @@ export function createAppOpenApiDocument() {
         TurnId: toJsonSchema(TurnIdSchema),
         TurnFeedbackResponse: toJsonSchema(TurnFeedbackResponseSchema),
         UpdateAutomationRequest: toJsonSchema(UpdateAutomationRequestSchema),
+        UpdateMcpBindingRequest: toJsonSchema(UpdateMcpBindingRequestSchema),
         UpdateProviderSubscriptionAccountRequest: toJsonSchema(
           UpdateProviderSubscriptionAccountRequestSchema
         ),

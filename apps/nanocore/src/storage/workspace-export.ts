@@ -9,6 +9,12 @@ import {
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
+import {
+  AGENT_RESOURCE_CATALOG_EXPORT_PATH,
+  emptyPortableAgentResourceCatalog,
+  type WorkspaceCatalogExportProjection,
+  WORKSPACE_EXPORT_CATALOG_FEATURE,
+} from '../catalog/catalog-portability.js';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
@@ -40,6 +46,7 @@ export const WORKSPACE_EXPORT_MANIFEST_FILE = 'openkit-workspace-export.json';
 export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
   'records/injection-plans.jsonl',
   'records/injection-receipts.jsonl',
+  'catalog/catalog.json',
 ] as const;
 
 /** Workspace SQLite tables whose portable row families are covered by workspace export/import. */
@@ -227,6 +234,8 @@ export interface WriteWorkspaceExportTreeInput {
   goalVerificationRecords?: readonly unknown[];
   /** MCP tool schema snapshots to export as line-oriented records. */
   mcpToolSchemaSnapshots?: readonly unknown[];
+  /** Portable Skill/MCP/plugin catalog projection and retained Skill payloads. */
+  agentResourceCatalog?: WorkspaceCatalogExportProjection;
 }
 
 /** Input for previewing a workspace import without writing target state. */
@@ -576,6 +585,17 @@ export function writeWorkspaceExportTree(
         input.mcpToolSchemaSnapshots
       );
     }
+    const catalogExport = input.agentResourceCatalog ?? {
+      catalog: emptyPortableAgentResourceCatalog(),
+      payloads: [],
+    };
+    writeJson(join(recordsRoot, 'agent-resource-catalog.json'), catalogExport.catalog);
+    for (const captured of catalogExport.payloads) {
+      assertWorkspaceArchiveFilePath(captured.path);
+      const payloadPath = join(input.exportRoot, captured.path);
+      mkdirSync(dirname(payloadPath), { recursive: true });
+      writeJson(payloadPath, captured.payload);
+    }
 
     const contentInventory = listRegularExportFiles(input.exportRoot)
       .filter((path) => path !== WORKSPACE_EXPORT_MANIFEST_FILE)
@@ -601,7 +621,7 @@ export function writeWorkspaceExportTree(
       contentDigest: digestText(JSON.stringify(contentInventory)),
       redactionLevel: 'metadata',
       sensitivity: 'internal',
-      requiredFeatures: [],
+      requiredFeatures: [WORKSPACE_EXPORT_CATALOG_FEATURE],
       extensions: {},
       sourceDeploymentId: input.sourceDeploymentId,
       workspaceId: history.workspace.id,
@@ -611,7 +631,10 @@ export function writeWorkspaceExportTree(
     };
 
     writeJson(join(input.exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE), manifest);
-    return verifyWorkspaceExportTree({ exportRoot: input.exportRoot });
+    return verifyWorkspaceExportTree({
+      exportRoot: input.exportRoot,
+      supportedFeatures: [WORKSPACE_EXPORT_CATALOG_FEATURE],
+    });
   } catch (error) {
     rmSync(input.exportRoot, { recursive: true, force: true });
     throw error;
@@ -687,12 +710,30 @@ export function verifyWorkspaceExportTree(
   const manifestPath = join(input.exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
   const manifestText = readCanonicalTextFile(manifestPath);
   const manifest = parseWorkspaceExportManifest(JSON.parse(manifestText), {
-    supportedFeatures: input.supportedFeatures ?? [],
+    supportedFeatures: [
+      WORKSPACE_EXPORT_CATALOG_FEATURE,
+      ...(input.supportedFeatures ?? []),
+    ],
   });
   for (const unsupportedPath of UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS) {
     if (manifest.contentInventory.some((entry) => entry.path === unsupportedPath)) {
       throw new Error(`Unsupported workspace export record path: ${unsupportedPath}`);
     }
+  }
+  if (
+    manifest.contentInventory.some(
+      (entry) =>
+        entry.path.startsWith('catalog/plugin-snapshots/') ||
+        entry.path.startsWith('catalog/mcp-data/')
+    )
+  ) {
+    throw new Error('Workspace export must not include original plugin roots or MCP package data.');
+  }
+  if (
+    manifest.requiredFeatures.includes(WORKSPACE_EXPORT_CATALOG_FEATURE) &&
+    !manifest.contentInventory.some((entry) => entry.path === AGENT_RESOURCE_CATALOG_EXPORT_PATH)
+  ) {
+    throw new Error('Workspace export is missing records/agent-resource-catalog.json.');
   }
   if (manifest.contentDigest !== digestText(JSON.stringify(manifest.contentInventory))) {
     throw new Error('Workspace export manifest content digest does not match its inventory.');

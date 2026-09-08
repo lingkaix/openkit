@@ -276,6 +276,21 @@ describe('Codex worker adapter', () => {
     expect(plan.argv).not.toContain(capabilityToken);
   });
 
+  it('projects Skill trees into CODEX_HOME/skills as discovery links, not as the digested supply root', async () => {
+    const input = codexInput();
+    const supplyRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-skill-supply-'));
+    const targetPath = join(supplyRoot, 'repo-guidelines');
+    mkdirSync(targetPath, { recursive: true });
+    writeFileSync(join(targetPath, 'SKILL.md'), '# Hello\n');
+    await codexAdapter.prepareTurn({
+      ...input,
+      skillTargetPaths: [{ id: 'repo-guidelines', targetPath }],
+    });
+    const discoveryPath = join(input.stateRoot, 'skills', 'repo-guidelines');
+    expect(lstatSync(discoveryPath).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(discoveryPath, 'SKILL.md'))).toBe(true);
+  });
+
   it('rejects direct-provider authority before launch', async () => {
     const input = codexInput();
 

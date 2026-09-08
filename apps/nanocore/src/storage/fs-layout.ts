@@ -12,7 +12,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parseRecordEnvelope } from '@openkit/config-schema';
+import { AGENT_RESOURCE_CATALOG_FEATURE, parseRecordEnvelope } from '@openkit/config-schema';
 
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 
@@ -167,6 +167,14 @@ export interface WorkspaceLayoutPaths {
   evidenceBackend: string;
   /** Workspace derived indexes directory. */
   indexes: string;
+  /** Workspace catalog metadata and snapshot root. */
+  catalog: string;
+  /** Immutable Skill snapshot root. */
+  catalogSkillSnapshots: string;
+  /** Immutable plugin snapshot root. */
+  catalogPluginSnapshots: string;
+  /** Mutable MCP package-data root. */
+  catalogMcpData: string;
 }
 
 /**
@@ -378,6 +386,10 @@ export function ensureWorkspaceLayoutRoot(workspaceRoot: string): WorkspaceLayou
     evidenceBundles: join(workspaceRoot, 'evidence', 'bundles'),
     evidenceBackend: join(workspaceRoot, 'evidence', 'backend'),
     indexes: join(workspaceRoot, 'indexes'),
+    catalog: join(workspaceRoot, 'catalog'),
+    catalogSkillSnapshots: join(workspaceRoot, 'catalog', 'skill-snapshots'),
+    catalogPluginSnapshots: join(workspaceRoot, 'catalog', 'plugin-snapshots'),
+    catalogMcpData: join(workspaceRoot, 'catalog', 'mcp-data'),
   };
 
   ensureLayoutDirectory(paths.root, true);
@@ -589,7 +601,9 @@ function verifyCanonicalRecordEnvelopeSupport(root: string): void {
 
     let envelope: ReturnType<typeof parseRecordEnvelope>;
     try {
-      envelope = parseRecordEnvelope(record);
+      envelope = parseRecordEnvelope(record, {
+        supportedFeatures: [AGENT_RESOURCE_CATALOG_FEATURE],
+      });
     } catch (error) {
       throw new Error(
         `DATA_ROOT unsupported requiredFeatures in ${reportPath}: ${errorMessage(error)}`

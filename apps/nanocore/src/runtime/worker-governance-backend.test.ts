@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -6,6 +9,9 @@ import {
 import { describe, expect, it } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { prepareNanoHostContextPackageImports } from './worker-governance-backend.js';
 
@@ -50,6 +56,65 @@ describe('NanoHost worker governance helpers', () => {
           workspaceRoots: [],
         })
       ).rejects.toThrow();
+    }
+  });
+
+  it('imports verified Skill files after the canonical AEP', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-supply-import-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    try {
+      const store = createDemoStore();
+      const turn = store.createTurn('ws_demo', 'th_demo', 'Use catalog skill', {
+        kind: 'user',
+        id: 'user_local',
+      });
+      const created = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        displayName: 'Repo guidelines',
+        expectedRevision: 0,
+        producer: { id: 'user_local', kind: 'user' },
+        tree: [
+          {
+            contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+            kind: 'file',
+            path: 'SKILL.md',
+          },
+        ],
+        workspaceId: turn.workspaceId,
+      });
+      const environmentPackage = AgentEnvironmentPackageSchema.parse(
+        resolveAgentEnvironmentPackage({
+          agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
+          agentSessionId: 'as_nanohost_1',
+          backend: { kind: 'openshell' },
+          coreDb,
+          createdAt: '2026-06-16T00:00:00.000Z',
+          requestId: 'req_nanohost_skill_1',
+          turn,
+          triggerActor: turn.triggerActor,
+          userId: 'user_local',
+          workspaceCwd: process.cwd(),
+          workspaceRoots: [],
+        })
+      );
+      const imports = await prepareNanoHostContextPackageImports(environmentPackage, {
+        dataRoot,
+        workspaceRoots: [],
+      });
+      expect(imports.map((item) => item.slot)).toEqual(['package-config', 'worker-supply']);
+      expect(imports[1]).toMatchObject({
+        byteLength: Buffer.byteLength('# Hello\n'),
+        relativePath: 'as_nanohost_1/supply/inputs/repo-guidelines/SKILL.md',
+        slot: 'worker-supply',
+      });
+      expect(imports[1]?.contentDigest).toBe(
+        created.version.inventory.find((entry) => entry.path === 'SKILL.md')?.sha256
+      );
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
     }
   });
 });

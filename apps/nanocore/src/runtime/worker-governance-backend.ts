@@ -18,6 +18,7 @@ import {
   WorkerTranscriptArtifactRecordSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
+import { skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 import type { OpenShellFilesystemGrant, OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
@@ -90,6 +91,8 @@ export class WorkerGovernanceCapacityUnavailableError extends Error {
  * Backend-private workspace context used for transport effects.
  */
 export interface WorkerGovernanceMaterializationContext {
+  /** Workspace data root used to read verified Skill snapshots for worker-supply imports. */
+  dataRoot?: string;
   /** Backend-private provider credentials resolved by NanoCore for this materialization only. */
   providerCredentials?: WorkerGovernanceProviderCredential[];
   /** Backend-private runtime environment credentials resolved by NanoCore for this materialization only. */
@@ -129,12 +132,12 @@ export interface NanoHostStagedExportResult {
 export const MAX_WORKER_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 /**
- * Prepares the canonical AEP followed by the sole generated Context Package imports.
+ * Prepares the canonical AEP, then declared worker-supply files, then Context Package imports.
  *
  * @param environmentPackage Immutable AEP containing the exact generated input and root digest.
  * @param context NanoCore-private roots available to the selected backend.
- * @returns Canonical package-config first, then sorted Context Package files.
- * @throws Error when the AEP or Context Package lineage, bytes, or root proof is invalid.
+ * @returns Canonical package-config first, then worker-supply files, then sorted Context Package files.
+ * @throws Error when the AEP, worker-supply snapshot, or Context Package lineage, bytes, or root proof is invalid.
  */
 export async function prepareNanoHostContextPackageImports(
   environmentPackage: AgentEnvironmentPackage,
@@ -187,8 +190,12 @@ export async function prepareNanoHostContextPackageImports(
     relativePath: inputPaths.packageRelativePath,
     slot: 'package-config',
   };
+  const workerSupplyImports = await prepareWorkerSupplyImports(
+    environmentPackage,
+    context.dataRoot
+  );
   if (candidates.length === 0) {
-    return [packageConfigImport];
+    return [packageConfigImport, ...workerSupplyImports];
   }
   const input = canonicalPackage.environmentPackage.workspace.inputs.find(
     (candidate) => candidate.id === expectedInputId
@@ -220,6 +227,7 @@ export async function prepareNanoHostContextPackageImports(
   }
   return [
     packageConfigImport,
+    ...workerSupplyImports,
     ...files.map((file, index) => ({
       body: file.body,
       byteLength: fileInventory[index]?.byteLength ?? file.body.byteLength,
@@ -230,6 +238,65 @@ export async function prepareNanoHostContextPackageImports(
       slot: 'context',
     })),
   ];
+}
+
+/**
+ * Reads verified Skill snapshot files into import-only worker-supply identities.
+ *
+ * @param environmentPackage Admitted AEP whose supply inventory is authoritative.
+ * @param dataRoot Workspace data root holding catalog snapshots.
+ * @returns Sorted regular-file imports, or an empty list when no Skills are supplied.
+ */
+async function prepareWorkerSupplyImports(
+  environmentPackage: AgentEnvironmentPackage,
+  dataRoot: string | undefined
+): Promise<NanoHostContextPackageImport[]> {
+  const skills = [...(environmentPackage.supply?.skills ?? [])].sort((left, right) =>
+    left.id.localeCompare(right.id)
+  );
+  if (skills.length === 0) {
+    return [];
+  }
+  if (!dataRoot) {
+    throw new Error('Worker supply imports require a data root.');
+  }
+  const inputPaths = workerSessionInputPaths(environmentPackage.scope.agentSessionId);
+  const imports: NanoHostContextPackageImport[] = [];
+  for (const skill of skills) {
+    const digest = skill.integrity?.sha256;
+    const inventory = skill.inventory;
+    if (!digest || !inventory) {
+      throw new Error(`Worker supply skill is missing verified inventory: ${skill.id}`);
+    }
+    const snapshot = skillSnapshotPath(
+      dataRoot,
+      environmentPackage.scope.workspaceId,
+      skill.id,
+      digest
+    );
+    const files = inventory
+      .filter((entry) => entry.kind === 'file')
+      .slice()
+      .sort((left, right) => left.path.localeCompare(right.path));
+    for (const file of files) {
+      if (!file.sha256) {
+        throw new Error(`Worker supply file is missing digest: ${skill.id}/${file.path}`);
+      }
+      const body = await readFile(join(snapshot, file.path));
+      const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
+      if (contentDigest !== file.sha256 || body.byteLength !== file.size) {
+        throw new Error(`Worker supply file digest mismatch: ${skill.id}/${file.path}`);
+      }
+      imports.push({
+        body,
+        byteLength: body.byteLength,
+        contentDigest,
+        relativePath: `${inputPaths.supplyRelativePath}/${skill.id}/${file.path}`,
+        slot: 'worker-supply',
+      });
+    }
+  }
+  return imports;
 }
 
 /**

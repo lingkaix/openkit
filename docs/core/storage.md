@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-08-22
+updated: 2026-09-08
 ---
 # Storage Model
 
@@ -24,7 +24,9 @@ The source of truth MUST be explicit per data class.
 
 Storage decisions must not create a competing product model. They project core records into files, directories, SQLite tables, indexes, and materialized read models.
 
-NanoCore is not a general repository, object, or bulk-file storage service. It may retain bounded product records, Workspace files, Artifacts, uploads, evidence, and runtime handoff data only through their existing owners and limits. Versioned text and code sources belong in a network-addressable Git service. Static source data that exceeds an accepted bounded NanoCore record, upload, Artifact, or evidence contract belongs in external object storage such as S3-compatible storage. NanoCore stores the non-secret locator, policy, immutable revision or digest lineage, and bounded coordination metadata needed to use those sources; it does not host or silently absorb the external storage service.
+NanoCore is not a general repository, object, or bulk-file storage service. It may retain bounded product records, Workspace files, Artifacts, uploads, evidence, installed agent resources, and runtime handoff data only through their existing owners and limits. Workspace source repositories, editable development sources, and their Git history belong in a network-addressable Git service; this boundary primarily keeps large repositories and source-development storage outside NanoCore. Static source data that exceeds an accepted bounded NanoCore record, upload, Artifact, or evidence contract belongs in external object storage such as S3-compatible storage. NanoCore stores the non-secret locator, policy, immutable revision or digest lineage, and bounded coordination metadata needed to use those sources; it does not host or silently absorb the external storage service.
+
+Bounded installed Skill and Agent Plugin snapshots are ordinary catalog-owned product resources. Their retained bytes are immutable and digest-verified, with exact source-version or uploaded-source lineage, size and entry-count limits, and owner-defined retention and purge. They contain no editable repository or Git history. Retained content is canonical for installation, so authorized worker loading and exact rollback do not require another network or Git lookup; integrity verification and current access checks still apply. Refresh admits a new immutable version rather than rewriting a snapshot. Missing or corrupt content fails explicitly, and physical purge respects live references and holds without claiming that unavailable bytes remain loadable. Disposable runtime copies and indexes remain projections of this authority.
 
 Secret values belong to the vault boundary, not normal workspace files or protocol records.
 
@@ -66,7 +68,7 @@ Per-workspace SQLite files are preferred for workspace-local structured data bec
 
 Non-authoritative defaults:
 
-- Files are the source of truth for workspace records, thread records, turn records, item logs, artifacts, knowledge sources, server config, provider instance inputs, agent setup config, runtime snapshots, and logs.
+- Files are the source of truth for workspace records, thread records, turn records, item logs, artifacts, knowledge sources, server config, provider instance inputs, agent setup config, resource catalogs and installed snapshots, runtime snapshots, and logs.
 - SQLite indexes those records for query, search, pagination, constraints, and UI read models.
 - SQLite may be the source of truth for operational records that do not have a natural durable file form and require structured query.
 - Secret values are not stored in normal workspace files or protocol records. Workspace storage may keep secret references, grants, injection rules, and audit metadata, while secret material belongs behind the vault boundary.
@@ -133,7 +135,7 @@ The durable lifecycle of raw audio and private reasoning is explicitly not appli
 - Storage layout MUST NOT redefine workspace, thread, turn, item, artifact, knowledge, vault, audit, usage, or AgentSession semantics.
 - Secret values MUST NOT be stored in normal workspace files, item payloads, protocol records, or derived indexes.
 - Authority-bearing storage fields MUST NOT be silently ignored by readers that do not understand them.
-- A remote Agent Runtime MUST NOT consume a host-local Git repository path from the NanoCore server. Required code or versioned text MUST first exist through an authorized network-addressable Git source, and the Sandbox performs Git operations under its current network and Vault policy.
+- A remote Agent Runtime MUST NOT consume a host-local Git repository path from the NanoCore server. Repository-sourced code and development text MUST first exist through an authorized network-addressable Git source, and the Sandbox performs Git operations under its current network and Vault policy. Bounded installed resources use their catalog-owned immutable snapshots and governed delivery rather than requiring a Git repository for each load.
 - Large static source data MUST remain in an external object store once it exceeds the applicable bounded NanoCore-owned record or handoff contract. NanoCore retains only the external reference and required bounded lineage; neither NanoCore nor NanoHost becomes the object-storage service.
 
 ## Item Log Invariants

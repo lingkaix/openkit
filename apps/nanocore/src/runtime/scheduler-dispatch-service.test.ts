@@ -243,7 +243,7 @@ describe('scheduler dispatch service', () => {
                 },
               ],
             },
-            path: `workspaces/${workspace.id}/config/mcp-servers.jsonc`,
+            path: `workspaces/${workspace.id}/catalog/catalog.json`,
             workspaceId: workspace.id,
           },
         ],

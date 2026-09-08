@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-06
+updated: 2026-09-08
 ---
 # Agent Environment Package And Worker Governance Backends
 
@@ -142,7 +142,7 @@ The top-level sections have these responsibilities:
 | `agent` | Identifies the selected Agent and descriptive runtime/profile projection. |
 | `runtime` | Carries the governed image selection defined below, declared absolute worker binaries, fixed generic shim command, and process/session inputs. |
 | `workspace` | Carries the worker-visible root, declared inputs, generated material, and output declarations. |
-| `supply` | Carries resolved static Skill and selected MCP catalog material; selected MCP entries enable only the separately governed fixed MCP capability routes. |
+| `supply` | Carries exact scoped Skill versions and their bounded resource inventories, original plugin/member lineage, and selected MCP configuration/binding lineage with effective catalog digests. MCP entries enable only the separately governed fixed MCP capability routes; upstream configuration and credentials stay outside the package. |
 | `control` | Carries the sandbox-local `/worker-control/*` Integration binding, transcript, non-secret worker-control token reference, and the opaque runtime-adapter selector. |
 | `capabilities` | Carries the sandbox-local `/capabilities/*` Integration binding and separately governed worker-capability projection; it is enabled only for the exact three MCP routes when selected MCP supply is non-empty and otherwise remains disabled with no routes. |
 | `credentials` | Carries declarations and references only, never credential values. |
@@ -192,6 +192,16 @@ The build definition obeys the same package rules as every other resolved input,
 
 Execution of a build definition — acquisition, containment, network bounds, time and size bounds, storage, verification, and import — is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`. The package carries the resolved inputs and lineage only, exactly as it does for every other backend-materialized field.
 
+## Installed Resource Inputs
+
+Resolved `supply` binds every selected Skill to its scoped catalog identity, exact digest and format, selection source, original package/member provenance when applicable, and complete bounded directory/file inventory under `docs/specs/20260711-skill_catalog_versioning_pinning.md`. Each resource has one unique Core-assigned inventory key using a nonempty `[A-Za-z0-9_-]+` segment. Inventory paths remain relative to that Skill root, with entry kind, normalized executability, and exact file length and SHA-256. Source bytes resolve from verified retained snapshots through NanoCore-private roots; host paths, mutable source locators, source-fetch credentials, and raw file bytes are not embedded in this inventory.
+
+After the canonical AEP import, each regular file uses the existing `reference.import` effect under the import-only `worker-supply` identity and the exact inventory-derived destination owned by `docs/specs/20260801-nanohost_workspace_data_boundary.md`. Directory entries and executable flags remain immutable input metadata; the Worker Shim realizes them inside the assigned source root and verifies the complete Skill tree digest before adaptation. Required missing, extra, corrupt, unsupported, or target-colliding content blocks native launch. The same AEP identity binds source inventory, transfer proof, and adapter inputs; source provenance never permits refetching mutable content during launch.
+
+MCP supply carries only the exact configuration version, current binding lineage, effective catalog digest, selected ids, and existing capability-plane metadata. It does not carry the original PluginVersion tree or any upstream command, endpoint, package environment, Vault material, or client-specific extension. The selected adapter creates the deterministic read-only native supply projection from verified Skill inputs and the fixed Gateway loopback binding under `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`. Expected and reread observed derived-tree digests plus adapter identity belong to existing materialization evidence; generated files do not become catalog authority or publisher bytes.
+
+Resource identity, inventory, selection, and static adapter projection participate in package and session compatibility. Changed resources require later AEP resolution and the existing replacement/compatibility path, never in-place edits to active session files. Delivery or native-launch uncertainty uses existing runtime inspection and cleanup; catalog publication and external runtime installation are separate effects without atomic rollback or automatic replay.
+
 ## Resolution And Launch Invariants
 
 NanoCore must resolve and validate an AEP before any worker launch effect.
@@ -207,13 +217,13 @@ Resolution and materialization obey these invariants:
 - The sandbox-local worker-control, inference, and capability bindings remain distinct and non-secret in the package. They share no token reference or authority, and raw authentication material is resolved through runtime-private channels.
 - The package MUST NOT contain a NanoHost identity or credential, Runtime Epoch identity, Cell identity, remote NanoCore or Gateway URL, SSH target, Gateway forward, container-runtime endpoint, direct sandbox-to-NanoCore endpoint, OpenShell authentication material, or raw route token.
 - Workspace paths and roots must pass the containment, immutable-base, materialization, and publication rules of their owners before launch.
-- After bridge readiness and exact `session.open` or reuse inspection, the canonical AEP is admitted first into the AgentSession-private package slot, followed by every prepared Context inventory file. Only then may `turn.start` bind the exact private AEP and Context references. Missing, failed, changed, or uncertain package admission blocks later imports and native launch without replay.
+- After bridge readiness and exact `session.open` or reuse inspection, the canonical AEP is admitted first into the AgentSession-private package slot, followed by its declared worker-supply files and every prepared Context inventory file. Only then may `turn.start` bind the exact private AEP, resource inventory, and Context references. Missing, failed, changed, or uncertain package admission blocks later imports and native launch without replay.
 - The prepared Context Package's exact sorted regular-file inventory and package-root digest must match the generated `context` input before its per-file imports can run, while output declarations remain path-only and cannot pre-authorize produced bytes.
 - Required backend capabilities must be present and backend readiness must succeed before materialization can become launchable.
 - Optional capability absence remains unadvertised; it does not authorize a fallback or silent degradation.
 - A backend may implement only the declared image, command, files, mounts, credentials, policy, sandbox-local Integration bindings, resources, and evidence sinks.
 
-The AEP is immutable. Any change to launch identity, image, command, adapter, binaries, workspace layout or content, context, credential attachment, Vault grant, policy, preferred or allowed logical-model contract, resource intent, output declaration, observability requirement, or backend requirement creates a new AEP and a new bounded launch. A change to a Gateway-private concrete route within the same pinned logical-model contract does not change the AEP because that route is neither package content nor worker-visible authority.
+The AEP is immutable. Any change to launch identity, image, command, adapter, binaries, workspace layout or content, context, selected Skill/MCP versions or bindings, resource inventories, credential attachment, Vault grant, policy, preferred or allowed logical-model contract, resource intent, output declaration, observability requirement, or backend requirement creates a new AEP and a new bounded launch. A change to a Gateway-private concrete route within the same pinned logical-model contract does not change the AEP because that route is neither package content nor worker-visible authority.
 
 This specification defines no backend update operation, mutation of a pending or active package, environment rewrite, session-reuse inference, compatibility reader, or automatic retry. Retry is a new owning request that must resolve and validate current authority again.
 
@@ -267,6 +277,8 @@ The current version 4 `llm` section does not project the logical model's resolve
 
 Current packages with no selected MCP server project worker capabilities as disabled with no routes. A package with selected MCP server supply enables only `mcp.list_servers`, `mcp.list_tools`, and `mcp.call_tool` through the separately authenticated NanoCore Gateway route; it grants no direct MCP connection, arbitrary capability, or alternate control plane.
 
+Persistent Skill/MCP versions, Plugin membership expansion, the declared `worker-supply` inventory, and verified native resource materialization are accepted targets but are not implemented by the current static supply shape. Their schema, resolver, fixed-file admission, and adapter changes must ship together; existing package-config and Context imports are not proof of this additional resource delivery.
+
 Current snapshot persistence redacts and reparses the package, records its digest and lineage, and supports redacted list/read diagnostics. Scheduler restart recovery verifies snapshot, scope, lease, session, admission, backend kind, and exact reference or build-input lineage before using the package for cleanup, reconnect, or closeout evidence.
 
 The current affected package tests, migration and database checks, typechecks, builds, linters, OpenAPI generation and validation, and NanoHost Rust tests, formatting, and Clippy checks pass. This implementation projection does not claim completion of the separate A1 gate.
@@ -307,11 +319,12 @@ The contract is satisfied only when all of the following are observable:
 - Materialization and launch do not widen the parsed package or expose a second control, inference, credential, or capability route.
 - A generated Context Package input preserves its package-root digest and declared `context` slot while private roots and host paths remain outside the package; every output declaration remains path-only, and actual export digest and length are accepted only as NanoHost-produced evidence after NanoCore byte verification and canonical-owner handoff.
 - The worker-consumed AEP is reparsed immediately before import and serialized as compact UTF-8 JSON with recursively UTF-16-code-unit-sorted object keys, preserved array order, JSON-stringified keys and strings, no BOM, and no trailing newline; non-JSON values fail before effects, and its exact lowercase SHA-256 plus byte length bind the import identity.
-- The first successful import for each admitted Turn is its canonical AEP at `/openkit/sessions/<agent-session-id>/config/package.json`; it precedes the complete private Context inventory and `turn.start`. The data-boundary path grammar admits no adjacent path, export, selector, schema field, or new transfer surface. Failed import or unproved prior-input cleanup prevents launch under the existing runtime cleanup and wider-fence owner.
+- The first successful import for each admitted Turn is its canonical AEP at `/openkit/sessions/<agent-session-id>/config/package.json`; it precedes the exact `worker-supply` file inventory, complete private Context inventory, and `turn.start`. The data-boundary path grammar admits no adjacent path, export, caller-selected root, or new transfer surface. Failed import or unproved prior-input cleanup prevents launch under the existing runtime cleanup and wider-fence owner.
 - The package carries only distinct non-secret sandbox-local Integration bindings and token references for worker control, inference, and capability; it carries no raw route token, NanoHost credential, remote Gateway or NanoCore endpoint, SSH target, Gateway forward, container-runtime endpoint, Cell identity, or Runtime Epoch identity.
 - The package carries one preferred logical model and an exact non-empty allowed logical-model set with each member's Gateway-derived effective capabilities and `modelFamilyId`; it carries no LLM Provider profile, Provider-native model, account slot, private route member, fallback order, or Provider credential.
 - NanoHost bootstrap uses only the fixed package command and six existing non-secret lineage environment entries and carries no Turn credential; private `turn.start` supplies three mutually distinct raw route tokens through AgentSession-local bindings, with worker control restricted to the Worker Shim control client and inference and enabled capability restricted to their authorized sanitized native bindings.
 - Raw secrets, authorization material, backend-private handles, and unrestricted host references are absent from the AEP, durable snapshot, public diagnostics, and product records.
+- Exact Skill trees verify from the retained version inventory before adapter exposure, and the expected derived supply digest equals the digest reread from installed bytes. Missing, extra, tampered, or unsupported required resources prevent native launch; raw source MCP configuration, credentials, and nonstandard extensions never enter worker discovery. A new Skill selection changes the AEP and uses the existing session compatibility boundary.
 - Any material launch-input change produces a new package and bounded launch rather than mutating an existing package or session.
 - The persisted snapshot is redacted, reparsed as version 4, digest-bound, Workspace-owned, and linked to the exact package, Turn, AgentSession, Agent, runtime, and backend.
 - Complete restart evidence rejects a missing or mismatched package snapshot and requires `backend.preferred` and `runtime.image.ref` to match the durable backend session before claiming package-to-session consistency; the current path remains partial for those two comparisons.

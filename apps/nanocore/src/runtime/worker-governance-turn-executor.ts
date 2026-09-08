@@ -1423,6 +1423,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       backendCleanupRequired = true;
       const materialization = await this.backend.materialize(environmentPackage, {
+        ...(this.coreDb?.dataRoot ? { dataRoot: this.coreDb.dataRoot } : {}),
         providerCredentials,
         runtimeEnvCredentials,
         runtimeFileCredentials,

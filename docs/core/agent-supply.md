@@ -1,5 +1,6 @@
 ---
 status: Accepted
+updated: 2026-09-08
 ---
 # Agent Supply
 
@@ -28,6 +29,8 @@ Resolution, governance materialization, and runtime adaptation are one-way proje
 Authored composition precedes resolution. One Server-supplied Agent Manifest may be composed with one Workspace-owned binding, the selected nested profile, and applicable User preference into one composed authored setup. That composition may add Workspace-owned resources and requirements under their existing owners; after composition, Core resolves exactly one authored setup through the ordinary catalogs, grants, policy, compatibility, and materialization boundaries.
 
 Agent catalogs are workspace-visible selection surfaces, not runtime launch manifests.
+
+Skills are independently versioned behavior resources: their exact content and provenance must remain selectable, comparable, and recoverable independently of a distribution package. Agent Plugins supplies a public packaging and declaration format for grouped Skill and MCP installation and management; a package is not another authored setup or runtime authority. Import changes catalog availability, while explicit setup selection and current authorization decide what reaches a worker. Resolution preserves exact component versions and source membership, and native adaptation cannot activate undeclared package behavior or bypass the governed MCP route.
 
 Agent Manifests should describe required supply without embedding secret values, absolute local paths, provider-native payloads, or adapter-private launch details.
 

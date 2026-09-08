@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 const MCP_SERVER_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const MCP_SLOT_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -52,14 +53,30 @@ export const WorkspaceMcpStdioTransportSchema = z
     kind: z.literal('stdio'),
     command: z.string().min(1),
     args: z.array(z.string()).default([]),
+    cwd: z.string().min(1).nullable().default(null),
     environment: z
       .record(
         z.string().regex(ENVIRONMENT_NAME),
         z.object({ credentialSlot: z.string().regex(MCP_SLOT_ID) }).strict()
       )
       .default({}),
+    environmentValues: z.record(z.string().regex(ENVIRONMENT_NAME), z.string()).default({}),
   })
-  .strict();
+  .strict()
+  .superRefine((transport, context) => {
+    for (const name of ['PLUGIN_ROOT', 'PLUGIN_DATA']) {
+      if (
+        Object.hasOwn(transport.environment, name) ||
+        Object.hasOwn(transport.environmentValues, name)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message: `Reserved MCP environment name cannot be configured: ${name}.`,
+          path: ['environmentValues', name],
+        });
+      }
+    }
+  });
 
 /** NanoCore-connected Streamable HTTP MCP transport. */
 export const WorkspaceMcpHttpTransportSchema = z
@@ -75,10 +92,11 @@ export const WorkspaceMcpHttpTransportSchema = z
         endpoint.hash === ''
       );
     }, 'MCP endpoints must be credential-free HTTP URLs without query or hash.'),
+    headers: z.record(z.string().regex(HTTP_HEADER_NAME), z.string()).default({}),
   })
   .strict();
 
-/** Workspace-owned MCP server entry. */
+/** Workspace-owned MCP server entry, including optional plugin package-root identity. */
 export const WorkspaceMcpServerSchema = z
   .object({
     id: WorkspaceMcpServerIdSchema,
@@ -94,6 +112,7 @@ export const WorkspaceMcpServerSchema = z
     timeoutMs: z.number().int().positive().max(2_147_483_647).default(60_000),
     schemaPolicy: z.enum(['pinned', 'tracking']),
     pinnedSchemaSnapshotId: z.string().min(1).nullable().default(null),
+    packageRootDigest: z.string().regex(SHA256_DIGEST).nullable().default(null),
   })
   .strict()
   .superRefine((server, context) => {
@@ -211,6 +230,24 @@ export const WorkspaceMcpServerCatalogSchema = z
     );
   });
 
+/** Digest format for immutable MCP configuration versions. */
+export const OPENKIT_MCP_CONFIG_DIGEST_FORMAT = 'openkit-mcp-config-v1' as const;
+
+/**
+ * Digests one validated MCP declaration plus optional package-root digest.
+ *
+ * @param declaration Non-secret validated transport declaration.
+ * @param packageRootDigest Exact plugin root digest, or null.
+ * @returns `sha256:` configuration digest.
+ */
+export function digestMcpConfig(declaration: unknown, packageRootDigest: string | null): string {
+  return `sha256:${createHash('sha256')
+    .update(Buffer.from(OPENKIT_MCP_CONFIG_DIGEST_FORMAT, 'ascii'))
+    .update(Buffer.from([0]))
+    .update(Buffer.from(stableJson({ declaration, packageRootDigest }), 'utf8'))
+    .digest('hex')}`;
+}
+
 /** Parsed Workspace MCP server entry. */
 export type WorkspaceMcpServer = z.infer<typeof WorkspaceMcpServerSchema>;
 /** Parsed Workspace MCP server catalog. */
@@ -223,7 +260,7 @@ export function parseWorkspaceMcpServerCatalog(input: unknown): WorkspaceMcpServ
   return WorkspaceMcpServerCatalogSchema.parse(input);
 }
 
-/** Resolves one enabled MCP server and stamps its stable catalog-entry digest. */
+/** Resolves one enabled MCP server and stamps its stable catalog-entry digest, including transport, binding, and package-root identity. */
 export function resolveWorkspaceMcpServer(input: {
   readonly catalog: WorkspaceMcpServerCatalog;
   readonly serverId: string;
@@ -257,11 +294,16 @@ function addDuplicateIssues(
 }
 
 /** Returns true when a catalog subtree contains a recognizable raw credential value. */
-function containsRawSecret(value: unknown): boolean {
+export function mcpCatalogContainsRawSecret(value: unknown): boolean {
   if (typeof value === 'string') return RAW_SECRET.test(value);
-  if (Array.isArray(value)) return value.some(containsRawSecret);
+  if (Array.isArray(value)) return value.some(mcpCatalogContainsRawSecret);
   if (!value || typeof value !== 'object') return false;
-  return Object.values(value).some(containsRawSecret);
+  return Object.values(value).some(mcpCatalogContainsRawSecret);
+}
+
+/** Returns true when a catalog subtree contains a recognizable raw credential value. */
+function containsRawSecret(value: unknown): boolean {
+  return mcpCatalogContainsRawSecret(value);
 }
 
 /** Serializes values with stable object-key ordering for entry digests. */

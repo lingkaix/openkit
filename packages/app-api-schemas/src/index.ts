@@ -16,6 +16,7 @@ export * from './nanohost.js';
 export * from './provider-subscriptions.js';
 export * from './quick-chat.js';
 export * from './repository.js';
+export * from './resource-catalog.js';
 export * from './runtime-config.js';
 export * from './runtime-evidence.js';
 export * from './search.js';

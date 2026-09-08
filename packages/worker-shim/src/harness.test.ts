@@ -46,7 +46,7 @@ type RunFileEffect = (input: {
 async function importWorkerInput(
   runFileEffect: RunFileEffect,
   slotRoots: Record<string, string>,
-  slot: 'context' | 'package-config',
+  slot: 'context' | 'package-config' | 'worker-supply',
   path: string,
   bytes: Buffer
 ) {

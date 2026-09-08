@@ -31,6 +31,7 @@ export const CANONICAL_SLOT_ROOTS = Object.freeze({
   ...CANONICAL_WORKSPACE_SLOT_ROOTS,
   'package-config': '/openkit/sessions',
   'runtime-credential': '/',
+  'worker-supply': '/openkit/sessions',
 });
 
 const IMPORT_SLOTS = new Set([
@@ -41,6 +42,7 @@ const IMPORT_SLOTS = new Set([
   'turn-inputs',
 ]);
 const PACKAGE_CONFIG_SLOTS = new Set(['package-config']);
+const WORKER_SUPPLY_SLOTS = new Set(['worker-supply']);
 const RUNTIME_CREDENTIAL_SLOTS = new Set(['runtime-credential']);
 const EXPORT_SLOTS = new Set([
   'cache',
@@ -104,11 +106,13 @@ function parseCommand(argv, slotRoots) {
     const root =
       slot === 'package-config'
         ? resolvePackageConfigRoot(slotRoots, relativePath)
-        : slot === 'context'
-          ? resolveContextRoot(slotRoots, relativePath)
-          : replace
-          ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
-          : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
+        : slot === 'worker-supply'
+          ? resolveWorkerSupplyRoot(slotRoots, relativePath)
+          : slot === 'context'
+            ? resolveContextRoot(slotRoots, relativePath)
+            : replace
+              ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
+              : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
     const length = parseBoundedDecimal(argv[6]);
     const digest = argv[8];
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
@@ -154,6 +158,20 @@ function resolvePackageConfigRoot(slotRoots, relativePath) {
     throw new Error('invalid package path');
   }
   return resolveSlotRoot(slotRoots, 'package-config', PACKAGE_CONFIG_SLOTS);
+}
+
+/**
+ * Resolves one AgentSession-private worker-supply file namespace.
+ *
+ * @param {Record<string, string>} slotRoots Slot root projection.
+ * @param {string} relativePath Validated import path.
+ * @returns {string} Fixed worker-supply root.
+ */
+function resolveWorkerSupplyRoot(slotRoots, relativePath) {
+  if (!/^[A-Za-z0-9_-]+\/supply\/inputs\/[A-Za-z0-9_-]+\/.+$/.test(relativePath)) {
+    throw new Error('invalid worker supply path');
+  }
+  return resolveSlotRoot(slotRoots, 'worker-supply', WORKER_SUPPLY_SLOTS);
 }
 
 /** Resolves the one worker-owned namespace accepted for replaceable runtime credentials. */

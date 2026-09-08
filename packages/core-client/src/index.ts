@@ -3,6 +3,7 @@ export * from './agents.js';
 export * from './app.js';
 export * from './auth.js';
 export * from './capabilities.js';
+export * from './catalog.js';
 export * from './client.js';
 export * from './core.js';
 export * from './errors.js';

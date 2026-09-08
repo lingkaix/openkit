@@ -651,27 +651,36 @@ async function seedFixture(dataRoot, repositoryPath, callFile, nanoHostPort) {
     schemaVersion: 1,
     skills: [],
   });
-  await writeJson(join(dataRoot, 'workspaces', 'ws_demo', 'config', 'mcp-servers.jsonc'), {
-    schemaVersion: 1,
-    servers: [
-      {
-        allowedTools: ['echo'],
-        approvalRequiredTools: [],
-        credentialBindings: [],
-        deniedTools: [],
-        enabled: true,
-        id: 'echo',
-        pinnedSchemaSnapshotId: null,
-        schemaPolicy: 'tracking',
-        timeoutMs: 10_000,
-        transport: {
-          args: [join(repoRoot, 'apps/nanocore/src/test-support/mcp-stdio-stub.mjs'), callFile],
-          command: process.execPath,
-          environment: {},
-          kind: 'stdio',
+  const { replaceWorkspaceEffectiveMcpCatalog } = await import(
+    '../../apps/nanocore/dist/catalog/resource-catalog.js'
+  );
+  replaceWorkspaceEffectiveMcpCatalog({
+    dataRoot,
+    workspaceId: 'ws_demo',
+    catalog: {
+      schemaVersion: 1,
+      servers: [
+        {
+          allowedTools: ['echo'],
+          approvalRequiredTools: [],
+          credentialBindings: [],
+          deniedTools: [],
+          enabled: true,
+          id: 'echo',
+          pinnedSchemaSnapshotId: null,
+          schemaPolicy: 'tracking',
+          timeoutMs: 10_000,
+          transport: {
+            args: [join(repoRoot, 'apps/nanocore/src/test-support/mcp-stdio-stub.mjs'), callFile],
+            command: process.execPath,
+            environment: {},
+            environmentValues: {},
+            cwd: null,
+            kind: 'stdio',
+          },
         },
-      },
-    ],
+      ],
+    },
   });
   await writeFile(join(repositoryPath, 'README.md'), '# Worker MCP smoke\n');
   for (const args of [

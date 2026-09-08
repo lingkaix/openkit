@@ -36,6 +36,10 @@ import {
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import {
+  projectWorkspaceCatalogExport,
+  writeImportedWorkspaceCatalog,
+} from '../catalog/catalog-portability.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
   parseWorkerContextPackageTrace,
@@ -812,6 +816,13 @@ export function importVerifiedWorkspace({
         `${JSON.stringify(snapshot.dataSourceCatalog, null, 2)}\n`
       );
     }
+    if (snapshot.agentResourceCatalog) {
+      writeImportedWorkspaceCatalog(
+        workspaceRoot,
+        snapshot.agentResourceCatalog,
+        snapshot.importedSkillPayloads
+      );
+    }
     if (coreDb) {
       importWorkspaceDatabaseRows({
         authorityUserId,
@@ -974,6 +985,7 @@ export function createVerifiedWorkspaceExport({
     turnEvents: turns.map((turn) => [turn.id, store.getTurnEventsForExport(turn.id)]),
     portableFileState,
     ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
+    agentResourceCatalog: projectWorkspaceCatalogExport(dataRoot, workspaceId),
     auditEvents: workspaceRowFamilies.auditEvents,
     agentEnvironmentPackageSnapshots: workspaceRowFamilies.agentEnvironmentPackageSnapshots,
     capabilityCalls: workspaceRowFamilies.capabilityCalls,

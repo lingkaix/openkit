@@ -15,7 +15,6 @@ export const RuntimeConfigFileKindSchema = z.enum([
   'user',
   'workspace',
   'data-source',
-  'mcp-server',
 ]);
 
 /** Materialized workspace root projection captured for worker sessions. */

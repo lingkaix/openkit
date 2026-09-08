@@ -480,6 +480,41 @@ registerOperations(catalog, ['listWorkspaceRepositories', 'getWorkspaceRepositor
   resolver: 'path-workspace',
   scope: 'workspace',
 });
+registerOperations(
+  catalog,
+  ['getWorkspaceCatalog', 'listSkillCatalog', 'listMcpCatalog', 'listPluginCatalog'],
+  {
+    mutating: false,
+    policyOperation: 'workspace.read',
+    resolver: 'path-workspace',
+    scope: 'workspace',
+  }
+);
+registerOperations(catalog, ['submitSkillCandidate'], {
+  mutating: true,
+  policyOperation: 'workspace.write',
+  resolver: 'path-workspace',
+  scope: 'workspace',
+});
+registerOperations(
+  catalog,
+  [
+    'importSkill',
+    'decideSkillCandidate',
+    'selectSkillDefault',
+    'setSkillPin',
+    'createMcpConfig',
+    'selectMcpVersion',
+    'updateMcpBinding',
+    'importPlugin',
+  ],
+  {
+    mutating: true,
+    policyOperation: 'workspace.configure',
+    resolver: 'path-workspace',
+    scope: 'workspace',
+  }
+);
 registerOperations(catalog, ['setDefaultWorkspaceRepository'], {
   mutating: true,
   policyOperation: 'workspace.configure',

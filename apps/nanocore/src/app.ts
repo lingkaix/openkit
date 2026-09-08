@@ -18,6 +18,7 @@ import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import { registerActionCenterRoutes } from './action-center.js';
 import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
+import { registerResourceCatalogRoutes } from './catalog/catalog-routes.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { asApiError } from './api-errors.js';
@@ -969,23 +970,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 workspaceDb.sqlite.close();
               }
             },
-            onMcpServerAuthorityChange: (change) => {
-              const workspaceDb = repositoryWorkspaceDb(change.workspaceId);
-              try {
-                recordWorkspaceAuditEvent({
-                  workspaceDb,
-                  workspaceId: change.workspaceId,
-                  category: 'system',
-                  action: 'mcp_server_catalog.authority.update',
-                  resource: `mcp-server-catalog:${change.serverId}`,
-                  outcome: 'succeeded',
-                  severity: 'info',
-                  summary: `Workspace MCP server catalog authority changed for ${change.serverId}: ${change.fields.join(', ')}.`,
-                });
-              } finally {
-                workspaceDb.sqlite.close();
-              }
-            },
           }
         : {}),
     });
@@ -1303,6 +1287,21 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerSearchRoutes({ app, authorizedWorkspaceIds, requestStore });
 
   registerAgentCatalogRoutes({ app, authorizedWorkspaceIds, requestStore });
+
+  registerResourceCatalogRoutes({
+    app,
+    afterMutation: (workspaceId) => {
+      runtimeConfigManager.reload({ dryRun: false, mode: 'safe' });
+      void workerMcpGateway.closeWorkspace(workspaceId);
+    },
+    dataRoot: () => {
+      const root = dataRoot ?? sharedStore.getDataRoot();
+      if (!root) {
+        throw new Error('Workspace catalog operations require a data root.');
+      }
+      return root;
+    },
+  });
 
   registerRepositoryRoutes({
     app,

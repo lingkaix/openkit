@@ -427,12 +427,12 @@ describe('scheduler dispatch loop', () => {
       workspaceMcpServerCatalogs: [
         {
           catalog: mcpCatalog('queued-tool'),
-          path: `workspaces/${queuedWorkspace.id}/config/mcp-servers.jsonc`,
+          path: `workspaces/${queuedWorkspace.id}/catalog/catalog.json`,
           workspaceId: queuedWorkspace.id,
         },
         {
           catalog: mcpCatalog('initiating-tool'),
-          path: 'workspaces/ws_demo/config/mcp-servers.jsonc',
+          path: 'workspaces/ws_demo/catalog/catalog.json',
           workspaceId: 'ws_demo',
         },
       ],

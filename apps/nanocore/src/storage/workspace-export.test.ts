@@ -300,6 +300,7 @@ describe('workspace export verifier', () => {
 
     expect(existsSync(join(root, WORKSPACE_EXPORT_MANIFEST_FILE))).toBe(true);
     expect(exported.checkedFiles).toEqual([
+      'records/agent-resource-catalog.json',
       'records/agent-sessions.jsonl',
       'records/artifact-reviews.jsonl',
       'records/item-revisions.jsonl',
@@ -334,7 +335,10 @@ describe('workspace export verifier', () => {
     ).toMatchObject({
       id: 'ws_demo',
     });
-    expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest.workspaceId).toBe('ws_demo');
+    expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest).toMatchObject({
+      requiredFeatures: ['agent.resource-catalog.v1'],
+      workspaceId: 'ws_demo',
+    });
   });
 
   it('round-trips canonical workspace history with deterministic reminted lineage', () => {
@@ -1139,8 +1143,9 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_imported_ws_demo',
       },
       verification: {
-        fileCount: 18,
+        fileCount: 19,
         checkedFiles: [
+          'records/agent-resource-catalog.json',
           'records/agent-sessions.jsonl',
           'records/artifact-reviews.jsonl',
           'records/item-revisions.jsonl',

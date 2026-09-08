@@ -21,6 +21,12 @@ export interface RequiredFeatureDefinition {
  * Known required features used by fail-closed readers.
  */
 export const REQUIRED_FEATURE_REGISTRY = {
+  'agent.resource-catalog.v1': {
+    id: 'agent.resource-catalog.v1',
+    status: 'active',
+    description:
+      'Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection.',
+  },
   'workspace.mount.fuse': {
     id: 'workspace.mount.fuse',
     status: 'active',

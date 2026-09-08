@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, rename, rm, unlink, writeFile, cp, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type {
@@ -107,6 +107,17 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
   }
 
   await mkdir(input.stateRoot, { mode: 0o700, recursive: true });
+  const skillsHome = join(input.stateRoot, 'skills');
+  await mkdir(skillsHome, { recursive: true });
+  for (const skill of input.skillTargetPaths ?? []) {
+    const discoveryPath = join(skillsHome, skill.id);
+    await rm(discoveryPath, { force: true, recursive: true });
+    try {
+      await symlink(skill.targetPath, discoveryPath);
+    } catch {
+      await cp(skill.targetPath, discoveryPath, { recursive: true });
+    }
+  }
   const nativeTurnDirectory = input.nativeTurnDirectory ?? input.sessionDirectory;
   await mkdir(nativeTurnDirectory, { mode: 0o700, recursive: true });
   const finalMessagePath = join(nativeTurnDirectory, 'final-message.txt');

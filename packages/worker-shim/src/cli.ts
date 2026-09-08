@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { closeSync, readSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile, access, cp } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -474,6 +474,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   }
   const llmRoute = resolveWorkerLlmRoute(packageManifest);
   const mcpServerIds = resolveWorkerMcpServerIds(packageManifest);
+  const skillSupply = resolveSkillSupply(packageManifest.supply?.skills);
   const turnInput = resolveWorkerTurnInput(packageManifest);
   const cwd = resolveWorkerWorkingDirectory(packageManifest);
   const workspaceInputs = resolveWorkspaceInputs(packageManifest);
@@ -486,6 +487,10 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
         childEnvironment: workerChildEnvironment(packageManifest, environment, llmRoute),
         llmRoute,
         mcpServerIds,
+        skillTargetPaths: skillSupply.map((skill) => ({
+          id: skill.id,
+          targetPath: skill.materialization.targetPath,
+        })),
         sessionDirectory: options.args.sessionDir,
         stateRoot,
         turnInput,
@@ -534,6 +539,10 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       childEnvironment,
       llmRoute,
       mcpServerIds,
+      skillTargetPaths: skillSupply.map((skill) => ({
+        id: skill.id,
+        targetPath: skill.materialization.targetPath,
+      })),
       ...(provenanceDeclaration
         ? { runtimeProvenance: { ...provenanceDeclaration, lineage } }
         : {}),
@@ -1479,27 +1488,12 @@ async function materializeRuntimeSupply(packageManifest: WorkerShimPackageManife
  * @param skill Catalog-resolved Skill supply entry.
  */
 async function materializeSkillSupply(skill: RuntimeSkillSupply): Promise<void> {
-  await mkdir(skill.materialization.targetPath, { recursive: true });
-  await writeFile(
-    join(skill.materialization.targetPath, 'openkit-supply.json'),
-    `${JSON.stringify(
-      {
-        allowedRuntimeAdapters: skill.allowedRuntimeAdapters,
-        allowedWorkspaceScopes: skill.allowedWorkspaceScopes,
-        id: skill.id,
-        integrity: skill.integrity,
-        materialization: skill.materialization,
-        policyRefIds: skill.policyRefIds,
-        reviewStatus: skill.reviewStatus,
-        secretRefIds: skill.secretRefIds,
-        sourceRef: skill.sourceRef,
-        version: skill.version,
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
-  );
+  const skillMarkdown = join(skill.materialization.targetPath, 'SKILL.md');
+  try {
+    await access(skillMarkdown);
+  } catch {
+    throw new Error(`Skill tree is missing SKILL.md at ${skill.materialization.targetPath}`);
+  }
 }
 
 /**

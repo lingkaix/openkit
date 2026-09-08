@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
+import { parseWorkspaceMcpServerCatalog, resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -12,7 +12,7 @@ applyMigrations(coreDb);
 const gateway = createDefaultWorkerMcpGateway(coreDb);
 const serverPidFile = `${pidFile}.server`;
 const server = resolveWorkspaceMcpServer({
-  catalog: {
+  catalog: parseWorkspaceMcpServerCatalog({
     schemaVersion: 1,
     servers: [
       {
@@ -25,10 +25,17 @@ const server = resolveWorkspaceMcpServer({
         pinnedSchemaSnapshotId: null,
         schemaPolicy: 'tracking',
         timeoutMs: 2_000,
-        transport: { args: [stdioStub], command: process.execPath, environment: {}, kind: 'stdio' },
+        transport: {
+          args: [stdioStub],
+          command: process.execPath,
+          cwd: null,
+          environment: {},
+          environmentValues: {},
+          kind: 'stdio',
+        },
       },
     ],
-  },
+  }),
   serverId: 'echo',
 });
 const gatewayInput = {

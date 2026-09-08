@@ -114,6 +114,13 @@ import {
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 import type { WorkspacePortableFileState } from './workspace-portable-file-state.js';
+import {
+  AGENT_RESOURCE_CATALOG_EXPORT_PATH,
+  readPortableAgentResourceCatalog,
+  readPortableSkillPayload,
+  reconstructImportedWorkspaceCatalog,
+} from '../catalog/catalog-portability.js';
+import type { PortableSkillPayload, ResourceCatalogDocument } from '@openkit/config-schema';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
@@ -688,6 +695,10 @@ export interface WorkspaceImportSnapshot {
   goalVerificationRecords: ExportedGoalVerificationRecord[];
   /** Imported MCP tool schema snapshot rows. */
   mcpToolSchemaSnapshots: ExportedMcpToolSchemaSnapshot[];
+  /** Reconstructed inactive Workspace resource catalog, or null when the export omits it. */
+  agentResourceCatalog: ResourceCatalogDocument | null;
+  /** Verified Skill payloads to materialize beside the reconstructed catalog. */
+  importedSkillPayloads: readonly PortableSkillPayload[];
   /** Imported authoritative workspace files ready for staged publication. */
   portableFileState: WorkspacePortableFileState;
 }
@@ -1032,6 +1043,7 @@ export function readWorkspaceImportSnapshot(
     workResources.workerContextPackageFiles,
     knowledge
   );
+  const importedCatalog = readImportedAgentResourceCatalog(context.files);
 
   return {
     report,
@@ -1102,7 +1114,46 @@ export function readWorkspaceImportSnapshot(
     goalReviewRecords: goalRuntime.goalReviewRecords,
     goalVerificationRecords: goalRuntime.goalVerificationRecords,
     mcpToolSchemaSnapshots: goalRuntime.mcpToolSchemaSnapshots,
+    agentResourceCatalog: importedCatalog.catalog,
+    importedSkillPayloads: importedCatalog.payloads,
     portableFileState,
+  };
+}
+
+/**
+ * Reads the portable catalog projection and rejects original plugin roots or MCP package data.
+ *
+ * @param files Verified export file contents.
+ * @returns Inactive reconstructed catalog, or null when the export predates the catalog feature.
+ */
+function readImportedAgentResourceCatalog(files: ReadonlyMap<string, string>): {
+  catalog: ResourceCatalogDocument | null;
+  payloads: PortableSkillPayload[];
+} {
+  for (const path of files.keys()) {
+    if (
+      path === 'catalog/catalog.json' ||
+      path.startsWith('catalog/plugin-snapshots/') ||
+      path.startsWith('catalog/mcp-data/')
+    ) {
+      throw new Error(`Unsupported workspace export file: ${path}.`);
+    }
+  }
+  const text = files.get(AGENT_RESOURCE_CATALOG_EXPORT_PATH);
+  if (!text) {
+    return { catalog: null, payloads: [] };
+  }
+  const portable = readPortableAgentResourceCatalog(text);
+  const payloads = new Map<string, PortableSkillPayload>();
+  for (const [path, body] of files) {
+    if (!path.startsWith('skill-payloads/')) {
+      continue;
+    }
+    payloads.set(path, readPortableSkillPayload(body));
+  }
+  return {
+    catalog: reconstructImportedWorkspaceCatalog(portable, payloads),
+    payloads: [...payloads.values()],
   };
 }
 

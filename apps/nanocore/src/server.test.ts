@@ -1442,8 +1442,9 @@ describe('nanocore server', () => {
     const body = WorkspaceExportResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
       workspaceId: 'ws_demo',
-      fileCount: 22,
+      fileCount: 23,
       checkedFiles: [
+        'records/agent-resource-catalog.json',
         'records/agent-sessions.jsonl',
         'records/artifact-reviews.jsonl',
         'records/item-revisions.jsonl',
@@ -1503,7 +1504,7 @@ describe('nanocore server', () => {
       sourceWorkspaceId: 'ws_demo',
       exportedWorkspaceId: 'ws_demo',
       collision: { status: 'collides', workspaceId: 'ws_demo' },
-      verification: { fileCount: 21 },
+      verification: { fileCount: 22 },
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
@@ -13045,7 +13046,7 @@ describe('nanocore server', () => {
         workspaceMcpServerCatalogs: [
           {
             catalog,
-            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'mcp-servers.jsonc'),
+            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'catalog', 'catalog.json'),
             workspaceId: 'ws_demo',
           },
         ],
