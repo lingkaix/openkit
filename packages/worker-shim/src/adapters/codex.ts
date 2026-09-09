@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, unlink, writeFile, cp, symlink } from 'node:fs/promises';
+import { cp, mkdir, open, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type {

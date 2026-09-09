@@ -1,9 +1,9 @@
 /**
- * Generative UI / A2UI demo surface (WP-9, board 13).
+ * Generative UI / A2UI catalog shell (WP-9, board 13).
  *
- * Tier C render shell only: shows the three-state fallback (streaming skeleton → rendered whitelist → plain-content fallback) with fixture declarations.
- * It is omitted from published navigation and routing.
- * No live agent data path exists.
+ * Unpublished review surface for the native eight-component catalog. Live
+ * presentations render inside Thread Items; this route is omitted from published
+ * navigation.
  */
 
 import type { ReactNode } from 'react';

@@ -72,7 +72,8 @@ export type RuntimeItemType =
   | 'agent-handoff'
   | 'status'
   | 'plan'
-  | 'knowledge-injection';
+  | 'knowledge-injection'
+  | 'generative-ui-reference';
 
 /**
  * Protocol item delta kinds that a runtime may emit.

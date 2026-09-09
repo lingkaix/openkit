@@ -128,6 +128,24 @@ export function recordWorkspaceAuditEvent(input: RecordWorkspaceAuditEventInput)
 }
 
 /**
+ * Records one protocol-valid audit event in an app-scoped database.
+ *
+ * @param input App event context and SQLite handle.
+ * @returns Protocol audit event stored in SQLite.
+ */
+export function recordAppAuditEvent(
+  input: Omit<RecordWorkspaceAuditEventInput, 'workspaceDb'> & { sqlite: CoreDb['sqlite'] }
+): AuditEvent {
+  const { sqlite: _sqlite, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
+  assertNoUnsafeAuditValue(safeInput);
+
+  return recordAuditEvent(input.sqlite, {
+    ...input,
+    workspaceId: input.workspaceId,
+  });
+}
+
+/**
  * Records one protocol-valid server audit event.
  *
  * @param input Server event context and database handle.
@@ -186,6 +204,47 @@ export function listWorkspaceAuditEvents(
       ORDER BY created_at, audit_event_id`
     )
     .all(workspaceId)
+    .map(auditEventFromRow);
+}
+
+/**
+ * Lists every audit event stored in one SQLite handle.
+ *
+ * @param sqlite Core, Workspace, or app database handle.
+ * @returns Protocol audit events in stable storage order.
+ */
+export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
+  return sqlite
+    .prepare(
+      `SELECT
+        audit_event_id,
+        workspace_id,
+        protocol_version,
+        thread_id,
+        turn_id,
+        item_id,
+        capability_call_id,
+        permission_decision_id,
+        vault_grant_id,
+        request_id,
+        actor_json,
+        subject_json,
+        agent_id,
+        agent_session_id,
+        category,
+        action,
+        resource,
+        resource_revision,
+        outcome,
+        severity,
+        summary,
+        error_code,
+        created_at,
+        occurred_at
+      FROM audit_events
+      ORDER BY created_at, audit_event_id`
+    )
+    .all()
     .map(auditEventFromRow);
 }
 

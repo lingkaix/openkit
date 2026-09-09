@@ -1,6 +1,6 @@
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
@@ -56,6 +56,7 @@ const WORKSPACE_TABLES = [
   'backend_workspace_handles',
   'capability_calls',
   'evidence_bundles',
+  'generative_presentations',
   'git_push_records',
   'goal_plan_records',
   'goal_records',
@@ -796,6 +797,7 @@ describe('database setup', () => {
     );
     const offenders = listSourceFiles(sourceRoot)
       .filter((path) => !path.endsWith('migrate.test.ts'))
+      .filter((path) => !path.endsWith(`generative-kernel${sep}native.ts`))
       .filter((path) => schemaMutationPattern.test(readFileSync(path, 'utf8')))
       .map((path) => relative(process.cwd(), path));
 

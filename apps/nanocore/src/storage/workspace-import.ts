@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   ArtifactReviewViewSchema,
   BackendWorkspaceHandleSchema,
@@ -25,6 +25,7 @@ import {
   WorkspaceRepositoryGitConfigSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
+import type { PortableSkillPayload, ResourceCatalogDocument } from '@openkit/config-schema';
 import {
   AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
@@ -55,6 +56,12 @@ import {
   deriveArtifactReviewWorkerRequestId,
   serializeArtifactReviewFollowUpRequest,
 } from '../artifact-reviews.js';
+import {
+  AGENT_RESOURCE_CATALOG_EXPORT_PATH,
+  readPortableAgentResourceCatalog,
+  readPortableSkillPayload,
+  reconstructImportedWorkspaceCatalog,
+} from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
@@ -114,13 +121,6 @@ import {
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 import type { WorkspacePortableFileState } from './workspace-portable-file-state.js';
-import {
-  AGENT_RESOURCE_CATALOG_EXPORT_PATH,
-  readPortableAgentResourceCatalog,
-  readPortableSkillPayload,
-  reconstructImportedWorkspaceCatalog,
-} from '../catalog/catalog-portability.js';
-import type { PortableSkillPayload, ResourceCatalogDocument } from '@openkit/config-schema';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
@@ -695,6 +695,22 @@ export interface WorkspaceImportSnapshot {
   goalVerificationRecords: ExportedGoalVerificationRecord[];
   /** Imported MCP tool schema snapshot rows. */
   mcpToolSchemaSnapshots: ExportedMcpToolSchemaSnapshot[];
+  /** Portable Light App identity rows. */
+  lightApps: unknown[];
+  /** Portable Light App definition rows. */
+  lightAppDefinitions: unknown[];
+  /** Portable Light App record rows. */
+  lightAppRecords: unknown[];
+  /** Portable Generative UI presentation rows. */
+  generativePresentations: Record<string, unknown>[];
+  /** Imported presentation ids keyed by source id. */
+  presentationIds: Map<string, string>;
+  /** Imported thread ids keyed by source id. */
+  threadIds: Map<string, string>;
+  /** Imported turn ids keyed by source id. */
+  turnIds: Map<string, string>;
+  /** Imported item ids keyed by source id. */
+  itemIds: Map<string, string>;
   /** Reconstructed inactive Workspace resource catalog, or null when the export omits it. */
   agentResourceCatalog: ResourceCatalogDocument | null;
   /** Verified Skill payloads to materialize beside the reconstructed catalog. */
@@ -912,6 +928,8 @@ interface ImportRemintContext {
   evidenceBundleIds: Map<string, string>;
   /** Canonical knowledge ids retained by the imported workspace. */
   knowledgeIds: Set<string>;
+  /** Imported presentation ids keyed by source id. */
+  presentationIds: Map<string, string>;
 }
 
 /**
@@ -996,6 +1014,7 @@ export function readWorkspaceImportSnapshot(
     vaultGrantIds: new Map(),
     evidenceBundleIds: new Map(),
     knowledgeIds: new Set(),
+    presentationIds: new Map(),
   };
   const exportedGoalAuthority = {
     goals: readOptionalImportJsonl(context.files, 'records/goal-records.jsonl').map((record) =>
@@ -1114,6 +1133,20 @@ export function readWorkspaceImportSnapshot(
     goalReviewRecords: goalRuntime.goalReviewRecords,
     goalVerificationRecords: goalRuntime.goalVerificationRecords,
     mcpToolSchemaSnapshots: goalRuntime.mcpToolSchemaSnapshots,
+    lightApps: readOptionalImportJsonl(context.files, 'records/light-apps.jsonl'),
+    lightAppDefinitions: readOptionalImportJsonl(
+      context.files,
+      'records/light-app-definitions.jsonl'
+    ),
+    lightAppRecords: readOptionalImportJsonl(context.files, 'records/light-app-records.jsonl'),
+    generativePresentations: readOptionalImportJsonl(
+      context.files,
+      'records/generative-presentations.jsonl'
+    ) as Record<string, unknown>[],
+    presentationIds: context.presentationIds,
+    threadIds: context.threadIds,
+    turnIds: context.turnIds,
+    itemIds: context.itemIds,
     agentResourceCatalog: importedCatalog.catalog,
     importedSkillPayloads: importedCatalog.payloads,
     portableFileState,
@@ -1324,6 +1357,28 @@ function readCanonicalImportState(context: ImportRemintContext) {
       );
     }
   }
+  const exportedPresentations = readOptionalImportJsonl(
+    context.files,
+    'records/generative-presentations.jsonl'
+  );
+  for (const row of exportedPresentations) {
+    if (
+      !row ||
+      typeof row !== 'object' ||
+      Array.isArray(row) ||
+      typeof (row as { id?: unknown }).id !== 'string'
+    ) {
+      throw new Error('Invalid generative presentation export row.');
+    }
+    const record = row as { id: string; lineage?: { itemId?: unknown } };
+    if (!context.presentationIds.has(record.id)) {
+      context.presentationIds.set(record.id, randomUUID());
+    }
+    const reservedItemId = record.lineage?.itemId;
+    if (typeof reservedItemId === 'string' && !itemIds.has(reservedItemId)) {
+      itemIds.set(reservedItemId, `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`);
+    }
+  }
   const exportedAgentEnvironmentPackageSnapshots = readOptionalImportJsonl(
     context.files,
     'records/agent-environment-package-snapshots.jsonl'
@@ -1456,6 +1511,12 @@ function readCanonicalImportState(context: ImportRemintContext) {
         userInputRequestIds,
         item.userInputRequestId,
         'user input request'
+      );
+    } else if (item.type === 'generative-ui-reference') {
+      rewritten.presentationId = requiredMapValue(
+        context.presentationIds,
+        item.presentationId,
+        'presentation'
       );
     }
     return ItemSchema.parse(rewritten);

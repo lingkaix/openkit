@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-
+import { KernelCommandError } from '../generative-kernel/errors.js';
 import type {
   CommandRequestName,
   CommandRequestRecord,
@@ -10,6 +10,8 @@ import type {
   CommandRequestScope,
   ConversationCommandReceiptMetadata,
 } from '../lib/store.js';
+import type { AppDb } from './app-db.js';
+import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import {
   type CoreDb,
   openCoreDb,
@@ -36,13 +38,14 @@ type CommandRequestRow = {
 };
 
 /** Scoped database that can own command idempotency requests. */
-type CommandRequestDb = CoreDb | UserDb | WorkspaceDb;
+type CommandRequestDb = CoreDb | UserDb | WorkspaceDb | AppDb;
 
 /** Exact physical owner selected by one command request scope. */
 type CommandRequestOwner =
   | { readonly scope: 'core' }
   | { readonly scope: 'user'; readonly userId: string }
-  | { readonly scope: 'workspace'; readonly workspaceId: string };
+  | { readonly scope: 'workspace'; readonly workspaceId: string }
+  | { readonly scope: 'app'; readonly workspaceId: string; readonly appId: string };
 
 /** Closed schema for the sole extra metadata allowed on a command receipt. */
 const ConversationCommandReceiptMetadataSchema: z.ZodType<ConversationCommandReceiptMetadata> = z
@@ -132,6 +135,9 @@ export function recordCommandRequestRecord(dataRoot: string, record: CommandRequ
   if (owner.scope === 'workspace' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
     throw new Error(`Workspace not found: ${owner.workspaceId}`);
   }
+  if (owner.scope === 'app' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
+    throw new Error(`Workspace not found: ${owner.workspaceId}`);
+  }
 
   const db = openCommandRequestDb(dataRoot, owner);
 
@@ -207,13 +213,18 @@ export function getCommandRequestRecord(
   if (owner.scope === 'workspace' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
     return null;
   }
+  if (owner.scope === 'app' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
+    return null;
+  }
 
   const path =
     owner.scope === 'core'
       ? coreDbPath(dataRoot)
       : owner.scope === 'user'
         ? userDbPath(dataRoot, owner.userId)
-        : workspaceDbPath(dataRoot, owner.workspaceId);
+        : owner.scope === 'app'
+          ? lightAppDbPath(dataRoot, owner.workspaceId, owner.appId)
+          : workspaceDbPath(dataRoot, owner.workspaceId);
 
   if (!existsSync(path)) {
     return null;
@@ -268,6 +279,12 @@ export function getCommandRequestRecordFromDb(
 
   const record = mapCommandRequestRow(row);
   assertCommandRequestDbOwner(db, record.scope);
+  if (db.scope === 'app' && record.expiresAt <= referenceTime) {
+    throw new KernelCommandError(
+      'recovery_required',
+      'The original request requires recovery and cannot be replayed.'
+    );
+  }
   return record;
 }
 
@@ -343,6 +360,9 @@ export function listCommandRequestRecords(
  * @returns Open migrated scoped database.
  */
 function openCommandRequestDb(dataRoot: string, owner: CommandRequestOwner): CommandRequestDb {
+  if (owner.scope === 'app') {
+    return openExistingAppDb(dataRoot, owner.workspaceId, owner.appId);
+  }
   const db =
     owner.scope === 'core'
       ? openCoreDb(dataRoot)
@@ -369,18 +389,29 @@ function commandRequestOwner(scope: CommandRequestScope): CommandRequestOwner {
   const coreId = scope.coreId;
   const userId = scope.userId;
   const workspaceId = scope.workspaceId;
+  const appId = scope.appId;
 
-  if (coreId === 'server' && userId === undefined && workspaceId === undefined) {
+  if (
+    coreId === 'server' &&
+    userId === undefined &&
+    workspaceId === undefined &&
+    appId === undefined
+  ) {
     return { scope: 'core' };
   }
-  if (coreId === undefined && userId && workspaceId === undefined) {
+  if (coreId === undefined && userId && workspaceId === undefined && appId === undefined) {
     return { scope: 'user', userId };
   }
-  if (coreId === undefined && workspaceId && userId === undefined) {
+  if (coreId === undefined && workspaceId && userId === undefined && appId) {
+    return { scope: 'app', workspaceId, appId };
+  }
+  if (coreId === undefined && workspaceId && userId === undefined && appId === undefined) {
     return { scope: 'workspace', workspaceId };
   }
 
-  throw new Error('Command request scope must name exactly one Core, User, or Workspace owner.');
+  throw new Error(
+    'Command request scope must name exactly one Core, User, Workspace, or App owner.'
+  );
 }
 
 /**
@@ -406,6 +437,14 @@ function assertCommandRequestDbOwner(db: CommandRequestDb, scope: CommandRequest
   ) {
     return;
   }
+  if (
+    db.scope === 'app' &&
+    owner.scope === 'app' &&
+    owner.workspaceId === db.workspaceId &&
+    owner.appId === db.appId
+  ) {
+    return;
+  }
 
   throw new Error('Command request scope does not match its owning database.');
 }
@@ -417,6 +456,9 @@ function assertCommandRequestDbOwner(db: CommandRequestDb, scope: CommandRequest
  * @param referenceTime Current ISO timestamp used for expiry.
  */
 function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string): void {
+  if (db.scope === 'app') {
+    return;
+  }
   if (db.scope === 'core' || db.scope === 'user') {
     db.sqlite.prepare('DELETE FROM idempotency_requests WHERE expires_at <= ?').run(referenceTime);
     return;

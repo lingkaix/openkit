@@ -385,6 +385,11 @@ export function createWorkspaceMcpConfig(input: {
   const packageRootDigest = input.packageRootDigest ?? null;
   const digest = digestMcpConfig(declaration, packageRootDigest);
   const id = input.id ?? skillIdFromDisplayName(input.displayName);
+  if (id === 'openkit-generative') {
+    throw new CatalogForbiddenError(
+      'Catalog id openkit-generative is reserved for the built-in Worker MCP surface.'
+    );
+  }
   const current =
     input.baseCatalog ?? loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const existingBinding = current.mcp.bindings.find((item) => item.entryId === id);
@@ -814,6 +819,11 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
   const bindings: ResourceCatalogDocument['mcp']['bindings'] = [];
   const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
   for (const server of input.catalog.servers) {
+    if (server.id === 'openkit-generative') {
+      throw new CatalogForbiddenError(
+        'Catalog id openkit-generative is reserved for the built-in Worker MCP surface.'
+      );
+    }
     const declaration: McpValidatedDeclaration =
       server.transport.kind === 'stdio'
         ? {

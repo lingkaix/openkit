@@ -141,6 +141,7 @@ export async function writeHotDataRootBackup(
   input: WriteHotDataRootBackupInput
 ): Promise<VerifiedDataRootBackupManifest> {
   assertBackupRootOutsideDataRoot(input.dataRoot, input.backupRoot);
+  const appsBefore = listLightAppDirectoryPaths(input.dataRoot);
   rmSync(input.backupRoot, { recursive: true, force: true });
   mkdirSync(dirname(input.backupRoot), { recursive: true });
   cpSync(input.dataRoot, input.backupRoot, { recursive: true, force: true });
@@ -159,6 +160,12 @@ export async function writeHotDataRootBackup(
       sourceDb.close();
     }
   }
+  const appsAfter = listLightAppDirectoryPaths(input.dataRoot);
+  if (appsBefore.join('\n') !== appsAfter.join('\n')) {
+    throw new Error('Light App inventory changed during hot backup capture.');
+  }
+  copyMissingLightAppDefinitions(input.dataRoot, input.backupRoot);
+  assertLightAppDefinitionCoverage(input.backupRoot);
 
   return writeDataRootBackupManifest({
     backupRoot: input.backupRoot,
@@ -257,6 +264,7 @@ export function verifyDataRootBackupManifest(
       throw new Error(`Digest mismatch for backup file ${entry.path}`);
     }
   }
+  assertLightAppDefinitionCoverage(input.backupRoot);
 
   return { manifest, checkedFiles: manifest.contentInventory.map((entry) => entry.path).sort() };
 }
@@ -390,4 +398,71 @@ function digestFile(path: string): string {
 /** Computes a SHA-256 content digest for one text payload. */
 function digestText(text: string): string {
   return `sha256:${createHash('sha256').update(text).digest('hex')}`;
+}
+
+/**
+ * Lists Light App directory paths relative to a data root.
+ *
+ * @param root Data root or backup root.
+ * @returns Stable relative app directory paths.
+ */
+function listLightAppDirectoryPaths(root: string): string[] {
+  return listRegularBackupFiles(root)
+    .filter((path) => path.includes('/light-apps/') && path.endsWith('/data.sqlite'))
+    .map((path) => path.slice(0, -'/data.sqlite'.length))
+    .sort();
+}
+
+/**
+ * Copies digest-addressed definition bytes missing from the captured tree.
+ *
+ * @param dataRoot Live data root.
+ * @param backupRoot Captured backup root.
+ */
+function copyMissingLightAppDefinitions(dataRoot: string, backupRoot: string): void {
+  for (const appPath of listLightAppDirectoryPaths(backupRoot)) {
+    const sourceDefinitions = join(dataRoot, appPath, 'definitions');
+    const capturedDefinitions = join(backupRoot, appPath, 'definitions');
+    if (!existsSync(sourceDefinitions)) {
+      continue;
+    }
+    mkdirSync(capturedDefinitions, { recursive: true });
+    for (const name of readdirSync(sourceDefinitions)) {
+      const captured = join(capturedDefinitions, name);
+      if (!existsSync(captured)) {
+        cpSync(join(sourceDefinitions, name), captured);
+      }
+    }
+  }
+}
+
+/**
+ * Verifies each captured app database has matching definition bytes.
+ *
+ * @param root Backup or data-root copy.
+ * @throws Error when a digest-addressed definition file is missing or mismatched.
+ */
+function assertLightAppDefinitionCoverage(root: string): void {
+  for (const appPath of listLightAppDirectoryPaths(root)) {
+    const dbPath = join(root, appPath, 'data.sqlite');
+    const sqlite = new Database(dbPath, { fileMustExist: true, readonly: true });
+    try {
+      const row = sqlite
+        .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
+        .get() as { schemaDigest: string } | undefined;
+      if (!row?.schemaDigest?.startsWith('sha256:')) {
+        throw new Error(`Captured Light App is missing schema digest: ${appPath}`);
+      }
+      const hex = row.schemaDigest.slice('sha256:'.length);
+      const definitionPath = join(root, appPath, 'definitions', `${hex}.json`);
+      if (!existsSync(definitionPath)) {
+        throw new Error(`Captured Light App is missing definition bytes: ${appPath}`);
+      }
+      if (digestFile(definitionPath) !== row.schemaDigest) {
+        throw new Error(`Captured Light App definition digest mismatch: ${appPath}`);
+      }
+    } finally {
+      sqlite.close();
+    }
+  }
 }
