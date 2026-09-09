@@ -11,7 +11,7 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  * @param value Candidate date.
  * @returns True when the lexical form round-trips through Date.
  */
-export function isCanonicalUtcDate(value: string): boolean {
+function isCanonicalUtcDate(value: string): boolean {
   if (!DATE_PATTERN.test(value)) {
     return false;
   }
