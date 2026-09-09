@@ -369,51 +369,61 @@ export function countExpandedInstances(
   components: ReadonlyMap<string, AdmittedComponent>,
   dataModel: unknown
 ): number {
-  const visiting = new Set<string>();
-  const walk = (id: string): number => {
-    if (visiting.has(id)) {
-      throw new KernelCommandError(
-        'validation_failed',
-        `A2UI component graph contains a cycle at ${id}.`
-      );
-    }
+  const walk = (id: string, contextPath: string): number => {
     const component = components.get(id);
     if (!component) {
       throw new KernelCommandError('validation_failed', `Dangling component reference: ${id}.`);
     }
-    visiting.add(id);
     const children = component.props.children;
     if (children && typeof children === 'object' && !Array.isArray(children)) {
       const record = children as Record<string, unknown>;
       if (typeof record.componentId === 'string' && typeof record.path === 'string') {
-        const repeated = valueAtPath(dataModel, record.path);
+        const absolutePath = resolveA2uiPath(record.path, contextPath);
+        const repeated = valueAtPath(dataModel, absolutePath);
         const copies = Array.isArray(repeated) ? repeated.length : 0;
-        const body = walk(record.componentId);
-        visiting.delete(id);
-        return 1 + copies * body;
+        let total = 1;
+        for (let index = 0; index < copies; index += 1) {
+          total += walk(record.componentId, joinContext(absolutePath, index));
+          if (total > MAX_EXPANDED_INSTANCES) {
+            return total;
+          }
+        }
+        return total;
       }
     }
     let total = 1;
     for (const child of childIds(component)) {
-      total += walk(child);
+      total += walk(child, contextPath);
+      if (total > MAX_EXPANDED_INSTANCES) {
+        return total;
+      }
     }
-    visiting.delete(id);
     return total;
   };
-  return walk('root');
+  return walk('root', '/');
+}
+
+function resolveA2uiPath(path: string, contextPath: string): string {
+  if (path.startsWith('/')) {
+    return path;
+  }
+  const base = contextPath.endsWith('/') ? contextPath : `${contextPath}/`;
+  return `${base}${path}`;
+}
+
+function joinContext(absolutePath: string, index: number): string {
+  const base = absolutePath.endsWith('/') ? absolutePath.slice(0, -1) : absolutePath;
+  return `${base}/${index}`;
 }
 
 function valueAtPath(root: unknown, path: string): unknown {
-  if (!path.startsWith('/')) {
-    return undefined;
-  }
   let current: unknown = root;
   for (const part of path.split('/').filter(Boolean)) {
+    if (Array.isArray(current) && /^\d+$/.test(part)) {
+      current = current[Number(part)];
+      continue;
+    }
     if (!current || typeof current !== 'object' || Array.isArray(current)) {
-      if (Array.isArray(current) && /^\d+$/.test(part)) {
-        current = current[Number(part)];
-        continue;
-      }
       return undefined;
     }
     current = (current as Record<string, unknown>)[part];

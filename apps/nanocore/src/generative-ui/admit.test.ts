@@ -189,9 +189,42 @@ describe('native A2UI admission', () => {
     });
     const records = Array.from({ length: 50 }, (_, index) => ({ id: String(index) }));
     expect(countExpandedInstances(admitted.components, { records })).toBe(101);
+    const relative = admitProducerMessages({
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      title: 'View',
+      fallbackText: 'Fallback',
+      messages: messages([
+        { id: 'root', component: 'List', children: { componentId: 'row', path: 'records' } },
+        { id: 'row', component: 'Column', children: ['body'] },
+        { id: 'body', component: 'Text', text: { path: '/membership_id' } },
+      ]),
+      source: { kind: 'item', itemId: randomUUID(), contentDigest: DIGEST },
+      actions: [],
+    });
+    expect(countExpandedInstances(relative.components, { records })).toBe(101);
     expect(() =>
       assertExpandedSourceInstances(admitted.components, {
         records: Array.from({ length: 250 }, (_, index) => ({ id: String(index) })),
+      })
+    ).toThrow(KernelCommandError);
+    const nested = admitProducerMessages({
+      threadId: 'th_demo',
+      turnId: 'turn_demo',
+      title: 'View',
+      fallbackText: 'Fallback',
+      messages: messages([
+        { id: 'root', component: 'List', children: { componentId: 'n1', path: 'records' } },
+        { id: 'n1', component: 'List', children: { componentId: 'n2', path: '/records' } },
+        { id: 'n2', component: 'List', children: { componentId: 'leaf', path: '/records' } },
+        { id: 'leaf', component: 'Text', text: 'Hello' },
+      ]),
+      source: { kind: 'item', itemId: randomUUID(), contentDigest: DIGEST },
+      actions: [],
+    });
+    expect(() =>
+      assertExpandedSourceInstances(nested.components, {
+        records: Array.from({ length: 8 }, (_, index) => ({ id: String(index) })),
       })
     ).toThrow(KernelCommandError);
   });
