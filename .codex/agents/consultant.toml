@@ -1,6 +1,6 @@
 name = "consultant"
 description = "Challenge value, premises, feasibility, and continued investment before direction-bearing commitment; provide fresh direction scrutiny during long-running work."
-model = "gpt-5.6-sol"
+model = "gpt-6-astra"
 model_reasoning_effort = "xhigh"
 
 developer_instructions = """

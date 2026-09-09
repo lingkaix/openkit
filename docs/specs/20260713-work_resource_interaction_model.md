@@ -70,6 +70,10 @@ Work Resource Class 2 and Work Resource Class 3 are deferred boundary definition
 - Do not implement Work Resource Class 2, Work Resource Class 3, arbitrary external writeback, CRDT, operational transformation, real-time multi-user coediting, or live mutation of an active worker filesystem.
 - Do not preserve backward compatibility for repository-owned internal shapes replaced during implementation.
 
+## Personal Scope Projection
+
+Thread-grounded interaction and independently addressed Artifact/material reads obey `20260909-thread_visibility_and_sharing.md`. A private-origin Artifact remains private on direct byte delivery, preview, search, widget and export paths; a guessed id or shared reference never widens its audience. Explicit snapshot sharing creates destination-owned admitted bytes rather than reclassifying the original. Data or configuration changed through a private conversation retains its own shared-resource effect authority. Each later card action authenticates its current caller and does not reuse the original user's permissions.
+
 ## Decision
 
 ### Product interaction posture

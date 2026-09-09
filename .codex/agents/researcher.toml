@@ -1,7 +1,7 @@
 name = "researcher"
 description = "Research external projects from primary sources and retain independent evidence under temp/."
-model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model = "gpt-6-astra"
+model_reasoning_effort = "medium"
 web_search = "live"
 
 developer_instructions = """

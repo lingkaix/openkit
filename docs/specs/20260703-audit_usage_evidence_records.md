@@ -5,6 +5,10 @@ updated: 2026-09-09
 ---
 # Audit, Usage, And Evidence Records
 
+## Personal Conversation And Scoped Learning Evidence
+
+Private dialogue and private Memory are not payloads for shared effect audit. Management mutations retain actor, target scope, exact base/candidate identity, gate/command lineage and outcome through existing AuditEvent records; effect visibility does not expose the originating private Thread. Scope-qualified Memory/Knowledge operations and assessment/consolidation calls retain the owning User/Workspace/Server and current responsible actor in existing evidence. Assessment results use existing Knowledge Observations and never impersonate a human Review. Do not duplicate private source text, secrets or a personal summary in Server/Workspace audit or usage records.
+
 ## Summary
 
 This spec defines the target record model for audit, usage, and evidence.

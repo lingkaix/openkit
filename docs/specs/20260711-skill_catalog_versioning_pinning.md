@@ -154,6 +154,10 @@ Replace the hardcoded metadata table directly, implement the setup/AEP exact ref
 
 Skill instructions/scripts remain subordinate to authored setup, current permission, and sandbox controls. Experimental metadata such as `allowed-tools` grants no OpenKit authority. Installed resources are read-only; outputs use declared work areas. Candidate claims, observed outcomes, and authorized promotion remain distinguishable.
 
+## Memory And Knowledge Learning Inputs
+
+`20260909-personal_memory_and_knowledge_learning.md` may route procedural learning to this existing SkillCandidate owner. Personal preferences and factual Knowledge remain in their notebook; a Skill is instructions plus optional supporting files/code, not another notebook scope. Source-private content cannot leak through candidate descriptions, packaged files or evaluation evidence. Automatic candidate generation/evaluation changes no current digest; authorized promotion, pins, exact work evidence and rollback retain this specification's semantics. A/B comparison remains distinct from an implemented experiment scheduler or autonomous promotion policy.
+
 ## Deferred / Future Work
 
 Experiment scheduling, statistical analysis, held-back evaluation suites, autonomous promotion policy, business-model representations, generic proposals, registry search, source hosting, version ranges, and cross-deployment distribution remain separate work.

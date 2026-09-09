@@ -39,6 +39,14 @@ Eligibility is not unconditional execution. Current credential restrictions, act
 
 Future finer permissions use the same subject/action/resource/context and enforcement-point contracts, without requiring a new Light App authorization model or client-side role engine. This is the target authorization baseline; implementation projections must identify any remaining role-based restrictions honestly.
 
+## Personal Conversation And Scoped Learning
+
+Thread placement inside a Workspace does not grant other members access to its private conversation, private-derived Artifact or personal context. Source read authority and destination audience remain separate decisions. Private ownership permits no declassification of another resource. Task and Goal work is Workspace-shared; private-to-shared handoff admits only explicit selected material. All discovery, search, event, notification, attachment, context and export paths apply the same current audience decision, including to protected metadata.
+
+User Memory is readable and mutable only by the current owning User through governed operations. Workspace Knowledge uses active membership and current resource policy. Server Knowledge uses deployment authority and is not an automatic corpus for every Workspace. A selected personal preference may influence authorized private work across Workspaces, but protected source facts retain their original restrictions. Sharing a Memory, Knowledge Page or Skill is an explicit source-to-destination promotion, not an effect of summary generation or installation.
+
+Memory, Skill instructions, recalled decisions and AI assessments cannot grant permissions, bypass current target validation or answer a human gate. Every management effect uses the requesting user's current authority. Optional AI evidence assessment is distinct from authorization and human Knowledge Review. Removal, forgetting or source revocation invalidates affected future reads, candidates and publication before deferred cache cleanup; separately published material retains its existing ownership and retention.
+
 ## Boundary
 
 Permission owns policy and authorization decisions.

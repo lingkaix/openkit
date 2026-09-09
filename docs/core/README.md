@@ -151,7 +151,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | Storage, file-system-first source of truth, SQLite companion store, item log persistence | `storage.md` |
 | User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
-| Knowledge Store, Knowledge Page, Knowledge Source, Knowledge Proposal, Knowledge Review, Knowledge Manager, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
+| Personal Memory, Knowledge Store, Knowledge Page, Knowledge Source, Knowledge Proposal, Knowledge Review, Knowledge Manager, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
 | AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization | `agent-supply.md` |
 | Permission, Subject, Action, Resource, Context, PermissionDecision, enforcement point | `permissions.md` |
 | Sandbox, sandbox scope, isolation area, sandbox summary, backend containment | `sandbox.md` |

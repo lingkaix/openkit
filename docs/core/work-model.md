@@ -43,13 +43,21 @@ Product surfaces present parallel work as related execution Threads linked from 
 
 ## Quick Chat Workspace
 
-Quick Chat is each user's initial owner-only Workspace for lightweight conversation, ordinary Thread and Item history, and workspace Knowledge.
+Quick Chat is each user's initial owner-only Workspace for lightweight conversation and ordinary Thread and Item history. The Personal Assistant may retrieve that user's Memory through the governed knowledge owner; Memory belongs to the User independently of Quick Chat.
 
 Quick Chat is a real Workspace, but it is not a project Workspace. It must not silently expose repository or workspace-data-source binding, Task Mode, Goal Mode, worker execution, or Git write behavior.
 
 When work needs a project boundary, the product must ask the user to create or select an eligible Workspace instead of using Quick Chat as a hidden bridge.
 
 Exact workspace kinds, seed behavior, route guards, record fields, error codes, and client selection mechanics belong to implementation-facing contracts.
+
+## Personal Assistant And Shared Work
+
+Core Assistant is the user's Personal Assistant across eligible work contexts. It uses shared internal runtime machinery while maintaining private conversation and personally owned Memory. Workspace capabilities, configuration and information remain governed resources selected on demand; personalization does not widen authority.
+
+Quick Chat, private project Assistant conversations and management dialogue are visible only to their initiating user by default. Task and Goal narratives are Workspace-shared, including their execution Threads and eligible results. A private project Thread remains Workspace-owned with a narrower audience; persistent personal Memory is independently User-owned. Other members and deployment administrators do not gain private conversation access merely through Workspace membership or administration.
+
+Users may explicitly publish selected personal conversation material to a shared discussion or formal task. Handoff identifies the receiving Workspace and exact disclosed brief/inputs; private history, personal Memory and hidden provider context are not implicitly copied. Shared effects and their eligible audit remain visible according to their resource owner, without publishing the private discussion. A shared card never delegates the original caller's privileges to its reader. Visibility and notification prominence are separate: full shared work can remain inspectable while attention surfaces emphasize decisions, progress and outcomes.
 
 ## Product Modes
 

@@ -84,6 +84,8 @@ Kernel, protocol, and product surfaces:
 Workflow, human attention, and verification:
 
 - [`20260704-chat_mode_assistant.md`](./20260704-chat_mode_assistant.md)
+- [`20260909-thread_visibility_and_sharing.md`](./20260909-thread_visibility_and_sharing.md)
+- [`20260909-personal_memory_and_knowledge_learning.md`](./20260909-personal_memory_and_knowledge_learning.md)
 - [`20260704-task_mode_worker_delegation.md`](./20260704-task_mode_worker_delegation.md)
 - [`20260704-goal_mode_coordination.md`](./20260704-goal_mode_coordination.md)
 - [`20260704-workflow_coordinator_internal_agent.md`](./20260704-workflow_coordinator_internal_agent.md)

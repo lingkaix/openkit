@@ -433,6 +433,8 @@ Implementations MAY support only a subset of approval statuses, but clients shou
 
 Artifacts are durable user-visible outputs associated with a Workspace and, when produced or communicated through work, an exact Thread, Turn, and Item lineage.
 
+An Artifact produced in a private Thread retains that Thread's audience on independent lookup, communication and byte delivery. Workspace placement does not make it shared. Permissions governs explicit broader publication and current audience admission; source lineage and an opaque reference never grant access. Shared-resource mutations keep their own effect visibility independently of private discussion.
+
 Work-produced Artifact creation, every work-produced mutation, and every Thread communication MUST be represented by the exact Item-backed lineage defined by the owning specification. A governed Workspace-only import or registration MAY initially keep Thread and Turn null only when the Artifact carries the explicit immutable provenance defined by that specification; it MUST NOT masquerade as user or agent work output.
 
 Artifact records may be fetched independently through app or protocol APIs. Workspace identity and immutable origin remain authoritative before communication, while the first Thread introduction and every later work-produced mutation create exact Item-backed lineage without rewriting the Workspace-only origin.

@@ -4,6 +4,10 @@ implementation: Partial
 ---
 # Policy Enforcement Mapping
 
+## Personal Scope Projection
+
+Personal scope and Thread visibility project through the same Policy Kernel. `20260909-thread_visibility_and_sharing.md` supplies creation-fixed private/workspace classification and private owner; current Workspace membership resolves shared audience. `20260909-personal_memory_and_knowledge_learning.md` supplies explicit User/Workspace/Server page scope and retained source restrictions. Administration requires current target mutation authority and exact human confirmation; User Memory requires exact current user, Server Knowledge requires deployment administration, and neither grants Workspace content access. Tool membership stays entry-path/binding determined; a currently unauthorized caller receives a typed refusal. AI assessments and past Memory never become grant facts.
+
 ## Summary
 
 This spec maps the OpenKit policy kernel into NanoCore product enforcement.

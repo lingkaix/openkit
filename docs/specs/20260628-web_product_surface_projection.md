@@ -76,6 +76,10 @@ The superseded Web UI slice specs are retained as historical reference only. The
 
 Earlier Web projection text described minimum product areas that would land as underlying contracts stabilized. The accepted ordinary-user intent is now completeness over the current public catalog: every in-scope operation receives a disposition, release-ready operations become truthful product workflows, and not-release-ready callables stay unpublished with a named Roadmap owner.
 
+## Personal Assistant, Memory And Shared Work
+
+Thread lists, search, notification and Artifact/widget access obey `20260909-thread_visibility_and_sharing.md`, including project-private Assistant/admin Threads and Workspace-shared Task/Goal work. Personal Memory lives under the current User surface, Workspace Knowledge under the selected Workspace, and Server Knowledge under administration. Memory inspection/edit/forget and pending candidates use `20260909-personal_memory_and_knowledge_learning.md`; ordinary Workspace navigation never enumerates another user's Memory. A shared snapshot labels its cutoff and subsequent conversation audience. Management conversation and validated forms invoke the same configuration commands and exact preview/confirmation contract owned by the Assistant spec.
+
 ## Decision
 
 Web is the product projection for every currently supported canonical-user or Workspace-authorized NanoCore operation. Page names and mockups are not the inventory authority. The included universe is the 147 `PUBLIC_OPERATION_ACCESS` entries whose scope is `user` or `workspace`, excluding the two Gateway-actor compatibility operations. That 147 equals the 195 catalog entries minus 46 server-scoped deployment-admin or bootstrap operations minus those two Gateway-actor operations.

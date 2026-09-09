@@ -448,6 +448,14 @@ Runtime-internal sub-agent streams and their native origin indexes follow the re
 
 `server/evidence` owns backend evidence that is not workspace-owned, such as server startup diagnostics or gateway lifecycle evidence.
 
+## Scoped Knowledge And Private Thread Placement
+
+This storage owner assigns User Memory to `users/<userId>/memory/` and Server Knowledge to `server/knowledge/`; existing Workspace Knowledge remains `workspaces/<workspaceId>/knowledge/`. All use the same notebook subtree (`pages`, `schema`, `proposals`, `reviews`, and existing maintenance families) owned by the Knowledge implementation. Scope schema files are `schema/scope-schema.yaml`; the former Workspace-only schema location is migrated by that owner. Sources remain sibling families at `users/<userId>/sources/`, `server/sources/`, and `workspaces/<workspaceId>/sources/`. Derived scoped indexes remain non-authoritative. No new database, source engine or per-user Workspace tree is created.
+
+`20260909-personal_memory_and_knowledge_learning.md` owns selection, operation and permission semantics for these roots, including profile v3 revisions and exact-base replacement. Stored scope is verified against the canonical root; a caller cannot select another root through page paths. Knowledge Source snapshots retain prior replacement bytes without a new revision archive family. Scope mutation uses the existing single-writer deployment/store boundary with cross-process exclusion; unsupported concurrent writers fail before writes.
+
+Private project Threads and their Item/Artifact material remain in their existing Workspace paths. Their canonical Thread record adds creation-fixed `visibility` and `privateOwnerUserId` under `20260909-thread_visibility_and_sharing.md`; physical containment does not confer access. Every index/export/read projection resolves that owner before publishing private-derived metadata or bytes. User Memory is excluded from Workspace migration/clone; a private Thread remains attached to the original Workspace rather than moving when its user changes membership.
+
 ## User Storage Layout
 
 `user.sqlite` owns:
@@ -509,7 +517,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 - The canonical Workspace system record is `workspace-record.json`; editable `name`, shared `defaultAgentId`, and other accepted Workspace composition live only in `config/workspace.jsonc`, and the removed `workspace.json` name fails loudly without a compatibility reader.
 - Workspace ownership is a Core identity relationship and never determines the canonical Workspace path.
 - The legacy root-level `core.sqlite` path is implementation debt, not the target location.
-- The legacy workspace `memory/` directory name is implementation debt; the target directory is `knowledge/`.
+- The retired workspace `memory/` directory is not restored. User-owned `users/<userId>/memory/` is the intentional scoped Memory root, not an alias or compatibility path for Workspace Knowledge.
 - Workspace domain rows are workspace-scoped even if the gateway, scheduler, or runtime lives in the server process. Deployment-wide scheduler rows remain server-scoped when they fence scheduler epoch, lease, capacity, or physical cleanup atomically; direct restart closeout follows product-safe lineage into the existing workspace owners and never copies workspace-domain payload into a server settlement row. Rows with no workspace context are server-scoped.
 - Quarantined worker output should be retained by default as restricted redacted evidence for a bounded retention window, not silently deleted at rejection time.
 - Derived indexes and read models must be rebuildable from file-backed records or authoritative SQLite ledgers.

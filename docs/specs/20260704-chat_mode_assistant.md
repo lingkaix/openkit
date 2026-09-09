@@ -8,7 +8,7 @@ implementation: Partial
 
 - Chat Mode as the lightweight user interaction path before delegated worker work starts.
 - The Core Assistant role contract for quick replies, clarification, simple workspace state lookup, and routing triage.
-- The Assistant's ordinary conversational entry path and its complete fixed Tool set: bounded Workspace state reads, bounded read-only working-directory inspection, Knowledge Manager query, Workspace creation, and Task or Goal handoff.
+- The Assistant's ordinary conversational entry path and its complete fixed Tool set: bounded Workspace state reads, bounded read-only working-directory inspection, Knowledge Manager query, personal Memory commands, Workspace creation, and Task or Goal handoff.
 - The Assistant information-source model, request-scoped read selection, output-audience projection, and continuity precedence.
 - The narrowed administration entry path that reuses the Assistant role without mixing administration Tools into ordinary conversation.
 - The handoff contract from Assistant to Workflow Coordinator.
@@ -44,7 +44,11 @@ implementation: Partial
 
 Chat Mode is the immediate interaction path for simple answers, clarification, and workspace state lookup. It is implemented by the Core Assistant, an Internal Core Role that stays inside the Core coordination plane and must not become a worker runtime.
 
-The Assistant may answer directly only when the request fits its limited role boundary. If the request needs non-trivial work, long-running execution, file edits, external side effects, broad repository analysis, risky actions, or multi-step planning, the Assistant must hand off explicitly through the owning Task or Goal path. The user-facing transition from Chat Mode to Task Mode or Goal Mode must be visible in Thread history.
+The Assistant may answer directly only when the request fits its limited role boundary. Apart from the exact governed personal Memory commands and separate finite management entry defined below, requests for non-trivial work, long-running execution, file edits, external side effects, broad repository analysis, risky actions or multi-step planning require explicit handoff through the owning Task or Goal path. The user-facing transition from Chat Mode to Task Mode or Goal Mode must be visible in Thread history.
+
+## Personal Assistant And Visibility
+
+Core Assistant is presented as the current user's Personal Assistant. Private continuity and user Memory personalize interaction; they do not create a per-user runtime process, agent supply entry or authorization identity. `20260909-thread_visibility_and_sharing.md` owns private conversation and shared Task/Goal disclosure; `20260909-personal_memory_and_knowledge_learning.md` owns User Memory and scoped Knowledge retrieval. The five existing information-source classes remain unchanged: Memory is governed reusable context, and raw personal conversation remains Thread history. Selected Workspace resources are read on demand under current user and output-audience authority.
 
 ## Goals / Non-goals
 
@@ -61,7 +65,7 @@ The Assistant may answer directly only when the request fits its limited role bo
 - Do not let the Assistant run worker agents directly.
 - Do not let the Assistant edit files, push commits, call shell commands, browse arbitrarily, or use broad MCP tool supply.
 - Do not treat Chat Mode as a hidden autonomous workflow.
-- Do not let the Assistant write Knowledge Store records directly.
+- Do not let the Assistant write notebook files directly or publish Workspace/Server Knowledge through ordinary conversation. Explicit User Memory commands delegate to the existing Knowledge Store owner.
 - Do not require every Chat Mode request to create a plan, goal, task, or worker turn.
 
 ## Background
@@ -93,8 +97,9 @@ The ordinary conversational entry path has this complete fixed semantic Tool set
 5. `workspace.create` for an empty project Workspace required by an accepted handoff.
 6. `task.start` for an explicit Task handoff.
 7. `goal.start` for an explicit Goal handoff.
+8. `memory.manage` for exact current-user save, edit, forget or candidate-review requests through the existing scoped Knowledge owner.
 
-These semantic operations MUST map to the Tool contract owned by `docs/specs/20260813-internal_agent_runtime.md`; provider-safe names may be projected by that owner without changing membership or order. No worker-execution, file-write, Git-write, credential, policy, runtime-management, broad MCP, or administration Tool belongs to this entry path.
+These semantic operations MUST map to the Tool contract owned by `docs/specs/20260813-internal_agent_runtime.md`; provider-safe names may be projected by that owner without changing membership or order. No worker-execution, arbitrary file-write, Git-write, credential, policy, runtime-management, broad MCP, or administration Tool belongs to this entry path. `memory.manage` has a closed operation selector `save | edit | forget | review`, requires a private Thread owned by the current user, and uses the scoped Memory command validation, exact revision and review rules; in a shared Thread it remains present and returns a typed private-entry requirement without reading or mutating personal data.
 
 Rules:
 
@@ -106,7 +111,7 @@ Rules:
 - A request for an operation belonging to another entry path MUST produce a proposed new Thread for that entry path rather than a refusal or an in-place Tool-array change.
 - Read-only working-directory inspection must be bounded by workspace root policy, file size limits, path exclusions, and redaction rules.
 - Assistant tools must not expose secrets, raw vault material, bearer tokens, provider-native payloads, raw worker checkpoints, or raw `DATA_ROOT` paths.
-- Assistant tools must not mutate workspace files, Knowledge Store records, Git state, runtime state, vault records, or policy configuration.
+- Assistant tools must not mutate Workspace files or Workspace/Server Knowledge, Git state, runtime state, Vault records or Policy configuration. The closed `memory.manage` operation is the explicit User Memory exception and never exposes filesystem writes; automatic capture is a trusted bounded Core assembly step under the scoped learning owner, not a model-selected tool.
 - Assistant tool results may be summarized into an assistant message, but restricted evidence must stay behind its owning visibility boundary.
 
 Policy-disabled read-only inspection and currently unavailable handoff operations remain present because their worst case is contained by read-only enforcement, typed refusal, or explicit approval. Tool invocation performs no action when authorization, policy, resource state, dependency availability, or the required user decision is missing.
@@ -168,17 +173,52 @@ Acceptance is observable when replacing the provider or deleting all provider-si
 
 ### Administration Entry Path
 
-Administration is a narrowed Assistant Turn, not a separate Agent role and not an extension of the ordinary conversational Tool set. Workspace configuration beyond creating an empty project Workspace, Worker Agent supply, execution-environment setup, capability or credential binding, and policy authoring belong only to an administration entry path.
+Administration is a private, narrowed Personal Assistant Turn, not a separate Agent role or runtime and not an extension of the ordinary conversational Tool set. The server resolves the dedicated administration surface and current actor authority; an ordinary administration request proposes a new private administration Thread. R035 conversation and R048 validated forms use the same configuration/command owners. This section owns the finite initial management contract.
 
-The server admits that entry path only when the arriving surface is the administration surface and the current actor holds the required administration authority. Both facts are server-resolved and model input cannot supply or widen either one. The entry path opens its own Thread and carries its own complete fixed Tool set; an ordinary conversational request for administration produces a proposed administration Thread rather than a refusal, role switch, or in-place Tool-array mutation.
+The model cannot supply or widen the administration surface or current actor authority. The administration Turn receives no ordinary conversational observation Tools, so retrieved untrusted material and administration operations do not coexist in one Tool array. Direct edits use validated forms; model-backed administration is for drafting, explanation or diagnosis, and application remains the human-confirmed Core command rather than a model Tool. The finite conversational setup scope below deliberately makes R035 usable without creating another configuration owner.
 
-Every administration mutation Tool is `propose`-shaped. The Assistant may produce a candidate with intended effect and rationale, but the product MUST show the exact diff or preview and the owning Core command applies it only after the human decision required by `docs/core/permissions.md`. The administration Turn receives no ordinary conversational observation Tools, so retrieved untrusted material and administration operations do not coexist in one Tool array.
+The initial management entry has one complete fixed ordered semantic Tool set: `administration.inspect`, `administration.schema`, `administration.propose`. Inspection returns redacted current configuration, revision, validation/readiness failures and whether a change needs reload or restart. Schema returns the allowed fields and constraints for the exact registered target family. Proposal prepares an exact candidate under the command owner. None executes arbitrary code or publishes a configuration effect. These semantic names project through the existing private Tool contract; no new public Tool registry is implied.
 
-Most administration remains direct validated forms. A model-backed administration Turn is admitted only for drafting, explanation, or diagnosis that benefits from semantic assistance; this does not add authority or bypass the form and command owners.
+#### Scope and action classes
 
-An administration proposal terminates when it is accepted, rejected, expires, becomes stale, conflicts, or fails. Retry or recovery starts a new Turn against current actor authority and current resource state; it never treats a prior proposal, approval, provider cache, or Tool presence as authority. Missing actor role, wrong surface, stale target, authorization loss, dependency failure, or absent human decision fails closed without applying the proposal.
+| Class | Initial actions | Authority and outcome |
+| --- | --- | --- |
+| Automatic | Read eligible redacted configuration/schema/status; explain an existing validation failure; validate a proposed candidate. | Current resource read authority; bounded observation only. |
+| Proposal | Draft create/update for a project Workspace, Provider profile or Worker Agent profile; draft a fix for a validation error; preview changes to existing non-secret resource bindings. | Current target mutation eligibility; candidate bytes, base revision, intended effect and rationale; no application. |
+| Approval | Apply the exact confirmed candidate through its existing Core command; perform that owner's ordinary configuration reload where supported. | Current user authority and payload-bound confirmation rechecked at application; record actual command and reload outcome. |
+| Prohibited in this entry | Read or generate bearer secrets; author administrator grants or Workspace membership; arbitrary shell/file/Git writes; install Plugin hooks; change Policy or Vault grants; start/stop/restart services; force unknown effects; provision NanoHost/OpenShell; delete a Workspace, Provider or Worker profile. | Typed unavailable/denied result; use the appropriate existing authorized product surface, never a hidden Worker bypass. |
 
-Acceptance is observable when ordinary conversational Turns contain no administration Tool, an administration request opens a proposed separate Thread, every administration effect has an exact human-approved Core command outcome, and a stale or unauthorized proposal cannot apply after retry or restart.
+Workspace configuration requires current active membership and its existing operation/Policy checks. Workspace creation follows the existing user-scoped creation owner. Deployment Provider and server Worker configuration require current usable deployment-administrator authority. Workspace-local Worker/profile overrides require Workspace configuration authority; selecting an existing Server resource does not permit changing it. User preference changes target only the current user through their owner. The schema/configuration owner, not the selected Thread's Workspace or model, classifies every field and resource.
+
+Initial create/update scope includes ordinary Workspace name and authored configuration, Provider non-secret profile and logical-model bindings, and Worker profile/runtime/AEP selections admitted by their respective configuration schemas. References must resolve to currently available, authorized resources. Repository or data-source attachment, credential binding and execution-environment setup may be inspected and explained; actual privileged setup, new secret entry and provisioning remain with their existing forms and owning commands. Unsupported fields are rejected rather than written as raw JSONC.
+
+#### Candidate, confirmation and application
+
+Use existing Item-backed human attention and command records. A proposal Item carries target family/id/scope, operation, expected current revision (or verified absence for create), exact normalized candidate, before/after preview, validation results, impact/reload classification, request lineage, and the existing owner command to invoke. It contains no secret, executable expression or model-selected filesystem path. The command owner derives storage targets and permits only its registered schema fields.
+
+Every write receives a confirmation bound to that exact candidate and target. A revised candidate requires new confirmation. The model cannot answer its own gate, and an earlier broad request is not a reusable grant to apply an unseen diff. Where a form submits the same candidate, it uses the same validation, revision and confirmation semantics without invoking a model.
+
+After confirmation, Core rechecks user identity, current token restrictions, target authority, base revision, schema, dependency availability and applicable Policy. It calls the existing target command once with the accepted request identity. The result distinguishes persisted configuration, validated/reloaded configuration, restart-required configuration and failure. A successful file write alone cannot mean the Provider is usable or a Worker can launch; verification returns only the actual readiness evidence obtained.
+
+A management proposal terminates as accepted/applied, rejected, stale, expired or failed through its existing gate/command owner. No management proposal table or private approval lifecycle is added. Exact replay returns the owning command's verified outcome; different input under the request id conflicts. If configuration persisted but reload failed, show both facts, keep the prior running snapshot where the configuration owner prescribes it, and allow an explicitly proposed correction. Do not blindly repeat a write, restart a service, or roll back later user changes. An unknown external result stays unknown and uses the owning inspection/recovery path.
+
+#### Personal scope and audit
+
+This Thread is private to its initiating user under the visibility specification. The Assistant never receives the administrator token secret. NanoCore derives request authority from the authenticated bearer or eligible session and checks it at each effect. Removing a token or membership prevents later application even after approval; a reconnect or provider cache cannot resurrect the grant.
+
+Record current user/responsible actor, target scope, operation, exact change/base identities, confirmation, command, request and outcome through existing AuditEvent/CapabilityCall owners. Redacted configuration effects may be visible to their resource audience; private reasoning/dialogue and credential contents are not audit payloads. Shared cards or summaries do not transfer the originating user's permissions.
+
+#### MCP, Skills and the runtime seam
+
+Internal roles may consume selected Skill context and admitted MCP Tools through trusted entry-path assembly. This is a reusable runtime capability, not permission to expose every installed Plugin to every role. Pin selected resource versions for each admitted run; reassemble only at the safe boundary owned by the internal-runtime contract. Resource text cannot widen the tools, actor, audience or authority. MCP calls use the existing capability Gateway and current effect authorization; Reading a Skill does not execute its scripts. This management entry exposes no shell or Skill-script execution; a procedure requiring such execution must use a separately admitted Worker Task under the existing Task Mode, AgentSession and AEP owners, never trusted NanoCore code.
+
+For the ordinary Assistant entry, a selected MCP binding may implement only bounded Workspace/work-state read or bounded read-only working-directory inspection, with the same schema, source/effect boundary and deterministic tool position. For example, an admitted read adapter may supply the bounded work-state operation; binding a server never imports its other Tools. Thread history, governed Knowledge query, Workspace creation, work handoff and personal Memory commands retain their Core owners and cannot be replaced by a third-party server. Trusted assembly pins the exact server/tool/version and a validator-enforced semantic mapping before the Turn, and an unavailable binding returns a typed result. Selected Skills explain only these admitted operations. This capability is accepted design and Not Started; adding another reachable semantic operation requires amending this entry contract rather than dynamically extending its Tool array.
+
+The management first slice uses the three Core-backed tools above and needs no third-party MCP to edit Core configuration. A later admitted resource may implement a registered capability without changing its owner or bypassing the finite management scope. Personalization and Memory influence explanations, not tool admission or configuration Policy.
+
+Management acceptance requires an ordinary member to configure an eligible Workspace while being denied deployment Provider mutation; an administrator may configure a Provider without exposing a token to the model. A user who did not develop OpenKit must complete ordinary Workspace/Provider/Worker-profile setup through conversation and the existing secret/setup forms, observe actual validation and readiness evidence, and never edit server files manually. Model and form paths must produce the same admitted configuration and audit result. Stale revisions, revoked credentials, changed candidates and unsupported fields cause no new write; retry must not repeat an uncertain effect. Private management and shared-resource effect audit retain their separate audiences.
+
+The concrete conversational management integration is Not Started. The existing role runtime and configuration owner are dependencies, not evidence that R035 already works.
 
 ### Routing outcomes
 
@@ -248,7 +288,7 @@ Chat Mode does not resume the provider invocation after process failure. The cal
 
 ## Accepted Design
 
-NanoCore implements Core Assistant as one role assembly over the bounded internal Agent runtime owned by `docs/specs/20260813-internal_agent_runtime.md`. The Assistant supplies its role prompt, bounded current Thread input, entry-path-fixed Tool definitions, request-scoped sources, and output audience; the generic loop supplies no Assistant authority or product lifecycle.
+NanoCore implements Core Assistant as one role assembly over the bounded internal Agent runtime owned by `docs/specs/20260813-internal_agent_runtime.md`. The Assistant supplies its role prompt, bounded current Thread input, entry-path-fixed Tool definitions (including the explicit personal Memory operation), request-scoped sources, and output audience; the generic loop supplies no Assistant authority or product lifecycle.
 
 The Assistant remains app-local in `apps/nanocore`, owns no private execution lifecycle, and must not introduce a second loop, registry, event protocol, hook framework, or multi-agent framework for this role.
 
@@ -260,7 +300,7 @@ The route records one user-message item plus either a direct `assistant-message`
 
 Historical deterministic L6 evidence covered the accepted V1 Assistant backbone: a knowledge-backed direct answer with source evidence, a bounded clarification gate projected into Action Center, linked-repository file-list and file-read answers from read-only inspection, a visible Task Mode handoff that starts bounded worker progress through Workflow Coordinator, and a visible Goal Mode handoff that creates a durable goal. The retired MCP-only and `chat.start` stories are not active release gates; current L1 and L3 unified-route coverage proves that a mutating repository-file request is not answered by the read-only repository inspection tool and does not create an `assistant.repository.read` capability row.
 
-The accepted Assistant routing and projection path is implemented behind `conversation.submit`. Explicit external search or browsing requests remain refused until a separate accepted external-search capability exists. The strict request requires `requestId`, the Core Client generates one when omitted, and NanoCore stores only bounded branch metadata plus downstream owner identifiers. Identical replay reconstructs from canonical Thread, Turn, Item, Task, and Goal owners without rerunning Coordinator, Provider, worker launch, or Goal creation; missing or contradictory owners return `409 recovery_required`. This specification remains `Partial` only for the recovery and external-capability cases still named by its acceptance criteria, not for the retired Chat-specific transport.
+The accepted Assistant routing and projection path is implemented behind `conversation.submit`. Explicit external search or browsing requests remain refused until a separate accepted external-search capability exists. The strict request requires `requestId`, the Core Client generates one when omitted, and NanoCore stores only bounded branch metadata plus downstream owner identifiers. Identical replay reconstructs from canonical Thread, Turn, Item, Task, and Goal owners without rerunning Coordinator, Provider, worker launch, or Goal creation; missing or contradictory owners return `409 recovery_required`. This specification remains `Partial`: private project visibility, personal Memory operations, conversational management and trusted selected MCP/Skill assembly remain unimplemented alongside the named recovery and external-capability gaps. The retired Chat-specific transport is not an implementation gap.
 
 ## Alternatives Considered
 
@@ -279,14 +319,14 @@ The accepted Assistant routing and projection path is implemented behind `conver
 - L1: routing classification tests for answer, clarify, Task handoff, Goal handoff, and refusal.
 - L1: typed provider and persistence error tests proving system failure never returns a success-shaped routing outcome.
 - L1: schema tests requiring `requestId` and rejecting changed input under a reused id.
-- L1: tool-boundary tests proving disallowed file writes, shell, worker calls, MCP calls, and secret reads cannot be requested through Assistant tools.
+- L1: tool-boundary tests proving disallowed file writes, shell, direct worker calls, unadmitted MCP calls, and secret reads cannot be requested through Assistant tools.
 - L2: contract tests for item projection and handoff record shape.
 - L3: NanoCore black-box tests for a direct answer, a clarification gate, a Task Mode handoff, a Goal Mode handoff, exact provider-error mapping, and post-provider persistence failure with no false `answered` outcome.
 - L3: same-id replay for every successful routing outcome returns the original Chat, Task-handoff, or Goal-handoff owner tuple without duplicate provider, gate, worker, Goal, admission, or usage effects; changed input returns `idempotency_key_conflict` before effects.
 - L3: a user-requested retry after a failed provider or persistence attempt uses a new request id, is visibly a new invocation, and does not resume hidden Chat state.
 - L6: story acceptance where a user asks a simple workspace question and gets an immediate answer, then asks for a larger change and sees a visible handoff to tracked work.
 
-Acceptance: Assistant never directly starts a worker, never mutates files or knowledge, emits visible thread history, and routes non-trivial work to Workflow Coordinator.
+Acceptance: Assistant never directly starts a worker, never mutates arbitrary files or Workspace/Server Knowledge, emits visible thread history, and routes non-trivial work to Workflow Coordinator.
 
 Acceptance also requires identical ordered ordinary-entry Tool definitions across message classes, zero ambient Workspace or operational reads for a general question, current per-call authorization and publication guarding, reconstructible continuity, a separate propose-only administration Thread, and a Quick Chat work request that reaches one confirmed executing Workspace and Task or Goal or leaves an exact durable missing-authorization refusal.
 
@@ -303,8 +343,6 @@ Previously open questions are resolved by accepted V1 defaults: Assistant read-o
 ## Deferred / Future Work
 
 - Rich UI for Assistant routing explanations.
-- Assistant personalization from accepted Knowledge Store preferences.
-- Multi-user Assistant behavior and per-member visibility rules.
 
 ## Links
 

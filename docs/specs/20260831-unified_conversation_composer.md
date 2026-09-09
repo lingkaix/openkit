@@ -27,6 +27,10 @@ This specification owns the Workspace-scoped conversation-target catalog, the sh
 - `docs/core/identity.md`
 - `docs/core/protocol.md`
 
+## Audience At Submission
+
+`20260909-thread_visibility_and_sharing.md` owns Thread visibility. Target selection never silently changes audience. New Personal Assistant and management conversations are private; Task/Goal destinations are Workspace-shared. Before handoff the Composer shows the exact public brief/attachments and receiving Workspace in the existing confirmation. Existing shared Assistant continuations use their shared audience and cannot invoke private Memory or management operations. Contract projections carry the durable visibility/private-owner metadata, and all target/history discovery excludes inaccessible private metadata before returning candidates.
+
 ## Summary
 
 One Composer can address a built-in role, an applicable running or warm Worker, or a new Task Worker and can express one logical-model preference and zero or more existing Artifact references. NanoCore publishes the valid choices as a context-sensitive read model and accepts one idempotent structured submission. The submission resolves the selected target once, records the resulting durable Thread and Turn lineage through existing owners, and invokes the existing role or workflow service instead of adding a dispatcher lifecycle.

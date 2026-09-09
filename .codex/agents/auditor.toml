@@ -1,6 +1,6 @@
 name = "auditor"
 description = "Check intent fidelity during work, adjudicate discretionary assurance, audit repository integrity, run governed measurements, or execute an engineer-approved terminal archive."
-model = "gpt-5.6-sol"
+model = "gpt-6-astra"
 model_reasoning_effort = "high"
 
 developer_instructions = """

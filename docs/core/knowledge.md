@@ -1,27 +1,27 @@
 ---
 status: Accepted
 ---
-# Knowledge Model
+# Knowledge And Personal Memory Model
 
 This document defines OpenKit knowledge semantics.
 
-This document owns workspace knowledge, notebook semantics, sources, derived representations, proposals, reviews, Knowledge Manager responsibilities, retrieval, knowledge-derived material selection and preparation, knowledge governance, and the boundary between reusable knowledge and task-time context.
+This document owns personally owned Memory, Workspace- and Server-owned Knowledge, their common notebook semantics, sources, derived representations, proposals, reviews, Knowledge Manager responsibilities, retrieval, evidence assessment, knowledge-derived material selection and preparation, and the boundary between reusable understanding and task-time context.
 
-This document does not own runtime session continuity, workflow progression, concrete Context Package files or delivery traces, final worker prompt assembly, vault secret storage, raw domain-system records, protocol record schemas, storage layout, UI design, or agent-private memory.
+This document does not own runtime session continuity, workflow progression, concrete Context Package files or delivery traces, final worker prompt assembly, vault secret storage, raw domain-system records, protocol record schemas, storage layout, UI design, or opaque agent-runtime memory.
 
-Knowledge is reusable workspace understanding, learning, and collected context.
+Memory is the user-facing name for User-owned reusable understanding, preferences, learning and personal context. Knowledge is the name for reusable understanding owned by a Workspace or CoreServer. They use one governed knowledge model; Memory is not a second storage engine or a hidden Agent state.
 
 Knowledge is not runtime session state, a prompt dump, hidden agent memory, raw source storage, or a replacement for an external system of record.
 
 ## Purpose
 
-OpenKit keeps reusable understanding in a workspace-owned notebook and makes relevant, governed material available near agent work.
+OpenKit keeps reusable understanding in an explicitly User-, Workspace- or Server-owned notebook and makes relevant, governed material available near agent work. User Memory emphasizes personality and continuity; shared Knowledge emphasizes work and organizational understanding. Ownership, applicable context and source restrictions are independent of those presentation names.
 
 Sources remain evidence, knowledge remains curated interpretation, and Context Packages remain bounded task-time projections rather than copies of the notebook.
 
 ## Principles
 
-- Knowledge is workspace-owned, not agent-owned.
+- Memory is User-owned; Knowledge is Workspace- or Server-owned. None is agent-owned.
 - Authorized humans retain final authority over reviewed knowledge.
 - The Knowledge Manager may inspect, organize, retrieve, and propose, but generated learning never promotes itself into active knowledge.
 - Sources provide evidence; knowledge stores curated interpretation.
@@ -32,7 +32,7 @@ Sources remain evidence, knowledge remains curated interpretation, and Context P
 
 ## Canonical Terms
 
-`Knowledge Store` is the workspace-owned system that manages reusable knowledge, notebook pages, source references, proposal lifecycle, review decisions, retrieval indexes, and knowledge selection for Context Packages.
+`Knowledge Store` is the common scope-bound system that manages reusable knowledge, notebook pages, source references, proposal lifecycle, review decisions, retrieval indexes, and knowledge selection for Context Packages.
 
 `Knowledge Page` is a durable, reviewable, user-visible unit of reusable knowledge.
 
@@ -42,7 +42,7 @@ Sources remain evidence, knowledge remains curated interpretation, and Context P
 
 `Knowledge Proposal` is a pending request to create, update, merge, split, supersede, archive, or delete Knowledge Store content.
 
-`Knowledge Review` is an explicit decision by an authorized human to accept, reject, or defer a Knowledge Proposal. In create-only V1, changing the proposed page content requires a new proposal rather than a combined edit-and-accept transition.
+`Knowledge Review` is an explicit decision by an authorized human to accept, reject, or defer a Knowledge Proposal. For either create or replace, changing the proposed page content requires a new proposal rather than a combined edit-and-accept transition.
 
 `Knowledge Manager` is the Internal Core Role responsible for source-traceable knowledge query support, context-material preparation, proposal drafting, validation support, and bounded maintenance suggestions.
 
@@ -56,7 +56,7 @@ Sources remain evidence, knowledge remains curated interpretation, and Context P
 
 ## Boundaries And Non-Goals
 
-Knowledge owns reusable workspace understanding and source-traceable knowledge selection.
+Knowledge owns scope-bound reusable understanding and source-traceable selection. Personal Memory is the User projection of the same primitive; Skill is procedural behavior and supporting code owned by Agent Supply, not a privileged Knowledge Page. Facts and preferences do not become executable instructions merely because a model stores them.
 
 Knowledge does not own workflow progression, worker execution, final semantic context composition, concrete Context Package persistence or delivery, raw external records, permission semantics, audit schemas, or secret material.
 
@@ -125,17 +125,27 @@ An authorized human MAY create or edit knowledge directly through the existing K
 
 An accepted Knowledge Review authorizes one bounded application through the Knowledge Store owner; the review decision alone does not prove that the change became active.
 
-V1 generated learning is create-only: its pending proposal fixes one absent Knowledge Page id, exact page bytes and content digest, sources, and producer before review. The business activation tuple is the exact proposal, accepting human review, created page and digest, sources, producer, and reviewer. Request, Audit, and command-receipt evidence prove command completion and replay but are not additional activation authority.
+A generated create or single-page replacement fixes target scope, page identity, exact candidate content, source versions, producer and expected prior revision or absence before review. The business activation tuple is the exact proposal, accepting human review, resulting page revision and digest, sources, producer and reviewer. Application rejects a stale base and never overwrites a later direct edit. Request, Audit and command-receipt evidence prove command completion and replay but are not additional activation authority; multiple storage effects are not implicitly atomic.
 
 A missing or contradictory application owner MUST fail closed and MUST NOT be reconstructed from the current page or process memory.
 
-V1 reversal is an explicit authorized Knowledge-owner command that removes only the unchanged page created by that accepted proposal.
+Bounded create reversal is an explicit authorized Knowledge-owner command that removes only the unchanged page created by that accepted create proposal. Replacement proposals are ineligible, and a page later replaced counts as edited and cannot be removed by its earlier create reversal.
 
 The reversal result MUST retain the original proposal, original review, created-page digest, reversal request, actor, and audit lineage.
 
 Reversal MUST NOT create a second proposal or rollback workflow, erase source evidence, remove a subsequently edited page, or imply reversal of external effects already caused by prior worker use.
 
-Generated update, replacement, merge, split, patch, archive, and delete proposals plus generalized historical restoration remain outside V1 until a separate accepted specification defines their present need and content-history owner.
+Consolidation may propose a complete replacement of one page using current authorized sources. Multi-page merge, split, rename, generated deletion and generalized historical restoration are excluded from this bounded lifecycle. Forgetting is an explicit authorized user operation: stop active retrieval and stale candidate application, remove content through its retention owner, and prevent automatic resurrection from the same source versions. Retained minimal evidence and independently published copies do not become active memory.
+
+## Automatic Learning And Evidence Assessment
+
+Automatic extraction selects bounded eligible completed interactions and creates source-linked observations or pending proposals. Consolidation compares those observations with current saved understanding; unchanged inputs or no useful finding may complete without a proposal. It is a bounded operation of the existing Knowledge Manager and runtime, not a separate persistent Agent, scheduler or self-improvement authority. Consolidation and assessment output MUST NOT recursively establish its own factual evidence.
+
+Users may explicitly save, inspect, edit or forget personal Memory and eligible Knowledge. A current task instruction overrides a remembered preference for that task without silently rewriting it. Direct user expression is distinguishable from a model inference; inferred learning remains pending until authorized review. Existing source, candidate, review, page and evidence owners preserve the difference between a proposal, an assessment and an applied change.
+
+Optional AI prove is source-grounded evidence assessment of an exact claim or candidate. It records support, contradiction or insufficient evidence and its limitations; it is neither mathematical proof nor an authorization grant. An authored scope policy may require this assessment for critical generated content, but a positive result never substitutes for human Review. Changed content or evidence invalidates the old assessment. User editing remains available without falsely preserving a verified label.
+
+Learning that yields a reusable procedure may submit a Skill candidate through Agent Supply. Skill version comparison and rollback retain that owner; factual Memory/Knowledge, procedural Skills, model-generated candidate claims and observed evaluation results remain distinguishable.
 
 ## Retrieval And Context
 
@@ -151,7 +161,7 @@ Later citations, evaluation, or learning claims MUST resolve to that delivery tr
 
 ## Scope And Relationships
 
-Knowledge is workspace-scoped by default and MUST NOT leak across workspaces through sessions, manifests, caches, embeddings, indexes, traces, or Context Packages.
+Every Memory or Knowledge record has one explicit owner scope. Personal Memory may serve its User across authorized private work contexts; it MUST NOT silently enter shared work. Workspace and Server Knowledge do not leak across scopes through sessions, manifests, caches, embeddings, indexes, traces or Context Packages. Current source restrictions survive capture, derivation, assessment and promotion, including when the destination is privately owned.
 
 Items and work history may be Knowledge Sources, but they are not knowledge by themselves.
 
@@ -163,12 +173,16 @@ External domain systems own their raw source-of-truth records; OpenKit may cite,
 
 ## Invariants
 
+- User Memory, Workspace Knowledge and Server Knowledge MUST remain isolated by current owner and source authority; personal material MUST NOT silently enter shared work or another scope.
+- Forgetting MUST stop retrieval and stale candidate application before derived cleanup and MUST prevent automatic resurrection from the same source versions.
+- AI assessment MUST remain evidence, never permission or human Review; content-bound assessment MUST be invalidated by a changed candidate or evidence.
+
 - Reviewed knowledge MUST remain human-authoritative and MUST NOT become agent-owned.
 - Direct human creates and edits MUST pass current validation and MUST NOT preserve a reviewed-proposal acceptance label across changed bytes.
 - Generated learning MUST enter as a source-linked pending Knowledge Proposal and MUST NOT self-promote or self-confirm.
 - Only an authorized human Knowledge Review may accept generated learning for active retrieval.
-- An accepted review MUST NOT count as applied knowledge until the exact proposal-created page, content digest, source lineage, producer, and accepting human review are durable. Missing Audit or command receipt prevents a success or replay claim and returns `recovery_required`, but does not deactivate an otherwise complete business tuple.
-- A V1 reversal MUST remove only the unchanged proposal-created page and retain both the original and reversal evidence.
+- An accepted review MUST NOT count as applied knowledge until the exact resulting page revision, content digest, owner scope, source lineage, producer, and accepting human review are durable. Missing Audit or command receipt prevents a success or replay claim and returns `recovery_required`, but does not deactivate an otherwise complete business tuple.
+- Bounded create reversal MUST remove only the unchanged original proposal-created page; any later replacement makes it ineligible. Both original and reversal evidence MUST remain.
 - Workspace-only, imported, reconstructed, or standalone Knowledge provenance MUST NOT masquerade as completed worker output.
 - Only the owning worker delivery trace may prove that a worker received selected knowledge.
 - Knowledge Pages MUST NOT store secret values.

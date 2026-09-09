@@ -74,6 +74,8 @@ The operation attached to each field follows its natural owner: a scalar prefere
 
 A conversational Thread is addressed to exactly one conversational counterpart. A worker-execution Thread has no conversational counterpart: it is classified by its execution purpose and remains reachable through lineage and reference Items rather than being presented as an addressed conversation.
 
+A Thread has a durable visibility classification independent of its Workspace placement; Permissions resolves the actual audience from current identity and membership. Personal conversation is private to its initiating user by default; Task and Goal work is Workspace-shared. Permissions owns source and recipient eligibility, including private conversation inside a shared Workspace. Sharing publishes explicitly selected material through that owner and never implicitly changes prior history or grants execution authority.
+
 A Thread groups sequential Turns, Items, Artifacts, Approvals, and Agent activity over time. It may involve different Agents and historical AgentSessions across those sequential Turns, but it has at most one current AgentSession and one Turn in flight. Parallel work uses parallel Threads rather than parallel Turns in one Thread.
 
 A Thread carries `threadSource` and optional `parentThreadId`. `threadSource` identifies whether the Thread originated as a user conversation, worker execution, or another accepted execution class. `parentThreadId` preserves causal Thread lineage without moving or copying history. These fields are fixed when the Thread is created; a missing or inaccessible parent leaves lineage unresolved and MUST NOT authorize access, execution, or mutation.

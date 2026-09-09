@@ -6,6 +6,10 @@ implementation: Partial
 
 Implementation note: item projection, digest records, and the accepted Turn-owned Task and Goal delivery trace are implemented. Real worker launches persist and verify the exact Coordinator request, generated `context` input, immutable package files and trace, Workspace Input Snapshot, Workspace Materialization Record, backend handoff, selected or excluded Workspace Material revisions, and queue proof before launch. Direct Task traces also bind selected Knowledge page identities, content digests, complete provenance, and worker-visible bytes through the same owner. Broader candidate audit detail and citation projection remain unimplemented, so this broader specification remains Partial; Goal-mode Knowledge integration remains explicitly deferred outside the current accepted scope.
 
+## Personal Scope Projection
+
+Personal Memory is not ambient Worker input. Under `20260909-thread_visibility_and_sharing.md`, shared Task/Goal work receives only the exact confirmed brief, selected attachments and explicitly promoted personal context. Source selection must exclude private Thread/Memory bodies and metadata outside the receiving audience before materialization. Existing S39 trace records the actual admitted bytes; an inaccessible origin link is not permission to fetch the private conversation. Scoped Knowledge trace identities include owner scope and page revision/digest while this owner alone proves delivery.
+
 ## Summary
 
 This spec defines the task-time context package sent to worker agents.

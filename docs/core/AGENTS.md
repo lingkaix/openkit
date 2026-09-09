@@ -25,5 +25,5 @@ Read `README.md` first. This file contains only local agent execution rules for 
 - Do not add, remove, split, or merge core aspect documents without updating the README required aspect set, term index, and reading order.
 - Do not retire a Core document unless acting as the auditor on an engineer-approved terminal-archive package. Use `current-guidance: None`, link `decision-evidence` to the same-change audit, write substantive and distinct `Lifecycle Reason` and `Retention Reason` sections, then treat the archived file as immutable.
 - Never edit, rename, move, or delete a file under `docs/core/retired/`; put later observations in a new audit record and renewed authority in a new active Core document.
-- Split knowledge and AgentSession into separate docs. Knowledge is reusable workspace understanding and learning; AgentSession is runtime continuity.
+- Split knowledge and AgentSession into separate docs. Knowledge and personal Memory are reusable scope-owned understanding and learning; AgentSession is runtime continuity.
 - Split permissions and sandbox into separate docs. Permissions are authorization and policy decision semantics; sandbox is execution isolation and runtime environment design.

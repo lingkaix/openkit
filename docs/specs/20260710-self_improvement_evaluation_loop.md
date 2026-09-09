@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 ---
 # Explicit Work Reflection And Knowledge Improvement
 
@@ -36,6 +36,8 @@ implementation: Implemented
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 
 ## Summary
+
+This specification owns only the explicit completed-Worker-work reflection composition, which remains create-only. The common proposal operation also admits exact-base replacement for other compositions under S60/S61 and the scoped learning specification; the create-only restrictions below constrain this caller composition, never the shared command. The existing completed-work implementation is retained; adaptation to the new canonical scoped request identity is Not Started, hence the Partial projection.
 
 OpenKit V1 supports deliberate learning from real work without adding another runtime or workflow engine. An authenticated user asks an agent to inspect one retained completed work history through the existing unified `openkit` Skill and bundled CLI. The agent may then call the existing `knowledge.proposal-draft` operation with exact Workspace-owned source references and complete create-only Knowledge Page content, or explain that the evidence does not justify a reusable lesson without creating Knowledge state.
 
@@ -81,13 +83,13 @@ If the evidence is missing, contradictory, stale, unavailable, or insufficient, 
 
 ### Proposal creation and command replay
 
-`knowledge.proposal-draft` MUST accept the complete create-only target and exact source references required by S60 and S61. A successful call creates one ordinary pending Knowledge Proposal and returns its existing identifier and validation result. It creates no page, review decision, reflection record, evaluation record, or private lifecycle.
+This completed-work composition MUST submit a complete create target and exact source references to `knowledge.proposal-draft` under S60/S61. The command also accepts replacement from separately admitted compositions. A successful call creates one ordinary pending Knowledge Proposal and returns its existing identifier and validation result. It creates no page, review decision, reflection record, evaluation record, or private lifecycle.
 
-The command uses the normal command-ledger key `command + requestId + scope`, with scope exactly `{ workspaceId }`; the complete normalized draft request is the input hash. A stored receipt replays through the existing owner projection, any changed draft input under the same Workspace and request id returns `idempotency_key_conflict`, and a proposal found through S61's deterministic Workspace-plus-request owner id without a completed receipt returns `recovery_required`. Title and candidate fields MUST NOT enter the ledger scope because changing them would bypass same-request conflict detection. The command does not reconstruct a response, expand the direct-mutation ledger contract, or create recovery state.
+The command uses the normal command-ledger key `command + requestId + scope`, with canonical owner scope exactly `{ kind: workspace, workspaceId }`; the complete normalized draft request is the input hash. A stored receipt replays through the existing owner projection, any changed draft input under the same Workspace and request id returns `idempotency_key_conflict`, and a proposal found through S61's deterministic owner-scope-plus-request owner id without a completed receipt returns `recovery_required`. Title and candidate fields MUST NOT enter the ledger scope because changing them would bypass same-request conflict detection. The command does not reconstruct a response, expand the direct-mutation ledger contract, or create recovery state.
 
 ### Human review and application
 
-The existing Knowledge Proposal and Knowledge Review owners decide acceptance, rejection, or deferral. Acceptance applies only the exact reviewed create-only target and remains subject to current authorization, validation, conflict, sensitivity, and source-lineage checks. Once any generated proposal for a page id is accepted, its retained Proposal and Review permanently reserve that id against later generated proposals; reversal removes the page but a later generated proposal must choose another id.
+The existing Knowledge Proposal and Knowledge Review owners decide acceptance, rejection, or deferral. Acceptance applies only the exact reviewed create-only target and remains subject to current authorization, validation, conflict, sensitivity, and source-lineage checks. Another create cannot reuse an existing or removed page id. Exact-base replacement under the scoped learning owner may update an existing generated page without rewinding its revision; after replacement the original create reversal is ineligible. Reversal reserves the removed id, so a later create must choose another id.
 
 Application may require more than one file write. Success MUST NOT be reported until both the accepted decision and the matching proposal-created page are durable. If interruption leaves an accepted decision without its exact page effect, that condition remains discoverable; replay of the same authorized decision may complete the deterministic missing effect, otherwise it returns `recovery_required`. No background repair, settlement record, or recovery workflow is created.
 
@@ -114,6 +116,10 @@ An authorization, Knowledge Store, canonical-history, provider, worker, or trans
 ## Proposed Design
 
 Use the unified `openkit` Skill and bundled CLI as the agent's composition surface. Reuse existing work-history reads, `knowledge.proposal-draft`, `knowledge.proposal-decide`, Knowledge Page reads, the S61-owned bounded `knowledge.proposal-reverse`, and S39; extend only their owning contracts where exact source, page, application, reversal, and delivery predicates require it. Add no reflection route, schema family, module, table, file-backed ledger, runner, or dependency.
+
+## Personal Interaction Learning Boundary
+
+This specification continues to own the implemented explicit completed-Worker-work composition. `20260909-personal_memory_and_knowledge_learning.md` owns the newly accepted opt-in bounded extraction during a later private Personal Assistant interaction, including registration of conversation snapshots as Knowledge Sources. That source is not Worker output and needs no fabricated S39 trace. The new composition reuses this specification's proposal/review/application separation but does not change the meaning of completed Worker evidence, start a passive mining service or automatically promote Knowledge or Skills. Its single-page replacement and optional assessment extensions are Not Started; references below to deferred passive/scheduled reflection remain applicable to unattended jobs, not the named interaction-bounded capture.
 
 ## Current Implementation Projection
 

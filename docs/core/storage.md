@@ -42,12 +42,14 @@ CoreServer
   Workspace
 ```
 
+User Memory and Workspace/Server Knowledge reuse the same file-backed knowledge machinery under distinct trusted scope roots; no separate Memory database or authority is implied. Private project Thread bytes remain in the Workspace tree and carry private access through their owning Thread, not through directory concealment.
+
 User and Workspace are independent storage scopes. Identity membership links users to workspaces, while workspace ownership and access relationships must not be encoded by nesting the workspace under the current owner's storage scope.
 
 Storage ownership is divided into three conceptual areas:
 
-- server-owned config, provider instances, agent setup sources, runtime snapshots, scheduler diagnostics, process logs, global indexes, and migration metadata
-- user-owned files, preferences, user-local data, user logs, user-scoped config, and user-specific workspace ordering or recent-workspace indexes
+- server-owned config, provider instances, agent setup sources, deployment Knowledge, runtime snapshots, scheduler diagnostics, process logs, global indexes, and migration metadata
+- user-owned Memory, files, preferences, user-local data, user logs, user-scoped config, and user-specific workspace ordering or recent-workspace indexes
 - workspace-owned repository references and lineage, bounded workspace files, task artifacts, turn and item materialization, workspace knowledge, agent runtime outputs, and workspace-specific logs
 
 The concrete path tree is defined in the server config and data layout spec, not duplicated here.

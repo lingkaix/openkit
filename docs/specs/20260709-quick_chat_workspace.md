@@ -8,7 +8,7 @@ implementation: Partial
 
 - The product and implementation contract for the built-in Quick Chat workspace kind.
 - The per-user seed rule that makes Quick Chat each user's initial owner-only Workspace.
-- The rule that Quick Chat is not shareable in the first multi-user implementation.
+- The rule that the Quick Chat Workspace cannot be shared or converted to a project; explicitly selected conversation snapshots may be published under the Thread sharing owner.
 - The capability boundary that allows lightweight Chat Mode and workspace knowledge while refusing repository, data-source, Task Mode, Goal Mode, worker execution, and Git write flows.
 - The Quick Chat work-request transition that preserves that capability boundary while resolving or creating a separate executing Workspace through one confirmation.
 - The App API and Web behavior required to project the Work Model boundary for Quick Chat.
@@ -76,6 +76,12 @@ The earlier NanoCore seed state created both `Demo Workspace` and `Quick Chat`.
 The current Web selection algorithm chooses a route workspace, then a stored workspace id, then the first workspace returned by the server.
 
 Because `Demo Workspace` is project-shaped seed data, automatically giving it to every new user makes the fresh landing state feel pre-populated instead of clean.
+
+## Selected Content And Personal Memory
+
+Quick Chat remains owner-only: its Workspace membership cannot be widened and it never becomes a shared work container. Any prohibition or error below for sharing Quick Chat refers to that Workspace conversion/membership operation, not `thread.share` publication of a selected snapshot into a separate eligible project Workspace. `20260909-thread_visibility_and_sharing.md` owns that explicit disclosure, original-private-history retention and receiving shared Thread. Existing handoff confirmation must also bind the exact public task brief and selected attachments.
+
+User Memory is independently stored in the User scope and retrieved through `20260909-personal_memory_and_knowledge_learning.md`. Quick Chat history may be a registered source after user-authorized capture, but its existing Workspace Knowledge records are not automatically renamed, exported as User Memory or silently activated as a personal profile. Quick Chat creation/deletion and project selection do not create/delete personal Memory.
 
 ## Decision
 

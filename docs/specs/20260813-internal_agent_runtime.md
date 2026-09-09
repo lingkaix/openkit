@@ -136,6 +136,10 @@ A dependency failure before an environment touch produces bounded feedback when 
 
 Acceptance requires deterministic Tool-call order, zero execution for truncated or incomplete calls, schema validation before every closure invocation, and no provider call after an exit condition is observed.
 
+## Personal Assistant And Selected Resources
+
+Personal Assistant, management and Knowledge maintenance reuse this same bounded runtime without per-user processes or durable hidden Memory. Current Thread, scoped Memory/Knowledge and permission owners assemble continuity; changing provider or restarting does not erase those records. Selected Skills supply context and MCP bindings supply server-bound Tools only through trusted entry-path assembly. An entry's declared binding/version determines its exact tool set; current actor authority decides each call, not whether an otherwise reachable Tool disappears. Neither Plugin text nor the current message registers new internal Tools. Skill script execution is not part of this loop. Interaction-bounded Memory extraction uses these same fuses and typed outcomes; the runtime does not become a Dreaming scheduler.
+
 ## Minimal Tool Contract
 
 The runtime Tool contract is deliberately small:

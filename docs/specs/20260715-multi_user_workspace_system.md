@@ -351,11 +351,11 @@ Canonical Workspace readers and writers must continue to reject symlinks and uns
 
 ## Personal And Shared Data Boundaries
 
-- Workspace Threads, Items, Knowledge, Artifacts, AgentSessions, approvals, policy decisions, audit, usage, repositories, data sources, and Workspace configuration are shared according to policy.
+- Task/Goal Threads and their eligible Items/results are Workspace-shared. Assistant and administration Threads inside a project Workspace are Workspace-owned but private to their initiating user by default, under `20260909-thread_visibility_and_sharing.md`; private-origin Artifacts inherit that audience on standalone access. Resource effects, approvals, policy decisions, audit, usage, repositories, data sources and configuration retain their own current disclosure rules.
 - User preferences, current Workspace selection, personal notification state, and user-local credentials remain user-scoped.
-- A user's built-in Quick Chat Workspace remains owner-only and non-shareable in V1. Each server user has an independent Quick Chat Workspace and its Knowledge does not become team knowledge.
+- A user's built-in Quick Chat Workspace remains owner-only and is not converted into a shared project. Each user has independent Quick Chat history. Explicit snapshot sharing may publish selected eligible material to another Workspace under the Thread sharing owner. Personal Memory is independently User-owned and never becomes team Knowledge through Quick Chat or membership.
 - Raw Vault secret material remains in the Vault backend. Every active member has membership-derived eligibility for Workspace reference/grant administration and governed use; exact Vault grants, current Policy, credential scope, and required approvals still control each operation.
-- No per-member hidden record family is added inside a shared Workspace in V1. Truly personal state belongs to user scope.
+- No parallel hidden record family is added: existing Thread records carry creation-fixed private/workspace visibility and private owner. The private project Thread stays in the Workspace tree; User Memory stays in User storage. Listing, search, streaming, exports and direct-id reads resolve this distinction before exposing candidates. This explicitly replaces the earlier blanket exclusion of private records in shared Workspaces.
 
 ## Actor Attribution
 
