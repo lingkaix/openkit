@@ -1,9 +1,21 @@
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+
+import { createLightApp } from '../generative-kernel/commands.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 
 import {
   createOpenKitAccessTokenRecord,
@@ -372,5 +384,75 @@ describe('data-root backup manifest', () => {
         stagingRoot: join(backupRoot, '.restore-staging'),
       })
     ).toThrow('Restore staging root must be outside the backup root.');
+  });
+
+  it('verifies captured Light App definition bytes against the app database', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-light-app-source-'));
+    const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-light-app-backup-'));
+    mkdirSync(join(dataRoot, 'server', 'db'), { recursive: true });
+    writeFileSync(
+      join(dataRoot, 'server', 'layout.json'),
+      '{"schemaVersion":1,"layoutVersion":2,"deploymentId":"deployment_backup_test"}\n'
+    );
+    const store = createDemoStore({ dataRoot });
+    const schema: LightAppSchemaInput = {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Membership CRM map',
+      purpose: 'Local membership-to-CRM mappings.',
+      collections: [
+        {
+          name: 'mappings',
+          type: 'base',
+          description: 'Mappings.',
+          fields: [
+            {
+              name: 'membership_id',
+              type: 'text',
+              required: true,
+              description: 'Membership id.',
+            },
+            {
+              name: 'active',
+              type: 'bool',
+              required: true,
+              description: 'Whether the mapping is active.',
+            },
+          ],
+          indexes: [],
+        },
+      ],
+    };
+    await createLightApp(
+      {
+        store,
+        inflightCommands: new WeakMap(),
+        dataRoot,
+        workspaceId: 'ws_demo',
+        actor: { kind: 'user', id: 'user_local' },
+        requestId: randomUUID(),
+      },
+      schema
+    );
+    const verified = await writeHotDataRootBackup({
+      dataRoot,
+      backupRoot,
+      backupId: 'drbak_light_app',
+      sourceDeploymentId: 'deployment_backup_test',
+      startedAt: timestamp,
+      completedAt: '2026-09-09T00:00:01.000Z',
+    });
+    expect(verified.checkedFiles.some((path) => path.includes('/light-apps/') && path.endsWith('/data.sqlite'))).toBe(
+      true
+    );
+    expect(verified.checkedFiles.some((path) => path.includes('/light-apps/') && path.includes('/definitions/'))).toBe(
+      true
+    );
+    const appDirs = readdirSync(join(backupRoot, 'workspaces', 'ws_demo', 'light-apps'));
+    rmSync(join(backupRoot, 'workspaces', 'ws_demo', 'light-apps', appDirs[0]!, 'definitions'), {
+      recursive: true,
+      force: true,
+    });
+    expect(() => verifyDataRootBackupManifest({ backupRoot })).toThrow(/definition/i);
   });
 });

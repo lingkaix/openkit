@@ -596,6 +596,11 @@ describe('agent environment package resolver', () => {
         id: 'github',
         schemaPolicy: 'tracking',
       }),
+      expect.objectContaining({
+        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        id: 'openkit-generative',
+        schemaPolicy: 'pinned',
+      }),
     ]);
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('command');
     expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');

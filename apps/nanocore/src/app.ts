@@ -75,6 +75,8 @@ import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-routes.js';
+import { registerGenerativeUiRoutes } from './generative-ui-routes.js';
+import { registerKernelRoutes } from './kernel-routes.js';
 import { registerMaterialRoutes } from './material-routes.js';
 import { registerQuickAndChatModeRoutes, registerTaskModeRoute } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
@@ -1275,6 +1277,22 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerThreadRoutes({ app, inflightCommands, requestStore });
 
   registerMaterialRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    openWorkspaceDb: repositoryWorkspaceDb,
+    requestStore,
+  });
+
+  registerKernelRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    openWorkspaceDb: repositoryWorkspaceDb,
+    requestStore,
+  });
+
+  registerGenerativeUiRoutes({
     app,
     coreDb: options.coreDb,
     inflightCommands,

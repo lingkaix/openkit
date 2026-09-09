@@ -15,6 +15,7 @@ export type {
   EvidenceBundleSensitivityClass,
 } from './evidence-bundles.js';
 export { evidenceBundles } from './evidence-bundles.js';
+export { generativePresentations } from './generative-presentations.js';
 export type { GitPushRecordOutcome } from './git-push-records.js';
 export { gitPushRecords } from './git-push-records.js';
 export type { GoalRecordStatus, GoalTaskStatus } from './goal-records.js';

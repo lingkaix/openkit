@@ -28,6 +28,7 @@ import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
+import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
 import { getVaultGrant, type VaultGrantRecord } from '../vault/vault-grants.js';
 import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
@@ -318,11 +319,14 @@ function resolveOpenShellAgentEnvironmentPackage(
     input.coreDb?.dataRoot,
     input.agentSessionId
   );
-  const workerMcpServers = resolveWorkerMcpServerSupply(
-    (manifest.mcp ?? []).map((server) => server.id),
-    manifest.runtime.adapter,
-    input.workspaceMcpServerCatalog
-  );
+  const workerMcpServers = [
+    ...resolveWorkerMcpServerSupply(
+      (manifest.mcp ?? []).map((server) => server.id),
+      manifest.runtime.adapter,
+      input.workspaceMcpServerCatalog
+    ),
+    createOpenkitGenerativeMcpSupply(),
+  ];
   const preparedContextPackage = input.preparedContextPackage
     ? requirePreparedWorkerContextPackage(
         input.turn,

@@ -58,6 +58,7 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
+import type { AppDb } from '../storage/app-db.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   ensureLayout,
@@ -235,7 +236,14 @@ export type CommandRequestName =
   | 'material.bind'
   | 'material.unbind'
   | 'material.exclude'
-  | 'material.restore';
+  | 'material.restore'
+  | 'kernel.apps.create'
+  | 'kernel.schema.update'
+  | 'kernel.apps.retire'
+  | 'kernel.records.create'
+  | 'kernel.records.update'
+  | 'kernel.records.batch'
+  | 'generative-ui.publish';
 
 /**
  * Resource kind returned by an idempotent command.
@@ -268,7 +276,11 @@ export type CommandRequestResponseKind =
   | 'steering_terminal_outcome'
   | 'material'
   | 'material_revision'
-  | 'thread_material_binding';
+  | 'thread_material_binding'
+  | 'light_app'
+  | 'light_app_record'
+  | 'light_app_batch'
+  | 'generative_presentation';
 
 /**
  * Non-secret scope identifiers used to isolate idempotency keys.
@@ -961,7 +973,7 @@ export class FsStore {
     command: CommandRequestName,
     requestId: string,
     scope: CommandRequestScope,
-    commandDb?: CoreDb | WorkspaceDb
+    commandDb?: CoreDb | WorkspaceDb | AppDb
   ): CommandRequestRecord | null {
     const key = commandRequestKey(command, requestId, scope);
 
@@ -987,7 +999,7 @@ export class FsStore {
    */
   public recordCommandRequest(
     input: CommandRequestRecordInput,
-    commandDb?: CoreDb | WorkspaceDb
+    commandDb?: CoreDb | WorkspaceDb | AppDb
   ): CommandRequestRecord {
     const createdAt = input.createdAt ?? now();
     const record: CommandRequestRecord = {

@@ -354,6 +354,10 @@ registerOperations(
     'listWorkspaceQuarantineRecords',
     'GET /api/workspaces/:workspaceId',
     'GET /api/workspaces/:workspaceId/resources',
+    'listLightApps',
+    'getLightApp',
+    'listLightAppRecords',
+    'getLightAppRecord',
   ],
   {
     mutating: false,
@@ -418,7 +422,16 @@ registerOperations(catalog, ['importWorkspaceArtifact'], {
 });
 registerOperations(
   catalog,
-  ['createWorkspaceMaterial', 'POST /api/workspaces/:workspaceId/threads'],
+  [
+    'createWorkspaceMaterial',
+    'POST /api/workspaces/:workspaceId/threads',
+    'retireLightApp',
+    'createLightAppRecord',
+    'updateLightAppRecord',
+    'batchLightAppRecords',
+    'publishGenerativePresentation',
+    'submitGenerativePresentationAction',
+  ],
   {
     mutating: true,
     policyOperation: 'workspace.write',
@@ -426,6 +439,12 @@ registerOperations(
     scope: 'workspace',
   }
 );
+registerOperations(catalog, ['createLightApp', 'updateLightAppSchema'], {
+  mutating: true,
+  policyOperation: 'workspace.configure',
+  resolver: 'path-workspace',
+  scope: 'workspace',
+});
 registerOperations(
   catalog,
   [
@@ -527,6 +546,20 @@ registerOperations(catalog, ['PATCH /api/workspaces/:workspaceId'], {
   resolver: 'path-workspace',
   scope: 'workspace',
 });
+registerOperations(
+  catalog,
+  [
+    'getGenerativePresentation',
+    'getGenerativePresentationResource',
+    'refreshGenerativePresentation',
+  ],
+  {
+    mutating: false,
+    policyOperation: 'thread.read',
+    resolver: 'path-workspace',
+    scope: 'workspace',
+  }
+);
 registerOperations(catalog, ['GET /api/workspaces/:workspaceId/threads'], {
   mutating: false,
   policyOperation: 'thread.read',

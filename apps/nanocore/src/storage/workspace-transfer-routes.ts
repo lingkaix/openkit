@@ -137,7 +137,13 @@ import {
 } from '../workspace/repository-store.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import type { CoreDb, WorkspaceDb } from './db.js';
+import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
+import {
+  assertExportableGenerativePresentations,
+  importGenerativePresentations,
+  importLightAppFamilies,
+  listExportableLightAppFamilies,
+} from './generative-portability.js';
 import { openWorkspaceDbAtRoot } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
@@ -498,6 +504,7 @@ function collectWorkspaceExportRows(
       },
       artifactReviews: [],
       workspaceMaterialRows: { bindings: [], materials: [], revisions: [] },
+      generativePresentations: [],
     };
   }
 
@@ -541,6 +548,7 @@ function collectWorkspaceExportRows(
         workspaceRepositories: listExportableWorkspaceRepositoryResources(workspaceDb, workspaceId),
         workspaceMaterialRows,
         workspaceSyncRecords,
+        generativePresentations: listExportableGenerativePresentations(workspaceDb),
       };
     })();
   } finally {
@@ -562,6 +570,7 @@ function importWorkspaceDatabaseRows({
   requestId,
   report,
   snapshot,
+  appIds,
 }: {
   /** Exact authenticated user that authorized the workspace import. */
   readonly authorityUserId: string;
@@ -571,6 +580,7 @@ function importWorkspaceDatabaseRows({
   readonly requestId: string | null;
   readonly report: WorkspaceImportDryRunReport;
   readonly snapshot: WorkspaceImportSnapshot;
+  readonly appIds: ReadonlyMap<string, string>;
 }): void {
   const workspaceDb = openWorkspaceDbAtRoot({
     dataRoot: coreDb.dataRoot,
@@ -646,6 +656,16 @@ function importWorkspaceDatabaseRows({
     importGoalReviewRecords(workspaceDb, snapshot.goalReviewRecords);
     importGoalVerificationRecords(workspaceDb, snapshot.goalVerificationRecords);
     importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
+    importGenerativePresentations({
+      workspaceDb,
+      presentations: snapshot.generativePresentations,
+      targetWorkspaceId: importedWorkspaceId,
+      threadIds: snapshot.threadIds,
+      turnIds: snapshot.turnIds,
+      itemIds: snapshot.itemIds,
+      appIds,
+      presentationIds: snapshot.presentationIds,
+    });
     importResolvedAgentSetups(workspaceDb, snapshot.resolvedAgentSetups);
     importWorkspaceVaultUseRecords(workspaceDb, snapshot.vaultUseRecords);
     importWorkerCheckpoints(workspaceDb, snapshot.workerCheckpoints);
@@ -823,6 +843,14 @@ export function importVerifiedWorkspace({
         snapshot.importedSkillPayloads
       );
     }
+    const appIds = importLightAppFamilies({
+      workspaceRoot,
+      sourceWorkspaceId: report.exportedWorkspaceId,
+      targetWorkspaceId: importedWorkspaceId,
+      apps: snapshot.lightApps as never,
+      definitions: snapshot.lightAppDefinitions as never,
+      records: snapshot.lightAppRecords as never,
+    });
     if (coreDb) {
       importWorkspaceDatabaseRows({
         authorityUserId,
@@ -832,6 +860,7 @@ export function importVerifiedWorkspace({
         requestId,
         report,
         snapshot,
+        appIds,
       });
     }
   };
@@ -1034,6 +1063,17 @@ export function createVerifiedWorkspaceExport({
           updatedAt: reference.updatedAt,
         }))
       : [],
+    ...(() => {
+      const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
+      const generativePresentations = workspaceRowFamilies.generativePresentations;
+      assertExportableGenerativePresentations(store, workspaceId, generativePresentations);
+      return {
+        lightApps: lightApps.apps,
+        lightAppDefinitions: lightApps.definitions,
+        lightAppRecords: lightApps.records,
+        generativePresentations,
+      };
+    })(),
   });
   const fileCount = exported.checkedFiles.length;
   const totalBytes = exported.manifest.contentInventory.reduce(

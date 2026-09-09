@@ -2,6 +2,7 @@ import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { KnowledgePageValidationError } from './knowledge/okf.js';
+import { KernelCommandError } from './generative-kernel/errors.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 
@@ -27,6 +28,10 @@ export function asApiError(message: string, code = 'not_found', status = 404): R
  */
 export function asCommandError(error: unknown, code: string, status = 404): Response {
   if (error instanceof IdempotencyKeyConflictError) {
+    return asApiError(error.message, error.code, error.status);
+  }
+
+  if (error instanceof KernelCommandError) {
     return asApiError(error.message, error.code, error.status);
   }
 

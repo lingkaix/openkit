@@ -175,6 +175,8 @@ export interface WorkspaceLayoutPaths {
   catalogPluginSnapshots: string;
   /** Mutable MCP package-data root. */
   catalogMcpData: string;
+  /** Workspace Light App inventory root. */
+  lightApps: string;
 }
 
 /**
@@ -390,6 +392,7 @@ export function ensureWorkspaceLayoutRoot(workspaceRoot: string): WorkspaceLayou
     catalogSkillSnapshots: join(workspaceRoot, 'catalog', 'skill-snapshots'),
     catalogPluginSnapshots: join(workspaceRoot, 'catalog', 'plugin-snapshots'),
     catalogMcpData: join(workspaceRoot, 'catalog', 'mcp-data'),
+    lightApps: join(workspaceRoot, 'light-apps'),
   };
 
   ensureLayoutDirectory(paths.root, true);

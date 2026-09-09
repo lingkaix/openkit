@@ -4,11 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { BootConfigError } from '../config/mode.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 
+/** Database handle that can apply a scoped setup section. */
+type SetupDb = {
+  readonly scope: 'core' | 'user' | 'workspace' | 'app';
+  readonly sqlite: import('better-sqlite3').Database;
+};
+
 const SETUP_FILE = '0000_setup.sql';
 const SETUP_ID = '0000_setup';
 const SETUP_SCOPE_MARKER = '-- openkit:scope ';
-
-type SetupDb = CoreDb | UserDb | WorkspaceDb;
 
 /**
  * Applies the current database setup to a Core database.
@@ -21,13 +25,24 @@ export function applyMigrations(coreDb: CoreDb): void {
 }
 
 /**
- * Applies the current database setup to one User or Workspace database.
+ * Applies the current database setup to one User, Workspace, or App database.
  *
- * @param scopedDb Open User or Workspace database.
+ * @param scopedDb Open User, Workspace, or App database.
  * @throws BootConfigError when the setup file is missing or fails to apply.
  */
-export function applyScopedMigrations(scopedDb: UserDb | WorkspaceDb): void {
+export function applyScopedMigrations(
+  scopedDb: UserDb | WorkspaceDb | { readonly scope: 'app'; readonly sqlite: SetupDb['sqlite'] }
+): void {
   applyDatabaseSetup(scopedDb);
+}
+
+/**
+ * Applies the app-scope setup section.
+ *
+ * @param sqlite Open app SQLite connection.
+ */
+export function applyAppMigrations(sqlite: SetupDb['sqlite']): void {
+  applyDatabaseSetup({ scope: 'app', sqlite });
 }
 
 /**

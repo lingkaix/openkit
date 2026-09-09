@@ -61,6 +61,13 @@ import {
   type WorkspaceDb,
 } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import {
+  dispatchOpenkitGenerativeTool,
+  OPENKIT_GENERATIVE_CATALOG_DIGEST,
+  OPENKIT_GENERATIVE_MCP_ID,
+  OPENKIT_GENERATIVE_TOOLS,
+} from './runtime/openkit-generative-mcp.js';
+import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { vaultSecretMaterialToString } from './vault/vault-backend.js';
 import { getVaultGrant, type VaultGrantRecord } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
@@ -129,6 +136,7 @@ export interface RegisterWorkerMcpRoutesInput {
 export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): void {
   const activeRequests = new Map<string, AbortController>();
   const toolCallTails = new Map<string, Promise<void>>();
+  const generativeInflight = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
   input.app.post('/api/worker-capabilities/mcp/_list-servers', async (context) => {
     let call: StartedCapabilityCall | null = null;
     let releaseMutation: (() => void) | null = null;
@@ -166,8 +174,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         .workspaceMcpServerCatalogs.find(
           (entry) => entry.workspaceId === environmentPackage.scope.workspaceId
         )?.catalog;
-      if (!catalog) throw unavailableServer();
-
       workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, environmentPackage.scope.workspaceId);
       applyScopedMigrations(workspaceDb);
       call = startCapabilityCall({
@@ -191,6 +197,18 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         workspaceId: environmentPackage.scope.workspaceId,
       });
       const servers = environmentPackage.supply.mcpServers.map((selected) => {
+        if (selected.id === OPENKIT_GENERATIVE_MCP_ID) {
+          if (selected.catalogDigest !== OPENKIT_GENERATIVE_CATALOG_DIGEST) {
+            throw unavailableServer();
+          }
+          return {
+            health: 'ready' as const,
+            id: selected.id,
+            toolNames: [...selected.allowedTools],
+            transport: 'stdio' as const,
+          };
+        }
+        if (!catalog) throw unavailableServer();
         const resolved = resolveWorkspaceMcpServer({ catalog, serverId: selected.id });
         if (resolved.catalogDigest !== selected.catalogDigest) throw unavailableServer();
         const snapshot = readCurrentMcpToolSchemaSnapshot({
@@ -245,6 +263,105 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       );
       const serverId = context.req.param('serverId');
       const selected = requireSelectedMcpServer(environmentPackage, serverId);
+      if (serverId === OPENKIT_GENERATIVE_MCP_ID) {
+        if (selected.catalogDigest !== OPENKIT_GENERATIVE_CATALOG_DIGEST) {
+          throw unavailableServer();
+        }
+        const protocolMessage = await context.req.raw
+          .clone()
+          .json()
+          .catch(() => null);
+        const cancellation = CancelledNotificationSchema.safeParse(protocolMessage);
+        if (cancellation.success) {
+          if (cancellation.data.params.requestId !== undefined) {
+            activeRequests
+              .get(
+                mcpActiveRequestKey(
+                  environmentPackage,
+                  serverId,
+                  cancellation.data.params.requestId
+                )
+              )
+              ?.abort(new DOMException('MCP caller cancelled request.', 'AbortError'));
+          }
+          return new Response(null, { status: 202 });
+        }
+        server = new Server(
+          { name: `openkit-${serverId}`, version: '1.0.0' },
+          { capabilities: { tools: {} } }
+        );
+        server.setRequestHandler(ListToolsRequestSchema, async () => {
+          if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
+            throw mcpDeniedError();
+          }
+          requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+          return {
+            tools: OPENKIT_GENERATIVE_TOOLS.filter(
+              (tool) =>
+                selected.allowedTools.includes(tool.name) && !selected.deniedTools.includes(tool.name)
+            ).map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            })),
+          };
+        });
+        server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+          if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
+            throw mcpDeniedError();
+          }
+          const toolCancellation = registerMcpActiveRequest(
+            activeRequests,
+            environmentPackage,
+            serverId,
+            extra.requestId,
+            extra.signal
+          );
+          const releaseMutation = input.workspaceMutationAdmission.enter(
+            environmentPackage.scope.workspaceId
+          );
+          if (!releaseMutation) {
+            toolCancellation.release();
+            throw mcpDeniedError();
+          }
+          let activeWorkspaceDb: WorkspaceDb | null = null;
+          try {
+            requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+            requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+            if (!selected.allowedTools.includes(request.params.name)) {
+              throw mcpDeniedError();
+            }
+            activeWorkspaceDb = openWorkspaceDb(
+              input.coreDb!.dataRoot,
+              environmentPackage.scope.workspaceId
+            );
+            applyScopedMigrations(activeWorkspaceDb);
+            const result = await dispatchOpenkitGenerativeTool(
+              {
+                store: input.store,
+                inflightCommands: generativeInflight,
+                dataRoot: input.coreDb!.dataRoot,
+                workspaceId: environmentPackage.scope.workspaceId,
+                actor: environmentPackage.scope.triggerActor,
+                workspaceDb: activeWorkspaceDb,
+                scope: environmentPackage.scope,
+              },
+              request.params.name,
+              (request.params.arguments ?? {}) as Record<string, unknown>
+            );
+            return result;
+          } finally {
+            activeWorkspaceDb?.sqlite.close();
+            releaseMutation();
+            toolCancellation.release();
+          }
+        });
+        const transport = new WebStandardStreamableHTTPServerTransport({
+          enableJsonResponse: true,
+        });
+        await server.connect(transport);
+        return await transport.handleRequest(context.req.raw);
+      }
       const catalog = input
         .runtimeConfig()
         .workspaceMcpServerCatalogs.find(

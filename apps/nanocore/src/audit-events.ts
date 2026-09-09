@@ -128,6 +128,24 @@ export function recordWorkspaceAuditEvent(input: RecordWorkspaceAuditEventInput)
 }
 
 /**
+ * Records one protocol-valid audit event in an app-scoped database.
+ *
+ * @param input App event context and SQLite handle.
+ * @returns Protocol audit event stored in SQLite.
+ */
+export function recordAppAuditEvent(
+  input: Omit<RecordWorkspaceAuditEventInput, 'workspaceDb'> & { sqlite: CoreDb['sqlite'] }
+): AuditEvent {
+  const { sqlite: _sqlite, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
+  assertNoUnsafeAuditValue(safeInput);
+
+  return recordAuditEvent(input.sqlite, {
+    ...input,
+    workspaceId: input.workspaceId,
+  });
+}
+
+/**
  * Records one protocol-valid server audit event.
  *
  * @param input Server event context and database handle.
