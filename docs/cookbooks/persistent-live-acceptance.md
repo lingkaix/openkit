@@ -58,6 +58,8 @@ Record a digest of the complete installed Skill tree, including relative filenam
 
 Use current public records first. Inspect optional telemetry only for the missing diagnostic question; telemetry absence does not override a proved product result. Preserve a collector or judge error and its inputs before correction. Complete retained evidence may be re-adjudicated without rerunning the product; missing observations cannot be reconstructed into a pass.
 
+For a stock file Collector, inspect the configured rotation files as well as the current output file when correlating an earlier request. Retain only the deciding safe span fields and matching request-log identity in the attempt evidence before rotation expires them; the live file is not a full-boot archive.
+
 If authorized SSH diagnosis identifies a repair, record the failure and perform the repair through the existing owner. A product upgrade or state repair starts a new attempt. Reduce a deterministic defect into its lowest sufficient regression rather than repeatedly expanding L6. Leave the deployment, Provider account and unrelated resources in place. Remove only attempt-owned temporary resources, and report cleanup failures separately.
 
 Map the retained observations to the acceptance conditions of each relevant change plan. One run may support several conditions, but a successful deployment or unrelated workload cannot close an untested plan. Keep a short record of build, input/story, times, public ids, observed outcome, deciding evidence and remaining limitations; no new execution database is needed.
