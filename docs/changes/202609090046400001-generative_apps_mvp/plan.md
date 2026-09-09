@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: 2026-09-09
 ---
 # Generative Apps MVP
@@ -32,11 +32,13 @@ The primary owns this plan, the root governance amendment, the two initial contr
 
 ### Current Facts And Acceptance Status
 
-- Core design and both initial implementation contracts are accepted; both specifications are `Implementation: In Progress` while this MVP lands. Epoch 2 supplies authorization for the settled details. Initial schema, command, transaction, presentation, Item, action, Worker, Policy, storage and portable contracts are now fixed. No initial design blocker remains; full-feature completion and later extensions stay deferred.
+- Core design and both initial implementation contracts are accepted; both specifications are `Implementation: Partial` because the initial NanoCore/Web/Worker/Skill path is landed while live selected-Worker, browser, and crash proofs remain deferred and later extensions stay out of this change. Epoch 2 supplies authorization for the settled details. Initial schema, command, transaction, presentation, Item, action, Worker, Policy, storage and portable contracts are now fixed. No initial design blocker remains; full-feature completion and later extensions stay deferred.
 - NanoCore Kernel, native Generative UI admission, Worker MCP `openkit-generative`, App API/Skill operations, Chat Item rendering through official A2UI v0.9, and Workspace feature markers are implemented on `feat/generative-apps-mvp`. The unpublished `/generative` fixture remains Tier C.
 - Built-in Worker tools reuse App API operation Policy plus `deniedTools` / fail-closed `approvalRequiredTools`. This MVP does not edit `WORKSPACE_ROLE_OPERATION_CEILINGS`; equal active-member eligibility remains unmet for editor/viewer and is recorded in the Policy mapping.
 - Existing portability covers per-app databases, definition bytes, native records, and retained presentations through explicit canonical-family exporters. Import verifies definition and presentation digests before remint.
 - Live selected-Worker journey, browser E2E form/edit/refresh, and crash/restart proofs are **deferred** under the engineer exception. Typecheck, official A2UI v0.9 admission, Policy, portability, CLI bundle, and contract conformance are not waived.
+- Independent Codex Reviewer, Verifier, and Auditor accepted HEAD `94c09bc9` on 2026-09-09. This plan is `implemented`, not `verified`, because those deferred live proofs remain outstanding. The design record `docs/changes/202609081810390001-generative_kernel_ui_design/plan.md` stays `verified` and is not reopened as implementation.
+- The corpus documentation validator previously failed solely on the unrelated `docs/changes/202609081255000001-agent_plugin_skill_mcp_catalog/plan.md` noncanonical `status: in-review`. Epoch 6 corrects that frontmatter to truthful `in-progress` so this PR's lightweight repo check can pass; that catalog plan's intent, owners, and checkpoint are otherwise untouched.
 
 ### Proposed MVP And Why This Size
 
@@ -151,3 +153,14 @@ Working facts after this epoch:
 - Native admission rejects unofficial `usageHint`, `List.alignment`, and `literalString` bindings. Kernel audit rows can carry the originating Item id for lineage-bound updates.
 - Policy mapping and Current Implementation Projections now match Git: MVP ships on existing role ceilings and records unmet equal-member eligibility; official A2UI v0.9 is the Chat renderer.
 - Observed focused checks at `2f79c77b` (worktree `/Users/m5pro/.herdr/worktrees/openkit/feat-generative-apps-mvp`): `pnpm --filter @openkit/nanocore typecheck`, `pnpm --filter @openkit/web typecheck`, and `pnpm --filter @openkit/core-client typecheck` exited 0. Focused Vitest on Kernel/UI/MCP/portability files reported 20 passed, 0 failed; a later MCP/UI rerun reported 9 passed, 0 failed including Ajv2020 compile of projected ListTools schemas. `pnpm --filter @openkit/web exec vitest run src/screens/chat/GenerativePresentationView.test.tsx` reported 2 passed. `node scripts/generate-doc-index.mjs --check` reported the documentation index is current. `git diff --check` passed. Live selected-Worker journey, browser E2E, and crash/restart proofs remain **deferred**.
+
+## Implementation Epoch 6
+
+Source: the engineer's instruction to keep working until both named change plans are complete and independent Reviewer, Verifier, and Auditor agree the PR is merge-ready, with live product acceptance marked deferred rather than claimed.
+
+Working facts after this epoch:
+
+- Independent Codex Reviewer, Verifier, and Auditor each wrote **accept** for HEAD `94c09bc9e3d21bb2eff76a1a1e9e9d7463d155f0`. Reports remain uncommitted under `temp/changes/202609090046400001-generative_apps_mvp/`. Reviewer residual P2 items (Chat refresh draft overlay; native list markup/`as never`) stay non-blocking and are not converted into live E2E requirements.
+- This plan status becomes `implemented`. It is not `verified`: live selected-Worker, browser E2E, and crash/restart proofs remain **deferred**. The earlier design plan remains `verified` and is not an implementation owner.
+- Kernel and Generative UI specifications move from `Implementation: In Progress` to `Partial` because the initial-delivery code is landed while those deferred proofs and later extensions keep the contracts from `Implemented`.
+- The GitHub `PR lightweight repo check` failed only on the pre-existing unrelated catalog plan's noncanonical `status: in-review`. This epoch changes that one frontmatter value to `in-progress`, matching the catalog plan's own checkpoint that independent review has not accepted that other change. No other catalog-plan content is edited.

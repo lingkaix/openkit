@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: In Progress
+implementation: Partial
 date: 2026-09-08
 updated: 2026-09-09
 ---

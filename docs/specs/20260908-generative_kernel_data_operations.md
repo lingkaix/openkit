@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: In Progress
+implementation: Partial
 date: 2026-09-08
 updated: 2026-09-09
 ---
@@ -245,7 +245,7 @@ Fixed operations, internal-agent MCP loading, advanced relational queries, destr
 
 ## Open Questions And Deferred Extensions
 
-No blocking initial-contract question remains. The initial contract fixes supported schema, data, lifecycle, request/result, concurrency, storage, portability, Policy and selected Worker behavior; the initial-delivery implementation is in progress on `feat/generative-apps-mvp` and live product proofs remain deferred.
+No blocking initial-contract question remains. The initial contract fixes supported schema, data, lifecycle, request/result, concurrency, storage, portability, Policy and selected Worker behavior; the initial-delivery implementation is landed on `feat/generative-apps-mvp` as `Partial` because live product proofs remain deferred.
 
 - [Non-blocking] Richer queries, upsert/predicate-wide mutations, destructive changes and recovery, and app-scoped schema/resource packages require their own accepted extension contracts before enablement.
 - [Non-blocking] Fixed operations and internal-agent MCP/Skill invocation require exact selected component and runtime bindings; they remain unavailable and do not block the general Worker data surface.
