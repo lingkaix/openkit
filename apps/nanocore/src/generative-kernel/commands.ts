@@ -46,20 +46,11 @@ import {
 } from './native.js';
 import { admitLightAppSchema } from './schema.js';
 import { allocateAppId, allocateRecordId } from './uuid.js';
+import { encodeSqlValue, normalizeLightAppFieldValue } from './values.js';
 
 const APP_DIRECTORY_LIMIT = 128;
 const RECORD_LIMIT = 10_000;
 const DATA_OBJECT_BYTE_LIMIT = 16 * 1024;
-const TEXT_BYTE_LIMIT = 4096;
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-
-function isCanonicalUtcDate(value: string): boolean {
-  if (!DATE_PATTERN.test(value)) {
-    return false;
-  }
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
-}
 const BATCH_POST = /^\/api\/collections\/([^/]+)\/records$/;
 const BATCH_PATCH = /^\/api\/collections\/([^/]+)\/records\/([^/]+)$/;
 const EMPTY_DIGEST = `sha256:${createHash('sha256').update('').digest('hex')}`;
@@ -1082,139 +1073,36 @@ function coerceFieldValue(
   value: unknown,
   pendingCreatedIds: ReadonlySet<string>
 ): unknown {
-  switch (field.type) {
-    case 'text': {
-      if (typeof value !== 'string') {
-        throw new KernelCommandError('validation_failed', `Field ${field.name} must be text.`, {
-          path: field.name,
-        });
-      }
-      const max = (field.options as { max?: number } | undefined)?.max ?? TEXT_BYTE_LIMIT;
-      if (Buffer.byteLength(value, 'utf8') > max) {
-        throw new KernelCommandError('limit_exceeded', `Field ${field.name} exceeds text limit.`, {
-          path: field.name,
-          limit: 'textBytes',
-          maximum: max,
-        });
-      }
-      return value;
-    }
-    case 'number': {
-      if (typeof value !== 'number' || !Number.isFinite(value)) {
-        throw new KernelCommandError(
-          'validation_failed',
-          `Field ${field.name} must be a finite number.`,
-          { path: field.name }
-        );
-      }
-      const options =
-        (field.options as { onlyInt?: boolean; min?: number; max?: number } | undefined) ?? {};
-      if (options.onlyInt && !Number.isSafeInteger(value)) {
-        throw new KernelCommandError(
-          'validation_failed',
-          `Field ${field.name} must be a safe integer.`,
-          { path: field.name }
-        );
-      }
-      if (options.min !== undefined && value < options.min) {
-        throw new KernelCommandError('validation_failed', `Field ${field.name} is below minimum.`, {
-          path: field.name,
-        });
-      }
-      if (options.max !== undefined && value > options.max) {
-        throw new KernelCommandError('validation_failed', `Field ${field.name} is above maximum.`, {
-          path: field.name,
-        });
-      }
-      return value;
-    }
-    case 'bool':
-      if (typeof value !== 'boolean') {
-        throw new KernelCommandError('validation_failed', `Field ${field.name} must be boolean.`, {
-          path: field.name,
-        });
-      }
-      return value;
-    case 'date':
-      if (typeof value !== 'string' || !isCanonicalUtcDate(value)) {
-        throw new KernelCommandError(
-          'validation_failed',
-          `Field ${field.name} must be a canonical UTC date.`,
-          { path: field.name }
-        );
-      }
-      return value;
-    case 'select': {
-      const values = (field.options as { values: string[] }).values;
-      if (typeof value !== 'string' || !values.includes(value)) {
-        throw new KernelCommandError(
-          'validation_failed',
-          `Field ${field.name} must be an admitted select value.`,
-          { path: field.name }
-        );
-      }
-      return value;
-    }
-    case 'relation': {
-      if (typeof value !== 'string') {
-        throw new KernelCommandError(
-          'validation_failed',
-          `Field ${field.name} must be a record id.`,
-          { path: field.name }
-        );
-      }
-      if (pendingCreatedIds.has(value)) {
-        throw new KernelCommandError(
-          'validation_failed',
-          'Batch relations cannot target records created in the same batch.'
-        );
-      }
-      const targetId = (field.options as { collection: string }).collection;
-      const target = schema.collections.find((collection) => collection.id === targetId);
-      if (!target) {
-        throw new KernelCommandError(
-          'validation_failed',
-          `Field ${field.name} has an unknown relation target.`
-        );
-      }
-      const exists = appDb.sqlite
-        .prepare(`SELECT 1 AS ok FROM ${quoteIdent(collectionTableName(target.id))} WHERE id = ?`)
-        .get(value) as { ok: number } | undefined;
-      if (!exists) {
-        throw new KernelCommandError(
-          'validation_failed',
-          `Field ${field.name} references a missing record.`,
-          { path: field.name }
-        );
-      }
-      return value;
-    }
-    default:
-      throw new KernelCommandError(
-        'validation_failed',
-        `Unsupported field type for ${field.name}.`
-      );
+  const canonical = normalizeLightAppFieldValue(field, value);
+  if (field.type !== 'relation') {
+    return canonical;
   }
-}
-
-/**
- * Encodes one JSON field value as a SQLite bind parameter.
- *
- * @param type Field type.
- * @param value Canonical value.
- * @returns SQLite value.
- */
-function encodeSqlValue(type: string, value: unknown): unknown {
-  if (value === null) {
-    return null;
+  const recordId = String(canonical);
+  if (pendingCreatedIds.has(recordId)) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Batch relations cannot target records created in the same batch.'
+    );
   }
-  if (type === 'bool') {
-    if (typeof value !== 'boolean') {
-      throw new KernelCommandError('validation_failed', 'Boolean fields require a boolean value.');
-    }
-    return value === true ? 1 : 0;
+  const targetId = (field.options as { collection: string }).collection;
+  const target = schema.collections.find((collection) => collection.id === targetId);
+  if (!target) {
+    throw new KernelCommandError(
+      'validation_failed',
+      `Field ${field.name} has an unknown relation target.`
+    );
   }
-  return value;
+  const exists = appDb.sqlite
+    .prepare(`SELECT 1 AS ok FROM ${quoteIdent(collectionTableName(target.id))} WHERE id = ?`)
+    .get(recordId) as { ok: number } | undefined;
+  if (!exists) {
+    throw new KernelCommandError(
+      'validation_failed',
+      `Field ${field.name} references a missing record.`,
+      { path: field.name }
+    );
+  }
+  return recordId;
 }
 
 /**

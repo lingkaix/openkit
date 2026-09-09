@@ -200,6 +200,106 @@ describe('Light App portability', () => {
           },
         ],
       })
-    ).toThrow(/boolean field requires a boolean value/);
+    ).toThrow(/Imported Light App record is invalid/);
+  });
+
+  it('rejects imported values that Kernel field validation would refuse', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-light-app-portability-types-'));
+    const store = createDemoStore({ dataRoot });
+    const context: KernelCommandContext = {
+      store,
+      inflightCommands: new WeakMap(),
+      dataRoot,
+      workspaceId: 'ws_demo',
+      actor: { kind: 'user', id: 'user_local' },
+      requestId: randomUUID(),
+    };
+    const schema: LightAppSchemaInput = {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Typed import',
+      purpose: 'Typed field validation on import.',
+      collections: [
+        {
+          name: 'notes',
+          type: 'base',
+          description: 'Notes.',
+          fields: [
+            {
+              name: 'note',
+              type: 'text',
+              required: true,
+              description: 'Short note.',
+              options: { max: 4 },
+            },
+            {
+              name: 'when',
+              type: 'date',
+              required: true,
+              description: 'Canonical date.',
+            },
+            {
+              name: 'count',
+              type: 'number',
+              required: true,
+              description: 'Safe integer count.',
+              options: { onlyInt: true },
+            },
+          ],
+          indexes: [],
+        },
+      ],
+    };
+    const created = await createLightApp(context, schema);
+    const record = await createRecord(
+      { ...context, requestId: randomUUID() },
+      created.appId,
+      'notes',
+      created.schemaRevision,
+      {
+        note: 'ok',
+        when: '2026-09-09T00:00:00.000Z',
+        count: 1,
+      }
+    );
+    const exported = listExportableLightAppFamilies(dataRoot, 'ws_demo');
+    const exportedRecord = exported.records[0]!;
+    const noteId = Object.entries(exportedRecord.record.values).find(
+      ([, value]) => value === 'ok'
+    )?.[0];
+    const dateId = Object.entries(exportedRecord.record.values).find(
+      ([, value]) => value === '2026-09-09T00:00:00.000Z'
+    )?.[0];
+    const countId = Object.entries(exportedRecord.record.values).find(
+      ([, value]) => value === 1
+    )?.[0];
+    expect(noteId && dateId && countId).toBeTruthy();
+    const invalids: Array<Record<string, string | number | boolean | null>> = [
+      { ...exportedRecord.record.values, [noteId!]: 'ééé' },
+      { ...exportedRecord.record.values, [dateId!]: 'not-a-date' },
+      { ...exportedRecord.record.values, [countId!]: 9007199254740992 },
+    ];
+    const targetWorkspaceId = 'ws_imported';
+    const targetRoot = ensureWorkspaceLayout(dataRoot, targetWorkspaceId).root;
+    for (const values of invalids) {
+      const digest = `sha256:${createHash('sha256').update(JSON.stringify(values), 'utf8').digest('hex')}`;
+      expect(() =>
+        importLightAppFamilies({
+          workspaceRoot: targetRoot,
+          sourceWorkspaceId: 'ws_demo',
+          targetWorkspaceId,
+          apps: exported.apps,
+          definitions: exported.definitions,
+          records: [
+            {
+              ...exportedRecord,
+              contentDigest: digest,
+              record: { ...exportedRecord.record, values },
+            },
+          ],
+        })
+      ).toThrow(/Imported Light App record is invalid/);
+    }
+    expect(record.id).toBeTruthy();
   });
 });

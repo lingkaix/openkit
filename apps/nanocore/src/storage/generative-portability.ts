@@ -6,12 +6,14 @@ import { LightAppAdmittedSchemaSchema } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 
 import { listSqliteAuditEvents } from '../audit-events.js';
+import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
   collectionTableName,
   createSchemaDdl,
   fieldColumnName,
   quoteIdent,
 } from '../generative-kernel/native.js';
+import { encodeSqlValue, normalizeLightAppFieldValue } from '../generative-kernel/values.js';
 import type { FsStore } from '../lib/store.js';
 import type { AppDb } from './app-db.js';
 import { lightAppRoot, lightAppsRoot, openExistingAppDb, writeDurableFile } from './app-db.js';
@@ -439,9 +441,28 @@ export function importLightAppFamilies(input: {
           exported.record.createRequestId,
           exported.record.lastRequestId,
           exported.record.schemaRevision,
-          ...collection.fields.map((field) =>
-            encodeSqlValue(field.type, exported.record.values[field.id] ?? null)
-          ),
+          ...collection.fields.map((field) => {
+            const raw = exported.record.values[field.id];
+            if (raw === undefined) {
+              throw new Error(`Imported Light App record is missing field ${field.id}.`);
+            }
+            if (raw === null) {
+              if (field.required) {
+                throw new Error(`Imported Light App record has a null required field: ${field.id}`);
+              }
+              return encodeSqlValue(field.type, null);
+            }
+            try {
+              return encodeSqlValue(field.type, normalizeLightAppFieldValue(field, raw));
+            } catch (error) {
+              if (error instanceof KernelCommandError) {
+                throw new Error(
+                  `Imported Light App record is invalid: ${exported.id}: ${error.message}`
+                );
+              }
+              throw error;
+            }
+          }),
         ];
         sqlite
           .prepare(
@@ -615,31 +636,6 @@ function rewritePresentationSource(
     };
   }
   return record;
-}
-
-function encodeSqlValue(type: string, value: unknown): unknown {
-  if (value === null) {
-    return null;
-  }
-  if (type === 'bool') {
-    if (typeof value !== 'boolean') {
-      throw new Error('Imported boolean field requires a boolean value.');
-    }
-    return value === true ? 1 : 0;
-  }
-  if (type === 'number') {
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      throw new Error('Imported number field requires a finite number.');
-    }
-    return value;
-  }
-  if (type === 'text' || type === 'date' || type === 'select' || type === 'relation') {
-    if (typeof value !== 'string') {
-      throw new Error(`Imported ${type} field requires a string value.`);
-    }
-    return value;
-  }
-  throw new Error(`Unknown imported field type: ${type}`);
 }
 
 function decodeSqlValue(type: string, value: unknown): unknown {

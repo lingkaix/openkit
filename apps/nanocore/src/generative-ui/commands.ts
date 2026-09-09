@@ -28,7 +28,12 @@ import { KernelCommandError } from '../generative-kernel/errors.js';
 import type { FsStore } from '../lib/store.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { type AdmittedDeclaration, admitProducerMessages, bindingPath } from './admit.js';
+import {
+  type AdmittedDeclaration,
+  admitProducerMessages,
+  assertExpandedSourceInstances,
+  bindingPath,
+} from './admit.js';
 
 const ACCEPTED_MESSAGE_BYTE_LIMIT = 2 * 1024 * 1024;
 const ACTION_MESSAGE_BYTE_LIMIT = 64 * 1024;
@@ -98,6 +103,7 @@ export async function publishGenerativePresentation(
       const admitted = admitProducerMessages(input);
       const sourceData = readAuthorizedSource(context, input.source, admitted, input.actions);
       const dataModel = buildSourceDataModel(input.source, sourceData);
+      assertExpandedSourceInstances(admitted.components, dataModel);
       const acceptedMessages = [
         input.messages[0],
         input.messages[1],
@@ -263,6 +269,8 @@ export function refreshGenerativePresentation(
     admitted,
     presentation.actions
   );
+  const dataModel = buildSourceDataModel(presentation.source, sourceData);
+  assertExpandedSourceInstances(admitted.components, dataModel);
   const observedAt = new Date().toISOString();
   return {
     presentationId: presentation.id,
@@ -273,7 +281,7 @@ export function refreshGenerativePresentation(
         updateDataModel: {
           surfaceId: event.action.surfaceId,
           path: '/',
-          value: buildSourceDataModel(presentation.source, sourceData),
+          value: dataModel,
         },
       },
     ],

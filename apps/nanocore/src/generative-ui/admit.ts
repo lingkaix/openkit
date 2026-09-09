@@ -1,4 +1,14 @@
 import {
+  ButtonApi,
+  CardApi,
+  CheckBoxApi,
+  ColumnApi,
+  ListApi,
+  RowApi,
+  TextApi,
+  TextFieldApi,
+} from '@a2ui/web_core/v0_9/basic_catalog';
+import {
   GENERATIVE_UI_NATIVE_CATALOG_ID,
   GENERATIVE_UI_PROTOCOL_VERSION,
   type GenerativeUiAction,
@@ -25,15 +35,25 @@ const MAX_EXPANDED_INSTANCES = 500;
 const MAX_DECLARATION_BYTES = 256 * 1024;
 const FORBIDDEN_KEYS = new Set(['style', 'theme', 'validationRegex', 'functionCall']);
 const ALLOWED_PROPS: Record<string, ReadonlySet<string>> = {
-  Text: new Set(['text', 'variant']),
+  Text: new Set(['text', 'variant', 'weight']),
   Row: new Set(['children', 'justify', 'align', 'weight']),
   Column: new Set(['children', 'justify', 'align', 'weight']),
   List: new Set(['children', 'direction', 'align', 'weight']),
   Card: new Set(['child', 'weight']),
-  Button: new Set(['child', 'text', 'action', 'variant', 'weight']),
+  Button: new Set(['child', 'action', 'variant', 'weight']),
   TextField: new Set(['value', 'label', 'variant']),
   CheckBox: new Set(['value', 'label', 'weight']),
 };
+const OFFICIAL_COMPONENT_APIS = {
+  Text: TextApi,
+  Row: RowApi,
+  Column: ColumnApi,
+  List: ListApi,
+  Card: CardApi,
+  Button: ButtonApi,
+  TextField: TextFieldApi,
+  CheckBox: CheckBoxApi,
+} as const;
 
 /** One admitted A2UI component. */
 export interface AdmittedComponent {
@@ -197,9 +217,53 @@ function admitComponent(row: unknown, index: number): AdmittedComponent {
   if (type === 'Button' && props.action === undefined) {
     throw new KernelCommandError('validation_failed', `Component ${id} Button requires action.`);
   }
+  if ((type === 'Button' || type === 'Card') && typeof props.child !== 'string') {
+    throw new KernelCommandError(
+      'validation_failed',
+      `Component ${id} ${type} requires a child component id.`
+    );
+  }
+  if ((type === 'TextField' || type === 'CheckBox') && props.label === undefined) {
+    throw new KernelCommandError('validation_failed', `Component ${id} ${type} requires a label.`);
+  }
+  const official = OFFICIAL_COMPONENT_APIS[type as keyof typeof OFFICIAL_COMPONENT_APIS];
+  if (!official.schema.safeParse(props).success) {
+    throw new KernelCommandError(
+      'validation_failed',
+      `Component ${id} ${type} is not a valid official A2UI v0.9 ${type}.`
+    );
+  }
   assertBindingValue(props.text, `${id}.text`);
   assertBindingValue(props.value, `${id}.value`);
+  assertBindingValue(props.label, `${id}.label`);
+  assertNoFunctionCalls(props, id);
   return { id, type, props };
+}
+
+function assertNoFunctionCalls(value: unknown, path: string): void {
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      assertNoFunctionCalls(entry, `${path}[${index}]`);
+    }
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.call !== undefined ||
+    record.functionCall !== undefined ||
+    record.checks !== undefined
+  ) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Function-call bindings and check expressions are unavailable.'
+    );
+  }
+  for (const [key, nested] of Object.entries(record)) {
+    assertNoFunctionCalls(nested, `${path}.${key}`);
+  }
 }
 
 function assertBindingValue(value: unknown, path: string): void {
@@ -292,6 +356,88 @@ function assertExpandedInstanceBound(components: Map<string, AdmittedComponent>)
     return next;
   };
   walk('root', 0, 0);
+}
+
+/**
+ * Counts source-expanded native instances, including List template multiplicity.
+ *
+ * @param components Admitted graph.
+ * @param dataModel Authorized source data model.
+ * @returns Instance count including the root.
+ */
+export function countExpandedInstances(
+  components: ReadonlyMap<string, AdmittedComponent>,
+  dataModel: unknown
+): number {
+  const visiting = new Set<string>();
+  const walk = (id: string): number => {
+    if (visiting.has(id)) {
+      throw new KernelCommandError(
+        'validation_failed',
+        `A2UI component graph contains a cycle at ${id}.`
+      );
+    }
+    const component = components.get(id);
+    if (!component) {
+      throw new KernelCommandError('validation_failed', `Dangling component reference: ${id}.`);
+    }
+    visiting.add(id);
+    const children = component.props.children;
+    if (children && typeof children === 'object' && !Array.isArray(children)) {
+      const record = children as Record<string, unknown>;
+      if (typeof record.componentId === 'string' && typeof record.path === 'string') {
+        const repeated = valueAtPath(dataModel, record.path);
+        const copies = Array.isArray(repeated) ? repeated.length : 0;
+        const body = walk(record.componentId);
+        visiting.delete(id);
+        return 1 + copies * body;
+      }
+    }
+    let total = 1;
+    for (const child of childIds(component)) {
+      total += walk(child);
+    }
+    visiting.delete(id);
+    return total;
+  };
+  return walk('root');
+}
+
+function valueAtPath(root: unknown, path: string): unknown {
+  if (!path.startsWith('/')) {
+    return undefined;
+  }
+  let current: unknown = root;
+  for (const part of path.split('/').filter(Boolean)) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) {
+      if (Array.isArray(current) && /^\d+$/.test(part)) {
+        current = current[Number(part)];
+        continue;
+      }
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+/**
+ * Refuses a source-backed expansion that exceeds 500 instances.
+ *
+ * @param components Admitted graph.
+ * @param dataModel Authorized source data model.
+ */
+export function assertExpandedSourceInstances(
+  components: ReadonlyMap<string, AdmittedComponent>,
+  dataModel: unknown
+): void {
+  const count = countExpandedInstances(components, dataModel);
+  if (count > MAX_EXPANDED_INSTANCES) {
+    throw new KernelCommandError('limit_exceeded', 'A2UI expanded instances exceed 500.', {
+      limit: 'expandedInstances',
+      maximum: MAX_EXPANDED_INSTANCES,
+    });
+  }
 }
 
 function childIds(component: AdmittedComponent): string[] {
