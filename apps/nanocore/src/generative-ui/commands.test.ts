@@ -9,7 +9,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
-import { createLightApp, createRecord } from '../generative-kernel/commands.js';
+import { createLightApp, createRecord, updateRecord } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -275,6 +275,168 @@ describe('Generative UI commands', () => {
         },
       });
       expect(updated.record).toMatchObject({ data: { annotation: 'reviewed' } });
+    } finally {
+      context.close();
+    }
+  });
+
+  it('refuses a form write after the record leaves the bound source query', async () => {
+    const context = createContext();
+    try {
+      const turn = context.store.createTurn(
+        'ws_demo',
+        'th_demo',
+        'Edit a mapping annotation',
+        context.actor
+      );
+      const app = await createLightApp({ ...context, requestId: randomUUID() }, MAPPING_SCHEMA);
+      const collection = app.schema?.collections[0];
+      const annotationField = collection?.fields.find((field) => field.name === 'annotation');
+      expect(collection && annotationField).toBeTruthy();
+      const record = await createRecord(
+        { ...context, requestId: randomUUID() },
+        app.appId,
+        'mappings',
+        app.schemaRevision,
+        {
+          membership_id: 'mem_1',
+          crm_id: 'crm_1',
+          annotation: 'needs review',
+          active: true,
+        }
+      );
+      const published = await publishGenerativePresentation(context, {
+        threadId: 'th_demo',
+        turnId: turn.id,
+        title: 'Edit annotation',
+        fallbackText: 'Edit the local mapping annotation.',
+        messages: nativeMessages('surface-form', [
+          {
+            id: 'root',
+            component: 'Column',
+            children: ['note', 'save'],
+          },
+          {
+            id: 'note',
+            component: 'TextField',
+            label: 'Annotation',
+            value: { path: '/records/0/data/annotation' },
+          },
+          {
+            id: 'save',
+            component: 'Button',
+            child: 'saveLabel',
+            action: {
+              event: {
+                name: 'saveAnnotation',
+                context: {
+                  expectedRecordRevision: { path: '/records/0/revision' },
+                  values: { path: '/records/0/data' },
+                },
+              },
+            },
+          },
+          { id: 'saveLabel', component: 'Text', text: 'Save' },
+        ]),
+        source: {
+          kind: 'kernel-records',
+          appId: app.appId,
+          collectionId: collection!.id,
+          schemaRevision: app.schemaRevision,
+          query: {
+            page: 1,
+            perPage: 1,
+            filter: `id = "${record.id}" && active = true`,
+            fields: 'annotation',
+          },
+        },
+        actions: [
+          {
+            name: 'saveAnnotation',
+            componentId: 'save',
+            kind: 'kernel-record-update',
+            recordId: record.id,
+            writableFieldIds: [annotationField!.id],
+          },
+        ],
+      });
+      const voided = await updateRecord(
+        { ...context, requestId: randomUUID() },
+        app.appId,
+        'mappings',
+        record.id,
+        {
+          schemaRevision: app.schemaRevision,
+          expectedRecordRevision: record.revision,
+          data: { active: false },
+        }
+      );
+      await expect(
+        submitGenerativePresentationAction({ ...context, requestId: randomUUID() }, published.id, {
+          version: GENERATIVE_UI_PROTOCOL_VERSION,
+          action: {
+            name: 'saveAnnotation',
+            surfaceId: 'surface-form',
+            sourceComponentId: 'save',
+            timestamp: new Date().toISOString(),
+            context: {
+              expectedRecordRevision: voided.revision,
+              values: { annotation: 'should not write' },
+            },
+          },
+        })
+      ).rejects.toMatchObject({ code: 'validation_failed' });
+    } finally {
+      context.close();
+    }
+  });
+
+  it('rolls back presentation insert when admission audit fails', async () => {
+    const context = createContext();
+    try {
+      const turn = context.store.createTurn(
+        'ws_demo',
+        'th_demo',
+        'Publish a generated view',
+        context.actor
+      );
+      const sourceItem = context.store.createItem({
+        id: `it_${turn.id}_source`,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text: 'Membership 1 maps to CRM 1.',
+        createdAt: turn.startedAt ?? new Date().toISOString(),
+        completedAt: turn.startedAt ?? new Date().toISOString(),
+      });
+      context.workspaceDb.sqlite.exec(
+        `CREATE TRIGGER reject_generative_audit BEFORE INSERT ON audit_events
+         BEGIN SELECT RAISE(ABORT, 'forced audit failure'); END;`
+      );
+      await expect(
+        publishGenerativePresentation(context, {
+          threadId: 'th_demo',
+          turnId: turn.id,
+          title: 'Mapping view',
+          fallbackText: 'Membership 1 maps to CRM 1.',
+          messages: nativeMessages('surface-item', [
+            { id: 'root', component: 'Column', children: ['body'] },
+            { id: 'body', component: 'Text', text: { path: '/text' } },
+          ]),
+          source: {
+            kind: 'item',
+            itemId: sourceItem.id,
+            contentDigest: `sha256:${createHash('sha256').update(sourceItem.text, 'utf8').digest('hex')}`,
+          },
+          actions: [],
+        })
+      ).rejects.toBeTruthy();
+      const rows = context.workspaceDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM generative_presentations')
+        .get() as { count: number };
+      expect(rows.count).toBe(0);
     } finally {
       context.close();
     }

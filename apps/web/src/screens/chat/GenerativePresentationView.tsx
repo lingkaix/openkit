@@ -1,6 +1,6 @@
 import type { ReactComponentImplementation } from '@a2ui/react/v0_9';
 import { A2uiSurface } from '@a2ui/react/v0_9';
-import { MessageProcessor, type SurfaceModel } from '@a2ui/web_core/v0_9';
+import { MessageProcessor } from '@a2ui/web_core/v0_9';
 import { createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -182,14 +182,10 @@ export function GenerativePresentationView({ item }: { item: GenerativeUiReferen
         </p>
         {refreshError ? <ErrorBanner message={refreshError} /> : null}
         {conflict ? <ErrorBanner message={conflict} /> : null}
-        <NativeSurface surface={surface} />
+        <A2uiSurface surface={surface} />
       </div>
     </Card>
   );
-}
-
-function NativeSurface({ surface }: { surface: SurfaceModel<ReactComponentImplementation> }) {
-  return <A2uiSurface surface={surface} />;
 }
 
 function readSurfaceId(messages: unknown[]): string | null {

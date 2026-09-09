@@ -43,7 +43,7 @@ Fixed by [`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/202607
   The two never overlap.
 - **React Router** — routing.
 - **jsonc-parser** — scanner-only JSONC syntax highlighting for the native configuration textarea; NanoCore remains the parser and validator.
-- **A2UI-like local renderer** — unpublished Tier-C declarative render shell (whitelisted primitives only). The official A2UI React renderer is not yet installed.
+- **A2UI native Chat renderer** — live Thread Items of type `generative-ui-reference` render through official `@a2ui/react@0.11.0` v0.9. The unpublished `/generative` fixture shell remains Tier C.
 - **Iconify + Remix Icon** — icons for the primitive and screen tiers.
 - **Biome** — lint/format (repo-wide config). **Vitest** + Testing Library — unit.
   **Playwright** — e2e.
@@ -126,7 +126,7 @@ Board 19 is live as a Tier-A selected-Workspace repository resources, diagnostic
 
 The current account boundary uses `client.app.listAuthorizedWorkspaces()` for admission, opens the account gate only for the exact typed `401 core.auth.unauthenticated`, offers the existing email/password sign-up and sign-in operations, and exposes sign-out on the authenticated Account route; focused tests and the isolated server-mode browser journey cover this boundary, while real-use proof remains pending.
 
-Selected-Workspace owner member administration, owner-issued invitation administration, the membership-independent account-level My invitations direct read with pending accept and decline decisions plus terminal rows, and selected active non-owner self-leave are focused-test-backed implementations through the existing Account route and the isolated server-mode browser journey; real-use and program-exit proof remain pending. The ordinary-user operation guard covers all 141 included operations; only Automation CRUD and Knowledge proposal draft/reversal remain deliberately unpublished under R092, R070, and R072. The stack specification remains `Partial` because the current generative shell and token bridge are local implementations and their required official direct dependencies are absent. Follow the current design→code loop in [`docs/cookbooks/claude-design-web-ui-loop.md`](../../docs/cookbooks/claude-design-web-ui-loop.md).
+Selected-Workspace owner member administration, owner-issued invitation administration, the membership-independent account-level My invitations direct read with pending accept and decline decisions plus terminal rows, and selected active non-owner self-leave are focused-test-backed implementations through the existing Account route and the isolated server-mode browser journey; real-use and program-exit proof remain pending. The ordinary-user operation guard covers all 141 included operations; only Automation CRUD and Knowledge proposal draft/reversal remain deliberately unpublished under R092, R070, and R072. The stack specification remains `Partial` because the Spectrum token package is still absent even though official A2UI v0.9 renderer packages are pinned for Chat Item rendering. Follow the current design→code loop in [`docs/cookbooks/claude-design-web-ui-loop.md`](../../docs/cookbooks/claude-design-web-ui-loop.md).
 
 ## Related docs
 

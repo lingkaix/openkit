@@ -170,7 +170,7 @@ Saved definitions and any canonical accepted UI payloads require explicit portab
 
 ## Current Implementation Projection
 
-As of 2026-09-08, `apps/web/src/screens/generative/` is an unpublished fixture shell. Its local recursive `A2UINode`/`A2UIDocument` format is not upstream A2UI, and local input changes do not demonstrate a Core action path. The official renderer dependencies, accepted surface persistence, current-authority action binding, and reusable-view lifecycle remain implementation gaps. The accepted design does not claim that these routes, catalog operations, or publication checks are implemented.
+As of 2026-09-09, Core admits native A2UI v0.9 producer messages against catalog `urn:openkit:a2ui:catalog:native:v1`, retains immutable presentations in `generative_presentations`, publishes `generative-ui-reference` Items, and exposes `generative-ui.publish|get|resource|refresh|action`. Chat renders those Items through official `@a2ui/react@0.11.0` / `@a2ui/web_core@0.10.7` v0.9 imports and the native catalog mapping in `apps/web/src/generative/native-catalog.tsx`. The unpublished `/generative` fixture shell remains Tier C and is not a product surface. Live selected-Worker, browser form/draft, and crash/restart proofs remain deferred. Saved-view identity and HTML delegates remain unimplemented extensions.
 
 ## Rollout And Acceptance
 

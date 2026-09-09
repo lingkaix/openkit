@@ -28,6 +28,13 @@ export function admitLightAppSchema(
   existing?: LightAppAdmittedSchema
 ): LightAppAdmittedSchema {
   const candidate = typeof input === 'string' ? parseSchemaText(input) : input;
+  const encoded = JSON.stringify(candidate);
+  if (Buffer.byteLength(encoded, 'utf8') > SCHEMA_BYTE_LIMIT) {
+    throw new KernelCommandError('limit_exceeded', 'Schema exceeds 256 KiB.', {
+      limit: 'schemaBytes',
+      maximum: SCHEMA_BYTE_LIMIT,
+    });
+  }
   const parsed = LightAppSchemaInputSchema.safeParse(candidate);
   if (!parsed.success) {
     throw new KernelCommandError(

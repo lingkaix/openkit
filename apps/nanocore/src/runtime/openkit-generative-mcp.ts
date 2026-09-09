@@ -5,12 +5,13 @@ import {
   GenerativeUiA2uiActionSchema,
   LightAppBatchRequestSchema,
   PublishGenerativePresentationRequestSchema,
+  RetireLightAppRequestSchema,
   UpdateLightAppRecordRequestSchema,
   UpdateLightAppSchemaRequestSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { type ActorRef, RequestIdSchema } from '@openkit/protocol';
-import type { z } from 'zod';
+import { z } from 'zod';
 
 import {
   batchRecords,
@@ -39,220 +40,137 @@ import type { WorkspaceDb } from '../storage/db.js';
 /** Reserved built-in Worker MCP server id. */
 export const OPENKIT_GENERATIVE_MCP_ID = 'openkit-generative';
 
+const AppIdSchema = z.string().uuid();
+const CollectionSelectorSchema = z.string().min(1);
+const PresentationIdSchema = z.string().uuid();
+
+const KernelAppsGetArgsSchema = z.object({ appId: AppIdSchema }).strict();
+const KernelSchemaUpdateArgsSchema = UpdateLightAppSchemaRequestSchema.extend({
+  appId: AppIdSchema,
+});
+const KernelAppsRetireArgsSchema = RetireLightAppRequestSchema.extend({
+  appId: AppIdSchema,
+});
+const KernelRecordsListArgsSchema = z
+  .object({
+    appId: AppIdSchema,
+    collection: CollectionSelectorSchema,
+    schemaRevision: z.number().int().positive(),
+    page: z.number().int().positive().optional(),
+    perPage: z.number().int().positive().max(100).optional(),
+    filter: z.string().optional(),
+    sort: z.string().optional(),
+    fields: z.string().optional(),
+  })
+  .strict();
+const KernelRecordsGetArgsSchema = z
+  .object({
+    appId: AppIdSchema,
+    collection: CollectionSelectorSchema,
+    recordId: AppIdSchema,
+    schemaRevision: z.number().int().positive(),
+    fields: z.string().optional(),
+  })
+  .strict();
+const KernelRecordsCreateArgsSchema = CreateLightAppRecordRequestSchema.extend({
+  appId: AppIdSchema,
+  collection: CollectionSelectorSchema,
+});
+const KernelRecordsUpdateArgsSchema = UpdateLightAppRecordRequestSchema.extend({
+  appId: AppIdSchema,
+  collection: CollectionSelectorSchema,
+  recordId: AppIdSchema,
+});
+const KernelRecordsBatchArgsSchema = LightAppBatchRequestSchema.extend({
+  appId: AppIdSchema,
+});
+const GenerativeUiGetArgsSchema = z.object({ presentationId: PresentationIdSchema }).strict();
+const GenerativeUiEventArgsSchema = GenerativeUiA2uiActionSchema.extend({
+  presentationId: PresentationIdSchema,
+});
+
+function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
+  const projection = z.toJSONSchema(schema, { target: 'draft-2020-12' }) as Record<string, unknown>;
+  delete projection.$schema;
+  return projection;
+}
+
 /** Built-in tool descriptors used for ListTools and catalog digest. */
 export const OPENKIT_GENERATIVE_TOOLS = [
   {
     name: 'kernel_apps_list',
     description: 'List Light Apps in the current Workspace.',
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    inputSchema: mcpInputSchema(z.object({}).strict()),
   },
   {
     name: 'kernel_apps_create',
     description: 'Create one Light App from a file-authored schema.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['format', 'schemaVersion', 'title', 'purpose', 'collections'],
-      properties: {
-        format: { type: 'string' },
-        schemaVersion: { type: 'integer' },
-        title: { type: 'string' },
-        purpose: { type: 'string' },
-        collections: { type: 'array' },
-      },
-    },
+    inputSchema: mcpInputSchema(CreateLightAppRequestSchema),
   },
   {
     name: 'kernel_apps_get',
     description: 'Read one Light App schema and capabilities.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['appId'],
-      properties: { appId: { type: 'string', format: 'uuid' } },
-    },
+    inputSchema: mcpInputSchema(KernelAppsGetArgsSchema),
   },
   {
     name: 'kernel_schema_update',
     description: 'Update one Light App schema within the initial evolution ceiling.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['appId', 'expectedAppRevision', 'expectedSchemaRevision', 'schema'],
-      properties: {
-        appId: { type: 'string', format: 'uuid' },
-        expectedAppRevision: { type: 'integer' },
-        expectedSchemaRevision: { type: 'integer' },
-        schema: { type: 'object' },
-      },
-    },
+    inputSchema: mcpInputSchema(KernelSchemaUpdateArgsSchema),
   },
   {
     name: 'kernel_apps_retire',
     description: 'Retire one Light App and disable writes.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['appId', 'expectedAppRevision'],
-      properties: {
-        appId: { type: 'string', format: 'uuid' },
-        expectedAppRevision: { type: 'integer' },
-      },
-    },
+    inputSchema: mcpInputSchema(KernelAppsRetireArgsSchema),
   },
   {
     name: 'kernel_records_list',
     description: 'List records in one Light App collection.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['appId', 'collection', 'schemaRevision'],
-      properties: {
-        appId: { type: 'string', format: 'uuid' },
-        collection: { type: 'string' },
-        schemaRevision: { type: 'integer' },
-        page: { type: 'integer' },
-        perPage: { type: 'integer' },
-        filter: { type: 'string' },
-        sort: { type: 'string' },
-        fields: { type: 'string' },
-      },
-    },
+    inputSchema: mcpInputSchema(KernelRecordsListArgsSchema),
   },
   {
     name: 'kernel_records_get',
     description: 'Read one Light App record.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['appId', 'collection', 'recordId', 'schemaRevision'],
-      properties: {
-        appId: { type: 'string', format: 'uuid' },
-        collection: { type: 'string' },
-        recordId: { type: 'string', format: 'uuid' },
-        schemaRevision: { type: 'integer' },
-        fields: { type: 'string' },
-      },
-    },
+    inputSchema: mcpInputSchema(KernelRecordsGetArgsSchema),
   },
   {
     name: 'kernel_records_create',
     description: 'Create one Light App record.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['appId', 'collection', 'schemaRevision', 'data'],
-      properties: {
-        appId: { type: 'string', format: 'uuid' },
-        collection: { type: 'string' },
-        schemaRevision: { type: 'integer' },
-        data: { type: 'object' },
-      },
-    },
+    inputSchema: mcpInputSchema(KernelRecordsCreateArgsSchema),
   },
   {
     name: 'kernel_records_update',
     description: 'Update one Light App record.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: [
-        'appId',
-        'collection',
-        'recordId',
-        'schemaRevision',
-        'expectedRecordRevision',
-        'data',
-      ],
-      properties: {
-        appId: { type: 'string', format: 'uuid' },
-        collection: { type: 'string' },
-        recordId: { type: 'string', format: 'uuid' },
-        schemaRevision: { type: 'integer' },
-        expectedRecordRevision: { type: 'integer' },
-        data: { type: 'object' },
-      },
-    },
+    inputSchema: mcpInputSchema(KernelRecordsUpdateArgsSchema),
   },
   {
     name: 'kernel_records_batch',
     description: 'Apply one atomic Light App record batch.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['appId', 'schemaRevision', 'requests'],
-      properties: {
-        appId: { type: 'string', format: 'uuid' },
-        schemaRevision: { type: 'integer' },
-        requests: { type: 'array', maxItems: 50 },
-      },
-    },
+    inputSchema: mcpInputSchema(KernelRecordsBatchArgsSchema),
   },
   {
     name: 'generative_ui_publish',
     description: 'Publish one admitted native Generative UI presentation.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['threadId', 'turnId', 'title', 'fallbackText', 'messages', 'source', 'actions'],
-      properties: {
-        threadId: { type: 'string' },
-        turnId: { type: 'string' },
-        title: { type: 'string' },
-        fallbackText: { type: 'string' },
-        messages: { type: 'array' },
-        source: { type: 'object' },
-        actions: { type: 'array' },
-      },
-    },
+    inputSchema: mcpInputSchema(PublishGenerativePresentationRequestSchema),
   },
   {
     name: 'generative_ui_get',
     description: 'Read one retained Generative UI presentation.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['presentationId'],
-      properties: { presentationId: { type: 'string', format: 'uuid' } },
-    },
+    inputSchema: mcpInputSchema(GenerativeUiGetArgsSchema),
   },
   {
     name: 'generative_ui_resource',
     description: 'Read the retained native A2UI resource for one presentation.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['presentationId'],
-      properties: { presentationId: { type: 'string', format: 'uuid' } },
-    },
+    inputSchema: mcpInputSchema(GenerativeUiGetArgsSchema),
   },
   {
     name: 'generative_ui_refresh',
     description: 'Refresh one presentation from its current authorized source.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['presentationId', 'version', 'action'],
-      properties: {
-        presentationId: { type: 'string', format: 'uuid' },
-        version: { type: 'string' },
-        action: { type: 'object' },
-      },
-    },
+    inputSchema: mcpInputSchema(GenerativeUiEventArgsSchema),
   },
   {
     name: 'generative_ui_action',
     description: 'Submit one admitted Kernel record-update action.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['presentationId', 'version', 'action'],
-      properties: {
-        presentationId: { type: 'string', format: 'uuid' },
-        version: { type: 'string' },
-        action: { type: 'object' },
-      },
-    },
+    inputSchema: mcpInputSchema(GenerativeUiEventArgsSchema),
   },
 ] as const;
 
@@ -566,8 +484,6 @@ function requestIdFrom(
 function withoutScope(args: Record<string, unknown>): Record<string, unknown> {
   const {
     workspaceId: _workspaceId,
-    threadId: _threadId,
-    turnId: _turnId,
     requestId: _requestId,
     agentSessionId: _agentSessionId,
     ...rest
@@ -576,9 +492,6 @@ function withoutScope(args: Record<string, unknown>): Record<string, unknown> {
 }
 
 function actionBody(args: Record<string, unknown>): unknown {
-  if (args.event && typeof args.event === 'object') {
-    return args.event;
-  }
   const rest = withoutScope(args);
   delete rest.presentationId;
   return rest;

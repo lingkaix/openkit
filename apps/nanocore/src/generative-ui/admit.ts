@@ -7,6 +7,7 @@ import {
 } from '@openkit/app-api-schemas';
 
 import { KernelCommandError } from '../generative-kernel/errors.js';
+import { filterConstrainsRecordId } from '../generative-kernel/filter.js';
 
 const NATIVE_COMPONENTS = new Set([
   'Text',
@@ -24,13 +25,13 @@ const MAX_EXPANDED_INSTANCES = 500;
 const MAX_DECLARATION_BYTES = 256 * 1024;
 const FORBIDDEN_KEYS = new Set(['style', 'theme', 'validationRegex', 'functionCall']);
 const ALLOWED_PROPS: Record<string, ReadonlySet<string>> = {
-  Text: new Set(['text', 'variant', 'usageHint']),
+  Text: new Set(['text', 'variant']),
   Row: new Set(['children', 'justify', 'align', 'weight']),
   Column: new Set(['children', 'justify', 'align', 'weight']),
-  List: new Set(['children', 'direction', 'alignment', 'weight']),
-  Card: new Set(['child', 'children', 'weight']),
+  List: new Set(['children', 'direction', 'align', 'weight']),
+  Card: new Set(['child', 'weight']),
   Button: new Set(['child', 'text', 'action', 'variant', 'weight']),
-  TextField: new Set(['value', 'label', 'variant', 'usageHint']),
+  TextField: new Set(['value', 'label', 'variant']),
   CheckBox: new Set(['value', 'label', 'weight']),
 };
 
@@ -212,11 +213,8 @@ function assertBindingValue(value: unknown, path: string): void {
   if (record.call !== undefined || record.functionCall !== undefined) {
     throw new KernelCommandError('validation_failed', 'Function-call bindings are unavailable.');
   }
-  if (
-    typeof record.path !== 'string' &&
-    record.literalString === undefined &&
-    record.literalBoolean === undefined
-  ) {
+  const keys = Object.keys(record);
+  if (keys.length !== 1 || keys[0] !== 'path' || typeof record.path !== 'string') {
     throw new KernelCommandError('validation_failed', `${path} must be a literal or path binding.`);
   }
 }
@@ -438,18 +436,6 @@ function assertRecordUpdateWiring(
       'Writable forms cannot include extra editable controls.'
     );
   }
-}
-
-function filterConstrainsRecordId(filter: string, recordId: string): boolean {
-  const expected = `id = "${recordId}"`;
-  const trimmed = filter.trim();
-  if (trimmed === expected) {
-    return true;
-  }
-  return trimmed
-    .split('&&')
-    .map((part) => part.trim())
-    .includes(expected);
 }
 
 function templateComponentIds(components: Map<string, AdmittedComponent>): Set<string> {

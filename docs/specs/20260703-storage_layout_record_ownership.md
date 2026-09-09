@@ -293,6 +293,7 @@ The owner-independent V2 Workspace root and most scoped record-family ownership 
 - Worker checkpoint rows carry workspace/thread/turn lineage, context package digest, stage, stop reason, and redacted diagnostics.
 - `WorkspaceMaterial`, immutable `WorkspaceMaterialRevision`, singular `ThreadMaterialBinding`, and version-keyed `ArtifactReview` are implemented in `workspace.sqlite`; their public routes, Action Center projection, and portable export/import use those existing owners rather than a second workflow or filesystem authority.
 - The obsolete Artifact-id-keyed JSON owner and `reviews/artifacts/` layout have been deleted without a compatibility reader, migration, or dual write. Only the accepted version-keyed `artifact_reviews` Workspace SQLite family may own generic Artifact Review decisions.
+- Light App authority lives under `workspaces/<workspaceId>/light-apps/<appId>/data.sqlite` with immutable `definitions/<sha256>.json`. `generative_presentations` in `workspace.sqlite` retains native A2UI declarations; portable export/import remints those families through `apps/nanocore/src/storage/generative-portability.ts`.
 
 `users/<userId>/db/user.sqlite` has a concrete open path and migration ledger. The current Workspace database path is `workspaces/<workspaceId>/db/workspace.sqlite`; owner transfer and membership changes therefore do not move, alias, or duplicate the Workspace tree.
 

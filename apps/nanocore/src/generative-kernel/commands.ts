@@ -81,15 +81,6 @@ export const LIGHT_APP_CAPABILITIES = {
   maxFilterBytes: 2048;
 };
 
-const LIGHT_APP_CAPABILITIES_VIEW = {
-  fieldTypes: [...LIGHT_APP_CAPABILITIES.fieldTypes],
-  filterOperators: [...LIGHT_APP_CAPABILITIES.filterOperators],
-  maxPerPage: 100 as const,
-  maxRecords: 10_000 as const,
-  maxBatchEntries: 50 as const,
-  maxFilterBytes: 2048 as const,
-};
-
 /** Shared Kernel command execution context. */
 export interface KernelCommandContext {
   /** Product store for receipts. */
@@ -243,7 +234,7 @@ export function getLightApp(
 ): GetLightAppResponse {
   const item = inspectCatalogItem(dataRoot, workspaceId, appId);
   if (item.lifecycle === 'unavailable') {
-    return { ...item, schema: null, capabilities: LIGHT_APP_CAPABILITIES_VIEW };
+    return { ...item, schema: null, capabilities: LIGHT_APP_CAPABILITIES };
   }
   const appDb = openExistingAppDb(dataRoot, workspaceId, appId);
   try {
@@ -549,7 +540,7 @@ export async function updateRecord(
   collectionSelector: string,
   recordId: string,
   body: UpdateLightAppRecordRequest,
-  lineage?: { presentationId: string; actionName: string; itemId: string }
+  lineage?: { presentationId: string; actionName: string; itemId: string; sourceFilter?: string }
 ): Promise<LightAppRecord> {
   return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) =>
     runKernelCommand(context, appDb, {
@@ -557,7 +548,7 @@ export async function updateRecord(
       responseKind: 'light_app_record',
       input: { collectionSelector, recordId, ...body, ...(lineage ?? {}) },
       execute: () => {
-        applyRecordUpdate(appDb, context, collectionSelector, recordId, body);
+        applyRecordUpdate(appDb, context, collectionSelector, recordId, body, true, lineage);
         return readProjectedRecord(
           appDb,
           resolveCollection(parseSchema(readMetadata(appDb)), collectionSelector),
@@ -924,6 +915,7 @@ function insertRecordRow(
  * @param recordId Record id.
  * @param body Update body.
  * @param audit Whether to write an audit event.
+ * @param lineage Optional presentation binding used to re-check source membership.
  */
 function applyRecordUpdate(
   appDb: AppDb,
@@ -931,7 +923,8 @@ function applyRecordUpdate(
   collectionSelector: string,
   recordId: string,
   body: UpdateLightAppRecordRequest,
-  audit = true
+  audit = true,
+  lineage?: { presentationId: string; actionName: string; itemId: string; sourceFilter?: string }
 ): void {
   const metadata = readMetadata(appDb);
   assertWritable(metadata);
@@ -940,6 +933,24 @@ function applyRecordUpdate(
   const current = readRecordRow(appDb, collection, recordId);
   if (Number(current.revision) !== body.expectedRecordRevision) {
     throw new KernelCommandError('conflict', 'Record revision is stale.');
+  }
+  if (lineage?.sourceFilter) {
+    const compiled = compileRecordFilter(lineage.sourceFilter, (operand) =>
+      columnFor(collection, operand)
+    );
+    if (compiled) {
+      const match = appDb.sqlite
+        .prepare(
+          `SELECT 1 AS ok FROM ${quoteIdent(collectionTableName(collection.id))} WHERE id = ? AND (${compiled.sql})`
+        )
+        .get(recordId, ...compiled.params) as { ok: number } | undefined;
+      if (!match) {
+        throw new KernelCommandError(
+          'validation_failed',
+          'Record is no longer a member of the bound source query.'
+        );
+      }
+    }
   }
   const values = validateRecordData(appDb, collection, schema, body.data, false);
   const merged: Record<string, unknown> = {};
@@ -990,7 +1001,8 @@ function applyRecordUpdate(
       context,
       'kernel.records.update',
       `light-app:${appDb.appId}:record:${recordId}`,
-      Number(current.revision) + 1
+      Number(current.revision) + 1,
+      lineage?.itemId
     );
   }
 }
@@ -1197,6 +1209,9 @@ function encodeSqlValue(type: string, value: unknown): unknown {
     return null;
   }
   if (type === 'bool') {
+    if (typeof value !== 'boolean') {
+      throw new KernelCommandError('validation_failed', 'Boolean fields require a boolean value.');
+    }
     return value === true ? 1 : 0;
   }
   return value;
@@ -1387,7 +1402,7 @@ function projectApp(appDb: AppDb): GetLightAppResponse {
   return {
     ...catalogItemFromMetadata(metadata),
     schema: parseSchema(metadata),
-    capabilities: LIGHT_APP_CAPABILITIES_VIEW,
+    capabilities: LIGHT_APP_CAPABILITIES,
   };
 }
 
@@ -1737,13 +1752,15 @@ function recordKernelAudit(
   context: KernelCommandContext,
   action: string,
   resource: string,
-  resourceRevision: number
+  resourceRevision: number,
+  itemId?: string
 ): void {
   recordAppAuditEvent({
     sqlite: appDb.sqlite,
     workspaceId: appDb.workspaceId,
     actor: context.actor,
     requestId: context.requestId,
+    itemId: itemId ?? null,
     category: 'system',
     action,
     resource,

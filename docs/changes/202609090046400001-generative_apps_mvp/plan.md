@@ -33,11 +33,10 @@ The primary owns this plan, the root governance amendment, the two initial contr
 ### Current Facts And Acceptance Status
 
 - Core design and both initial implementation contracts are accepted; both specifications are `Implementation: In Progress` while this MVP lands. Epoch 2 supplies authorization for the settled details. Initial schema, command, transaction, presentation, Item, action, Worker, Policy, storage and portable contracts are now fixed. No initial design blocker remains; full-feature completion and later extensions stay deferred.
-- `apps/nanocore/src/storage/db.ts` opens Workspace SQLite and validates it during startup. It does not establish an app-scoped database, schema admission, or local receipt transaction for Kernel.
-- `apps/web/src/screens/generative/render.tsx` renders the local recursive fixture `A2UIDocument` through `A2UI_CATALOG`. It is not the official protocol renderer or evidence of a Core mutation. The route tree admits only surfaces whose publication flag is live.
-- The Worker capability owner's current projection implements selected `mcp.list_servers`, `mcp.list_tools`, and `mcp.call_tool`, but explicitly retains pending real-Codex acceptance. A built-in Kernel target and its non-recursive gateway binding need implementation and direct proof; catalog presence is not proof of a callable route.
-- Existing portability requires explicit canonical-family coverage. Per-app databases, runtime-created tables, definition bytes, and accepted presentation revisions are new coverage, not automatically included by an existing exporter.
-- Current runtime role checks still require reconciliation with the accepted equal-member target. The MVP may not introduce a separate per-app permission model or silently claim that this membership projection is already implemented.
+- NanoCore Kernel, native Generative UI admission, Worker MCP `openkit-generative`, App API/Skill operations, Chat Item rendering through official A2UI v0.9, and Workspace feature markers are implemented on `feat/generative-apps-mvp`. The unpublished `/generative` fixture remains Tier C.
+- Built-in Worker tools reuse App API operation Policy plus `deniedTools` / fail-closed `approvalRequiredTools`. This MVP does not edit `WORKSPACE_ROLE_OPERATION_CEILINGS`; equal active-member eligibility remains unmet for editor/viewer and is recorded in the Policy mapping.
+- Existing portability covers per-app databases, definition bytes, native records, and retained presentations through explicit canonical-family exporters. Import verifies definition and presentation digests before remint.
+- Live selected-Worker journey, browser E2E form/edit/refresh, and crash/restart proofs are **deferred** under the engineer exception. Typecheck, official A2UI v0.9 admission, Policy, portability, CLI bundle, and contract conformance are not waived.
 
 ### Proposed MVP And Why This Size
 
@@ -70,7 +69,7 @@ Under Epoch 2 authorization and independent contract review, both specifications
 2. **Implement the real vertical path.** Build the bounded headless data commands and their agent projection, then wire native A2UI admission/rendering and one actual form action into the existing Thread. Keep safe schema authoring and catalog discovery on the same path; no manually seeded database or fixed mapping-specific tool substitutes for agent creation. Validate a non-Kernel result without adding another product workflow.
 3. **Qualify the same path for feedback use.** Prove restart, conflict, receipt, isolation, audit, fallback, backup/restore, and portable coverage with the actual new records. Complete the focused real-Worker and browser interaction before publishing the supported surface. Record any unimplemented broader predicates as deferred; do not mark all R096–R098 or the complete design finished.
 
-This is a dependency sketch, not a frozen role sequence or future task queue. Production work has not started. The immediate Next Action is the bounded Core integrity regression and selected Worker access probe; expected observable is a concrete failure against the absent implementation and a directly verified route for the first journey. A consequential unresolved authority or effect-boundary decision returns to the engineer; routine field names, package selection, and test corrections do not require another permission cycle.
+This is a dependency sketch, not a frozen role sequence or future task queue. Production Kernel, Generative UI, Worker MCP, Skill/CLI, and Chat Item rendering are implemented in later epochs; live selected-Worker and browser proofs remain deferred. Routine field names, package selection, and test corrections do not require another permission cycle.
 
 ### Deciding Acceptance Observations
 
@@ -139,3 +138,16 @@ Working facts after this epoch:
 - Built-in Worker tools reuse App API operation Policy (`workspace.configure` / `workspace.write` / `workspace.read` / `thread.read`) plus `deniedTools` / fail-closed `approvalRequiredTools`, and record CapabilityCall ledger rows. Equal active-member eligibility remains unmet for editor/viewer; this MVP does not edit `WORKSPACE_ROLE_OPERATION_CEILINGS`.
 - Focused typecheck for NanoCore, Web, and core-client passed. Focused Kernel/UI/MCP/portability and Chat presentation unit tests passed. Live selected-Worker journey, browser E2E form/edit/refresh, and crash/restart proofs are **deferred** under the engineer exception.
 - The bundled Skill CLI is regenerated through `pnpm run bundle:openkit` so `kernel.apps-create` and `generative-ui.publish` are reachable from `skills/openkit/scripts/openkit`.
+
+## Implementation Epoch 5
+
+Source: independent Codex Reviewer, Verifier, and Auditor rejection of `71a9e372`. Close remaining defects without claiming the deferred live proofs.
+
+Working facts after this epoch:
+
+- Worker `generative_ui_publish` keeps `threadId`/`turnId`; MCP ListTools schemas are `z.toJSONSchema` projections of the shared Zod contracts plus path selectors.
+- UI writes re-check compiled source-query membership in the same app transaction as `updateRecord`. Presentation insert and admission AuditEvent share one Workspace SQLite transaction.
+- Import verifies original definition bytes against their exported digest before remint, rejects non-boolean coerced values, and checks presentation content digests.
+- Native admission rejects unofficial `usageHint`, `List.alignment`, and `literalString` bindings. Kernel audit rows can carry the originating Item id for lineage-bound updates.
+- Policy mapping and Current Implementation Projections now match Git: MVP ships on existing role ceilings and records unmet equal-member eligibility; official A2UI v0.9 is the Chat renderer.
+- Live selected-Worker journey, browser E2E, and crash/restart proofs remain **deferred**.

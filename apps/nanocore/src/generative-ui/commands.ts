@@ -150,21 +150,23 @@ export async function publishGenerativePresentation(
         actions_json: JSON.stringify(input.actions),
         observed_at: createdAt,
       };
-      insertPresentation(context.workspaceDb, row);
-      recordWorkspaceAuditEvent({
-        workspaceDb: context.workspaceDb,
-        workspaceId: context.workspaceId,
-        threadId: input.threadId,
-        turnId: input.turnId,
-        itemId,
-        actor: context.actor,
-        requestId: context.requestId,
-        category: 'system',
-        action: 'generative-ui.publish',
-        resource: `generative-presentation:${presentationId}`,
-        outcome: 'succeeded',
-        summary: 'generative-ui.publish',
-      });
+      context.workspaceDb.sqlite.transaction(() => {
+        insertPresentation(context.workspaceDb, row);
+        recordWorkspaceAuditEvent({
+          workspaceDb: context.workspaceDb,
+          workspaceId: context.workspaceId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          itemId,
+          actor: context.actor,
+          requestId: context.requestId,
+          category: 'system',
+          action: 'generative-ui.publish',
+          resource: `generative-presentation:${presentationId}`,
+          outcome: 'succeeded',
+          summary: 'generative-ui.publish',
+        });
+      })();
       appendPresentationItem(context.store, row);
       return presentationId;
     },
@@ -312,6 +314,9 @@ export async function submitGenerativePresentationAction(
       presentationId: presentation.id,
       actionName: action.name,
       itemId: presentation.itemId,
+      ...(presentation.source.query.filter
+        ? { sourceFilter: presentation.source.query.filter }
+        : {}),
     }
   );
   let refreshUnavailable = false;

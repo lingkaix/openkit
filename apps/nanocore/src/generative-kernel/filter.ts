@@ -317,3 +317,39 @@ function tokenize(filter: string): Token[] {
   }
   return tokens;
 }
+
+/**
+ * Returns whether a filter is a top-level AND of comparisons that includes exact id equality.
+ *
+ * @param filter Filter text.
+ * @param recordId Bound record UUID.
+ * @returns True when the Kernel parser observes the required id equality.
+ */
+export function filterConstrainsRecordId(filter: string, recordId: string): boolean {
+  const tokens = tokenize(filter);
+  if (
+    tokens.some(
+      (token) => token.kind === 'or' || token.kind === 'lparen' || token.kind === 'rparen'
+    )
+  ) {
+    return false;
+  }
+  const comparisons: Token[][] = [[]];
+  for (const token of tokens) {
+    if (token.kind === 'and') {
+      comparisons.push([]);
+      continue;
+    }
+    comparisons[comparisons.length - 1]?.push(token);
+  }
+  return comparisons.some(
+    (comparison) =>
+      comparison.length === 3 &&
+      comparison[0]?.kind === 'ident' &&
+      comparison[0].value === 'id' &&
+      comparison[1]?.kind === 'op' &&
+      comparison[1].value === '=' &&
+      comparison[2]?.kind === 'string' &&
+      comparison[2].value === recordId
+  );
+}

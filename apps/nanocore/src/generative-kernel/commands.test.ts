@@ -224,4 +224,44 @@ describe('Generative Kernel commands', () => {
     expect(preserved.data.annotation).toBe('keep');
     expect(preserved.data.source_note).toBeNull();
   });
+
+  it('rechecks source-query membership before a lineage-bound record update', async () => {
+    const context = createContext();
+    const app = await createLightApp(context, MAPPING_SCHEMA);
+    const record = await createRecord(
+      { ...context, requestId: randomUUID() },
+      app.appId,
+      'mappings',
+      app.schemaRevision,
+      { membership_id: 'mem_1', crm_id: 'crm_1', annotation: 'keep', active: true }
+    );
+    await expect(
+      updateRecord(
+        { ...context, requestId: randomUUID() },
+        app.appId,
+        'mappings',
+        record.id,
+        {
+          schemaRevision: app.schemaRevision,
+          expectedRecordRevision: record.revision,
+          data: { annotation: 'stale binding' },
+        },
+        {
+          presentationId: randomUUID(),
+          actionName: 'saveAnnotation',
+          itemId: randomUUID(),
+          sourceFilter: `id = "${record.id}" && active = false`,
+        }
+      )
+    ).rejects.toMatchObject({ code: 'validation_failed' });
+    const unchanged = getRecord(
+      context.dataRoot,
+      context.workspaceId,
+      app.appId,
+      'mappings',
+      record.id,
+      app.schemaRevision
+    );
+    expect(unchanged.data.annotation).toBe('keep');
+  });
 });

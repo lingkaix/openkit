@@ -338,7 +338,17 @@ export function importLightAppFamilies(input: {
     if (!targetAppId) {
       throw new Error(`Missing reminted Light App id: ${app.id}`);
     }
-    const current = (definitionsByApp.get(app.id) ?? []).find(
+    const familyDefinitions = definitionsByApp.get(app.id) ?? [];
+    for (const definition of familyDefinitions) {
+      const actualDigest = digestText(definition.definition.schemaText);
+      if (
+        definition.definition.digest !== actualDigest ||
+        definition.contentDigest !== actualDigest
+      ) {
+        throw new Error(`Imported Light App definition digest mismatch: ${definition.id}`);
+      }
+    }
+    const current = familyDefinitions.find(
       (definition) => definition.definition.digest === app.app.schemaDigest
     );
     if (!current) {
@@ -486,7 +496,11 @@ export function importGenerativePresentations(input: {
     const itemId = requiredMapValue(input.itemIds, String(lineage.itemId), 'item');
     const source = rewritePresentationSource(presentation.source, input.appIds, input.itemIds);
     const actions = presentation.actions;
-    const messages = rewritePresentationMessages(presentation.messages);
+    const messages = presentation.messages;
+    const exportedDigest = String(row.contentDigest);
+    if (exportedDigest !== digestJson(messages)) {
+      throw new Error(`Imported presentation content digest mismatch: ${sourceId}`);
+    }
     const originRequestId =
       (typeof presentation.originRequestId === 'string' && presentation.originRequestId) ||
       (typeof presentation.requestId === 'string' ? presentation.requestId : null);
@@ -603,18 +617,29 @@ function rewritePresentationSource(
   return record;
 }
 
-function rewritePresentationMessages(messages: unknown): unknown {
-  return messages;
-}
-
 function encodeSqlValue(type: string, value: unknown): unknown {
   if (value === null) {
     return null;
   }
   if (type === 'bool') {
+    if (typeof value !== 'boolean') {
+      throw new Error('Imported boolean field requires a boolean value.');
+    }
     return value === true ? 1 : 0;
   }
-  return value;
+  if (type === 'number') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error('Imported number field requires a finite number.');
+    }
+    return value;
+  }
+  if (type === 'text' || type === 'date' || type === 'select' || type === 'relation') {
+    if (typeof value !== 'string') {
+      throw new Error(`Imported ${type} field requires a string value.`);
+    }
+    return value;
+  }
+  throw new Error(`Unknown imported field type: ${type}`);
 }
 
 function decodeSqlValue(type: string, value: unknown): unknown {
@@ -628,7 +653,11 @@ function decodeSqlValue(type: string, value: unknown): unknown {
 }
 
 function digestJson(value: unknown): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex')}`;
+  return digestText(JSON.stringify(value));
+}
+
+function digestText(value: string): string {
+  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
