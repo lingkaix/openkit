@@ -4,8 +4,7 @@ Read `README.md` first. This file contains only local agent execution rules for 
 
 ## Local Agent Rules
 
-- If a relevant cookbook exists for a task, agents must follow it.
-- Cookbook guidance should be treated as the operational source of truth for its scope.
+- Follow the relevant cookbook's procedure, subject to the accepted owner it projects; where they disagree the owner decides and the cookbook is the defect.
 - Use `mise` to install, pin, and manage runtimes and developer tools that a cookbook depends on.
 - Keep managed tool versions in the appropriate `mise.toml` for that scope and treat that file as the source of truth.
 - Run cookbook commands as bare commands. `docs/toolchain.md` owns how the pinned toolchain reaches `PATH`, and a per-command `mise exec --` prefix MUST NOT be reintroduced: it is a no-op whenever the toolchain is already resolvable, so it trains agents to treat it as optional while silently permitting the wrong runtime when it is not.
