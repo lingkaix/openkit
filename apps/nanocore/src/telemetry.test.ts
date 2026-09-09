@@ -1,9 +1,12 @@
 import { createServer, type IncomingMessage } from 'node:http';
+import { SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   InMemorySpanExporter,
   type ReadableSpan,
+  SimpleSpanProcessor,
   type SpanExporter,
 } from '@opentelemetry/sdk-trace-base';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -113,6 +116,72 @@ describe('telemetry lifecycle', () => {
     expect(logs).toEqual([
       `nanocore http.server.request method=GET route=/items/:id status=200 phase=handoff trace_id=${span.spanContext().traceId}`,
     ]);
+  });
+
+  it('does not export library global tracer spans that carry error or context content', async () => {
+    const exporter = new InMemorySpanExporter();
+    startTelemetry({
+      bootId: TEST_BOOT_ID,
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT },
+      exporter,
+    });
+    const library = trace.getTracer('better-auth');
+    const leaked = library.startSpan('db findOne session');
+    leaked.setAttribute('better_auth.context', 'plugin:credential-canary');
+    leaked.recordException(new Error('Authorization=secret-token'));
+    leaked.setStatus({
+      code: SpanStatusCode.ERROR,
+      message: 'session token okt_canary leaked',
+    });
+    leaked.end();
+    const response = await httpApp().request('/items/abc');
+    expect(response.status).toBe(200);
+    const span = soleSpan(exporter);
+    expect(span.name).toBe('http.server.request');
+    expect(span.attributes['http.route']).toBe('/items/:id');
+    const exported = JSON.stringify({
+      names: exporter.getFinishedSpans().map((item) => item.name),
+      attributes: exporter.getFinishedSpans().map((item) => item.attributes),
+      status: exporter.getFinishedSpans().map((item) => item.status),
+      events: exporter
+        .getFinishedSpans()
+        .map((item) =>
+          item.events.map((event) => ({ name: event.name, attributes: event.attributes }))
+        ),
+    });
+    expect(exported).not.toContain('better-auth');
+    expect(exported).not.toContain('better_auth.context');
+    expect(exported).not.toContain('plugin:credential-canary');
+    expect(exported).not.toContain('secret-token');
+    expect(exported).not.toContain('okt_canary');
+  });
+
+  it('does not export HTTP spans through a foreign global provider when NanoCore is disabled', async () => {
+    startTelemetry({
+      bootId: TEST_BOOT_ID,
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT },
+      exporter: new InMemorySpanExporter(),
+    });
+    await shutdownTelemetry();
+
+    const foreign = new InMemorySpanExporter();
+    const foreignProvider = new NodeTracerProvider({
+      spanProcessors: [new SimpleSpanProcessor(foreign)],
+    });
+    foreignProvider.register();
+    const logs: string[] = [];
+    vi.spyOn(console, 'info').mockImplementation((message: unknown) => {
+      logs.push(String(message));
+    });
+    try {
+      const response = await httpApp().request('/items/abc');
+      expect(response.status).toBe(200);
+      expect(foreign.getFinishedSpans()).toEqual([]);
+      expect(logs).toEqual([]);
+    } finally {
+      await foreignProvider.shutdown();
+      trace.disable();
+    }
   });
 
   it('uses the fixed unknown route label when no template matched', async () => {

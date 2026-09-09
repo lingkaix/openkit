@@ -1,4 +1,4 @@
-import { SpanKind, type Tracer, trace } from '@opentelemetry/api';
+import { INVALID_SPAN_CONTEXT, type Span, SpanKind, trace } from '@opentelemetry/api';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import {
@@ -65,6 +65,7 @@ export function tracesExportUrl(endpoint: string): string {
  *
  * Malformed endpoints or unsupported header env disable export with one product-safe
  * diagnostic. Injected exporters are used only when configuration is enabled.
+ * The provider is not registered globally; only this module's tracer exports.
  * Exporter construction failure does not prevent product boot.
  *
  * @param options Existing boot id, optional env override, and test exporter.
@@ -115,7 +116,6 @@ export function startTelemetry(options: {
       }),
       spanProcessors: [processor],
     });
-    provider.register();
     activeProvider = provider;
   } catch {
     console.warn(START_FAILURE_DIAGNOSTIC);
@@ -124,7 +124,7 @@ export function startTelemetry(options: {
 }
 
 /**
- * Makes one bounded best-effort flush and clears the global tracer provider.
+ * Makes one bounded best-effort flush and clears the installed tracer provider.
  * Exporter failure does not throw.
  */
 export async function shutdownTelemetry(): Promise<void> {
@@ -136,27 +136,27 @@ export async function shutdownTelemetry(): Promise<void> {
     }
   } catch {
     console.warn('Telemetry shutdown flush failed; product shutdown continues.');
-  } finally {
-    trace.disable();
   }
 }
 
 /**
  * Records bounded HTTP-boundary spans without URL, query, body, header, or error leakage.
  *
- * Product handlers do not branch on telemetry enablement; a no-op tracer is used when disabled.
+ * Product handlers do not branch on telemetry enablement; a non-recording span is used when disabled.
  * Correlation uses the server-owned span trace id, not caller header bytes.
  *
  * @returns Hono middleware that ends the span at response handoff.
  */
 export function createHttpTelemetryMiddleware(): MiddlewareHandler {
   return async (c, next) => {
-    const span = telemetryTracer().startSpan('http.server.request', {
-      kind: SpanKind.SERVER,
-      attributes: {
-        'http.request.method': c.req.method,
-      },
-    });
+    const span = activeProvider
+      ? activeProvider.getTracer(SERVICE_NAME).startSpan('http.server.request', {
+          kind: SpanKind.SERVER,
+          attributes: {
+            'http.request.method': c.req.method,
+          },
+        })
+      : trace.wrapSpanContext(INVALID_SPAN_CONTEXT);
 
     try {
       await next();
@@ -199,14 +199,9 @@ function isValidOtlpEndpoint(value: string | undefined): boolean {
   }
 }
 
-/** Returns the process tracer, which is a no-op when telemetry is disabled. */
-function telemetryTracer(): Tracer {
-  return trace.getTracer(SERVICE_NAME);
-}
-
 /** Ends the HTTP span at response handoff and emits one product-safe correlated diagnostic. */
 function recordHttpHandoff(
-  span: ReturnType<Tracer['startSpan']>,
+  span: Span,
   method: string,
   matchedRoutes: readonly { path: string }[],
   status: number

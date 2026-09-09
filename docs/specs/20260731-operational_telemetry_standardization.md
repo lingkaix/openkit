@@ -230,6 +230,8 @@ With no explicit OTLP destination, instrumentation is disabled. The initial oper
 
 The initial HTTP span includes method, matched route template, status, duration and known request identity; unmatched paths use a fixed unknown-route label rather than raw URLs. No request/response body, query, header, user text, raw exception or host path is emitted. A completed request span proves only the observed HTTP boundary, not later asynchronous Task completion. Terminal product and Worker outcomes are obtained from their own records until their instrumentation is implemented. The same rule applies to streaming responses: distinguish response handoff from stream completion; do not label handoff as completed user work.
 
+Enabling this slice must not enroll unrelated library instrumentation into its export pipeline. Its private stock tracer provider owns only the explicit HTTP instrumentation; disabled or stopped instrumentation uses a non-recording span and does not fall back to a foreign process-global exporter. Library exception and context fields therefore cannot enter this slice merely because a dependency uses the OpenTelemetry API.
+
 Use bounded stock SDK buffering and flush through the existing shutdown deadline. No active Collector means optional diagnostic unavailability, not failed product work. A stock in-memory exporter proves the positive and negative instrument paths; one live deployment verifies OTLP export and ordinary requests with export unavailable. No mandatory backend installation is attached to L6 admission.
 
 ### App Diagnostics Operational Sample
