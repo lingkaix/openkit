@@ -52,6 +52,14 @@ const RECORD_LIMIT = 10_000;
 const DATA_OBJECT_BYTE_LIMIT = 16 * 1024;
 const TEXT_BYTE_LIMIT = 4096;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function isCanonicalUtcDate(value: string): boolean {
+  if (!DATE_PATTERN.test(value)) {
+    return false;
+  }
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
 const BATCH_POST = /^\/api\/collections\/([^/]+)\/records$/;
 const BATCH_PATCH = /^\/api\/collections\/([^/]+)\/records\/([^/]+)$/;
 const EMPTY_DIGEST = `sha256:${createHash('sha256').update('').digest('hex')}`;
@@ -175,6 +183,7 @@ export async function createLightApp(
 ): Promise<CreateLightAppResponse> {
   const appId = allocateAppId(context.workspaceId, context.requestId);
   const appRoot = lightAppRoot(context.dataRoot, context.workspaceId, appId);
+  const admitted = admitLightAppSchema(schema, appId, 1);
   if (existsSync(appRoot)) {
     return replayOrRecoverCreate(context, appId, schema);
   }
@@ -193,7 +202,6 @@ export async function createLightApp(
     }
     throw error;
   }
-  const admitted = admitLightAppSchema(schema, appId, 1);
   const schemaJson = `${JSON.stringify(admitted)}\n`;
   const schemaDigest = persistDefinition(appRoot, schemaJson);
   const appDb = createAppDb(context.dataRoot, context.workspaceId, appId);
@@ -263,28 +271,31 @@ export async function updateLightAppSchema(
   schema: LightAppSchemaInput
 ): Promise<GetLightAppResponse> {
   return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) => {
-    const current = readMetadata(appDb);
-    assertWritable(current);
-    const admitted = admitLightAppSchema(schema, appId, expectedSchemaRevision + 1, parseSchema(current));
-    const schemaJson = `${JSON.stringify(admitted)}\n`;
-    const schemaDigest = persistDefinition(
-      lightAppRoot(context.dataRoot, context.workspaceId, appId),
-      schemaJson
-    );
     return runKernelCommand(context, appDb, {
       command: 'kernel.schema.update',
       responseKind: 'light_app',
       input: { expectedAppRevision, expectedSchemaRevision, schema },
       execute: () => {
-        const metadata = readMetadata(appDb);
-        assertWritable(metadata);
+        const current = readMetadata(appDb);
+        assertWritable(current);
         if (
-          metadata.appRevision !== expectedAppRevision ||
-          metadata.schemaRevision !== expectedSchemaRevision
+          current.appRevision !== expectedAppRevision ||
+          current.schemaRevision !== expectedSchemaRevision
         ) {
           throw new KernelCommandError('conflict', 'App or schema revision is stale.');
         }
-        for (const statement of additiveSchemaDdl(parseSchema(metadata), admitted)) {
+        const admitted = admitLightAppSchema(
+          schema,
+          appId,
+          expectedSchemaRevision + 1,
+          parseSchema(current)
+        );
+        const schemaJson = `${JSON.stringify(admitted)}\n`;
+        const schemaDigest = persistDefinition(
+          lightAppRoot(context.dataRoot, context.workspaceId, appId),
+          schemaJson
+        );
+        for (const statement of additiveSchemaDdl(parseSchema(current), admitted)) {
           appDb.sqlite.exec(statement);
         }
         const now = new Date().toISOString();
@@ -298,7 +309,7 @@ export async function updateLightAppSchema(
           .run(
             admitted.title,
             admitted.purpose,
-            metadata.appRevision + 1,
+            current.appRevision + 1,
             admitted.schemaRevision,
             schemaDigest,
             schemaJson,
@@ -307,7 +318,13 @@ export async function updateLightAppSchema(
             context.requestId,
             appId
           );
-        recordKernelAudit(appDb, context, 'kernel.schema.update', `light-app:${appId}`, admitted.schemaRevision);
+        recordKernelAudit(
+          appDb,
+          context,
+          'kernel.schema.update',
+          `light-app:${appId}`,
+          admitted.schemaRevision
+        );
         return projectApp(appDb);
       },
       replay: () => projectApp(appDb),
@@ -346,8 +363,20 @@ export async function retireLightApp(
             `UPDATE app_metadata SET lifecycle = 'retired', app_revision = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ?
              WHERE app_id = ?`
           )
-          .run(metadata.appRevision + 1, now, JSON.stringify(context.actor), context.requestId, appId);
-        recordKernelAudit(appDb, context, 'kernel.apps.retire', `light-app:${appId}`, metadata.appRevision + 1);
+          .run(
+            metadata.appRevision + 1,
+            now,
+            JSON.stringify(context.actor),
+            context.requestId,
+            appId
+          );
+        recordKernelAudit(
+          appDb,
+          context,
+          'kernel.apps.retire',
+          `light-app:${appId}`,
+          metadata.appRevision + 1
+        );
         return projectApp(appDb);
       },
       replay: () => projectApp(appDb),
@@ -480,8 +509,22 @@ export async function createRecord(
         const schema = requireCurrentSchema(metadata, schemaRevision);
         const collection = resolveCollection(schema, collectionSelector);
         assertRecordCeiling(appDb, schema, 1);
-        insertRecordRow(appDb, collection, schema, recordId, data, context.actor, context.requestId);
-        recordKernelAudit(appDb, context, 'kernel.records.create', `light-app:${appId}:record:${recordId}`, 1);
+        insertRecordRow(
+          appDb,
+          collection,
+          schema,
+          recordId,
+          data,
+          context.actor,
+          context.requestId
+        );
+        recordKernelAudit(
+          appDb,
+          context,
+          'kernel.records.create',
+          `light-app:${appId}:record:${recordId}`,
+          1
+        );
         return readProjectedRecord(appDb, collection, schema.schemaRevision, recordId);
       },
       replay: () => replayNamedRecord(appDb, recordId),
@@ -505,13 +548,14 @@ export async function updateRecord(
   appId: string,
   collectionSelector: string,
   recordId: string,
-  body: UpdateLightAppRecordRequest
+  body: UpdateLightAppRecordRequest,
+  lineage?: { presentationId: string; actionName: string; itemId: string }
 ): Promise<LightAppRecord> {
   return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) =>
     runKernelCommand(context, appDb, {
       command: 'kernel.records.update',
       responseKind: 'light_app_record',
-      input: { collectionSelector, recordId, ...body },
+      input: { collectionSelector, recordId, ...body, ...(lineage ?? {}) },
       execute: () => {
         applyRecordUpdate(appDb, context, collectionSelector, recordId, body);
         return readProjectedRecord(
@@ -595,7 +639,11 @@ async function runKernelCommand<T>(
     inflightCommands: context.inflightCommands,
     command: spec.command,
     requestId: context.requestId,
-    scope: { workspaceId: context.workspaceId, appId: appDb.appId, actorId: actorScopeId(context.actor) },
+    scope: {
+      workspaceId: context.workspaceId,
+      appId: appDb.appId,
+      actorId: actorScopeId(context.actor),
+    },
     input: { actor: context.actor, ...asObject(spec.input) },
     responseKind: spec.responseKind,
     appDb,
@@ -620,13 +668,19 @@ async function replayOrRecoverCreate(
   schema: LightAppSchemaInput
 ): Promise<CreateLightAppResponse> {
   if (!existsSync(lightAppDbPath(context.dataRoot, context.workspaceId, appId))) {
-    throw new KernelCommandError('recovery_required', 'Interrupted app creation cannot be replayed.');
+    throw new KernelCommandError(
+      'recovery_required',
+      'Interrupted app creation cannot be replayed.'
+    );
   }
   let appDb: AppDb;
   try {
     appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId);
   } catch {
-    throw new KernelCommandError('recovery_required', 'Interrupted app creation cannot be replayed.');
+    throw new KernelCommandError(
+      'recovery_required',
+      'Interrupted app creation cannot be replayed.'
+    );
   }
   try {
     return await runKernelCommand(context, appDb, {
@@ -765,7 +819,13 @@ function executeBatch(
     );
     resultIds.push(entry.recordId);
   });
-  recordKernelAudit(appDb, context, 'kernel.records.batch', `light-app:${appDb.appId}`, schema.schemaRevision);
+  recordKernelAudit(
+    appDb,
+    context,
+    'kernel.records.batch',
+    `light-app:${appDb.appId}`,
+    schema.schemaRevision
+  );
   return {
     app: catalogItemFromMetadata(readMetadata(appDb)),
     items: resultIds.map((recordId) => replayNamedRecord(appDb, recordId)),
@@ -882,6 +942,18 @@ function applyRecordUpdate(
     throw new KernelCommandError('conflict', 'Record revision is stale.');
   }
   const values = validateRecordData(appDb, collection, schema, body.data, false);
+  const merged: Record<string, unknown> = {};
+  for (const field of collection.fields) {
+    merged[field.name] = Object.hasOwn(body.data, field.name)
+      ? values[field.name]
+      : decodeSqlValue(field.type, current[fieldColumnName(field.id)]);
+  }
+  if (Buffer.byteLength(JSON.stringify(merged), 'utf8') > DATA_OBJECT_BYTE_LIMIT) {
+    throw new KernelCommandError('limit_exceeded', 'Record data exceeds 16 KiB.', {
+      limit: 'dataObjectBytes',
+      maximum: DATA_OBJECT_BYTE_LIMIT,
+    });
+  }
   const assignments = [
     'revision = ?',
     'updated = ?',
@@ -1052,7 +1124,7 @@ function coerceFieldValue(
       }
       return value;
     case 'date':
-      if (typeof value !== 'string' || !DATE_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
+      if (typeof value !== 'string' || !isCanonicalUtcDate(value)) {
         throw new KernelCommandError(
           'validation_failed',
           `Field ${field.name} must be a canonical UTC date.`,
@@ -1106,7 +1178,10 @@ function coerceFieldValue(
       return value;
     }
     default:
-      throw new KernelCommandError('validation_failed', `Unsupported field type for ${field.name}.`);
+      throw new KernelCommandError(
+        'validation_failed',
+        `Unsupported field type for ${field.name}.`
+      );
   }
 }
 
@@ -1412,7 +1487,10 @@ function resolveCollection(
 function compileSort(collection: LightAppAdmittedCollection, sort: string | undefined): string {
   const clauses: string[] = [];
   if (sort && sort.trim() !== '') {
-    const parts = sort.split(',').map((part) => part.trim()).filter(Boolean);
+    const parts = sort
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
     if (parts.length > 3) {
       throw new KernelCommandError('validation_failed', 'Sort accepts at most three fields.');
     }
@@ -1439,7 +1517,12 @@ function columnFor(
   collection: LightAppAdmittedCollection,
   operand: string
 ): { sql: string; type: string } {
-  if (operand === 'id' || operand === 'created' || operand === 'updated' || operand === 'revision') {
+  if (
+    operand === 'id' ||
+    operand === 'created' ||
+    operand === 'updated' ||
+    operand === 'revision'
+  ) {
     return { sql: quoteIdent(operand), type: operand === 'revision' ? 'number' : 'text' };
   }
   const field = collection.fields.find((candidate) => candidate.name === operand);
@@ -1463,7 +1546,10 @@ function parseFields(
   if (!fields || fields.trim() === '') {
     return undefined;
   }
-  const names = fields.split(',').map((name) => name.trim()).filter(Boolean);
+  const names = fields
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
   const known = new Set(collection.fields.map((field) => field.name));
   for (const name of names) {
     if (!known.has(name)) {
@@ -1480,8 +1566,17 @@ function parseFields(
  * @param perPage Page size.
  */
 function assertPage(page: number, perPage: number): void {
-  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(perPage) || perPage < 1 || perPage > 100) {
-    throw new KernelCommandError('validation_failed', 'Page and perPage must be positive integers.');
+  if (
+    !Number.isInteger(page) ||
+    page < 1 ||
+    !Number.isInteger(perPage) ||
+    perPage < 1 ||
+    perPage > 100
+  ) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Page and perPage must be positive integers.'
+    );
   }
   if ((page - 1) * perPage > 10_000) {
     throw new KernelCommandError('limit_exceeded', 'List offset exceeds 10,000.', {
@@ -1671,7 +1766,10 @@ function mapSqliteError(error: unknown): unknown {
   if (isSqliteBusy(error)) {
     return new KernelCommandError('unavailable', 'App database is busy.');
   }
-  const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: string }).code) : '';
+  const code =
+    typeof error === 'object' && error && 'code' in error
+      ? String((error as { code: string }).code)
+      : '';
   if (code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
     return new KernelCommandError('conflict', 'Record uniqueness conflict.');
   }

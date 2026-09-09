@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
-import { KernelCommandError } from './errors.js';
+import { createDemoStore } from '../test-support/demo-store.js';
+import type { KernelCommandContext } from './commands.js';
 import {
   createLightApp,
   createRecord,
@@ -16,8 +16,7 @@ import {
   updateLightAppSchema,
   updateRecord,
 } from './commands.js';
-import type { KernelCommandContext } from './commands.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { KernelCommandError } from './errors.js';
 
 const MAPPING_SCHEMA: LightAppSchemaInput = {
   format: 'openkit.light-app',
@@ -147,17 +146,11 @@ describe('Generative Kernel commands', () => {
       )
     ).rejects.toBeInstanceOf(KernelCommandError);
     await expect(
-      updateRecord(
-        { ...context, requestId: randomUUID() },
-        app.appId,
-        'mappings',
-        first.id,
-        {
-          schemaRevision: app.schemaRevision,
-          expectedRecordRevision: 99,
-          data: { annotation: 'stale' },
-        }
-      )
+      updateRecord({ ...context, requestId: randomUUID() }, app.appId, 'mappings', first.id, {
+        schemaRevision: app.schemaRevision,
+        expectedRecordRevision: 99,
+        data: { annotation: 'stale' },
+      })
     ).rejects.toMatchObject({ code: 'conflict' });
     const updated = await updateRecord(
       { ...context, requestId: randomUUID() },

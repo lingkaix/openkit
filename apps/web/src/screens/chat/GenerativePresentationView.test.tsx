@@ -1,5 +1,5 @@
 import type { CoreClient } from '@openkit/core-client';
-import { ItemSchema } from '@openkit/protocol';
+import { GenerativeUiReferenceItemSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { GenerativePresentationView } from './GenerativePresentationView';
 
-const ITEM = ItemSchema.parse({
+const ITEM = GenerativeUiReferenceItemSchema.parse({
   id: 'i-gen',
   workspaceId: 'ws1',
   threadId: 'th1',
@@ -21,13 +21,7 @@ const ITEM = ItemSchema.parse({
   completedAt: '2026-09-09T00:00:00.000Z',
 });
 
-function Providers({
-  children,
-  client,
-}: {
-  children: ReactNode;
-  client: CoreClient;
-}) {
+function Providers({ children, client }: { children: ReactNode; client: CoreClient }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <QueryClientProvider client={queryClient}>
@@ -43,13 +37,23 @@ describe('GenerativePresentationView', () => {
       protocolVersion: 'v0.9',
       catalogId: 'urn:openkit:a2ui:catalog:native:v1',
       messages: [
-        { createSurface: { surfaceId: 'surface-item' } },
         {
+          version: 'v0.9',
+          createSurface: {
+            surfaceId: 'surface-item',
+            catalogId: 'urn:openkit:a2ui:catalog:native:v1',
+            sendDataModel: false,
+          },
+        },
+        {
+          version: 'v0.9',
           updateComponents: {
+            surfaceId: 'surface-item',
             components: [
               {
                 id: 'root',
-                component: { Text: { text: { literalString: 'Membership mem_1 maps to crm_1' } } },
+                component: 'Text',
+                text: 'Membership mem_1 maps to crm_1',
               },
             ],
           },

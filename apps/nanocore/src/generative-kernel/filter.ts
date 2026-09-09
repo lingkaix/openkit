@@ -84,7 +84,10 @@ export function compileRecordFilter(
       take();
       const inner = parseOr(depth + 1);
       if (take().kind !== 'rparen') {
-        throw new KernelCommandError('validation_failed', 'Filter is missing a closing parenthesis.');
+        throw new KernelCommandError(
+          'validation_failed',
+          'Filter is missing a closing parenthesis.'
+        );
       }
       return `(${inner})`;
     }
@@ -101,7 +104,10 @@ export function compileRecordFilter(
     }
     const ident = take();
     if (ident.kind !== 'ident') {
-      throw new KernelCommandError('validation_failed', 'Filter comparisons require a field identifier.');
+      throw new KernelCommandError(
+        'validation_failed',
+        'Filter comparisons require a field identifier.'
+      );
     }
     const op = take();
     if (op.kind !== 'op') {
@@ -110,7 +116,10 @@ export function compileRecordFilter(
     const literal = take();
     const column = columnFor(ident.value);
     if (literal.kind === 'ident') {
-      throw new KernelCommandError('validation_failed', 'Field-to-field comparisons are unavailable.');
+      throw new KernelCommandError(
+        'validation_failed',
+        'Field-to-field comparisons are unavailable.'
+      );
     }
     if (literal.kind === 'null') {
       if (op.value === '=') {
@@ -119,16 +128,21 @@ export function compileRecordFilter(
       if (op.value === '!=') {
         return `${column.sql} IS NOT NULL`;
       }
-      throw new KernelCommandError('validation_failed', 'Ordered comparisons to null are rejected.');
+      throw new KernelCommandError(
+        'validation_failed',
+        'Ordered comparisons to null are rejected.'
+      );
     }
-    if ((op.value === '>' || op.value === '>=' || op.value === '<' || op.value === '<=') &&
+    if (
+      (op.value === '>' || op.value === '>=' || op.value === '<' || op.value === '<=') &&
       column.type !== 'text' &&
       column.type !== 'number' &&
       column.type !== 'date' &&
       ident.value !== 'created' &&
       ident.value !== 'updated' &&
       ident.value !== 'id' &&
-      ident.value !== 'revision') {
+      ident.value !== 'revision'
+    ) {
       throw new KernelCommandError(
         'validation_failed',
         'Ordering operators apply only to text, number, or date.'
@@ -143,7 +157,8 @@ export function compileRecordFilter(
       params.push(value);
       return `${column.sql} ${sqlOperator(op.value)} ?`;
     }
-    const value = literal.kind === 'string' ? literal.value : literal.kind === 'number' ? literal.value : null;
+    const value =
+      literal.kind === 'string' ? literal.value : literal.kind === 'number' ? literal.value : null;
     if (op.value === '!=') {
       params.push(value);
       return `(${column.sql} IS NOT NULL AND ${column.sql} ${sqlOperator(op.value)} ?)`;
@@ -224,27 +239,24 @@ function tokenize(filter: string): Token[] {
       throw new KernelCommandError('validation_failed', 'Single-quoted strings are unsupported.');
     }
     if (ch === '"') {
+      const start = i;
       i += 1;
-      let value = '';
-      while (i < filter.length && filter[i] !== '"') {
+      while (i < filter.length) {
         if (filter[i] === '\\') {
-          i += 1;
-          const escaped = filter[i];
-          if (escaped === undefined) {
-            throw new KernelCommandError('validation_failed', 'Unterminated string literal.');
-          }
-          value += escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped;
-          i += 1;
+          i += 2;
           continue;
         }
-        value += filter[i];
+        if (filter[i] === '"') {
+          i += 1;
+          break;
+        }
         i += 1;
       }
-      if (filter[i] !== '"') {
-        throw new KernelCommandError('validation_failed', 'Unterminated string literal.');
+      try {
+        tokens.push({ kind: 'string', value: JSON.parse(filter.slice(start, i)) as string });
+      } catch {
+        throw new KernelCommandError('validation_failed', 'Invalid JSON string literal.');
       }
-      i += 1;
-      tokens.push({ kind: 'string', value });
       continue;
     }
     if (filter.startsWith('&&', i)) {
@@ -267,10 +279,28 @@ function tokenize(filter: string): Token[] {
       i += 1;
       continue;
     }
-    if (ch === '/' || ch === '@' || ch === '-') {
+    if (ch === '/' || ch === '@') {
       throw new KernelCommandError('validation_failed', 'Unsupported filter syntax.');
     }
+    if (ch === '-' || /[0-9]/.test(ch)) {
+      const number = takeWhile((next) => /[0-9.eE+-]/.test(next));
+      if (!/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(number)) {
+        throw new KernelCommandError('validation_failed', 'Filter numbers must be JSON numbers.');
+      }
+      const value = Number(number);
+      if (!Number.isFinite(value)) {
+        throw new KernelCommandError('validation_failed', 'Filter numbers must be finite.');
+      }
+      tokens.push({ kind: 'number', value });
+      continue;
+    }
     const ident = takeWhile((next) => /[A-Za-z0-9_]/.test(next));
+    if (ident.length > 0 && !/^[A-Za-z_]/.test(ident)) {
+      throw new KernelCommandError(
+        'validation_failed',
+        'Filter identifiers must start with a letter.'
+      );
+    }
     if (ident === 'true' || ident === 'false') {
       tokens.push({ kind: 'boolean', value: ident === 'true' });
       continue;
@@ -281,15 +311,6 @@ function tokenize(filter: string): Token[] {
     }
     if (ident.length > 0) {
       tokens.push({ kind: 'ident', value: ident });
-      continue;
-    }
-    const number = takeWhile((next) => /[0-9.eE+-]/.test(next));
-    if (number.length > 0) {
-      const value = Number(number);
-      if (!Number.isFinite(value)) {
-        throw new KernelCommandError('validation_failed', 'Filter numbers must be finite.');
-      }
-      tokens.push({ kind: 'number', value });
       continue;
     }
     throw new KernelCommandError('validation_failed', `Unsupported filter syntax at ${ch}.`);

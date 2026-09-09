@@ -126,21 +126,18 @@ describe('Generative UI App API', () => {
             messages: nativeMessages('surface-item', [
               {
                 id: 'root',
-                component: { Column: { children: { explicitList: ['body', 'refresh'] } } },
+                component: 'Column', children: ['body', 'refresh'],
               },
-              { id: 'body', component: { Text: { text: { path: '/text' } } } },
+              { id: 'body', component: 'Text', text: { path: '/text' } },
               {
                 id: 'refresh',
-                component: {
-                  Button: {
-                    child: 'refreshLabel',
-                    action: { event: { name: 'refreshNow' } },
-                  },
-                },
+                component: 'Button',
+                child: 'refreshLabel',
+                action: { event: { name: 'refreshNow' } },
               },
               {
                 id: 'refreshLabel',
-                component: { Text: { text: { literalString: 'Refresh' } } },
+                component: 'Text', text: 'Refresh',
               },
             ]),
             source: {

@@ -1,6 +1,16 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import {
+  CreateLightAppRecordRequestSchema,
+  CreateLightAppRequestSchema,
+  GenerativeUiA2uiActionSchema,
+  LightAppBatchRequestSchema,
+  PublishGenerativePresentationRequestSchema,
+  UpdateLightAppRecordRequestSchema,
+  UpdateLightAppSchemaRequestSchema,
+} from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import { type ActorRef, RequestIdSchema } from '@openkit/protocol';
+import type { z } from 'zod';
 
 import {
   batchRecords,
@@ -39,7 +49,18 @@ export const OPENKIT_GENERATIVE_TOOLS = [
   {
     name: 'kernel_apps_create',
     description: 'Create one Light App from a file-authored schema.',
-    inputSchema: { type: 'object', additionalProperties: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['format', 'schemaVersion', 'title', 'purpose', 'collections'],
+      properties: {
+        format: { type: 'string' },
+        schemaVersion: { type: 'integer' },
+        title: { type: 'string' },
+        purpose: { type: 'string' },
+        collections: { type: 'array' },
+      },
+    },
   },
   {
     name: 'kernel_apps_get',
@@ -54,50 +75,136 @@ export const OPENKIT_GENERATIVE_TOOLS = [
   {
     name: 'kernel_schema_update',
     description: 'Update one Light App schema within the initial evolution ceiling.',
-    inputSchema: { type: 'object', additionalProperties: true, required: ['appId'] },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['appId', 'expectedAppRevision', 'expectedSchemaRevision', 'schema'],
+      properties: {
+        appId: { type: 'string', format: 'uuid' },
+        expectedAppRevision: { type: 'integer' },
+        expectedSchemaRevision: { type: 'integer' },
+        schema: { type: 'object' },
+      },
+    },
   },
   {
     name: 'kernel_apps_retire',
     description: 'Retire one Light App and disable writes.',
-    inputSchema: { type: 'object', additionalProperties: true, required: ['appId'] },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['appId', 'expectedAppRevision'],
+      properties: {
+        appId: { type: 'string', format: 'uuid' },
+        expectedAppRevision: { type: 'integer' },
+      },
+    },
   },
   {
     name: 'kernel_records_list',
     description: 'List records in one Light App collection.',
-    inputSchema: { type: 'object', additionalProperties: true, required: ['appId', 'collection'] },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['appId', 'collection', 'schemaRevision'],
+      properties: {
+        appId: { type: 'string', format: 'uuid' },
+        collection: { type: 'string' },
+        schemaRevision: { type: 'integer' },
+        page: { type: 'integer' },
+        perPage: { type: 'integer' },
+        filter: { type: 'string' },
+        sort: { type: 'string' },
+        fields: { type: 'string' },
+      },
+    },
   },
   {
     name: 'kernel_records_get',
     description: 'Read one Light App record.',
     inputSchema: {
       type: 'object',
-      additionalProperties: true,
-      required: ['appId', 'collection', 'recordId'],
+      additionalProperties: false,
+      required: ['appId', 'collection', 'recordId', 'schemaRevision'],
+      properties: {
+        appId: { type: 'string', format: 'uuid' },
+        collection: { type: 'string' },
+        recordId: { type: 'string', format: 'uuid' },
+        schemaRevision: { type: 'integer' },
+        fields: { type: 'string' },
+      },
     },
   },
   {
     name: 'kernel_records_create',
     description: 'Create one Light App record.',
-    inputSchema: { type: 'object', additionalProperties: true, required: ['appId', 'collection'] },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['appId', 'collection', 'schemaRevision', 'data'],
+      properties: {
+        appId: { type: 'string', format: 'uuid' },
+        collection: { type: 'string' },
+        schemaRevision: { type: 'integer' },
+        data: { type: 'object' },
+      },
+    },
   },
   {
     name: 'kernel_records_update',
     description: 'Update one Light App record.',
     inputSchema: {
       type: 'object',
-      additionalProperties: true,
-      required: ['appId', 'collection', 'recordId'],
+      additionalProperties: false,
+      required: [
+        'appId',
+        'collection',
+        'recordId',
+        'schemaRevision',
+        'expectedRecordRevision',
+        'data',
+      ],
+      properties: {
+        appId: { type: 'string', format: 'uuid' },
+        collection: { type: 'string' },
+        recordId: { type: 'string', format: 'uuid' },
+        schemaRevision: { type: 'integer' },
+        expectedRecordRevision: { type: 'integer' },
+        data: { type: 'object' },
+      },
     },
   },
   {
     name: 'kernel_records_batch',
     description: 'Apply one atomic Light App record batch.',
-    inputSchema: { type: 'object', additionalProperties: true, required: ['appId'] },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['appId', 'schemaRevision', 'requests'],
+      properties: {
+        appId: { type: 'string', format: 'uuid' },
+        schemaRevision: { type: 'integer' },
+        requests: { type: 'array', maxItems: 50 },
+      },
+    },
   },
   {
     name: 'generative_ui_publish',
     description: 'Publish one admitted native Generative UI presentation.',
-    inputSchema: { type: 'object', additionalProperties: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['threadId', 'turnId', 'title', 'fallbackText', 'messages', 'source', 'actions'],
+      properties: {
+        threadId: { type: 'string' },
+        turnId: { type: 'string' },
+        title: { type: 'string' },
+        fallbackText: { type: 'string' },
+        messages: { type: 'array' },
+        source: { type: 'object' },
+        actions: { type: 'array' },
+      },
+    },
   },
   {
     name: 'generative_ui_get',
@@ -122,14 +229,51 @@ export const OPENKIT_GENERATIVE_TOOLS = [
   {
     name: 'generative_ui_refresh',
     description: 'Refresh one presentation from its current authorized source.',
-    inputSchema: { type: 'object', additionalProperties: true, required: ['presentationId'] },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['presentationId', 'version', 'action'],
+      properties: {
+        presentationId: { type: 'string', format: 'uuid' },
+        version: { type: 'string' },
+        action: { type: 'object' },
+      },
+    },
   },
   {
     name: 'generative_ui_action',
     description: 'Submit one admitted Kernel record-update action.',
-    inputSchema: { type: 'object', additionalProperties: true, required: ['presentationId'] },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['presentationId', 'version', 'action'],
+      properties: {
+        presentationId: { type: 'string', format: 'uuid' },
+        version: { type: 'string' },
+        action: { type: 'object' },
+      },
+    },
   },
 ] as const;
+
+/** App API operations authorized for each built-in generative tool. */
+export const OPENKIT_GENERATIVE_TOOL_OPERATIONS = {
+  kernel_apps_list: 'listLightApps',
+  kernel_apps_create: 'createLightApp',
+  kernel_apps_get: 'getLightApp',
+  kernel_schema_update: 'updateLightAppSchema',
+  kernel_apps_retire: 'retireLightApp',
+  kernel_records_list: 'listLightAppRecords',
+  kernel_records_get: 'getLightAppRecord',
+  kernel_records_create: 'createLightAppRecord',
+  kernel_records_update: 'updateLightAppRecord',
+  kernel_records_batch: 'batchLightAppRecords',
+  generative_ui_publish: 'publishGenerativePresentation',
+  generative_ui_get: 'getGenerativePresentation',
+  generative_ui_resource: 'getGenerativePresentationResource',
+  generative_ui_refresh: 'refreshGenerativePresentation',
+  generative_ui_action: 'submitGenerativePresentationAction',
+} as const;
 
 /** SHA-256 digest of the built-in tool-schema descriptor. */
 export const OPENKIT_GENERATIVE_CATALOG_DIGEST = `sha256:${createHash('sha256')
@@ -169,6 +313,8 @@ export interface OpenkitGenerativeMcpContext {
   readonly workspaceDb: WorkspaceDb;
   /** Authenticated environment scope. */
   readonly scope: AgentEnvironmentPackage['scope'];
+  /** MCP protocol request identity used to stabilize Kernel request ids. */
+  readonly protocolRequestId?: string | number;
 }
 
 /**
@@ -183,7 +329,14 @@ export async function dispatchOpenkitGenerativeTool(
   context: OpenkitGenerativeMcpContext,
   toolName: string,
   args: Record<string, unknown>
-): Promise<{ content: Array<{ type: 'text'; text: string }>; structuredContent: unknown; _meta?: Record<string, unknown> }> {
+): Promise<{
+  content: Array<
+    | { type: 'text'; text: string }
+    | { type: 'resource'; resource: { uri: string; mimeType: string; text: string } }
+  >;
+  structuredContent: unknown;
+  _meta?: Record<string, unknown>;
+}> {
   assertScope(args, context);
   const kernelContext = {
     store: context.store,
@@ -191,29 +344,46 @@ export async function dispatchOpenkitGenerativeTool(
     dataRoot: context.dataRoot,
     workspaceId: context.workspaceId,
     actor: context.actor,
-    requestId: requestIdFrom(args),
+    requestId: requestIdFrom(args, context),
   };
   const uiContext = { ...kernelContext, workspaceDb: context.workspaceDb };
   switch (toolName) {
     case 'kernel_apps_list':
       return textResult(listLightApps(context.dataRoot, context.workspaceId));
     case 'kernel_apps_create':
-      return textResult(await createLightApp(kernelContext, schemaArg(args)));
+      return textResult(
+        await createLightApp(
+          kernelContext,
+          parseTool(CreateLightAppRequestSchema, withoutScope(args))
+        )
+      );
     case 'kernel_apps_get':
-      return textResult(getLightApp(context.dataRoot, context.workspaceId, stringArg(args, 'appId')));
-    case 'kernel_schema_update':
+      return textResult(
+        getLightApp(context.dataRoot, context.workspaceId, stringArg(args, 'appId'))
+      );
+    case 'kernel_schema_update': {
+      const body = parseTool(UpdateLightAppSchemaRequestSchema, {
+        expectedAppRevision: args.expectedAppRevision,
+        expectedSchemaRevision: args.expectedSchemaRevision,
+        schema: args.schema,
+      });
       return textResult(
         await updateLightAppSchema(
           kernelContext,
           stringArg(args, 'appId'),
-          numberArg(args, 'expectedAppRevision'),
-          numberArg(args, 'expectedSchemaRevision'),
-          args.schema as never
+          body.expectedAppRevision,
+          body.expectedSchemaRevision,
+          body.schema
         )
       );
+    }
     case 'kernel_apps_retire':
       return textResult(
-        await retireLightApp(kernelContext, stringArg(args, 'appId'), numberArg(args, 'expectedAppRevision'))
+        await retireLightApp(
+          kernelContext,
+          stringArg(args, 'appId'),
+          numberArg(args, 'expectedAppRevision')
+        )
       );
     case 'kernel_records_list':
       return textResult(
@@ -244,38 +414,64 @@ export async function dispatchOpenkitGenerativeTool(
           optionalString(args.fields)
         )
       );
-    case 'kernel_records_create':
+    case 'kernel_records_create': {
+      const body = parseTool(CreateLightAppRecordRequestSchema, {
+        schemaRevision: args.schemaRevision,
+        data: args.data,
+      });
       return textResult(
         await createRecord(
           kernelContext,
           stringArg(args, 'appId'),
           stringArg(args, 'collection'),
-          numberArg(args, 'schemaRevision'),
-          asRecord(args.data)
+          body.schemaRevision,
+          body.data
         )
       );
-    case 'kernel_records_update':
+    }
+    case 'kernel_records_update': {
+      const body = parseTool(UpdateLightAppRecordRequestSchema, {
+        schemaRevision: args.schemaRevision,
+        expectedRecordRevision: args.expectedRecordRevision,
+        data: args.data,
+      });
       return textResult(
         await updateRecord(
           kernelContext,
           stringArg(args, 'appId'),
           stringArg(args, 'collection'),
           stringArg(args, 'recordId'),
-          {
-            schemaRevision: numberArg(args, 'schemaRevision'),
-            expectedRecordRevision: numberArg(args, 'expectedRecordRevision'),
-            data: asRecord(args.data),
-          }
+          body
         )
       );
-    case 'kernel_records_batch':
-      return textResult(await batchRecords(kernelContext, stringArg(args, 'appId'), args as never));
+    }
+    case 'kernel_records_batch': {
+      const body = parseTool(LightAppBatchRequestSchema, {
+        schemaRevision: args.schemaRevision,
+        requests: args.requests,
+      });
+      return textResult(await batchRecords(kernelContext, stringArg(args, 'appId'), body));
+    }
     case 'generative_ui_publish': {
-      const published = await publishGenerativePresentation(uiContext, args as never);
+      const published = await publishGenerativePresentation(
+        uiContext,
+        parseTool(PublishGenerativePresentationRequestSchema, withoutScope(args))
+      );
+      const resource = getGenerativePresentationResource(uiContext, published.id);
       return {
-        content: [{ type: 'text', text: published.fallbackText }],
+        content: [
+          { type: 'text', text: published.fallbackText },
+          {
+            type: 'resource',
+            resource: {
+              uri: resource.uri,
+              mimeType: resource.mimeType,
+              text: resource.text,
+            },
+          },
+        ],
         structuredContent: published,
-        _meta: { ui: { resourceUri: `ui://openkit/generative/${published.id}` } },
+        _meta: { ui: { resourceUri: resource.uri } },
       };
     }
     case 'generative_ui_get':
@@ -289,7 +485,7 @@ export async function dispatchOpenkitGenerativeTool(
         refreshGenerativePresentation(
           uiContext,
           stringArg(args, 'presentationId'),
-          actionEvent(args)
+          parseTool(GenerativeUiA2uiActionSchema, actionBody(args))
         )
       );
     case 'generative_ui_action':
@@ -297,11 +493,14 @@ export async function dispatchOpenkitGenerativeTool(
         await submitGenerativePresentationAction(
           uiContext,
           stringArg(args, 'presentationId'),
-          actionEvent(args)
+          parseTool(GenerativeUiA2uiActionSchema, actionBody(args))
         )
       );
     default:
-      throw new KernelCommandError('unsupported_operation', `Unknown generative tool: ${toolName}.`);
+      throw new KernelCommandError(
+        'unsupported_operation',
+        `Unknown generative tool: ${toolName}.`
+      );
   }
 }
 
@@ -317,20 +516,83 @@ function textResult(value: unknown): {
 
 function assertScope(args: Record<string, unknown>, context: OpenkitGenerativeMcpContext): void {
   if (typeof args.workspaceId === 'string' && args.workspaceId !== context.workspaceId) {
-    throw new KernelCommandError('access_denied', 'Tool workspaceId does not match the Worker session.');
+    throw new KernelCommandError(
+      'access_denied',
+      'Tool workspaceId does not match the Worker session.'
+    );
   }
   if (typeof args.threadId === 'string' && args.threadId !== context.scope.threadId) {
-    throw new KernelCommandError('access_denied', 'Tool threadId does not match the Worker session.');
+    throw new KernelCommandError(
+      'access_denied',
+      'Tool threadId does not match the Worker session.'
+    );
   }
   if (typeof args.turnId === 'string' && args.turnId !== context.scope.turnId) {
     throw new KernelCommandError('access_denied', 'Tool turnId does not match the Worker session.');
   }
+  if (
+    typeof args.agentSessionId === 'string' &&
+    args.agentSessionId !== context.scope.agentSessionId
+  ) {
+    throw new KernelCommandError(
+      'access_denied',
+      'Tool agentSessionId does not match the Worker session.'
+    );
+  }
 }
 
-function requestIdFrom(args: Record<string, unknown>): string {
-  return typeof args.requestId === 'string' && args.requestId.length > 0
-    ? args.requestId
-    : randomUUID();
+function requestIdFrom(
+  args: Record<string, unknown>,
+  context: OpenkitGenerativeMcpContext
+): string {
+  if (args.requestId !== undefined) {
+    const parsed = RequestIdSchema.safeParse(args.requestId);
+    if (!parsed.success) {
+      throw new KernelCommandError('validation_failed', 'requestId must be a UUID.');
+    }
+    return parsed.data;
+  }
+  if (typeof context.protocolRequestId === 'string') {
+    const parsed = RequestIdSchema.safeParse(context.protocolRequestId);
+    if (parsed.success) {
+      return parsed.data;
+    }
+  }
+  const seed = `${context.workspaceId}:${context.scope.turnId}:${String(context.protocolRequestId ?? '')}`;
+  const hex = createHash('sha256').update(seed).digest('hex').slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function withoutScope(args: Record<string, unknown>): Record<string, unknown> {
+  const {
+    workspaceId: _workspaceId,
+    threadId: _threadId,
+    turnId: _turnId,
+    requestId: _requestId,
+    agentSessionId: _agentSessionId,
+    ...rest
+  } = args;
+  return rest;
+}
+
+function actionBody(args: Record<string, unknown>): unknown {
+  if (args.event && typeof args.event === 'object') {
+    return args.event;
+  }
+  const rest = withoutScope(args);
+  delete rest.presentationId;
+  return rest;
+}
+
+function parseTool<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new KernelCommandError(
+      'validation_failed',
+      parsed.error.issues[0]?.message ?? 'Invalid tool arguments.'
+    );
+  }
+  return parsed.data;
 }
 
 function stringArg(args: Record<string, unknown>, key: string): string {
@@ -355,37 +617,4 @@ function optionalNumber(value: unknown): number | undefined {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new KernelCommandError('validation_failed', 'Expected an object.');
-  }
-  return value as Record<string, unknown>;
-}
-
-function schemaArg(args: Record<string, unknown>): never {
-  if (args.schema && typeof args.schema === 'object' && !Array.isArray(args.schema)) {
-    return args.schema as never;
-  }
-  const schema = { ...args };
-  delete schema.workspaceId;
-  delete schema.threadId;
-  delete schema.turnId;
-  delete schema.requestId;
-  delete schema.agentSessionId;
-  return schema as never;
-}
-
-function actionEvent(args: Record<string, unknown>): never {
-  if (args.event && typeof args.event === 'object') {
-    return args.event as never;
-  }
-  const event = { ...args };
-  delete event.presentationId;
-  delete event.requestId;
-  delete event.workspaceId;
-  delete event.threadId;
-  delete event.turnId;
-  return event as never;
 }

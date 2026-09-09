@@ -15,11 +15,11 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import {
+  type GenerativeUiCommandContext,
   getGenerativePresentation,
   publishGenerativePresentation,
   refreshGenerativePresentation,
   submitGenerativePresentationAction,
-  type GenerativeUiCommandContext,
 } from './commands.js';
 
 const MAPPING_SCHEMA: LightAppSchemaInput = {
@@ -141,19 +141,17 @@ describe('Generative UI commands', () => {
         messages: nativeMessages('surface-item', [
           {
             id: 'root',
-            component: { Column: { children: { explicitList: ['body', 'refresh'] } } },
+            component: 'Column',
+            children: ['body', 'refresh'],
           },
-          { id: 'body', component: { Text: { text: { path: '/text' } } } },
+          { id: 'body', component: 'Text', text: { path: '/text' } },
           {
             id: 'refresh',
-            component: {
-              Button: {
-                child: 'refreshLabel',
-                action: { event: { name: 'refreshNow' } },
-              },
-            },
+            component: 'Button',
+            child: 'refreshLabel',
+            action: { event: { name: 'refreshNow' } },
           },
-          { id: 'refreshLabel', component: { Text: { text: { literalString: 'Refresh' } } } },
+          { id: 'refreshLabel', component: 'Text', text: 'Refresh' },
         ]),
         source: {
           kind: 'item',
@@ -216,35 +214,30 @@ describe('Generative UI commands', () => {
         messages: nativeMessages('surface-form', [
           {
             id: 'root',
-            component: { Column: { children: { explicitList: ['note', 'save'] } } },
+            component: 'Column',
+            children: ['note', 'save'],
           },
           {
             id: 'note',
-            component: {
-              TextField: {
-                label: 'Annotation',
-                text: { path: '/records/0/data/annotation' },
-              },
-            },
+            component: 'TextField',
+            label: 'Annotation',
+            value: { path: '/records/0/data/annotation' },
           },
           {
             id: 'save',
-            component: {
-              Button: {
-                child: 'saveLabel',
-                action: {
-                  event: {
-                    name: 'saveAnnotation',
-                    context: {
-                      expectedRecordRevision: { path: '/records/0/revision' },
-                      values: { path: '/records/0/data' },
-                    },
-                  },
+            component: 'Button',
+            child: 'saveLabel',
+            action: {
+              event: {
+                name: 'saveAnnotation',
+                context: {
+                  expectedRecordRevision: { path: '/records/0/revision' },
+                  values: { path: '/records/0/data' },
                 },
               },
             },
           },
-          { id: 'saveLabel', component: { Text: { text: { literalString: 'Save' } } } },
+          { id: 'saveLabel', component: 'Text', text: 'Save' },
         ]),
         source: {
           kind: 'kernel-records',
@@ -314,7 +307,7 @@ describe('Generative UI commands', () => {
         title: 'Stable view',
         fallbackText: 'Stable source text.',
         messages: nativeMessages('surface-replay', [
-          { id: 'root', component: { Text: { text: { path: '/text' } } } },
+          { id: 'root', component: 'Text', text: { path: '/text' } },
         ]),
         source: {
           kind: 'item' as const,
@@ -337,12 +330,7 @@ describe('Generative UI commands', () => {
   it('rejects publication onto a completed turn', async () => {
     const context = createContext();
     try {
-      const turn = context.store.createTurn(
-        'ws_demo',
-        'th_demo',
-        'Completed turn',
-        context.actor
-      );
+      const turn = context.store.createTurn('ws_demo', 'th_demo', 'Completed turn', context.actor);
       context.store.updateTurn(turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
@@ -355,7 +343,7 @@ describe('Generative UI commands', () => {
           title: 'Too late',
           fallbackText: 'Turn already completed.',
           messages: nativeMessages('surface-late', [
-            { id: 'root', component: { Text: { text: { literalString: 'Late' } } } },
+            { id: 'root', component: 'Text', text: 'Late' },
           ]),
           source: {
             kind: 'item',

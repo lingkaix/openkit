@@ -12,20 +12,6 @@ import {
 import type { AppDb } from '../storage/app-db.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
-/** Error raised when an expired app-local receipt cannot be replayed. */
-export class CommandRequestRecoveryRequiredError extends Error {
-  /** Stable protocol API error code. */
-  public readonly code = 'recovery_required';
-  /** HTTP response status. */
-  public readonly status = 409;
-
-  /** Creates a recovery-required receipt error. */
-  public constructor(message = 'The original request requires recovery and cannot be replayed.') {
-    super(message);
-    this.name = 'CommandRequestRecoveryRequiredError';
-  }
-}
-
 /** Error raised when one idempotency key is reused for different command input. */
 export class IdempotencyKeyConflictError extends Error {
   /** Stable protocol API error code. */
@@ -203,7 +189,9 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   if (options.conversationResponseMetadata && options.command !== 'conversation.submit') {
     throw new Error('Only conversation.submit may store extra command receipt metadata.');
   }
-  let transaction: { readonly db: CoreDb | WorkspaceDb | AppDb; readonly execute: () => T } | undefined;
+  let transaction:
+    | { readonly db: CoreDb | WorkspaceDb | AppDb; readonly execute: () => T }
+    | undefined;
 
   if (options.workspaceTransaction) {
     if (!options.workspaceDb) {

@@ -80,9 +80,7 @@ export function admitLightAppSchema(
       fields,
       indexes: collection.indexes.map((index) => ({
         unique: index.unique,
-        fields: index.fields.map((selector) =>
-          resolveSelector(selector, fieldIds, 'index field')
-        ),
+        fields: index.fields.map((selector) => resolveSelector(selector, fieldIds, 'index field')),
       })),
     };
   });
@@ -168,7 +166,10 @@ function resolveFieldId(
   if (existing && previousCollection && !requestedId) {
     const previous = previousCollection.fields.find((field) => field.name === name);
     if (previous) {
-      throw new KernelCommandError('unsupported_operation', 'Existing field IDs cannot be omitted.');
+      throw new KernelCommandError(
+        'unsupported_operation',
+        'Existing field IDs cannot be omitted.'
+      );
     }
     return randomUUID();
   }
@@ -217,7 +218,10 @@ function assertSafeSchemaEvolution(
   for (const previous of existing.collections) {
     const match = next.collections.find((collection) => collection.id === previous.id);
     if (!match) {
-      throw new KernelCommandError('unsupported_operation', 'Existing collection IDs cannot be omitted.');
+      throw new KernelCommandError(
+        'unsupported_operation',
+        'Existing collection IDs cannot be omitted.'
+      );
     }
     if (match.fields.length < previous.fields.length) {
       throw new KernelCommandError('unsupported_operation', 'Removing fields is unavailable.');
@@ -225,7 +229,10 @@ function assertSafeSchemaEvolution(
     for (const previousField of previous.fields) {
       const nextField = match.fields.find((field) => field.id === previousField.id);
       if (!nextField) {
-        throw new KernelCommandError('unsupported_operation', 'Existing field IDs cannot be omitted.');
+        throw new KernelCommandError(
+          'unsupported_operation',
+          'Existing field IDs cannot be omitted.'
+        );
       }
       if (nextField.type !== previousField.type || nextField.required !== previousField.required) {
         throw new KernelCommandError(
@@ -233,6 +240,38 @@ function assertSafeSchemaEvolution(
           'Changing field type or requiredness is unavailable.'
         );
       }
+      if (
+        JSON.stringify(nextField.options ?? null) !== JSON.stringify(previousField.options ?? null)
+      ) {
+        throw new KernelCommandError(
+          'unsupported_operation',
+          'Changing field options is unavailable.'
+        );
+      }
+    }
+    const fieldIds = new Map<string, string>();
+    for (const field of previous.fields) {
+      fieldIds.set(field.id, field.id);
+      fieldIds.set(field.name, field.id);
+    }
+    for (const field of match.fields) {
+      if (field.id) {
+        fieldIds.set(field.id, field.id);
+      }
+      const resolved = field.id ?? fieldIds.get(field.name);
+      if (resolved) {
+        fieldIds.set(field.name, resolved);
+      }
+    }
+    const indexKey = (index: { unique?: boolean; fields: readonly string[] }): string =>
+      JSON.stringify({
+        unique: Boolean(index.unique),
+        fields: index.fields.map((selector) => fieldIds.get(selector) ?? selector),
+      });
+    const previousKeys = previous.indexes.map(indexKey).sort();
+    const nextKeys = match.indexes.map(indexKey).sort();
+    if (JSON.stringify(previousKeys) !== JSON.stringify(nextKeys)) {
+      throw new KernelCommandError('unsupported_operation', 'Changing indexes is unavailable.');
     }
     for (const nextField of match.fields) {
       if (nextField.id) {

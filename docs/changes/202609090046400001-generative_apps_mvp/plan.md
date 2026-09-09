@@ -127,3 +127,15 @@ Permission finding: this MVP ships on the accepted Policy mapping (`workspace.re
 Renderer finding: in-thread Chat maps the eight native A2UI types onto existing React Aria primitives. Official `@a2ui/react@0.11.0` was not added because it peer-depends on zod 3 while this repository is on zod 4; a source guard still forbids a bare `@a2ui/react` default (v0.8) import.
 
 Herdr finding: independent Claude consultant and Codex reviewer/verifier/auditor panes could not be started from this session because the Herdr CLI protocol (22) is newer than the running server (20). The skill forbids `herdr server stop` without an explicit engineer intent to kill pane processes.
+
+## Implementation Epoch 4
+
+Source: the engineer's 2026-09-09 instruction to finish both change plans and make the PR merge-ready after independent Reviewer, Verifier, and Auditor agreement. The only authorized exception is that live product acceptance and real selected-Worker/browser/crash proofs are deferred for a later unified verification pass; those predicates are marked deferred rather than claimed. The exception does not waive typecheck, official A2UI v0.9 admission, Policy, portability, CLI bundle, contract conformance, or governance alignment.
+
+Working facts after this epoch:
+
+- NanoCore Kernel, native Generative UI admission, Worker `openkit-generative`, App API/Skill operations, Chat Item rendering, and Workspace feature markers are implemented on `feat/generative-apps-mvp`.
+- Official `@a2ui/react@0.11.0` and `@a2ui/web_core@0.10.7` are pinned; hosts import only `@a2ui/react/v0_9` and `@a2ui/web_core/v0_9`. Nested zod 3 is isolated through pnpm overrides. The `/generative` fixture remains unpublished Tier C.
+- Built-in Worker tools reuse App API operation Policy (`workspace.configure` / `workspace.write` / `workspace.read` / `thread.read`) plus `deniedTools` / fail-closed `approvalRequiredTools`, and record CapabilityCall ledger rows. Equal active-member eligibility remains unmet for editor/viewer; this MVP does not edit `WORKSPACE_ROLE_OPERATION_CEILINGS`.
+- Focused typecheck for NanoCore, Web, and core-client passed. Focused Kernel/UI/MCP/portability and Chat presentation unit tests passed. Live selected-Worker journey, browser E2E form/edit/refresh, and crash/restart proofs are **deferred** under the engineer exception.
+- The bundled Skill CLI is regenerated through `pnpm run bundle:openkit` so `kernel.apps-create` and `generative-ui.publish` are reachable from `skills/openkit/scripts/openkit`.

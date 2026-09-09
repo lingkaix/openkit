@@ -1,4 +1,14 @@
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, writeSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 
@@ -75,9 +85,15 @@ export function openExistingAppDb(dataRoot: string, workspaceId: string, appId: 
   const sqlite = openSqlite(path, true);
   applyAppPragmas(sqlite);
   const db: AppDb = { scope: 'app', sqlite, dataRoot, workspaceId, appId };
-  applyAppMigrations(db.sqlite);
-  assertAppIdentity(db);
-  return db;
+  try {
+    applyAppMigrations(db.sqlite);
+    assertAppIdentity(db);
+    assertDefinitionMatches(db);
+    return db;
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
 }
 
 /**
@@ -91,7 +107,10 @@ export function openExistingAppDb(dataRoot: string, workspaceId: string, appId: 
 export function createAppDb(dataRoot: string, workspaceId: string, appId: string): AppDb {
   const path = lightAppDbPath(dataRoot, workspaceId, appId);
   if (existsSync(path)) {
-    throw new KernelCommandError('recovery_required', 'Interrupted app creation cannot be replayed.');
+    throw new KernelCommandError(
+      'recovery_required',
+      'Interrupted app creation cannot be replayed.'
+    );
   }
   const sqlite = openSqlite(path, false);
   applyAppPragmas(sqlite);
@@ -184,6 +203,29 @@ function assertAppIdentity(db: AppDb): void {
   }
   if (row.appId !== db.appId || row.workspaceId !== db.workspaceId) {
     throw new KernelCommandError('unavailable', 'App identity does not match its storage.');
+  }
+}
+
+function assertDefinitionMatches(db: AppDb): void {
+  const row = db.sqlite
+    .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
+    .get() as { schemaDigest: string } | undefined;
+  if (!row?.schemaDigest?.startsWith('sha256:')) {
+    throw new KernelCommandError('unavailable', 'App authority is incomplete.');
+  }
+  const definitionPath = join(
+    lightAppRoot(db.dataRoot, db.workspaceId, db.appId),
+    'definitions',
+    `${row.schemaDigest.slice('sha256:'.length)}.json`
+  );
+  assertNotSymlink(definitionPath);
+  if (!existsSync(definitionPath)) {
+    throw new KernelCommandError('unavailable', 'App definition bytes are missing.');
+  }
+  const bytes = readFileSync(definitionPath);
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  if (digest !== row.schemaDigest) {
+    throw new KernelCommandError('unavailable', 'App definition digest does not match.');
   }
 }
 

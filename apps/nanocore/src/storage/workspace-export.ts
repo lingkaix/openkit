@@ -6,6 +6,7 @@ import {
   parseWorkspaceExportManifest,
   WORKSPACE_EXPORT_FORMAT_VERSION,
   WorkspaceConfigSchema,
+  type RequiredFeatureId,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
@@ -634,7 +635,7 @@ export function writeWorkspaceExportTree(
         };
       })
       .sort((left, right) => left.path.localeCompare(right.path));
-    const requiredFeatures = [WORKSPACE_EXPORT_CATALOG_FEATURE];
+    const requiredFeatures: RequiredFeatureId[] = [WORKSPACE_EXPORT_CATALOG_FEATURE];
     if (input.lightApps?.length || input.lightAppDefinitions?.length || input.lightAppRecords?.length) {
       requiredFeatures.push('workspace.generative-kernel.v1');
     }

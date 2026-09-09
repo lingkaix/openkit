@@ -287,3 +287,6 @@ export const ItemSchema = z.discriminatedUnion('type', [
   KnowledgeInjectionItemSchema,
   GenerativeUiReferenceItemSchema,
 ]);
+
+/** Item union for turn streams. */
+export type Item = z.infer<typeof ItemSchema>;

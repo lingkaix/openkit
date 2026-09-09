@@ -75,8 +75,9 @@ export function createSchemaDdl(schema: LightAppAdmittedSchema): string[] {
       const type = sqliteTypeForField(field);
       const nullability = field.required ? 'NOT NULL' : '';
       columns.push(`${column} ${type} ${nullability}`.trim());
-      if (field.type === 'bool') {
-        columns[columns.length - 1] += ` CHECK (${column} IS NULL OR ${column} IN (0, 1))`;
+      const check = fieldCheckSql(field, column);
+      if (check) {
+        columns[columns.length - 1] += ` CHECK (${check})`;
       }
       if (field.type === 'relation') {
         const targetId = (field.options as { collection: string }).collection;
@@ -93,7 +94,9 @@ export function createSchemaDdl(schema: LightAppAdmittedSchema): string[] {
       const indexName = quoteIdent(`i_${collection.id.replaceAll('-', '')}_${indexNumber}`);
       const indexColumns = index.fields.map((fieldId) => quoteIdent(fieldColumnName(fieldId)));
       const unique = index.unique ? 'UNIQUE ' : '';
-      statements.push(`CREATE ${unique}INDEX ${indexName} ON ${table} (${indexColumns.join(', ')})`);
+      statements.push(
+        `CREATE ${unique}INDEX ${indexName} ON ${table} (${indexColumns.join(', ')})`
+      );
     });
   }
   return statements;
@@ -123,10 +126,51 @@ export function additiveSchemaDdl(
         continue;
       }
       const column = quoteIdent(fieldColumnName(field.id));
+      const check = fieldCheckSql(field, column);
       statements.push(
-        `ALTER TABLE ${table} ADD COLUMN ${column} ${sqliteTypeForField(field)}`
+        `ALTER TABLE ${table} ADD COLUMN ${column} ${sqliteTypeForField(field)}${check ? ` CHECK (${check})` : ''}`
       );
     }
   }
   return statements;
+}
+
+function fieldCheckSql(
+  field: LightAppAdmittedCollection['fields'][number],
+  column: string
+): string | null {
+  if (field.type === 'bool') {
+    return `${column} IS NULL OR ${column} IN (0, 1)`;
+  }
+  if (field.type === 'number') {
+    const options = (field.options ?? {}) as { onlyInt?: boolean; min?: number; max?: number };
+    const parts = [
+      options.onlyInt === true
+        ? `typeof(${column}) = 'integer'`
+        : `typeof(${column}) IN ('integer', 'real')`,
+    ];
+    if (typeof options.min === 'number') {
+      parts.push(`${column} >= ${options.min}`);
+    }
+    if (typeof options.max === 'number') {
+      parts.push(`${column} <= ${options.max}`);
+    }
+    return `${column} IS NULL OR (${parts.join(' AND ')})`;
+  }
+  if (field.type === 'select') {
+    const values = ((field.options as { values?: string[] } | undefined)?.values ?? []).map(
+      (value) => `'${value.replaceAll("'", "''")}'`
+    );
+    if (values.length === 0) {
+      return null;
+    }
+    return `${column} IS NULL OR ${column} IN (${values.join(', ')})`;
+  }
+  if (field.type === 'text') {
+    const max = (field.options as { max?: number } | undefined)?.max;
+    if (typeof max === 'number') {
+      return `${column} IS NULL OR length(${column}) <= ${max}`;
+    }
+  }
+  return null;
 }

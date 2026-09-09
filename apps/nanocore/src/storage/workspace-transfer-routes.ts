@@ -35,11 +35,11 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
-import { parseJsoncObject } from '../config/jsonc.js';
 import {
   projectWorkspaceCatalogExport,
   writeImportedWorkspaceCatalog,
 } from '../catalog/catalog-portability.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
   parseWorkerContextPackageTrace,
@@ -49,6 +49,7 @@ import {
   importWorkspaceEvidenceBundles,
   listWorkspaceEvidenceBundles,
 } from '../evidence-bundles.js';
+import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -137,15 +138,14 @@ import {
 } from '../workspace/repository-store.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
+import { type CoreDb, openWorkspaceDbAtRoot, type WorkspaceDb } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
   assertExportableGenerativePresentations,
   importGenerativePresentations,
   importLightAppFamilies,
   listExportableLightAppFamilies,
 } from './generative-portability.js';
-import { openWorkspaceDbAtRoot } from './db.js';
-import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
   artifactReviews,
@@ -993,6 +993,7 @@ export function createVerifiedWorkspaceExport({
       workerContextDb.sqlite.close();
     }
   }
+  const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
   const exported = writeWorkspaceExportTree({
     exportRoot,
     exportId,
@@ -1015,7 +1016,7 @@ export function createVerifiedWorkspaceExport({
     portableFileState,
     ...(dataSourceCatalog ? { dataSourceCatalog } : {}),
     agentResourceCatalog: projectWorkspaceCatalogExport(dataRoot, workspaceId),
-    auditEvents: workspaceRowFamilies.auditEvents,
+    auditEvents: [...workspaceRowFamilies.auditEvents, ...lightApps.auditEvents],
     agentEnvironmentPackageSnapshots: workspaceRowFamilies.agentEnvironmentPackageSnapshots,
     capabilityCalls: workspaceRowFamilies.capabilityCalls,
     evidenceBundles: workspaceRowFamilies.evidenceBundles,
@@ -1064,7 +1065,6 @@ export function createVerifiedWorkspaceExport({
         }))
       : [],
     ...(() => {
-      const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
       const generativePresentations = workspaceRowFamilies.generativePresentations;
       assertExportableGenerativePresentations(store, workspaceId, generativePresentations);
       return {

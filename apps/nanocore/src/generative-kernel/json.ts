@@ -1,4 +1,4 @@
-import { parseTree, type Node } from 'jsonc-parser';
+import { type Node, parseTree } from 'jsonc-parser';
 
 import { KernelCommandError } from './errors.js';
 

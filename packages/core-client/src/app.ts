@@ -39,6 +39,12 @@ import {
   ConvertGoalSteeringToFollowUpResponseSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
+  type CreateLightAppRecordRequest,
+  CreateLightAppRecordRequestSchema,
+  type CreateLightAppRequest,
+  CreateLightAppRequestSchema,
+  type CreateLightAppResponse,
+  CreateLightAppResponseSchema,
   type CreateOpenKitAccessTokenRequest,
   CreateOpenKitAccessTokenRequestSchema,
   type CreateOpenKitAccessTokenResponse,
@@ -75,8 +81,18 @@ import {
   ExcludeThreadMaterialRequestSchema,
   type ExcludeThreadMaterialResponse,
   ExcludeThreadMaterialResponseSchema,
+  type GenerativePresentationDataModelResponse,
+  GenerativePresentationDataModelResponseSchema,
+  type GenerativePresentationResourceResponse,
+  GenerativePresentationResourceResponseSchema,
   type GetAgentEnvironmentPackageSnapshotResponse,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
+  type GetGenerativePresentationResponse,
+  GetGenerativePresentationResponseSchema,
+  type GetLightAppRecordResponse,
+  GetLightAppRecordResponseSchema,
+  type GetLightAppResponse,
+  GetLightAppResponseSchema,
   type GetThreadMaterialResponse,
   GetThreadMaterialResponseSchema,
   type GetWorkspaceApplyResultResponse,
@@ -95,50 +111,6 @@ import {
   IntroduceWorkspaceArtifactRequestSchema,
   type IntroduceWorkspaceArtifactResponse,
   IntroduceWorkspaceArtifactResponseSchema,
-  type CreateLightAppRequest,
-  CreateLightAppRequestSchema,
-  type CreateLightAppResponse,
-  CreateLightAppResponseSchema,
-  type GetLightAppResponse,
-  GetLightAppResponseSchema,
-  type ListLightAppsResponse,
-  ListLightAppsResponseSchema,
-  type UpdateLightAppSchemaRequest,
-  UpdateLightAppSchemaRequestSchema,
-  type UpdateLightAppSchemaResponse,
-  UpdateLightAppSchemaResponseSchema,
-  type RetireLightAppRequest,
-  RetireLightAppRequestSchema,
-  type RetireLightAppResponse,
-  RetireLightAppResponseSchema,
-  type ListLightAppRecordsResponse,
-  ListLightAppRecordsResponseSchema,
-  type GetLightAppRecordResponse,
-  GetLightAppRecordResponseSchema,
-  type CreateLightAppRecordRequest,
-  CreateLightAppRecordRequestSchema,
-  type UpdateLightAppRecordRequest,
-  UpdateLightAppRecordRequestSchema,
-  type UpdateLightAppRecordResponse,
-  UpdateLightAppRecordResponseSchema,
-  type LightAppBatchRequest,
-  LightAppBatchRequestSchema,
-  type LightAppBatchResponse,
-  LightAppBatchResponseSchema,
-  type PublishGenerativePresentationRequest,
-  PublishGenerativePresentationRequestSchema,
-  type PublishGenerativePresentationResponse,
-  PublishGenerativePresentationResponseSchema,
-  type GetGenerativePresentationResponse,
-  GetGenerativePresentationResponseSchema,
-  type GenerativePresentationResourceResponse,
-  GenerativePresentationResourceResponseSchema,
-  type RefreshGenerativePresentationRequest,
-  RefreshGenerativePresentationRequestSchema,
-  type SubmitGenerativePresentationActionRequest,
-  SubmitGenerativePresentationActionRequestSchema,
-  type GenerativePresentationDataModelResponse,
-  GenerativePresentationDataModelResponseSchema,
   type IssueNanoHostTransportTokenRequest,
   IssueNanoHostTransportTokenRequestSchema,
   type IssueNanoHostTransportTokenResponse,
@@ -169,6 +141,10 @@ import {
   KnowledgeRetrievalResponseSchema,
   type LeaveWorkspaceRequest,
   LeaveWorkspaceRequestSchema,
+  type LightAppBatchRequest,
+  LightAppBatchRequestSchema,
+  type LightAppBatchResponse,
+  LightAppBatchResponseSchema,
   type ListAgentEnvironmentPackageSnapshotsResponse,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
   type ListArtifactReviewsResponse,
@@ -189,6 +165,10 @@ import {
   ListKnowledgeObservationsResponseSchema,
   type ListKnowledgeSourcesResponse,
   ListKnowledgeSourcesResponseSchema,
+  type ListLightAppRecordsResponse,
+  ListLightAppRecordsResponseSchema,
+  type ListLightAppsResponse,
+  ListLightAppsResponseSchema,
   type ListMyAdminAccessTokensResponse,
   ListMyAdminAccessTokensResponseSchema,
   type ListNanoHostTransportTokensResponse,
@@ -251,6 +231,10 @@ import {
   PauseThreadGoalRequestSchema,
   type PauseThreadGoalResponse,
   PauseThreadGoalResponseSchema,
+  type PublishGenerativePresentationRequest,
+  PublishGenerativePresentationRequestSchema,
+  type PublishGenerativePresentationResponse,
+  PublishGenerativePresentationResponseSchema,
   type QuickChatRequest,
   QuickChatRequestSchema,
   type QuickChatResponse,
@@ -275,6 +259,8 @@ import {
   RecoverDeletedWorkspaceResponseSchema,
   type RecoverWorkspaceAccessRequest,
   RecoverWorkspaceAccessRequestSchema,
+  type RefreshGenerativePresentationRequest,
+  RefreshGenerativePresentationRequestSchema,
   type RegisterKnowledgeSourceRequest,
   RegisterKnowledgeSourceRequestSchema,
   type RegisterKnowledgeSourceResponse,
@@ -293,6 +279,10 @@ import {
   ResumeThreadGoalRequestSchema,
   type ResumeThreadGoalResponse,
   ResumeThreadGoalResponseSchema,
+  type RetireLightAppRequest,
+  RetireLightAppRequestSchema,
+  type RetireLightAppResponse,
+  RetireLightAppResponseSchema,
   type RetrieveKnowledgeRequest,
   RetrieveKnowledgeRequestSchema,
   type RetryInterruptedWorkerCheckpointRequest,
@@ -359,6 +349,8 @@ import {
   SubmitConversationRequestSchema,
   type SubmitConversationResponse,
   SubmitConversationResponseSchema,
+  type SubmitGenerativePresentationActionRequest,
+  SubmitGenerativePresentationActionRequestSchema,
   type SubmitGoalReviewDecisionRequest,
   SubmitGoalReviewDecisionRequestSchema,
   type SubmitGoalReviewDecisionResponse,
@@ -395,6 +387,14 @@ import {
   UnbindThreadMaterialResponseSchema,
   type UpdateAutomationRequest,
   UpdateAutomationRequestSchema,
+  type UpdateLightAppRecordRequest,
+  UpdateLightAppRecordRequestSchema,
+  type UpdateLightAppRecordResponse,
+  UpdateLightAppRecordResponseSchema,
+  type UpdateLightAppSchemaRequest,
+  UpdateLightAppSchemaRequestSchema,
+  type UpdateLightAppSchemaResponse,
+  UpdateLightAppSchemaResponseSchema,
   type VaultAdminBootstrapCodexAuthJsonRequest,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   type VaultAdminBootstrapCodexAuthJsonResponse,
@@ -682,20 +682,26 @@ export interface AppApiClient {
   /** Lists Light Apps. */
   listLightApps(workspaceId: string): Promise<ListLightAppsResponse>;
   /** Creates one Light App. */
-  createLightApp(workspaceId: string, input: CreateLightAppRequest): Promise<CreateLightAppResponse>;
+  createLightApp(
+    workspaceId: string,
+    input: CreateLightAppRequest,
+    requestId?: string
+  ): Promise<CreateLightAppResponse>;
   /** Reads one Light App. */
   getLightApp(workspaceId: string, appId: string): Promise<GetLightAppResponse>;
   /** Updates one Light App schema. */
   updateLightAppSchema(
     workspaceId: string,
     appId: string,
-    input: UpdateLightAppSchemaRequest
+    input: UpdateLightAppSchemaRequest,
+    requestId?: string
   ): Promise<UpdateLightAppSchemaResponse>;
   /** Retires one Light App. */
   retireLightApp(
     workspaceId: string,
     appId: string,
-    input: RetireLightAppRequest
+    input: RetireLightAppRequest,
+    requestId?: string
   ): Promise<RetireLightAppResponse>;
   /** Lists Light App records. */
   listLightAppRecords(
@@ -725,7 +731,8 @@ export interface AppApiClient {
     workspaceId: string,
     appId: string,
     collection: string,
-    input: CreateLightAppRecordRequest
+    input: CreateLightAppRecordRequest,
+    requestId?: string
   ): Promise<GetLightAppRecordResponse>;
   /** Updates one Light App record. */
   updateLightAppRecord(
@@ -733,18 +740,21 @@ export interface AppApiClient {
     appId: string,
     collection: string,
     recordId: string,
-    input: UpdateLightAppRecordRequest
+    input: UpdateLightAppRecordRequest,
+    requestId?: string
   ): Promise<UpdateLightAppRecordResponse>;
   /** Applies one atomic Light App record batch. */
   batchLightAppRecords(
     workspaceId: string,
     appId: string,
-    input: LightAppBatchRequest
+    input: LightAppBatchRequest,
+    requestId?: string
   ): Promise<LightAppBatchResponse>;
   /** Publishes one native Generative UI presentation. */
   publishGenerativePresentation(
     workspaceId: string,
-    input: PublishGenerativePresentationRequest
+    input: PublishGenerativePresentationRequest,
+    requestId?: string
   ): Promise<PublishGenerativePresentationResponse>;
   /** Reads one Generative UI presentation. */
   getGenerativePresentation(
@@ -766,7 +776,8 @@ export interface AppApiClient {
   submitGenerativePresentationAction(
     workspaceId: string,
     presentationId: string,
-    input: SubmitGenerativePresentationActionRequest
+    input: SubmitGenerativePresentationActionRequest,
+    requestId?: string
   ): Promise<GenerativePresentationDataModelResponse>;
   /** Lists version-keyed Reviews for one Artifact. */
   listArtifactReviews(
@@ -1386,32 +1397,35 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       );
     },
     listLightApps: (workspaceId) =>
-      transport.getJson(`/api/app/workspaces/${workspaceId}/light-apps`, ListLightAppsResponseSchema),
-    createLightApp: (workspaceId, input) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/light-apps`,
+        ListLightAppsResponseSchema
+      ),
+    createLightApp: (workspaceId, input, requestId) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/light-apps`,
         CreateLightAppRequestSchema.parse(input),
         CreateLightAppResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
     getLightApp: (workspaceId, appId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}`,
         GetLightAppResponseSchema
       ),
-    updateLightAppSchema: (workspaceId, appId, input) =>
+    updateLightAppSchema: (workspaceId, appId, input, requestId) =>
       transport.putJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}/schema`,
         UpdateLightAppSchemaRequestSchema.parse(input),
         UpdateLightAppSchemaResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
-    retireLightApp: (workspaceId, appId, input) =>
+    retireLightApp: (workspaceId, appId, input, requestId) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}/retire`,
         RetireLightAppRequestSchema.parse(input),
         RetireLightAppResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
     listLightAppRecords: (workspaceId, appId, collection, query) => {
       const params = new URLSearchParams({ schemaRevision: String(query.schemaRevision) });
@@ -1433,33 +1447,33 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         GetLightAppRecordResponseSchema
       );
     },
-    createLightAppRecord: (workspaceId, appId, collection, input) =>
+    createLightAppRecord: (workspaceId, appId, collection, input, requestId) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records`,
         CreateLightAppRecordRequestSchema.parse(input),
         GetLightAppRecordResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
-    updateLightAppRecord: (workspaceId, appId, collection, recordId, input) =>
+    updateLightAppRecord: (workspaceId, appId, collection, recordId, input, requestId) =>
       transport.patchJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records/${recordId}`,
         UpdateLightAppRecordRequestSchema.parse(input),
         UpdateLightAppRecordResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
-    batchLightAppRecords: (workspaceId, appId, input) =>
+    batchLightAppRecords: (workspaceId, appId, input, requestId) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/light-apps/${appId}/batch`,
         LightAppBatchRequestSchema.parse(input),
         LightAppBatchResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
-    publishGenerativePresentation: (workspaceId, input) =>
+    publishGenerativePresentation: (workspaceId, input, requestId) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/generative-presentations`,
         PublishGenerativePresentationRequestSchema.parse(input),
         PublishGenerativePresentationResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
     getGenerativePresentation: (workspaceId, presentationId) =>
       transport.getJson(
@@ -1477,12 +1491,12 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         RefreshGenerativePresentationRequestSchema.parse(input),
         GenerativePresentationDataModelResponseSchema
       ),
-    submitGenerativePresentationAction: (workspaceId, presentationId, input) =>
+    submitGenerativePresentationAction: (workspaceId, presentationId, input, requestId) =>
       transport.postJson(
         `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}/actions`,
         SubmitGenerativePresentationActionRequestSchema.parse(input),
         GenerativePresentationDataModelResponseSchema,
-        { 'x-openkit-request-id': createRequestId() }
+        { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
     listArtifactReviews: (workspaceId, artifactId) =>
       transport.getJson(

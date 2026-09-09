@@ -208,6 +208,47 @@ export function listWorkspaceAuditEvents(
 }
 
 /**
+ * Lists every audit event stored in one SQLite handle.
+ *
+ * @param sqlite Core, Workspace, or app database handle.
+ * @returns Protocol audit events in stable storage order.
+ */
+export function listSqliteAuditEvents(sqlite: CoreDb['sqlite']): AuditEvent[] {
+  return sqlite
+    .prepare(
+      `SELECT
+        audit_event_id,
+        workspace_id,
+        protocol_version,
+        thread_id,
+        turn_id,
+        item_id,
+        capability_call_id,
+        permission_decision_id,
+        vault_grant_id,
+        request_id,
+        actor_json,
+        subject_json,
+        agent_id,
+        agent_session_id,
+        category,
+        action,
+        resource,
+        resource_revision,
+        outcome,
+        severity,
+        summary,
+        error_code,
+        created_at,
+        occurred_at
+      FROM audit_events
+      ORDER BY created_at, audit_event_id`
+    )
+    .all()
+    .map(auditEventFromRow);
+}
+
+/**
  * Lists server audit events as protocol records.
  *
  * @param coreDb Server database that owns the events.

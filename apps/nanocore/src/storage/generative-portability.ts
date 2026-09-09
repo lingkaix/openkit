@@ -1,21 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
 import type { LightAppAdmittedSchema } from '@openkit/app-api-schemas';
 import { LightAppAdmittedSchemaSchema } from '@openkit/app-api-schemas';
+import Database from 'better-sqlite3';
 
-import type { FsStore } from '../lib/store.js';
-import { collectionTableName, createSchemaDdl, fieldColumnName, quoteIdent } from '../generative-kernel/native.js';
-import type { WorkspaceDb } from './db.js';
+import { listSqliteAuditEvents } from '../audit-events.js';
 import {
-  lightAppRoot,
-  lightAppsRoot,
-  openExistingAppDb,
-  writeDurableFile,
-} from './app-db.js';
+  collectionTableName,
+  createSchemaDdl,
+  fieldColumnName,
+  quoteIdent,
+} from '../generative-kernel/native.js';
+import type { FsStore } from '../lib/store.js';
+import type { AppDb } from './app-db.js';
+import { lightAppRoot, lightAppsRoot, openExistingAppDb, writeDurableFile } from './app-db.js';
+import type { WorkspaceDb } from './db.js';
 import { applyAppMigrations } from './migrate.js';
-import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
 
 /** Portable Light App identity row. */
 export interface ExportedLightApp {
@@ -88,6 +89,7 @@ export interface LightAppExportFamilies {
   apps: ExportedLightApp[];
   definitions: ExportedLightAppDefinition[];
   records: ExportedLightAppRecord[];
+  auditEvents: ReturnType<typeof listSqliteAuditEvents>;
 }
 
 /**
@@ -103,17 +105,18 @@ export function listExportableLightAppFamilies(
 ): LightAppExportFamilies {
   const root = lightAppsRoot(dataRoot, workspaceId);
   if (!existsSync(root)) {
-    return { apps: [], definitions: [], records: [] };
+    return { apps: [], definitions: [], records: [], auditEvents: [] };
   }
   const apps: ExportedLightApp[] = [];
   const definitions: ExportedLightAppDefinition[] = [];
   const records: ExportedLightAppRecord[] = [];
+  const auditEvents: ReturnType<typeof listSqliteAuditEvents> = [];
   const appIds = readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
   for (const appId of appIds) {
-    let appDb;
+    let appDb: AppDb;
     try {
       appDb = openExistingAppDb(dataRoot, workspaceId, appId);
     } catch {
@@ -181,7 +184,9 @@ export function listExportableLightAppFamilies(
       if (!existsSync(definitionRoot)) {
         throw new Error(`Missing Light App definition directory: ${appId}`);
       }
-      const definitionFiles = readdirSync(definitionRoot).filter((name) => name.endsWith('.json')).sort();
+      const definitionFiles = readdirSync(definitionRoot)
+        .filter((name) => name.endsWith('.json'))
+        .sort();
       if (definitionFiles.length === 0) {
         throw new Error(`Missing Light App definition bytes: ${appId}`);
       }
@@ -252,11 +257,12 @@ export function listExportableLightAppFamilies(
           });
         }
       }
+      auditEvents.push(...listSqliteAuditEvents(appDb.sqlite));
     } finally {
       appDb.sqlite.close();
     }
   }
-  return { apps, definitions, records };
+  return { apps, definitions, records, auditEvents };
 }
 
 /**
@@ -364,6 +370,8 @@ export function importLightAppFamilies(input: {
       for (const statement of createSchemaDdl(rewrittenSchema)) {
         sqlite.exec(statement);
       }
+      sqlite.exec('BEGIN');
+      sqlite.pragma('defer_foreign_keys = ON');
       sqlite
         .prepare(
           `INSERT INTO app_metadata (
@@ -390,6 +398,9 @@ export function importLightAppFamilies(input: {
           app.app.lastRequestId
         );
       for (const exported of input.records.filter((record) => record.record.appId === app.id)) {
+        if (exported.contentDigest !== digestJson(exported.record.values)) {
+          throw new Error(`Imported Light App record digest mismatch: ${exported.id}`);
+        }
         const collection = rewrittenSchema.collections.find(
           (candidate) => candidate.id === exported.record.collectionId
         );
@@ -430,6 +441,19 @@ export function importLightAppFamilies(input: {
           )
           .run(...values);
       }
+      const foreignKeyFailures = sqlite.pragma('foreign_key_check') as unknown[];
+      if (foreignKeyFailures.length > 0) {
+        sqlite.exec('ROLLBACK');
+        throw new Error(`Imported Light App relations failed integrity: ${app.id}`);
+      }
+      sqlite.exec('COMMIT');
+    } catch (error) {
+      try {
+        sqlite.exec('ROLLBACK');
+      } catch {
+        // The connection may already be rolled back.
+      }
+      throw error;
     } finally {
       sqlite.close();
     }
@@ -462,7 +486,7 @@ export function importGenerativePresentations(input: {
     const itemId = requiredMapValue(input.itemIds, String(lineage.itemId), 'item');
     const source = rewritePresentationSource(presentation.source, input.appIds, input.itemIds);
     const actions = presentation.actions;
-    const messages = rewritePresentationMessages(presentation.messages, input.appIds);
+    const messages = rewritePresentationMessages(presentation.messages);
     const originRequestId =
       (typeof presentation.originRequestId === 'string' && presentation.originRequestId) ||
       (typeof presentation.requestId === 'string' ? presentation.requestId : null);
@@ -498,21 +522,13 @@ export function importGenerativePresentations(input: {
   }
 }
 
-/**
- * Lists retained presentations for Workspace export.
- *
- * @param workspaceDb Workspace database.
- * @returns Portable presentation records.
- */
-export function listGenerativePresentationsForExport(workspaceDb: WorkspaceDb): unknown[] {
-  return listExportableGenerativePresentations(workspaceDb);
-}
-
 function assertNativeInventory(sqlite: Database.Database, schema: LightAppAdmittedSchema): void {
-  const expected = new Set(schema.collections.map((collection) => collectionTableName(collection.id)));
+  const expected = new Set(
+    schema.collections.map((collection) => collectionTableName(collection.id))
+  );
   const tables = sqlite
     .prepare(
-      `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'c_%' ORDER BY name`
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'c_*' ORDER BY name`
     )
     .all() as Array<{ name: string }>;
   for (const table of tables) {
@@ -523,6 +539,40 @@ function assertNativeInventory(sqlite: Database.Database, schema: LightAppAdmitt
   for (const name of expected) {
     if (!tables.some((table) => table.name === name)) {
       throw new Error(`Missing native Light App table cannot be exported: ${name}`);
+    }
+  }
+  const reserved = new Set([
+    'id',
+    'revision',
+    'created',
+    'updated',
+    'creator_json',
+    'last_mutator_json',
+    'create_request_id',
+    'last_request_id',
+    'write_schema_revision',
+  ]);
+  for (const collection of schema.collections) {
+    const expectedColumns = new Set([
+      ...reserved,
+      ...collection.fields.map((field) => fieldColumnName(field.id)),
+    ]);
+    const columns = sqlite
+      .prepare(`PRAGMA table_info(${quoteIdent(collectionTableName(collection.id))})`)
+      .all() as Array<{ name: string }>;
+    for (const column of columns) {
+      if (!expectedColumns.has(column.name)) {
+        throw new Error(
+          `Unknown native Light App column cannot be exported: ${collection.id}.${column.name}`
+        );
+      }
+    }
+    for (const name of expectedColumns) {
+      if (!columns.some((column) => column.name === name)) {
+        throw new Error(
+          `Missing native Light App column cannot be exported: ${collection.id}.${name}`
+        );
+      }
     }
   }
 }
@@ -553,18 +603,8 @@ function rewritePresentationSource(
   return record;
 }
 
-function rewritePresentationMessages(messages: unknown, appIds: ReadonlyMap<string, string>): unknown {
-  return JSON.parse(
-    JSON.stringify(messages, (_key, value) => {
-      if (value && typeof value === 'object' && !Array.isArray(value) && 'appId' in value) {
-        const appId = (value as { appId?: unknown }).appId;
-        if (typeof appId === 'string' && appIds.has(appId)) {
-          return { ...value, appId: appIds.get(appId) };
-        }
-      }
-      return value;
-    })
-  );
+function rewritePresentationMessages(messages: unknown): unknown {
+  return messages;
 }
 
 function encodeSqlValue(type: string, value: unknown): unknown {

@@ -20,19 +20,15 @@ import type { ActorRef, Item } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
   getLightApp,
+  type KernelCommandContext,
   listRecords,
   updateRecord,
-  type KernelCommandContext,
 } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type { FsStore } from '../lib/store.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import {
-  admitProducerMessages,
-  bindingPath,
-  type AdmittedDeclaration,
-} from './admit.js';
+import { type AdmittedDeclaration, admitProducerMessages, bindingPath } from './admit.js';
 
 const ACCEPTED_MESSAGE_BYTE_LIMIT = 2 * 1024 * 1024;
 const ACTION_MESSAGE_BYTE_LIMIT = 64 * 1024;
@@ -78,53 +74,54 @@ export async function publishGenerativePresentation(
   context: GenerativeUiCommandContext,
   input: PublishGenerativePresentationRequest
 ): Promise<GenerativePresentation> {
-  const admitted = admitProducerMessages(input);
-  const sourceData = readAuthorizedSource(context, input.source, admitted, input.actions);
-  const dataModel = buildSourceDataModel(input.source, sourceData);
-  const acceptedMessages = [
-    input.messages[0],
-    input.messages[1],
-    {
-      version: GENERATIVE_UI_PROTOCOL_VERSION,
-      updateDataModel: {
-        surfaceId: admitted.surfaceId,
-        path: '/',
-        value: dataModel,
-      },
-    },
-  ];
-  const acceptedBytes = Buffer.byteLength(JSON.stringify(acceptedMessages), 'utf8');
-  if (acceptedBytes > ACCEPTED_MESSAGE_BYTE_LIMIT) {
-    throw new KernelCommandError('limit_exceeded', 'Accepted A2UI messages exceed 2 MiB.', {
-      limit: 'acceptedMessages',
-      maximum: ACCEPTED_MESSAGE_BYTE_LIMIT,
-    });
-  }
-  assertWritableTurn(context.store, context.workspaceId, input.threadId, input.turnId);
-  const semanticInputHash = digestJson({
-    threadId: input.threadId,
-    turnId: input.turnId,
-    title: input.title,
-    fallbackText: input.fallbackText,
-    messages: input.messages,
-    source: input.source,
-    actions: input.actions,
-  });
-  const presentationId = randomUUID();
-  const itemId = `it_${randomUUID()}`;
-  const createdAt = new Date().toISOString();
   const retained = await runIdempotentCommand({
     store: context.store,
     inflightCommands: context.inflightCommands,
     command: 'generative-ui.publish',
     requestId: context.requestId,
-    scope: { workspaceId: context.workspaceId, actorId: actorScopeId(context.actor) },
+    scope: { workspaceId: context.workspaceId, actorId: context.actor.id },
     input: { actor: context.actor, ...input },
     responseKind: 'generative_presentation',
     workspaceDb: context.workspaceDb,
-    workspaceTransaction: true,
     execute: () => {
-      insertPresentation(context.workspaceDb, {
+      const interrupted = findPresentationByRequest(
+        context.workspaceDb,
+        context.workspaceId,
+        context.requestId
+      );
+      if (interrupted) {
+        throw new KernelCommandError(
+          'recovery_required',
+          'Interrupted presentation publication requires recovery.'
+        );
+      }
+      const admitted = admitProducerMessages(input);
+      const sourceData = readAuthorizedSource(context, input.source, admitted, input.actions);
+      const dataModel = buildSourceDataModel(input.source, sourceData);
+      const acceptedMessages = [
+        input.messages[0],
+        input.messages[1],
+        {
+          version: GENERATIVE_UI_PROTOCOL_VERSION,
+          updateDataModel: {
+            surfaceId: admitted.surfaceId,
+            path: '/',
+            value: dataModel,
+          },
+        },
+      ];
+      const acceptedBytes = Buffer.byteLength(JSON.stringify(acceptedMessages), 'utf8');
+      if (acceptedBytes > ACCEPTED_MESSAGE_BYTE_LIMIT) {
+        throw new KernelCommandError('limit_exceeded', 'Accepted A2UI messages exceed 2 MiB.', {
+          limit: 'acceptedMessages',
+          maximum: ACCEPTED_MESSAGE_BYTE_LIMIT,
+        });
+      }
+      assertWritableTurn(context.store, context.workspaceId, input.threadId, input.turnId);
+      const presentationId = randomUUID();
+      const itemId = `it_${randomUUID()}`;
+      const createdAt = new Date().toISOString();
+      const row: PresentationRow = {
         presentation_id: presentationId,
         workspace_id: context.workspaceId,
         thread_id: input.threadId,
@@ -134,7 +131,15 @@ export async function publishGenerativePresentation(
         actor_json: JSON.stringify(context.actor),
         request_id: context.requestId,
         origin_request_id: null,
-        semantic_input_hash: semanticInputHash,
+        semantic_input_hash: digestJson({
+          threadId: input.threadId,
+          turnId: input.turnId,
+          title: input.title,
+          fallbackText: input.fallbackText,
+          messages: input.messages,
+          source: input.source,
+          actions: input.actions,
+        }),
         title: input.title,
         fallback_text: input.fallbackText,
         protocol_version: GENERATIVE_UI_PROTOCOL_VERSION,
@@ -144,7 +149,8 @@ export async function publishGenerativePresentation(
         source_json: JSON.stringify(input.source),
         actions_json: JSON.stringify(input.actions),
         observed_at: createdAt,
-      });
+      };
+      insertPresentation(context.workspaceDb, row);
       recordWorkspaceAuditEvent({
         workspaceDb: context.workspaceDb,
         workspaceId: context.workspaceId,
@@ -159,14 +165,29 @@ export async function publishGenerativePresentation(
         outcome: 'succeeded',
         summary: 'generative-ui.publish',
       });
+      appendPresentationItem(context.store, row);
       return presentationId;
     },
-    replay: (record) => record.response.id,
+    replay: (record) => {
+      const row = requirePresentationRow(
+        context.workspaceDb,
+        context.workspaceId,
+        record.response.id
+      );
+      if (derivePublication(context.store, row) !== 'published') {
+        throw new KernelCommandError(
+          'recovery_required',
+          'Interrupted presentation publication requires recovery.'
+        );
+      }
+      return row.presentation_id;
+    },
     responseId: (id) => id,
   });
-  const row = requirePresentationRow(context.workspaceDb, context.workspaceId, retained);
-  appendPresentationItem(context.store, row);
-  return projectPresentation(context.store, row);
+  return projectPresentation(
+    context.store,
+    requirePresentationRow(context.workspaceDb, context.workspaceId, retained)
+  );
 }
 
 /**
@@ -182,7 +203,9 @@ export function getGenerativePresentation(
 ): GenerativePresentation {
   const row = requirePresentationRow(context.workspaceDb, context.workspaceId, presentationId);
   assertThreadReadable(context.store, context.workspaceId, row.thread_id);
-  return projectPresentation(context.store, row);
+  const presentation = projectPresentation(context.store, row);
+  assertSourceReadable(context, presentation.source);
+  return presentation;
 }
 
 /**
@@ -284,6 +307,11 @@ export async function submitGenerativePresentationAction(
       schemaRevision: presentation.source.schemaRevision,
       expectedRecordRevision: values.expectedRecordRevision,
       data: values.values,
+    },
+    {
+      presentationId: presentation.id,
+      actionName: action.name,
+      itemId: presentation.itemId,
     }
   );
   let refreshUnavailable = false;
@@ -378,9 +406,14 @@ function readAuthorizedSource(
     throw new KernelCommandError('unavailable', 'Light App source is unavailable.');
   }
   if (app.schema.schemaRevision !== source.schemaRevision) {
-    throw new KernelCommandError('schema_stale', 'Kernel schema revision does not match the source.');
+    throw new KernelCommandError(
+      'schema_stale',
+      'Kernel schema revision does not match the source.'
+    );
   }
-  const collection = app.schema.collections.find((candidate) => candidate.id === source.collectionId);
+  const collection = app.schema.collections.find(
+    (candidate) => candidate.id === source.collectionId
+  );
   if (!collection) {
     throw new KernelCommandError('not_found', 'Source collection was not found.');
   }
@@ -443,7 +476,7 @@ function assertWriteForm(
     const expectedType = field.type === 'text' ? 'TextField' : 'CheckBox';
     const expectedPath = `/records/0/data/${field.name}`;
     const controls = [...admitted.components.values()].filter((component) => {
-      const value = field.type === 'text' ? component.props.text : component.props.value;
+      const value = component.props.value;
       return component.type === expectedType && bindingPath(value) === expectedPath;
     });
     if (controls.length !== 1) {
@@ -461,8 +494,8 @@ function readItemSource(
   source: GenerativeUiItemSource
 ): string {
   const item = store
-    .listWorkspaceItemRevisions(workspaceId)
-    .find((candidate) => candidate.id === source.itemId);
+    .listAllItems()
+    .find((candidate) => candidate.id === source.itemId && candidate.workspaceId === workspaceId);
   if (!item || item.workspaceId !== workspaceId) {
     throw new KernelCommandError('not_found', 'Source item was not found.');
   }
@@ -523,10 +556,23 @@ function insertPresentation(workspaceDb: WorkspaceDb, row: PresentationRow): voi
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes('UNIQUE constraint failed')) {
-      throw new KernelCommandError('conflict', 'Presentation request identity already exists.');
+      throw new KernelCommandError(
+        'recovery_required',
+        'Interrupted presentation publication requires recovery.'
+      );
     }
     throw error;
   }
+}
+
+function findPresentationByRequest(
+  workspaceDb: WorkspaceDb,
+  workspaceId: string,
+  requestId: string
+): PresentationRow | undefined {
+  return workspaceDb.sqlite
+    .prepare(`SELECT * FROM generative_presentations WHERE workspace_id = ? AND request_id = ?`)
+    .get(workspaceId, requestId) as PresentationRow | undefined;
 }
 
 function requirePresentationRow(
@@ -667,12 +713,17 @@ function parseUpdateValues(
     throw new KernelCommandError('validation_failed', 'values must be an object.');
   }
   const app = getLightApp(commandContext.dataRoot, commandContext.workspaceId, source.appId);
-  const collection = app.schema?.collections.find((candidate) => candidate.id === source.collectionId);
+  const collection = app.schema?.collections.find(
+    (candidate) => candidate.id === source.collectionId
+  );
   const allowed = new Set(
     action.writableFieldIds.map((fieldId) => {
       const field = collection?.fields.find((candidate) => candidate.id === fieldId);
       if (!field) {
-        throw new KernelCommandError('validation_failed', 'Writable field is not in the admitted schema.');
+        throw new KernelCommandError(
+          'validation_failed',
+          'Writable field is not in the admitted schema.'
+        );
       }
       return field.name;
     })
@@ -714,6 +765,27 @@ function assertWritableTurn(
 
 function assertThreadReadable(store: FsStore, workspaceId: string, threadId: string): void {
   store.getThread(workspaceId, threadId);
+}
+
+function assertSourceReadable(
+  context: GenerativeUiCommandContext,
+  source: GenerativePresentation['source']
+): void {
+  if (source.kind === 'kernel-records') {
+    const app = getLightApp(context.dataRoot, context.workspaceId, source.appId);
+    if (app.lifecycle === 'unavailable') {
+      throw new KernelCommandError('unavailable', 'Presentation source is unavailable.');
+    }
+    return;
+  }
+  const item = context.store
+    .listAllItems()
+    .find(
+      (candidate) => candidate.id === source.itemId && candidate.workspaceId === context.workspaceId
+    );
+  if (!item) {
+    throw new KernelCommandError('unavailable', 'Presentation source is unavailable.');
+  }
 }
 
 function assertActionMessageSize(event: GenerativeUiA2uiAction): void {
@@ -764,8 +836,4 @@ function digestJson(value: unknown): string {
 
 function digestText(value: string): string {
   return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
-}
-
-function actorScopeId(actor: ActorRef): string {
-  return actor.kind === 'user' ? actor.id : `${actor.kind}:${actor.id}`;
 }

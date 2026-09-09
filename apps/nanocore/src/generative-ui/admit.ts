@@ -20,7 +20,19 @@ const NATIVE_COMPONENTS = new Set([
 ]);
 const MAX_COMPONENTS = 200;
 const MAX_DEPTH = 20;
+const MAX_EXPANDED_INSTANCES = 500;
 const MAX_DECLARATION_BYTES = 256 * 1024;
+const FORBIDDEN_KEYS = new Set(['style', 'theme', 'validationRegex', 'functionCall']);
+const ALLOWED_PROPS: Record<string, ReadonlySet<string>> = {
+  Text: new Set(['text', 'variant', 'usageHint']),
+  Row: new Set(['children', 'justify', 'align', 'weight']),
+  Column: new Set(['children', 'justify', 'align', 'weight']),
+  List: new Set(['children', 'direction', 'alignment', 'weight']),
+  Card: new Set(['child', 'children', 'weight']),
+  Button: new Set(['child', 'text', 'action', 'variant', 'weight']),
+  TextField: new Set(['value', 'label', 'variant', 'usageHint']),
+  CheckBox: new Set(['value', 'label', 'weight']),
+};
 
 /** One admitted A2UI component. */
 export interface AdmittedComponent {
@@ -66,7 +78,10 @@ export function admitProducerMessages(
   const updateComponents = asRecord(input.messages[1], 'messages[1]');
   assertMessageVersion(createSurface, 'messages[0]');
   assertMessageVersion(updateComponents, 'messages[1]');
-  if (createSurface.updateDataModel !== undefined || updateComponents.updateDataModel !== undefined) {
+  if (
+    createSurface.updateDataModel !== undefined ||
+    updateComponents.updateDataModel !== undefined
+  ) {
     throw new KernelCommandError(
       'validation_failed',
       'Producer messages must not include updateDataModel.'
@@ -86,7 +101,10 @@ export function admitProducerMessages(
   }
   const componentRows = update.components;
   if (!Array.isArray(componentRows) || componentRows.length === 0) {
-    throw new KernelCommandError('validation_failed', 'updateComponents requires a complete component set.');
+    throw new KernelCommandError(
+      'validation_failed',
+      'updateComponents requires a complete component set.'
+    );
   }
   if (componentRows.length > MAX_COMPONENTS) {
     throw new KernelCommandError('limit_exceeded', 'A2UI component count exceeds 200.', {
@@ -103,9 +121,13 @@ export function admitProducerMessages(
     components.set(component.id, component);
   }
   if (!components.has('root')) {
-    throw new KernelCommandError('validation_failed', 'A static reachable root component is required.');
+    throw new KernelCommandError(
+      'validation_failed',
+      'A static reachable root component is required.'
+    );
   }
   assertReachableGraph(components);
+  assertExpandedInstanceBound(components);
   assertActions(input.actions, components, input.source);
   return { surfaceId, components };
 }
@@ -118,6 +140,12 @@ export function admitProducerMessages(
  */
 export function buttonEventName(component: AdmittedComponent): string {
   const action = asRecord(component.props.action, `${component.id}.action`);
+  if (action.functionCall !== undefined) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Local functionCall actions are unavailable.'
+    );
+  }
   const event = asRecord(action.event, `${component.id}.action.event`);
   return requiredString(event.name, `${component.id}.action.event.name`);
 }
@@ -133,25 +161,64 @@ export function bindingPath(value: unknown): string | null {
     return null;
   }
   const record = value as Record<string, unknown>;
+  if (record.call !== undefined || record.functionCall !== undefined) {
+    throw new KernelCommandError('validation_failed', 'Function-call bindings are unavailable.');
+  }
   return typeof record.path === 'string' ? record.path : null;
 }
 
 function admitComponent(row: unknown, index: number): AdmittedComponent {
   const record = asRecord(row, `components[${index}]`);
   const id = requiredString(record.id, `components[${index}].id`);
-  const component = asRecord(record.component, `components[${index}].component`);
-  const types = Object.keys(component);
-  if (types.length !== 1) {
-    throw new KernelCommandError(
-      'validation_failed',
-      `Component ${id} must declare exactly one type.`
-    );
-  }
-  const type = types[0]!;
+  const type = requiredString(record.component, `components[${index}].component`);
   if (!NATIVE_COMPONENTS.has(type)) {
     throw new KernelCommandError('validation_failed', `Unsupported component type: ${type}.`);
   }
-  return { id, type, props: asRecord(component[type], `components[${index}].${type}`) };
+  const props: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (key === 'id' || key === 'component') {
+      continue;
+    }
+    if (FORBIDDEN_KEYS.has(key) || !ALLOWED_PROPS[type]?.has(key)) {
+      throw new KernelCommandError('validation_failed', `Unsupported ${type} property: ${key}.`);
+    }
+    props[key] = value;
+  }
+  if (type === 'Text' && props.text === undefined) {
+    throw new KernelCommandError('validation_failed', `Component ${id} Text requires text.`);
+  }
+  if (type === 'TextField' && props.value === undefined) {
+    throw new KernelCommandError('validation_failed', `Component ${id} TextField requires value.`);
+  }
+  if (type === 'CheckBox' && props.value === undefined) {
+    throw new KernelCommandError('validation_failed', `Component ${id} CheckBox requires value.`);
+  }
+  if (type === 'Button' && props.action === undefined) {
+    throw new KernelCommandError('validation_failed', `Component ${id} Button requires action.`);
+  }
+  assertBindingValue(props.text, `${id}.text`);
+  assertBindingValue(props.value, `${id}.value`);
+  return { id, type, props };
+}
+
+function assertBindingValue(value: unknown, path: string): void {
+  if (value === undefined || typeof value === 'string' || typeof value === 'boolean') {
+    return;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new KernelCommandError('validation_failed', `${path} must be a literal or path binding.`);
+  }
+  const record = value as Record<string, unknown>;
+  if (record.call !== undefined || record.functionCall !== undefined) {
+    throw new KernelCommandError('validation_failed', 'Function-call bindings are unavailable.');
+  }
+  if (
+    typeof record.path !== 'string' &&
+    record.literalString === undefined &&
+    record.literalBoolean === undefined
+  ) {
+    throw new KernelCommandError('validation_failed', `${path} must be a literal or path binding.`);
+  }
 }
 
 function assertReachableGraph(components: Map<string, AdmittedComponent>): void {
@@ -165,7 +232,10 @@ function assertReachableGraph(components: Map<string, AdmittedComponent>): void 
       });
     }
     if (visiting.has(id)) {
-      throw new KernelCommandError('validation_failed', `A2UI component graph contains a cycle at ${id}.`);
+      throw new KernelCommandError(
+        'validation_failed',
+        `A2UI component graph contains a cycle at ${id}.`
+      );
     }
     const component = components.get(id);
     if (!component) {
@@ -183,32 +253,81 @@ function assertReachableGraph(components: Map<string, AdmittedComponent>): void 
   };
   walk('root', 0);
   if (visited.size !== components.size) {
-    throw new KernelCommandError('validation_failed', 'A2UI component graph contains unreachable nodes.');
+    throw new KernelCommandError(
+      'validation_failed',
+      'A2UI component graph contains unreachable nodes.'
+    );
   }
+}
+
+function assertExpandedInstanceBound(components: Map<string, AdmittedComponent>): void {
+  const visiting = new Set<string>();
+  const walk = (id: string, depth: number, count: number): number => {
+    if (count + 1 > MAX_EXPANDED_INSTANCES) {
+      throw new KernelCommandError('limit_exceeded', 'A2UI expanded instances exceed 500.', {
+        limit: 'expandedInstances',
+        maximum: MAX_EXPANDED_INSTANCES,
+      });
+    }
+    if (depth > MAX_DEPTH) {
+      throw new KernelCommandError('limit_exceeded', 'A2UI graph depth exceeds 20.', {
+        limit: 'graphDepth',
+        maximum: MAX_DEPTH,
+      });
+    }
+    if (visiting.has(id)) {
+      throw new KernelCommandError(
+        'validation_failed',
+        `A2UI component graph contains a cycle at ${id}.`
+      );
+    }
+    const component = components.get(id);
+    if (!component) {
+      throw new KernelCommandError('validation_failed', `Dangling component reference: ${id}.`);
+    }
+    visiting.add(id);
+    let next = count + 1;
+    for (const child of childIds(component)) {
+      next = walk(child, depth + 1, next);
+    }
+    visiting.delete(id);
+    return next;
+  };
+  walk('root', 0, 0);
 }
 
 function childIds(component: AdmittedComponent): string[] {
   const ids: string[] = [];
-  const child = component.props.child;
-  if (typeof child === 'string') {
-    ids.push(child);
+  if (typeof component.props.child === 'string') {
+    ids.push(component.props.child);
   }
   const children = component.props.children;
-  if (children && typeof children === 'object' && !Array.isArray(children)) {
-    const record = children as Record<string, unknown>;
-    if (Array.isArray(record.explicitList)) {
-      for (const entry of record.explicitList) {
-        if (typeof entry !== 'string') {
-          throw new KernelCommandError('validation_failed', `Invalid child id on ${component.id}.`);
-        }
-        ids.push(entry);
+  if (Array.isArray(children)) {
+    for (const entry of children) {
+      if (typeof entry !== 'string') {
+        throw new KernelCommandError('validation_failed', `Invalid child id on ${component.id}.`);
       }
+      ids.push(entry);
+    }
+    return ids;
+  }
+  if (children && typeof children === 'object') {
+    const record = children as Record<string, unknown>;
+    if (typeof record.componentId === 'string') {
+      ids.push(record.componentId);
+      return ids;
+    }
+    if (Array.isArray(record.explicitList)) {
+      throw new KernelCommandError(
+        'validation_failed',
+        'A2UI v0.9 children must be an array or a template object.'
+      );
     }
     if (record.template && typeof record.template === 'object') {
-      const template = record.template as Record<string, unknown>;
-      if (typeof template.componentId === 'string') {
-        ids.push(template.componentId);
-      }
+      throw new KernelCommandError(
+        'validation_failed',
+        'A2UI v0.9 list templates use children.componentId and children.path.'
+      );
     }
   }
   return ids;
@@ -251,7 +370,10 @@ function assertActions(
         `${component.id}.action.event`
       );
       if (event.context !== undefined && JSON.stringify(event.context) !== '{}') {
-        throw new KernelCommandError('validation_failed', 'Refresh actions expect empty event context.');
+        throw new KernelCommandError(
+          'validation_failed',
+          'Refresh actions expect empty event context.'
+        );
       }
       continue;
     }
@@ -279,8 +401,7 @@ function assertRecordUpdateWiring(
       'Record-update sources must use page 1 and perPage 1.'
     );
   }
-  const expectedFilter = `id = "${action.recordId}"`;
-  if ((source.query.filter ?? '').trim() !== expectedFilter) {
+  if (!filterConstrainsRecordId(source.query.filter ?? '', action.recordId)) {
     throw new KernelCommandError(
       'validation_failed',
       'Record-update sources must constrain id to the bound record.'
@@ -305,16 +426,53 @@ function assertRecordUpdateWiring(
       'Record-update Button context must bind expectedRecordRevision and values paths.'
     );
   }
+  const templateIds = templateComponentIds(components);
+  const editable = [...components.values()].filter(
+    (component) =>
+      (component.type === 'TextField' || component.type === 'CheckBox') &&
+      !templateIds.has(component.id)
+  );
+  if (editable.length !== action.writableFieldIds.length) {
+    throw new KernelCommandError(
+      'validation_failed',
+      'Writable forms cannot include extra editable controls.'
+    );
+  }
+}
+
+function filterConstrainsRecordId(filter: string, recordId: string): boolean {
+  const expected = `id = "${recordId}"`;
+  const trimmed = filter.trim();
+  if (trimmed === expected) {
+    return true;
+  }
+  return trimmed
+    .split('&&')
+    .map((part) => part.trim())
+    .includes(expected);
 }
 
 function templateComponentIds(components: Map<string, AdmittedComponent>): Set<string> {
   const ids = new Set<string>();
+  const mark = (id: string): void => {
+    if (ids.has(id)) {
+      return;
+    }
+    const component = components.get(id);
+    if (!component) {
+      return;
+    }
+    ids.add(id);
+    for (const child of childIds(component)) {
+      mark(child);
+    }
+  };
   for (const component of components.values()) {
     const children = component.props.children;
     if (children && typeof children === 'object' && !Array.isArray(children)) {
-      const template = (children as Record<string, unknown>).template;
-      if (template && typeof template === 'object' && typeof (template as { componentId?: unknown }).componentId === 'string') {
-        ids.add((template as { componentId: string }).componentId);
+      const templateId = (children as { componentId?: unknown }).componentId;
+      if (typeof templateId === 'string') {
+        mark(templateId);
       }
     }
   }
