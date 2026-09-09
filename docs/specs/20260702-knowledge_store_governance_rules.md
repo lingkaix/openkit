@@ -4,7 +4,7 @@ implementation: Partial
 ---
 # Knowledge Store Governance Rules
 
-Implementation note: the accepted V1 validation, source, maintenance-record, create-only proposal review and application, unchanged-page reversal, and S39-only worker-delivery boundaries are implemented. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority; scoped ownership, revisions, replacement and bounded learning are accepted extensions that remain Not Started.
+Implementation note: the accepted V1 validation, source, maintenance-record, create-only proposal review and application, unchanged-page reversal, and S39-only worker-delivery boundaries are implemented. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority; scoped ownership, Git notebook publication and bounded learning are accepted extensions that remain Not Started.
 
 ## Summary
 
@@ -12,9 +12,9 @@ This specification defines the concrete governance rules that make the canonical
 
 OpenKit uses OKF-compatible Markdown as the portable envelope, an OpenKit Knowledge Profile for system-wide governance, and one scope schema for owner-specific constraints; the existing Workspace Schema is its current Workspace-only projection.
 
-Programmatic validation protects structural correctness, the Knowledge Manager supports semantic maintenance through separately owned explicit operations, and authorized human Knowledge Review preserves authority.
+Programmatic validation protects structural correctness, the Knowledge Manager supports semantic maintenance through separately owned explicit operations, and explicit maintenance delegation and required human Knowledge Review preserve authority.
 
-Generated learning may become a source-linked pending Knowledge Proposal, but it never self-promotes, self-confirms, or bypasses human review.
+Generated learning uses the unified notebook publisher under current maintenance authority or an exact required human Review. It never self-authorizes, self-confirms or bypasses a required decision.
 
 ## Owns
 
@@ -23,7 +23,7 @@ Generated learning may become a source-linked pending Knowledge Proposal, but it
 - Scope schema lifecycle, validation, migration, conformance levels, and failure behavior.
 - Save-time enforcement for governed knowledge records.
 - Source identity, source immutability expectations, derived-representation lineage, and source-reference health.
-- Observation, claim, conflict, proposal, human-review, create/replace application, content-lineage, and unchanged-create reversal governance.
+- Observation, claim, conflict, delegated editing, required proposal/review, content-lineage and history governance.
 - Knowledge-selection trace requirements contributed to a separately owned Context Package.
 
 ## Does Not Own
@@ -47,7 +47,7 @@ Generated learning may become a source-linked pending Knowledge Proposal, but it
 Goals:
 
 - Keep knowledge user-readable and portable while making active records machine-checkable.
-- Keep invalid, stale, conflicting, sensitive, or unreviewed material from silently influencing workers.
+- Keep invalid, stale, conflicting, sensitive, or unauthorized material from silently influencing workers.
 - Preserve human authority and exact source, proposal, review, page-content, actor, request, and audit lineage.
 - Make accepted proposal application and reversal bounded, idempotent, restart-safe, and fail-closed without another workflow.
 - Keep Knowledge selection explainable without duplicating Context Package delivery ownership.
@@ -72,11 +72,11 @@ OKF-compatible files
 
 Only active `scope-schema-valid` pages that pass authorization, sensitivity, freshness, conflict, and retrieval policy may enter default worker Knowledge selection.
 
-Every generated Knowledge change remains pending until an authorized human Knowledge Review accepts it.
+Ordinary generated edits may publish under explicit notebook maintenance delegation; critical content and sensitive effects retain exact required human decisions under `20260909-knowledge_notebook_editing.md`.
 
 An accepted review authorizes one Knowledge Store application, but active knowledge changes only when the exact resulting page revision and its complete lineage become durable.
 
-Bounded create reversal is an explicit authorized Knowledge command that removes only the unchanged page created by that accepted proposal while retaining the proposal, review, request, actor, source, and audit evidence.
+Restoration and removal use the same exact-base notebook publisher, with current validation and required confirmation, preserving prior content/history and operation evidence.
 
 ## Format And Schema Contract
 
@@ -122,7 +122,6 @@ Every active Knowledge Page and every draft Knowledge Page validated for possibl
 - `title`
 - `schema_version`
 - `openkit_status`
-- `openkit_revision`
 - `scope`
 - `source_refs`
 - `review_state`
@@ -137,17 +136,17 @@ Field behavior:
 - `title` MUST be human-readable and non-empty.
 - `schema_version` MUST identify the validating Scope Schema.
 - `openkit_status` is the unique OpenKit lifecycle authority and MUST distinguish draft, active, archived, superseded, invalid, and deleted records. Standard OKF `status` is a deterministic projection: draft maps to `draft`, active maps to `stable`, and the other four states map to `deprecated`. A missing standard status means `stable`; a conflicting projection is invalid. Standard status alone never activates an external page.
-- `openkit_revision` MUST be a server-owned positive integer: 1 on first creation and incremented on every accepted replacement or direct edit. Removed identities remain reserved.
+- Notebook revision is the service-resolved Git commit ID, outside page frontmatter. Profile v4 removes the unimplemented `openkit_revision` counter; exact identity is owner scope, notebook revision, page path and SHA-256 content digest.
 - `scope` MUST identify the exact User, Workspace or current Server owner under `20260909-personal_memory_and_knowledge_learning.md`; narrower source restrictions remain additional constraints, never scope substitution.
 - `source_refs` MUST exist even when empty; empty references are allowed only for direct user-authored notes, indexes, or policy-approved seed pages.
-- `review_state` MUST distinguish unreviewed, user-authored, accepted, rejected, deferred, and needs-review records; there is no provisional active state.
+- `review_state` MUST distinguish unreviewed, user-authored, delegated, accepted, rejected, deferred, and needs-review records; there is no provisional active state.
 - `sensitivity` MUST be explicit even when material is public or internal.
 - `freshness` MUST distinguish evergreen, time-bound, stale, expired, and unknown material.
 - `created_at` and `updated_at` MUST be machine-readable timestamps.
 
 Reusable base types are `SourceSummary`, `KnowledgePage`, `Entity`, `Topic`, `Observation`, `Claim`, `Procedure`, `Decision`, `Lesson`, `Proposal`, `Index`, and `Log`.
 
-Scope Schemas MAY add domain types, but consumers MUST preserve the base governance fields even when they do not understand an extension. OpenKit Knowledge Profile v3 uses `openkit_status`; the standard OKF lifecycle does not add a second state machine, retry policy, or recovery owner. Unknown nested YAML metadata is retained as data, including provenance, trust, and Attested Computation fields; reading or saving it never executes code, performs attestation, accesses a network, or grants authority. Secret-like field and value rejection applies recursively, including arrays; cyclic or excessive alias expansion is rejected before traversal.
+Scope Schemas MAY add domain types, but consumers MUST preserve the base governance fields even when they do not understand an extension. OpenKit Knowledge Profile v4 uses `openkit_status`; the standard OKF lifecycle does not add a second state machine, retry policy, or recovery owner. Unknown nested YAML metadata is retained as data, including provenance, trust, and Attested Computation fields; reading or saving it never executes code, performs attestation, accesses a network, or grants authority. Secret-like field and value rejection applies recursively, including arrays; cyclic or excessive alias expansion is rejected before traversal.
 
 ## Save-Time Enforcement
 
@@ -161,7 +160,7 @@ An invalid edit MUST NOT overwrite the latest valid active page.
 
 Imports, rough notes, integrations, and drafts MAY be retained as invalid drafts when preserving the material is useful, and their validation errors MUST remain inspectable.
 
-Repairing an invalid draft creates a valid draft or pending proposal according to Workspace policy; it does not silently activate knowledge.
+Repairing an invalid draft may produce a valid active page only under current explicit maintenance authority or an exact required human Review through the notebook publisher; otherwise it remains a valid draft or pending proposal. Structural validity alone never authorizes activation.
 
 ## Source Identity And Lineage
 
@@ -181,7 +180,7 @@ An external locator without captured identity MAY support review, but it MUST NO
 
 User Memory, Workspace Knowledge and Server Knowledge use the same governance with distinct current owners and output audiences. Personal conversation enters through a source-registered exact snapshot; it is not Worker/S39 evidence. The interaction-bounded, opt-in personal capture defined by `20260909-personal_memory_and_knowledge_learning.md` is an explicit exception to the older future-only passive-learning direction and does not authorize a recurring background job.
 
-Generated learning and automatic consolidation remain candidates until human Review. Optional AI prove is a digest/source/rubric-bound assessment recorded as an existing Observation with result and limitations; it is never a Review or an authorization source. A policy-free advisory assessment cannot veto an authorized human decision. An explicitly authored critical-content policy may require assessment evidence before generated activation; the enforcement owner is that policy, not the model. Direct user editing stays available, invalidates content-bound assessment and cannot falsely preserve an accepted or verified label.
+Generated learning and consolidation use explicitly delegated ordinary publication or the existing exact required Review path. Optional AI prove is a digest/source/rubric-bound assessment recorded as an existing Observation with result and limitations; it is never a Review or an authorization source. A policy-free advisory assessment cannot veto an authorized human decision. An explicitly authored critical-content policy may require assessment evidence before generated activation; the enforcement owner is that policy, not the model. Direct user editing stays available, invalidates content-bound assessment and cannot falsely preserve an accepted or verified label.
 
 ## Maintenance Records
 
@@ -193,7 +192,7 @@ An Observation MAY be ignored, retained, summarized, aggregated, attached to a p
 
 A Claim is a reusable assertion that may influence future work and therefore MUST carry sources, confidence, freshness, scope, review state, and conflict status.
 
-Accepted claims MAY support a pending Knowledge Proposal, but they MUST NOT become active page content without human Knowledge Review.
+Claims MAY guide source-grounded notebook editing, but a claim record is never publication authority; current maintenance delegation or an exact required Review remains necessary.
 
 Conflict states SHOULD distinguish conflicting, needs-review, weak-evidence, stale, resolved, superseded, and partially superseded material.
 
@@ -203,90 +202,17 @@ Maintenance records SHOULD use bounded append-only ledgers or equivalent history
 
 ## Proposal And Human Review Rules
 
-The scoped profile v3 permits generated `create` and exact-base single-page `replace` through the same Proposal/Review/Page owners. A monotonic page revision plus exact digest protects against replay and ABA, preserving V1 removed-page-id reservation while adding exact revision identity for replacements. Retain the previous full bytes through the existing Knowledge Source owner before replacement. The exact field, fence and partial-effect rules are owned by `20260703-knowledge_store_implementation.md` and its scoped learning extension. Multi-page merge, split, rename, generated deletion and generalized historical restoration remain excluded.
+`20260909-knowledge_notebook_editing.md` owns one edit/publication contract. Ordinary authorized maintenance publishes a validated fixed-base Git revision without a synthetic review. A required review uses the existing Knowledge Proposal/Review owners and freezes owner scope, base/candidate commits, candidate digest, source references, producer, rationale and current assessment/critical-content requirements. The human accepts, rejects or defers exactly those bytes. Changed content/base requires a new proposal; no model may accept its own candidate. Pending/rejected/deferred candidates remain outside published content.
 
-Before review, the proposal MUST fix its exact target Knowledge Page id, complete canonical page bytes, content digest, source references, rationale, confidence, freshness, sensitivity, scope, producer, creation time, and whether it was generated from completed work history. S61 encodes proposal creation time and the server-owned producer directly, derives freshness, sensitivity and scope from the digested candidate page bytes, and derives the completed-work fact only from the closed immutable Turn, Item and strict live S39 source-reference tuple, so imported history cannot masquerade as a new worker result and no duplicate field can disagree. Review input or response-only content cannot replace those durable candidate bytes.
+Publication revalidates scope, path, OKF/profile/schema, sources, confidentiality, current authority and exact base. Its unique content decision is the compare-and-set published ref; Audit and command receipts separately establish successful command completion. Failure and replay follow the notebook owner, with no inference from current page bytes, no duplicated prior-page Source archive and no repair runner. Human direct edits use the same publisher and are user-authored; delegated edits are marked delegated, not human-reviewed. Changed content invalidates earlier content-bound review/assessment labels.
 
-V1 generated proposals may cite exact registered Sources, directly `user-authored` Knowledge Pages, or the one strict completed-work trio. They MUST NOT treat another `accepted` generated Page as independent factual evidence. The scoped replace operation may name its exact generated base for comparison while retaining the approved original source lineage. This bounded compromise avoids a transitive proposal-authority graph; a user may restate the needed fact in a reviewed user-authored Page or register the underlying material as a Source.
+Generated knowledge retains exact registered Source references or the existing strict completed-worker Turn/final Item/S39 evidence trio when claiming worker output. Current or historical generated pages may guide organization and comparison but are not independent factual evidence; preserve their underlying admitted source lineage. Imported, workspace-only, reconstructed or standalone retrieval history cannot masquerade as a new worker result. Only S39 proves worker delivery. Source references and captured evidence remain owned by their existing records, not Git history alone.
 
-Every generated proposal begins pending and remains excluded from active retrieval.
+Active pages may preserve explicitly marked uncertainty; retrieval keeps the existing conflict exclusions. A relevant unresolved conflict is still determined from the latest conflict row's target/source subjects, not the conflict row's own evidence references. Its states `conflicting`, `needs_review`, `weak_evidence` and `stale` remain unresolved; `resolved`, `superseded` and `partially_superseded` do not independently block use. A conflict affecting publication under authored review policy requires that actual decision; a model score cannot suppress the conflict or fabricate resolution.
 
-Only an authorized human Knowledge Review may accept, reject, or defer a generated proposal. Changing the fixed candidate requires a new proposal in V1; there is no combined edit-and-accept transition.
+Archive/supersede are retained metadata edits through the same publisher. Multi-page merge/split and link repair are final-tree edits, not distinct workflows. Removing published pages requires exact human confirmation; restore appends an exact-base validated revision. Explicit forgetting additionally suppresses current and normal historical retrieval and automatic re-extraction, with truthful source/evidence/backup retention. No historical reset or downstream-effect reversal is implied.
 
-Policy MAY validate, route, batch, or prioritize proposals, but it MUST NOT substitute for human acceptance.
-
-An authorized human MAY create or edit knowledge directly with `review_state: user-authored`; that write MUST pass current validation and creates no synthetic proposal or review identifier. Direct edits use the scoped extension's expected-revision guard and retain prior full bytes through the existing Knowledge Source owner. Command and Audit remain with their existing owners; no historical-content record family is created.
-
-Rejecting a proposal closes it without an active Knowledge mutation.
-
-Deferring a proposal keeps it non-active and reviewable without authorizing application. A later review decision appends to the same proposal's review history.
-
-Accepting a proposal creates durable application authorization; it does not itself prove that the fixed page was published. Acceptance and rejection are terminal, while one or more deferred decisions may precede the terminal decision.
-
-## Accepted Proposal Application
-
-The existing Knowledge Store mutation owner applies an accepted create or exact-base replacement proposal exactly once; this specification introduces no application runner, queue, application record, settlement record, or recovery workflow.
-
-The application MUST validate the accepted proposal, human review, expected absence or exact base revision/digest, fixed bytes and digest, sources, owner scope, authorization, schema, sensitivity, freshness, and conflict state immediately before publication. A latest conflict row is unresolved exactly while its status is `conflicting`, `needs_review`, `weak_evidence`, or `stale`; `resolved`, `superseded`, and `partially_superseded` do not block publication. An unresolved row is relevant exactly when one of its `subjectReferences` names the target as `knowledge:<knowledgePageId>`, exactly equals a fixed proposal source reference, or equals the digest-free owner form of a qualified `source:` or `knowledge:` proposal source. The conflict row's own `sourceReferences` are evidence for that conflict and do not make it relevant. A relevant unresolved conflict returns `409 conflict` before the accepted Review or Page write; no conflict workflow or derived state is created.
-
-The existing proposal, review, page, command-idempotency, and audit owners MUST make the business activation tuple and separate command-completion evidence verifiable without a new record family:
-
-- proposal identifier
-- accepting review identifier
-- target Knowledge Page identifier
-- an accepted review row whose `targetStateAtDecision` matches the exact safe absent target or current base revision/digest
-- resulting page revision and content digest
-- source references
-- producer and authorized reviewer actor references
-- decision request identifier and application time as command-completion evidence
-
-The exact proposal, accepted human review, fixed resulting page revision and digest, sources, producer, reviewer, and owner scope form the business activation tuple. The active read projection MUST expose those exact authorized bytes or no applied page; it MUST NOT expose different, unreviewed, unlineaged, or partially validated bytes. Audit and receipt evidence gate the decision command's success and replay projection, not activation of an otherwise complete business tuple.
-
-Application uses the existing request-idempotency owner:
-
-- An exact replay with a completed command receipt returns the same page identity, content digest, and current projection.
-- Reusing a request identifier with changed input returns `409 idempotency_key_conflict`.
-- If the exact accepted review is durable and the fixed target page is still absent for create or matches the exact frozen base for replace, the same authorized decision request MAY complete that one deterministic page write from the proposal's fixed bytes and digest.
-- If the complete business activation tuple exists but Audit or the completed receipt is absent, the page remains active, while the operation returns `409 recovery_required` and does not synthesize the missing command evidence or reconstruct success.
-- If the create target already existed or the replace target differs from its expected base before the authorized effect, carries unrecognized bytes, or any required proposal, review, page revision/digest, source, producer, reviewer, or owner-scope lineage is missing or contradictory, the operation returns `409 conflict` or `409 recovery_required` as specified by S61 and performs no inference, reconstruction, second application, or repair.
-
-After restart, replay and inspection use only the durable proposal, review, page, request-idempotency, and audit owners.
-
-Process memory, current page content, a generated summary, or an S61 retrieval trace MUST NOT reconstruct missing application authority.
-
-## Bounded Reversal
-
-Bounded create reversal is an explicit authorized Knowledge command naming the original proposal, accepting review, fixed Knowledge Page id, expected content digest, and reversal request id. The original decision request id resolves through the named immutable review row rather than being duplicated in the reversal request.
-
-Only an original create proposal is eligible; replacement proposals and any subsequently edited or replaced page are ineligible. Removed page ids remain reserved and explicit later saving uses a fresh id. Exact replay with matching completed reversal command and audit evidence returns the same completed reversal without another page effect. Otherwise, the command MAY remove only the page created by that proposal and only while its current bytes still match the fixed digest. The retained accepted Proposal and Review continue to reserve the page id after removal, so another proposal targeting that id returns `409 conflict`. A changed target returns `409 conflict` with zero mutation; a missing page without matching completed reversal evidence, or contradictory proposal, review, page, command, source, actor, digest, or audit authority, returns `409 recovery_required`.
-
-The original proposal, review, decision request, sources, actors, created-page digest, reversal request, and audit evidence remain durable.
-
-Reversal creates no second proposal, review, revision, tombstone, rollback record, recovery state, or workflow and does not claim to undo worker or external effects that occurred before reversal.
-
-## Generated Learning Governance
-
-V1 permits only an explicit agent-driven composition of existing work-history reads and the existing Knowledge Proposal draft operation; it creates no reflection operation or private lifecycle.
-
-A V1 generated-learning proposal may cite only the closed exact source-reference forms defined by S61. A proposal derived from completed worker work MUST cite one terminal same-Workspace direct-Task worker Turn, the final completed `assistant-message` Item projected by that Turn, and that Turn's exact accepted S39 Context Package trace and digest. Other Artifacts, reviews, evidence, audit, usage, or external material may guide agent or human judgment, but they become proposal evidence in V1 only after explicit capture through the existing registered Knowledge Source owner.
-
-The Context Package contract exclusively decides whether a trace proves worker delivery; this specification consumes that proof and does not redefine it.
-
-Workspace-only work, imported history, replay reconstruction, standalone Knowledge selection or materialization, and records without accepted delivery proof MUST NOT be labelled as worker output.
-
-Generated learning always remains pending until human Knowledge Review accepts it.
-
-There is no provisional active state, auto-promotion, TTL confirmation, citation counter, citation-based acceptance, expiry sweep, or scheduled confirmation path.
-
-Later citations MAY be observations about usefulness, but they are never review authority.
-
-Passive, event-triggered, or scheduled learning generation remains deferred until real usage proves a need and a separately accepted trigger scope exists; any future automation may draft pending proposals only.
-
-## Knowledge Manager Boundary
-
-The Knowledge Manager service specification exclusively owns V1 operation names, callers, typed outputs, errors, and request lifecycle.
-
-This governance contract requires only that Knowledge Manager writes create pending proposals through the existing Knowledge Store owner and never apply repairs, promote learning, schedule maintenance, or create private lifecycle state.
+Knowledge Manager owns the bounded invocation and semantic editing; the Knowledge Store owns all publication. Explicit maintenance and the accepted personal capture composition may call it; a new recurring/event trigger still needs its own accepted owner. No private lifecycle, automatic trigger, evaluation authority or second scheduler follows from the permission to edit.
 
 ## Health And Repair
 
@@ -296,7 +222,7 @@ This governance contract requires that health inspection remain explicit and rep
 
 It MUST NOT apply repairs, draft proposals, schedule work, or mutate knowledge.
 
-Future repair application requires separately accepted scope and MUST use the same proposal and human-review path whenever meaning, authority, sensitivity, scope, freshness, retrieval eligibility, or future worker behavior may change.
+Ordinary semantic repair uses explicitly delegated notebook maintenance and its final-tree publisher. Authority, source restrictions, schema and sensitive effects remain separate current decisions; report-only health cannot silently apply a repair.
 
 ## Knowledge Selection Trace Boundary
 
@@ -319,7 +245,7 @@ Restricted trace evidence MUST remain redacted or access-controlled under the ow
 | Import or capture | Portable source material or lower-conformance draft. |
 | Draft create or rough note | OpenKit required fields when governed; invalid material may remain an invalid draft. |
 | Proposal creation | `OpenKit-profile-valid` target shape or an invalid draft with attached errors. |
-| Active Knowledge save | Human-authored or human-reviewed, policy-eligible, `scope-schema-valid` page with complete content and actor lineage. |
+| Active Knowledge save | Human-authored, delegated or human-reviewed, policy-eligible, `scope-schema-valid` page with complete content and actor lineage. |
 | Default notebook view | Active valid pages plus pending proposals and user-selected maintenance views. |
 | Default worker Knowledge selection | Active, authorized, non-expired, policy-eligible `scope-schema-valid` pages. |
 | Lower-conformance source snippet | Explicit policy authorization plus traceable source identity and exclusion reasoning. |
@@ -337,7 +263,7 @@ The accepted-proposal path freezes exact create-only page bytes and digest, pres
 
 Context preparation references the single governed retrieval trace and exposes no standalone worker-context trace or materialization. Only S39 materializes and proves worker delivery.
 
-No provisional auto-promotion, citation confirmation, TTL expiry, scheduled Knowledge maintenance, or passive Knowledge Manager trigger is implemented or accepted.
+No citation-based confirmation, TTL promotion or new scheduled trigger is implemented. Explicitly delegated notebook editing is accepted design but Not Started.
 
 Concrete implementation detail remains in the Knowledge Store implementation, Knowledge Manager service, and Context Package specifications rather than being duplicated here.
 
@@ -345,23 +271,23 @@ Concrete implementation detail remains in the Knowledge Store implementation, Kn
 
 Use existing package and NanoCore suites; this specification authorizes no new runner, harness, or fixture framework.
 
-- L1 governance tests cover active-write validation, secret rejection, source identity, generated-pending and human-review authority, direct-mutation lineage, create/replace application, bounded create reversal, and fail-closed partial evidence.
+- L1 governance tests cover active-write validation, secret rejection, source identity, delegated publication and required human-review authority, direct-mutation lineage, multi-page publication and history restoration, and fail-closed partial evidence.
 - L2 contract tests prove proposal, review, page, command, actor, source, digest, and audit lineage remains resolvable without exposing restricted evidence or adding another lifecycle owner.
 - S61 owns implementation and interruption tests, S17 owns caller and error tests, S39 owns direct-Task delivery tests, and S18 owns the single real L6 composition; this governance spec does not duplicate them.
 
 Acceptance requires all of these predicates:
 
-- Generated learning never becomes active without human Knowledge Review.
-- One accepted V1 generated proposal creates at most one exact active page.
-- Every active proposal-created page has the complete business activation tuple; every claimed successful or replayed application additionally has its request, Audit, and receipt evidence.
+- Generated content cannot publish without explicit current maintenance authority or its exact required human Review.
+- One authorized candidate publishes one complete Git revision, including all of its validated changed pages.
+- Every active page resolves to published content/provenance; required human reviews bind exact candidate bytes, and successful commands have exact Audit/receipt evidence.
 - Missing or contradictory application evidence fails `recovery_required` without inference or repair.
 - Workspace-only, imported, reconstructed, or standalone Knowledge provenance cannot claim worker output.
 - Only the owning worker delivery trace proves later Knowledge use.
 
 ## Risks & Mitigations
 
-- Risk: human review becomes noisy before real proposal volume exists. Mitigation: allow bounded batching and prioritization without changing acceptance authority; automate only after real-use evidence.
-- Risk: separate review and page writes leave a bounded interrupted state. Mitigation: report success only after both verify, allow only the same authorized command to complete its one deterministic missing page effect, and return `recovery_required` for every contradictory state.
+- Risk: human review becomes noisy before real proposal volume exists. Mitigation: use notebook-scoped delegation for ordinary edits and retain exact review for designated critical content.
+- Risk: separate review and page writes leave a bounded interrupted state. Mitigation: publish content through one Git ref and report command success only when separate evidence verifies; retain explicit recovery-required results otherwise.
 - Risk: reversal is mistaken for undoing downstream effects. Mitigation: reversal changes future active Knowledge only and preserves prior use evidence.
 - Risk: Knowledge selection trace duplicates Context Package authority. Mitigation: retain only the Knowledge contribution and defer package identity, delivery, and replay to the owning contract.
 
@@ -371,17 +297,17 @@ Acceptance requires all of these predicates:
 - Programmatic validation enforces structure, Knowledge Manager operations support bounded maintenance, and authorized humans own Knowledge Review.
 - Invalid material may remain a draft but never silently enters active retrieval.
 - Raw captured sources are immutable by default and Derived Representations retain exact source-version lineage.
-- Observations and claims remain maintenance evidence until human-reviewed proposals promote reusable interpretation.
-- Generated learning is always a pending source-linked proposal; provisional auto-promotion and self-confirmation do not exist.
-- Accepted generated-proposal application is one idempotent create or exact-base single-page replace Knowledge Store mutation with exact page-content lineage and fail-closed partial-state handling.
-- Reversal names the original accepted proposal and review, removes only their unchanged created page through one authorized command, retains command and audit evidence, and never creates another proposal, review, content-history family, or claim of undoing prior external effects.
+- Observations and claims remain evidence; authorized notebook publication creates reusable interpretation.
+- Generated learning may use delegated publication; source lineage, current authority and any required Review remain mandatory.
+- All notebook edits use one exact-base multi-page publisher with Git content lineage and explicit partial command-evidence handling.
+- Reversal/restoration publishes a new exact-base revision through the same owner and never claims to undo external effects or erase intervening history.
 - Knowledge selection contributes traceable page ids, content digests, and exclusions, while the separately owned worker delivery trace alone proves worker receipt.
 
 ## Deferred / Future Work
 
 - Richer source conversion, binary capture, semantic retrieval, and broader source-reference validation remain deferred until current retrieval evidence justifies them.
-- Broader health and repair classes remain deferred; meaning-changing repair always requires a proposal and human review.
-- Passive, event-triggered, or scheduled proposal drafting requires real-use evidence plus a separately accepted trigger contract and may never authorize promotion.
+- Health-driven ordinary notebook repairs use current maintenance authority; schema/authority changes remain separate configuration effects.
+- Passive, event-triggered, or scheduled proposal drafting requires real-use evidence plus a separately accepted trigger contract and cannot itself grant maintenance authority.
 - Richer imported notebook migration tools remain deferred until real incompatible bundles require them.
 
 ## Links

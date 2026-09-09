@@ -41,7 +41,7 @@ This specification owns only the explicit completed-Worker-work reflection compo
 
 OpenKit V1 supports deliberate learning from real work without adding another runtime or workflow engine. An authenticated user asks an agent to inspect one retained completed work history through the existing unified `openkit` Skill and bundled CLI. The agent may then call the existing `knowledge.proposal-draft` operation with exact Workspace-owned source references and complete create-only Knowledge Page content, or explain that the evidence does not justify a reusable lesson without creating Knowledge state.
 
-Agent analysis is advisory. The proposal remains pending until the existing human Knowledge Review owner accepts, rejects, or defers it. Changing the fixed candidate requires a new proposal. A later worker has used accepted knowledge only when its existing S39 Context Package trace proves that the exact selected bytes were materialized and delivered. Reversal is a narrow Knowledge-owner mutation against the exact proposal-created page and retained lineage, not a second improvement lifecycle.
+In this explicitly reviewed completed-work composition, Agent analysis is advisory. The proposal remains pending until the existing human Knowledge Review owner accepts, rejects, or defers it. Changing the fixed candidate requires a new proposal. A later worker has used accepted knowledge only when its existing S39 Context Package trace proves that the exact selected bytes were materialized and delivered. Restoration is a current-base Knowledge-owner publication from the retained proposal base, not a second improvement lifecycle.
 
 ## Goals / Non-goals
 
@@ -65,7 +65,7 @@ Agent analysis is advisory. The proposal remains pending until the existing huma
 
 - V1 reflection is a composition of existing transport-neutral operations, not a new `knowledge.reflect` operation or NanoCore subsystem.
 - The reviewing agent reads exact completed Workspace records through the unified Skill/CLI and either returns ordinary advisory output or invokes `knowledge.proposal-draft` once.
-- A generated proposal is create-only. Before review it fixes its target page id, exact page bytes, content digest, and source lineage; it cannot describe a generic update, merge, Skill change, or workflow change.
+- A generated proposal is create-only. Before review it fixes the notebook base/candidate commits, new target page id, exact bytes/digest and source lineage; it cannot describe a generic update, merge, Skill change, or workflow change.
 - NanoCore validates the normal proposal command, exact same-Workspace source references, create-only target, content shape, and authorization. It does not run a model or persist reflection state.
 - Human Knowledge Review is the only activation authority. Agent output, proposal existence, retrieval selection, citation count, and later model agreement cannot activate knowledge.
 - Later worker use is proved only by the immutable S39 trace owned by that worker Turn.
@@ -83,15 +83,15 @@ If the evidence is missing, contradictory, stale, unavailable, or insufficient, 
 
 ### Proposal creation and command replay
 
-This completed-work composition MUST submit a complete create target and exact source references to `knowledge.proposal-draft` under S60/S61. The command also accepts replacement from separately admitted compositions. A successful call creates one ordinary pending Knowledge Proposal and returns its existing identifier and validation result. It creates no page, review decision, reflection record, evaluation record, or private lifecycle.
+This completed-work composition MUST submit a complete create target and exact source references to `knowledge.proposal-draft` under S60/S61. The command uses the common notebook-change envelope; this composition restricts its candidate diff to one new page, while separately admitted maintenance may change several pages. A successful call creates one ordinary pending Knowledge Proposal and returns its existing identifier and validation result. It creates no page, review decision, reflection record, evaluation record, or private lifecycle.
 
 The command uses the normal command-ledger key `command + requestId + scope`, with canonical owner scope exactly `{ kind: workspace, workspaceId }`; the complete normalized draft request is the input hash. A stored receipt replays through the existing owner projection, any changed draft input under the same Workspace and request id returns `idempotency_key_conflict`, and a proposal found through S61's deterministic owner-scope-plus-request owner id without a completed receipt returns `recovery_required`. Title and candidate fields MUST NOT enter the ledger scope because changing them would bypass same-request conflict detection. The command does not reconstruct a response, expand the direct-mutation ledger contract, or create recovery state.
 
 ### Human review and application
 
-The existing Knowledge Proposal and Knowledge Review owners decide acceptance, rejection, or deferral. Acceptance applies only the exact reviewed create-only target and remains subject to current authorization, validation, conflict, sensitivity, and source-lineage checks. Another create cannot reuse an existing or removed page id. Exact-base replacement under the scoped learning owner may update an existing generated page without rewinding its revision; after replacement the original create reversal is ineligible. Reversal reserves the removed id, so a later create must choose another id.
+The existing Knowledge Proposal and Knowledge Review owners decide acceptance, rejection or deferral for this manual composition. Acceptance rechecks its fixed base/candidate, current authorization, validation, conflict, sensitivity and source lineage through the common notebook publisher. An existing or suppressed page ID cannot be silently reused. Other delegated maintenance compositions follow their own accepted admission rather than this composition's mandatory Review.
 
-Application may require more than one file write. Success MUST NOT be reported until both the accepted decision and the matching proposal-created page are durable. If interruption leaves an accepted decision without its exact page effect, that condition remains discoverable; replay of the same authorized decision may complete the deterministic missing effect, otherwise it returns `recovery_required`. No background repair, settlement record, or recovery workflow is created.
+Review, Git publication and command evidence are separate effects under `20260909-knowledge_notebook_editing.md`. Only the published ref activates content, and success requires completed command evidence. Stale base conflicts; an incomplete decision/publication/receipt tuple returns `recovery_required` without automatic missing-page completion or a recovery workflow.
 
 Rejecting or deferring a proposal changes only its existing review lifecycle. It MUST NOT trigger another agent call, worker Turn, retry, or follow-up automatically.
 
@@ -103,9 +103,9 @@ If the required S39 trace, page byte, digest, or owner tuple is missing or contr
 
 ### Bounded reversal
 
-A reversal request through the existing Knowledge owner MUST name the original proposal and accepted review, the exact proposal-created page, and the expected current digest. The original content digest is resolved from the named immutable proposal and review rather than duplicated in the request. It may remove that page only when all lineage matches and the page remains unchanged. Proposal, review, command, and audit evidence remain retained and continue reserving the page id, so no later byte-identical page can be mistaken for the old proposal's effect.
+A restoration request through the existing Knowledge publisher names the current base, retained historical proposal-base revision and selected page paths. It computes a new validated diff, requires exact human confirmation for removal and publishes a new revision. It preserves intervening Git, Proposal, Review, Source, command and Audit history; it never rewinds the published ref or deletes a later edit blindly.
 
-If the page has changed, reversal returns S61's `409 conflict`; missing or contradictory lineage returns `409 recovery_required`, and both produce zero mutation. Reversal MUST NOT delete intervening history, reopen completed work, enqueue follow-up execution, or create recovery state.
+If the current base has changed, restoration returns S61's `409 conflict`; missing or contradictory lineage returns `409 recovery_required`, and both produce zero mutation. Reversal MUST NOT delete intervening history, reopen completed work, enqueue follow-up execution, or create recovery state.
 
 ### Restart and dependency failure
 
@@ -119,7 +119,7 @@ Use the unified `openkit` Skill and bundled CLI as the agent's composition surfa
 
 ## Personal Interaction Learning Boundary
 
-This specification continues to own the implemented explicit completed-Worker-work composition. `20260909-personal_memory_and_knowledge_learning.md` owns the newly accepted opt-in bounded extraction during a later private Personal Assistant interaction, including registration of conversation snapshots as Knowledge Sources. That source is not Worker output and needs no fabricated S39 trace. The new composition reuses this specification's proposal/review/application separation but does not change the meaning of completed Worker evidence, start a passive mining service or automatically promote Knowledge or Skills. Its single-page replacement and optional assessment extensions are Not Started; references below to deferred passive/scheduled reflection remain applicable to unattended jobs, not the named interaction-bounded capture.
+This specification owns the explicitly reviewed completed-Worker-work composition. Scoped learning owns opted-in conversation-source extraction, and the notebook editing owner permits ordinary publication under explicit maintenance delegation. Neither changes the strict Worker/Item/S39 evidence meaning or adds a passive mining service. The Git publisher and scoped learning extensions remain Not Started; current create-only implementation evidence below does not constrain their accepted target.
 
 ## Current Implementation Projection
 
@@ -134,7 +134,7 @@ The explicit V1 composition is implemented through existing owners. Proposal dra
 - L6 uses the existing unified Skill/CLI and stock OpenShell surface for one useful completed Task, explicit agent review, pending proposal, human decision, later Task delivery, and reversal. A skipped or synthetic story is not evidence.
 - No reflection endpoint test, separate runner, Evaluation Harness, crash matrix, recurring-trigger story, Judge story, or long-horizon platform is required.
 
-Acceptance requires no new reflection owner; one source-linked create-only pending proposal or an honest no-proposal response; human-only activation; discoverable and bounded interrupted application; exact S39-only later-delivery proof; stale-safe owner-local reversal; typed fail-closed behavior; and no passive agent framework.
+Acceptance requires no new reflection owner; one source-linked create-only pending proposal or an honest no-proposal response; human-only activation within this explicit proposal composition; discoverable and bounded interrupted application; exact S39-only later-delivery proof; stale-safe owner-local reversal; typed fail-closed behavior; and no passive agent framework.
 
 ## Risks & Mitigations
 

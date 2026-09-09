@@ -119,6 +119,8 @@ Workspace MCP server catalogs are not authored runtime-config files. Effective G
 
 `user.jsonc` owns personal per-Workspace Agent, profile, logical-model, and applicable internal-role preferences. It stores no Server default, Workspace-shared behavior, Provider credential, Gateway route, Sandbox placement, AgentSession identity, or native runtime state.
 
+`knowledgeMaintenance` is an owner-local field of `user.jsonc` for User Memory, `workspace.jsonc` for Workspace Knowledge, and `server.jsonc` for Server Knowledge. Its strict shape is `{enabled:boolean,reviewRequiredPageIds:string[]}`, defaulting to disabled/empty; IDs are safe, unique and scope-local under the Knowledge owner. Existing current-user, Workspace configuration and administrator authorization respectively govern edits; no cross-scope inheritance applies. The notebook publisher rechecks the current validated snapshot immediately before publication and records the exact value/digest as admission evidence. Reload can revoke an in-flight publication without changing that run's Tool set. Import of notebook content never enables this setting. This design is Not Started until config schemas, revision-aware commands and the notebook consumer land together; it adds no new settings store.
+
 All authored files use strict schemas, explicit `schemaVersion`, the shared required-feature registry when behavior needs a feature gate, and namespaced descriptive extensions. Unknown authority-bearing behavior remains invalid. This change adds no compatibility alias, generic unknown-field activation, routing plugin registry, or parallel configuration transaction protocol.
 
 ## Selection, Composition, And Resolution
@@ -186,7 +188,7 @@ The following items remain outside this config and identity contract:
 - Better Auth is an implementation provider for auth sessions; it does not rename the OpenKit conceptual `AuthSession`.
 - Runtime config editing must go through NanoCore-owned routes and schemas, not raw file browsing through the bundled CLI.
 - Server supplies resources and fallback defaults, Workspace composes shared behavior, and User supplies the most specific persistent preference without any of those defaults becoming a generic resource ceiling.
-- `gateway.jsonc`, `internal-role-profiles.jsonc`, `user.jsonc`, and `workspace.jsonc` are distinct authored owners; `server.jsonc` contains only its own deployment fields and final Agent fallback.
+- `gateway.jsonc`, `internal-role-profiles.jsonc`, `user.jsonc`, and `workspace.jsonc` are distinct authored owners; `server.jsonc` contains its own deployment fields, Server notebook maintenance setting and final Agent fallback.
 - User → Workspace → Server is the ordinary persistent-preference order, explicit request or Orchestrator selection is more specific when admitted, and model preference never selects an Agent.
 - NanoCore bearer tokens used by the bundled CLI are credential material and must not be printed, logged, persisted in documentation, or exposed in artifacts.
 - Historical identity, auth, config, and data-layout specs are supporting detail, not active guidance.

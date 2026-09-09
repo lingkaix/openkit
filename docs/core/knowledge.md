@@ -23,7 +23,7 @@ Sources remain evidence, knowledge remains curated interpretation, and Context P
 
 - Memory is User-owned; Knowledge is Workspace- or Server-owned. None is agent-owned.
 - Authorized humans retain final authority over reviewed knowledge.
-- The Knowledge Manager may inspect, organize, retrieve, and propose, but generated learning never promotes itself into active knowledge.
+- The Knowledge Manager may inspect, retrieve and edit an explicitly delegated notebook through one validated publisher. Ordinary authorized maintenance need not create a human Review; critical-content and sensitive-effect decisions retain their owning human authority.
 - Sources provide evidence; knowledge stores curated interpretation.
 - Context Packages are governed task-time projections, not raw workspace dumps.
 - File-system-first knowledge remains inspectable, portable, editable, and easy to back up.
@@ -32,7 +32,7 @@ Sources remain evidence, knowledge remains curated interpretation, and Context P
 
 ## Canonical Terms
 
-`Knowledge Store` is the common scope-bound system that manages reusable knowledge, notebook pages, source references, proposal lifecycle, review decisions, retrieval indexes, and knowledge selection for Context Packages.
+`Knowledge Store` is the common scope-bound system that manages reusable knowledge, notebook pages, source references, content revisions, optional proposal/review decisions, retrieval indexes, and knowledge selection for Context Packages.
 
 `Knowledge Page` is a durable, reviewable, user-visible unit of reusable knowledge.
 
@@ -42,9 +42,9 @@ Sources remain evidence, knowledge remains curated interpretation, and Context P
 
 `Knowledge Proposal` is a pending request to create, update, merge, split, supersede, archive, or delete Knowledge Store content.
 
-`Knowledge Review` is an explicit decision by an authorized human to accept, reject, or defer a Knowledge Proposal. For either create or replace, changing the proposed page content requires a new proposal rather than a combined edit-and-accept transition.
+`Knowledge Review` is an explicit decision by an authorized human to accept, reject, or defer a Knowledge Proposal. For any candidate, changing its proposed content requires a new proposal rather than a combined edit-and-accept transition.
 
-`Knowledge Manager` is the Internal Core Role responsible for source-traceable knowledge query support, context-material preparation, proposal drafting, validation support, and bounded maintenance suggestions.
+`Knowledge Manager` is the Internal Core Role responsible for source-traceable knowledge query support, context-material preparation, proposal drafting, validation support, and authorized bounded notebook maintenance.
 
 `Observation` is a low-friction agent-recorded signal about work, source material, or repeated behavior; it is not active knowledge by default.
 
@@ -62,13 +62,13 @@ Knowledge does not own workflow progression, worker execution, final semantic co
 
 Artifacts may become Knowledge Sources, but artifacts are not required between ordinary source ingest and a Knowledge Proposal.
 
-The Knowledge Manager is not a persistent agent runtime, workflow engine, scheduler, retry queue, or autonomous proposal-application owner.
+The Knowledge Manager is not a persistent agent runtime, workflow engine, scheduler, retry queue, or independent publication authority.
 
 ## Authority And Projection
 
 Authorized users or team members own Knowledge Review decisions and direct user-authored knowledge.
 
-The Knowledge Manager prepares source-traceable answers, context material, proposals, and maintenance suggestions through explicit bounded operations.
+The Knowledge Manager prepares source-traceable answers, context material, proposals, and authorized notebook edits through explicit bounded operations.
 
 The Knowledge Store validates and persists knowledge, proposals, reviews, content identity and lineage, and retrieval projections through its existing owners.
 
@@ -80,22 +80,11 @@ A Knowledge selection or preparation result, workspace record, imported record, 
 
 ## Lifecycle
 
-The canonical lifecycle is:
+Sources and interactions supply evidence; human and Agent edits work from one fixed notebook revision; the Knowledge Store validates the complete candidate and current authority before publishing a new revision. A human Review is an additional path when required, not the mandatory intermediary for every ordinary delegated edit. Default retrieval selects valid active pages, then the existing Context Package and worker-delivery owners project and prove exact delivered content.
 
-```text
-intake or source
-  -> source identity and derived representations
-  -> pending Knowledge Proposal
-  -> human Knowledge Review
-  -> active Knowledge Page
-  -> retrieval and policy filtering
-  -> Context Package selection
-  -> owning worker delivery trace
-  -> worker execution
-  -> observations or pending Knowledge Proposals
-```
+One published notebook revision owns the current OKF content tree and retained history. An editing workspace is temporary, and indexes, summaries and materialized directories are rebuildable projections. Multiple file changes publish as one revision after an exact-base check; a stale writer cannot overwrite a newer edit. Creation, editing, merge, split, archive and restoration use this same boundary. Restoration appends a new revision; it never erases intervening history or reverses external effects.
 
-Raw material does not become active knowledge merely because it was ingested, summarized, cited, scheduled, or generated by an agent.
+Capture, successful no-op, draft, required Review, publication, conflict and incomplete command evidence are distinct outcomes. Restart reads published content and existing evidence; it never resumes a hidden editor or infers publication from a candidate.
 
 ## Sources And Generated Learning
 
@@ -103,13 +92,13 @@ Sources preserve evidence identity and lineage; knowledge preserves reusable int
 
 The same source may support multiple Knowledge Pages, and a Knowledge Page may cite multiple sources.
 
-Raw sources remain source material unless an authorized user authors knowledge directly or accepts a source-linked Knowledge Proposal.
+Raw sources remain source material until an authorized notebook publication creates curated interpretation. Human-authored, human-reviewed and delegated Agent-authored content remain visibly distinguishable.
 
 An explicit bounded inspection of exact completed work history MAY produce a source-linked pending Knowledge Proposal.
 
-That inspection drafts a proposal; it is not a Knowledge Review and does not activate knowledge.
+That inspection is not a Knowledge Review. It may draft a candidate or, under separately admitted notebook maintenance authority, publish an ordinary validated edit.
 
-Generated learning MUST remain pending until an authorized human accepts it through Knowledge Review.
+Generated learning MUST have explicit current maintenance or exact human decision authority before publication. Required Reviews cannot be supplied by the generating model.
 
 Citation count, elapsed time, repeated generation, absence of rejection, schedule execution, or later agent use MUST NOT confirm or promote generated learning.
 
@@ -119,31 +108,21 @@ Workspace-only work, imported history, reconstructed history, standalone Knowled
 
 ## Proposal Review, Application, And Reversal
 
-Knowledge changes that may affect future worker behavior MUST remain proposed until Knowledge Review accepts them, except for explicit direct user-authored edits.
+Humans own maintenance delegation and required decisions. The Knowledge Store owns validation and publication. Ordinary authorized edits may publish without a synthetic Proposal/Review; a required decision freezes the exact base, candidate and source evidence in the existing Proposal/Review owners. Changed bytes or base require a new decision. A model cannot change its own scope, maintenance policy or critical-content rules through notebook text.
 
-An authorized human MAY create or edit knowledge directly through the existing Knowledge mutation owner, but the candidate MUST pass current validation and become `user-authored`; changed bytes MUST NOT retain the acceptance label of an earlier reviewed proposal.
+One fixed-base edit can change several files, repair links and update page states. Final validation prevents invalid active content, broken affected references, source disclosure and silent overwrites; temporary draft inconsistencies are allowed. Notebook history retains exact old/new content and responsible actor/producer history. There is no separate page-counter/full-byte archive or merge/split workflow. A content version is not proof of truth or authorization for future operations.
 
-An accepted Knowledge Review authorizes one bounded application through the Knowledge Store owner; the review decision alone does not prove that the change became active.
+Success requires published content plus the existing command and audit evidence. Failure before publication leaves the earlier version intact; missing or contradictory post-publication command evidence is explicit recovery-required, not permission to replay or fabricate a receipt. Exact historical reads still require current scope/source permissions.
 
-A generated create or single-page replacement fixes target scope, page identity, exact candidate content, source versions, producer and expected prior revision or absence before review. The business activation tuple is the exact proposal, accepting human review, resulting page revision and digest, sources, producer and reviewer. Application rejects a stale base and never overwrites a later direct edit. Request, Audit and command-receipt evidence prove command completion and replay but are not additional activation authority; multiple storage effects are not implicitly atomic.
-
-A missing or contradictory application owner MUST fail closed and MUST NOT be reconstructed from the current page or process memory.
-
-Bounded create reversal is an explicit authorized Knowledge-owner command that removes only the unchanged page created by that accepted create proposal. Replacement proposals are ineligible, and a page later replaced counts as edited and cannot be removed by its earlier create reversal.
-
-The reversal result MUST retain the original proposal, original review, created-page digest, reversal request, actor, and audit lineage.
-
-Reversal MUST NOT create a second proposal or rollback workflow, erase source evidence, remove a subsequently edited page, or imply reversal of external effects already caused by prior worker use.
-
-Consolidation may propose a complete replacement of one page using current authorized sources. Multi-page merge, split, rename, generated deletion and generalized historical restoration are excluded from this bounded lifecycle. Forgetting is an explicit authorized user operation: stop active retrieval and stale candidate application, remove content through its retention owner, and prevent automatic resurrection from the same source versions. Retained minimal evidence and independently published copies do not become active memory.
+Archival excludes a retained page from ordinary retrieval. Explicit removal/forgetting retains its required human confirmation. Forgetting blocks active and normal historical retrieval, stale candidate application and automatic resurrection from the same sources; independently retained evidence and backup bytes remain subject to their disclosed retention. Ordinary forgetting does not promise physical erasure. User restoration and import cannot bypass suppression or revoked source authority.
 
 ## Automatic Learning And Evidence Assessment
 
-Automatic extraction selects bounded eligible completed interactions and creates source-linked observations or pending proposals. Consolidation compares those observations with current saved understanding; unchanged inputs or no useful finding may complete without a proposal. It is a bounded operation of the existing Knowledge Manager and runtime, not a separate persistent Agent, scheduler or self-improvement authority. Consolidation and assessment output MUST NOT recursively establish its own factual evidence.
+Automatic extraction selects bounded eligible completed interactions and creates source-linked observations, candidates or authorized notebook revisions. Consolidation compares those observations with current saved understanding; unchanged inputs or no useful finding may complete without a change. It is a bounded operation of the existing Knowledge Manager and runtime, not a separate persistent Agent, scheduler or self-improvement authority. Consolidation and assessment output MUST NOT recursively establish its own factual evidence.
 
-Users may explicitly save, inspect, edit or forget personal Memory and eligible Knowledge. A current task instruction overrides a remembered preference for that task without silently rewriting it. Direct user expression is distinguishable from a model inference; inferred learning remains pending until authorized review. Existing source, candidate, review, page and evidence owners preserve the difference between a proposal, an assessment and an applied change.
+Users may explicitly save, inspect, edit or forget personal Memory and eligible Knowledge. A current task instruction overrides a remembered preference for that task without silently rewriting it. Direct user expression is distinguishable from a model inference; inferred learning follows current notebook maintenance authority and any required review. Existing source, candidate, review, page and evidence owners preserve the difference between a proposal, an assessment and an applied change.
 
-Optional AI prove is source-grounded evidence assessment of an exact claim or candidate. It records support, contradiction or insufficient evidence and its limitations; it is neither mathematical proof nor an authorization grant. An authored scope policy may require this assessment for critical generated content, but a positive result never substitutes for human Review. Changed content or evidence invalidates the old assessment. User editing remains available without falsely preserving a verified label.
+Optional AI prove is source-grounded evidence assessment of an exact claim or candidate. It records support, contradiction or insufficient evidence and its limitations; it is neither mathematical proof nor an authorization grant. An authored scope policy may require this assessment for critical generated content, but a positive result never grants maintenance authority or substitutes for a required human Review. Changed content or evidence invalidates the old assessment. User editing remains available without falsely preserving a verified label.
 
 Learning that yields a reusable procedure may submit a Skill candidate through Agent Supply. Skill version comparison and rollback retain that owner; factual Memory/Knowledge, procedural Skills, model-generated candidate claims and observed evaluation results remain distinguishable.
 
@@ -179,10 +158,10 @@ External domain systems own their raw source-of-truth records; OpenKit may cite,
 
 - Reviewed knowledge MUST remain human-authoritative and MUST NOT become agent-owned.
 - Direct human creates and edits MUST pass current validation and MUST NOT preserve a reviewed-proposal acceptance label across changed bytes.
-- Generated learning MUST enter as a source-linked pending Knowledge Proposal and MUST NOT self-promote or self-confirm.
-- Only an authorized human Knowledge Review may accept generated learning for active retrieval.
-- An accepted review MUST NOT count as applied knowledge until the exact resulting page revision, content digest, owner scope, source lineage, producer, and accepting human review are durable. Missing Audit or command receipt prevents a success or replay claim and returns `recovery_required`, but does not deactivate an otherwise complete business tuple.
-- Bounded create reversal MUST remove only the unchanged original proposal-created page; any later replacement makes it ineligible. Both original and reversal evidence MUST remain.
+- Generated learning MUST retain source lineage and explicit publication authority; a model MUST NOT self-authorize or self-confirm its factual claims.
+- Ordinary delegated publication requires explicit current maintenance authority; only an authorized human can supply a required Knowledge Review.
+- A required Review is not proof of publication. Published revision, exact content and existing operation evidence must agree; missing Audit or command receipt prevents a success or replay claim even when the content ref advanced.
+- Restore and reversal create new exact-base revisions; they preserve old evidence and cannot silently overwrite later edits or undo external effects.
 - Workspace-only, imported, reconstructed, or standalone Knowledge provenance MUST NOT masquerade as completed worker output.
 - Only the owning worker delivery trace may prove that a worker received selected knowledge.
 - Knowledge Pages MUST NOT store secret values.

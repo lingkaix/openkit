@@ -42,7 +42,7 @@ CoreServer
   Workspace
 ```
 
-User Memory and Workspace/Server Knowledge reuse the same file-backed knowledge machinery under distinct trusted scope roots; no separate Memory database or authority is implied. Private project Thread bytes remain in the Workspace tree and carry private access through their owning Thread, not through directory concealment.
+User Memory and Workspace/Server Knowledge reuse the same file-backed notebook machinery under distinct trusted scope roots. One published versioned content tree owns notebook content and retained history; materialized pages and indexes are projections. Sources retain original evidence independently. No separate Memory database or content-history owner is implied. Private project Thread bytes remain in the Workspace tree and carry private access through their owning Thread, not through directory concealment.
 
 User and Workspace are independent storage scopes. Identity membership links users to workspaces, while workspace ownership and access relationships must not be encoded by nesting the workspace under the current owner's storage scope.
 

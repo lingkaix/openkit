@@ -11,7 +11,7 @@ implementation: Partial
 - Task-mode-service-to-Knowledge Manager context material requests.
 - Explicit App API operations for governed proposal drafting, repair suggestions, and health inspection.
 - Knowledge Manager output classes: answer, uncertainty report, context material, proposal draft, repair suggestion, and health report.
-- The optional semantic Knowledge Manager Turn, its activation boundary, initial Tool set, proposal-only mutation posture, and role-specific failure semantics.
+- The optional semantic Knowledge Manager Turn, its activation boundary, initial Tool set, entry-specific mutation authority, and role-specific failure semantics.
 
 ## Does Not Own
 
@@ -34,7 +34,7 @@ implementation: Partial
 
 ## Summary
 
-Knowledge Manager is an Internal Core Role implemented as deterministic NanoCore service functions for knowledge retrieval support and governed maintenance. Existing knowledge specs own the store, governance, validation, proposals, the single governed retrieval owner, and durable records. This spec owns only the five typed operation families and their caller boundary.
+Knowledge Manager is an Internal Core Role implemented as deterministic NanoCore service functions for knowledge retrieval support and governed maintenance. Existing knowledge specs own the store, governance, validation, proposals, the single governed retrieval owner, and durable records. This spec owns the typed operation families and their caller boundary.
 
 Knowledge Manager may prepare source-traceable material and draft proposals. It must not silently rewrite high-impact active knowledge, bypass validation, compose final worker prompts, own a private execution lifecycle, or become the workflow coordinator.
 
@@ -53,8 +53,8 @@ Knowledge Manager may prepare source-traceable material and draft proposals. It 
 - Do not redefine Knowledge Store format or validation.
 - Do not let Knowledge Manager write secrets or read vault material.
 - Do not let Knowledge Manager directly launch workers.
-- Do not let Knowledge Manager silently apply meaning-changing repairs.
-- Do not build semantic knowledge v2 or history-derived preference synthesis beyond existing governance.
+- Do not let Knowledge Manager change content without current explicit instruction or maintenance delegation.
+- Do not add unbounded synthesis or expand source access through notebook maintenance.
 - Do not add passive hooks, scheduled envelopes, a Knowledge-specific loop, or a generic internal-agent framework.
 
 ## Background
@@ -64,7 +64,7 @@ Knowledge Manager may prepare source-traceable material and draft proposals. It 
 ## Decision
 
 - Knowledge Manager is an Internal Core Role implemented through direct deterministic service calls.
-- It exposes bounded operation families: `answer`, `prepare-context-material`, `draft-proposal`, `suggest-repair`, and `health-check`.
+- It exposes bounded operation families: `answer`, `prepare-context-material`, `draft-proposal`, `suggest-repair`, `health-check`, and explicitly admitted `maintain`.
 - Assistant may call Knowledge Manager for direct knowledge answers and uncertainty reports.
 - Task Mode calls Knowledge Manager once for source-traceable material before final context assembly.
 - `answer` and `prepare-context-material` MUST reuse the one deterministic governed retrieval owner defined by `docs/specs/20260703-knowledge_store_implementation.md`; Knowledge Manager MUST NOT own a parallel substring search, candidate selector, policy filter, ranking path, or retrieval trace family.
@@ -93,10 +93,10 @@ Knowledge Manager may prepare source-traceable material and draft proposals. It 
 
 `draft-proposal`:
 
-- creates one create or exact-base single-page replace candidate Knowledge Proposal from source material, worker output, user correction, or maintenance findings
-- fixes one target `knowledgePageId` with expected absence for create or exact base revision/digest and retained base Source for replace, exact canonical candidate bytes and `contentDigest`, source references, confidence, freshness, owner scope and conflict notes in the existing proposal owner
+- creates one fixed-base notebook-change Knowledge Proposal from source material, worker output, user correction, or maintenance findings
+- fixes exact owner scope, base/candidate commits, source versions, producer, confidence and rationale through the existing Proposal owner; candidate commit fixes all changed paths and bytes
 - applies S61's terminal-work predicate exactly when the normalized source references contain any `turn`, `item`, or `context-package` reference; such a request must contain the complete matching terminal direct-Task tuple, while a proposal backed only by registered Source or existing Knowledge Page references does not claim worker output
-- does not activate the proposal; only an authorized human review may apply its fixed page through the S61 owner
+- does not activate the proposal; this explicitly proposal-only operation leaves application to the currently authorized decision and shared notebook publisher
 
 `suggest-repair`:
 
@@ -110,17 +110,15 @@ Knowledge Manager may prepare source-traceable material and draft proposals. It 
 
 ### Optional semantic Turn
 
-The semantic Knowledge Manager path is one short, request-scoped Turn over the shared internal Agent runtime. It is not a replacement for deterministic retrieval, validation, context preparation, freshness checks, policy filtering, repair suggestions, or health inspection. The caller MUST use a deterministic operation when that operation can produce the required result, and model preference, convenience, or confidence is not an activation condition.
+The semantic path uses one bounded Turn through the shared internal Agent runtime when the request needs semantic judgment; deterministic answer, retrieval, validation and reports remain direct calls. Read/proposal entries keep the ordered Tools `knowledge.search`, `knowledge.source.read`, `knowledge.change.propose`. Their effects remain bounded reads and pending candidate creation. These entries never acquire maintenance tools because of message text or a model request.
 
-The complete initial Tool set is `knowledge.search`, `knowledge.source.read`, and `knowledge.change.propose`. `knowledge.search` returns bounded scope- and audience-filtered candidates with provenance, revision, freshness, visibility, conflict, and uncertainty evidence. `knowledge.source.read` reads only one explicitly selected source or bounded segment through its current source and permission owners. `knowledge.change.propose` creates only a reviewable Knowledge Proposal candidate with source lineage, intended scope, uncertainty, conflicts, and exclusions through the existing proposal owner. A Turn may receive a smaller subset when one or more operations are unreachable, but it may receive no additional mutation Tool under this contract.
+`maintain` is a separate trusted entry for explicit notebook editing or the scoped learning owner's admitted personal capture composition. Its input is `{instruction,pageIds?,sourceIds?}` plus existing request identity; exact owner scope, actor, audience and authority come from the route/trusted caller. Page/source IDs select admitted content, never host paths. The initial App API route is `POST <scoped-knowledge-route>/manager/maintenance`, with existing User/Workspace/Server scope route and authorization conventions. The route, Core Client and bundled CLI project this same operation; no worker-facing route or Goal caller is added.
 
-Every Tool call is server-bound, reauthorized against the current actor, exact owner scope, output audience, source revision, and Knowledge policy, and returns only a bounded product-safe result. Tool presence grants no authority. Missing, denied, stale, conflicted, deleted, unreadable, or dependency-failed sources remain typed observations; the model MUST NOT infer their content, widen scope, substitute a different source silently, or convert uncertainty into a durable claim.
+Maintenance receives exactly, in order, `knowledge.search`, `knowledge.source.read`, `knowledge.notebook_workspace.update`, `knowledge.notebook.update`. The notebook owner defines the latter pair's strict input/effect/limit/failure schemas: interpreted editing only in one fixed-base virtual filesystem, followed by submission of that exact candidate to the publisher. There is no raw host shell, Git Tool, arbitrary MCP execution, private loop or extra session owner. `knowledge.notebook.update` is a closed candidate-publication request, never a script or transaction language. The Tool closures retain the fixed snapshot across calls in this invocation only.
 
-The Turn terminates after it returns a grounded answer, bounded context result, or accepted proposal receipt and has no runnable Tool call, or when the shared runtime returns its exact abort, limit, or failure outcome. Quiescence, model confidence, or a proposal draft never means that Knowledge was accepted, applied, replaced, deleted, published, or shared. Those mutations remain exclusively with the existing Knowledge service and review owners.
+All calls reauthorize current actor, scope, source, audience and policy. Missing or denied material remains a typed observation, never permission to widen scope or substitute sources. The Turn ends on its terminal typed result, cancellation or the shared runtime's limits. Maintenance output is one of `published` with `{baseRevision,notebookRevision,changedPageIds,receiptRef}`, `review_required` with `{proposalId,baseRevision,candidateRevision}`, `no_change`, or a bounded `conflict | denied | invalid_request | unavailable | recovery_required` result. An operation may publish at most once; the published or review-required result ends editing, and further changes require a new invocation. Model prose or quiescence cannot prove publication.
 
-Retry after provider failure, stale input, restart, or an invalidated source is a new Turn reconstructed from the current request, Knowledge records, source revisions, proposal history, and evidence. No provider conversation, hidden transcript, or in-memory summary is recovery authority. If deterministic service can still answer the original request without semantic loss, the caller may use that existing operation; otherwise it returns the typed semantic failure or insufficient-evidence result and performs no mutation. Duplicate proposal calls retain the existing proposal request-identity rules, while read-only retries create no new durable Knowledge Manager state.
-
-Observable acceptance requires that a deterministic case completes without a model Turn; a demonstrated semantic case receives only the admitted Tools and retains source identity, freshness, audience, conflict, and uncertainty; a mutation attempt can produce only a pending Knowledge Proposal; a missing or stale dependency cannot become accepted Knowledge; restart reconstructs from durable owners; and no generic runner, scheduler, event hook, private lifecycle record, or automatic publication path appears in the Knowledge Manager boundary.
+Restart/provider failure never resumes a virtual editing session. A new Turn reconstructs current authorized content; exact command replay inspects the existing owner outcome rather than rerunning the model. Cancellation discards unsaved edits, while an explicitly saved Proposal retains its candidate. No result can turn missing command evidence into success. Deterministic paths remain usable without activating a model.
 
 ### Callers
 
@@ -133,8 +131,9 @@ The exact V1 semantic caller vocabulary is `assistant`, `task-mode`, and `app-ap
 | `draft-proposal` | `assistant`, `app-api` |
 | `suggest-repair` | `app-api` |
 | `health-check` | `app-api` |
+| `maintain` | `assistant`, `app-api` |
 
-- Assistant may call `answer` and receive an answer or uncertainty report. Trusted private Assistant assembly may also call `draft-proposal` after admitted conversation Source registration for the exact opted-in, bounded capture in `20260909-personal_memory_and_knowledge_learning.md`; this preserves the `assistant` caller and current user, never impersonates `app-api`, and cannot activate or apply the candidate.
+- Assistant may call `answer`, or trusted private assembly may call `draft-proposal`/`maintain` for the exact scoped learning composition. Capture and maintenance permissions remain separate; a private conversation never implicitly authorizes Workspace/Server publication. Ordinary Assistant model Tools do not include the virtual filesystem.
 - Direct Task Mode calls `prepare-context-material` exactly once for its accepted S39 path; that operation delegates to S61 exactly once and returns the existing retrieval trace reference. Task Mode does not call `answer`, S61, or another selector in parallel.
 - Governed App API routes assign `app-api` after authorization and schema validation; an authenticated user remains the audit actor rather than becoming the semantic caller.
 - No passive or scheduled caller is authorized in V1. A future trigger must be owned by a separately accepted specification and reuse these operations without adding a second lifecycle owner.
@@ -145,9 +144,9 @@ The caller table constrains routes that already exist; it does not authorize imp
 
 - Every Knowledge Manager write must pass through the knowledge service.
 - Invalid active knowledge must not enter retrieval.
-- Generated Knowledge Page content and meaning-changing repairs require proposal and review. Observations, claims, and conflicts may use their existing maintenance owners but remain non-active until the governed proposal path promotes reusable knowledge.
+- Ordinary generated edits require explicit instruction or current maintenance delegation; designated critical content and sensitive effects require the exact decision owned by the notebook publisher. Observations/claims/conflicts remain maintenance evidence, not self-granted publication authority.
 - A drafted proposal's exact source references MUST be persisted through the existing Knowledge Proposal owner; returning lineage only in the operation response is insufficient. Its validation result is a response and diagnostic projection because application revalidates the fixed candidate against current authority.
-- This service never auto-applies repairs. Any future repair application remains governed by the Knowledge Store owner and requires separately accepted scope.
+- Report-only repair/health operations never apply changes. The separate admitted maintenance entry may apply ordinary corrections through the notebook publisher.
 
 ### Output and audit
 
@@ -161,7 +160,7 @@ An `answer` or `prepare-context-material` result may reference the one governed 
 
 Each deterministic call and each optional semantic Turn is request-scoped and terminates with one schema-valid result or the owning typed failure. Neither creates a Knowledge Manager session, run, checkpoint, pending row, retry queue, or recovery record; the semantic Turn's ordinary Thread and Turn records belong to the shared internal Agent runtime and conversation owners rather than a Knowledge-specific lifecycle.
 
-`answer` returns a cited answer or `insufficient-evidence` and never mutates knowledge. App API `prepare-context-material` may return bounded selected and excluded projections plus the existing S61 retrieval trace reference, while Task Mode returns exactly `{ retrievalTraceId }`; neither form assembles or materializes worker context. `draft-proposal` may create only a pending create or exact-base replace Knowledge Proposal through the existing proposal store and review flow, with its fixed target page id, bytes, digest, and sources durable before success. `suggest-repair` and `health-check` return reports and do not apply repairs, schedule work, or write knowledge.
+`answer` returns a cited answer or `insufficient-evidence` and never mutates knowledge. App API `prepare-context-material` may return bounded selected and excluded projections plus the existing S61 retrieval trace reference, while Task Mode returns exactly `{ retrievalTraceId }`; neither form assembles or materializes worker context. `draft-proposal` may create only a pending fixed-base notebook-change Knowledge Proposal through the existing proposal store and review flow, with its fixed base/candidate commits and sources durable before success. `suggest-repair` and `health-check` return reports and do not apply repairs, schedule work, or write knowledge.
 
 Authorization keeps the existing authentication mapping, invalid request bodies return `invalid_request` with HTTP 400, a missing addressed resource returns the existing typed not-found response with HTTP 404, and a conflicting proposal request id returns `idempotency_key_conflict` with HTTP 409. When S61's deterministic owner-scope-plus-request proposal exists but the matching proposal-draft receipt is absent, the proposal route returns `recovery_required` with HTTP 409 and performs no additional mutation. Other operation failures return HTTP 500 with `knowledge_manager_answer_failed`, `knowledge_manager_context_failed`, `knowledge_manager_proposal_draft_failed`, `knowledge_manager_repair_suggest_failed`, or `knowledge_manager_health_check_failed` at their owning route. Every public error is a closed typed envelope with bounded, redacted details; caught exception messages, stack traces, local paths, query text, source bytes, credentials, and secret-like values MUST NOT be copied into a response. A failed call must not claim a proposal, repair, health action, context delivery, or worker availability that its owning durable record does not prove. Proposal drafting alone is a business mutation and MUST use its request id to return the same pending proposal on replay. Each answer, context preparation, repair suggestion, or health check is a distinct invocation; its usage or trace evidence is not retry state and does not authorize resumption.
 
@@ -169,19 +168,17 @@ After restart, only the Knowledge Store, Knowledge Proposal and review records, 
 
 ## Accepted Design
 
-NanoCore keeps the five direct deterministic functions over the existing knowledge store, validation, proposal, and trace services as the default path, with both read operations delegating to S61's single governed retrieval owner. For demonstrated semantic cases only, the Knowledge Manager role may execute one bounded Turn through `docs/specs/20260813-internal_agent_runtime.md` with only `knowledge.search`, `knowledge.source.read`, and `knowledge.change.propose`; mutation remains proposal-only. Assistant, the existing Task Mode integration, and App API routes supply bounded inputs and consume typed outputs. Task Mode owns its durable transitions, final worker-context persistence, materialization, S39 delivery proof, and worker launch; it requests scheduler and Human Attention or Action Center effects through those existing owners. Workflow Coordinator retains semantic worker-context composition but cannot change S61's Knowledge selection dispositions. S61 retrieval evidence remains audit-only and MUST NOT be promoted into the S39 owner. No generic runner, registry, hooks, scheduler dependency, Knowledge-specific Tool executor, Goal integration, automatic active-page application, or second retrieval or context-delivery owner belongs to this service.
+Keep existing deterministic operations and one S61 retrieval owner. Optional semantic read/proposal Turns use their three-Tool set; explicitly admitted `maintain` uses its separate four-Tool set and the notebook publisher. Task Mode still requests S61 preparation once; Workflow Coordinator owns composition and S39 owns worker delivery. Neither maintenance nor a retrieval trace creates worker execution, scheduling, Goal integration or a second context owner.
 
 ## Scoped Memory And Learning Extension
 
-`20260909-personal_memory_and_knowledge_learning.md` extends these same operations with trusted User/Workspace/Server scope resolution and the bounded interaction-capture composition. Personal Memory uses governed Knowledge retrieval rather than a sixth Assistant source or private runtime. `knowledge.change.propose` may produce a create or exact-base replace candidate through the existing owner; it never applies its own output. Explicit user Memory mutations bypass semantic judgment only by invoking the existing validated user-authored command, not by granting the model a file writer.
-
-An assessment is a bounded call over one exact candidate and current authorized evidence, recorded in the existing Observation family. It introduces no Judge role, evaluation service or autonomous activation. Retrieval preserves every candidate's scope, page revision/digest, source authority and output audience under the one deterministic store implementation. The model may return conflict/uncertainty and must not silently choose a higher-scope fact.
+`20260909-personal_memory_and_knowledge_learning.md` owns source capture, scope/audience and bounded extraction. `20260909-knowledge_notebook_editing.md` owns editing/publication/history. Capture opt-in alone cannot enable unattended maintenance. An assessment remains one bounded invocation recorded by existing Observation evidence, never a Judge service or self-approval. Deterministic retrieval retains exact scope, commit/digest, source authority and audience; contradictions are not resolved by simply preferring a higher scope.
 
 ## Current Implementation Projection
 
 NanoCore exposes the five deterministic Knowledge Manager operations through App API schemas, `@openkit/core-client`, NanoCore routes, OpenAPI, the transport-neutral operation catalog, the bundled CLI, and the unified Skill. Answer and context preparation delegate to S61's governed retrieval owner; context preparation returns that owner's trace reference and exposes no standalone worker-context materialization or delivery surface.
 
-The server assigns only `assistant`, `task-mode`, or `app-api`, rejects public caller overrides, validates generated candidate bytes and source lineage before proposal persistence, and returns bounded product-safe errors. Proposal drafting fixes one create-only page id, exact canonical bytes, digest, and source references through the existing proposal owner. Direct Task delivery remains proved only by S39's exact page, digest, provenance, and byte projection. Product-facing Knowledge Manager operations expose no worker-facing `knowledge.*` capability routes, and Goal Mode integration remains deferred outside this specification's acceptance boundary. The optional semantic Knowledge Manager Turn and its three-Tool assembly are not implemented, so the implementation is Partial; current deterministic operations remain conforming and must not be routed through a model merely to approximate the missing semantic path.
+The server assigns only `assistant`, `task-mode`, or `app-api`, rejects public caller overrides, validates generated candidate bytes and source lineage before proposal persistence, and returns bounded product-safe errors. Proposal drafting fixes one create-only page id, exact canonical bytes, digest, and source references through the existing proposal owner. Direct Task delivery remains proved only by S39's exact page, digest, provenance, and byte projection. Product-facing Knowledge Manager operations expose no worker-facing `knowledge.*` capability routes, and Goal Mode integration remains deferred outside this specification's acceptance boundary. The semantic read/proposal Turn, separate maintenance entry and Git publisher are not implemented, so the implementation is Partial; current deterministic operations remain conforming and must not be routed through a model merely to approximate the missing semantic path.
 
 ## Alternatives Considered
 
@@ -197,16 +194,16 @@ The server assigns only `assistant`, `task-mode`, or `app-api`, rejects public c
 
 ## Testing Strategy / Acceptance Criteria
 
-- L1/L2 tests cover the five deterministic operation schemas, exact server-assigned callers, client-override rejection, authenticated actor separation, S61 delegation by both read operations, create and exact-base replacement proposal output, deterministic-path non-activation, the exact semantic Tool set, and absence of a Knowledge-specific runner, scheduler, or private lifecycle state.
+- L1/L2 tests cover the five deterministic operation schemas, exact server-assigned callers, client-override rejection, authenticated actor separation, S61 delegation by both read operations, fixed-base notebook proposal output, deterministic-path non-activation, the exact semantic Tool set, and absence of a Knowledge-specific runner, scheduler, or private lifecycle state.
 - One existing NanoCore route suite covers the bounded 400, 404, `idempotency_key_conflict`, `recovery_required`, and operation-specific 500 mappings plus successful-result isolation, error redaction, proposal request replay, and the fact that S61 retrieval evidence cannot satisfy S39 delivery.
 - S18 alone owns the real Knowledge L6 story; this service spec authorizes no additional story or harness.
 
-Acceptance: routes assign only `assistant`, `task-mode`, or `app-api` and reject client override; every call or semantic Turn is request-scoped; deterministic cases activate no model; both read operations use S61's single governed retrieval owner; semantic cases receive only the three admitted Tools; public failures are typed and redacted; every proposal draft is create or exact-base replace and durably fixes its target page id, bytes, digest, and sources through the existing owner; S61 retrieval evidence never counts as S39 delivery proof; and no observable result depends on a Knowledge-specific runner, private lifecycle, second retrieval owner, second context owner, automatic publication path, or Goal integration.
+Acceptance: routes assign only `assistant`, `task-mode`, or `app-api` and reject client override; every call or semantic Turn is request-scoped; deterministic cases activate no model; both read operations use S61's single governed retrieval owner; semantic cases receive only their exact entry-specific Tools; public failures are typed and redacted; every proposal draft durably fixes its base/candidate commits and sources through the existing owner; S61 retrieval evidence never counts as S39 delivery proof; and no observable result depends on a Knowledge-specific runner, private lifecycle, second retrieval owner, second context owner, unauthorized publication path, or Goal integration.
 
 ## Risks & Mitigations
 
 - Risk: Knowledge Manager over-synthesizes facts. Mitigation: source references and insufficient-evidence outcomes are required.
-- Risk: maintenance changes surprise users. Mitigation: this service returns review-required suggestions and only the governed proposal path may create reviewable change records.
+- Risk: maintenance changes surprise users. Mitigation: maintenance is explicitly delegated, history shows exact attributed diffs, and sensitive changes retain required human decisions.
 - Risk: context material becomes too large. Mitigation: the owning mode service applies policy and package bounds before Coordinator composition and again at materialization without adding excluded material.
 
 ## Resolved Decisions
@@ -219,7 +216,7 @@ Previously open questions are resolved by accepted V1 defaults: health checks ar
 - Semantic retrieval and embedding-backed ranking.
 - Implicit cross-Workspace factual sharing; audience-bounded personal scope selection is owned by the scoped Memory extension.
 - Team review rules for shared knowledge.
-- Additional semantic Knowledge Tools or automatic active-page application beyond source registration and pending candidate production.
+- Tools or unattended triggers beyond the explicitly bounded notebook maintenance entry.
 
 ## Links
 

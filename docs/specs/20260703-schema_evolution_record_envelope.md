@@ -182,7 +182,7 @@ When tolerant storage records project into protocol or App API payloads, the pro
 
 ## Personal Scope And Knowledge Profile Projection
 
-Thread `visibility` and `privateOwnerUserId` are authority-bearing creation metadata owned by `20260909-thread_visibility_and_sharing.md`; missing/contradictory data cannot default to shared. The scoped Knowledge extension adds exact owner scope and `openkit_revision` under profile v3 plus proposal expected-base and Review target-state assertion. Apply these through the existing record/schema migration owners, preserving source lineage and failing closed on ambiguous scope or revision. Retired Workspace Memory aliases remain absent; intentional User Memory is a new scoped projection, not a compatibility parser.
+Thread `visibility` and `privateOwnerUserId` are authority-bearing creation metadata owned by `20260909-thread_visibility_and_sharing.md`; missing/contradictory data cannot default to shared. The scoped Knowledge extension adds exact owner scope under profile v4 plus notebook Git base/candidate commit assertions on publication and required Review; page revision counters are absent. Apply these through the existing record/schema migration owners, preserving source lineage and failing closed on ambiguous scope or revision. Retired Workspace Memory aliases remain absent; intentional User Memory is a new scoped projection, not a compatibility parser.
 
 ## Authority-Bearing Fields
 
@@ -238,7 +238,7 @@ The initial Generative contracts register `workspace.generative-kernel.v1` and `
 
 The accepted recurring design selects `workspace.recurring-triggers.v1` for definitions, exact occurrence/expired-range history and its inert portable projection. Like the Generative identifiers above, it must enter the shared runtime registry and executable/spec projection when implemented; current writers cannot emit it. Unknown required recurring semantics fail closed rather than importing active execution or silently omitting history.
 
-The Personal Assistant design selects `openkit.thread-visibility.v1`, `openkit.knowledge-owner-scope.v1` and `openkit.knowledge-exact-revision.v1` for private Thread audiences, scoped Knowledge ownership and exact page/mutation revisions. These are design-selected, Not Started identifiers. Register them and update the existing executable/spec projection before their families become writable/importable; current writers cannot emit them. Dependent export manifests carry the required features so unsupported readers reject before disclosing private content or weakening mutation guards.
+The Personal Assistant design selects `openkit.thread-visibility.v1`, `openkit.knowledge-owner-scope.v1` and `openkit.knowledge-git-notebook.v1` for private Thread audiences, scoped Knowledge ownership and Git-backed exact notebook/mutation revisions. These are design-selected, Not Started identifiers. Register them and update the existing executable/spec projection before their families become writable/importable; current writers cannot emit them. Dependent export manifests carry the required features so unsupported readers reject before disclosing private content or weakening mutation guards.
 
 ## Extension Namespaces
 
