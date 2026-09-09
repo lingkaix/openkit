@@ -1,8 +1,7 @@
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
-
-import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
+import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 

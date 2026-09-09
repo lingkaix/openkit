@@ -603,9 +603,7 @@ export class RuntimeConfigFileService {
             'workspaces',
             spec.workspaceId ?? '',
             'config',
-            spec.kind === 'data-source'
-              ? 'data-sources.jsonc'
-              : 'workspace.jsonc'
+            spec.kind === 'data-source' ? 'data-sources.jsonc' : 'workspace.jsonc'
           )
         : spec.kind === 'user'
           ? join(tempRoot, 'users', spec.userId ?? '', 'config', 'user.jsonc')
@@ -895,10 +893,7 @@ export class RuntimeConfigFileService {
    * @param workspaceId Workspace id to resolve.
    * @returns Workspace config path.
    */
-  private workspaceConfigPath(
-    workspaceId: string,
-    kind: 'workspace' | 'data-source'
-  ): string {
+  private workspaceConfigPath(workspaceId: string, kind: 'workspace' | 'data-source'): string {
     return join(
       this.dataRoot,
       'workspaces',
@@ -1189,9 +1184,7 @@ function schemaForKind(kind: RuntimeConfigFileKind): z.ZodType {
  * @param kind Runtime config file kind.
  * @returns True when the kind is workspace-scoped.
  */
-function isWorkspaceScopedKind(
-  kind: RuntimeConfigFileKind
-): kind is 'workspace' | 'data-source' {
+function isWorkspaceScopedKind(kind: RuntimeConfigFileKind): kind is 'workspace' | 'data-source' {
   return kind === 'workspace' || kind === 'data-source';
 }
 

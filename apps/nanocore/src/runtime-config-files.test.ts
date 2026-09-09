@@ -10,12 +10,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { ensureLocalUser } from './auth/identity.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**

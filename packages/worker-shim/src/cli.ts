@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { closeSync, readSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile, access, cp } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';

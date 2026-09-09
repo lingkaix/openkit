@@ -80,7 +80,9 @@ export const A2UI_CATALOG: Readonly<Record<string, CatalogRenderer>> = {
     </Card>
   ),
   Row: (node, renderChildren) => (
-    <div className="flex flex-row flex-wrap items-center gap-2">{renderChildren(node.children)}</div>
+    <div className="flex flex-row flex-wrap items-center gap-2">
+      {renderChildren(node.children)}
+    </div>
   ),
   Column: (node, renderChildren) => (
     <div className="flex flex-col gap-2">{renderChildren(node.children)}</div>

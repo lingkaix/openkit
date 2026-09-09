@@ -3,8 +3,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -13,14 +13,12 @@ import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-
-import { createLightApp } from '../generative-kernel/commands.js';
-import { createDemoStore } from '../test-support/demo-store.js';
-
 import {
   createOpenKitAccessTokenRecord,
   verifyOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { createLightApp } from '../generative-kernel/commands.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import {
   bindThreadMaterial,
   createWorkspaceMaterial,
@@ -442,12 +440,16 @@ describe('data-root backup manifest', () => {
       startedAt: timestamp,
       completedAt: '2026-09-09T00:00:01.000Z',
     });
-    expect(verified.checkedFiles.some((path) => path.includes('/light-apps/') && path.endsWith('/data.sqlite'))).toBe(
-      true
-    );
-    expect(verified.checkedFiles.some((path) => path.includes('/light-apps/') && path.includes('/definitions/'))).toBe(
-      true
-    );
+    expect(
+      verified.checkedFiles.some(
+        (path) => path.includes('/light-apps/') && path.endsWith('/data.sqlite')
+      )
+    ).toBe(true);
+    expect(
+      verified.checkedFiles.some(
+        (path) => path.includes('/light-apps/') && path.includes('/definitions/')
+      )
+    ).toBe(true);
     const appDirs = readdirSync(join(backupRoot, 'workspaces', 'ws_demo', 'light-apps'));
     rmSync(join(backupRoot, 'workspaces', 'ws_demo', 'light-apps', appDirs[0]!, 'definitions'), {
       recursive: true,

@@ -3334,7 +3334,10 @@ export const operationCatalog = [
     mutating: true,
     inputSchema: flatRequest(appSchemas.PublishGenerativePresentationRequestSchema, workspaceScope),
     handler: ({ client }, input) =>
-      client.app.publishGenerativePresentation(input.workspaceId, bodyWithout(input, 'workspaceId')),
+      client.app.publishGenerativePresentation(
+        input.workspaceId,
+        bodyWithout(input, 'workspaceId')
+      ),
   },
   {
     ...STANDARD,

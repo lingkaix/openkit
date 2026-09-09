@@ -164,3 +164,13 @@ Working facts after this epoch:
 - This plan status becomes `implemented`. It is not `verified`: live selected-Worker, browser E2E, and crash/restart proofs remain **deferred**. The earlier design plan remains `verified` and is not an implementation owner.
 - Kernel and Generative UI specifications move from `Implementation: In Progress` to `Partial` because the initial-delivery code is landed while those deferred proofs and later extensions keep the contracts from `Implemented`.
 - The GitHub `PR lightweight repo check` failed only on the pre-existing unrelated catalog plan's noncanonical `status: in-review`. This epoch changes that one frontmatter value to `in-progress`, matching the catalog plan's own checkpoint that independent review has not accepted that other change. No other catalog-plan content is edited.
+
+## Implementation Epoch 7
+
+Source: after Epoch 6 unblocked `validate-doc-model.mjs`, the same lightweight `check:repo` chain reached `validate-agent-interface-reachability.mjs` and failed because the retired-binary needle `openkit-mcp` is a substring of the accepted MCP catalog digest format `openkit-mcp-config-v1`.
+
+Working facts after this epoch:
+
+- The reachability scanner now treats `openkit-mcp` as the deleted public binary/package identifier and does not flag `openkit-mcp-config-v1`. The other retired needles are unchanged.
+- After that scanner passed, whole-repo `biome check .` became reachable. This epoch applies formatter/import-order fixes required for that gate, including a few NanoCore and worker-shim files this slice did not otherwise change, and removes an unused Kernel schema fixture from the Generative UI route test.
+- This does not rename catalog identity, waive the no-user-facing-MCP rule, or absorb remaining catalog-plan work.

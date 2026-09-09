@@ -1,7 +1,7 @@
 import {
-  GetGenerativePresentationResponseSchema,
   GenerativePresentationDataModelResponseSchema,
   GenerativePresentationResourceResponseSchema,
+  GetGenerativePresentationResponseSchema,
   LightAppRequestIdSchema,
   PublishGenerativePresentationRequestSchema,
   PublishGenerativePresentationResponseSchema,

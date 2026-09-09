@@ -170,7 +170,9 @@ export const LightAppCollectionInputSchema = z
         path: ['fields'],
       });
     }
-    const ids = collection.fields.map((field) => field.id).filter((id): id is string => Boolean(id));
+    const ids = collection.fields
+      .map((field) => field.id)
+      .filter((id): id is string => Boolean(id));
     if (new Set(ids).size !== ids.length) {
       context.addIssue({
         code: 'custom',
@@ -336,12 +338,7 @@ export const LightAppDateValueSchema = z
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
 /** JSON value admitted for one Kernel field. */
-export const LightAppFieldValueSchema = z.union([
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z.null(),
-]);
+export const LightAppFieldValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
 /** Public Kernel record wire shape. */
 export const LightAppRecordSchema = z

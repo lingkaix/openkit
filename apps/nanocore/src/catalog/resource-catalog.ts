@@ -386,7 +386,9 @@ export function createWorkspaceMcpConfig(input: {
   const digest = digestMcpConfig(declaration, packageRootDigest);
   const id = input.id ?? skillIdFromDisplayName(input.displayName);
   if (id === 'openkit-generative') {
-    throw new CatalogForbiddenError('Catalog id openkit-generative is reserved for the built-in Worker MCP surface.');
+    throw new CatalogForbiddenError(
+      'Catalog id openkit-generative is reserved for the built-in Worker MCP surface.'
+    );
   }
   const current =
     input.baseCatalog ?? loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);

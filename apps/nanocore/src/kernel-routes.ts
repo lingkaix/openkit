@@ -27,12 +27,12 @@ import {
   createRecord,
   getLightApp,
   getRecord,
+  type KernelCommandContext,
   listLightApps,
   listRecords,
   retireLightApp,
   updateLightAppSchema,
   updateRecord,
-  type KernelCommandContext,
 } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import type { FsStore } from './lib/store.js';
@@ -279,7 +279,10 @@ function bindWorkspace(
   if (mutating) {
     const parsed = LightAppRequestIdSchema.safeParse(requestId);
     if (!parsed.success) {
-      throw new KernelCommandError('validation_failed', 'Kernel mutations require x-openkit-request-id.');
+      throw new KernelCommandError(
+        'validation_failed',
+        'Kernel mutations require x-openkit-request-id.'
+      );
     }
     requestId = parsed.data;
   }

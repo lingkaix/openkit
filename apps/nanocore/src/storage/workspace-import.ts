@@ -25,6 +25,7 @@ import {
   WorkspaceRepositoryGitConfigSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
+import type { PortableSkillPayload, ResourceCatalogDocument } from '@openkit/config-schema';
 import {
   AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
@@ -55,6 +56,12 @@ import {
   deriveArtifactReviewWorkerRequestId,
   serializeArtifactReviewFollowUpRequest,
 } from '../artifact-reviews.js';
+import {
+  AGENT_RESOURCE_CATALOG_EXPORT_PATH,
+  readPortableAgentResourceCatalog,
+  readPortableSkillPayload,
+  reconstructImportedWorkspaceCatalog,
+} from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
@@ -114,13 +121,6 @@ import {
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 import type { WorkspacePortableFileState } from './workspace-portable-file-state.js';
-import {
-  AGENT_RESOURCE_CATALOG_EXPORT_PATH,
-  readPortableAgentResourceCatalog,
-  readPortableSkillPayload,
-  reconstructImportedWorkspaceCatalog,
-} from '../catalog/catalog-portability.js';
-import type { PortableSkillPayload, ResourceCatalogDocument } from '@openkit/config-schema';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
@@ -1134,7 +1134,10 @@ export function readWorkspaceImportSnapshot(
     goalVerificationRecords: goalRuntime.goalVerificationRecords,
     mcpToolSchemaSnapshots: goalRuntime.mcpToolSchemaSnapshots,
     lightApps: readOptionalImportJsonl(context.files, 'records/light-apps.jsonl'),
-    lightAppDefinitions: readOptionalImportJsonl(context.files, 'records/light-app-definitions.jsonl'),
+    lightAppDefinitions: readOptionalImportJsonl(
+      context.files,
+      'records/light-app-definitions.jsonl'
+    ),
     lightAppRecords: readOptionalImportJsonl(context.files, 'records/light-app-records.jsonl'),
     generativePresentations: readOptionalImportJsonl(
       context.files,
@@ -1359,7 +1362,12 @@ function readCanonicalImportState(context: ImportRemintContext) {
     'records/generative-presentations.jsonl'
   );
   for (const row of exportedPresentations) {
-    if (!row || typeof row !== 'object' || Array.isArray(row) || typeof (row as { id?: unknown }).id !== 'string') {
+    if (
+      !row ||
+      typeof row !== 'object' ||
+      Array.isArray(row) ||
+      typeof (row as { id?: unknown }).id !== 'string'
+    ) {
       throw new Error('Invalid generative presentation export row.');
     }
     const record = row as { id: string; lineage?: { itemId?: unknown } };
@@ -1368,10 +1376,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     }
     const reservedItemId = record.lineage?.itemId;
     if (typeof reservedItemId === 'string' && !itemIds.has(reservedItemId)) {
-      itemIds.set(
-        reservedItemId,
-        `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`
-      );
+      itemIds.set(reservedItemId, `it_imported_${context.targetWorkspaceId}_${itemIds.size + 1}`);
     }
   }
   const exportedAgentEnvironmentPackageSnapshots = readOptionalImportJsonl(

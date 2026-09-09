@@ -4,9 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
-import { createLightApp } from '../generative-kernel/commands.js';
 import type { KernelCommandContext } from '../generative-kernel/commands.js';
+import { createLightApp } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';

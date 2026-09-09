@@ -447,9 +447,9 @@ function assertLightAppDefinitionCoverage(root: string): void {
     const dbPath = join(root, appPath, 'data.sqlite');
     const sqlite = new Database(dbPath, { fileMustExist: true, readonly: true });
     try {
-      const row = sqlite.prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1').get() as
-        | { schemaDigest: string }
-        | undefined;
+      const row = sqlite
+        .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
+        .get() as { schemaDigest: string } | undefined;
       if (!row?.schemaDigest?.startsWith('sha256:')) {
         throw new Error(`Captured Light App is missing schema digest: ${appPath}`);
       }

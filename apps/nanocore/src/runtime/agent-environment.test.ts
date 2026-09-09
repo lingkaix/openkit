@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -24,7 +25,6 @@ import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { importWorkspaceSkill, setWorkspaceSkillPin } from '../catalog/resource-catalog.js';
 import {
   resolveAgentEnvironmentPackage,
   resolveAgentEnvironmentPackageMetadata,

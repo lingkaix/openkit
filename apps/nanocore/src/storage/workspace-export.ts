@@ -4,19 +4,19 @@ import { dirname, join, relative, sep } from 'node:path';
 import {
   parseWorkspaceDataSourceCatalog,
   parseWorkspaceExportManifest,
+  type RequiredFeatureId,
   WORKSPACE_EXPORT_FORMAT_VERSION,
   WorkspaceConfigSchema,
-  type RequiredFeatureId,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
+import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
   AGENT_RESOURCE_CATALOG_EXPORT_PATH,
   emptyPortableAgentResourceCatalog,
-  type WorkspaceCatalogExportProjection,
   WORKSPACE_EXPORT_CATALOG_FEATURE,
+  type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
-import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
@@ -636,7 +636,11 @@ export function writeWorkspaceExportTree(
       })
       .sort((left, right) => left.path.localeCompare(right.path));
     const requiredFeatures: RequiredFeatureId[] = [WORKSPACE_EXPORT_CATALOG_FEATURE];
-    if (input.lightApps?.length || input.lightAppDefinitions?.length || input.lightAppRecords?.length) {
+    if (
+      input.lightApps?.length ||
+      input.lightAppDefinitions?.length ||
+      input.lightAppRecords?.length
+    ) {
       requiredFeatures.push('workspace.generative-kernel.v1');
     }
     if (input.generativePresentations?.length) {

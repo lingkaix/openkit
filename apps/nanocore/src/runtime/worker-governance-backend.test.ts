@@ -7,11 +7,11 @@ import {
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { createDemoStore } from '../test-support/demo-store.js';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { prepareNanoHostContextPackageImports } from './worker-governance-backend.js';
 

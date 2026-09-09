@@ -15,47 +15,6 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const SCHEMA = {
-  format: 'openkit.light-app',
-  schemaVersion: 1,
-  title: 'Membership CRM map',
-  purpose: 'Local membership-to-CRM mappings.',
-  collections: [
-    {
-      name: 'mappings',
-      type: 'base',
-      description: 'Mappings.',
-      fields: [
-        {
-          name: 'membership_id',
-          type: 'text',
-          required: true,
-          description: 'Membership id.',
-        },
-        {
-          name: 'crm_id',
-          type: 'text',
-          required: true,
-          description: 'CRM id.',
-        },
-        {
-          name: 'annotation',
-          type: 'text',
-          required: true,
-          description: 'Local note.',
-        },
-        {
-          name: 'active',
-          type: 'bool',
-          required: true,
-          description: 'Whether the mapping is active.',
-        },
-      ],
-      indexes: [{ fields: ['membership_id', 'crm_id'], unique: true }],
-    },
-  ],
-};
-
 /**
  * Builds native createSurface plus updateComponents messages.
  *
@@ -126,7 +85,8 @@ describe('Generative UI App API', () => {
             messages: nativeMessages('surface-item', [
               {
                 id: 'root',
-                component: 'Column', children: ['body', 'refresh'],
+                component: 'Column',
+                children: ['body', 'refresh'],
               },
               { id: 'body', component: 'Text', text: { path: '/text' } },
               {
@@ -137,7 +97,8 @@ describe('Generative UI App API', () => {
               },
               {
                 id: 'refreshLabel',
-                component: 'Text', text: 'Refresh',
+                component: 'Text',
+                text: 'Refresh',
               },
             ]),
             source: {

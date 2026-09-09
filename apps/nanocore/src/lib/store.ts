@@ -50,6 +50,7 @@ import {
 } from '../knowledge/okf.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import type { RuntimeAgent } from '../runtime/types.js';
+import type { AppDb } from '../storage/app-db.js';
 import {
   getCommandRequestRecord,
   getCommandRequestRecordFromDb,
@@ -58,7 +59,6 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
-import type { AppDb } from '../storage/app-db.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   ensureLayout,

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-
+import { KernelCommandError } from '../generative-kernel/errors.js';
 import type {
   CommandRequestName,
   CommandRequestRecord,
@@ -10,7 +10,6 @@ import type {
   CommandRequestScope,
   ConversationCommandReceiptMetadata,
 } from '../lib/store.js';
-import { KernelCommandError } from '../generative-kernel/errors.js';
 import type { AppDb } from './app-db.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import {
@@ -392,7 +391,12 @@ function commandRequestOwner(scope: CommandRequestScope): CommandRequestOwner {
   const workspaceId = scope.workspaceId;
   const appId = scope.appId;
 
-  if (coreId === 'server' && userId === undefined && workspaceId === undefined && appId === undefined) {
+  if (
+    coreId === 'server' &&
+    userId === undefined &&
+    workspaceId === undefined &&
+    appId === undefined
+  ) {
     return { scope: 'core' };
   }
   if (coreId === undefined && userId && workspaceId === undefined && appId === undefined) {
@@ -405,7 +409,9 @@ function commandRequestOwner(scope: CommandRequestScope): CommandRequestOwner {
     return { scope: 'workspace', workspaceId };
   }
 
-  throw new Error('Command request scope must name exactly one Core, User, Workspace, or App owner.');
+  throw new Error(
+    'Command request scope must name exactly one Core, User, Workspace, or App owner.'
+  );
 }
 
 /**
