@@ -216,6 +216,23 @@ describe('protocol hardening boundary', () => {
     expect(status.type).toBe('status');
     expect(plan.type).toBe('plan');
     expect(knowledgeInjection.type).toBe('knowledge-injection');
+
+    const generativeUi = protocol.ItemSchema.parse({
+      id: 'it_generative',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      parentItemId: null,
+      causationId: 'req_publish',
+      status: 'completed',
+      createdAt: '2026-05-27T00:00:00Z',
+      completedAt: '2026-05-27T00:00:01Z',
+      type: 'generative-ui-reference',
+      presentationId: '11111111-1111-4111-8111-111111111111',
+      title: 'Mapping view',
+      fallbackText: 'Membership 1 maps to CRM 1.',
+    });
+    expect(generativeUi.type).toBe('generative-ui-reference');
   });
 
   it('records request correlation on event envelopes', () => {

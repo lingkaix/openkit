@@ -36,6 +36,7 @@ export const ItemTypeSchema = z.enum([
   'status',
   'plan',
   'knowledge-injection',
+  'generative-ui-reference',
 ]);
 
 /**
@@ -256,6 +257,16 @@ export const KnowledgeInjectionItemSchema = BaseItemSchema.extend({
 });
 
 /**
+ * Thread Item that references one immutable Generative UI presentation.
+ */
+export const GenerativeUiReferenceItemSchema = BaseItemSchema.extend({
+  type: z.literal('generative-ui-reference'),
+  presentationId: z.string().uuid(),
+  title: z.string().min(1),
+  fallbackText: z.string().min(1),
+});
+
+/**
  * Item union for turn streams.
  */
 export const ItemSchema = z.discriminatedUnion('type', [
@@ -274,4 +285,5 @@ export const ItemSchema = z.discriminatedUnion('type', [
   StatusItemSchema,
   PlanItemSchema,
   KnowledgeInjectionItemSchema,
+  GenerativeUiReferenceItemSchema,
 ]);
