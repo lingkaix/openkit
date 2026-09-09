@@ -95,6 +95,50 @@ import {
   IntroduceWorkspaceArtifactRequestSchema,
   type IntroduceWorkspaceArtifactResponse,
   IntroduceWorkspaceArtifactResponseSchema,
+  type CreateLightAppRequest,
+  CreateLightAppRequestSchema,
+  type CreateLightAppResponse,
+  CreateLightAppResponseSchema,
+  type GetLightAppResponse,
+  GetLightAppResponseSchema,
+  type ListLightAppsResponse,
+  ListLightAppsResponseSchema,
+  type UpdateLightAppSchemaRequest,
+  UpdateLightAppSchemaRequestSchema,
+  type UpdateLightAppSchemaResponse,
+  UpdateLightAppSchemaResponseSchema,
+  type RetireLightAppRequest,
+  RetireLightAppRequestSchema,
+  type RetireLightAppResponse,
+  RetireLightAppResponseSchema,
+  type ListLightAppRecordsResponse,
+  ListLightAppRecordsResponseSchema,
+  type GetLightAppRecordResponse,
+  GetLightAppRecordResponseSchema,
+  type CreateLightAppRecordRequest,
+  CreateLightAppRecordRequestSchema,
+  type UpdateLightAppRecordRequest,
+  UpdateLightAppRecordRequestSchema,
+  type UpdateLightAppRecordResponse,
+  UpdateLightAppRecordResponseSchema,
+  type LightAppBatchRequest,
+  LightAppBatchRequestSchema,
+  type LightAppBatchResponse,
+  LightAppBatchResponseSchema,
+  type PublishGenerativePresentationRequest,
+  PublishGenerativePresentationRequestSchema,
+  type PublishGenerativePresentationResponse,
+  PublishGenerativePresentationResponseSchema,
+  type GetGenerativePresentationResponse,
+  GetGenerativePresentationResponseSchema,
+  type GenerativePresentationResourceResponse,
+  GenerativePresentationResourceResponseSchema,
+  type RefreshGenerativePresentationRequest,
+  RefreshGenerativePresentationRequestSchema,
+  type SubmitGenerativePresentationActionRequest,
+  SubmitGenerativePresentationActionRequestSchema,
+  type GenerativePresentationDataModelResponse,
+  GenerativePresentationDataModelResponseSchema,
   type IssueNanoHostTransportTokenRequest,
   IssueNanoHostTransportTokenRequestSchema,
   type IssueNanoHostTransportTokenResponse,
@@ -635,6 +679,95 @@ export interface AppApiClient {
     artifactId: string,
     input: IntroduceWorkspaceArtifactInput
   ): Promise<IntroduceWorkspaceArtifactResponse>;
+  /** Lists Light Apps. */
+  listLightApps(workspaceId: string): Promise<ListLightAppsResponse>;
+  /** Creates one Light App. */
+  createLightApp(workspaceId: string, input: CreateLightAppRequest): Promise<CreateLightAppResponse>;
+  /** Reads one Light App. */
+  getLightApp(workspaceId: string, appId: string): Promise<GetLightAppResponse>;
+  /** Updates one Light App schema. */
+  updateLightAppSchema(
+    workspaceId: string,
+    appId: string,
+    input: UpdateLightAppSchemaRequest
+  ): Promise<UpdateLightAppSchemaResponse>;
+  /** Retires one Light App. */
+  retireLightApp(
+    workspaceId: string,
+    appId: string,
+    input: RetireLightAppRequest
+  ): Promise<RetireLightAppResponse>;
+  /** Lists Light App records. */
+  listLightAppRecords(
+    workspaceId: string,
+    appId: string,
+    collection: string,
+    query: {
+      schemaRevision: number;
+      page?: number;
+      perPage?: number;
+      filter?: string;
+      sort?: string;
+      fields?: string;
+    }
+  ): Promise<ListLightAppRecordsResponse>;
+  /** Reads one Light App record. */
+  getLightAppRecord(
+    workspaceId: string,
+    appId: string,
+    collection: string,
+    recordId: string,
+    schemaRevision: number,
+    fields?: string
+  ): Promise<GetLightAppRecordResponse>;
+  /** Creates one Light App record. */
+  createLightAppRecord(
+    workspaceId: string,
+    appId: string,
+    collection: string,
+    input: CreateLightAppRecordRequest
+  ): Promise<GetLightAppRecordResponse>;
+  /** Updates one Light App record. */
+  updateLightAppRecord(
+    workspaceId: string,
+    appId: string,
+    collection: string,
+    recordId: string,
+    input: UpdateLightAppRecordRequest
+  ): Promise<UpdateLightAppRecordResponse>;
+  /** Applies one atomic Light App record batch. */
+  batchLightAppRecords(
+    workspaceId: string,
+    appId: string,
+    input: LightAppBatchRequest
+  ): Promise<LightAppBatchResponse>;
+  /** Publishes one native Generative UI presentation. */
+  publishGenerativePresentation(
+    workspaceId: string,
+    input: PublishGenerativePresentationRequest
+  ): Promise<PublishGenerativePresentationResponse>;
+  /** Reads one Generative UI presentation. */
+  getGenerativePresentation(
+    workspaceId: string,
+    presentationId: string
+  ): Promise<GetGenerativePresentationResponse>;
+  /** Reads one Generative UI A2UI resource. */
+  getGenerativePresentationResource(
+    workspaceId: string,
+    presentationId: string
+  ): Promise<GenerativePresentationResourceResponse>;
+  /** Refreshes one Generative UI presentation. */
+  refreshGenerativePresentation(
+    workspaceId: string,
+    presentationId: string,
+    input: RefreshGenerativePresentationRequest
+  ): Promise<GenerativePresentationDataModelResponse>;
+  /** Submits one Generative UI record-update action. */
+  submitGenerativePresentationAction(
+    workspaceId: string,
+    presentationId: string,
+    input: SubmitGenerativePresentationActionRequest
+  ): Promise<GenerativePresentationDataModelResponse>;
   /** Lists version-keyed Reviews for one Artifact. */
   listArtifactReviews(
     workspaceId: string,
@@ -1252,6 +1385,105 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         IntroduceWorkspaceArtifactResponseSchema
       );
     },
+    listLightApps: (workspaceId) =>
+      transport.getJson(`/api/app/workspaces/${workspaceId}/light-apps`, ListLightAppsResponseSchema),
+    createLightApp: (workspaceId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/light-apps`,
+        CreateLightAppRequestSchema.parse(input),
+        CreateLightAppResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
+    getLightApp: (workspaceId, appId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}`,
+        GetLightAppResponseSchema
+      ),
+    updateLightAppSchema: (workspaceId, appId, input) =>
+      transport.putJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/schema`,
+        UpdateLightAppSchemaRequestSchema.parse(input),
+        UpdateLightAppSchemaResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
+    retireLightApp: (workspaceId, appId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/retire`,
+        RetireLightAppRequestSchema.parse(input),
+        RetireLightAppResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
+    listLightAppRecords: (workspaceId, appId, collection, query) => {
+      const params = new URLSearchParams({ schemaRevision: String(query.schemaRevision) });
+      if (query.page !== undefined) params.set('page', String(query.page));
+      if (query.perPage !== undefined) params.set('perPage', String(query.perPage));
+      if (query.filter !== undefined) params.set('filter', query.filter);
+      if (query.sort !== undefined) params.set('sort', query.sort);
+      if (query.fields !== undefined) params.set('fields', query.fields);
+      return transport.getJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records?${params}`,
+        ListLightAppRecordsResponseSchema
+      );
+    },
+    getLightAppRecord: (workspaceId, appId, collection, recordId, schemaRevision, fields) => {
+      const params = new URLSearchParams({ schemaRevision: String(schemaRevision) });
+      if (fields !== undefined) params.set('fields', fields);
+      return transport.getJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records/${recordId}?${params}`,
+        GetLightAppRecordResponseSchema
+      );
+    },
+    createLightAppRecord: (workspaceId, appId, collection, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records`,
+        CreateLightAppRecordRequestSchema.parse(input),
+        GetLightAppRecordResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
+    updateLightAppRecord: (workspaceId, appId, collection, recordId, input) =>
+      transport.patchJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records/${recordId}`,
+        UpdateLightAppRecordRequestSchema.parse(input),
+        UpdateLightAppRecordResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
+    batchLightAppRecords: (workspaceId, appId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/batch`,
+        LightAppBatchRequestSchema.parse(input),
+        LightAppBatchResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
+    publishGenerativePresentation: (workspaceId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/generative-presentations`,
+        PublishGenerativePresentationRequestSchema.parse(input),
+        PublishGenerativePresentationResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
+    getGenerativePresentation: (workspaceId, presentationId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}`,
+        GetGenerativePresentationResponseSchema
+      ),
+    getGenerativePresentationResource: (workspaceId, presentationId) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}/resource`,
+        GenerativePresentationResourceResponseSchema
+      ),
+    refreshGenerativePresentation: (workspaceId, presentationId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}/refresh`,
+        RefreshGenerativePresentationRequestSchema.parse(input),
+        GenerativePresentationDataModelResponseSchema
+      ),
+    submitGenerativePresentationAction: (workspaceId, presentationId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}/actions`,
+        SubmitGenerativePresentationActionRequestSchema.parse(input),
+        GenerativePresentationDataModelResponseSchema,
+        { 'x-openkit-request-id': createRequestId() }
+      ),
     listArtifactReviews: (workspaceId, artifactId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/reviews`,

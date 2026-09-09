@@ -18,7 +18,8 @@ export interface ClientTransport {
   postJson<TInput, TSchema extends z.ZodType>(
     path: string,
     input: TInput,
-    schema: TSchema
+    schema: TSchema,
+    extraHeaders?: HeadersInit
   ): Promise<z.infer<TSchema>>;
   /** Posts one raw body and validates a JSON response. */
   postStream<TSchema extends z.ZodType>(
@@ -31,13 +32,15 @@ export interface ClientTransport {
   putJson<TInput, TSchema extends z.ZodType>(
     path: string,
     input: TInput,
-    schema: TSchema
+    schema: TSchema,
+    extraHeaders?: HeadersInit
   ): Promise<z.infer<TSchema>>;
   /** Patches a JSON body and validates a JSON response. */
   patchJson<TInput, TSchema extends z.ZodType>(
     path: string,
     input: TInput,
-    schema: TSchema
+    schema: TSchema,
+    extraHeaders?: HeadersInit
   ): Promise<z.infer<TSchema>>;
   /** Deletes a resource with an empty successful response. */
   deleteEmpty(path: string): Promise<void>;
@@ -76,6 +79,16 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return merged;
   };
 
+  const jsonHeaders = (extraHeaders?: HeadersInit): Headers => {
+    const merged = mergeHeaders({ 'content-type': 'application/json' });
+    if (extraHeaders) {
+      new Headers(extraHeaders).forEach((value, key) => {
+        merged.set(key, value);
+      });
+    }
+    return merged;
+  };
+
   const url = (path: string): string => `${normalizedBaseUrl}${path}`;
 
   const getJson: ClientTransport['getJson'] = async (path, schema) => {
@@ -107,11 +120,11 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return response.body;
   };
 
-  const postJson: ClientTransport['postJson'] = async (path, input, schema) => {
+  const postJson: ClientTransport['postJson'] = async (path, input, schema, extraHeaders) => {
     const response = await fetcher(url(path), {
       credentials: 'include',
       method: 'POST',
-      headers: mergeHeaders({ 'content-type': 'application/json' }),
+      headers: jsonHeaders(extraHeaders),
       body: JSON.stringify(input),
     });
 
@@ -129,22 +142,22 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return parseJsonResponse(response, schema);
   };
 
-  const putJson: ClientTransport['putJson'] = async (path, input, schema) => {
+  const putJson: ClientTransport['putJson'] = async (path, input, schema, extraHeaders) => {
     const response = await fetcher(url(path), {
       credentials: 'include',
       method: 'PUT',
-      headers: mergeHeaders({ 'content-type': 'application/json' }),
+      headers: jsonHeaders(extraHeaders),
       body: JSON.stringify(input),
     });
 
     return parseJsonResponse(response, schema);
   };
 
-  const patchJson: ClientTransport['patchJson'] = async (path, input, schema) => {
+  const patchJson: ClientTransport['patchJson'] = async (path, input, schema, extraHeaders) => {
     const response = await fetcher(url(path), {
       credentials: 'include',
       method: 'PATCH',
-      headers: mergeHeaders({ 'content-type': 'application/json' }),
+      headers: jsonHeaders(extraHeaders),
       body: JSON.stringify(input),
     });
 
