@@ -157,6 +157,8 @@ Task graphs, tool retries, chain-of-thought internals, process logs, native SDK 
 
 Core schedules work at the thread and turn level.
 
+A durable recurring instruction remains a source of new Turn requests rather than a parallel run model. Each due occurrence must enter the ordinary admission boundary with current authority and its own stable lineage; after admission, the existing Thread, Turn, AgentSession, scheduler, and runtime owners determine execution and outcome. Recurrence must not duplicate Turn status, bypass a Gate, retry an uncertain effect, or execute concurrent Turns in one Thread.
+
 A thread may contain:
 
 - sequential turns by the same agent
@@ -238,6 +240,7 @@ Adapter-native launch config, runtime config snapshots, absolute local paths, wo
 - A turn MUST be represented as the core execution unit instead of introducing `AgentRun` or `TaskRun` as default core objects.
 - A worker-executed Turn MUST be assigned to one AgentSession. A Core-local service Turn may omit AgentSession only under the exact protocol exception.
 - Runtime MUST NOT admit more than one in-flight Turn in a Thread or AgentSession; concurrent work MUST use distinct Threads and AgentSessions.
+- A recurring instruction MUST enter execution through an ordinary Turn admission and MUST NOT create a second execution lifecycle, duplicate Turn outcome, or resubmit an accepted Turn because its later execution failed or became uncertain.
 - Runtime MUST keep Sandbox, Harness, AgentSession binding, and active Turn lease as distinct private projections; placement sharing MUST NOT become identity, authority, lineage, or outcome sharing.
 - An idle AgentSession MAY consume open-session capacity but MUST NOT retain an active-Turn lease or authority to begin another Turn.
 - Concurrent Goal worker Items MUST remain in their execution Threads; the Goal Main Thread MUST retain references rather than copied worker history.

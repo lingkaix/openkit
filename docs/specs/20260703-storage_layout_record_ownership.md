@@ -93,6 +93,14 @@ Kernel data and its receipts/audit never depend on `ATTACH` or a transaction in 
 
 The required portable graph, captured-definition pairing, app/audit inventory, and import rewriting are fixed by [Workspace Backup, Export, And Import](20260704-workspace_backup_export_import.md). Runtime implementation remains absent; this section fixes ownership and placement rather than claiming the existing store/exporter supports them.
 
+## Recurring Work Storage
+
+[Recurring Triggers](20260711-scheduler_recurring_event_triggers.md) owns `RecurringSchedule`, `RecurringOccurrence`, and lossless `ExpiredOccurrenceRange` records. They are Workspace-owned product history physically homed in `server/db/core.sqlite`, beside existing scheduler admission rows, so the exact occurrence acceptance and queue insertion commit in one transaction. This is a named transactional exception to scope homing, not a second scheduler. The same database owns definition/cursor changes, occurrence/range materialization, and attributed recurring `AuditEvent` rows; audit reads aggregate them under the existing Workspace owner without dual-writing.
+
+The trigger specification owns fields and transitions. Storage enforces unique `(scheduleId, scheduledAt)` individual occurrence identity, non-overlapping accounted range coverage, and atomic cursor advancement with the corresponding history. Indexes support active due definitions, pending occurrence deadlines, and Workspace/schedule history pagination. Full deployment backup includes the Core database. Workspace export explicitly selects these Workspace-owned rows even though they are outside `workspace.sqlite`; scheduler capacity, leases and live queue authority remain non-portable. Import stores inert history under the portability owner and never activates a source cursor.
+
+Every definition mutation, scan materialization and admission participates in the existing Workspace mutation fence, so backup/export/deletion observes a consistent cut. Definition tombstones and occurrence/range history use the existing `workspace-audit` retention class; no automatic pruning or new maintenance runner is part of this slice. Existing legal hold and sealed deletion closure include this graph and its audit before Workspace deletion removes its Core-homed rows. Missing/corrupt required history fails export or recovery visibly rather than creating replacement empty history.
+
 ## Decision
 
 Use sibling ownership trees and one database per ownership scope. A Workspace is a first-class server resource; its owner is an identity relationship, not its physical parent.

@@ -340,18 +340,19 @@ test('keeps the real-use host manifest invariants', () => {
   assertRetains(
     environment,
     [
-      'A manifest is applied by a command and never by a role.',
+      'For the reproducible real-use fixture, a manifest is applied by a command and never by a role.',
       'A manifest is not authoritative until a real bring-up has run against a host it produced.',
       'A manifest is grown rather than authored.',
       'Completeness is therefore never a gate on the manifest.',
       "A manifest describes the machine and never the product's state.",
       'Provisioning and bring-up are two commands and never one.',
-      'The manifest is addressed by a digest of its own content',
-      'manifestDigest=<64-lowercase-hex>',
-      'followed by one newline',
-      'the value is the SHA-256 of the exact raw `apps/nanohost/deploy/host-manifest.json` bytes',
+      'The profile is addressed by the SHA-256 of its exact raw bytes',
+      'the structured result is one JSON object followed by exactly one newline',
+      'including observed profile/artifact, product-commit and machine identity',
+      'Deployment provisioning may follow an authorized cookbook',
+      'never infers a pass from the recipe or role report',
       'Fixture and remote assertion modes collect their observations separately and submit the same normalized fact object to one shared comparator.',
-      'The assertion half runs through the existing `pnpm host:assert <alias>` command before real use rather than from a parallel preflight or wrapper.',
+      'For NanoHost real-use qualification, the assertion half runs through the existing `pnpm host:assert <alias>` command before real use rather than from a parallel preflight or wrapper.',
       // A recommendation stated as a precondition would forbid the shared host
       // this repository actually has.
       'This is a recommendation rather than a precondition',
@@ -414,7 +415,7 @@ test('releases the moved rules from the documents that used to state them', () =
   assertReleased(
     toolchain,
     [
-      'A manifest is applied by a command and never by a role.',
+      'For the reproducible real-use fixture, a manifest is applied by a command and never by a role.',
       'Provisioning and bring-up are two commands and never one.',
     ],
     TOOLCHAIN_PATH

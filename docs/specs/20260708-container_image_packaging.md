@@ -22,6 +22,7 @@ implementation: Partial
 - Agent Environment Package field semantics, which are owned by `docs/specs/20260616-agent_environment_package.md`.
 - OpenShell provider, policy, vault, and evidence internalization, which is owned by `docs/specs/20260703-openshell_mechanism_internalization.md`.
 - Runtime Epoch lifecycle, Sandbox Integration, RelayStream, route credentials, and runtime transport, which are owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- Deployment host support, installed dependencies, engine qualification, and host-requirement verdicts, which are owned by `docs/specs/20260909-deployment_host_requirements.md`.
 - Kubernetes, Helm, Docker Compose, installer, desktop-app, or platform-specific deployment packaging.
 - npm package publishing, language package versioning, or third-party marketplace distribution.
 - Product-wide release composition, authorization, retry, and completion semantics, which are owned by `docs/specs/20260829-release_management.md`.
@@ -38,6 +39,7 @@ implementation: Partial
 
 ## Related Docs
 
+- `docs/specs/20260909-deployment_host_requirements.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`

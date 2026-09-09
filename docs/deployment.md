@@ -17,6 +17,14 @@ Rests on: the current internal-development posture, in which the product is dogf
 
 Overturned by: sustained contention observed in real use — work queueing behind the single worker slot, writer-lock waits or failures under ordinary load, or a deployment whose membership makes the single-writer data root the binding constraint. Any of those retires the premise. The observation alone authorizes nothing; `docs/core/foundation.md` states what an accepted current design has to supply before implementation, configuration, or test obligations may follow a replacement profile.
 
+### The Initial Combined Deployment Recommendation Is 2 Cores, 8 GiB, And 30 GiB
+
+For the initial combined small-deployment shape, begin with at least 2 available logical CPU cores, 8 GiB of available memory, and 30 GiB of available persistent storage before deployment images and Workspace data. This is an empirical operating recommendation, not a hard minimum, admission rule, reservation, per-process allocation, or capacity promise. Actual images, build cache, Workspace data, and operating-system use may require more. A split NanoCore and NanoHost deployment does not divide or duplicate these numbers because no independent per-role recommendation is qualified yet; `docs/specs/20260909-deployment_host_requirements.md` owns the resulting check semantics.
+
+Rests on: the current small-team profile, the combined application-image plus NanoHost topology, and empirical headroom needed to run that stack while retaining inspectable local state.
+
+Overturned by: repeatable measurements from representative current workloads showing that this envelope either cannot satisfy owned readiness and latency bounds or materially overstates the resources needed. A replacement recommendation requires those measurements and does not change any hard runtime or scheduling contract by itself.
+
 ## Owns
 
 This guide owns no behavioral contract and no repository-operation decision. No deployment, architecture, product, runtime, release, security, or workflow decision is authoritative here.
@@ -33,6 +41,7 @@ This guide does not own any contract or implementation fact linked below. Core d
 - Communication, worker control, workspace transfer, and capability supply: `docs/core/communication.md`, `docs/core/agent-capability.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-worker_agent_capability.md`
 - Vault and provider credentials: `docs/core/vault.md`, `docs/specs/20260704-vault_backend_implementation.md`, `docs/specs/20260721-provider_subscription_accounts.md`
 - Product releases and worker images: `docs/specs/20260829-release_management.md`, `docs/specs/20260708-container_image_packaging.md`, `docs/specs/20260721-worker_execution_environment_images.md`
+- Deployment host profiles, dependency classes, and requirement-check verdicts: `docs/specs/20260909-deployment_host_requirements.md`
 - Operator projections: `docs/manual/nanocore-deployment-modes.en.md`, `docs/manual/nanocore-data-root-config.en.md`
 
 ## Known Debt

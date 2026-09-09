@@ -228,6 +228,14 @@ Usage categories:
 
 Usage rows may be aggregated for diagnostics, but raw metering rows should remain queryable until retention policy deletes or compacts them.
 
+## Recurring Trigger Attribution
+
+Recurring definition create/edit/pause/resume/delete and terminal trigger transitions emit the existing `AuditEvent` with exact command actor or automation actor, responsible user, Workspace, schedule and occurrence/range lineage, and redacted result. These Workspace-owned rows home in `core.sqlite` with their recurring product records as the explicit [Storage](20260703-storage_layout_record_ownership.md) transaction exception. Mutation or terminal transition and its AuditEvent commit together; failed audit persistence rolls back that local transition. There is no cross-database audit transaction or second audit journal. Workspace audit reads and portable export include this exception; it is distinct from non-portable deployment access history also stored in Core.
+
+Core-homed portable recurring audit is selected by the selected Workspace ID and exactly one action from `recurring.schedule.create`, `recurring.schedule.edit`, `recurring.schedule.pause`, `recurring.schedule.resume`, `recurring.schedule.delete`, `recurring.occurrence.terminal`, or `recurring.expired-range.record`, with the matching retained recurring subject identity. A Workspace ID alone never makes a Core AuditEvent portable; other Core action families retain their existing export disposition. Workspace audit aggregation uses descending `(createdAt, id)` keyset order and the same pair as its cursor across every included source, with globally unique AuditEvent IDs and no per-database offset or copied rows. Audit rows are immutable; a later inserted row preceding the cursor appears on refresh rather than destabilizing the current page.
+
+The trigger owner's at-most-three admission-attempt summaries and expired ranges are authoritative product history, not copies of worker logs or replacements for AuditEvent. No AuditEvent is required per expanded instant of an expired range: one attributed range transition preserves the exact covered set. After occurrence acceptance, queue/Turn owners record execution outcomes; audit projection failure never resubmits accepted work. Retain recurring history and its audit under `workspace-audit`, including existing legal-hold and Workspace deletion closure behavior. These producers are target design, not currently implemented coverage.
+
 ## Current Implementation Projection
 
 User-facing evidence readback uses the transport-neutral operation catalog, bundled CLI, and unified end-user Skill; selected worker MCP evidence remains on the separately authenticated private capability plane and its existing durable read models rather than becoming an end-user route authority.

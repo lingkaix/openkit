@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-31
+updated: 2026-09-09
 ---
 # Runtime Scheduling And Scale
 
@@ -21,6 +21,7 @@ updated: 2026-08-31
 - AEP resolution, Workspace synchronization, provider billing, or sandbox containment.
 - NanoHost identity, transport, Runtime Epoch composition, OpenShell lifecycle, sandbox create or delete, and epoch recovery.
 - Dynamic multi-target placement, generic fleet worker-pool policy, generic warm pools, cross-workspace fairness, per-user quotas, high availability, multi-process Core, or distributed takeover. These remain deferred and non-authorizing. One Goal-to-ordinary-Sandbox pin is admitted below and is not a generic warm pool.
+- Recurring cadence, occurrence, retry, expiry, and history semantics. This specification owns only their fit within the current single-process scheduling profile.
 
 ## Core References
 
@@ -88,6 +89,7 @@ For the first slice, persisted AgentSession runtime bindings plus exact Harness 
 - A Sandbox may host multiple Harnesses. NanoCore selects or creates a Harness by the exact `HarnessCompatibilityKey` owned by the NanoHost runtime specification; runtime kind, adapter, governed image and static process configuration participate in that key, while AgentSession, Thread, Turn, logical-model route, and transient credentials do not.
 - Concurrent active Turns are authorized only for distinct AgentSessions and distinct Threads in a Harness whose adapter proves independent state roots, routing, interruption, output, credential binding, and cleanup. One AgentSession still belongs to one Thread and has at most one active Turn; one Turn belongs to one Thread and one AgentSession.
 - The target may admit work only while the configured NanoHost reports current ready capacity through its one authoritative predecessor-fenced transport session.
+- The small-deployment profile permits one serialized NanoCore-local recurring scan every five seconds. That soft timer may produce ordinary durable scheduler admissions but grants no capacity, lease, dispatch, or execution authority and is not another scheduler.
 - NanoCore MUST durably bind the exact Workspace, Thread, Turn, AgentSession, Agent, package snapshot, target, and lease before worker launch.
 - On first worker-bearing Goal admission, NanoCore writes `pinnedGoalId` on the chosen compatible ordinary Sandbox's `SandboxRuntimeRecord` and MUST prefer that Sandbox for later compatible Goal worker AgentSessions while the pin is active; NanoCore MUST NOT dispatch Goal worker work through the default standby-worker selection.
 - Another Goal MUST NOT co-reside on that pinned ordinary Sandbox while `pinnedGoalId` names the first Goal. The second Goal MAY use another ordinary compatible Sandbox; if the one-Sandbox profile has no remaining compatible capacity, its existing scheduler admission entry stays queued for normal dispatch retry and the Goal remains non-terminal. This creates no new denial, queue, or attention state, and NanoHost wires remain unchanged.
@@ -95,6 +97,7 @@ For the first slice, persisted AgentSession runtime bindings plus exact Harness 
 - An absent `pinnedGoalId` before first worker-bearing admission, or an ordinarily released pin with no conflicting live binding or occupancy, creates a new pin on a freshly admitted compatible ordinary Sandbox through ordinary scheduling. Only stale or contradictory `pinnedGoalId` that conflicts with live binding or occupancy fails closed. Lost warm Sandbox state costs latency only and is not a recovery dependency. NanoCore MUST NOT use default standby-worker selection.
 - Every Turn still performs fresh authority, AEP, context, and lease checks. Warm retained state is never durable authority, permission, recovery truth, completion proof, or unique required progress. Restart reconstructs the pin only from `SandboxRuntimeRecord.pinnedGoalId` and other NanoCore-private scheduling and binding truth.
 - NanoCore MUST NOT authorize a second live attempt for the same AgentSession, Thread, Turn, or occupied active-Turn unit while the first lease remains live, reconnecting, or cleanup-owned.
+- Each recurring schedule may retain at most one accepted occurrence whose scheduler row is still `queued`; an earlier occurrence may already be admitted or running, and distinct schedules targeting one Thread may each hold their one waiting row. The existing Thread single-flight rule serializes execution. A trigger deadline limits only pre-admission retries; it does not cancel or reprioritize an already accepted queue row.
 - Opening or retaining an idle AgentSession consumes open-session capacity but grants no active-Turn capacity, lease time, inference, capability, provider, Vault, or execution authority.
 - Local SQLite transactions own NanoCore coordination state only. They do not make sandbox, provider, repository, or remote worker effects atomic with Core truth.
 - A pre-launch failure with proof that no worker effect occurred MAY release or requeue the same accepted intent through the existing admission owner.
@@ -132,6 +135,7 @@ The Runtime Epoch may structurally contain zero or more Sandboxes. One compatibl
 - Missing, stale, contradictory, or overcommitted Harness or Sandbox capacity denies admission; NanoCore does not borrow a sibling's slot, trust an unproved occupancy report, or infer capacity from process idleness.
 - An absent `pinnedGoalId` before first worker-bearing admission, or an ordinarily released pin with no conflicting live binding or occupancy, is not a recovery failure: ordinary scheduling writes a new pin on a freshly admitted compatible ordinary Sandbox and MUST NOT use default standby-worker selection. Only stale or contradictory `pinnedGoalId` that conflicts with live binding or occupancy fails closed and remains inspectable as `recovery_required`. Lost warm Sandbox state costs latency only and is not a recovery dependency.
 - Missing or conflicting launch authority prevents worker start.
+- A recurring occurrence whose queue row already committed remains accepted even when it has not executed before the trigger's ten-minute deadline. Later denial, delay, failure, interruption, or unknown worker effect is not authority for recurring resubmission.
 - A missed heartbeat or NanoCore restart never by itself proves Turn failure or success.
 - Exact reconnect proof over the successor authoritative NanoHost session preserves the original attempt; failed proof preserves no availability or cleanup claim and follows the owning interruption and NanoHost-lifecycle boundaries.
 - NanoHost or effect-capable member failure makes every attached AgentSession independently interrupted or unknown and fences affected capacity until definite cleanup or post-fence fresh-ready proof.
@@ -149,6 +153,7 @@ The configured NanoHost, shared Runtime Epoch, one NanoHost transport session, p
 ## Testing Strategy / Acceptance Criteria
 
 - L1 covers configured local versus remote target selection, Harness `maxOpenSessions` and `maxActiveTurns`, Sandbox `maxHarnesses` and aggregate bounds, exact Harness compatibility selection, duplicate-launch rejection, heartbeat deadline, exact reconnect predicates, and separate open-session and active-Turn release.
+- L1 covers the one-queued-occurrence-per-schedule bound, one admitted/running occurrence plus one waiting occurrence, distinct schedules targeting one Thread, and lease-enforced Thread single-flight, with no trigger-local parallelism or deadline cancellation after admission acceptance.
 - L1 for the Goal-to-ordinary-Sandbox pin, when sibling runtime-path ownership clears, proves same-Goal reuse of the `SandboxRuntimeRecord.pinnedGoalId` Sandbox, other-Goal exclusion from that Sandbox with another ordinary Sandbox or existing-scheduler queued retry, fresh per-Turn authority, AEP, context, and lease checks, absent-or-released pin creating a new pin through ordinary scheduling, fail-closed only for stale or contradictory pin state that conflicts with live binding or occupancy, and unchanged protocol, App API, AEP, worker-control, and NanoHost `session.open` and `turn.start` wires; the nullable `pinnedGoalId` column now exists, but its only production reader protects idle eviction, with no Goal-aware selector or writer; current admission lacks Goal, and this criterion remains unmet.
 - L2 covers worker-control token, lineage, process-key, and sequence enforcement at the lease boundary.
 - L3 keeps one deterministic kill/restart scenario that proves either exact same-worker adoption with no duplicate launch or the documented interrupted fallback after timeout.
@@ -181,4 +186,5 @@ Deferred work is non-authorizing and creates no current schema, implementation, 
 - `docs/specs/20260629-worker_runtime_communication_model.md`
 - `docs/core/agent-session.md`
 - `docs/specs/20260704-goal_mode_coordination.md`
+- `docs/specs/20260711-scheduler_recurring_event_triggers.md`
 - `docs/deployment.md`

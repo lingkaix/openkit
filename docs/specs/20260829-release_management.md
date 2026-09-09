@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 date: 2026-08-29
-updated: 2026-09-01
+updated: 2026-09-09
 ---
 # Release Management
 
@@ -19,6 +19,7 @@ updated: 2026-09-01
 - Container image contents, image taxonomy, OCI labels, or GHCR naming, which are owned by `docs/specs/20260708-container_image_packaging.md`.
 - The end-user Skill package contents or host contract, which are owned by `docs/specs/20260713-openkit_agent_skill_interface.md`.
 - NanoHost runtime or distribution readiness, which is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
+- Deployment host support profiles, installed dependencies, resource recommendations, and host-requirement verdicts, which are owned by `docs/specs/20260909-deployment_host_requirements.md`.
 - Test-layer semantics, which are owned by `docs/specs/20260529-test_strategy.md`.
 - Repository visibility, GHCR package visibility mutations, GitHub repository rules, or who receives publication credentials.
 - npm publication, desktop packaging, a public Skill registry, deployment automation, or update delivery.
@@ -35,6 +36,7 @@ updated: 2026-09-01
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260721-worker_execution_environment_images.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
+- `docs/specs/20260909-deployment_host_requirements.md`
 
 ## Summary
 
@@ -89,7 +91,7 @@ The current release bundle contains exactly these controlled assets:
 | --- | --- | --- |
 | Catalog entries with `release: true` | GHCR | Exact version tag, version without `v`, source-revision tag, digest, and stable-only `latest` |
 | End-user `openkit` Skill | GitHub Release attachment | `openkit-skill-<tag>.tar.gz` containing the complete `skills/openkit/` tree and repository license |
-| NanoHost Distribution | GitHub Release attachment | `openkit-nanohost-<tag>-linux-arm64.tar.gz` satisfying the exact target, tree, pin, installer, license, and reproducibility contract owned by the NanoHost specification |
+| NanoHost Distributions | GitHub Release attachments | `openkit-nanohost-<tag>-linux-amd64.tar.gz` and `openkit-nanohost-<tag>-linux-arm64.tar.gz`, each satisfying the exact target, tree, pin, installer, license, and reproducibility contract owned by the NanoHost specification |
 | Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over the attached Skill and NanoHost archives |
 | Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, automatic gate result, manual-gate disposition, and portable-asset checksum |
 
@@ -99,7 +101,7 @@ All root, app, and workspace package manifests remain private and produce no npm
 
 `test-env` remains an internal CI artifact, and the Codex-plus-Pi dogfood image remains an internal non-release artifact.
 
-The NanoHost owner admits exactly one distribution target, `linux/arm64`. Release composition MUST use that owner's exact archive without redefining its contents, destinations, prerequisites, installer semantics, or readiness; no `linux/amd64` NanoHost attachment exists until that owner admits it.
+The NanoHost owner admits exactly two distribution targets, `linux/amd64` and `linux/arm64`. Release composition MUST use both exact target-matched archives without redefining their contents, destinations, installer semantics, or readiness, and MUST bind each generated manifest to its exact target plus the host-profile id and digest owned by the deployment-host specification. Current arm64-only packaging is an implementation gap and cannot define the release target set.
 
 R001 remains open pending fresh exact-product no-host-reboot A1 evidence. Until that runtime gate closes, a release MUST remain a prerelease and its notes MUST state that the NanoHost archive is installable but supported Worker Agent execution is not yet release-ready.
 
@@ -175,7 +177,7 @@ For a newly promoted prerelease, the workflow MUST prove that it did not change 
 
 The workflow MUST log out of GHCR and inspect the exact `worker-common` digest without credentials.
 
-The workflow MUST download every controlled GitHub Release attachment and verify `SHA256SUMS`. It MUST inspect the Skill archive and run the bundled CLI's local operation discovery under the supported Node runtime without a NanoCore connection. It MUST run the same executable NanoHost release-asset verifier used before publication against the downloaded NanoHost archive, including exact tree, generated-manifest consistency, inner checksums, AArch64 ELF identity, and a newly created contained `DESTDIR` installation; an amd64 verification host reports staging only and makes no live NanoHost readiness claim.
+The workflow MUST download every controlled GitHub Release attachment and verify `SHA256SUMS`. It MUST inspect the Skill archive and run the bundled CLI's local operation discovery under the supported Node runtime without a NanoCore connection. It MUST run the same executable NanoHost release-asset verifier used before publication against both downloaded NanoHost archives, including exact tree, target and generated-manifest consistency, inner checksums, target-matched ELF identity, and a newly created contained `DESTDIR` installation. Cross-target staging makes no live NanoHost readiness claim; fresh target-matched real-host qualification is separate.
 
 The GitHub Release prerelease state MUST agree with the tag, and its notes MUST name the source commit, workflow run, image digests, automatic gates, manual-gate disposition, visibility posture, NanoHost target and current R001 runtime status, and portable-asset checksum.
 
@@ -185,7 +187,7 @@ The existing `.github/workflows/ci.yml` already runs tag preflight, L0-L3, L5, a
 
 The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete Skill, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
 
-The native arm64 NanoHost build job, NanoHost archive packaging, combined portable checksum, shared NanoHost verifier, isolated fixed-path installer job, and NanoHost attachment and post-publication checks defined by this amendment are implemented and pass their focused local regressions. Exact artifact candidate commit `1a5468bce556c14bb3dfc16550a9dc2f1c7adad5` completed the no-lifecycle A1 real-artifact gate and received independent evidence acceptance, so R002 is complete. R004 remains open until a separately authorized tag is published and verified, and stable preflight remains blocked while R001 is open.
+The native arm64 NanoHost build job, arm64 archive packaging, combined portable checksum, arm64 verifier, isolated fixed-path installer job, and arm64 attachment checks are implemented and pass their focused local regressions. Exact artifact candidate commit `1a5468bce556c14bb3dfc16550a9dc2f1c7adad5` completed the no-lifecycle A1 real-artifact gate and received independent evidence acceptance for arm64. The required amd64 native build, target-aware packaging and verification, attachment, post-publication checks, and fresh real-host qualification are not implemented. R004 remains open until a separately authorized complete tag is published and verified, and stable preflight remains blocked while R001 is open.
 
 The repository is currently private, no product release exists, and no visibility mutation or release publication occurs as part of this implementation change.
 
@@ -198,10 +200,10 @@ The repository is currently private, no product release exists, and no visibilit
 - The workflow pushes a digest candidate, smokes every declared platform before promotion, and reuses matching version and source-revision tags without mutation.
 - A prerelease GitHub Release is marked prerelease and not Latest; a stable release is marked stable.
 - The deterministic Skill packager produces an archive with the expected envelope, complete Skill directory, executable bundle, repository license, and matching SHA-256.
-- The tag-only native `ubuntu-24.04-arm` job reads the NanoHost Rust version from its existing app pin, performs a locked release build, runs the binary's side-effect-free `--version`, and hands only that AArch64 binary to portable packaging without A1, a self-hosted runner, or a cross-build framework.
-- The NanoHost packager consumes the specification-owned target and one accepted pin projection, verifies the Gateway and commit-bound OpenShell license bytes, rejects non-AArch64 inputs, and produces the exact archive twice with identical bytes.
-- One shared NanoHost release-asset verifier accepts the intact pre-publication and downloaded post-publication archive and rejects checksum corruption, wrong tree or architecture, generated-manifest inconsistency, and staging escape before writes.
-- Before R002 closes, the exact final candidate commit is built natively on A1, reports its version, packages the real pin-bound inputs, reports successful package and host prerequisites plus the expected nonzero `destination-conflict` for the earlier installed NanoHost bytes, proves all live destinations unchanged, and installs only beneath a newly created contained `DESTDIR`; any artifact-affecting change makes that result stale and requires a rerun, while no service lifecycle or current-deployment effect occurs.
+- Target-native tag-only amd64 and arm64 jobs read the NanoHost Rust version from its existing app pin, perform locked release builds, run each binary's side-effect-free `--version`, and hand only the target-matched binary to portable packaging without A1 or a cross-build framework.
+- The NanoHost packager consumes each specification-owned target and one accepted pin projection, verifies the target-matched Gateway and commit-bound OpenShell license bytes, rejects architecture-mismatched inputs, and produces each exact archive twice with identical bytes.
+- One shared target-aware NanoHost release-asset verifier accepts both intact pre-publication and downloaded post-publication archives and rejects checksum corruption, wrong tree or architecture, generated-manifest inconsistency, and staging escape before writes.
+- Historical R002 closed for the initial arm64 artifact only after the exact final candidate commit was built natively on A1, reported its version, packaged the real pin-bound inputs, reported successful package and host prerequisites plus the expected nonzero `destination-conflict` for the earlier installed NanoHost bytes, proved all live destinations unchanged, and installed only beneath a newly created contained `DESTDIR`. The amd64 target requires its own target-native implementation and qualification, but does not reopen that historical result or make A1 the exclusive future qualification host.
 - The repository release gate passes without requiring Docker for ordinary checks; image publication behavior remains decided only by the tag workflow.
 - A completed real release satisfies every post-publication predicate above before its release change record becomes verified.
 

@@ -126,6 +126,7 @@ Worker runtime, supply, and synchronization:
 - [`20260709-worker_credential_access_declarations.md`](./20260709-worker_credential_access_declarations.md)
 - [`20260709-worker_sandbox_freedom_policy.md`](./20260709-worker_sandbox_freedom_policy.md)
 - [`20260711-scheduler_recurring_event_triggers.md`](./20260711-scheduler_recurring_event_triggers.md)
+- [`20260909-deployment_host_requirements.md`](./20260909-deployment_host_requirements.md)
 
 Storage, knowledge, policy, vault, audit, and metering:
 

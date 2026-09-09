@@ -230,6 +230,8 @@ The `session.concurrent-turns` identifier describes a Harness capability and nev
 
 The accepted initial Generative contracts select `workspace.generative-kernel.v1` for the app/schema/native-record and app-audit portable graph, and `workspace.generative-ui.native-v1` for immutable native presentations and their Item references. These are design-selected identifiers, not claims that current readers or the runtime registry implement them. Add them to the existing shared registry and its executable/spec projection together when implementing those families; until then, writers cannot emit them and unsupported readers must fail closed. The native UI marker does not admit HTML delegates, saved-view lifecycles, or executable Plugin resources.
 
+The accepted recurring design selects `workspace.recurring-triggers.v1` for definitions, exact occurrence/expired-range history and its inert portable projection. Like the Generative identifiers above, it must enter the shared runtime registry and executable/spec projection when implemented; current writers cannot emit it. Unknown required recurring semantics fail closed rather than importing active execution or silently omitting history.
+
 ## Extension Namespaces
 
 `extensions` fields MUST be namespaced.

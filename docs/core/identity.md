@@ -53,7 +53,7 @@ An `AuthSession` may carry a non-secret derived-authority Token reference when a
 
 `Invitation` is a pending request to join a workspace.
 
-`AutomationIdentity` is a non-human actor that can trigger work under a declared owner or policy context. The concept alone does not define a token-issuance or Workspace-membership contract; any such contract requires a separate owning specification.
+`AutomationIdentity` is a non-human actor that can trigger work under a declared owner or policy context. The concept alone does not define a token-issuance or Workspace-membership contract; any such contract requires a separate owning specification. A recurring instruction may realize that identity by binding to one responsible user and checking current Policy; derived trigger permissions and activity history do not create independent credentials or membership.
 
 `IntegrationIdentity` is an external system identity such as a webhook source, repository app, or provider integration.
 

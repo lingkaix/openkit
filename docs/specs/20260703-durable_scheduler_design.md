@@ -1,7 +1,7 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-31
+updated: 2026-09-09
 ---
 # Durable Scheduler Design
 
@@ -21,6 +21,7 @@ updated: 2026-08-31
 - Storage layout or table DDL.
 - Dynamic multi-target placement, fairness, aging, affinity, warm pools, per-scope scale policy, high availability, multi-process Core, or distributed takeover.
 - Automatic reconstruction of every crash boundary or a recovery workflow for incomplete product owners.
+- Recurring definition, occurrence, cadence, retry, or expiry semantics. This specification owns only the existing admission boundary they must reuse.
 - NanoHost identity and transport, Runtime Epoch identity or lifecycle, OpenShell operations, sandbox create or delete, OS supervision, or fresh-empty readiness proof.
 
 ## Core References
@@ -73,6 +74,7 @@ Existing placement-plan, pool, scheduler capacity, target-health, priority, and 
 ## Admission And Launch
 
 - Admission resolves the immutable Turn/AEP `triggerActor` through the existing product lineage and applies the shared `runtime.launch` current-authority predicate before writing a new admission. Scheduler rows link the Turn, AgentSession, and package snapshot and must not copy another runtime `ActorRef` or use the derived responsible user as storage or capacity scope.
+- A recurring occurrence is accepted when its exact scheduler queue row commits, not when dispatch or worker execution begins. Where the occurrence owner and admission row share `core.sqlite`, the occurrence acceptance and queue insert MUST use one transaction and one deterministic request identity. Exact replay returns that row; a conflicting identity fails `recovery_required`. Once committed, later queue denial, dispatch delay, Turn failure, interruption, unknown effect, or approval wait MUST NOT cause the occurrence owner to submit another admission.
 - Dispatch applies the same predicate again immediately before minting a sandbox token or requesting worker launch. Authority lost after admission uses the scheduler's existing denied or terminal admission outcome and launches nothing; it adds no lease state, retry, replacement, or recovery owner.
 - Admission MUST validate product lineage, requested Agent, configured target compatibility, exact Harness compatibility selection, one-active-Turn-per-Thread and per-AgentSession uniqueness, and every Harness and Sandbox capacity bound before launch.
 - Admission MUST reject a claim while the configured NanoHost identity, predecessor-fenced authoritative connection, or current ready-capacity report is missing, stale, conflicting, or non-ready.
@@ -125,6 +127,8 @@ A complete terminal owner tuple may finish through the existing owner transactio
 
 NanoCore currently persists admission entries, placement plans, leases, pool and scheduler capacity rows, target-health summaries, worker-control bindings, and scheduler epochs. Dispatch, lease maintenance, health probing, and restart scanning run as in-process services. Ordinary successful NanoHost Turns release scheduler capacity after Turn-local backend cleanup while retaining the shared Sandbox. The current path admits multiple compatibility-keyed Harness records inside one Sandbox and retains one active-Turn unit per Harness; scheduler authorization for concurrent active Turns across those Harnesses remains unimplemented. The duplicate RuntimeTarget `active_lease_id`, mutable `capacity_state`, and test-only claim or settle helpers have been deleted through the strict current migration; scheduler leases and capacity rows remain the only active-Turn grant. The nullable `sandbox_runtime_records.pinned_goal_id` column now exists as this specification's physical home; current scheduler and placement code has no Goal-aware reader, writer, or selector for it, and no Goal pin behavior is implemented.
 
+The current admission insert is not request-idempotent, and `startProductTurn` may return `scheduler_admission_deferred` after its queue row already committed. The recurring occurrence transaction above is therefore unimplemented.
+
 The pre-listen restart scan now performs only durable classification, fencing, read-only restoration, and deterministic result-only expectation registration. The existing post-listener single-flight maintenance service resumes exact cleanup and fail-closed accepted-final-status recovery through ordinary transport. Worker-governance preparation consumes the sole configured NanoHost readiness projection before any fresh, reused, or replacement AgentSession can acquire a lease; runtime-binding and Sandbox uncertainty remain non-reusable and preserve the existing capacity fence. Real restart, reconnect, cleanup, and saturation acceptance remains outstanding.
 
 ## Alternatives Considered
@@ -144,6 +148,7 @@ Rejected. Durable lease identity and reconnect fencing are necessary to reject s
 ## Testing Strategy / Acceptance Criteria
 
 - L1 covers admission validation, per-Turn, per-Thread, and per-AgentSession uniqueness, Harness and Sandbox capacity bounds, lease-before-launch, heartbeat and renewal bounds, exact reconnect predicates, wrong-key rejection, ordinary terminal unit release without Sandbox deletion, and Harness-, Sandbox-, and Runtime-Epoch-width cleanup fencing.
+- L1 covers atomic recurring-occurrence acceptance with the exact deterministic admission row, idempotent exact replay, and conflicting replay rejection.
 - L2 covers the lease-bound worker-control token, lineage, sequence, and final-status boundary.
 - L3 retains one deterministic NanoCore kill/restart scenario: predecessor-fenced exact adoption must continue the same worker without duplicate sandbox creation or launch, while failed proof must reach the documented interrupted or unknown fallback.
 - L5 or opt-in A1 acceptance proves one configured local or remote NanoHost path, ordinary Turn release with the shared Sandbox retained, definite physical cleanup, uncertain-cleanup Runtime Epoch invalidation, and post-fence fresh-ready capacity release. Existing runners and harnesses must be reused.
@@ -168,6 +173,7 @@ Deferred work is non-authorizing and creates no current schema, migration, imple
 ## Links
 
 - `docs/specs/20260703-runtime_scheduling_scale.md`
+- `docs/specs/20260711-scheduler_recurring_event_triggers.md`
 - `docs/specs/20260703-worker_control_protocol.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`

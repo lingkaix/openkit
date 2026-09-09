@@ -56,7 +56,7 @@ The clean target for human remote access is a single credential family: server-i
 - Do not define permission policy semantics; scopes here are authentication-layer coarse gates, not the policy model.
 - Do not preserve the raw cookie/authorization env-var passthrough as a compatibility alias.
 - Do not design worker-side sandbox token minting, which stays lease-bound in the scheduler design.
-- Do not define `AutomationIdentity` token issuance, responsible-user binding, or Workspace membership for V1.
+- Do not define `AutomationIdentity` token issuance or independent Workspace membership. The [Recurring Trigger specification](20260711-scheduler_recurring_event_triggers.md) separately owns its bounded schedule-to-responsible-user binding without a new credential.
 
 ## Background
 
@@ -242,6 +242,10 @@ Acceptance criteria: all L1-L3 behaviors pass deterministically; no agent-visibl
 - Risk: NanoCore starts after a recovery preflight and races the operator's write. Mitigation: the operator holds the existing data-root exclusive lock from before database open through file durability, transaction commit, database close, and command completion.
 - Risk: a crash leaves the only plaintext credential on one side of the file/SQLite boundary. Mitigation: publish the `0600` envelope first, bind deterministic Token facts, resume only an exact file-before-database state, and return `recovery_required` for every contradiction rather than overwriting or deleting material.
 
+## Recurring Identity Boundary
+
+The separate owning specification required for scheduled automation responsibility is [Recurring Triggers](20260711-scheduler_recurring_event_triggers.md). Its Core-local schedule identity uses the responsible human's current membership and Policy on each admission and dispatch; it issues no automation Token and creates no automation WorkspaceMember. Broader automation authentication remains deferred.
+
 ## Resolved Decisions
 
 Previously open questions are resolved by accepted V1 defaults: the encrypted fallback file uses a machine-scoped key when no secret-safe OS credential writer is available; `workspace` tokens bind to an explicit Workspace list only, and wildcard Workspace binding is deferred until its audit and revocation semantics are designed.
@@ -249,7 +253,7 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 ## Deferred / Future Work
 
 - OAuth-style device-flow pairing so a Skill-capable AI application can acquire a token through a browser consent step instead of manual issuance.
-- Dedicated `AutomationIdentity` token issuance, responsible-user binding, administration, and Workspace-membership rules after a separate owning specification is accepted.
+- Dedicated `AutomationIdentity` token issuance, administration, and independent Workspace-membership rules remain deferred. The bounded recurring responsible-user binding is owned separately by the recurring specification and grants none of those capabilities.
 - Fine-grained token scopes (per-capability, per-thread, time-boxed step tokens) beyond the closed v1 set.
 - Web UI token administration surfaces projecting the token read models.
 

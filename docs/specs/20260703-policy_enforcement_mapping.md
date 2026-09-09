@@ -174,6 +174,10 @@ Mutation posture is separate from the product operation. It describes whether a 
 
 Governed metadata reads, user-scoped invitation discovery and response, self-leave, and deployment recovery demonstrate why neither HTTP method nor a generic `workspace.read` or `workspace.write` split is sufficient. Workspace-member-visible member and invitation collections map to `membership.manage`; the authenticated invitee's own invitation collection and exact accept or decline map to `invitation.respond`. A new product-operation family or access-right identifier requires an owning-spec update before it is added to runtime metadata. A route-level authorization allow never substitutes for a deeper effect check such as `runtime.launch`, `vault.use`, `network.egress`, or `repo.push`.
 
+### Recurring Operation Projection
+
+[Recurring Triggers](20260711-scheduler_recurring_event_triggers.md) reuse existing operations: definition/history reads map to `workspace.read`, with `thread.read` for linked Thread/Turn content; create/edit/pause/resume/delete map to `workspace.configure` and are mutations for readonly-token enforcement. Due admission maps to `turn.run` and independently requires current `runtime.launch`; normal dispatch rechecks current authority again. Audit reads retain `audit.read`. The schedule is the concrete AutomationIdentity owner, binding the exact automation actor to an immutable responsible user; it grants no rights itself. Inactive identity/user, revoked membership, denied Policy or missing lineage cannot be replaced by an owner, administrator or system actor. This adds no role or access-right identifier.
+
 ### Initial Generative Operation Projection
 
 These concrete operation mappings extend the existing registry; they add no access-right identifiers or Light App ACL. Each endpoint/catalog descriptor has one fixed primary product operation and mutation posture. The initial contracts are owned by [Kernel](20260908-generative_kernel_data_operations.md) and [Generative UI](20260908-generative_ui_interaction.md); implementation registration remains required before publication.
