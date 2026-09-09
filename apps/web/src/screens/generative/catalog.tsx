@@ -13,12 +13,6 @@ import {
   type ButtonSize,
   type ButtonVariant,
   Card,
-  ItemCard,
-  type ItemKind,
-  Select,
-  type SelectOption,
-  StatusChip,
-  type StatusTone,
   Switch,
   TextField,
 } from '../../primitives';
@@ -75,25 +69,6 @@ function asString(value: unknown, fallback = ''): string {
 }
 
 /**
- * Reads Select options from a declarative props bag.
- *
- * @param value Expected `{ id, label }[]`.
- * @returns Normalized select options.
- */
-function asSelectOptions(value: unknown): SelectOption[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item, index) => {
-      const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
-      return {
-        id: asString(row.id, `opt_${index}`),
-        label: asString(row.label, asString(row.id, `Option ${index + 1}`)),
-      };
-    })
-    .filter((opt) => opt.label.length > 0);
-}
-
-/**
  * Whitelisted A2UI type → OpenKit primitive renderers.
  *
  * Keys are the only component type names the shell will render as interactive UI.
@@ -104,7 +79,15 @@ export const A2UI_CATALOG: Readonly<Record<string, CatalogRenderer>> = {
       {renderChildren(node.children)}
     </Card>
   ),
-
+  Row: (node, renderChildren) => (
+    <div className="flex flex-row flex-wrap items-center gap-2">{renderChildren(node.children)}</div>
+  ),
+  Column: (node, renderChildren) => (
+    <div className="flex flex-col gap-2">{renderChildren(node.children)}</div>
+  ),
+  List: (node, renderChildren) => (
+    <div className="flex flex-col gap-2">{renderChildren(node.children)}</div>
+  ),
   Button: (node) => {
     const label = asString(node.props?.label, node.content ?? '');
     const variant = asString(node.props?.variant, 'accent') as ButtonVariant;
@@ -115,52 +98,17 @@ export const A2UI_CATALOG: Readonly<Record<string, CatalogRenderer>> = {
       </Button>
     );
   },
-
-  ItemCard: (node, renderChildren) => {
-    const kind = asString(node.props?.kind, 'positive') as ItemKind;
-    const title = asString(node.props?.title, node.content ?? 'Item');
-    const meta = asString(node.props?.meta) || undefined;
-    return (
-      <ItemCard kind={kind} title={title} meta={meta}>
-        {renderChildren(node.children)}
-      </ItemCard>
-    );
-  },
-
-  StatusChip: (node) => {
-    const tone = asString(node.props?.tone, 'neutral') as StatusTone;
-    const label = asString(node.props?.label, node.content ?? '');
-    return <StatusChip tone={tone}>{label}</StatusChip>;
-  },
-
-  Switch: (node) => {
-    const label = asString(node.props?.label, node.content ?? '');
-    const selected = Boolean(node.props?.selected ?? node.props?.defaultSelected);
-    return <Switch defaultSelected={selected}>{label}</Switch>;
-  },
-
-  Select: (node) => {
-    const label = asString(node.props?.label, 'Select');
-    const items = asSelectOptions(node.props?.items);
-    const placeholder = asString(node.props?.placeholder) || undefined;
-    const selectedKey = asString(node.props?.selectedKey) || undefined;
-    return (
-      <Select
-        label={label}
-        items={items}
-        placeholder={placeholder}
-        defaultSelectedKey={selectedKey}
-      />
-    );
-  },
-
   TextField: (node) => {
     const label = asString(node.props?.label, 'Field');
     const defaultValue = asString(node.props?.value, node.content ?? '') || undefined;
     const placeholder = asString(node.props?.placeholder) || undefined;
     return <TextField label={label} defaultValue={defaultValue} placeholder={placeholder} />;
   },
-
+  CheckBox: (node) => {
+    const label = asString(node.props?.label, node.content ?? '');
+    const selected = Boolean(node.props?.selected ?? node.props?.value);
+    return <Switch defaultSelected={selected}>{label}</Switch>;
+  },
   Text: (node) => {
     const text = asString(node.content, asString(node.props?.text));
     const strong = Boolean(node.props?.strong);

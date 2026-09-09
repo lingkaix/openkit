@@ -105,23 +105,25 @@ describe('WP-9 three-state render model', () => {
 });
 
 describe('WP-9 whitelist catalog', () => {
-  it('whitelists only OpenKit primitives used by the sample', () => {
+  it('whitelists only the native eight-component catalog', () => {
     expect(isWhitelisted('Card')).toBe(true);
     expect(isWhitelisted('Button')).toBe(true);
-    expect(isWhitelisted('ItemCard')).toBe(true);
-    expect(isWhitelisted('StatusChip')).toBe(true);
-    expect(isWhitelisted('Switch')).toBe(true);
-    expect(isWhitelisted('Select')).toBe(true);
-    expect(isWhitelisted('TextField')).toBe(true);
     expect(isWhitelisted('Text')).toBe(true);
+    expect(isWhitelisted('TextField')).toBe(true);
+    expect(isWhitelisted('CheckBox')).toBe(true);
+    expect(isWhitelisted('Row')).toBe(true);
+    expect(isWhitelisted('Column')).toBe(true);
+    expect(isWhitelisted('List')).toBe(true);
     expect(isWhitelisted('Chart')).toBe(false);
     expect(isWhitelisted('EmbeddedFrame')).toBe(false);
-    expect(Object.keys(A2UI_CATALOG).length).toBeGreaterThan(0);
+    expect(isWhitelisted('Select')).toBe(false);
+    expect(Object.keys(A2UI_CATALOG)).toHaveLength(8);
   });
 });
 
 describe('WP-9 no arbitrary-code / no iframe path', () => {
   it('shell modules do not contain iframe tags, eval, Function(, or script injection', () => {
+    expect(SHELL_SOURCES).not.toMatch(/from ['"]@a2ui\/react['"]/);
     expect(SHELL_SOURCES).not.toMatch(/<iframe\b/i);
     expect(SHELL_SOURCES).not.toMatch(/createElement\(\s*['"]iframe['"]/i);
     expect(SHELL_SOURCES).not.toMatch(/\beval\s*\(/);

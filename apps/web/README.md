@@ -23,6 +23,8 @@ The live Tier-A board-19 **Repositories** screen projects selected-Workspace rep
 
 The live Tier-A **Catalog** screen projects selected-Workspace Skill, MCP, and Agent Plugin catalog management through `client.catalog`. It imports SKILL.md trees, pins current Skill versions, creates inactive MCP configurations, toggles enablement, and imports plugin.json packages. Native Codex plugin loading is not advertised. Stdio MCP enablement remains a deployment-admin authority on the server. Writes stay disabled while disconnected.
 
+The live Chat surface renders `generative-ui-reference` Thread Items through the eight native A2UI types mapped onto OpenKit primitives. Kernel create and record writes stay agent-first. The `/generative` fixture shell remains unpublished Tier C.
+
 Surfaces that run ahead of a stable kernel contract may retain internal review implementations, but published navigation and routing omit them until they become live (DESIGN.md §11).
 
 The Settings **Debug** surface contains the component catalog and is the single Web placement for future developer-facing inspection panels after their contracts and authorization are accepted.

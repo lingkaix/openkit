@@ -3123,6 +3123,285 @@ export const operationCatalog = [
       return { deleted: credentialStore.deleteToken({ baseUrl: endpoint }) };
     },
   },
+  {
+    ...STANDARD,
+    id: 'kernel.apps-list',
+    source: 'app-api',
+    appOperationId: 'listLightApps',
+    clientMethod: 'app.listLightApps',
+    group: 'kernel',
+    summary: 'List Light Apps in one Workspace.',
+    mutating: false,
+    inputSchema: strictScope(workspaceScope),
+    handler: ({ client }, input) => client.app.listLightApps(input.workspaceId),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.apps-create',
+    source: 'app-api',
+    appOperationId: 'createLightApp',
+    clientMethod: 'app.createLightApp',
+    group: 'kernel',
+    summary: 'Create one Light App from a file-authored schema.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CreateLightAppRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.createLightApp(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.apps-get',
+    source: 'app-api',
+    appOperationId: 'getLightApp',
+    clientMethod: 'app.getLightApp',
+    group: 'kernel',
+    summary: 'Read one Light App schema and capabilities.',
+    mutating: false,
+    inputSchema: strictScope({ ...workspaceScope, appId: z.string().uuid() }),
+    handler: ({ client }, input) => client.app.getLightApp(input.workspaceId, input.appId),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.schema-update',
+    source: 'app-api',
+    appOperationId: 'updateLightAppSchema',
+    clientMethod: 'app.updateLightAppSchema',
+    group: 'kernel',
+    summary: 'Update one Light App schema within the initial evolution ceiling.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.UpdateLightAppSchemaRequestSchema, {
+      ...workspaceScope,
+      appId: z.string().uuid(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.updateLightAppSchema(
+        input.workspaceId,
+        input.appId,
+        bodyWithout(input, 'workspaceId', 'appId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.apps-retire',
+    source: 'app-api',
+    appOperationId: 'retireLightApp',
+    clientMethod: 'app.retireLightApp',
+    group: 'kernel',
+    summary: 'Retire one Light App and disable writes.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.RetireLightAppRequestSchema, {
+      ...workspaceScope,
+      appId: z.string().uuid(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.retireLightApp(
+        input.workspaceId,
+        input.appId,
+        bodyWithout(input, 'workspaceId', 'appId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.records-list',
+    source: 'app-api',
+    appOperationId: 'listLightAppRecords',
+    clientMethod: 'app.listLightAppRecords',
+    group: 'kernel',
+    summary: 'List records in one Light App collection.',
+    mutating: false,
+    inputSchema: strictScope({
+      ...workspaceScope,
+      appId: z.string().uuid(),
+      collection: IDENTIFIER,
+      schemaRevision: z.number().int().positive(),
+      page: z.number().int().positive().optional(),
+      perPage: z.number().int().positive().max(100).optional(),
+      filter: z.string().optional(),
+      sort: z.string().optional(),
+      fields: z.string().optional(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.listLightAppRecords(input.workspaceId, input.appId, input.collection, {
+        schemaRevision: input.schemaRevision,
+        page: input.page,
+        perPage: input.perPage,
+        filter: input.filter,
+        sort: input.sort,
+        fields: input.fields,
+      }),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.records-get',
+    source: 'app-api',
+    appOperationId: 'getLightAppRecord',
+    clientMethod: 'app.getLightAppRecord',
+    group: 'kernel',
+    summary: 'Read one Light App record.',
+    mutating: false,
+    inputSchema: strictScope({
+      ...workspaceScope,
+      appId: z.string().uuid(),
+      collection: IDENTIFIER,
+      recordId: z.string().uuid(),
+      schemaRevision: z.number().int().positive(),
+      fields: z.string().optional(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.getLightAppRecord(
+        input.workspaceId,
+        input.appId,
+        input.collection,
+        input.recordId,
+        input.schemaRevision,
+        input.fields
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.records-create',
+    source: 'app-api',
+    appOperationId: 'createLightAppRecord',
+    clientMethod: 'app.createLightAppRecord',
+    group: 'kernel',
+    summary: 'Create one Light App record.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.CreateLightAppRecordRequestSchema, {
+      ...workspaceScope,
+      appId: z.string().uuid(),
+      collection: IDENTIFIER,
+    }),
+    handler: ({ client }, input) =>
+      client.app.createLightAppRecord(
+        input.workspaceId,
+        input.appId,
+        input.collection,
+        bodyWithout(input, 'workspaceId', 'appId', 'collection')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.records-update',
+    source: 'app-api',
+    appOperationId: 'updateLightAppRecord',
+    clientMethod: 'app.updateLightAppRecord',
+    group: 'kernel',
+    summary: 'Update one Light App record.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.UpdateLightAppRecordRequestSchema, {
+      ...workspaceScope,
+      appId: z.string().uuid(),
+      collection: IDENTIFIER,
+      recordId: z.string().uuid(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.updateLightAppRecord(
+        input.workspaceId,
+        input.appId,
+        input.collection,
+        input.recordId,
+        bodyWithout(input, 'workspaceId', 'appId', 'collection', 'recordId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'kernel.records-batch',
+    source: 'app-api',
+    appOperationId: 'batchLightAppRecords',
+    clientMethod: 'app.batchLightAppRecords',
+    group: 'kernel',
+    summary: 'Apply one atomic Light App record batch.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.LightAppBatchRequestSchema, {
+      ...workspaceScope,
+      appId: z.string().uuid(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.batchLightAppRecords(
+        input.workspaceId,
+        input.appId,
+        bodyWithout(input, 'workspaceId', 'appId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'generative-ui.publish',
+    source: 'app-api',
+    appOperationId: 'publishGenerativePresentation',
+    clientMethod: 'app.publishGenerativePresentation',
+    group: 'generative-ui',
+    summary: 'Publish one admitted native Generative UI presentation.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.PublishGenerativePresentationRequestSchema, workspaceScope),
+    handler: ({ client }, input) =>
+      client.app.publishGenerativePresentation(input.workspaceId, bodyWithout(input, 'workspaceId')),
+  },
+  {
+    ...STANDARD,
+    id: 'generative-ui.get',
+    source: 'app-api',
+    appOperationId: 'getGenerativePresentation',
+    clientMethod: 'app.getGenerativePresentation',
+    group: 'generative-ui',
+    summary: 'Read one retained Generative UI presentation.',
+    mutating: false,
+    inputSchema: strictScope({ ...workspaceScope, presentationId: z.string().uuid() }),
+    handler: ({ client }, input) =>
+      client.app.getGenerativePresentation(input.workspaceId, input.presentationId),
+  },
+  {
+    ...STANDARD,
+    id: 'generative-ui.resource',
+    source: 'app-api',
+    appOperationId: 'getGenerativePresentationResource',
+    clientMethod: 'app.getGenerativePresentationResource',
+    group: 'generative-ui',
+    summary: 'Read the retained native A2UI resource for one presentation.',
+    mutating: false,
+    inputSchema: strictScope({ ...workspaceScope, presentationId: z.string().uuid() }),
+    handler: ({ client }, input) =>
+      client.app.getGenerativePresentationResource(input.workspaceId, input.presentationId),
+  },
+  {
+    ...STANDARD,
+    id: 'generative-ui.refresh',
+    source: 'app-api',
+    appOperationId: 'refreshGenerativePresentation',
+    clientMethod: 'app.refreshGenerativePresentation',
+    group: 'generative-ui',
+    summary: 'Refresh one presentation from its current authorized source.',
+    mutating: false,
+    inputSchema: flatRequest(appSchemas.RefreshGenerativePresentationRequestSchema, {
+      ...workspaceScope,
+      presentationId: z.string().uuid(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.refreshGenerativePresentation(
+        input.workspaceId,
+        input.presentationId,
+        bodyWithout(input, 'workspaceId', 'presentationId')
+      ),
+  },
+  {
+    ...STANDARD,
+    id: 'generative-ui.action',
+    source: 'app-api',
+    appOperationId: 'submitGenerativePresentationAction',
+    clientMethod: 'app.submitGenerativePresentationAction',
+    group: 'generative-ui',
+    summary: 'Submit one admitted Kernel record-update action.',
+    mutating: true,
+    inputSchema: flatRequest(appSchemas.SubmitGenerativePresentationActionRequestSchema, {
+      ...workspaceScope,
+      presentationId: z.string().uuid(),
+    }),
+    handler: ({ client }, input) =>
+      client.app.submitGenerativePresentationAction(
+        input.workspaceId,
+        input.presentationId,
+        bodyWithout(input, 'workspaceId', 'presentationId')
+      ),
+  },
 ];
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
