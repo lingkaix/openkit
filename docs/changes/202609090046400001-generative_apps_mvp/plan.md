@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: planned
+status: in-progress
 date: 2026-09-09
 ---
 # Generative Apps MVP
@@ -32,7 +32,7 @@ The primary owns this plan, the root governance amendment, the two initial contr
 
 ### Current Facts And Acceptance Status
 
-- Core design and both initial implementation contracts are accepted; both specifications remain `Implementation: Not Started`. Epoch 2 supplies authorization for the settled details. Initial schema, command, transaction, presentation, Item, action, Worker, Policy, storage and portable contracts are now fixed. No initial design blocker remains; full-feature completion and runtime proof are separate.
+- Core design and both initial implementation contracts are accepted; both specifications are `Implementation: In Progress` while this MVP lands. Epoch 2 supplies authorization for the settled details. Initial schema, command, transaction, presentation, Item, action, Worker, Policy, storage and portable contracts are now fixed. No initial design blocker remains; full-feature completion and later extensions stay deferred.
 - `apps/nanocore/src/storage/db.ts` opens Workspace SQLite and validates it during startup. It does not establish an app-scoped database, schema admission, or local receipt transaction for Kernel.
 - `apps/web/src/screens/generative/render.tsx` renders the local recursive fixture `A2UIDocument` through `A2UI_CATALOG`. It is not the official protocol renderer or evidence of a Core mutation. The route tree admits only surfaces whose publication flag is live.
 - The Worker capability owner's current projection implements selected `mcp.list_servers`, `mcp.list_tools`, and `mcp.call_tool`, but explicitly retains pending real-Codex acceptance. A built-in Kernel target and its non-recursive gateway binding need implementation and direct proof; catalog presence is not proof of a callable route.
@@ -116,4 +116,14 @@ Focused feasibility evidence stays uncommitted under `temp/changes/2026090900464
 
 Observed final contract checks on 2026-09-09: `node scripts/validate-spec-lifecycle.mjs` passed; `node scripts/generate-doc-index.mjs --check` passed after regeneration; `git diff --check` passed; 203 local Markdown link targets across changed tracked documents and the current contract/plan files resolved; both focused feasibility probes passed. The independent reviewer also ran `node --test tests/agents-root-contract.test.mjs` with 5 passed and 0 failed. `git diff --exit-code HEAD -- docs/product-vision.md` passed with no output. The full `node scripts/validate-doc-model.mjs` still exits 1 solely for the pre-existing unrelated `in-review` plan status named above. No check is waived or relabeled as passing.
 
-Final independent acceptance: `/root/generative_mvp_contract_review` inspected the promoted bytes and accepted the material contracts with no actionable findings. It confirmed that both specification statuses, README, generated INDEX, B3 and checkpoint agree, and that the remaining uncertainty is implementation evidence rather than an unresolved initial design decision. This closes the contract-freeze work under Epoch 2; the change remains `planned` because production implementation has not begun.
+Final independent acceptance: `/root/generative_mvp_contract_review` inspected the promoted bytes and accepted the material contracts with no actionable findings. It confirmed that both specification statuses, README, generated INDEX, B3 and checkpoint agree, and that the remaining uncertainty is implementation evidence rather than an unresolved initial design decision. This closes the contract-freeze work under Epoch 2.
+
+## Implementation Epoch 3
+
+Source: the engineer's 2026-09-09 request to land the accepted initial-delivery boundary after merge `e3ecaee7`, including published in-thread Web UI, in a worktree PR. Production Kernel, Generative UI, Skill/CLI, Worker MCP `openkit-generative`, backup/export coverage, and Chat Item rendering are in this epoch. The `/generative` fixture remains unpublished Tier C.
+
+Permission finding: this MVP ships on the accepted Policy mapping (`workspace.read` / `workspace.configure` / `workspace.write` / `thread.read`) without editing `WORKSPACE_ROLE_OPERATION_CEILINGS`. Editor still cannot create or evolve a Light App schema, and viewer still cannot write records. Equal active-member eligibility in `docs/core/permissions.md` remains unmet for those fixed roles; the shared cutover is outside this frontier. Denial for missing, removed, and cross-Workspace callers reuses the existing authorizer.
+
+Renderer finding: in-thread Chat maps the eight native A2UI types onto existing React Aria primitives. Official `@a2ui/react@0.11.0` was not added because it peer-depends on zod 3 while this repository is on zod 4; a source guard still forbids a bare `@a2ui/react` default (v0.8) import.
+
+Herdr finding: independent Claude consultant and Codex reviewer/verifier/auditor panes could not be started from this session because the Herdr CLI protocol (22) is newer than the running server (20). The skill forbids `herdr server stop` without an explicit engineer intent to kill pane processes.
