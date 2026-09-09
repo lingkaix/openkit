@@ -24,6 +24,16 @@ Start a fresh Skill-capable Agent session outside the source checkout with the p
 
 For L6, select an admitted story under `tests/stories/`, preserve the prompt and relevant redacted observations, and have an independent Judge inspect the story and evidence. The Judge recomputes a deciding public fact. Apply the existing repeated-run admission rule when admitting or materially revising a story. Reuse the same deployment between repetitions; vary only scenario-owned names/inputs where necessary.
 
+### Cursor CLI Host
+
+The verified Cursor CLI entrypoint is `agent` (also installed as `cursor-agent`); the desktop `cursor` binary is a different entrypoint. Install the complete built Skill tree at `<fresh-directory>/.cursor/skills/openkit/`. Start a new process with `--workspace <fresh-directory> --trust --model <model-id>` and supply only the persona and user goal. Do not resume a development session or add the source checkout. Select an available real model through the installed CLI; record its exact model id and CLI version with the attempt.
+
+Set `OPENKIT_NANOCORE_URL` in the Actor process environment and reuse the protected endpoint-specific credential store. A shell variable exported only in the coordinator does not prove that a terminal multiplexer child inherited it; set it in the actual Actor shell before launching the CLI. Do not put a token in the launch arguments or task prompt. The stored credential must pass an actual authorized public operation; `doctor` reporting a storage backend only proves credential presence.
+
+Match the credential to the scenario: server-admin tokens authorize operator surfaces, not ordinary Workspace content. Use a Workspace-bound token with the necessary mutation posture for Thread or Task work. A normal user session provisions the Workspace and issues its token through supported APIs when needed. If the endpoint store already contains the operator credential, preserve it and supply the existing `OPENKIT_NANOCORE_TOKEN` override privately from a protected file in the Actor launcher. Retain only non-secret scope and binding metadata. Do not overwrite the admin store or broaden product authorization to repair a test precondition.
+
+Record a digest of the complete installed Skill tree, including relative filenames and bytes, alongside the exact deployment identity. Keep the story and judge inputs outside the Actor directory. Interactive terminal capture is sufficient when the host's headless print entrypoint stalls; that stall is a host/tool observation and supplies no product verdict. Apply the same prompt isolation and retain the actual interaction transcript. The independent Judge uses a different fresh process and receives the story plus the sealed observed evidence, then re-reads the deciding public record.
+
 ## Observe, Repair, Repeat
 
 Use current public records first. Inspect optional telemetry only for the missing diagnostic question; telemetry absence does not override a proved product result. Preserve a collector or judge error and its inputs before correction. Complete retained evidence may be re-adjudicated without rerunning the product; missing observations cannot be reconstructed into a pass.
