@@ -33,7 +33,7 @@ NanoCore uses one small bounded loop for internal roles instead of separate role
 
 The caller assembles all role and product meaning before invocation, and the loop only performs model calls, applies an admitted transient compaction checkpoint, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
 
-The loop is expressible without importing or understanding Thread, Turn, Goal, Workspace, Worker, AgentSession, or any other product concept. Internal roles remain Core-local assemblies over this mechanism, and every durable or consequential result remains controlled by its existing owner.
+The loop is expressible without importing or understanding Thread, Turn, Goal, Workspace, Worker, AgentSession, or any other product concept. Internal roles remain Core-local assemblies over this mechanism, and every durable or consequential result remains controlled by its existing owner. OpenKit owns this implementation and continues using pi-ai behind the Gateway; it does not adopt Pi Agent Core as its runtime, session or harness owner. MCP, progressive Skills and native Kernel/UI use are caller assembly under `docs/specs/20260909-internal_agent_resource_integration.md`, not additional loop primitives.
 
 ## Runtime Input And Ownership Boundary
 
@@ -125,8 +125,8 @@ The loop MUST perform these steps in order:
 3. If the completed Gateway output begins with an admitted OpenKit Compaction Item, replace the older transient transcript with its low-authority continuation summary before appending every later output item in order; do not publish or execute the compaction item as model prose or a Tool call.
 4. If the Provider or required compaction failed or cancellation occurred, terminate with the exact typed outcome.
 5. If a truncated provider response contains any Tool call, execute none of its Tool calls; when another model round trip remains admissible, append bounded safe error results for correction, and otherwise terminate with the applicable fuse or failure.
-6. For each complete Tool call in provider order, resolve the exact supplied Tool, validate its arguments against the input schema, invoke its server-bound closure, sanitize its result or error, and append the model-visible feedback.
-7. Call the model again only when at least one complete runnable Tool call was processed; otherwise return `quiescent`.
+6. For each complete Tool call in provider order, resolve the exact supplied Tool, strictly validate its arguments against the input schema, check cancellation/deadline and remaining Tool capacity, invoke its server-bound closure, sanitize its result or error, and append the model-visible feedback. Validation does not coerce values, insert defaults, discard unknown fields or normalize nulls. Increment the environment-touch counter immediately before invoking a closure, including a closure that subsequently refuses the call.
+7. Call the model again only when at least one Tool call was answered, including a bounded lookup/validation/truncation error eligible for correction, and another model round trip is admissible; otherwise return `quiescent` when no calls need feedback or the applicable fuse/failure. An invalid request cannot create an unbounded correction loop or be executed because a previous error described a repair.
 
 The loop MUST NOT guess missing Tool arguments, execute a partial batch containing a truncated call, treat model prose as authorization, or treat a model-generated stop flag as authoritative.
 
@@ -136,9 +136,13 @@ A dependency failure before an environment touch produces bounded feedback when 
 
 Acceptance requires deterministic Tool-call order, zero execution for truncated or incomplete calls, schema validation before every closure invocation, and no provider call after an exit condition is observed.
 
+Call IDs must be non-empty and unique within the run's correlated Tool calls; an invalid correlation batch fails before any closure executes. Unsupported content and malformed message-role combinations fail at the Gateway projection boundary. Invalid names and arguments do not consume an environment touch, but every correction request consumes a model round trip. Hitting a Tool fuse stops before the next closure, never halfway through an admitted operation.
+
+The caller signal and loop deadline produce one cancellation signal passed to the Gateway and every closure. Trusted caller assembly may privately bind its own AbortController into a Tool closure so that an owner-required stop, such as a durable Approval Gate, cancels that same run. The controller is never a model argument or a new ToolExecutionContext field; the loop observes only cancellation and returns `aborted`, while the caller interprets the owned reason. Awaited model/Tool work is raced against that signal so an uncooperative asynchronous dependency cannot keep the loop waiting beyond its deadline; synchronous blocking work is forbidden on this path. The first observed caller cancellation yields `aborted`; the first observed deadline yields `limit_reached` with `deadline`. Clear timers/listeners at exit and observe any outstanding promise rejection. A late result cannot append messages, emit text or resume the loop. Tool owners retain independent responsibility for their already admitted effects and terminal evidence. In particular, returning `aborted` does not prove that an external effect stopped or never occurred; no abandoned call is automatically replayed.
+
 ## Personal Assistant And Selected Resources
 
-Personal Assistant, management and Knowledge maintenance reuse this same bounded runtime without per-user processes or durable hidden Memory. Current Thread, scoped Memory/Knowledge and permission owners assemble continuity; changing provider or restarting does not erase those records. Selected Skills supply context and MCP bindings supply server-bound Tools only through trusted entry-path assembly. An entry's declared binding/version determines its exact tool set; current actor authority decides each call, not whether an otherwise reachable Tool disappears. Neither Plugin text nor the current message registers new internal Tools. Skill script execution is not part of this loop. Interaction-bounded Memory extraction uses these same fuses and typed outcomes; the runtime does not become a Dreaming scheduler.
+Personal Assistant, management and Knowledge maintenance reuse this same bounded runtime without per-user processes or durable hidden Memory. Current Thread, scoped Memory/Knowledge and permission owners assemble continuity; changing provider or restarting does not erase those records. Selected Skills supply context and reviewed MCP adapters may implement exact Core-owned capabilities through trusted entry-path assembly. An MCP server never supplies arbitrary new model-visible Tools or a Worker harness. The accepted entry contract determines its exact Core Tool set, while selected bindings/versions determine only admitted implementations; current actor authority decides each call, not whether an otherwise reachable Tool disappears. Neither Plugin text nor the current message registers new internal Tools. Skill script execution is not part of this loop. Interaction-bounded Memory extraction uses these same fuses and typed outcomes; the runtime does not become a Dreaming scheduler.
 
 ## Minimal Tool Contract
 
@@ -159,11 +163,12 @@ interface ToolExecutionContext {
   signal: AbortSignal;
 }
 
+type AgentContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 interface AgentToolResult {
-  content: Array<
-    | { type: "text"; text: string }
-    | { type: "image"; data: string; mimeType: string }
-  >;
+  content: readonly AgentContent[];
   details?: unknown;
   isError?: boolean;
 }
@@ -174,16 +179,25 @@ interface AgentToolCall {
   arguments: unknown;
 }
 
-interface AgentMessage {
-  role: "user" | "assistant" | "tool";
-  text: string;
-  toolCalls: readonly AgentToolCall[];
-  truncated: boolean;
-  callId?: string;
-}
+type AgentMessage =
+  | { role: "user"; content: readonly AgentContent[] }
+  | {
+      role: "assistant";
+      content: readonly (
+        | { type: "text"; text: string }
+        | ({ type: "toolCall" } & AgentToolCall)
+      )[];
+      truncated: boolean;
+    }
+  | {
+      role: "tool";
+      callId: string;
+      content: readonly AgentContent[];
+      isError: boolean;
+    };
 ```
 
-`AgentMessage` is the loop-local assembled-message shape: role, text content, an ordered `AgentToolCall` list, and a completion or truncation marker. `callId` is required exactly when `role` is `"tool"` and names the `AgentToolCall.callId` that the result answers. `AgentToolCall` reuses `callId` from `ToolExecutionContext` and `name` from `AgentTool` and carries no provider fields. Tool-result text is the sanitized model-visible projection of `AgentToolResult` onto a `tool` role message.
+`AgentMessage` preserves ordered content and admits only meaningful role combinations. Assistant text and Tool calls retain their original interleaving; user and Tool messages preserve admitted text/image order. A Tool message answers exactly one prior `AgentToolCall.callId`, including a safe error response for a rejected call. The Gateway converts this private union to/from pi-ai at its existing provider boundary; provider-native thinking, signatures, model/provider identity, timestamps, usage and raw response metadata are not copied into the union. Required native provider state remains Gateway-private and cannot become reconstruction authority. An unsupported image capability returns a safe explicit unavailable result, never silently discards the image or labels it read.
 
 Only `name`, `description`, and `inputSchema` are eligible for provider projection. The `execute` closure, internal result `details`, authoritative command identity, actor and role bindings, credentials, policy facts, and audit data remain server-side.
 
@@ -191,7 +205,7 @@ Only `name`, `description`, and `inputSchema` are eligible for provider projecti
 
 The generic Tool interface MUST NOT duplicate role, owner, effect class, budget class, visibility, confirmation, credential, scope, audience, or autonomy metadata already owned by Core contracts. Tool identity and admission are owned by `docs/core/agent-capability.md` rather than this runtime shape.
 
-Tool creation and update occur in trusted server code, and a run receives a temporary immutable array. Tool termination is the end of that array's run; replacement occurs on a later safe provider request or new run. Missing Tools fail exact lookup, stale or unauthorized operations fail through their current owner, and restart reconstructs the array rather than reviving it.
+Tool creation and update occur in trusted server assembly, and a run receives a temporary immutable array. Tool termination is the end of that array's run; replacement occurs only on a newly admitted run. No between-roundtrip replacement inside a run is allowed. Missing Tools fail exact lookup, stale or unauthorized operations fail through their current owner, and restart reconstructs the array rather than reviving it.
 
 Acceptance requires provider serialization to contain no field beyond the three eligible fields and requires every execution to use the supplied server closure rather than a model-selected implementation path.
 
@@ -209,7 +223,7 @@ Acceptance requires adversarial error inputs containing every prohibited categor
 
 This specification owns the boundary that streaming cannot change runtime or product semantics; the channel transport owns delivery. The loop's return value remains the final messages and one typed exit regardless of whether any increment was observed.
 
-The optional observer receives provider text increments only. It cannot influence loop control, cannot be inspected by the model, carries no product status or progress meaning, and MAY be ignored without changing the result.
+The optional observer receives provider text increments only. It cannot influence loop control, cannot be inspected by the model, carries no product status or progress meaning, and MAY be ignored without changing the result. Observer exceptions/disconnection are contained at the transport boundary and cannot fail or delay the loop; no observer callback performs a durable effect. The transport applies its existing audience-safe streaming policy before releasing increments, and stops delivery immediately at cancellation or publication refusal.
 
 Increments are ephemeral transport state. Only finalized content is eligible to become a durable Item through its owning product boundary, while role progress uses existing Item and status projections rather than the increment observer.
 
@@ -230,7 +244,7 @@ The parts need not be separate paragraphs. Tool descriptions and schemas are the
 
 Trusted assembly proceeds conceptually in this deterministic order: role core, current facts from their exact owners, active Tool definitions, optional bounded cross-Tool guidance, optional progressively disclosed Skill index, bounded conversation or work messages, and provider serialization. The order does not require every layer to be concatenated into the system string, and optional layers MAY be absent.
 
-The caller rebuilds the effective prompt and Tool definitions from current trusted inputs for every new run. An in-progress provider request remains pinned to its admitted prompt, messages, Tool definitions, model, context policy, and limits; a later safe provider request or new run receives changes.
+The caller rebuilds the effective prompt and Tool definitions from current trusted inputs for every new run. An in-progress run remains pinned to its admitted prompt, Tool definitions, model, context policy and limits while its transcript evolves; only a newly admitted run receives configuration changes.
 
 Warm provider state is a disposable cache and never authority. Ordinary users, retrieved content, files, Skills, MCPs, plugins, and model output MUST NOT replace the internal-role prompt or widen Tool set, scope, audience, authority, budget, or autonomy.
 
@@ -238,7 +252,7 @@ By default the assembler excludes ambient files, repository summaries, working d
 
 Prompt creation and update belong to trusted role assembly and configuration. A missing or invalid required role core fails before dispatch; stale facts are refreshed from their owner for a new run; conflicting untrusted instructions remain delimited data; restart rebuilds and repins the request.
 
-Acceptance requires stable role behavior to reconstruct without hidden provider memory, selected resource context to remain absent until an admitted Tool reads it, and prompt injection to fail to replace the role or executable policy.
+Acceptance requires stable role behavior to reconstruct without hidden provider memory, selected resource bodies to remain absent until an admitted Tool reads them, with only the bounded Skill index and Tool schemas admitted at assembly, and prompt injection to fail to replace the role or executable policy.
 
 ## Persistence And Restart
 
@@ -252,9 +266,9 @@ Acceptance requires restart reconstruction without a durable loop or toolset rec
 
 ## Internal Role Execution Profile
 
-Before model dispatch, the caller resolves one configuration-owned profile containing the internal role, preferred logical model, compatible logical-model candidates, and required logical-model capabilities. Prompt, Tool, fuse, model-family-independence, and fallback-profile configuration fields are not part of the current file contract because no runtime consumer owns them. The resolved context policy instead comes from the selected logical model in `gateway.jsonc` under `docs/specs/20260902-agent_runtime_context_compaction.md`; it is not duplicated in the internal-role profile.
+Before model dispatch, the caller resolves one configuration-owned profile containing the internal role, preferred logical model, compatible logical-model candidates, and required logical-model capabilities. The runtime-enabled profile additionally owns `limits:{maxModelTurns,maxToolCalls,deadlineMs}` with the positive-integer and objective constraints above; an omitted limits object resolves to `{maxModelTurns:16,maxToolCalls:48,deadlineMs:120000}` for the initial internal roles. This is the concrete configuration projection required by the loop consumer. Prompt text, arbitrary Tool definitions, model-family-independence and fallback-profile fields are not added to this file. Workspace Assistant resource-selection references remain in their separate existing Workspace composition owner, not copied into profiles. The resolved context policy instead comes from the selected logical model in `gateway.jsonc` under `docs/specs/20260902-agent_runtime_context_compaction.md`; it is not duplicated in the internal-role profile.
 
-One product execution is pinned to its resolved logical-model ID, Gateway-derived effective capabilities and `modelFamilyId`, prompt, Tool definitions, context policy, and limits. No logical model, Tool schema, role instruction, or safety limit changes after dispatch begins. Each Gateway call may select a different private route member within that same logical contract, including bounded pre-output failover, without changing the internal-role execution profile or exposing Provider identity.
+Each bounded run is pinned to its resolved logical-model ID, Gateway-derived effective capabilities and `modelFamilyId`, prompt, Tool definitions, context policy and limits. No logical model, Tool schema, role instruction or safety limit changes between provider round trips after that run begins. A separately admitted clarification invocation may remain in the same product Turn while starting a new run from current owners; this runtime imposes no product-Turn-wide model or Tool pin. A caller with a stricter accepted product constraint must enforce it during assembly, without a product branch in the loop. Each Gateway call may select a different private route member within that same logical contract, including bounded pre-output failover, without changing the internal-role execution profile or exposing Provider identity.
 
 Selection of another compatible logical model is permitted only before the run's first dispatch and only when the caller explicitly selects an admitted candidate satisfying every required capability. A started run never substitutes another logical model. Gateway-private fallback among route members of the pinned logical model follows the Gateway owner and may occur independently for each call only before that call emits output. Failure after output begins terminates with its exact typed outcome; retry is a newly admitted execution reconstructed from current durable truth.
 
@@ -296,6 +310,8 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 - `InternalAgentLoopInput`, `AgentMessage`, `AgentTool`, `InternalAgentLoopExit`, and provider projection remain NanoCore-private and are absent from protocol, App API, config schema, AEP, worker-control, and NanoHost surfaces.
 - Exactly three fuses and four typed exits cover every local termination path, and none becomes product success.
 - Truncated or incomplete Tool calls execute zero environment operations, while complete calls execute sequentially after schema validation.
+- Text/Tool interleaving and Tool-returned images survive the Gateway round trip; duplicate call IDs, malformed role combinations and unsupported parts fail explicitly. Validation neither mutates nor coerces input, and invalid-call correction remains bounded by model turns.
+- A hanging asynchronous Tool cannot defeat the deadline, late completion cannot resume the loop, and owner evidence can truthfully remain unknown after `aborted` without an automatic retry.
 - Provider projection contains only Tool name, description, and input schema, and bound execution and internal details stay server-side.
 - Model-visible errors support bounded correction without exposing any prohibited value category.
 - Streaming observation changes no final messages, exit, persistence, recovery, or product behavior.
@@ -308,3 +324,8 @@ These exclusions have no creation, update, termination, retry, or recovery lifec
 
 - `docs/specs/20260529-test_strategy.md`
 - `docs/specs/20260902-agent_runtime_context_compaction.md`
+- `docs/specs/20260909-internal_agent_resource_integration.md`
+
+## Implementation Reference
+
+Pi source at `6160683a4a8012f0d1cd30c145df18b4ca6f5176`, especially [message types](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/ai/src/types.ts#L422) and [agent-loop ordering](https://github.com/earendil-works/pi/blob/6160683a4a8012f0d1cd30c145df18b4ca6f5176/packages/agent/src/agent-loop.ts#L215), informs the small content union and ordered execution. Its harness/session exports, generic hooks, default parallel Tools, argument normalization and raw error feedback are not part of this contract. Existing role-profile helpers and pi-ai transport are implementation foundations; the shared bounded loop and these resource-aware callers remain work to implement, not proof supplied by upstream source.

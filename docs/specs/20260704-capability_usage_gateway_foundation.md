@@ -83,9 +83,9 @@ Implementing worker MCP separately would create duplicate attribution code, dupl
   - `CapabilityCallRecorder`: starts, finishes, and fails durable capability calls.
   - `UsageRecorder`: writes usage rows linked to a capability call.
   - `GatewayUsageNormalizer` functions owned by each producer family.
-- LLM gateway calls and worker MCP calls MUST both create `CapabilityCall` records. LLM calls MAY use an OpenAI-compatible public route, backend-local `inference.local`, or the authenticated worker-inference route, but internally they still represent one `llm` capability family.
+- LLM gateway calls and admitted Worker or internal Assistant MCP calls MUST both create `CapabilityCall` records. LLM calls MAY use an OpenAI-compatible public route, backend-local `inference.local`, or the authenticated worker-inference route, but internally they still represent one `llm` capability family.
 - pi-ai-routed LLM calls MUST record `UsageRecord` rows with `category: "llm"`.
-- Worker MCP `mcp.call_tool` calls whose upstream contact occurred or cannot be excluded MUST record exactly one `UsageRecord` with `category: "tool"`, `unit: "tool_calls"`, and quantity `1`; byte quantities MAY be recorded when reliably measured.
+- Admitted MCP `mcp.call_tool` calls, from Workers or internal Assistant, whose upstream contact occurred or cannot be excluded MUST record exactly one `UsageRecord` with `category: "tool"`, `unit: "tool_calls"`, and quantity `1`; byte quantities MAY be recorded when reliably measured.
 - `mcp.list_servers` and `mcp.list_tools` MUST create capability-call/audit records but MUST NOT create usage rows unless a later accepted spec defines billable listing semantics.
 - The recorder MUST remain adapter-neutral; current Workspace-attributed Codex and pi-ai Gateway calls and every other current producer reuse it.
 
@@ -120,6 +120,7 @@ Rules:
 
 - Missing optional lineage is allowed for server diagnostics and manual gateway calls, but workspace id and a non-null authority actor are required for worker-agent execution and workspace-owned usage.
 - Before a Workspace-attributed producer starts a CapabilityCall or contacts an upstream, it must apply the current-authority predicate from `docs/specs/20260715-multi_user_workspace_system.md` to that actor and the concrete `llm.gateway.use`, `tool.use`, or `network.egress` operation. A null, stale, or denied actor records no Workspace effect; an unattributed server diagnostic cannot be promoted into Workspace usage or authority.
+- Internal Assistant MCP uses authenticated user/Workspace/Thread/Turn and request lineage without an Agent, AgentSession or AEP. `20260909-internal_agent_resource_integration.md` owns its admission and private connection partition; the existing recorder, responsible-user usage derivation and no-contact listing/denial rules remain common.
 - The context actor is transient enforcement input. Durable CapabilityCall and RuntimeEvidence records retain their existing AEP, Turn, AgentSession, request, and audit links instead of copying another `ActorRef`; the linked UsageRecord stores only the exact derived responsible-user id required by the audit and usage specification.
 - The context MUST NOT carry prompt text, tool arguments, tool results, secrets, bearer tokens, or raw prompt cache keys.
 - Producer adapters may add feature-local diagnostic ids, but the recorder stores only stable OpenKit ids and redacted summaries.

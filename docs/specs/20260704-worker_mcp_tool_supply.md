@@ -159,6 +159,10 @@ Rules:
 
 The gateway has an MCP subsystem beside the inference dispatcher: the existing workspace-scoped catalog, a bounded stdio and HTTP client supervisor, a schema snapshot store, and the three operation handlers that compose validation → policy → optional approval → dispatch → normalization → usage/audit emission. Its MCP implementation uses the existing official SDK as an internal worker-capability dependency and does not depend on the removal-only user-facing MCP package or inherit an end-user transport contract. A deterministic stub MCP server supplies focused L1–L3 checks.
 
+## Internal Caller Reuse Boundary
+
+`20260909-internal_agent_resource_integration.md` owns the internal Assistant consumer of this MCP substrate: owned internal-capability adapter binding, internal user/Thread/Turn lineage, per-run private stdio/HTTP session partitions, bounded cleanup, product-visible Tool Items and the non-Worker approval exit. This specification's AEP, AgentSession, Sandbox capability token/listener, Worker pool and Harness interruption clauses apply only to Worker callers. Internal calls share the SDK/supervisor, schemas, current Policy/Vault and normalized evidence facilities, never Worker credentials or an invented Worker identity. The Worker shared-session compromise does not authorize sharing its connections with private Assistant runs. The internal branch remains Not Started and changes no claim about the delivered Worker branch.
+
 ## Current Implementation Projection
 
 The executable plane implements exactly the three selected-MCP routes. NanoCore exposes authenticated `/capabilities/mcp/*` handlers, validates selected catalog and schema lineage, applies policy and approval, runs the bounded upstream stdio call, and records capability, usage, and audit outcomes. Sandbox Integration carries the separate capability token over its existing nested session and fixed native listener, while the Codex adapter projects only selected server ids through fixed loopback URLs. No direct worker-to-server connection or worker-visible upstream credential exists.

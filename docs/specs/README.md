@@ -66,6 +66,11 @@ workflow. Change records explain what changed in a specific lifecycle event.
 
 Current specs live at the root of this directory. Read the relevant core document first, then the active spec that owns the concrete implementation contract.
 
+Internal Agent runtime and resources:
+
+- [Internal Agent Runtime](20260813-internal_agent_runtime.md): one owned bounded loop, private ordered message/Tool contracts, fuses, cancellation and Gateway projection.
+- [Internal Agent Resource Integration](20260909-internal_agent_resource_integration.md): owned internal-capability MCP adapters and progressive Skills, native Kernel/UI commands, internal approval and publication integration.
+
 Kernel, protocol, and product surfaces:
 
 - [Generative Kernel Data And Operations](./20260908-generative_kernel_data_operations.md) — Accepted; initial MVP contract, implementation Partial.

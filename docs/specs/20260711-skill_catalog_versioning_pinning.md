@@ -162,6 +162,10 @@ Skill instructions/scripts remain subordinate to authored setup, current permiss
 
 Experiment scheduling, statistical analysis, held-back evaluation suites, autonomous promotion policy, business-model representations, generic proposals, registry search, source hosting, version ranges, and cross-deployment distribution remain separate work.
 
+## Internal Assistant Consumer
+
+`20260909-internal_agent_resource_integration.md` owns metadata-first selection and bounded `skill.read` for the internal Assistant. It resolves this catalog's exact retained versions/pins and source restrictions directly without an AEP or another version authority. Current removal/eligibility changes invalidate later reads even when bytes remain retained for evidence. Reading an immutable snapshot does not install or execute its scripts; Worker execution and materialization retain their existing owners. The consumer is Not Started and does not expand other internal roles' Tool sets automatically.
+
 ## Related Specifications And Sources
 
 - `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
