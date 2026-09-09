@@ -30,9 +30,11 @@ Use this intent map to choose search terms; do not treat it as the authoritative
 | Manage Workspace access | `member`, `invitation`, `ownership`, `access recovery` | [administration.md](administration.md) |
 | Administer deployment access | `access token`, `user disable`, `credential` | [administration.md](administration.md) |
 | Administer the NanoHost execution host | `nanohost`, `transport token`, `enroll`, `decommission` | [administration.md](administration.md) |
+| Operate catalogs and generated apps | `skill`, `plugin`, `mcp`, `kernel`, `presentation` | Discover the current operation contract |
+| Observe a deployed workload | `diagnostics`, `thread`, `turn`, `artifact`, `evidence`, `audit`, `usage` | [acceptance.md](acceptance.md) |
 
 ## Respect coverage boundaries
 
 Expect the catalog to expose public end-user and operator behavior from App API, public Core projections, and the two local credential operations. Expect private NanoCore internals, raw storage, arbitrary HTTP, arbitrary shell, worker callbacks, provider gateways, and worker-side capability supply to remain unavailable.
 
-Treat a missing operation as a coverage or product-boundary fact, not permission to call a private route. Report the missing user intent and stop; do not invent an identifier or bypass the public Core Client.
+Treat a missing operation as a coverage or product-boundary fact, not permission to call a private route. Report the missing user intent and continue independent supported work; do not invent an identifier or bypass the public Core Client.

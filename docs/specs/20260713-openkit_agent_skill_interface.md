@@ -90,6 +90,16 @@ The underlying architecture does not require MCP. The former `OpenKitNanoCoreCli
 
 The clean design therefore removes the eager transport and retains the valuable layers: a guided agent workflow, typed public operations, Core Client reuse, credential mediation, redaction, and NanoCore-owned product semantics.
 
+## Live Product Use And Acceptance
+
+The Skill is the primary Agent-facing public product interface and is not limited to capabilities currently exposed by Web UI. Existing supported public reads and commands remain discoverable and composable through the checked catalog. Real-use acceptance and Agent task/benchmark workloads are admitted product use: the caller operates the deployed product through normal public contracts and reads its results. This does not introduce a repository-developer mode inside the Skill; source editing, building, installation, SSH and private host diagnosis remain the Agent host's separately authorized tools and repository/deployment guidance.
+
+The existing public NanoHost runtime-target observation must be exposed as `nanohost.runtime-target` through Core Client, with its deployment-admin authorization and exact response unchanged. App search and Workspace/Thread dashboard reads remain excluded from the initial catalog delta until their server handlers implement the accepted thread-visibility owner. Existing Workspace authorization alone does not establish private-conversation visibility. Once that owner is implemented and verified, a Web presentation origin alone is not grounds for excluding these useful public reads. Session-only account operations and secret-returning operations without a secure named destination remain explicitly excluded. The existing coverage test must continue proving every public operation has one mapping or justified exclusion; this change does not introduce another coverage registry.
+
+A direct `references/acceptance.md` explains persistent-instance reuse, selecting scenario state, locating public result and diagnostic records, recording incomplete evidence, and handing a repair back to authorized engineering work. It carries no story answers, fixed call trajectory, schema copies, hidden seeding or new test runner. Product calls continue to use search, describe and call. Audit, Usage and Evidence are read from their existing public owners; optional telemetry is diagnostic support rather than a success oracle.
+
+Existing user authorization persists through the task. The Skill must not demand another generic confirmation for a bounded action already expressly authorized. A server-required approval reserved to a human remains an exact decision and cannot be supplied by the model or inferred from broad task authorization. Long-running work is followed through bounded durable reads with a stated deadline; avoiding a CLI daemon does not require endless polling or rebuilding the deployment.
+
 ## Decision
 
 ### One end-user Skill
@@ -157,6 +167,7 @@ skills/openkit/
     recovery.md
     administration.md
     capability-map.md
+    acceptance.md
 ```
 
 The implementation may omit a reference file when no current capability requires it, but it must not create additional overview, installation, quick-reference, changelog, or README files inside the Skill folder.
@@ -487,7 +498,7 @@ Coverage is proportional: complete capability mapping is static and contract-tes
 
 - One real-agent story starts with only Skill metadata, loads `SKILL.md` and one relevant reference, discovers an operation not named in `SKILL.md`, describes and calls it, and completes a bounded loop without loading the complete catalog.
 - Legacy stories remain only when they prove a distinct risk not covered at L0-L3; confirmed defects are reduced to the lowest sufficient deterministic regression.
-- No L6 story depends on a developer Skill, OpenKit repository self-improvement workflow, MCP tool, MCP resource, or MCP prompt.
+- L6 may use the ordinary Skill for deployed-product acceptance. It must not depend on a separate developer Skill, private repository manipulation inside the CLI, user-facing MCP tool, MCP resource, or MCP prompt.
 
 ## Risks & Mitigations
 

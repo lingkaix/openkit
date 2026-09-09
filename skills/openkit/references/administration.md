@@ -6,7 +6,7 @@ Load this reference for runtime configuration, access administration, NanoHost e
 
 Identify the deployment, workspace, target resource, requested effect, and acting user before selecting an operation. Use `ops search` and `ops describe` to inspect the operation's mutation status, sensitivity, and required access.
 
-Ask for explicit user direction before changing runtime configuration, invalidating sessions, revoking access, unlocking or rebinding a vault, changing grants, scheduling an automation, writing to a repository, pushing Git state, exporting data, importing data, restoring data, or creating another external effect.
+Use existing explicit user direction, or obtain it when absent, before changing runtime configuration, invalidating sessions, revoking access, unlocking or rebinding a vault, changing grants, scheduling an automation, writing to a repository, pushing Git state, exporting data, importing data, restoring data, or creating another external effect.
 
 Invoke one bounded administration operation at a time. Re-read the owning status, audit, usage, repository, automation, vault, or portability record before reporting success.
 
@@ -22,7 +22,7 @@ Use Workspace access recovery or user disable only with explicit deployment-admi
 
 Pass secret input through stdin or a platform credential mechanism, and keep it out of arguments and agent-visible output. Never request raw provider credentials, vault contents, injection payloads, process handles, or private runtime records through the operation catalog.
 
-For a locked-out server deployment, a human operator runs the local `openkit-operator admin recovery-users` and `admin recover-access` commands only while NanoCore is stopped. The operator chooses one listed active User, an expiry no later than 24 hours, a new private output path, and the exact confirmation shown by the command contract. Never stop NanoCore on the user's behalf, copy the recovery envelope into conversation, or inspect its Token. Pass the complete envelope directly through stdin to `credential.store`; the operation stores only its `token` field. A same-path retry is valid only for the exact owner, expiry, and confirmation; report `recovery_required` for every contradiction and do not overwrite, delete, or repair the output.
+For a locked-out server deployment, a human operator runs the local `openkit-operator admin recovery-users` and `admin recover-access` commands only while NanoCore is stopped. The operator chooses one listed active User, an expiry no later than 24 hours, a new private output path, and the exact confirmation shown by the command contract. This Skill cannot stop NanoCore; an engineer-authorized external operator uses the deployment tools when that step is required. Never copy the recovery envelope into conversation or inspect its Token. Pass the complete envelope directly through stdin to `credential.store`; the operation stores only its `token` field. A same-path retry is valid only for the exact owner, expiry, and confirmation; report `recovery_required` for every contradiction and do not overwrite, delete, or repair the output.
 
 Use access-token listing or revocation only when required. Do not work around the intentional absence of generic token creation or rotation, and do not overwrite the endpoint administration credential with an unnamed token.
 

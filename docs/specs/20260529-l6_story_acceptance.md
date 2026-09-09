@@ -29,7 +29,7 @@ L6 answers one question: can a user or AI agent complete one important product i
 
 L6 is an opt-in acceptance layer, not a required copy of L1-L5 and not a test platform for every feature, failure branch, provider, runtime, transport, or deployment shape. A behavior already proved deterministically at a lower layer receives L6 coverage only when a distinct end-to-end product risk remains.
 
-L6 is agent-first by definition. An actor exercises the intent knowing only what a real user would know, and what that unconstrained attempt reveals is the whole reason the layer exists. A mechanical proof of a fixed path is not a lesser L6 story; it is an L3 or L4 test, and `docs/specs/20260529-test_strategy.md` owns it there. A story therefore has no committed runner, adapter, or per-story command, and must reuse existing product clients rather than grow parallel authentication, transport, process-control, evidence, Git, cleanup, or recovery systems.
+L6 is agent-first by definition. An actor exercises the intent knowing only what a real user would know, and what that unconstrained attempt reveals is the whole reason the layer exists. A mechanical proof of a fixed path is not a lesser L6 story; it is an L3 or L4 test, and `docs/specs/20260529-test_strategy.md` owns it there. A story therefore has no prescribed Actor trajectory or per-story executable. Shared execution support may reuse existing product clients and collection tools; it must not grow parallel authentication, transport, process-control, evidence, Git, cleanup, or recovery systems.
 
 Agent-first execution separates three roles: a stage manager that prepares the environment and assembles evidence, an actor that receives only the persona and one user ask, and a judge that adjudicates from the story text and the evidence package alone. The product verdict must be reproducible by an independent judge from that package. Each role's central claim carries a named falsifier under Role Claims And Falsifiers.
 
@@ -37,7 +37,7 @@ Assertions read from two channels. Outside-in assertions check what the product 
 
 ## Current Scope
 
-The current engineering baseline is the V1 scheduling profile and counts defined in `docs/specs/20260703-runtime_scheduling_scale.md`: one configured `RuntimeTarget` projecting one NanoHost and one active worker slot, with NanoHost runtime details owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`. L6 targets the small-team shape described by the Judgment in `docs/deployment.md` without defining a team-size threshold of its own. It should prove that product shape after the target path is implemented; it does not simulate multi-process, multi-writer, fleet, fairness, hot-failover, or high-availability behavior, and prior Cell or A1 runs do not prove the accepted RelayStream plus nested standard HTTP/2 feasibility precondition.
+The current engineering baseline is the V1 scheduling profile and counts defined in `docs/specs/20260703-runtime_scheduling_scale.md`: one configured `RuntimeTarget` projecting one NanoHost and one active worker slot, with NanoHost runtime details owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`. Ordinary L6 runs default to the persistent-deployment modes in `docs/specs/20260909-persistent_deployment_acceptance.md`: in-product work or an external Skill/browser Actor operating the same real product. The Actor need not run inside NanoCore. A dedicated environment is used when the story names a distinct installation, cold-start, destructive or isolation condition that a persistent instance cannot prove. L1-L5 retain their existing execution owners. L6 targets the small-team shape described by the Judgment in `docs/deployment.md` without defining a team-size threshold of its own. It should prove that product shape after the target path is implemented; it does not simulate multi-process, multi-writer, fleet, fairness, hot-failover, or high-availability behavior, and prior Cell or A1 runs do not prove the accepted RelayStream plus nested standard HTTP/2 feasibility precondition.
 
 One accepted story should normally prove one complete user intent. It may cross several existing components when the user intent naturally does so, but it MUST NOT accumulate unrelated cache, usage, audit, review, Git, cleanup, Runtime Epoch recovery, cancellation, compression, credential-override, and recovery assertions merely because one runner can reach them.
 
@@ -55,7 +55,7 @@ Security, authorization, credential isolation, secret redaction, sandbox contain
 ## Non-goals
 
 - Do not create an L6 story for every feature, state transition, fallback, backend, or deployment combination.
-- Do not admit a proof that needs a committed runner, adapter, or fixed script; that proof belongs to a lower layer.
+- Do not admit a proof whose Actor must follow a fixed script; that proof belongs to a lower layer. Shared preparation, collection and adjudication support does not prescribe an Actor trajectory.
 - Do not treat subjective agent judgement as the sole blocking oracle.
 - Do not let an executor mutate private product state during the user-flow portion of a story.
 - Do not build another authentication transport, process supervisor, workflow engine, recovery coordinator, evidence platform, Git harness, or general agent-runner framework for L6.
@@ -158,9 +158,9 @@ Admission is re-decided on every revision, not only at authoring. A story drifts
 
 ### Execution Support
 
-L6 has no committed runner, no adapter, and no per-story command. A story is dispatched by a stage manager when someone decides to run it, so adding a story adds no entry to `package.json`, no CI target, and no file under a runner directory. Mechanical validation of the story document is separate and remains part of the ordinary repository gate.
+L6 has no per-story runner, adapter or command. Adding a story adds no entry to `package.json`, no CI target and no executable beside the story. Shared support may prepare an existing deployment, invoke an existing Agent host, preserve evidence or recompute deterministic facts when repeated use demonstrates the need. Such support stays in its existing owning module, remains independent of story answers and reuses public clients. Mechanical validation of the story document is separate and remains part of the ordinary repository gate.
 
-When a run needs a throwaway script, the actor or the stage manager writes it during that run and discards it with the rest of the disposable state. That script is run scaffolding, not a repository artifact: it is never committed, never named by the story, and never reused across runs. A script that someone wants to commit is evidence that the proof is mechanical, which returns the story to Admission above.
+A one-off script may remain disposable. Repeated generic setup or evidence collection may be retained in shared support after focused verification; copying disposable scripts per run is not required. Promotion must remove scenario-specific answers, duplicated transport and private product-state mutation. A script that dictates the Actor's solution remains a mechanical proof and returns to Admission above. The stage manager may reuse a healthy deployment without invoking installation or teardown.
 
 ### Execution Model
 
@@ -189,7 +189,7 @@ The judge MAY perform read-only verification and MUST recompute at least one nam
 
 Read-only recomputation is not run context. It tells the judge nothing about what the story expects, and it is the only mechanism by which the stage manager's faithfulness claim below becomes falsifiable. Absent it, that claim can only be argued in prose, and the argument grows without bound.
 
-An actor or judge surface whose host injects an immutable context envelope independent of the task payload does not satisfy these context rules and is not an approved agent-first surface. A story that needs such a surface fails Admission: the envelope cannot be narrowed by the story, so the isolation the layer depends on cannot be established. This specification grants no per-story exception to the context rules, because an exception would have to be verified by the same evidence apparatus whose trustworthiness the rules exist to establish.
+Normal Agent-host instructions, public product documentation and the installed Skill are permitted operating context. The task payload still contains only persona and user ask for the Actor, and story plus evidence for the Judge. Neither instance may inherit the current development conversation, hidden expected answers, another role's reasoning or private implementation guidance. Use a fresh host session away from the source checkout and disable unrelated memory or task-context injection when necessary. Retain the host/profile, supplied task prompt and admitted tools/Skill identity; if material context isolation cannot be established, record an exploratory use result rather than claiming admitted L6 evidence. An immutable host envelope is not disqualifying merely because it exists; hidden task knowledge remains disqualifying.
 
 The actor may adapt to benign presentation differences but may not bypass product authority or replace a failed product path with private writes. Setup, cleanup, and diagnostic inspection remain stage-manager work using declared repository tools.
 
@@ -348,7 +348,7 @@ Story artifacts live under `tests/stories/`. The committed stories declare their
 
 The five former mechanical story proofs now run from the L3 and L4 entrypoints and gates owned by `docs/specs/20260529-test_strategy.md`. Their obsolete story documents and shared runner location have been removed.
 
-The remaining admitted stories have no committed runner, adapter, or per-story command. Stage-manager/actor/judge separation, friction scalars, and retention sampling remain accepted execution design that is not yet implemented.
+The remaining admitted stories have no per-story executable or prescribed Actor trajectory. Stage-manager/actor/judge separation, friction scalars, and retention sampling remain accepted execution design that is not yet implemented.
 
 No new cancellation, compression, credential-override, restart, recovery, or backend-specific L6 harness is accepted by this specification. A confirmed real integration failure is fixed in product code and reduced to the lowest sufficient regression layer.
 
@@ -359,7 +359,7 @@ No new cancellation, compression, credential-override, restart, recovery, or bac
 - An independent judge reproduces the product verdict from the story and the evidence package alone.
 - Every deterministic assertion names the evidence or product record that decides it.
 - Story front matter declares owning contract documents that exist in the repository.
-- Every assertion in a committed story is satisfiable from the persona and the sole user ask, and no committed runner, adapter, per-story command, or fixed script exists for any story.
+- Every assertion in a committed story is satisfiable from the persona and the sole user ask. No per-story executable or fixed Actor trajectory exists; shared support preserves the context and public-surface boundaries.
 - Every assertion declares its channel and tier, every inside-out assertion names a product record with an owning specification, and no assertion constrains the path by which its subject became true.
 - Every required assertion is reachable by an ask that states an objective without naming the mechanism, and an unwitnessed required assertion yields `inconclusive` rather than a pass.
 - Recorded friction is dispositioned as a non-blocking finding and never enters the product verdict.

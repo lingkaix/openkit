@@ -70,6 +70,12 @@ Core may expose governed workspace services for knowledge, artifacts, capabiliti
 
 These services reuse existing storage, capability, Agent supply, Policy, Vault, and Audit boundaries. Neither Plugin installation nor a generated widget grants authority or creates an execution runtime. Concrete producer allocation, persistence, resource interfaces, and publication are implementation contracts.
 
+## Observation And Agent-Assisted Improvement
+
+Agents may use governed work records and diagnostic projections to investigate failures, evaluate outcomes and propose improvements. Operational telemetry is optional, potentially incomplete diagnostic information; it never becomes product state, permission, audit or acceptance authority. Existing work and evidence owners retain creation, retention and termination semantics. Missing or contradictory observations remain explicit and cannot authorize reconstruction of a successful effect.
+
+Product operation through an App, Skill or API remains separate from an external engineer-authorized host or repository action. Co-locating an observer, testing Agent or maintenance tool with Core transfers no privilege. A repair follows the existing command, work and release owners; observation does not create an automatic repair runtime. Whether execution is driven internally or externally, completion requires the actual owned result, not an Agent claim or the absence of error logs.
+
 ## Internal Core Roles
 
 Core may use lightweight internal roles for coordination. These roles remain inside Core, are not Agent Runtime entries, are not worker-agent supply, and are not user-selectable worker execution tools. A role whose owning contract admits direct conversation MAY appear as a product conversation target, but the selection addresses the Core role and never exposes or creates a worker Agent, AgentSession, Harness, Sandbox, or native process.

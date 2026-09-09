@@ -1,6 +1,6 @@
 ---
 name: openkit
-description: Operate OpenKit as an agent helping an end user through its public NanoCore interface. Use for end-user setup, connection diagnostics, workspace and repository operation, Chat Mode, Task Mode, Goal Mode, bounded loop coordination, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, NanoHost execution-host administration, audit, usage, automations, Git operations, backup, export, import, and workspace portability. Do not use for OpenKit source development, repository self-improvement, arbitrary shell or HTTP access, private NanoCore internals, or worker-side capability supply.
+description: Operate OpenKit through its public agent interface. Use for end-user setup, connection diagnostics, workspace and repository operation, Chat/Task/Goal work, loop coordination, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, audit, usage, automation, Git operations, backup/export/import and workspace portability, NanoHost administration, catalogs, and real-use acceptance or benchmark workloads. Host SSH, source editing and deployment use separate host tools.
 ---
 
 # OpenKit
@@ -30,7 +30,7 @@ Treat NanoCore durable records as authoritative for workflow state, authorizatio
 
 Perform one bounded operation at a time. Re-read durable state after every mutation before deciding what to do next. Never bypass an approval, review, recovery, or authorization gate.
 
-Present human decisions without resolving them unless the user gives explicit direction. Ask before approvals, rejections, destructive changes, external side effects, provider spending, repository writes, Git publication, deployment, credential changes, or operator actions.
+Honor existing user authorization for the requested scope; do not repeatedly ask permission for an already authorized operation. Obtain missing authorization before sensitive or external effects. Present server-required human decisions without resolving them yourself; a broad work request does not answer a reserved approval gate.
 
 Treat SIGINT and transport abort as stopping only the local wait. Confirm product cancellation, interruption, or completion through an explicit operation and a durable read.
 
@@ -56,6 +56,7 @@ Adapt this sequence to the task, but preserve its authority and safety boundarie
 - Load [knowledge.md](references/knowledge.md) for knowledge sources, observations, claims, conflicts, retrieval, bounded context preparation, proposals, repair, or knowledge health.
 - Load [recovery.md](references/recovery.md) for interrupted or unknown work, retries, checkpoints, restarts, stale state, `recovery_required`, or local aborts.
 - Load [administration.md](references/administration.md) for runtime configuration, access administration, NanoHost execution-host credentials, vault operations, audit, usage, automations, Git administration, backup, export, import, or workspace portability.
+- Load [acceptance.md](references/acceptance.md) for real-use checks, Agent task sets, benchmarks, public evidence collection, or diagnosis on a persistent deployment.
 - Load [capability-map.md](references/capability-map.md) when the user intent does not clearly identify a capability group or when an operation cannot be found.
 
 Do not load all references or enumerate the complete operation catalog by default. Let CLI search and description provide the current machine-readable operation contract.

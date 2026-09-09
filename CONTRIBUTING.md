@@ -37,7 +37,7 @@ If this document and `AGENTS.md` disagree, treat `AGENTS.md` as the source of tr
 
 ## Development Workflow
 
-Before NanoHost real-use work on A1, run the repository-owned host workflow from the root:
+For explicitly authorized NanoHost fixture qualification on A1, run the repository-owned host workflow from the root:
 
 ```bash
 pnpm host:provision a1
@@ -46,7 +46,7 @@ pnpm host:nanohost:bring-up a1
 pnpm host:teardown a1
 ```
 
-These commands are an explicitly authorized real-use lifecycle, not the release-installer test path. Use `pnpm test:nanohost-installer-live` for the isolated fixed-path installer regression; it binds every live path to a new temporary Bubblewrap fixture and does not start, stop, restart, or reload a service.
+These commands provision and tear down a qualification fixture; do not run them as preflight against a persistent deployment. Ordinary real-use acceptance follows [`docs/cookbooks/persistent-live-acceptance.md`](./docs/cookbooks/persistent-live-acceptance.md). This fixture lifecycle is separate from the release-installer test path. Use `pnpm test:nanohost-installer-live` for the isolated fixed-path installer regression; it binds every live path to a new temporary Bubblewrap fixture and does not start, stop, restart, or reload a service.
 
 Follow [`docs/cookbooks/nanohost-real-use-host.md`](./docs/cookbooks/nanohost-real-use-host.md), keep credentials outside repository artifacts, and retain only the redacted result at `temp/state/nanohost/host-manifest/a1/result.json`.
 

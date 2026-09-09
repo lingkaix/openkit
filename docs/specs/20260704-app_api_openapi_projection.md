@@ -188,3 +188,7 @@ Previously open questions are resolved by accepted V1 defaults: the generated Op
 - `docs/core/contract-evolution.md`
 - `docs/specs/20260715-contract_stability_baseline.md`
 - `docs/app-api.md`
+
+## Agent Use Of Public Read Projections
+
+The App search and Workspace/Thread dashboard read models can become packaged Agent Skill projections through the same public Core Client methods and shared schemas once their handlers implement the accepted thread-visibility owner. Current Workspace checks do not establish private-conversation filtering; these mappings remain excluded from the initial persistent-acceptance delta. They are read projections, not Web-exclusive authorities or CLI workflow state. Exact operation names and catalog coverage belong to `20260713-openkit_agent_skill_interface.md`; no additional route or generic HTTP escape hatch is created.

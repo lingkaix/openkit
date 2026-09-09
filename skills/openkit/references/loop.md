@@ -4,7 +4,7 @@ Load this reference for normal workspace work, mode selection, plans, bounded ex
 
 ## Prepare the work context
 
-Run `doctor`, select or create the intended workspace, and inspect its durable resources. Ask the user to confirm repositories, data sources, and external-effect boundaries before linking or changing them.
+Run `doctor`, select or create the intended workspace, and inspect its durable resources. Resolve repositories, data sources and effect scope from the user's current instructions; request only missing authorization before linking or changing them.
 
 Create or resume one thread for the work. Read the current thread, active mode state, Action Center, and relevant artifacts before mutating anything.
 
@@ -33,6 +33,6 @@ Use an accepted refine, redo, steering, pause, resume, interrupt, or stop operat
 
 ## Close or hand off
 
-Call the loop complete only when the requested stop condition is met, relevant evidence has been reviewed, no blocking Action Center decision remains, and the user accepts the result.
+Call the loop complete only when the requested stop condition is met, relevant evidence has been reviewed, no blocking Action Center decision remains, and any acceptance explicitly reserved to the user has been received. Ordinary completion under existing authorization does not require a new approval.
 
 If state is interrupted, unknown, stale, or contradictory, stop normal execution and load [recovery.md](recovery.md). If the user asks for operator-only changes, load [administration.md](administration.md).

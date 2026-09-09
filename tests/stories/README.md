@@ -36,7 +36,7 @@ contracts: docs/specs/20260628-web_product_surface_projection.md, docs/core/vaul
 
 `contracts` is one comma-separated scalar line naming the owning Core and specification documents whose behavior the story accepts.
 
-There is no `mode` or `runner` field. Every L6 story is agent-first by definition, so the mode would restate the layer and a committed runner would contradict it.
+There is no `mode` or `runner` field. Every L6 story is agent-first by definition, so the mode would restate the layer and a per-story runner would prescribe its trajectory.
 
 The front matter is scalar key-value lines with a closed field set, not YAML. The L6 specification owns the one-step switch trigger to a real YAML parser; do not add partial YAML syntax to the scalar parser.
 
@@ -58,9 +58,9 @@ A story body must contain no fenced code block. Committed executable detail in s
 
 ## Execution Model
 
-Stories are not part of the mechanical test suite. There is no committed runner, no adapter, and no per-story command: adding a story adds nothing to `package.json` and no CI target. A story runs when a stage manager is asked to run it, using the roles in the L6 specification.
+Stories are not part of the mechanical test suite. There is no per-story runner, adapter or command: adding a story adds nothing to `package.json` and no CI target. A story runs when a stage manager is asked to run it, using the roles in the L6 specification.
 
-When a run needs a throwaway script, the actor or stage manager writes it during the run and discards it with the rest of the disposable state. Such a script is never committed, never named by the story, and never reused. Wanting to commit one means the proof is mechanical, which returns the story to Admission above.
+Use the existing public clients and shared setup/collection support. A one-off script may remain disposable; repeated generic preparation or evidence collection may be maintained under its existing support owner without prescribing the Actor's solution or creating private state. Ordinary L6 defaults to the persistent-deployment modes; a distinct cold/destructive condition selects its own fixture. See `docs/cookbooks/persistent-live-acceptance.md`.
 
 Story documents are still validated mechanically. `pnpm -w check:repo` runs `scripts/validate-story-schema.mjs` over every story: the two on-disk shapes, the closed front matter field set, contract-reference existence, repository-unique ids, the body section list, the no-fenced-code rule, and the no-committed-executable rule for asset directories.
 
@@ -83,5 +83,5 @@ Story documents are still validated mechanically. `pnpm -w check:repo` runs `scr
 
 Admitted L6 stories:
 
-- `openkit-agent-skill-progressive-discovery.story.md`: real Codex acceptance flow proving progressive Skill loading, CLI operation discovery and description, one workspace mutation, and durable public readback without MCP.
+- `openkit-agent-skill-progressive-discovery.story.md`: real Skill-capable Agent creating and confirming a Workspace on a persistent deployment through the packaged CLI, with unconstrained discovery and independent public readback.
 - `worker-mcp-governed-tool-use.story.md`: Worker MCP acceptance covering governed tool calls, approval-required tools, audit evidence, usage rows, and credential redaction.

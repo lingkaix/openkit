@@ -12,6 +12,10 @@ Each checkbox is one outcome-sized issue that can be delivered through one chang
 A completed item keeps its entry and is marked complete. Item IDs are cited from tests, specifications, cookbooks, and change records, so removing a completed entry orphans live references. The architecture and current implementation decide how an issue is delivered; the Roadmap does not prescribe which specification, Core document, package, schema, or internal mechanism a team must change.
 
 Roadmap completion is finite: it means the Product Vision and the concrete supported capability families below are complete. It does not require native adapters for every CMS, CRM, BI, analytics, messaging, Git, model, file, or domain system. Newly accepted product scope creates new roadmap work; it does not make this checklist an unlimited connector or feature backlog.
+## Persistent Live Acceptance Direction
+
+Ordinary L6 stories and Agent task/benchmark workloads should use the two modes in [Persistent Deployment Acceptance](specs/20260909-persistent_deployment_acceptance.md): work inside a persistent deployed OpenKit instance and an external Agent using the current Skill or Web surface. Reuse the deployment and protected Provider setup; create bounded scenario state and associate actual evidence with each change plan. Installation, cold-start, destructive and containment proofs keep their own required fixtures. This direction does not close unchecked roadmap work or turn a build into real acceptance. Customer autonomous host maintenance and a co-deployed coding Agent are outside the initial delivery.
+
 ## Execution Pathway
 
 This is the current execution order and the only authority for what runs next. It draws items from several Phases because value arrival, not dependency depth, decides sequence. The engineer owns this order; an agent may propose a revision from evidence but MUST NOT reorder it silently.

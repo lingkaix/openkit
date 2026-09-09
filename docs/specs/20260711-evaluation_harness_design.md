@@ -31,6 +31,10 @@ This Draft records future decision gates and safety boundaries only. It is not a
 
 Current V1 evaluation uses existing completed-work, S39, evidence, and human-review owners. A Harness remains deferred until repeated real use proves a concrete capability gap and a new accepted specification defines the smallest necessary mechanism. This Draft cannot itself satisfy that design gate.
 
+## Persistent Deployment Workloads
+
+`docs/specs/20260909-persistent_deployment_acceptance.md` admits Agent task sets and benchmarks composed from existing Task/Goal execution and ordinary files/Artifacts. These workloads do not activate this deferred Harness, create its record families or require its activation gates. Independent comparison of existing observations remains possible without a new runtime, suite service or automatic promotion mechanism. L6 retains its distinct Actor and adjudication contract.
+
 ## Current Posture
 
 Current evaluation work must reuse the existing owners for `Thread`, `Turn`, `Item`, the accepted Context Package trace, `Artifact`, review, audit, usage, and evidence. Human review remains the authority for accepting or rejecting a proposed change.

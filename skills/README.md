@@ -4,9 +4,9 @@ This directory contains one repository-authored Skill named `openkit` for agents
 
 ## Package
 
-The package contains one concise `skills/openkit/SKILL.md`, generated `agents/openai.yaml` metadata, one bundled `scripts/openkit` CLI entrypoint, and one-level `references/` material for setup, loop operation, knowledge, recovery, administration, and capability discovery.
+The package contains one concise `skills/openkit/SKILL.md`, generated `agents/openai.yaml` metadata, one bundled `scripts/openkit` CLI entrypoint, and one-level `references/` material for setup, loop operation, knowledge, recovery, administration, capability discovery, and persistent-deployment acceptance.
 
-The Skill is end-user-only. It combines connection setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loop guidance, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, NanoHost execution-host administration, audit, usage, automations, Git operations, and workspace portability without adding a developer audience switch or repository self-improvement mode.
+The Skill operates the public product for users and authorized operators, including real-use acceptance and benchmark workloads. It combines connection setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loop guidance, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, NanoHost execution-host administration, audit, usage, automations, Git operations, and workspace portability without adding a developer audience switch or a source-editing/SSH mode. The desktop Agent may use separately authorized host tools outside this interface.
 
 The bundled CLI progressively exposes every supported public end-user and operator NanoCore capability through operation search, description, and invocation. The Skill and CLI do not expose private NanoCore internals, generic shell access, arbitrary HTTP access, or worker-side capability supply.
 

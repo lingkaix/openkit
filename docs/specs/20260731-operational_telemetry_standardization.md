@@ -1,5 +1,5 @@
 ---
-status: Draft
+status: Accepted
 implementation: Not Started
 date: "2026-07-31"
 ---
@@ -11,6 +11,7 @@ date: "2026-07-31"
 - Adoption of stock OpenTelemetry signals, OTLP transport, W3C Trace Context, applicable OpenTelemetry Semantic Conventions, and JUnit-compatible test-result interchange.
 - Correlation from existing OpenKit execution identities into traces and logs without creating another product record.
 - Telemetry topology, enablement, redaction, bounded buffering, exporter failure, shutdown, and test-environment behavior.
+- The process-only operational sample on the existing deployment-admin App Diagnostics read projection; its shared schema remains in App API schemas and boot readiness semantics remain with their owner.
 
 ## Does Not Own
 
@@ -18,7 +19,7 @@ date: "2026-07-31"
 - `AuditEvent`, `CapabilityCall`, `UsageRecord`, `PermissionDecision`, `VaultUse`, `EvidenceBundle`, `RuntimeEvidence`, Thread, Turn, Item, Artifact, or any other canonical record semantics.
 - Product analytics, user-behavior tracking, billing, compliance reporting, SLO policy, alert policy, or a user-facing observability product.
 - An observability storage backend, dashboard vendor, hosted service, or bundled Grafana, Prometheus, Loki, Tempo, Jaeger, or equivalent stack.
-- A universal `Run`, event ledger, event bus, workflow, recovery mechanism, log database, test harness, or public telemetry API.
+- A universal `Run`, event ledger, event bus, workflow, recovery mechanism, log database, test harness, or public trace/log query API.
 - Raw worker, provider, sandbox, or test artifact formats and their existing evidence retention.
 
 ## Core References
@@ -166,7 +167,7 @@ These attributes are a projection of existing ids, not a new identity vocabulary
 - The first implementation uses stock OpenTelemetry HTTP, process, runtime, SDK, and Collector metrics where supported by the pinned stable conventions.
 - Metrics describe aggregate availability, latency, counts, resource use, and exporter health. They do not reproduce AuditEvent, UsageRecord, CapabilityCall, or test-result rows.
 - Workspace, Thread, Turn, request, user, account, CapabilityCall, test-case, raw route, URL, error message, and evidence ids are prohibited metric dimensions.
-- A custom `openkit.*` metric may be added only when an existing owning specification names a current operational question that stock metrics cannot answer and fixes a bounded low-cardinality attribute set. This Draft introduces no custom metric catalog.
+- A custom `openkit.*` metric may be added only when an existing owning specification names a current operational question that stock metrics cannot answer and fixes a bounded low-cardinality attribute set. This specification introduces no custom metric catalog.
 - UsageRecord remains measurement authority for attributable product consumption. An OTel token or cost metric is an operational aggregate and must not be treated as billing, quota, or audit truth.
 
 ## Log Contract
@@ -221,13 +222,27 @@ Stable route templates, provider family, model id, operation, streaming flag, HT
 - The minimum analysis target is one query from a known `bootId`, request id, Turn id, CapabilityCall id, or test run to its available correlated spans and logs, with native evidence references when present.
 - Dashboards, alert thresholds, SLOs, and a bundled backend remain separate future operator choices.
 
+## Initial Persistent-Deployment Slice
+
+The first delivery supports the persistent-deployment acceptance composition in `docs/specs/20260909-persistent_deployment_acceptance.md`. Existing public work, Audit, Usage and Evidence queries are the default evidence read path; no aggregate evidence API or new storage is required. The initial instrumentation slice is bounded NanoCore HTTP request tracing and correlated safe terminal diagnostics through the stock OpenTelemetry SDK, plus process diagnostics through the existing App Diagnostics owner. Additional manual worker/provider spans and metrics remain the target above and are added where an observed diagnostic question requires them; their absence is explicit rather than a claim of complete trace coverage.
+
+With no explicit OTLP destination, instrumentation is disabled. The initial operator enablement uses the standard `OTEL_EXPORTER_OTLP_ENDPOINT` for a same-deployment Collector and honors `OTEL_SDK_DISABLED=true`; no secret headers, arbitrary attributes, payload capture or vendor exporter is admitted. Malformed configuration disables export with a bounded safe diagnostic rather than preventing product boot. A Collector can retain native OTLP output using its stock file exporter for an internal deployment; the operator owns that file's restricted access, rotation and deletion. Collector output remains outside Data Root product backup and never becomes an OpenKit ledger. No remote fleet collection or central service is required.
+
+The initial HTTP span includes method, matched route template, status, duration and known request identity; unmatched paths use a fixed unknown-route label rather than raw URLs. No request/response body, query, header, user text, raw exception or host path is emitted. A completed request span proves only the observed HTTP boundary, not later asynchronous Task completion. Terminal product and Worker outcomes are obtained from their own records until their instrumentation is implemented. The same rule applies to streaming responses: distinguish response handoff from stream completion; do not label handoff as completed user work.
+
+Use bounded stock SDK buffering and flush through the existing shutdown deadline. No active Collector means optional diagnostic unavailability, not failed product work. A stock in-memory exporter proves the positive and negative instrument paths; one live deployment verifies OTLP export and ordinary requests with export unavailable. No mandatory backend installation is attached to L6 admission.
+
+### App Diagnostics Operational Sample
+
+The accepted target adds to the existing deployment-admin App Diagnostics response a strict `process` projection with `observedAt` (UTC timestamp), `nodeVersion`, nonnegative `uptimeSeconds`, and `memory` containing nonnegative integer `rssBytes`, `heapUsedBytes` and `heapTotalBytes`. These values are sampled from the current NanoCore process after authorization, are not persisted, and are not host-wide capacity or Worker health claims. They reset/change with process lifetime and collection time. The existing boot id correlates the sample with a process instance; exact deployed build identity remains the release/deployment owner's evidence. The projection includes `telemetry` with booleans `enabled` and `exportConfigured`, describing local configuration only, not successful delivery. `exportConfigured` is true exactly when an explicit endpoint parses as an absolute HTTP(S) URL with a host and without embedded credentials, query or fragment; absent or malformed endpoints yield false. `enabled` is true exactly when `exportConfigured` is true and `OTEL_SDK_DISABLED` is not `true` (case-insensitive). A valid endpoint with the SDK disabled yields `(enabled=false, exportConfigured=true)`; an absent or malformed endpoint yields `(false, false)`. Optional telemetry failure cannot change readiness or a product outcome. This adds no diagnostic store, polling service, public filesystem access, configuration owner or arbitrary runtime inspection.
+
 ## Current Implementation Projection
 
 OpenKit currently has no direct application-owned OpenTelemetry SDK, OTLP exporter, Collector configuration, trace middleware, or telemetry backend contract. `@opentelemetry/api` appears only through transitive dependencies and is not OpenKit instrumentation.
 
 NanoCore already provides much of the source information this projection will consume: durable boot start, outcome, and orderly-shutdown rows; general server and Workspace AuditEvent recorders; CapabilityCall and UsageRecord producers; PermissionDecision and VaultUse linkage; process-local Gateway usage summaries; worker checkpoints; EvidenceBundle and RuntimeEvidence indexes; bounded runtime transcript and provenance evidence; and stable request, Workspace, Thread, Turn, AgentSession, package snapshot, and CapabilityCall identities.
 
-NanoCore creates server and Workspace log directories, but ordinary process output currently goes mainly to stdout and stderr and has no complete application-owned retention path. Existing evidence producers and retention coverage remain partial as documented by their owning specifications. This Draft authorizes no implementation until accepted and paired with an execution plan.
+NanoCore creates server and Workspace log directories, but ordinary process output currently goes mainly to stdout and stderr and has no complete application-owned retention path. Existing evidence producers and retention coverage remain partial as documented by their owning specifications. The target is accepted; the initial persistent-deployment slice is the first implementation boundary and does not claim complete instrumentation of all producers.
 
 ## Alternatives Considered
 
@@ -276,7 +291,7 @@ Acceptance requires all of the following:
 - Sensitive and unrestricted content is absent before export.
 - Metrics remain bounded by low-cardinality dimensions.
 - No SDK or exporter authority enters the governed worker or sandbox in the initial implementation.
-- No bundled backend, persistent spool, new runner, event bus, public API, or recovery workflow exists.
+- No bundled backend, persistent spool, new runner, event bus, telemetry-query API, or recovery workflow exists.
 
 ## Risks & Mitigations
 
