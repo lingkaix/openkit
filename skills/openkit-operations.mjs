@@ -342,6 +342,19 @@ export const operationCatalog = [
   {
     ...STANDARD,
     ...DEPLOYMENT_ADMIN_ACCESS,
+    id: 'nanohost.runtime-target',
+    source: 'app-api',
+    appOperationId: 'getNanoHostRuntimeTargetStatus',
+    clientMethod: 'app.getNanoHostRuntimeTargetStatus',
+    group: 'nanohost',
+    summary: 'Read the configured NanoHost RuntimeTarget readiness status.',
+    mutating: false,
+    inputSchema: EMPTY_INPUT,
+    handler: ({ client }) => client.app.getNanoHostRuntimeTargetStatus(),
+  },
+  {
+    ...STANDARD,
+    ...DEPLOYMENT_ADMIN_ACCESS,
     id: 'nanohost.token-list',
     source: 'app-api',
     appOperationId: 'listNanoHostTransportTokens',
@@ -3468,27 +3481,23 @@ export const operationExclusions = [
   {
     source: 'app-api',
     name: 'getWorkspaceDashboard',
-    reason: 'The workspace dashboard is a Web-only presentation read model.',
-    owner: 'docs/specs/20260704-app_api_openapi_projection.md',
+    reason:
+      'Existing handlers check Workspace access but do not yet implement the accepted private-thread visibility contract. Workspace authorization alone does not establish private-conversation visibility.',
+    owner: 'docs/specs/20260909-thread_visibility_and_sharing.md',
   },
   {
     source: 'app-api',
     name: 'getThreadDashboard',
-    reason: 'The thread dashboard is a Web-only presentation read model.',
-    owner: 'docs/specs/20260704-app_api_openapi_projection.md',
-  },
-  {
-    source: 'app-api',
-    name: 'getNanoHostRuntimeTargetStatus',
     reason:
-      'Host bring-up uses the App API RuntimeTarget route directly; no accepted Skill or Core Client caller exists.',
-    owner: 'docs/specs/20260802-nanohost_runtime_and_transport.md',
+      'Existing handlers check Workspace access but do not yet implement the accepted private-thread visibility contract. Workspace authorization alone does not establish private-conversation visibility.',
+    owner: 'docs/specs/20260909-thread_visibility_and_sharing.md',
   },
   {
     source: 'app-api',
     name: 'searchApp',
-    reason: 'App search is a Web presentation route, not operation-catalog discovery.',
-    owner: 'docs/specs/20260704-app_api_openapi_projection.md',
+    reason:
+      'Existing handlers check Workspace access but do not yet implement the accepted private-thread visibility contract. Workspace authorization alone does not establish private-conversation visibility.',
+    owner: 'docs/specs/20260909-thread_visibility_and_sharing.md',
   },
   {
     source: 'core-projection',

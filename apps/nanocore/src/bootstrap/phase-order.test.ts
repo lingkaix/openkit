@@ -1,5 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import {
+  createSourceFile,
+  isFunctionDeclaration,
+  ModuleKind,
+  ScriptTarget,
+  transpileModule,
+} from 'typescript';
+import { describe, expect, it, vi } from 'vitest';
 
 /**
  * Extracts boot phase names from the NanoCore process entrypoint.
@@ -19,6 +26,49 @@ function readEntrypointBootPhaseNames(): string[] {
  */
 function readEntrypointSource(): string {
   return readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+}
+
+/**
+ * Evaluates the entrypoint closeNanoCoreListeners body against injected shutdown bindings.
+ *
+ * @param bindings Free variables closed over by the entrypoint function.
+ * @returns The extracted close function.
+ */
+function evaluateCloseNanoCoreListeners(bindings: {
+  shutdownTelemetry: () => Promise<void>;
+  workerMcpGateway: { close: () => Promise<unknown> };
+  appServer: { close: (callback: () => void) => void };
+  nanoHostServer: { close: (callback: () => void) => void };
+}): (onClosed: () => void) => void {
+  const sourceFile = createSourceFile(
+    'index.ts',
+    readEntrypointSource(),
+    ScriptTarget.Latest,
+    true
+  );
+  const declaration = sourceFile.statements.find(
+    (statement) =>
+      isFunctionDeclaration(statement) && statement.name?.text === 'closeNanoCoreListeners'
+  );
+  if (!declaration) {
+    throw new Error('closeNanoCoreListeners was not found in the NanoCore entrypoint.');
+  }
+
+  const javascript = transpileModule(declaration.getText(sourceFile), {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText;
+  return new Function(
+    'shutdownTelemetry',
+    'workerMcpGateway',
+    'appServer',
+    'nanoHostServer',
+    `${javascript}\nreturn closeNanoCoreListeners;`
+  )(
+    bindings.shutdownTelemetry,
+    bindings.workerMcpGateway,
+    bindings.appServer,
+    bindings.nanoHostServer
+  ) as (onClosed: () => void) => void;
 }
 
 describe('NanoCore boot phase order', () => {
@@ -132,5 +182,27 @@ describe('NanoCore boot phase order', () => {
     expect(nanoHostListenerConstruction).toBeGreaterThan(listenerConstruction);
     expect(maintenanceStart).toBeGreaterThan(listenerConstruction);
     expect(maintenanceStart).toBeGreaterThan(nanoHostListenerConstruction);
+  });
+
+  it('closes process listeners without waiting for optional telemetry flush', async () => {
+    const shutdownTelemetry = vi.fn(() => new Promise<void>(() => undefined));
+    const appServer = { close: vi.fn((callback: () => void) => callback()) };
+    const nanoHostServer = { close: vi.fn((callback: () => void) => callback()) };
+    const workerMcpGateway = { close: vi.fn(async () => undefined) };
+    const onClosed = vi.fn();
+    const closeNanoCoreListeners = evaluateCloseNanoCoreListeners({
+      shutdownTelemetry,
+      workerMcpGateway,
+      appServer,
+      nanoHostServer,
+    });
+
+    closeNanoCoreListeners(onClosed);
+    expect(shutdownTelemetry).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(appServer.close).toHaveBeenCalledTimes(1);
+      expect(nanoHostServer.close).toHaveBeenCalledTimes(1);
+      expect(onClosed).toHaveBeenCalledTimes(1);
+    });
   });
 });

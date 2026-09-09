@@ -435,11 +435,38 @@ function runtimeConfigPlan() {
   };
 }
 
+/** Returns one exact public NanoHost RuntimeTarget admin response. */
+function nanoHostRuntimeTargetStatus() {
+  return {
+    identityId: 'integration_nanohost_primary',
+    deploymentId: 'deploy_primary',
+    connectionGeneration: 3,
+    predecessorFenced: true,
+    ready: true,
+    freshEmpty: true,
+    observedAt: timestamp,
+  };
+}
+
 /** Returns one strict App Diagnostics fixture. */
 function appDiagnostics() {
   return {
     service: 'nanocore',
     boot: bootReadiness(),
+    process: {
+      observedAt: timestamp,
+      nodeVersion: 'v24.0.0',
+      uptimeSeconds: 1.5,
+      memory: {
+        rssBytes: 1,
+        heapUsedBytes: 1,
+        heapTotalBytes: 1,
+      },
+      telemetry: {
+        enabled: false,
+        exportConfigured: false,
+      },
+    },
     gateway: {
       status: 'ok',
       endpoints: ['/v1/chat/completions'],
@@ -4809,6 +4836,34 @@ describe('createCoreClient', () => {
     });
 
     await expect(client.app.getDiagnostics()).rejects.toBeInstanceOf(ProtocolValidationError);
+  });
+
+  it('reads the exact public NanoHost RuntimeTarget admin response', async () => {
+    const payload = nanoHostRuntimeTargetStatus();
+    const { client, requests } = createFakeClient({
+      'GET /api/app/nanohost/runtime-target': { body: payload },
+    });
+
+    await expect(client.app.getNanoHostRuntimeTargetStatus()).resolves.toEqual(payload);
+    expect(requests).toEqual([
+      expect.objectContaining({
+        hasBody: false,
+        method: 'GET',
+        path: '/api/app/nanohost/runtime-target',
+      }),
+    ]);
+  });
+
+  it('rejects extra fields on the NanoHost RuntimeTarget admin response', async () => {
+    const { client } = createFakeClient({
+      'GET /api/app/nanohost/runtime-target': {
+        body: { ...nanoHostRuntimeTargetStatus(), targetId: 'caller-selected' },
+      },
+    });
+
+    await expect(client.app.getNanoHostRuntimeTargetStatus()).rejects.toBeInstanceOf(
+      ProtocolValidationError
+    );
   });
 
   it('validates email auth responses with concrete schemas', async () => {

@@ -179,11 +179,40 @@ export const BootReadinessSnapshotSchema = z
   })
   .strict();
 
+/** Sampled NanoCore process memory observation. */
+export const ProcessMemorySampleSchema = z
+  .object({
+    rssBytes: z.number().int().nonnegative(),
+    heapUsedBytes: z.number().int().nonnegative(),
+    heapTotalBytes: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** Nested process.telemetry flags. They describe local configuration only, not successful export. */
+export const ProcessTelemetryConfigurationSchema = z
+  .object({
+    enabled: z.boolean(),
+    exportConfigured: z.boolean(),
+  })
+  .strict();
+
+/** Strict process sample returned by authorized App Diagnostics. */
+export const ProcessDiagnosticsSampleSchema = z
+  .object({
+    observedAt: z.string().datetime(),
+    nodeVersion: z.string().min(1),
+    uptimeSeconds: z.number().nonnegative(),
+    memory: ProcessMemorySampleSchema,
+    telemetry: ProcessTelemetryConfigurationSchema,
+  })
+  .strict();
+
 /** App-facing diagnostics response schema for /api/app/diagnostics. */
 export const AppDiagnosticsResponseSchema = z
   .object({
     service: z.string().min(1),
     boot: BootReadinessSnapshotSchema,
+    process: ProcessDiagnosticsSampleSchema,
     gateway: z.object({
       status: z.string().min(1),
       endpoints: z.array(z.string().min(1)),
@@ -218,5 +247,11 @@ export type ProvidersDiagnostics = z.infer<typeof ProvidersDiagnosticsSchema>;
 export type SetupDiagnosticsResponse = z.infer<typeof SetupDiagnosticsResponseSchema>;
 /** Boot readiness projection returned by App Diagnostics. */
 export type BootReadinessSnapshot = z.infer<typeof BootReadinessSnapshotSchema>;
+/** Sampled NanoCore process memory observation. */
+export type ProcessMemorySample = z.infer<typeof ProcessMemorySampleSchema>;
+/** Nested process.telemetry configuration flags. */
+export type ProcessTelemetryConfiguration = z.infer<typeof ProcessTelemetryConfigurationSchema>;
+/** Strict process sample returned by authorized App Diagnostics. */
+export type ProcessDiagnosticsSample = z.infer<typeof ProcessDiagnosticsSampleSchema>;
 /** App-facing diagnostics response. */
 export type AppDiagnosticsResponse = z.infer<typeof AppDiagnosticsResponseSchema>;

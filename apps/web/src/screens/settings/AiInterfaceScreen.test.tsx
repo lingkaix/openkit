@@ -95,6 +95,20 @@ const DIAGNOSTICS = {
       knowledgeIndex: { state: 'ready', reasons: [] },
     },
   },
+  process: {
+    observedAt: TIMESTAMP,
+    nodeVersion: 'v24.0.0',
+    uptimeSeconds: 1.5,
+    memory: {
+      rssBytes: 1,
+      heapUsedBytes: 1,
+      heapTotalBytes: 1,
+    },
+    telemetry: {
+      enabled: false,
+      exportConfigured: false,
+    },
+  },
   gateway: {
     status: 'ok',
     endpoints: ['/v1/chat/completions'],

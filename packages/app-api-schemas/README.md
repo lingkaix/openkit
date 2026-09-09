@@ -28,6 +28,8 @@ Knowledge Proposal page ids and page-source references reserve the final `index`
 
 Do not add stable Core protocol records here. Core records, commands, events, errors, and conformance fixtures belong in `@openkit/protocol`.
 
+App Diagnostics includes a strict process sample with nested telemetry configuration booleans. The schema does not grant access or interpret exporter delivery; NanoCore samples only after deployment-admin authorization.
+
 ## Commands
 
 - `pnpm --filter @openkit/app-api-schemas test`

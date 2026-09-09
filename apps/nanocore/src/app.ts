@@ -59,6 +59,7 @@ import {
 } from './config/runtime-config.js';
 import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { registerRuntimeConfigRoutes } from './config/runtime-config-routes.js';
+import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js';
 import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import { registerGenerativeUiRoutes } from './generative-ui-routes.js';
@@ -147,6 +148,7 @@ import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js'
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
+import { createHttpTelemetryMiddleware } from './telemetry.js';
 import { registerThreadRoutes } from './thread-routes.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
 import { registerTurnRoutes } from './turn-routes.js';
@@ -720,6 +722,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
   const schedulerEpoch = options.schedulerEpoch ?? 1;
   const app = new Hono<{ Variables: AuthVariables }>();
+  app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
     options.nanohostTransportSessionAuthority ?? createNanoHostTransportSessionAuthority();
   if (options.coreDb && startupOpenKitConfig.nanohost) {
@@ -1172,6 +1175,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       AppDiagnosticsResponseSchema.parse({
         service: 'nanocore',
         boot: getBootReadiness(),
+        process: createProcessDiagnosticsSample(),
         gateway: {
           status: 'ok',
           endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],

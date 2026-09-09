@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { resolveTelemetryConfiguration } from './telemetry.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 
@@ -194,6 +195,23 @@ describe('Settings diagnostics app API', () => {
     expect(res.status).toBe(200);
     expect(body).not.toHaveProperty('internalAgents');
     expect(body).not.toHaveProperty('internalTasks');
+  });
+
+  it('samples the current process and nested process.telemetry flags for authorized callers', async () => {
+    const app = createApp();
+    const res = await app.request('/api/app/diagnostics');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.process.nodeVersion).toBe(process.version);
+    expect(body.process.uptimeSeconds).toBeGreaterThanOrEqual(0);
+    expect(body.process.memory.rssBytes).toBeGreaterThanOrEqual(0);
+    expect(body.process.memory.heapUsedBytes).toBeGreaterThanOrEqual(0);
+    expect(body.process.memory.heapTotalBytes).toBeGreaterThanOrEqual(0);
+    expect(typeof body.process.observedAt).toBe('string');
+    expect(body.process.telemetry).toEqual(resolveTelemetryConfiguration());
+    expect(body.process).not.toHaveProperty('hostHealthy');
+    expect(body.process).not.toHaveProperty('buildId');
   });
 
   it('exposes the aggregate diagnostics snapshot in local mode', async () => {

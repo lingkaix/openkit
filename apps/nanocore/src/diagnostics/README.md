@@ -6,6 +6,7 @@ This directory owns redacted NanoCore diagnostics projections; canonical public 
 
 - `snapshot.ts` projects runtime mode, authentication state, migrations, providers, and agent readiness.
 - `setup.ts` projects configuration and agent-setup readiness from current runtime inputs.
+- `process-sample.ts` samples authorized process observations and local telemetry configuration without persistence or host-health claims.
 - Do not duplicate public response DTOs, expose host paths or secret material, or read deployment-owned state before deployment-admin authorization.
 - Diagnostics are projections only; configuration, OAuth, provider, storage, and readiness owners remain in their respective modules.
 

@@ -105,6 +105,7 @@ import {
 import { rebuildExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
+import { shutdownTelemetry, startTelemetry } from './telemetry.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems } from './worker-mcp-routes.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
@@ -523,6 +524,7 @@ const nanoHostFetch: typeof app.fetch = async (request, env, executionContext) =
     ? app.fetch(request, env, executionContext)
     : new Response(null, { status: 404 });
 
+startTelemetry({ bootId });
 const appServer = appTlsListen
   ? serve(
       {
@@ -694,6 +696,7 @@ function shutdown(signal: NodeJS.Signals): void {
 
 /** Closes both process listeners before completing orderly shutdown. */
 function closeNanoCoreListeners(onClosed: () => void): void {
+  void shutdownTelemetry().catch(() => undefined);
   void workerMcpGateway
     .close()
     .catch(() => undefined)

@@ -227,6 +227,8 @@ import {
   ListWorkspaceVaultInjectionReceiptsResponseSchema,
   type ListWorkspaceVaultUseRecordsResponse,
   ListWorkspaceVaultUseRecordsResponseSchema,
+  type NanoHostRuntimeTargetStatusResponse,
+  NanoHostRuntimeTargetStatusResponseSchema,
   type PauseThreadGoalRequest,
   PauseThreadGoalRequestSchema,
   type PauseThreadGoalResponse,
@@ -1120,6 +1122,8 @@ export interface AppApiClient {
   ): Promise<SetMyAdminAccessTokenDefaultResponse>;
   /** Enrolls one NanoHost identity and first transport token. */
   enrollNanoHost(input: EnrollNanoHostInput): Promise<EnrollNanoHostResponse>;
+  /** Reads the configured NanoHost RuntimeTarget readiness status. */
+  getNanoHostRuntimeTargetStatus(): Promise<NanoHostRuntimeTargetStatusResponse>;
   /** Lists redacted NanoHost transport token records. */
   listNanoHostTransportTokens(): Promise<ListNanoHostTransportTokensResponse>;
   /** Issues one NanoHost transport token through a proved named safe-sink write. */
@@ -1972,6 +1976,11 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         '/api/app/nanohost/enroll',
         EnrollNanoHostRequestSchema.parse(input),
         EnrollNanoHostResponseSchema
+      ),
+    getNanoHostRuntimeTargetStatus: () =>
+      transport.getJson(
+        '/api/app/nanohost/runtime-target',
+        NanoHostRuntimeTargetStatusResponseSchema
       ),
     listNanoHostTransportTokens: () =>
       transport.getJson('/api/app/nanohost/tokens', ListNanoHostTransportTokensResponseSchema),

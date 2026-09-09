@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 date: "2026-09-09"
 ---
 # Persistent Deployment Acceptance
@@ -96,4 +96,4 @@ PR publication, merge and deployment use their existing owners and explicit task
 
 ## Implementation Status
 
-Existing public operations, Task/Goal execution, Skill packaging and evidence producers are the substrate. This specification initially records the accepted target only; real deployment qualification and the focused implementation delta must be observed before marking the slice implemented. Other roadmap plans retain their individual acceptance obligations.
+Existing public operations, Task/Goal execution and evidence producers remain the substrate. The focused implementation adds the NanoHost runtime-target Skill/Core Client read, refreshed packaged Skill guidance, process diagnostics and optional HTTP telemetry. Local contract checks pass; deployment attribution, actual Task completion, independent external Skill runs and Collector-outage behavior still require live observation before marking this composition implemented. Other roadmap plans retain their individual acceptance obligations.

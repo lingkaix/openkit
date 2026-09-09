@@ -801,6 +801,7 @@ function appDiagnosticsPayload(): Record<string, unknown> {
   return {
     service: 'nanocore',
     boot: bootReadiness(),
+    process: processDiagnosticsSample(),
     gateway: {
       status: 'ok',
       endpoints: ['/health'],
@@ -810,6 +811,24 @@ function appDiagnosticsPayload(): Record<string, unknown> {
     providers: { diagnostics: [], registry: [] },
     capabilities: ['core.stream.replay'],
     runtimeConfig: runtimeConfigStatus(),
+  };
+}
+
+/** Builds one valid App Diagnostics process sample. */
+function processDiagnosticsSample(): Record<string, unknown> {
+  return {
+    observedAt: timestamp,
+    nodeVersion: 'v24.0.0',
+    uptimeSeconds: 1.5,
+    memory: {
+      rssBytes: 1,
+      heapUsedBytes: 1,
+      heapTotalBytes: 1,
+    },
+    telemetry: {
+      enabled: false,
+      exportConfigured: false,
+    },
   };
 }
 
@@ -2287,6 +2306,48 @@ describe('app api schemas', () => {
       ProviderRegistryEntrySchema.safeParse({
         ...provider,
         dispatchFamily: 'provider-api',
+      }).success
+    ).toBe(false);
+  });
+
+  it('requires a strict process sample without host health or build claims', () => {
+    const processSample = processDiagnosticsSample();
+    const payload = appDiagnosticsPayload();
+    const { process: _process, ...withoutProcess } = payload;
+
+    expect(AppDiagnosticsResponseSchema.parse(payload).process).toEqual(processSample);
+    expect(AppDiagnosticsResponseSchema.safeParse(withoutProcess).success).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        process: { ...processSample, hostHealthy: true },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        process: { ...processSample, buildId: 'build_demo' },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        process: { ...processSample, uptimeSeconds: -1 },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        process: { ...processSample, telemetry: { enabled: true } },
+      }).success
+    ).toBe(false);
+    expect(
+      AppDiagnosticsResponseSchema.safeParse({
+        ...payload,
+        process: {
+          ...processSample,
+          telemetry: { enabled: true, exportConfigured: true, delivered: true },
+        },
       }).success
     ).toBe(false);
   });

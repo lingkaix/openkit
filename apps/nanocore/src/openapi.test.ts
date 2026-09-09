@@ -3634,6 +3634,38 @@ describe('app api openapi projection', () => {
     ]);
   });
 
+  it('projects the App Diagnostics process sample including nested process.telemetry', () => {
+    const diagnostics = jsonObject(
+      createAppOpenApiDocument().components.schemas.AppDiagnosticsResponse
+    );
+    const process = jsonObject(jsonObject(diagnostics?.properties)?.process);
+    const processProperties = jsonObject(process?.properties);
+    const memory = jsonObject(processProperties?.memory);
+    const telemetry = jsonObject(processProperties?.telemetry);
+
+    expect(diagnostics?.required).toEqual(
+      expect.arrayContaining(['service', 'boot', 'process', 'gateway'])
+    );
+    expect(process).toMatchObject({
+      type: 'object',
+      required: ['observedAt', 'nodeVersion', 'uptimeSeconds', 'memory', 'telemetry'],
+      additionalProperties: false,
+    });
+    expect(processProperties).not.toHaveProperty('hostHealthy');
+    expect(processProperties).not.toHaveProperty('buildId');
+    expect(memory).toMatchObject({
+      type: 'object',
+      required: ['rssBytes', 'heapUsedBytes', 'heapTotalBytes'],
+      additionalProperties: false,
+    });
+    expect(telemetry).toMatchObject({
+      type: 'object',
+      required: ['enabled', 'exportConfigured'],
+      additionalProperties: false,
+    });
+    expect(jsonObject(telemetry?.properties)).not.toHaveProperty('delivered');
+  });
+
   it('keeps the committed openapi artifact in sync with the projection', () => {
     const artifact = JSON.parse(
       readFileSync(new URL('../openapi/app-api.openapi.json', import.meta.url), 'utf8')

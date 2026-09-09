@@ -31,6 +31,7 @@ test('the OpenKit Skill ships only the accepted release tree', () => {
   assert.deepEqual(listFiles(skillRoot), [
     'SKILL.md',
     'agents/openai.yaml',
+    'references/acceptance.md',
     'references/administration.md',
     'references/capability-map.md',
     'references/knowledge.md',
@@ -54,6 +55,7 @@ test('the OpenKit Skill ships only the accepted release tree', () => {
   assert.ok(skill.split('\n').length < 500);
 
   for (const name of [
+    'acceptance',
     'administration',
     'capability-map',
     'knowledge',
@@ -117,7 +119,6 @@ test('one catalog covers the checked App API and public Core projection', async 
     'app-api:acceptWorkspaceInvitation',
     'app-api:createOpenKitAccessToken',
     'app-api:declineWorkspaceInvitation',
-    'app-api:getNanoHostRuntimeTargetStatus',
     'app-api:getThreadDashboard',
     'app-api:getWorkspaceDashboard',
     'app-api:leaveWorkspace',
@@ -269,6 +270,21 @@ test('one catalog covers the checked App API and public Core projection', async 
     assert.ok(exclusion.owner);
   }
 
+  const runtimeTarget = operationCatalog.find((entry) => entry.id === 'nanohost.runtime-target');
+  assert.equal(runtimeTarget?.appOperationId, 'getNanoHostRuntimeTargetStatus');
+  assert.equal(runtimeTarget?.clientMethod, 'app.getNanoHostRuntimeTargetStatus');
+  assert.equal(runtimeTarget?.mutating, false);
+  assert.equal(runtimeTarget?.group, 'nanohost');
+
+  const deferredVisibility = operationExclusions.filter((entry) =>
+    ['getWorkspaceDashboard', 'getThreadDashboard', 'searchApp'].includes(entry.name)
+  );
+  assert.equal(deferredVisibility.length, 3);
+  for (const exclusion of deferredVisibility) {
+    assert.match(exclusion.reason, /private-thread visibility|private-conversation/);
+    assert.equal(exclusion.owner, 'docs/specs/20260909-thread_visibility_and_sharing.md');
+  }
+
   const proposalOperationIds = operationCatalog
     .filter((entry) => entry.id.startsWith('knowledge.proposal-'))
     .map((entry) => entry.id)
@@ -338,6 +354,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'diagnostics.setup',
       'nanohost.decommission',
       'nanohost.enroll',
+      'nanohost.runtime-target',
       'nanohost.token-issue',
       'nanohost.token-list',
       'nanohost.token-revoke',
