@@ -12,6 +12,16 @@ Build the current public Skill with `pnpm build:openkit` under the normal reposi
 
 Run `scripts/openkit doctor` from the installed Skill. With the appropriate access, discover and read `diagnostics`, `nanohost runtime-target`, and the relevant workspace/worker operations. A reachable API, configured Provider or ready target is a precondition observation, not completed Worker evidence. Do not create a fresh Provider subscription merely to run another attempt.
 
+### Update An Exact Source Build
+
+When the operator's deployment helper unconditionally fetches a branch, use its existing build and service primitives against the selected committed snapshot. Do not publish a branch merely to satisfy that helper. `git archive --format=tar --output=<archive> <commit>` exports tracked bytes; transfer that archive over the authorized SSH connection and extract into a new commit-named build directory. Retain the full commit and archive digest. Uncommitted fixes are not included.
+
+On the target host, build the App with `docker build --file <tree>/containers/app/Dockerfile --tag <image>:<commit> <tree>` and run `docker run --rm <image>:<commit> openkit-app-smoke`. Record the resulting image ID. Build Worker images and the NanoHost binary only when their source or declared dependency inputs changed; otherwise retain their verified digests and record that component attribution separately. Host Docker inventory does not prove that the private NanoHost Image Store contains an image.
+
+Before replacement, inspect the current deployment's non-secret service configuration and active work. Preserve its Data Root, protected environment file, Vault key mount, transport credential directory, network/port bindings, restart policy and log rotation. Recreate only the owned App container with the new image and those same settings; do not replay bootstrap, access recovery or data initialization when current credentials and data remain valid. If the deployment mounts Web assets outside the image, extract the new image's assets into its commit-named Web directory and switch the existing asset link during the same maintenance window. Keep an old container stopped; never run two App instances against the same writable Data Root.
+
+Finish any App replacement before starting a newly provisioned NanoHost readiness interval. Then observe public health, authenticated diagnostics, the new image/container identity and boot ID, the retained Workspace records, and actual NanoHost readiness before admitting new work. An update ends the earlier attempt's attribution window; keep its evidence and begin a fresh attempt on the new build.
+
 ### Initial NanoHost Provisioning
 
 Complete image supply and credential enrollment before the first NanoHost service start. Build or retrieve the declared required images off the readiness path, import and verify their exact digests in the NanoHost Image Store, install the configured binary/unit, and enroll the configured identity/deployment pair into its safe credential sink. Then start the service and observe the normal authoritative connection, predecessor fence, readiness and fresh-empty gates. A Core test-data reset invalidates old transport credentials even when their sink files remain; reenroll before starting NanoHost against the fresh Core.
