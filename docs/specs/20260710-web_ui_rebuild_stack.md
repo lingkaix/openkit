@@ -126,8 +126,8 @@ These deltas remain recorded here as the stack-owned source for the reconciled `
 
 - Current: `apps/web` is rebuilt in place with React, Zustand, React Router, TanStack Query, Tailwind CSS v4, React Aria Components, and the existing Iconify/Remix pattern.
 - Current Composer divergence: `apps/web/src/primitives/Composer.tsx` is text-only, uses fixed textarea rows, places Send beside the textarea, and exposes neither the accepted lower action row nor structured draft output.
-- Partial stack conformance: `apps/web/src/screens/generative/` contains a custom local A2UI-like declarative renderer and whitelist catalog rather than the official A2UI React renderer, and `apps/web/src/styles/tokens.css` is a hand-maintained Spectrum-derived semantic bridge rather than a projection sourced from Adobe's token package.
-- Missing direct dependencies: `apps/web/package.json` and the lockfile contain neither the official A2UI React renderer nor the Adobe Spectrum token package.
+- Partial stack conformance: Chat Item rendering uses official `@a2ui/react@0.11.0` and `@a2ui/web_core@0.10.7` v0.9 imports for native presentations; `apps/web/src/screens/generative/` remains an unpublished local fixture and is not the product renderer. `apps/web/src/styles/tokens.css` is a hand-maintained Spectrum-derived semantic bridge rather than a projection sourced from Adobe's token package.
+- Missing direct dependencies: the Adobe Spectrum token package is still absent from `apps/web/package.json` and the lockfile. The official A2UI React renderer is pinned; nested zod 3 is isolated through root pnpm overrides.
 - Unaffected: `packages/core-client` and `packages/protocol` are framework-agnostic and require no change for the view-layer rebuild.
 - Retired operational guidance: [`docs/cookbooks/spa-solid-vite.md`](../cookbooks/spa-solid-vite.md) is a retirement stub that points at this stack and the design→code cookbook.
 - Current operational guidance: the design→code workflow is owned by [`docs/cookbooks/claude-design-web-ui-loop.md`](../cookbooks/claude-design-web-ui-loop.md).
@@ -188,7 +188,7 @@ Resolved target: icons stay on Iconify + Remix Icon; `apps/web` is rebuilt in pl
 
 This backlog records current divergence and does not authorize dependency or implementation work. Activation requires a separately frozen change under the repository dependency procedure after exact package identity, compatible version, license, and migration shape are verified.
 
-- Replace the custom local A2UI-like renderer with the official A2UI React renderer while preserving the existing OpenKit whitelist mapping and plain-content fallback.
+- Replace the custom local A2UI-like renderer with the official A2UI React renderer while preserving the existing OpenKit whitelist mapping and plain-content fallback. Chat Item rendering now uses the official v0.9 renderer; the unpublished `/generative` fixture remains a local review shell and is not a second product dialect.
 - Add the Adobe Spectrum token package as a direct Web dependency and make the semantic Tailwind bridge derive from that package rather than from hand-maintained copied values.
 
 This specification may return to `Implemented` only when both direct dependencies are present in `apps/web/package.json` and the lockfile, production imports use the official renderer and package-backed token source, focused renderer and token-parity checks pass, and the replaced local ownership is removed rather than retained as a parallel implementation.

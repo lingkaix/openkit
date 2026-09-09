@@ -313,6 +313,8 @@ function summarizeItemForProvider(item: Item): string {
         item.policySummary,
         `knowledgeEntryIds: ${item.knowledgeEntryIds.join(', ')}`,
       ]);
+    case 'generative-ui-reference':
+      return joinNonEmpty([`Generated view ${item.title}`, item.fallbackText]);
     default:
       return assertNever(item);
   }

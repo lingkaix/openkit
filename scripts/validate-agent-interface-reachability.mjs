@@ -106,10 +106,26 @@ function scanFile(relativePath) {
   }
   const content = readFileSync(path, 'utf8');
   for (const needle of forbiddenNeedles) {
-    if (content.includes(needle)) {
+    if (containsLegacyIdentifier(content, needle)) {
       errors.push(
         `Legacy agent-interface identifier ${JSON.stringify(needle)} remains in ${relativePath}.`
       );
     }
   }
+}
+
+/**
+ * Reports whether a removed public-interface identifier still occurs as itself.
+ *
+ * The catalog digest format `openkit-mcp-config-v1` is current accepted identity, not the deleted `openkit-mcp` binary.
+ *
+ * @param {string} content File contents.
+ * @param {string} needle Forbidden identifier.
+ * @returns {boolean} True when the needle remains as the retired interface rather than a current accepted prefix.
+ */
+function containsLegacyIdentifier(content, needle) {
+  if (needle === 'openkit-mcp') {
+    return /openkit-mcp(?!-config-v1)/u.test(content);
+  }
+  return content.includes(needle);
 }

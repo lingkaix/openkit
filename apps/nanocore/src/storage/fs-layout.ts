@@ -12,7 +12,11 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AGENT_RESOURCE_CATALOG_FEATURE, parseRecordEnvelope } from '@openkit/config-schema';
+import {
+  parseRecordEnvelope,
+  REQUIRED_FEATURE_REGISTRY,
+  type RequiredFeatureId,
+} from '@openkit/config-schema';
 
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 
@@ -175,6 +179,8 @@ export interface WorkspaceLayoutPaths {
   catalogPluginSnapshots: string;
   /** Mutable MCP package-data root. */
   catalogMcpData: string;
+  /** Workspace Light App inventory root. */
+  lightApps: string;
 }
 
 /**
@@ -390,6 +396,7 @@ export function ensureWorkspaceLayoutRoot(workspaceRoot: string): WorkspaceLayou
     catalogSkillSnapshots: join(workspaceRoot, 'catalog', 'skill-snapshots'),
     catalogPluginSnapshots: join(workspaceRoot, 'catalog', 'plugin-snapshots'),
     catalogMcpData: join(workspaceRoot, 'catalog', 'mcp-data'),
+    lightApps: join(workspaceRoot, 'light-apps'),
   };
 
   ensureLayoutDirectory(paths.root, true);
@@ -602,7 +609,7 @@ function verifyCanonicalRecordEnvelopeSupport(root: string): void {
     let envelope: ReturnType<typeof parseRecordEnvelope>;
     try {
       envelope = parseRecordEnvelope(record, {
-        supportedFeatures: [AGENT_RESOURCE_CATALOG_FEATURE],
+        supportedFeatures: Object.keys(REQUIRED_FEATURE_REGISTRY) as RequiredFeatureId[],
       });
     } catch (error) {
       throw new Error(

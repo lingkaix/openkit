@@ -76,6 +76,7 @@ describe('scoped storage databases', () => {
         'backend_workspace_handles',
         'capability_calls',
         'evidence_bundles',
+        'generative_presentations',
         'git_push_records',
         'goal_plan_records',
         'goal_records',

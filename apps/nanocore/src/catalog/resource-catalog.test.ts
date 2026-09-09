@@ -126,6 +126,25 @@ describe('workspace resource catalog', () => {
     }
   });
 
+  it('rejects the reserved built-in openkit-generative catalog id', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-reserved-'));
+    try {
+      expect(() =>
+        createWorkspaceMcpConfig({
+          createdAt: '2026-09-08T00:00:00.000Z',
+          dataRoot,
+          declaration: { args: ['fixtures/echo.mjs'], command: 'node', kind: 'stdio' },
+          displayName: 'Generative',
+          expectedRevision: 0,
+          id: 'openkit-generative',
+          workspaceId: 'ws_demo',
+        })
+      ).toThrow(CatalogForbiddenError);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('creates an inactive MCP config and projects an effective Gateway entry only after enablement', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-'));
     try {

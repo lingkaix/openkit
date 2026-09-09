@@ -22,9 +22,9 @@ import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
-import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
@@ -33,6 +33,7 @@ import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-ref
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
+import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
 
 type Turn = z.infer<typeof TurnSchema>;
@@ -318,11 +319,14 @@ function resolveOpenShellAgentEnvironmentPackage(
     input.coreDb?.dataRoot,
     input.agentSessionId
   );
-  const workerMcpServers = resolveWorkerMcpServerSupply(
-    (manifest.mcp ?? []).map((server) => server.id),
-    manifest.runtime.adapter,
-    input.workspaceMcpServerCatalog
-  );
+  const workerMcpServers = [
+    ...resolveWorkerMcpServerSupply(
+      (manifest.mcp ?? []).map((server) => server.id),
+      manifest.runtime.adapter,
+      input.workspaceMcpServerCatalog
+    ),
+    createOpenkitGenerativeMcpSupply(),
+  ];
   const preparedContextPackage = input.preparedContextPackage
     ? requirePreparedWorkerContextPackage(
         input.turn,

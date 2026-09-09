@@ -10,6 +10,7 @@ import {
   UserMessage,
 } from '../../primitives';
 import type { ThreadItem } from './data';
+import { GenerativePresentationView } from './GenerativePresentationView';
 
 /** Protocol user-input request rendered by the inline Gate control. */
 type UserInputRequestItem = Extract<ThreadItem, { type: 'user-input-request' }>;
@@ -310,6 +311,9 @@ export function ItemView({
 
     case 'knowledge-injection':
       return <ItemCard kind="neutral" title="Knowledge added" meta={item.summary} />;
+
+    case 'generative-ui-reference':
+      return <GenerativePresentationView item={item} />;
 
     default:
       return null;

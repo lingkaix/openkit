@@ -444,6 +444,7 @@ describe('ensureLayout', () => {
       workspacePaths.catalogSkillSnapshots,
       workspacePaths.catalogPluginSnapshots,
       workspacePaths.catalogMcpData,
+      workspacePaths.lightApps,
       workspacePaths.threads,
       workspacePaths.runtime,
       workspacePaths.runtimeAgentSessions,

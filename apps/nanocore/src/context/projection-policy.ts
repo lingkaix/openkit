@@ -123,6 +123,7 @@ const ITEM_TYPE_CATEGORY_MAP = {
   status: 'diagnostic',
   plan: 'goal',
   'knowledge-injection': 'knowledge',
+  'generative-ui-reference': 'diagnostic',
 } as const satisfies Record<ItemType, LlmProjectionItemCategory>;
 
 /**

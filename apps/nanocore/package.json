@@ -26,6 +26,7 @@
     "format": "biome check --write ."
   },
   "dependencies": {
+    "@a2ui/web_core": "0.10.7",
     "@better-auth/drizzle-adapter": "^1.6.11",
     "@earendil-works/pi-ai": "0.84.2",
     "@hono/node-server": "^1.19.14",

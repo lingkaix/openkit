@@ -9,6 +9,7 @@ import {
   commandRequestKey,
   type FsStore,
 } from '../lib/store.js';
+import type { AppDb } from '../storage/app-db.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
 /** Error raised when one idempotency key is reused for different command input. */
@@ -121,6 +122,10 @@ type IdempotentCommandOptions<T> = IdempotentCommandBaseOptions<T> &
         readonly coreTransaction?: undefined;
         /** Core database is not selected. */
         readonly coreDb?: undefined;
+        /** App transaction mode is not selected. */
+        readonly appTransaction?: undefined;
+        /** App database is not selected. */
+        readonly appDb?: undefined;
       }
     | {
         /** Executes synchronously inside the required Core transaction. */
@@ -133,14 +138,38 @@ type IdempotentCommandOptions<T> = IdempotentCommandBaseOptions<T> &
         readonly workspaceTransaction?: undefined;
         /** Workspace database is not selected. */
         readonly workspaceDb?: undefined;
+        /** App transaction mode is not selected. */
+        readonly appTransaction?: undefined;
+        /** App database is not selected. */
+        readonly appDb?: undefined;
+      }
+    | {
+        /** Executes synchronously inside the required App transaction. */
+        readonly execute: () => T;
+        /** Open App database that owns both the business record and receipt. */
+        readonly appDb: AppDb;
+        /** Runs synchronous command execution and receipt writing in one App transaction. */
+        readonly appTransaction: true;
+        /** Workspace transaction mode is not selected. */
+        readonly workspaceTransaction?: undefined;
+        /** Workspace database is not selected. */
+        readonly workspaceDb?: undefined;
+        /** Core transaction mode is not selected. */
+        readonly coreTransaction?: undefined;
+        /** Core database is not selected. */
+        readonly coreDb?: undefined;
       }
     | {
         /** Executes an ordinary command that may be asynchronous. */
         readonly execute: () => Promise<T> | T;
         /** Optional open Workspace database for receipt-first reads and writes. */
         readonly workspaceDb?: WorkspaceDb;
+        /** Optional open App database for receipt-first reads and writes. */
+        readonly appDb?: AppDb;
         /** Transactional execution is enabled only by the explicit true literal. */
         readonly workspaceTransaction?: undefined;
+        /** App transactional execution is enabled only by the explicit true literal. */
+        readonly appTransaction?: undefined;
         /** Core database is not selected for ordinary commands. */
         readonly coreDb?: undefined;
         /** Core transactional execution is enabled only by the explicit true literal. */
@@ -160,7 +189,9 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   if (options.conversationResponseMetadata && options.command !== 'conversation.submit') {
     throw new Error('Only conversation.submit may store extra command receipt metadata.');
   }
-  let transaction: { readonly db: CoreDb | WorkspaceDb; readonly execute: () => T } | undefined;
+  let transaction:
+    | { readonly db: CoreDb | WorkspaceDb | AppDb; readonly execute: () => T }
+    | undefined;
 
   if (options.workspaceTransaction) {
     if (!options.workspaceDb) {
@@ -180,9 +211,18 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     }
     transaction = { db: options.coreDb, execute: options.execute };
   }
+  if (options.appTransaction) {
+    if (!options.appDb) {
+      throw new Error('appTransaction requires an open App database.');
+    }
+    if (Object.prototype.toString.call(options.execute) === '[object AsyncFunction]') {
+      throw new Error('appTransaction commands must execute synchronously.');
+    }
+    transaction = { db: options.appDb, execute: options.execute };
+  }
 
   const inputHash = commandInputHash(options.input);
-  const commandDb = options.coreDb ?? options.workspaceDb;
+  const commandDb = options.coreDb ?? options.workspaceDb ?? options.appDb;
   const existingRecord = options.store.getCommandRequest(
     options.command,
     options.requestId,

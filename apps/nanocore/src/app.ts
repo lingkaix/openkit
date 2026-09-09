@@ -18,7 +18,6 @@ import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import { registerActionCenterRoutes } from './action-center.js';
 import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
-import { registerResourceCatalogRoutes } from './catalog/catalog-routes.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { asApiError } from './api-errors.js';
@@ -48,6 +47,7 @@ import { registerOperationAccessGuards } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
+import { registerResourceCatalogRoutes } from './catalog/catalog-routes.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
 import {
@@ -61,9 +61,11 @@ import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { registerRuntimeConfigRoutes } from './config/runtime-config-routes.js';
 import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
+import { registerGenerativeUiRoutes } from './generative-ui-routes.js';
 import { registerGoalRoutes } from './goal-routes.js';
 import { registerGovernanceRoutes } from './governance-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
+import { registerKernelRoutes } from './kernel-routes.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
@@ -1275,6 +1277,22 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerThreadRoutes({ app, inflightCommands, requestStore });
 
   registerMaterialRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    openWorkspaceDb: repositoryWorkspaceDb,
+    requestStore,
+  });
+
+  registerKernelRoutes({
+    app,
+    coreDb: options.coreDb,
+    inflightCommands,
+    openWorkspaceDb: repositoryWorkspaceDb,
+    requestStore,
+  });
+
+  registerGenerativeUiRoutes({
     app,
     coreDb: options.coreDb,
     inflightCommands,

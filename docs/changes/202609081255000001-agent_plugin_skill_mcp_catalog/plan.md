@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-review
+status: in-progress
 date: 2026-09-08
 branch: feat/agent-plugin-skill-mcp-catalog
 ---

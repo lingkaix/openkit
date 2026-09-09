@@ -53,6 +53,18 @@ export const REQUIRED_FEATURE_REGISTRY = {
     status: 'active',
     description: 'Audit retention is controlled by a legal-hold policy.',
   },
+  'workspace.generative-kernel.v1': {
+    id: 'workspace.generative-kernel.v1',
+    status: 'active',
+    description:
+      'Workspace export includes Light App identity, admitted definitions, native records, and app-local audit.',
+  },
+  'workspace.generative-ui.native-v1': {
+    id: 'workspace.generative-ui.native-v1',
+    status: 'active',
+    description:
+      'Workspace export includes immutable native Generative UI presentations and their Item references.',
+  },
 } as const satisfies Record<string, RequiredFeatureDefinition>;
 
 /**

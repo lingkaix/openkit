@@ -112,6 +112,7 @@ const itemTypesByDeltaKind = {
     'status',
     'plan',
     'knowledge-injection',
+    'generative-ui-reference',
   ],
   'progress-updated': [
     'assistant-message',

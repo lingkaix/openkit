@@ -84,6 +84,7 @@ const allowedItemTypesByDeltaKind = {
     'status',
     'plan',
     'knowledge-injection',
+    'generative-ui-reference',
   ],
   'progress-updated': [
     'assistant-message',
@@ -175,6 +176,7 @@ describe('item delta validation', () => {
       'status',
       'plan',
       'knowledge-injection',
+      'generative-ui-reference',
     ] as const;
 
     for (const itemType of nonCommandItemTypes) {

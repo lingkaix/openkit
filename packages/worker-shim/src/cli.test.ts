@@ -2977,7 +2977,9 @@ describe('worker shim CLI parsing', () => {
         stdout: '{"type":"session.completed"}\n',
       },
       () => {
-        expect(readFileSync(join(skillTargetPath, 'SKILL.md'), 'utf8')).toContain('Repo guidelines');
+        expect(readFileSync(join(skillTargetPath, 'SKILL.md'), 'utf8')).toContain(
+          'Repo guidelines'
+        );
         expect(existsSync(join(skillTargetPath, 'openkit-supply.json'))).toBe(false);
         expect(existsSync(mcpTargetPath)).toBe(false);
       }

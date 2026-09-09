@@ -25,16 +25,15 @@ import {
 } from '@openkit/config-schema';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
-import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
-
-import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
-import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
-import { createProviderDiagnostics } from '../providers/diagnostics.js';
-import { ProviderRegistry } from '../providers/registry.js';
 import {
   loadWorkspaceResourceCatalog,
   projectEffectiveWorkspaceMcpCatalog,
 } from '../catalog/resource-catalog.js';
+import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
+import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
+import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
+import { createProviderDiagnostics } from '../providers/diagnostics.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { parseJsoncObject } from './jsonc.js';
 import {

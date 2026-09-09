@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 208;
+const EXPECTED_CATALOG_SIZE = 223;
 const EXPECTED_SERVER_SIZE = 46;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 160;
+const EXPECTED_INCLUDED_SIZE = 175;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -81,6 +81,23 @@ const WEB_OPERATION_GROUPS = {
     setSkillPin: { disposition: 'live', surface: 'Catalog' },
     submitSkillCandidate: { disposition: 'workflow', surface: 'Catalog' },
     updateMcpBinding: { disposition: 'live', surface: 'Catalog' },
+  },
+  'Generative apps': {
+    batchLightAppRecords: { disposition: 'workflow', surface: 'Chat' },
+    createLightApp: { disposition: 'workflow', surface: 'Chat' },
+    createLightAppRecord: { disposition: 'workflow', surface: 'Chat' },
+    getGenerativePresentation: { disposition: 'live', surface: 'Chat' },
+    getGenerativePresentationResource: { disposition: 'live', surface: 'Chat' },
+    getLightApp: { disposition: 'workflow', surface: 'Chat' },
+    getLightAppRecord: { disposition: 'workflow', surface: 'Chat' },
+    listLightAppRecords: { disposition: 'workflow', surface: 'Chat' },
+    listLightApps: { disposition: 'workflow', surface: 'Chat' },
+    publishGenerativePresentation: { disposition: 'workflow', surface: 'Chat' },
+    refreshGenerativePresentation: { disposition: 'live', surface: 'Chat' },
+    retireLightApp: { disposition: 'workflow', surface: 'Chat' },
+    submitGenerativePresentationAction: { disposition: 'live', surface: 'Chat' },
+    updateLightAppRecord: { disposition: 'workflow', surface: 'Chat' },
+    updateLightAppSchema: { disposition: 'workflow', surface: 'Chat' },
   },
   Dashboards: {
     getConversationTargets: { disposition: 'live', surface: 'Chat' },

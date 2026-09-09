@@ -4,18 +4,19 @@ import { dirname, join, relative, sep } from 'node:path';
 import {
   parseWorkspaceDataSourceCatalog,
   parseWorkspaceExportManifest,
+  type RequiredFeatureId,
   WORKSPACE_EXPORT_FORMAT_VERSION,
   WorkspaceConfigSchema,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import { ItemSchema, KnowledgeEntrySchema } from '@openkit/protocol';
+import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
   AGENT_RESOURCE_CATALOG_EXPORT_PATH,
   emptyPortableAgentResourceCatalog,
-  type WorkspaceCatalogExportProjection,
   WORKSPACE_EXPORT_CATALOG_FEATURE,
+  type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
-import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
@@ -56,6 +57,7 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'backend_workspace_handles',
   'capability_calls',
   'evidence_bundles',
+  'generative_presentations',
   'git_push_records',
   'goal_plan_records',
   'goal_records',
@@ -234,6 +236,14 @@ export interface WriteWorkspaceExportTreeInput {
   goalVerificationRecords?: readonly unknown[];
   /** MCP tool schema snapshots to export as line-oriented records. */
   mcpToolSchemaSnapshots?: readonly unknown[];
+  /** Portable Light App identity rows. */
+  lightApps?: readonly unknown[];
+  /** Portable Light App definition rows. */
+  lightAppDefinitions?: readonly unknown[];
+  /** Portable Light App record rows. */
+  lightAppRecords?: readonly unknown[];
+  /** Portable Generative UI presentation rows. */
+  generativePresentations?: readonly unknown[];
   /** Portable Skill/MCP/plugin catalog projection and retained Skill payloads. */
   agentResourceCatalog?: WorkspaceCatalogExportProjection;
 }
@@ -585,6 +595,21 @@ export function writeWorkspaceExportTree(
         input.mcpToolSchemaSnapshots
       );
     }
+    if (input.lightApps?.length) {
+      writeJsonl(join(recordsRoot, 'light-apps.jsonl'), input.lightApps);
+    }
+    if (input.lightAppDefinitions?.length) {
+      writeJsonl(join(recordsRoot, 'light-app-definitions.jsonl'), input.lightAppDefinitions);
+    }
+    if (input.lightAppRecords?.length) {
+      writeJsonl(join(recordsRoot, 'light-app-records.jsonl'), input.lightAppRecords);
+    }
+    if (input.generativePresentations?.length) {
+      writeJsonl(
+        join(recordsRoot, 'generative-presentations.jsonl'),
+        input.generativePresentations
+      );
+    }
     const catalogExport = input.agentResourceCatalog ?? {
       catalog: emptyPortableAgentResourceCatalog(),
       payloads: [],
@@ -610,6 +635,17 @@ export function writeWorkspaceExportTree(
         };
       })
       .sort((left, right) => left.path.localeCompare(right.path));
+    const requiredFeatures: RequiredFeatureId[] = [WORKSPACE_EXPORT_CATALOG_FEATURE];
+    if (
+      input.lightApps?.length ||
+      input.lightAppDefinitions?.length ||
+      input.lightAppRecords?.length
+    ) {
+      requiredFeatures.push('workspace.generative-kernel.v1');
+    }
+    if (input.generativePresentations?.length) {
+      requiredFeatures.push('workspace.generative-ui.native-v1');
+    }
     const manifest: WorkspaceExportManifest = {
       schemaVersion: 1,
       recordType: 'workspace-export',
@@ -621,7 +657,7 @@ export function writeWorkspaceExportTree(
       contentDigest: digestText(JSON.stringify(contentInventory)),
       redactionLevel: 'metadata',
       sensitivity: 'internal',
-      requiredFeatures: [WORKSPACE_EXPORT_CATALOG_FEATURE],
+      requiredFeatures,
       extensions: {},
       sourceDeploymentId: input.sourceDeploymentId,
       workspaceId: history.workspace.id,
@@ -633,7 +669,11 @@ export function writeWorkspaceExportTree(
     writeJson(join(input.exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE), manifest);
     return verifyWorkspaceExportTree({
       exportRoot: input.exportRoot,
-      supportedFeatures: [WORKSPACE_EXPORT_CATALOG_FEATURE],
+      supportedFeatures: [
+        WORKSPACE_EXPORT_CATALOG_FEATURE,
+        'workspace.generative-kernel.v1',
+        'workspace.generative-ui.native-v1',
+      ],
     });
   } catch (error) {
     rmSync(input.exportRoot, { recursive: true, force: true });
@@ -712,6 +752,8 @@ export function verifyWorkspaceExportTree(
   const manifest = parseWorkspaceExportManifest(JSON.parse(manifestText), {
     supportedFeatures: [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
+      'workspace.generative-kernel.v1',
+      'workspace.generative-ui.native-v1',
       ...(input.supportedFeatures ?? []),
     ],
   });

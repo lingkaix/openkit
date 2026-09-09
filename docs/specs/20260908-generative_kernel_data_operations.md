@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 date: 2026-09-08
 updated: 2026-09-09
 ---
@@ -147,7 +147,7 @@ The first probes are independent: a headless cross-system ID mapping with create
 
 ## Current Implementation Projection
 
-As of 2026-09-08, `apps/nanocore/src/storage/db.ts` provides Workspace SQLite, but no Kernel module/schema/operation owner implements this contract. The existing Material slice in [Work Resource Interaction](20260713-work_resource_interaction_model.md) supports Markdown/plain text only; it is not a general module store. The export owner uses explicit record/table coverage, so adding a storage table alone does not make it portable. The current local Generative UI fixture demonstrates no Kernel data path. Existing work and capability specifications describe reusable boundaries, not proof that every proposed effect class is runnable today.
+As of 2026-09-09, NanoCore implements the initial Kernel contract in `apps/nanocore/src/generative-kernel/`: per-app SQLite under `workspaces/<workspaceId>/light-apps/<appId>/`, file-authored admitted definitions, native DDL, bounded list/create/update/batch commands, app-local receipts, and Workspace catalog projection. Built-in Worker tools live on `openkit-generative`; App API and Skill/CLI expose the ten `kernel.*` operations. Live selected-Worker journey, crash/restart, and browser proofs remain deferred under the MVP engineer exception. Equal active-member eligibility is unmet for editor/viewer role ceilings and is recorded rather than claimed. The existing Material slice in [Work Resource Interaction](20260713-work_resource_interaction_model.md) remains Markdown/plain text only and is not a general module store.
 
 ## Acceptance Predicates
 
@@ -245,7 +245,7 @@ Fixed operations, internal-agent MCP loading, advanced relational queries, destr
 
 ## Open Questions And Deferred Extensions
 
-No blocking initial-contract question remains. The initial contract fixes supported schema, data, lifecycle, request/result, concurrency, storage, portability, Policy and selected Worker behavior; its implementation is still not started.
+No blocking initial-contract question remains. The initial contract fixes supported schema, data, lifecycle, request/result, concurrency, storage, portability, Policy and selected Worker behavior; the initial-delivery implementation is landed on `feat/generative-apps-mvp` as `Partial` because live product proofs remain deferred.
 
 - [Non-blocking] Richer queries, upsert/predicate-wide mutations, destructive changes and recovery, and app-scoped schema/resource packages require their own accepted extension contracts before enablement.
 - [Non-blocking] Fixed operations and internal-agent MCP/Skill invocation require exact selected component and runtime bindings; they remain unavailable and do not block the general Worker data surface.
