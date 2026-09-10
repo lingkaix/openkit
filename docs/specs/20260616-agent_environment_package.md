@@ -190,6 +190,8 @@ The build definition obeys the same package rules as every other resolved input,
 - **Not a published image.** The image a build definition produces is attempt-scoped. Its publication boundary and content guarantees are owned by `docs/specs/20260721-worker_execution_environment_images.md`; this specification only requires that the package never names such an image as a deployment image.
 - **Digest binding.** The resulting image digest is bound to the attempt by the execution runtime owner and recorded as launch evidence. It is never written back into the immutable package. Under the build form the package-to-session consistency comparison that otherwise uses `runtime.image.ref` uses the build-definition lineage — the exact empty-context singleton reference and digest, independent Dockerfile input digest, and resolved argument digest — plus the recorded resulting image digest, and a missing or mismatched value fails closed exactly as a reference mismatch does.
 
+Administrator-authorized environment preparation under `20260910-persistent_worker_volumes.md` reuses this exact build-definition shape, no-secret validation, explicit egress and bounds in an immutable candidate Artifact before a Worker attempt exists. It does not require a synthetic AEP or lease and does not grant the later workload any authority; later launch still resolves its own complete current AEP.
+
 Execution of a build definition — acquisition, containment, network bounds, time and size bounds, storage, verification, and import — is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`. The package carries the resolved inputs and lineage only, exactly as it does for every other backend-materialized field.
 
 ## Installed Resource Inputs

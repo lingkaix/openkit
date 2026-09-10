@@ -47,6 +47,14 @@ User Memory is readable and mutable only by the current owning User through gove
 
 Memory, Skill instructions, recalled decisions and AI assessments cannot grant permissions, bypass current target validation or answer a human gate. Every management effect uses the requesting user's current authority. Optional AI evidence assessment is distinct from authorization and human Knowledge Review. Removal, forgetting or source revocation invalidates affected future reads, candidates and publication before deferred cache cleanup; separately published material retains its existing ownership and retention.
 
+## Technical Administration
+
+System operations and technical configuration that change deployment or runtime behavior require the requesting user's current usable administrator authority. In server mode that authority derives from their valid admin Token, including the identity owner's selected-token session projection; neither Workspace membership nor ordinary-user confirmation supplies it. Assistant and Operator act for that user, receive no Token secret and hold no independent privileged service identity. Each management call rechecks current authority, and revocation prevents later application even after an earlier proposal or confirmation.
+
+The intended operator is the team's technical administrator or engineer. Ordinary members may request administrative help, but cannot approve system-level changes on that person's behalf. Technical administration covers host-code activation, deployment/runtime configuration, Provider setup and execution-storage maintenance; a Workspace-local target does not exempt these effects. Resource owners distinguish such effects from ordinary authored business content and selection of already admitted resources. This rule does not reclassify Skill content editing, catalog metadata, personal model preferences or ordinary Task/Goal resource selection as deployment administration. Their existing owners still govern admission, bindings and effects independently. An Orchestrator selecting an eligible existing environment within an admitted workload does not edit the deployment's technical policy or acquire an admin credential. Administrator authority still grants no implicit access to another user's private content or an unjoined Workspace.
+
+The identity owner's implicit local actor remains the local-mode administrator; the valid administrator-Token requirement applies to team/server-mode administration. Settling an already dispatched effect records what happened and requires its exact authenticated effect lineage, not a new user authorization. Revocation blocks new dispatch and application without preventing truthful settlement of an in-flight result.
+
 ## Boundary
 
 Permission owns policy and authorization decisions.

@@ -7,7 +7,7 @@ date: 2026-09-09
 
 ## Owned Worker Environment Management
 
-The private administration entry may invoke the exact environment preparation/activation/status and whole-storageRef purge owners specified by [Persistent Worker Volumes](20260910-persistent_worker_volumes.md). This is a bounded Core command integration, not an internal shell, Docker client, generic Worker lifecycle API or Plugin-selected Tool. The existing runtime and authorization owners execute each effect; ordinary Assistant discovery still cannot enlarge its Tool array.
+Only the private administration entry acting under the current user's usable administrator authority under Permissions Core (a valid admin Token in server mode) may invoke the exact environment preparation/activation/status and whole-storageRef purge owners specified by [Persistent Worker Volumes](20260910-persistent_worker_volumes.md). This is a bounded Core command integration, not an internal shell, Docker client, generic Worker lifecycle API or Plugin-selected Tool. The existing runtime and authorization owners execute each effect; ordinary Assistant discovery still cannot enlarge its Tool array.
 
 ## Owns
 
@@ -34,7 +34,7 @@ Keep one OpenKit-owned minimal loop and pi-ai transport. Trusted caller assembly
 
 The existing Workspace configuration file `config/workspace.jsonc` owns optional `assistant.resources:{skillIds:readonly string[]}` in the first slice. Absence means an empty list. Skill IDs must be non-empty and unique and reference existing Workspace catalog entries. No inline implementation, credential, path, active version pointer, all-installed selection or per-user Tool membership preference is accepted. Skill current-version/pin selection remains with its catalog. A Plugin is packaging of independently owned components, not an internal harness to load wholesale.
 
-The existing revision-aware Workspace configuration command validates and applies Skill selection under current Workspace configuration authority and Policy. Changes affect a new bounded run; Skill text and the current message cannot change admission in place. Import rewrites these IDs through the existing catalog maps and retains references as unavailable until fresh target selection; no import activates executable behavior. This is not the removed generic `defaultSkillIds` and creates no separate selection store.
+The existing revision-aware Workspace configuration command validates and applies selection of existing Skill entries under current Workspace configuration authority and Policy. This content selection does not activate host code or grant new runtime authority. Ordinary use of an already admitted Skill does not require administrator authority. Changes affect a new bounded run; Skill text and the current message cannot change admission in place. Import rewrites these IDs through the existing catalog maps and retains references as unavailable until fresh target selection; no import activates executable behavior. This is not the removed generic `defaultSkillIds` and creates no separate selection store.
 
 ### Internal capability admission
 
