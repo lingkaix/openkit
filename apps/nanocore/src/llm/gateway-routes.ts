@@ -3,6 +3,7 @@ import { constants as zlibConstants, zstdDecompress } from 'node:zlib';
 
 import {
   type AgentEnvironmentPackage,
+  resolveProviderSubscriptionFamily,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
@@ -1587,10 +1588,16 @@ export function registerWorkerInferenceRoutes({
 
             const responsesInput = input as z.infer<typeof GatewayResponsesRequestSchema>;
             const tools = sanitized.tools;
-            const messageAnchoredTools = Array.isArray(tools) && tools.length > 0;
+            const wrapCodexAdditionalTools =
+              resolveProviderSubscriptionFamily({
+                id: provider.id,
+                ...(provider.vendor ? { vendor: provider.vendor } : {}),
+              }) === 'openai-codex' &&
+              Array.isArray(tools) &&
+              tools.length > 0;
             const request: OpenAICompatibleResponsesRequest = {
               ...requestBody,
-              input: messageAnchoredTools
+              input: wrapCodexAdditionalTools
                 ? [
                     { role: 'developer', tools, type: 'additional_tools' },
                     ...(Array.isArray(responsesInput.input)
@@ -1600,7 +1607,7 @@ export function registerWorkerInferenceRoutes({
                 : responsesInput.input,
               model: providerModel,
               stream: responsesInput.stream ?? false,
-              ...(messageAnchoredTools ? { tools: [] } : {}),
+              ...(wrapCodexAdditionalTools ? { tools: [] } : {}),
             };
             if (request.stream) {
               const stream = await llmGatewayDispatcher.createResponsesStream(

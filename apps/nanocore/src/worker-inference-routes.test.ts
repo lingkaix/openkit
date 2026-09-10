@@ -8,7 +8,10 @@ import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
-import { GatewayUnsupportedFeatureError } from './llm/gateway-converters.js';
+import {
+  convertResponsesRequestToChatCompletionRequest,
+  GatewayUnsupportedFeatureError,
+} from './llm/gateway-converters.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleProviderError,
@@ -234,6 +237,8 @@ const ownedCoreDatabases: CoreDb[] = [];
 const WORKER_INFERENCE_TEST_BODY_LIMIT = 16 * 1024 * 1024;
 const WORKER_LOGICAL_MODEL_ID = 'worker-reasoning';
 const WORKER_PROVIDER_MODEL = 'openai/gpt-5.2';
+const CODEX_PROVIDER_ID = 'openai-codex';
+const CODEX_PROVIDER_MODEL = 'openai-codex/gpt-5.6-sol';
 
 afterEach(() => {
   for (const coreDb of ownedCoreDatabases.splice(0)) {
@@ -249,6 +254,7 @@ afterEach(() => {
  * @param durableStorage Whether the app receives durable storage.
  * @param includeWorkerProvider Whether the AEP-selected provider is available.
  * @param runtimeProvenance Whether the AEP requires runtime provenance.
+ * @param options Optional resolved provider-family override for Codex vs generic routes.
  * @returns Route fixture.
  */
 function createWorkerInferenceRouteFixture(
@@ -256,8 +262,13 @@ function createWorkerInferenceRouteFixture(
   coreDb?: CoreDb,
   durableStorage = true,
   includeWorkerProvider = true,
-  runtimeProvenance = false
+  runtimeProvenance = false,
+  options: { readonly subscriptionFamily?: 'openai-codex' } = {}
 ): WorkerInferenceRouteFixture {
+  const providerProfileId =
+    options.subscriptionFamily === 'openai-codex' ? CODEX_PROVIDER_ID : 'agent-openrouter';
+  const providerModel =
+    options.subscriptionFamily === 'openai-codex' ? CODEX_PROVIDER_MODEL : WORKER_PROVIDER_MODEL;
   const appCoreDb =
     coreDb ??
     (durableStorage
@@ -283,8 +294,8 @@ function createWorkerInferenceRouteFixture(
   const agentSetup = createTestAgentSetup({
     logicalModelId: WORKER_LOGICAL_MODEL_ID,
     privateRoute: {
-      providerProfileId: 'agent-openrouter',
-      providerModel: WORKER_PROVIDER_MODEL,
+      providerProfileId,
+      providerModel,
     },
     requiredCapabilities: trustedRelay
       ? [
@@ -352,8 +363,8 @@ function createWorkerInferenceRouteFixture(
             routes: [
               {
                 id: 'primary',
-                providerProfileId: 'agent-openrouter',
-                providerModel: WORKER_PROVIDER_MODEL,
+                providerProfileId,
+                providerModel,
               },
             ],
           },
@@ -366,14 +377,23 @@ function createWorkerInferenceRouteFixture(
       providerRegistry: new ProviderRegistry([
         ...(includeWorkerProvider
           ? [
-              {
-                defaultModel: WORKER_PROVIDER_MODEL,
-                displayName: 'Agent OpenRouter',
-                id: 'agent-openrouter',
-                kind: 'gateway' as const,
-                models: [WORKER_PROVIDER_MODEL],
-                vendor: 'openrouter' as const,
-              },
+              options.subscriptionFamily === 'openai-codex'
+                ? {
+                    defaultModel: providerModel,
+                    displayName: 'OpenAI Codex',
+                    id: providerProfileId,
+                    kind: 'gateway' as const,
+                    models: [providerModel],
+                    vendor: 'openai-codex' as const,
+                  }
+                : {
+                    defaultModel: providerModel,
+                    displayName: 'Agent OpenRouter',
+                    id: providerProfileId,
+                    kind: 'gateway' as const,
+                    models: [providerModel],
+                    vendor: 'openrouter' as const,
+                  },
             ]
           : []),
         {
@@ -559,7 +579,9 @@ describe('worker inference routes', () => {
   });
 
   it('normalizes pinned Codex Responses tools into the message-anchored prefix', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      subscriptionFamily: 'openai-codex',
+    });
     const tools = [
       {
         description: 'Apply one patch.',
@@ -591,6 +613,48 @@ describe('worker inference routes', () => {
         tools: [],
       })
     );
+  });
+
+  it('keeps worker function tools through generic Responses-to-Chat conversion', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    const tool = {
+      description: 'Return the provided text unchanged.',
+      name: 'probe_echo',
+      parameters: {
+        properties: { text: { type: 'string' } },
+        required: ['text'],
+        type: 'object',
+      },
+      strict: false,
+      type: 'function' as const,
+    };
+    const input = 'Reply with the single word ok. Do not call tools.';
+    const response = await postWorkerResponses(fixture, {
+      input,
+      model: WORKER_LOGICAL_MODEL_ID,
+      tools: [tool],
+    });
+
+    expect(response.status).toBe(200);
+    const routed = fixture.dispatcher.responseCalls[0]?.request;
+    expect(routed).toMatchObject({
+      input,
+      tools: [tool],
+    });
+    expect(JSON.stringify(routed?.input)).not.toContain('additional_tools');
+    const converted = convertResponsesRequestToChatCompletionRequest(
+      routed as OpenAICompatibleResponsesRequest
+    );
+    expect(converted.tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'probe_echo',
+          description: 'Return the provided text unchanged.',
+          parameters: tool.parameters,
+        },
+      },
+    ]);
   });
 
   it('does not recover missing adapter authority from descriptive runtime kind', async () => {
