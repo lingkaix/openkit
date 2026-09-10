@@ -1901,7 +1901,7 @@ describe('PiAiGatewayClient', () => {
     }
   });
 
-  it('preserves custom response projection when bridging Responses through Chat Completions', async () => {
+  it('advertises function-only additional_tools when bridging Responses through Chat Completions', async () => {
     let seenContext: Context | undefined;
     let seenOptions: (StreamOptions & Record<string, unknown>) | undefined;
     let seenPayload: unknown;
@@ -1915,7 +1915,15 @@ describe('PiAiGatewayClient', () => {
     models.setProvider(faux.provider);
     const additionalTools = {
       role: 'developer',
-      tools: [{ type: 'custom', name: 'exec', description: 'Run code.', format: { type: 'text' } }],
+      tools: [
+        {
+          description: 'Run code.',
+          name: 'exec',
+          parameters: { properties: { input: { type: 'string' } }, type: 'object' },
+          strict: false,
+          type: 'function',
+        },
+      ],
       type: 'additional_tools',
     } as const;
     faux.setResponses([
@@ -1971,7 +1979,12 @@ describe('PiAiGatewayClient', () => {
     expect(seenContext).toMatchObject({
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Run the check.' }] }],
     });
-    expect(seenContext?.tools).toBeUndefined();
+    expect(seenContext?.tools).toEqual([
+      expect.objectContaining({
+        description: 'Run code.',
+        name: 'exec',
+      }),
+    ]);
     expect(seenOptions).toMatchObject({
       apiKey: 'openrouter-secret',
       reasoningEffort: 'high',
@@ -2000,8 +2013,8 @@ describe('PiAiGatewayClient', () => {
       'response.content_part.done',
       'response.output_item.done',
       'response.output_item.added',
-      'response.custom_tool_call_input.delta',
-      'response.custom_tool_call_input.done',
+      'response.function_call_arguments.delta',
+      'response.function_call_arguments.done',
       'response.output_item.done',
       'response.completed',
     ]);
@@ -2011,9 +2024,89 @@ describe('PiAiGatewayClient', () => {
     expect(events[3]).toMatchObject({ item_id: 'reasoning_0', summary_index: 0 });
     expect(events[9]).toMatchObject({ content_index: 0, item_id: 'message_1' });
     expect(events[14]).toMatchObject({ item_id: 'call_exec' });
-    expect(events[15]).toMatchObject({ input: 'text(true);', item_id: 'call_exec' });
+    expect(events[15]).toMatchObject({
+      arguments: '{"input":"text(true);"}',
+      item_id: 'call_exec',
+    });
     expect(body).toContain('text(true);');
     expect(body).toContain('data: [DONE]');
+    expect(events.some((event) => event.type === 'response.custom_tool_call_input.done')).toBe(
+      false
+    );
+  });
+
+  it('advertises function-only additional_tools on a non-stream chat-native Responses bridge', async () => {
+    let seenContext: Context | undefined;
+    let providerCalls = 0;
+    const faux = fauxProvider({
+      api: 'openai-completions',
+      provider: 'openrouter',
+      models: [{ id: 'stealth/ox-alpha' }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      async (context) => {
+        providerCalls += 1;
+        seenContext = context;
+        return fauxAssistantMessage(
+          [fauxToolCall('read_file', { path: 'README.md' }, { id: 'call_read' }), fauxText('ok')],
+          { stopReason: 'toolUse' }
+        );
+      },
+    ]);
+
+    const response = await new PiAiGatewayClient().createResponses(
+      providerConfig({
+        adapterId: 'openrouter',
+        apiKey: 'openrouter-secret',
+        displayName: 'OpenRouter',
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+        id: 'openrouter-a1',
+        models: ['stealth/ox-alpha'],
+        subscriptionProviderId: 'openrouter',
+      }),
+      {
+        input: [
+          {
+            role: 'developer',
+            tools: [
+              {
+                description: 'Read one file.',
+                name: 'read_file',
+                parameters: { properties: { path: { type: 'string' } }, type: 'object' },
+                strict: false,
+                type: 'function',
+              },
+            ],
+            type: 'additional_tools',
+          },
+          { role: 'user', content: [{ type: 'input_text', text: 'Read README.md.' }] },
+        ],
+        model: 'stealth/ox-alpha',
+        store: false,
+        tools: [],
+      },
+      undefined,
+      {},
+      models
+    );
+
+    expect(providerCalls).toBe(1);
+    expect(seenContext?.tools).toEqual([
+      expect.objectContaining({
+        description: 'Read one file.',
+        name: 'read_file',
+      }),
+    ]);
+    expect(response.output).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'read_file',
+          type: 'function_call',
+        }),
+      ])
+    );
   });
 
   it('preserves Codex Responses Lite namespace and custom tool semantics through pi-ai', async () => {

@@ -274,16 +274,23 @@ export class PiAiGatewayClient {
     transport: LLMGatewayTransportContext = {},
     models: Models = this.models
   ): Promise<OpenAICompatibleResponsesResponse> {
-    if (provider.subscriptionProviderId === 'openai-codex') {
-      const additionalTools = assertCodexResponsesRequestAdmission(request, false);
+    const codexProvider = provider.subscriptionProviderId === 'openai-codex';
+    const { additionalTools, bridgedFunctionTools } = admitPiResponsesNativeRequest(
+      request,
+      false,
+      !codexProvider
+    );
+    if (codexProvider || additionalTools) {
       this.assertExplicitCredential(provider);
       const { knownCost, model } = this.resolveModel(provider, request.model, models);
       const response = await raceProviderWithSignal(
         () =>
           models.complete(
             model,
-            toPiResponsesContext(request, model, additionalTools),
-            this.toCodexResponsesOptions(request, model, transport, additionalTools)
+            toPiResponsesContext(request, model, additionalTools, bridgedFunctionTools),
+            codexProvider
+              ? this.toCodexResponsesOptions(request, model, transport, additionalTools)
+              : this.toBridgedResponsesOptions(provider, request, transport)
           ),
         transport.signal
       );
@@ -327,13 +334,12 @@ export class PiAiGatewayClient {
     models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
     const codexProvider = provider.subscriptionProviderId === 'openai-codex';
-    const additionalTools = codexProvider
-      ? assertCodexResponsesRequestAdmission(request, true)
-      : readResponsesAdditionalTools(request.input);
+    const { additionalTools, bridgedFunctionTools } = admitPiResponsesNativeRequest(
+      request,
+      true,
+      !codexProvider
+    );
     if (codexProvider || additionalTools) {
-      if (!codexProvider) {
-        assertCodexResponsesRequestAdmission(request, true);
-      }
       this.assertExplicitCredential(provider);
       const { knownCost, model } = this.resolveModel(provider, request.model, models);
       const localAbortController = new AbortController();
@@ -342,7 +348,7 @@ export class PiAiGatewayClient {
         : localAbortController.signal;
       const events = models.stream(
         model,
-        toPiResponsesContext(request, model, additionalTools),
+        toPiResponsesContext(request, model, additionalTools, bridgedFunctionTools),
         codexProvider
           ? this.toCodexResponsesOptions(request, model, { ...transport, signal }, additionalTools)
           : this.toBridgedResponsesOptions(provider, request, { ...transport, signal })
@@ -1337,16 +1343,19 @@ function assertResponsesToolHistoryDeclarations(
 }
 
 /**
- * Converts a native Responses request into the pi-ai context consumed by Codex.
+ * Converts a native Responses request into the pi-ai context consumed by Codex or a chat-native bridge.
  *
  * @param request OpenAI-compatible Responses request.
  * @param model Exact pi-ai model selected for assistant history.
+ * @param additionalTools Admitted message-anchored tools, when present.
+ * @param bridgedFunctionTools Chat-native function restore. Codex omits this so payload restore stays authoritative.
  * @returns Text, function history, instructions, and tools without a Chat conversion.
  */
 function toPiResponsesContext(
   request: OpenAICompatibleResponsesRequest,
   model: AssistantModel,
-  additionalTools: ResponsesAdditionalTools | undefined
+  additionalTools: ResponsesAdditionalTools | undefined,
+  bridgedFunctionTools?: NonNullable<Context['tools']>
 ): Context {
   const messages: Context['messages'] = [];
   const instructions = typeof request.instructions === 'string' ? [request.instructions] : [];
@@ -1517,7 +1526,7 @@ function toPiResponsesContext(
     throw new GatewayUnsupportedFeatureError('pi-ai Responses input role');
   }
 
-  const tools = additionalTools ? [] : toPiTools(request.tools);
+  const tools = bridgedFunctionTools ?? (additionalTools ? [] : toPiTools(request.tools));
   return {
     messages,
     ...(instructions.filter(Boolean).length > 0
@@ -1556,6 +1565,53 @@ function readResponsesAdditionalTools(
     kinds,
     providerTools: lowerResponsesToolDefinitions(record.tools, false),
   };
+}
+
+/**
+ * Admits a native Responses request for Codex or a chat-native bridge.
+ * Bridged callers restore function-only tools first, then reuse Codex field and history admission so unknown request fields and unrepresentable history fail closed. Custom, namespace, tool_search, and native builtins are not translated.
+ *
+ * @param request Responses request.
+ * @param allowStream Whether this call owns a streaming response.
+ * @param bridged Whether the selected provider is a chat-native Responses bridge.
+ * @returns Admitted tools and optional Chat Completions function restore.
+ */
+function admitPiResponsesNativeRequest(
+  request: OpenAICompatibleResponsesRequest,
+  allowStream: boolean,
+  bridged: boolean
+): {
+  readonly additionalTools: ResponsesAdditionalTools | undefined;
+  readonly bridgedFunctionTools?: NonNullable<Context['tools']>;
+} {
+  if (!bridged) {
+    return { additionalTools: assertCodexResponsesRequestAdmission(request, allowStream) };
+  }
+  const additionalTools = readResponsesAdditionalTools(request.input);
+  if (!additionalTools) {
+    return { additionalTools: undefined };
+  }
+  const bridgedFunctionTools = bridgedFunctionToolsFromAdditionalTools(additionalTools);
+  return {
+    additionalTools: assertCodexResponsesRequestAdmission(request, allowStream),
+    bridgedFunctionTools,
+  };
+}
+
+/**
+ * Restores function-only message-anchored tools for a chat-native Responses bridge.
+ * Custom, namespace, tool_search, and other unrepresentable shapes fail before credentials.
+ *
+ * @param additionalTools Admitted additional-tools prefix.
+ * @returns pi-ai Context tools for the bridged Chat Completions transport.
+ */
+function bridgedFunctionToolsFromAdditionalTools(
+  additionalTools: ResponsesAdditionalTools
+): NonNullable<Context['tools']> {
+  if (additionalTools.hasToolSearch) {
+    throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools');
+  }
+  return toPiTools(additionalTools.item.tools);
 }
 
 /** Registers exact local declarations and rejects request-local definition conflicts. */
