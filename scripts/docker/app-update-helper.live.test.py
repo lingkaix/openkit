@@ -45,6 +45,15 @@ HTTP_READY_SECONDS = 30
 APPLY_WAIT_SECONDS = 900
 PORT_RANGE_START = 18791
 LIVE_ENABLED = os.environ.get(LIVE_ENV) == "1"
+FIXTURE_BOOT_SUBSYSTEM_NAMES = (
+    "config",
+    "storage",
+    "policy",
+    "vault",
+    "scheduler",
+    "llmGateway",
+    "knowledgeIndex",
+)
 
 
 def fixture_current_image_ref(run_id: str) -> str:
@@ -151,9 +160,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/diagnostics":
             self._send(200, {"migrations": {"applied": fixture["appliedMigrations"]}})
         elif path == "/api/app/diagnostics":
-            self._send(200, {"boot": {"acceptingProductWork": fixture["acceptingProductWork"], "bootId": fixture["bootId"], "subsystems": {}}})
+            self._send(200, {"boot": fixture["boot"]})
         elif path == "/api/app/auth/tokens":
             self._send(200, {"items": [fixture["token"]]})
+        elif path == "/api/app/nanohost/runtime-target":
+            self._send(404, {"protocolVersion": "0.5.0", "code": "nanohost_runtime_target_not_found", "message": "Configured NanoHost RuntimeTarget is unavailable."})
         elif path == "/api/app/workspaces":
             self._send(403)
         elif path.startswith("/api/app/app-update/") and path.split("/")[-1]:
@@ -221,6 +232,35 @@ def choose_free_port() -> int:
     raise RuntimeError("No free 127.0.0.1 fixture port in %s+100." % PORT_RANGE_START)
 
 
+def fixture_boot_projection(*, boot_id: str, product_ready: bool) -> Dict[str, Any]:
+    """Closed /api/app/diagnostics boot object. Candidate fail is typed non-ready, not empty subsystems."""
+
+    subsystems = {name: {"state": "ready", "reasons": []} for name in FIXTURE_BOOT_SUBSYSTEM_NAMES}
+    if product_ready:
+        return {
+            "acceptingProductWork": True,
+            "bootId": boot_id,
+            "overall": "ready",
+            "subsystems": subsystems,
+        }
+    subsystems["scheduler"] = {
+        "state": "degraded",
+        "reasons": [
+            {
+                "blocks": ["product_work"],
+                "code": "fixture.candidate_not_ready",
+                "message": "Fixture candidate is not ready for product work.",
+            }
+        ],
+    }
+    return {
+        "acceptingProductWork": True,
+        "bootId": boot_id,
+        "overall": "degraded",
+        "subsystems": subsystems,
+    }
+
+
 def write_source_tree(root: Path, *, accepting: bool, boot_id: str, web_body: str, hold_seconds: int) -> None:
     docker_dir = root / "scripts" / "docker"
     docker_dir.mkdir(parents=True, exist_ok=True)
@@ -232,9 +272,8 @@ def write_source_tree(root: Path, *, accepting: bool, boot_id: str, web_body: st
     (root / "fixture.json").write_text(
         json.dumps(
             {
-                "acceptingProductWork": accepting,
                 "appliedMigrations": [MIGRATION],
-                "bootId": boot_id,
+                "boot": fixture_boot_projection(boot_id=boot_id, product_ready=accepting),
                 "token": FIXTURE_TOKEN,
             },
             indent=2,
@@ -690,6 +729,41 @@ class FixtureAdmissionTests(unittest.TestCase):
             self.assertEqual(ready["status"], 200)
             self.assertEqual((ready["body"] or {}).get("items"), [FIXTURE_TOKEN])
             self.assertEqual(helper._auth_store_identity(ready["body"])[0]["tokenId"], FIXTURE_TOKEN["tokenId"])
+            import urllib.error
+            import urllib.request
+            target_url = "http://127.0.0.1:%s/api/app/nanohost/runtime-target" % port
+            try:
+                urllib.request.urlopen(urllib.request.Request(target_url, method="GET"), timeout=2)
+                self.fail("no-NanoHost runtime-target must not be HTTP 200")
+            except urllib.error.HTTPError as error:
+                self.assertEqual(error.code, 404)
+                err_body = json.loads(error.read().decode("utf-8"))
+                self.assertEqual(err_body.get("code"), "nanohost_runtime_target_not_found")
+                self.assertNotEqual(err_body.get("code"), "nanohost_transport_admin_server_mode_required")
+                self.assertEqual(err_body.get("protocolVersion"), "0.5.0")
+            diag_status, diag_body = helper._authorized_get("/api/app/diagnostics")
+            self.assertEqual(diag_status, 200)
+            parsed_ready = helper._parse_boot_readiness(diag_body)
+            self.assertIsNotNone(parsed_ready)
+            self.assertEqual(parsed_ready["bootId"], CURRENT_BOOT)
+            self.assertEqual(parsed_ready["acceptingProductWork"], True)
+            self.assertTrue(parsed_ready["noBlockingReadiness"])
+            self.assertEqual(
+                tuple((diag_body or {}).get("boot", {}).get("subsystems") or {}),
+                FIXTURE_BOOT_SUBSYSTEM_NAMES,
+            )
+            self.assertIsNone(
+                helper._parse_boot_readiness(
+                    {
+                        "boot": {
+                            "acceptingProductWork": True,
+                            "bootId": CURRENT_BOOT,
+                            "overall": "ready",
+                            "subsystems": {},
+                        }
+                    }
+                )
+            )
         finally:
             if proc is not None:
                 if proc.poll() is None:
@@ -697,6 +771,52 @@ class FixtureAdmissionTests(unittest.TestCase):
                     proc.wait(timeout=5)
                 if proc.stderr:
                     proc.stderr.close()
+
+        cand_tree = Path(tempfile.mkdtemp(prefix="ok-fx-entry-cand-"))
+        cand_proc = None
+        try:
+            write_source_tree(
+                cand_tree,
+                accepting=False,
+                boot_id=CANDIDATE_BOOT,
+                web_body="fixture-candidate-web\n",
+                hold_seconds=0,
+            )
+            cand_port = choose_free_port()
+            cand_proc = start_generated_fixture_app(cand_tree, cand_port)
+            cand_ready: Optional[Dict[str, Any]] = None
+            deadline = time.time() + 2
+            while cand_proc.poll() is None and time.time() < deadline:
+                time.sleep(0.05)
+                helper.config = {
+                    "appBaseUrl": "http://127.0.0.1:%s" % cand_port,
+                    "adminTokenFile": str(token_path),
+                }
+                cand_ready = wait_fixture_auth_tokens(helper._authorized_get, timeout=0.3)
+                if cand_ready["status"] == 200:
+                    break
+            if cand_proc.poll() is not None:
+                err = cand_proc.stderr.read() if cand_proc.stderr else ""
+                self.fail("candidate entrypoint exited before listen: rc=%s stderr=%s" % (cand_proc.returncode, err))
+            cand_status, cand_diag = helper._authorized_get("/api/app/diagnostics")
+            self.assertEqual(cand_status, 200)
+            parsed_fail = helper._parse_boot_readiness(cand_diag)
+            self.assertIsNotNone(parsed_fail)
+            self.assertEqual(parsed_fail["bootId"], CANDIDATE_BOOT)
+            self.assertFalse(parsed_fail["noBlockingReadiness"])
+            self.assertIn("fixture.candidate_not_ready", parsed_fail["blockingReasons"])
+            self.assertEqual(
+                tuple((cand_diag or {}).get("boot", {}).get("subsystems") or {}),
+                FIXTURE_BOOT_SUBSYSTEM_NAMES,
+            )
+        finally:
+            if cand_proc is not None:
+                if cand_proc.poll() is None:
+                    cand_proc.kill()
+                    cand_proc.wait(timeout=5)
+                if cand_proc.stderr:
+                    cand_proc.stderr.close()
+            shutil.rmtree(cand_tree, ignore_errors=True)
 
         server = HTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
