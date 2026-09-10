@@ -188,6 +188,15 @@ test('release preflight rejects a missing portable Skill input', () => {
   );
 });
 
+test('release preflight rejects a missing operations Skill input', () => {
+  const repoRoot = makeReleaseFixture({ omitOpsSkillManifest: true });
+
+  assert.throws(
+    () => validateReleasePreflight({ repoRoot, tag: 'v0.0.1' }),
+    /Portable release input does not exist: skills\/openkit-ops\/SKILL\.md/
+  );
+});
+
 test('release preflight rejects a missing NanoHost distribution input', () => {
   const repoRoot = makeReleaseFixture({ omitNanoHostInstaller: true });
 
@@ -333,7 +342,8 @@ test('release preflight rejects worker images without an explicit build target',
  * @param {boolean} [options.leafAnonymousPull] Whether the deployment leaf incorrectly declares anonymous pull.
  * @param {string} [options.appBaseImage] App base image manifest value.
  * @param {string} [options.packageVersion] Version written into the workspace package.
- * @param {boolean} [options.omitSkillManifest] Whether to omit the Skill manifest.
+ * @param {boolean} [options.omitSkillManifest] Whether to omit the public Skill manifest.
+ * @param {boolean} [options.omitOpsSkillManifest] Whether to omit the operations Skill manifest.
  * @param {boolean} [options.omitWorkerContract] Whether to omit the deployment workerContract.
  * @param {boolean} [options.omitWorkerRuntime] Whether to omit the deployment worker runtime.
  * @param {boolean} [options.omitWorkerTarget] Whether to omit the worker Docker target.
@@ -373,6 +383,10 @@ function makeReleaseFixture(options = {}) {
   mkdirSync(join(root, 'skills', 'openkit', 'scripts'), { recursive: true });
   if (!options.omitSkillManifest) {
     writeFileSync(join(root, 'skills', 'openkit', 'SKILL.md'), '# Fixture Skill\n');
+  }
+  if (!options.omitOpsSkillManifest) {
+    mkdirSync(join(root, 'skills', 'openkit-ops'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'openkit-ops', 'SKILL.md'), '# Fixture operations Skill\n');
   }
   writeFileSync(join(root, 'skills', 'openkit', 'agents', 'openai.yaml'), 'interface: fixture\n');
   const cliPath = join(root, 'skills', 'openkit', 'scripts', 'openkit');

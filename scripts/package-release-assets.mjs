@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertAarch64Elf } from './lib/nanohost-elf.mjs';
 import {
@@ -12,6 +22,7 @@ import {
   parseOpenShellRelease,
   parseVersionTag,
 } from './release-preflight.mjs';
+import { listInlineMarkdownLinkTargets } from './validate-doc-model.mjs';
 
 const NANOHOST_TARGET = 'linux/arm64';
 const NANOHOST_FILES = [
@@ -36,7 +47,7 @@ const INNER_CHECKSUM_FILES = NANOHOST_FILES.filter((name) => name !== 'SHA256SUM
  * @param {string} [input.ref] Git revision to archive.
  * @param {string} input.outputDir Destination directory.
  * @param {object} [input.nanohost] NanoHost packaging input.
- * @returns {{ archivePath: string, checksumPath: string, checksum: string, nanohostArchivePath?: string }} Produced assets.
+ * @returns {{ archivePath: string, opsArchivePath: string, checksumPath: string, checksum: string, nanohostArchivePath?: string }} Produced assets.
  */
 export function packageReleaseAssets(input) {
   parseVersionTag(input.tag);
@@ -47,25 +58,20 @@ export function packageReleaseAssets(input) {
   const repoRoot = resolve(input.repoRoot);
   const outputDir = resolve(input.outputDir);
   mkdirSync(outputDir, { recursive: true });
-  const archiveName = `openkit-skill-${input.tag}.tar.gz`;
-  const archivePath = resolve(outputDir, archiveName);
-  run(
-    'git',
-    [
-      'archive',
-      '--format=tar.gz',
-      `--prefix=openkit-skill-${input.tag}/`,
-      `--output=${archivePath}`,
-      ref,
-      '--',
-      'LICENSE',
-      'skills/openkit',
-    ],
-    { cwd: repoRoot, message: 'Unable to archive release assets' }
-  );
+  const skill = gitArchiveSkill(repoRoot, ref, outputDir, `openkit-skill-${input.tag}`, [
+    'LICENSE',
+    'skills/openkit',
+  ]);
+  const ops = gitArchiveSkill(repoRoot, ref, outputDir, `openkit-ops-skill-${input.tag}`, [
+    'LICENSE',
+    'skills/openkit-ops',
+  ]);
 
-  const checksum = sha256File(archivePath);
-  const checksums = [[archiveName, checksum]];
+  const checksum = sha256File(skill.archivePath);
+  const checksums = [
+    [skill.archiveName, checksum],
+    [ops.archiveName, sha256File(ops.archivePath)],
+  ];
   let nanohostArchivePath;
   if (input.nanohost) {
     nanohostArchivePath = packageNanoHost({
@@ -82,7 +88,105 @@ export function packageReleaseAssets(input) {
     checksumPath,
     `${checksums.map(([name, digest]) => `${digest}  ${name}`).join('\n')}\n`
   );
-  return { archivePath, checksumPath, checksum, nanohostArchivePath };
+  return {
+    archivePath: skill.archivePath,
+    opsArchivePath: ops.archivePath,
+    checksumPath,
+    checksum,
+    nanohostArchivePath,
+  };
+}
+
+/** Archives one Skill tree and repository license from the selected revision. */
+function gitArchiveSkill(repoRoot, ref, outputDir, prefix, paths) {
+  const archiveName = `${prefix}.tar.gz`;
+  const archivePath = resolve(outputDir, archiveName);
+  run(
+    'git',
+    [
+      'archive',
+      '--format=tar.gz',
+      `--prefix=${prefix}/`,
+      `--output=${archivePath}`,
+      ref,
+      '--',
+      ...paths,
+    ],
+    { cwd: repoRoot, message: 'Unable to archive release assets' }
+  );
+  return { archiveName, archivePath };
+}
+
+/**
+ * Extracts one operations Skill archive and verifies its entrypoint and packaged references.
+ *
+ * @param {object} input Verification input.
+ * @param {string} input.archivePath Path to `openkit-ops-skill-<tag>.tar.gz`.
+ * @param {string} input.destDir Empty directory that receives the extracted envelope.
+ * @returns {{ envelopePath: string, skillPath: string }} Extracted envelope and entrypoint.
+ * @throws {Error} When the entrypoint is missing or a packaged reference does not resolve inside the envelope.
+ */
+export function verifyOperationsSkillArchive(input) {
+  const archivePath = resolve(input.archivePath);
+  const destDir = resolve(input.destDir);
+  mkdirSync(destDir, { recursive: true });
+  run('tar', ['-xzf', archivePath, '-C', destDir], {
+    message: 'Unable to extract the operations Skill archive',
+  });
+  const entries = readdirSync(destDir);
+  if (entries.length !== 1) {
+    throw new Error('Operations Skill archive must contain one envelope directory.');
+  }
+  const envelopePath = join(destDir, entries[0]);
+  if (!lstatSync(envelopePath, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error('Operations Skill archive envelope is missing.');
+  }
+  const licensePath = join(envelopePath, 'LICENSE');
+  const skillPath = join(envelopePath, 'skills', 'openkit-ops', 'SKILL.md');
+  if (!lstatSync(licensePath, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error('Operations Skill archive is missing LICENSE.');
+  }
+  if (!lstatSync(skillPath, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error('Operations Skill archive is missing skills/openkit-ops/SKILL.md.');
+  }
+
+  const skillRoot = join(envelopePath, 'skills', 'openkit-ops');
+  for (const filePath of listMarkdownFiles(skillRoot)) {
+    const relativeFile = relative(envelopePath, filePath).split('\\').join('/');
+    const content = readFileSync(filePath, 'utf8');
+    for (const target of listInlineMarkdownLinkTargets(content)) {
+      if (target.startsWith('/') || target.startsWith('docs/') || target.startsWith('../')) {
+        throw new Error(`${relativeFile}: packaged reference is not inside the archive: ${target}`);
+      }
+      const resolvedPath = resolve(dirname(filePath), target);
+      const relativeResolved = relative(envelopePath, resolvedPath).split('\\').join('/');
+      if (relativeResolved.startsWith('../') || relativeResolved === '..') {
+        throw new Error(`${relativeFile}: packaged reference is not inside the archive: ${target}`);
+      }
+      if (!lstatSync(resolvedPath, { throwIfNoEntry: false })?.isFile()) {
+        throw new Error(`${relativeFile}: packaged reference does not exist: ${target}`);
+      }
+    }
+  }
+
+  return { envelopePath, skillPath };
+}
+
+/** Lists Markdown files below one directory recursively. */
+function listMarkdownFiles(directory) {
+  if (!existsSync(directory)) {
+    return [];
+  }
+  const paths = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      paths.push(...listMarkdownFiles(path));
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      paths.push(path);
+    }
+  }
+  return paths;
 }
 
 /** Packages the exact reproducible linux/arm64 NanoHost distribution. */
@@ -356,12 +460,13 @@ function main() {
     tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
   });
   console.log(`Release Skill archive: ${result.archivePath}`);
+  console.log(`Release operations Skill archive: ${result.opsArchivePath}`);
   if (result.nanohostArchivePath)
     console.log(`Release NanoHost archive: ${result.nanohostArchivePath}`);
   console.log(`Release checksum: ${result.checksumPath}`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     main();
   } catch (error) {

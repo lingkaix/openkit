@@ -207,7 +207,9 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .filter(Boolean)
     .join('\n');
   assert.match(portableCommands, /verify-nanohost-release\.mjs/);
+  assert.match(portableCommands, /verifyOperationsSkillArchive/);
   assert.match(portableCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
+  assert.match(portableCommands, /openkit-ops-skill-.*\.tar\.gz/);
   assert.match(portableCommands, /sha256sum -c SHA256SUMS/);
   const releaseStep = portable.steps.find(
     (candidate) =>
@@ -241,6 +243,7 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .filter(Boolean)
     .join('\n');
   assert.match(releaseCommands, /openkit-skill-.*\.tar\.gz/);
+  assert.match(releaseCommands, /openkit-ops-skill-.*\.tar\.gz/);
   assert.match(releaseCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
   assert.match(releaseCommands, /portable-assets\/SHA256SUMS/);
 
@@ -249,6 +252,7 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .filter(Boolean)
     .join('\n');
   assert.match(verificationCommands, /verify-nanohost-release\.mjs/);
+  assert.match(verificationCommands, /verifyOperationsSkillArchive/);
   assert.match(verificationCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
 });
 

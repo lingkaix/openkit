@@ -67,6 +67,7 @@ function validatePortableReleaseInputs(repoRoot) {
     'skills/openkit/SKILL.md',
     'skills/openkit/agents/openai.yaml',
     'skills/openkit/scripts/openkit',
+    'skills/openkit-ops/SKILL.md',
   ]) {
     assertRelativeExistingPath(repoRoot, path, 'Portable release input');
   }
@@ -482,7 +483,7 @@ function main() {
   console.log(`Release images: ${result.releaseImages.join(', ')}`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     main();
   } catch (error) {

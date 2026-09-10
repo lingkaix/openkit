@@ -13,7 +13,7 @@ Observe product-work readiness and its individual reasons rather than treating e
 
 ## Update NanoCore And Web
 
-Coordinate a maintenance window and inspect active work. A second deployment is optional. Resolve the selected release to its immutable artifact identity or select an exact source commit. Build from an explicit committed snapshot, run the image's `openkit-app-smoke`, and record the actual image digest before replacing the active container.
+Coordinate a maintenance window and inspect active work. A second deployment is optional. For a release, acquire and verify its published immutable image digest. For an exact source commit, build from that committed snapshot and record the resulting image digest. Run the selected image's `openkit-app-smoke` before replacing the active container; a local rebuild is not the published release artifact.
 
 For a source build, acquire the selected checkout as described in [getting started](getting-started.en.md). Its `docs/cookbooks/persistent-live-acceptance.md` describes the maintained exact-source procedure, including a `git archive` transfer when the selected local commit is not published. A source checkout is an explicit prerequisite for building, not a prerequisite for inspecting or recovering the installed deployment.
 

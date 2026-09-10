@@ -15,9 +15,13 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
-import { packageReleaseAssets } from '../scripts/package-release-assets.mjs';
+import {
+  packageReleaseAssets,
+  verifyOperationsSkillArchive,
+} from '../scripts/package-release-assets.mjs';
 
 test('release packager archives the complete Skill and writes its SHA-256', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-release-assets-'));
@@ -29,10 +33,11 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
   const cliPath = join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit');
   writeFileSync(cliPath, '#!/usr/bin/env node\n');
   chmodSync(cliPath, 0o755);
+  writeOpsSkillFixture(repoRoot);
   git(repoRoot, ['init', '-q']);
   git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
   git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
-  git(repoRoot, ['add', 'LICENSE', 'skills/openkit']);
+  git(repoRoot, ['add', 'LICENSE', 'skills/openkit', 'skills/openkit-ops']);
   git(repoRoot, ['commit', '-qm', 'fixture']);
 
   const outputDir = join(repoRoot, 'dist', 'release');
@@ -66,10 +71,9 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
   ]);
   assert.equal(result.checksum, checksum);
   assert.equal(repeated.checksum, checksum);
-  assert.equal(
-    readFileSync(result.checksumPath, 'utf8'),
-    `${checksum}  openkit-skill-v0.1.0-rc.1.tar.gz\n`
-  );
+  const checksumLines = readFileSync(result.checksumPath, 'utf8').trim().split('\n');
+  assert.ok(checksumLines.includes(`${checksum}  openkit-skill-v0.1.0-rc.1.tar.gz`));
+  assert.ok(checksumLines.some((line) => line.endsWith('  openkit-ops-skill-v0.1.0-rc.1.tar.gz')));
   const extractDir = join(repoRoot, 'extract');
   mkdirSync(extractDir);
   const extracted = spawnSync('tar', ['-xzf', result.archivePath, '-C', extractDir], {
@@ -82,6 +86,160 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
     ).mode & 0o111,
     0
   );
+});
+
+test('release packager archives the operations Skill with LICENSE and SHA-256', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-ops-release-assets-'));
+  writeFileSync(join(repoRoot, 'LICENSE'), 'fixture license\n');
+  mkdirSync(join(repoRoot, 'skills', 'openkit', 'scripts'), { recursive: true });
+  writeFileSync(join(repoRoot, 'skills', 'openkit', 'SKILL.md'), '# Fixture Skill\n');
+  writeFileSync(join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit'), '#!/usr/bin/env node\n');
+  chmodSync(join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit'), 0o755);
+  writeOpsSkillFixture(repoRoot);
+  git(repoRoot, ['init', '-q']);
+  git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
+  git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
+  git(repoRoot, ['add', 'LICENSE', 'skills/openkit', 'skills/openkit-ops']);
+  git(repoRoot, ['commit', '-qm', 'fixture']);
+
+  const outputDir = join(repoRoot, 'dist', 'release');
+  const result = packageReleaseAssets({
+    outputDir,
+    ref: 'HEAD',
+    repoRoot,
+    tag: 'v0.1.0-rc.1',
+  });
+  const listed = spawnSync('tar', ['-tzf', result.opsArchivePath], { encoding: 'utf8' });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.deepEqual(listed.stdout.trim().split('\n').sort(), [
+    'openkit-ops-skill-v0.1.0-rc.1/',
+    'openkit-ops-skill-v0.1.0-rc.1/LICENSE',
+    'openkit-ops-skill-v0.1.0-rc.1/skills/',
+    'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/',
+    'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/SKILL.md',
+    'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/references/',
+    'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/references/operating.en.md',
+    'openkit-ops-skill-v0.1.0-rc.1/skills/openkit-ops/references/setup.en.md',
+  ]);
+  const opsChecksum = createHash('sha256')
+    .update(readFileSync(result.opsArchivePath))
+    .digest('hex');
+  const checksumLines = readFileSync(result.checksumPath, 'utf8').trim().split('\n');
+  assert.ok(checksumLines.includes(`${result.checksum}  openkit-skill-v0.1.0-rc.1.tar.gz`));
+  assert.ok(checksumLines.includes(`${opsChecksum}  openkit-ops-skill-v0.1.0-rc.1.tar.gz`));
+
+  const extractDir = mkdtempSync(join(tmpdir(), 'openkit-ops-extract-'));
+  const verified = verifyOperationsSkillArchive({
+    archivePath: result.opsArchivePath,
+    destDir: extractDir,
+  });
+  assert.notEqual(extractDir.startsWith(repoRoot), true);
+  assert.equal(
+    verified.skillPath,
+    join(extractDir, 'openkit-ops-skill-v0.1.0-rc.1', 'skills', 'openkit-ops', 'SKILL.md')
+  );
+});
+
+test('operations Skill verifier rejects a packaged reference that does not resolve', () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-ops-missing-ref-'));
+  writeFileSync(join(repoRoot, 'LICENSE'), 'fixture license\n');
+  mkdirSync(join(repoRoot, 'skills', 'openkit', 'scripts'), { recursive: true });
+  writeFileSync(join(repoRoot, 'skills', 'openkit', 'SKILL.md'), '# Fixture Skill\n');
+  writeFileSync(join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit'), '#!/usr/bin/env node\n');
+  chmodSync(join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit'), 0o755);
+  mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'references'), { recursive: true });
+  writeFileSync(
+    join(repoRoot, 'skills', 'openkit-ops', 'SKILL.md'),
+    '# Ops\n\nSee [missing](references/missing.en.md).\n'
+  );
+  writeFileSync(
+    join(repoRoot, 'skills', 'openkit-ops', 'references', 'operating.en.md'),
+    '---\nstatus: Accepted\n---\n# Operating\n'
+  );
+  git(repoRoot, ['init', '-q']);
+  git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
+  git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
+  git(repoRoot, ['add', 'LICENSE', 'skills/openkit', 'skills/openkit-ops']);
+  git(repoRoot, ['commit', '-qm', 'fixture']);
+  const result = packageReleaseAssets({
+    outputDir: join(repoRoot, 'dist', 'release'),
+    ref: 'HEAD',
+    repoRoot,
+    tag: 'v0.1.0-rc.1',
+  });
+
+  assert.throws(
+    () =>
+      verifyOperationsSkillArchive({
+        archivePath: result.opsArchivePath,
+        destDir: mkdtempSync(join(tmpdir(), 'openkit-ops-missing-extract-')),
+      }),
+    /packaged reference does not exist: references\/missing\.en\.md/
+  );
+});
+
+test('operations Skill verifier resolves the repository archive outside the checkout', () => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'openkit-ops-head-'));
+  const extractDir = mkdtempSync(join(tmpdir(), 'openkit-ops-head-extract-'));
+  try {
+    const result = packageReleaseAssets({
+      outputDir,
+      ref: 'HEAD',
+      repoRoot: process.cwd(),
+      tag: 'v0.0.0-ops-verify',
+    });
+    const verified = verifyOperationsSkillArchive({
+      archivePath: result.opsArchivePath,
+      destDir: extractDir,
+    });
+    assert.equal(extractDir.startsWith(process.cwd()), false);
+    assert.ok(existsSync(verified.skillPath));
+    assert.ok(
+      existsSync(
+        join(verified.envelopePath, 'skills', 'openkit-ops', 'references', 'getting-started.en.md')
+      )
+    );
+  } finally {
+    rmSync(outputDir, { force: true, recursive: true });
+    rmSync(extractDir, { force: true, recursive: true });
+  }
+});
+
+test('operations Skill verifier runs from a stdin module import', () => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'openkit-ops-stdin-'));
+  const extractDir = mkdtempSync(join(tmpdir(), 'openkit-ops-stdin-extract-'));
+  try {
+    const result = packageReleaseAssets({
+      outputDir,
+      ref: 'HEAD',
+      repoRoot: process.cwd(),
+      tag: 'v0.0.0-ops-stdin',
+    });
+    const moduleUrl = pathToFileURL(
+      join(process.cwd(), 'scripts', 'package-release-assets.mjs')
+    ).href;
+    const spawned = spawnSync(process.execPath, ['--input-type=module'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        OPS_ARCHIVE: result.opsArchivePath,
+        OPS_EXTRACT: extractDir,
+      },
+      input: `import { verifyOperationsSkillArchive } from ${JSON.stringify(moduleUrl)};
+verifyOperationsSkillArchive({
+  archivePath: process.env.OPS_ARCHIVE,
+  destDir: process.env.OPS_EXTRACT,
+});
+process.stdout.write('verified\\n');
+`,
+    });
+    assert.equal(spawned.status, 0, spawned.stderr);
+    assert.match(spawned.stdout, /verified/);
+    assert.equal(extractDir.startsWith(process.cwd()), false);
+  } finally {
+    rmSync(outputDir, { force: true, recursive: true });
+    rmSync(extractDir, { force: true, recursive: true });
+  }
 });
 
 test('release packager and shared verifier prove the reproducible NanoHost arm64 asset', () => {
@@ -140,7 +298,7 @@ test('release packager and shared verifier prove the reproducible NanoHost arm64
     .split('\n');
   assert.deepEqual(
     portableChecksums.map((line) => line.slice(66)).sort(),
-    [archiveName, 'openkit-skill-v0.1.0-rc.1.tar.gz'].sort()
+    [archiveName, 'openkit-ops-skill-v0.1.0-rc.1.tar.gz', 'openkit-skill-v0.1.0-rc.1.tar.gz'].sort()
   );
 
   const verifier = join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs');
@@ -555,6 +713,7 @@ function makeNanoHostReleaseFixture() {
   const cliPath = join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit');
   writeFileSync(cliPath, '#!/usr/bin/env node\n');
   chmodSync(cliPath, 0o755);
+  writeOpsSkillFixture(repoRoot);
   writeFileSync(
     join(repoRoot, 'apps', 'nanohost', 'deploy', 'openkit-nanohost.service'),
     '[Service]\nExecStart=/usr/lib/openkit/nanohost\n'
@@ -912,4 +1071,21 @@ function git(cwd, args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
+}
+
+/** Writes one operations Skill tree with sibling reference links. */
+function writeOpsSkillFixture(repoRoot) {
+  mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'references'), { recursive: true });
+  writeFileSync(
+    join(repoRoot, 'skills', 'openkit-ops', 'SKILL.md'),
+    '# Ops\n\nSee [operating](references/operating.en.md).\n'
+  );
+  writeFileSync(
+    join(repoRoot, 'skills', 'openkit-ops', 'references', 'operating.en.md'),
+    '---\nstatus: Accepted\n---\n# Operating\n\nSee [setup](setup.en.md).\n'
+  );
+  writeFileSync(
+    join(repoRoot, 'skills', 'openkit-ops', 'references', 'setup.en.md'),
+    '---\nstatus: Accepted\n---\n# Setup\n\nSibling procedure.\n'
+  );
 }

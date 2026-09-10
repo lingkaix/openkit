@@ -791,6 +791,25 @@ describe('documentation model validator', () => {
     assert.deepEqual(validateDocModel(root), []);
   });
 
+  it('classifies any new file under skills/openkit-ops/references without a validator edit', () => {
+    const root = createFixture();
+    mkdirSync(join(root, 'skills/openkit-ops/references'), { recursive: true });
+    writeFileSync(
+      join(root, 'skills/openkit-ops/references/second-page.en.md'),
+      '---\nstatus: Accepted\n---\n# Second Page\n\nAnother operator-facing manual page.\n'
+    );
+
+    const documents = classifyDocuments(root);
+    const opsEntry = documents.find(
+      (document) => document.path === 'skills/openkit-ops/references/second-page.en.md'
+    );
+    const pointer = documents.find((document) => document.path === 'docs/manual/operating.en.md');
+
+    assert.equal(opsEntry?.type, 'manual');
+    assert.equal(pointer?.type, 'manual');
+    assert.deepEqual(validateDocModel(root), []);
+  });
+
   it('accepts a manual basename under the suffix-only language grammar', () => {
     const root = createFixture();
     writeFileSync(

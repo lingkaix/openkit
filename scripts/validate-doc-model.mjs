@@ -87,10 +87,12 @@ export function classifyDocuments(repoRoot) {
   /** @type {ClassifiedDocument[]} */
   const documents = [];
 
-  for (const path of listMarkdownFiles(join(repoRoot, 'docs')).map((absolute) =>
-    toRepositoryPath(repoRoot, absolute)
-  )) {
-    documents.push({ path, type: classifyPath(path) });
+  for (const root of ['docs', join('skills', 'openkit-ops', 'references')]) {
+    for (const path of listMarkdownFiles(join(repoRoot, root)).map((absolute) =>
+      toRepositoryPath(repoRoot, absolute)
+    )) {
+      documents.push({ path, type: classifyPath(path) });
+    }
   }
 
   return documents.sort((a, b) => a.path.localeCompare(b.path));
@@ -99,7 +101,7 @@ export function classifyDocuments(repoRoot) {
 /**
  * Classifies one repository-relative documentation path.
  *
- * @param {string} path Repository-relative path below `docs/`.
+ * @param {string} path Repository-relative documentation path.
  * @returns {string} Documentation type identifier.
  */
 function classifyPath(path) {
@@ -123,6 +125,14 @@ function classifyPath(path) {
   }
   if (SNAPSHOT_FILES.has(path)) {
     return 'snapshot';
+  }
+  if (
+    segments[0] === 'skills' &&
+    segments[1] === 'openkit-ops' &&
+    segments[2] === 'references' &&
+    segments.length === 4
+  ) {
+    return 'manual';
   }
   if (segments[1] === 'manual' && segments.length === 3) {
     return 'manual';
@@ -731,6 +741,38 @@ function resolveRepositoryDocLinks(repoRoot, path, content) {
 
     return [resolvedPath.replace(/\/$/u, '')];
   });
+}
+
+/**
+ * Lists concrete inline Markdown link targets after masking non-link contexts.
+ *
+ * External URIs, placeholders, and backtick `docs/` citations are omitted.
+ * Packaged operator references use this for required sibling links.
+ *
+ * @param {string} content Markdown content.
+ * @returns {string[]} Link destinations without fragments, in source order.
+ */
+export function listInlineMarkdownLinkTargets(content) {
+  const { maskedContent } = scanSecondLevelHeadings(content);
+  const targets = [];
+
+  for (const target of readInlineLinkTargets(maskedContent)) {
+    const fragmentIndex = target.search(/[?#]/u);
+    const withoutFragment = fragmentIndex === -1 ? target : target.slice(0, fragmentIndex);
+
+    if (
+      !withoutFragment ||
+      withoutFragment.startsWith('//') ||
+      EXTERNAL_URI_SCHEME_PATTERN.test(withoutFragment) ||
+      !isConcreteRepositoryTarget(withoutFragment)
+    ) {
+      continue;
+    }
+
+    targets.push(withoutFragment);
+  }
+
+  return targets;
 }
 
 /**
