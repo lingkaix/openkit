@@ -88,6 +88,61 @@ test('release packager archives the complete Skill and writes its SHA-256', () =
   );
 });
 
+test('packaged public Skill CLI describes current App-update operations', () => {
+  const checkoutCli = join(process.cwd(), 'skills', 'openkit', 'scripts', 'openkit');
+  const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-app-update-archive-'));
+  const extractDir = mkdtempSync(join(tmpdir(), 'openkit-skill-app-update-extract-'));
+  try {
+    writeFileSync(join(repoRoot, 'LICENSE'), 'fixture license\n');
+    mkdirSync(join(repoRoot, 'skills', 'openkit', 'scripts'), { recursive: true });
+    writeFileSync(join(repoRoot, 'skills', 'openkit', 'SKILL.md'), '# Fixture Skill\n');
+    const cliPath = join(repoRoot, 'skills', 'openkit', 'scripts', 'openkit');
+    copyFileSync(checkoutCli, cliPath);
+    chmodSync(cliPath, 0o755);
+    writeOpsSkillFixture(repoRoot);
+    git(repoRoot, ['init', '-q']);
+    git(repoRoot, ['config', 'user.email', 'release-test@openkit.local']);
+    git(repoRoot, ['config', 'user.name', 'OpenKit Release Test']);
+    git(repoRoot, ['add', 'LICENSE', 'skills/openkit', 'skills/openkit-ops']);
+    git(repoRoot, ['commit', '-qm', 'fixture']);
+
+    const tag = 'v0.0.0-app-update-cli';
+    const result = packageReleaseAssets({
+      outputDir: join(repoRoot, 'dist', 'release'),
+      ref: 'HEAD',
+      repoRoot,
+      tag,
+    });
+    const extracted = spawnSync('tar', ['-xzf', result.archivePath, '-C', extractDir], {
+      encoding: 'utf8',
+    });
+    assert.equal(extracted.status, 0, extracted.stderr);
+    assert.equal(extractDir.startsWith(process.cwd()), false);
+
+    const packagedCli = join(
+      extractDir,
+      `openkit-skill-${tag}`,
+      'skills',
+      'openkit',
+      'scripts',
+      'openkit'
+    );
+    for (const operationId of ['app-update.prepare', 'app-update.start', 'app-update.status']) {
+      const described = spawnSync(process.execPath, [packagedCli, 'ops', 'describe', operationId], {
+        encoding: 'utf8',
+      });
+      assert.equal(described.status, 0, described.stderr);
+      const envelope = JSON.parse(described.stdout);
+      assert.equal(envelope.ok, true);
+      assert.equal(envelope.command, 'ops.describe');
+      assert.equal(envelope.data.id, operationId);
+    }
+  } finally {
+    rmSync(repoRoot, { force: true, recursive: true });
+    rmSync(extractDir, { force: true, recursive: true });
+  }
+});
+
 test('release packager archives the operations Skill with LICENSE and SHA-256', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-ops-release-assets-'));
   writeFileSync(join(repoRoot, 'LICENSE'), 'fixture license\n');
