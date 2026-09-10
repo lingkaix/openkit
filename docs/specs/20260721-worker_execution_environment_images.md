@@ -1,9 +1,15 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-06
+updated: 2026-09-10
 ---
 # Worker Execution Environment Images
+
+## Inherited Volume Layout
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns generic retained-volume admission and replacement. The common base declares `/workspace` and `/sandbox` through OCI `Config.Volumes`, pins numeric sandbox UID/GID `1000:1000`, sets OCI `WorkingDir` to `/tmp/openkit-bootstrap` so the mount does not mask that directory, and makes `/openkit` a real ephemeral directory outside retained home. Derived images inherit these declarations and may add validated volume targets; no file-type manifest is required. An image layout label is descriptive evidence, never permission to select another storageRef or broaden mounts/credentials.
+
+The current Dockerfile still has the earlier `/openkit -> /sandbox/openkit` layout and no persistent-volume declaration; that implementation must change before claiming retention. Its former disposable-user-cache sentence is replaced by the volume owner's whole-tree rule. Fixed immutable executables, non-root containment, current AEP authority, declared runtimes, image verification and build egress rules continue unchanged. Initial volume content is seeded only from the exact selected image; later images must not overwrite existing home data to refresh software.
 
 ## Owns
 
@@ -174,7 +180,7 @@ If one native runtime cannot build on a supported architecture, only that final 
 
 Publishing the base makes every refresh of the common stage a change to a released artifact that external derivations inherit, which is the cost this specification previously declined to pay and now accepts for the consumers named in Principles. The release identity, tag, digest, and label rules that cost brings are not restated here: `worker-common` is an ordinary `release: true` entry in `containers/images.json` and takes them unchanged from `docs/specs/20260708-container_image_packaging.md`. What is owned here is narrower: a refresh MUST NOT reduce the baseline a derivation already relies on without the same reviewed maintenance change, because a derived Dockerfile states what it adds and cannot state what its base removed. A stale local tag may remain cached according to AgentManifest pull policy, but a release or deployment that requires exact supply must select an immutable final image digest. `test-env` does not inherit that digest by derivation; a Node digest change is a sibling mirror update owned by `docs/toolchain.md`.
 
-Replacing a sandbox, or recovering through a fresh Runtime Epoch after invalidation, recreates the environment from the selected final image and immutable AEP. Writable virtual-environment or user-cache changes are disposable unless an independently declared workspace/output contract captures them; this specification creates no package-cache persistence or sandbox-resume guarantee.
+Replacing a sandbox, or recovering through a fresh Runtime Epoch after invalidation, recreates the environment from the selected final image and immutable AEP. The admitted inherited volume layout preserves complete writable volumes, including user-installed dependencies and unknown files, under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md). Image replacement changes immutable software; it does not reset those volumes or promise native-format rollback or live process resume.
 
 ## Current Implementation Projection
 

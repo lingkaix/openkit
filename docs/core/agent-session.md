@@ -1,5 +1,6 @@
 ---
 status: Accepted
+updated: 2026-09-10
 ---
 # AgentSession Model
 
@@ -98,6 +99,10 @@ An operation may retry only through its existing owner and immutable identity. R
 After Core restart, recovery derives current selection from durable AgentSession records and validates every dependent runtime binding before use. Missing, stale, conflicting, duplicated-current, or dependency-failed state is fenced from execution. Recovery never chooses a winner from two purported current AgentSessions by recency or runtime liveness.
 
 When exact continuity cannot be proved, Core preserves the prior Turn's truthful outcome, retires or fences the affected AgentSession, and may create one successor for a new authorized Turn. Snapshot restore, generic resume selection, fork, clone, and rollback are not authorized mechanisms.
+
+## Retained Files Across Execution Replacement
+
+AgentSession termination revokes its live binding and native continuation authority; it MUST NOT erase its associated retained working volumes. [Storage](storage.md) owns whole-volume persistence, including native histories, memory and configuration without a file-type allowlist. A successor in the same authorized work environment may access retained files as data after predecessor writers are fenced. Reattachment alone does not establish exact native continuity, authorize last-session discovery, move an active Turn, or promote native memory to Core Knowledge. Runtime-generated credentials and control material remain request-private and are refreshed separately.
 
 ## Warm State And Knowledge
 

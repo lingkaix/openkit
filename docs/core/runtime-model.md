@@ -1,5 +1,6 @@
 ---
 status: Accepted
+updated: 2026-09-10
 ---
 # Runtime Model
 
@@ -35,7 +36,7 @@ These four rules govern every execution substrate Core will ever admit, not one 
 
 **Push work down, not authority.** A substrate may hold effects, bytes, caches, materializations, and processes that Core no longer touches, and none of that makes it a decision owner. It owns exactly one authority: the truth about its own local effects. Only the substrate can prove that an effect it accepted reached a definite result, so Core MUST accept that proof and MUST NOT infer it — and that authority is non-transferable in the other direction too, because the substrate MUST NOT extend it into product meaning, terminal status, permission, review, or completion. An unprovable local effect is therefore a substrate-level failure, not a product-level guess.
 
-**Move bytes, not truth.** A substrate may move, stage, buffer, and discard bytes freely, and no byte becomes truth by arriving. Evidence is the sharp case, because evidence is bytes that look like truth: evidence MAY explain a decision and MUST NOT make one. No readiness, capacity, recovery, review, or terminal decision may depend on a substrate's private record.
+**Move bytes, not truth.** A substrate may move, stage and buffer bytes under their storage owner, and discard only bytes whose retention/deletion owner permits it; no byte becomes product truth by arriving. Evidence is the sharp case, because evidence is bytes that look like truth: evidence MAY explain a decision and MUST NOT make one. No readiness, capacity, recovery, review, or terminal decision may depend on a substrate's private forensic record. Current owner-defined storage identity and attachment checks are operational preconditions, not forensic evidence promoted into authority.
 
 **Buffer what you produce; never cache what you were granted.** A substrate MAY hold bounded quantities of the facts it produces while they await acceptance, because those bytes are not yet truth and holding them costs nothing but space. It MUST NOT cache the authority it received. A cached authorization, policy decision, capability grant, or lease state turns every stale read into a decision made on old truth. Where a substrate legitimately needs to act without asking again, the correct instrument is an immutable grant with an explicit deadline, which is not a cache and MUST NOT acquire invalidation, refresh, or fallback semantics.
 
@@ -193,6 +194,12 @@ Review is also a normal turn. A reviewer agent reads thread history, artifacts, 
 
 This keeps implementation-review loops visible without creating a special run model.
 
+## Long-Lived Environments And Replacement
+
+NanoCore remains the orchestration and governance center. A container, VM or other admitted backend is an execution resource, not the center of the product model. Healthy compatible Sandboxes SHOULD remain reusable; routine NanoCore/Web delivery MUST NOT require NanoHost delivery or destruction of healthy execution resources. A bounded Core disconnect may preserve exact execution only under the existing lease, identity, sequence and continuity proofs; it does not guarantee every in-flight inference or external call survives.
+
+[Storage](storage.md) owns retained working volumes independently of execution lifetime. Planned environment replacement prepares and validates the candidate before draining affected work, fences every old writer before reattachment, refreshes current authority, and proves the new environment before admitting execution. Replacement may occur during a long-running logical task, but it does not move an active Turn between identities or restore process memory. Failed continuity retains the truthful interrupted/unknown outcome and permits only new authorized work. Image rollback is not data rollback.
+
 ## Execution-Substrate Lifecycle
 
 `protocol.md` owns the closed protocol AgentSession and Turn lifecycle enums. AgentSession identity remains hidden from ordinary product navigation and action. `agent-session.md` owns continuity interpretation. Runtime owns the separate execution-substrate lifecycle and must bind every substrate effect to those existing owners without creating another product workflow.
@@ -206,7 +213,7 @@ The substrate lifecycle has these responsibilities:
 3. Interruption preserves the existing Turn, AgentSession, evidence, and effect uncertainty when liveness or control is lost. A known stop does not by itself prove whether an external effect occurred, and an unprovable outcome must not be guessed or replayed automatically.
 4. Ordinary AgentSession termination revokes that AgentSession's control and removes only its local runtime binding and owned resources. It preserves a compatible shared Sandbox and epoch when exact local cleanup and continued sibling safety are proved.
 5. Epoch invalidation interrupts every affected AgentSession, fences all capacity owned by that epoch, terminates the complete effect-capable failure domain, and prevents member-local recovery or reuse. An accepted create or delete whose completion cannot be proved, or failure of any effect-capable member, MUST invalidate the owning epoch.
-6. Recovery may adopt only the exact surviving execution under an accepted proof contract. Otherwise it completes existing cleanup and preserves interruption or uncertainty. An invalid epoch may return capacity only after the prior effect domain is fenced and a fresh compatible epoch is proved ready and free of prior mutable execution state. Replacement and retry require a fresh authorized request and do not rewrite the prior attempt.
+6. Recovery may adopt only the exact surviving execution under an accepted proof contract. Otherwise it completes existing cleanup and preserves interruption or uncertainty. An invalid epoch may return capacity only after the prior effect domain is fenced and a fresh compatible epoch is proved ready and free of prior mutable execution state; separately retained working volumes are not live execution state and remain subject to fresh authorized attachment. Replacement and retry require a fresh authorized request and do not rewrite the prior attempt.
 7. Dependency failure before admission blocks launch. Dependency failure after admission follows the same interruption, evidence, cleanup, and fresh-request boundaries; runtime must not synthesize authority or a successful terminal result.
 
 A gate response always attaches to the same Turn, but only the owning accepted contract chooses its next status. Chat clarification may continue that Turn as `running`; a Task or Goal worker gate closes the old execution envelope and any later worker execution uses a new Turn.

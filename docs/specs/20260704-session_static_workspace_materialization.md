@@ -1,9 +1,17 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-06
+updated: 2026-09-10
 ---
 # AgentSession Static Workspace Materialization
+
+## Persistent Working Volumes Amendment
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) separates generic retained volumes from the existing per-Turn generated input/control slots. Persistence is whole-volume and does not enumerate file kinds. Existing slot examples with `retention: session` describe execution-local materialization; writable working data is retained under its storageRef across session/Sandbox replacement. A successor never inherits old route credentials, authority, a claimed successful outcome or an unproved native handle, but may use the same authorized working bytes after predecessor fencing.
+
+Current materialization must not recursively remove a populated retained target, run `git clean`, replace arbitrary user configuration or delete ignored files as a freshness step. New source imports use no-overwrite staging and exact lineage; a source change conflicting with retained work is surfaced before launch. Generated AEP, context, instructions, transcripts used for protocol carriage, credentials and control slots remain separate and refreshed under their existing owners. Runtime-owned files within a persistent volume are not transport spools merely because their names contain log, session or transcript.
+
+Existing current-runtime/session records continue to own active bindings. Stable Thread-addressed data subdirectories may live within one admitted sharing group's opaque volume without changing the whole-volume retention or purge unit. Independent Threads retain separate mutable working and native-state locations; a new AgentSession id must not accidentally select an empty unrelated data root.
 
 ## Owns
 
@@ -112,11 +120,11 @@ Turn-dynamic fields include:
 
 ### Git Source Materialization Boundary
 
-A Git input for a remote Agent Runtime MUST resolve to a network-addressable repository locator and an exact accepted commit. Before the Agent process starts, a Sandbox-side workspace materializer uses the worker image's Git client to clone or fetch that repository, check out the exact commit into the declared worktree slot, and prove the resulting clean `HEAD`. A NanoCore host path, unpublished local commit, implicit host checkout, tar copy, or Git-bundle fallback is not an alternate source form.
+A Git input for a remote Agent Runtime MUST resolve to a network-addressable repository locator and an exact accepted commit. For the first initialization of a new empty slot, a Sandbox-side workspace materializer uses the worker image's Git client to clone or fetch that repository, check out the exact commit and prove the resulting clean `HEAD`. For an existing retained slot, it validates source identity and current authority, preserves tracked, untracked and ignored working bytes, and does not reset or clean the directory. A requested incompatible source/baseline requires an explicit reconciliation, not destructive reinitialization. A NanoCore host path, unpublished local commit, implicit host checkout, tar copy, or Git-bundle fallback is not an alternate source form.
 
 After launch, an Agent may use `git` and a hosting client such as `gh` inside the Sandbox when the source access class, permission, approval, Vault grant, and network policy authorize the operation. NanoHost owns only Sandbox lifecycle and network-policy enforcement for this traffic; it does not execute Git commands, parse Git objects, select commits, hold hosting credentials, or interpret clone, fetch, push, branch, or pull-request semantics.
 
-Missing or unreachable repository locators, missing commits, denied egress, absent or stale grants, checkout mismatch, or dirty initial state fail before Agent start without falling back to NanoCore-hosted repository bytes. Retry is a fresh materialization from the current catalog, grant, policy, and remote repository state. Partial checkout remains disposable Sandbox-local state and follows the existing cleanup boundary; it never becomes NanoCore storage or later-Turn authority.
+Missing or unreachable repository locators, missing commits, denied egress, absent or stale grants, checkout mismatch, or a dirty state presented as a fresh initial checkout fail before Agent start without falling back to NanoCore-hosted repository bytes. Retry is a fresh materialization from the current catalog, grant, policy, and remote repository state. A partial first checkout remains visibly incomplete and cannot satisfy launch readiness. In a retained volume its bytes are preserved for explicit reconciliation rather than automatically deleted; they never become accepted source or product authority.
 
 If a requested change touches a session-static field and the backend cannot apply it safely in place, NanoCore MUST mark the session stale for that turn and launch a replacement session.
 
@@ -128,13 +136,13 @@ The conceptual shape is:
 {
   "schemaVersion": 1,
   "layoutId": "swl_01jz...",
-  "root": "/workspace/sessions/<agent-session-id>",
-  "workingDirectory": "/workspace/sessions/<agent-session-id>",
+  "root": "/workspace/threads/<thread-id>",
+  "workingDirectory": "/workspace/threads/<thread-id>",
   "slots": [
     {
       "id": "main-worktree",
       "kind": "worktree",
-      "path": "/workspace/sessions/<agent-session-id>/worktrees/main",
+      "path": "/workspace/threads/<thread-id>/worktrees/main",
       "access": "read-write",
       "allowedSourceKinds": ["git", "workspace-dir"],
       "allowedMaterializationModes": ["checkout", "fetch", "bind", "copy", "upload", "rsync"],
@@ -145,7 +153,7 @@ The conceptual shape is:
     {
       "id": "turn-inputs",
       "kind": "input",
-      "path": "/workspace/sessions/<agent-session-id>/inputs",
+      "path": "/openkit/sessions/<agent-session-id>/inputs",
       "access": "read-only",
       "allowedSourceKinds": ["workspace-file", "workspace-dir", "generated", "openkit-artifact", "http-archive"],
       "allowedMaterializationModes": ["copy", "upload", "rsync"],
@@ -155,7 +163,7 @@ The conceptual shape is:
     {
       "id": "external-data",
       "kind": "data",
-      "path": "/workspace/sessions/<agent-session-id>/data",
+      "path": "/workspace/threads/<thread-id>/data",
       "access": "read-only",
       "allowedSourceKinds": ["s3", "r2", "gcs", "azure-blob", "box", "s3-files"],
       "allowedMaterializationModes": ["object-store-sync", "provider-file-sync", "gateway-read", "fuse-mount"],
@@ -165,7 +173,7 @@ The conceptual shape is:
     {
       "id": "turn-output",
       "kind": "output",
-      "path": "/workspace/sessions/<agent-session-id>/outputs",
+      "path": "/openkit/sessions/<agent-session-id>/outputs",
       "access": "read-write",
       "allowedSourceKinds": ["generated"],
       "allowedMaterializationModes": ["create-empty"],
@@ -210,49 +218,42 @@ Rules:
 The default reusable worker filesystem skeleton should be:
 
 ```text
-/workspace/
-  base/                                      shared immutable baseline
+/workspace/                                   whole retained volume
+  threads/
+    <thread-id>/                              stable mutable working slot
+      worktrees/main/
+      data/
+  shared-working/                            retained non-canonical work
+/sandbox/                                     whole retained home volume
+/openkit/                                     disposable control root
   sessions/
     <agent-session-id>/
-      worktrees/
-        main/
       inputs/
-      data/
-      artifacts/
-        in/
-        out/
       outputs/
       scratch/
-      .openkit/
-        materializations/
-        manifests/
-  shared-working/                            non-canonical and disposable
-/openkit/
-  sessions/
-    <agent-session-id>/
       context/
       instructions/
       transcript/
       control/
 ```
 
-The default worker working directory SHOULD be its `/workspace/sessions/<agent-session-id>` namespace rather than the Sandbox root or one specific repository path.
+The default worker working directory SHOULD be its `/workspace/threads/<thread-id>` namespace rather than the Sandbox root or one specific repository path.
 
-Agents should receive the active root for the current turn as context, such as `/workspace/sessions/<agent-session-id>/worktrees/main`, instead of baking a repository path into the session's base working directory.
+Agents should receive the active root for the current turn as context, such as `/workspace/threads/<thread-id>/worktrees/main`, instead of baking a repository path into the session's base working directory.
 
 Backends MAY use different concrete paths when required, but the AEP and materialization records MUST expose a stable OpenKit path summary and preserve slot identity.
 
 ### AgentSession Namespaces And Turn Slots
 
-One shared Sandbox may contain multiple open AgentSessions, but each AgentSession has one separately addressable mutable namespace for its worktree, inputs, outputs, scratch, generated context, instructions, transcript, native conversation files, local route bindings, and writable caches. That namespace is Workspace-write isolation, not security and adjudication isolation. The namespace is part of the AgentSession-static layout and remains bound to that exact AgentSession until close. Another AgentSession never receives it as its own slot set, and a different Thread never inherits it through compatible placement.
+One shared Sandbox may contain multiple open AgentSessions, with separately addressed mutable working slots and exact disposable input/control namespaces. This is Workspace-write isolation, not security and adjudication isolation. A disposable namespace remains bound to its exact AgentSession and is never inherited. Retained working/native data is separately addressed by stable Thread identity; an authorized successor may reuse it after predecessor fencing. A new related Thread may explicitly select a prior idle working slot through whole-volume reuse admission, but compatible placement alone cannot transfer it and concurrent Threads cannot own the same writable slot.
 
 The shared immutable baseline and proved immutable or content-addressed read-only caches may be projected into more than one AgentSession namespace. No shared writable canonical Workspace tree is permitted. Filesystem namespacing under one OS identity proves Workspace-write isolation only; it is not security and adjudication isolation, and work requiring that stronger boundary uses proved OS isolation or a separate Sandbox.
 
 AgentSession-persistent slots may retain a proved private worktree baseline and verified large-input views across sequential Turns in the same AgentSession. Turn-scoped slots include generated instructions, Context Package files, request inputs, output staging, route bindings, temporary credentials, transcript spools, and other request-specific material. Each new Turn replaces or clears those slots before `turn.start`, even when the same native conversation is reused.
 
-Namespace creation follows `session.open` after Sandbox and Harness readiness and before the first Turn materialization. Slot contents update only through the owning materializer. Exact `session.close` removes the namespace after output, transcript, evidence, route-revocation, and local-cleanup barriers settle; cleanup uncertainty drains admission and widens the fence to the Harness, Sandbox, or Runtime Epoch boundary whose complete effects can be proved. Restart may adopt only the exact surviving AgentSession binding and namespace under current proof; otherwise later work receives a new namespace through fresh admission.
+Namespace creation follows `session.open` after Sandbox and Harness readiness and before the first Turn materialization. Slot contents update only through the owning materializer. Exact `session.close` removes only its disposable input/control namespace after output, transcript, evidence, route-revocation, and local-cleanup barriers settle; retained data volumes and native-data directories survive; cleanup uncertainty drains admission and widens the fence to the Harness, Sandbox, or Runtime Epoch boundary whose complete effects can be proved. Restart may adopt only the exact surviving AgentSession binding and namespace under current proof; otherwise later work receives a fresh control namespace through admission while its authorized retained volume remains available as working data.
 
-Missing, overlapping, stale, cross-boundary, access-widening, or dependency-failed slot declarations block materialization. A retained baseline whose identity, writer quiescence, output collection, Turn-slot clearing, delta safety, or current authorization cannot be proved makes the AgentSession stale and requires private-worktree replacement or AgentSession replacement. The materializer never preserves an unproved dirty baseline for latency.
+Missing, overlapping, stale, cross-boundary, access-widening, or dependency-failed slot declarations block materialization. A retained baseline whose identity, writer quiescence, output collection, Turn-slot clearing, delta safety, or current authorization cannot be proved makes the AgentSession stale and requires private-worktree replacement or AgentSession replacement. The materializer never reports an unproved dirty tree as a verified clean source baseline. It preserves such bytes for inspection or explicit continued work under the persistent-volume contract, without automatically accepting prior output or replaying an uncertain effect.
 
 Observable acceptance requires two open AgentSessions in one Sandbox to expose distinct mutable, context, transcript, control, and output namespaces; two sequential Turns in one AgentSession to reuse permitted persistent content while receiving empty or replaced Turn slots; an exact local close to preserve a compatible sibling; and an unprovable local cleanup to fence the wider boundary before reuse or capacity return.
 
@@ -391,22 +392,15 @@ Each AgentSession supports exactly one active Turn. Turn-scoped slots (`input`, 
 
 Separately, one Harness may hold multiple open AgentSessions for distinct Threads and may execute one Turn in each such AgentSession concurrently up to its declared capacity. Runtime-native child agents remain inside one outer AgentSession and do not create additional slots or Core AgentSession identities. Several compatibility-keyed Harness Instances may share one Sandbox under the runtime and Sandbox owners; this specification neither selects a Harness nor grants capacity beyond those owners.
 
-Immutable Turn-input slots, including the canonical AEP and Context Package, MUST be cleared after terminal process-group absence and before reuse. Output, transcript, and evidence slots with `retention: turn` MUST be cleared only after their contents are collected. If clearing fails, the AgentSession MUST be marked stale for reuse so prior-Turn contents cannot leak into the next Turn; a stale-for-hygiene AgentSession is replaced, not silently reused. `retention: session` contents persist across Turns within that AgentSession; `retention: policy` contents follow Workspace policy.
+Every automatically cleared input, output, transcript, evidence or scratch slot MUST be physically outside retained volumes, under the disposable `/openkit` root in this realization. Reject a layout that assigns automatic cleanup beneath a retained mount. Immutable Turn-input slots, including the canonical AEP and Context Package, MUST be cleared after terminal process-group absence and before reuse. Output, transcript, and evidence slots with `retention: turn` MUST be cleared only after their contents are collected. If clearing fails, the AgentSession MUST be marked stale for reuse so prior-Turn contents cannot leak into the next Turn; a stale-for-hygiene AgentSession is replaced, not silently reused. `retention: session` contents persist across Turns within that AgentSession; `retention: policy` contents follow Workspace policy.
 
 ### Non-canonical Shared Working Material
 
-The Sandbox may expose one non-canonical shared working area for uncommitted research notes, cloned references, intermediate datasets, comparison artifacts, and similar material whose value is temporary cross-AgentSession reuse. This is a Sandbox property, not a Core retention class, Workspace source, record family, durable lifecycle, canonical Workspace tree, evidence store, recovery input, or authorization surface. Its internal organization is deliberately unspecified.
+The Sandbox may expose one non-canonical shared working area for research notes, cloned references, intermediate datasets and unfinished work. Under `/workspace/shared-working` it belongs to the whole retained volume and survives Sandbox replacement under the persistent-volume owner. Its internal organization and unknown file formats remain unspecified; it creates no separate Core record family, retention class or evidence store.
 
-The area has all four required edge constraints:
+The area is intentionally cross-readable by admitted co-residents. New related work receives it only through current whole-volume audience admission; it is not a private slot or independent-adjudication environment. Workers may modify it through ordinary granted access. Its content confers no authority, completion proof or verified evidence, and canonical publication still uses the ordinary staged, reviewed, conflict-checked apply path.
 
-- It is Sandbox-scoped and may survive an AgentSession, but it becomes canonical only through the ordinary staged, reviewed, conflict-checked apply path.
-- It carries no authority and cannot discharge a Review, verification, completion, audit, or evidence requirement.
-- Its loss affects neither correctness nor recovery; no accepted operation, retry, rebuild, or recovery path may depend on its survival.
-- It is openly cross-readable by co-resident AgentSessions, and containment remains at the apply boundary rather than pretending the area is private.
-
-The area is created and discarded with its Sandbox, may be updated freely by admitted workers inside that Sandbox, is not retried or recovered, and is lost on drain, rebuild, cleanup, or failure without data-loss status. An arriving Turn may observe it only as non-authoritative working material and must use canonical sources and evidence for any governed claim. Missing or stale material causes no failure and no fallback; attempted publication outside staged apply is rejected, and any workflow that requires the material for correctness, recovery, or evidence is invalid.
-
-Durable creation, update, termination, retry, and recovery lifecycle is explicitly not applicable because the area creates no durable record or state machine. Observable acceptance requires Sandbox rebuild to discard it without changing product truth or recovery, cross-AgentSession reads to confer no authority, and every canonical exit to pass through staged conflict-checked apply. Definition, authority boundary, failure semantics, and acceptance remain applicable and are stated above.
+Creation, attachment, retry, recovery and purge follow the containing storageRef. Missing retained bytes are reported without automatic empty replacement; stale content must be inspected as working data rather than assumed current. Observable acceptance requires rebuild to preserve unknown bytes without changing product truth, cross-AgentSession reads to confer no authority, and every canonical exit to pass through the owning review/apply boundary. A separately declared disposable scratch area may be discarded, but it must be outside the retained mount and cannot be substituted for this area.
 
 ### Write-Back Policy
 
@@ -446,7 +440,7 @@ Backend-native file-transfer handles, upload IDs, sandbox IDs, container paths o
 
 The definition and exclusions for AgentSession-static layout, per-AgentSession namespaces, Turn-scoped hygiene, and non-canonical shared working material are stated above. The AEP snapshot owns the durable layout and compatibility projection, workspace synchronization owns Turn materialization and canonical handoff records, and the runtime owns only physical namespaces, bytes, and cleanup effects; no backend path or shared material becomes Workspace truth.
 
-Creation, update, termination, retry, recovery, conflict, missing, stale, restart, and dependency-failure behavior is stated in the namespace, hygiene, write-back, credential, and shared-working-material sections. Retry after replacement is fresh admission rather than reuse of a failed materialization effect. Observable acceptance is the conjunction of namespace isolation, Turn-slot clearing, exact compatible reuse or replacement, staged apply, sibling-preserving local cleanup, and fail-closed wider fencing. No decision class is not applicable except the shared area's durable lifecycle, for the reason stated in that section.
+Creation, update, termination, retry, recovery, conflict, missing, stale, restart, and dependency-failure behavior is stated in the namespace, hygiene, write-back, credential, and shared-working-material sections. Retry after replacement is fresh admission rather than reuse of a failed materialization effect. Observable acceptance is the conjunction of namespace isolation, Turn-slot clearing, exact compatible reuse or replacement, staged apply, sibling-preserving local cleanup, and fail-closed wider fencing. The retained shared area delegates its durable lifecycle to its containing storageRef; disposable control has no independent durable lifecycle.
 
 ## Accepted Design
 

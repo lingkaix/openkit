@@ -380,9 +380,7 @@ Recovery states:
 
 The Git strategy is the default path for Git repository workspace resources.
 
-The worker should receive a clean checkout at the requested base commit. The
-worker may write and commit inside the worker runtime, but the first implemented
-review path collects the result into NanoCore instead of allowing direct push.
+A new empty working target receives a clean checkout at the requested base commit. An admitted retained target follows `docs/specs/20260910-persistent_worker_volumes.md`: preserve dirty, untracked and ignored work, validate source identity, and report a baseline conflict for explicit reconciliation instead of reset or clone-over-existing. The worker may write and commit inside the worker runtime, but the first implemented review path collects the result into NanoCore instead of allowing direct push.
 
 The preferred first Git output format is:
 

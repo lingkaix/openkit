@@ -6,6 +6,10 @@ updated: 2026-09-09
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V2
 
+## Execution-Host Volume Coverage
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns generic retained execution-host volumes. A backup/export that covers only NanoCore files must explicitly report those volumes omitted or unavailable; Git and accepted Artifacts are not substitutes for their untracked, ignored or native data. Consistent whole-volume export requires quiescent writers and preserves the source access audience. Restore imports data into a new checked storage association and grants no live process, credential, attachment or native-session authority.
+
 ## Owns
 
 - The Light App-scoped import/export package envelope, manifest/digest verification, staged admission, selected data/resource closure, and identity rewriting; exact format fields remain proposed by the Generative Kernel specification until frozen here.

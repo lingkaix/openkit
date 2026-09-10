@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-09-08
+updated: 2026-09-10
 ---
 # Storage Model
 
@@ -31,6 +31,24 @@ Bounded installed Skill and Agent Plugin snapshots are ordinary catalog-owned pr
 Secret values belong to the vault boundary, not normal workspace files or protocol records.
 
 Storage format evolution follows the unknown-field preservation and fail-closed rules in `docs/core/contract-evolution.md`.
+
+## Persistent Worker Working Storage
+
+OpenKit SHOULD treat a healthy Worker environment as a long-lived, lightweight VM-like working resource. Durable working storage MUST outlive the replaceable process, Sandbox, image and execution-substrate epoch that use it. This is backend-independent storage doctrine, not a requirement to implement a VM backend or to preserve a container root filesystem.
+
+Retention applies to entire admitted writable volumes or directory roots, without an inventory of supported file types. Uncommitted and ignored files, project `temp/`, unfinished work, runtime-local conversations, memory, configuration and installed user tools are examples, not an allowlist. Git inclusion, Artifact registration, filename, extension, task completion and AgentSession termination MUST NOT decide whether bytes inside a retained root survive. Additional software may store previously unknown formats there without an OpenKit feature or schema change. Only an explicitly separate disposable mount or scratch area may carry automatic cleanup semantics.
+
+NanoCore owns each retained storage association's Workspace, access audience, execution attachment and deletion authority. The execution host owns the working bytes at that association; it is not a second owner of product records. Persisted working bytes MUST NOT be silently treated as an accepted Git commit, Artifact, Knowledge Page, completed Turn or independent verification result. Native runtime memory and history retain their source audience and do not automatically become Core User Memory or Workspace Knowledge. Private native data remains restricted rather than becoming shared merely because it is physically stored on a Workspace's execution host.
+
+Workspaces MUST have separate retained execution storage. Within one Workspace, an authorized Operator/Orchestrator Agent SHOULD prefer reusing suitable idle Workers and volumes for related work, including a new Task or Goal. The Agent judges usefulness from authorized work context; deterministic admission enforces current audience, compatibility, writer fencing and independent-adjudication separation. Whole-volume reuse intentionally exposes prior working data to the admitted successor, so it requires authorization for every contributing source audience. Matching Workspace or image alone never grants that access. An explicit fresh environment remains available when reuse is unsuitable.
+
+Image ancestry and an inherited storage-layout contract SHOULD make ordinary derived-image replacement reuse the same volumes. The mechanism MUST operate on volume identity, mount layout, ownership and current authorization, not by understanding each stored application's file formats. Compatible attachment does not prove software-format compatibility, native conversation continuity or data rollback. A changed image may add software without changing the working bytes; incompatible software or storage layout must preserve those bytes for a corrected environment or explicitly authorized migration.
+
+Normal Turn/AgentSession cleanup, Sandbox replacement, Runtime Epoch invalidation, NanoCore/Web updates and image-cache cleanup MUST NOT delete retained working storage. Runtime cleanup fences processes and authority; it does not erase working data to prove that execution stopped. Missing or inconsistent retained storage MUST be reported rather than replaced with an empty store under the same identity. Unproved writer absence blocks attachment by a successor. Security-suspect stored content remains retained for authorized inspection and MUST NOT be automatically reattached for execution.
+
+OpenKit-injected credentials, control state, route bindings and temporary grants MUST remain outside generic retained volumes and be recreated through their current owners. Preserved user files are data, never an authorization source. Retained native configuration cannot override current admission, provider, capability, network or credential policy. Preservation does not authorize new collection of private reasoning or raw data beyond the existing runtime and evidence owners.
+
+Purge requires explicit resource-deletion authority, current audience and hold checks, and proved writer fencing. Pressure or quota exhaustion refuses new writes/admission or requests authorized cleanup; it MUST NOT silently evict retained work. Backup/export coverage MUST name execution-host volumes separately from NanoCore storage and report an unavailable or omitted volume truthfully. A persistent local volume is not an off-host backup or a guarantee against physical disk loss. Observable conformance requires unknown, untracked and ignored bytes to survive compatible replacement without promotion to product truth, and missing, conflicted, unsafe or unavailable storage to preserve data and block false recovery.
 
 ## Storage Hierarchy
 
@@ -110,6 +128,8 @@ Owning record specifications assign these classes and their ordinary retention w
 
 Agent features introduce no retention class, retention engine, or global deletion workflow. They use the closed vocabulary above through the existing Thread, Turn, Item, Artifact, Knowledge, audit, usage, evidence, Workspace, user, and Vault owners.
 
+The mappings below govern OpenKit collection, capture, import and publication. They do not require classification or selective deletion of opaque runtime-owned bytes already written inside an admitted retained working volume. Whole-volume retention may preserve native rollout files containing private runtime material without OpenKit capturing, inspecting or promoting it. Such bytes retain their source audience and the working-storage lifecycle above; any subsequent OpenKit capture, export into evidence or product publication must satisfy the applicable restricted-raw owner. No default reasoning collector is introduced.
+
 The explicit mappings are:
 
 | Agent data | Existing class mapping | Boundary |
@@ -126,7 +146,7 @@ Deletion follows the owning resource. Acceptance of authorization removal, sourc
 
 Workspace and user deletion reuse their existing closure-export, backup, legal-hold, Vault, and fail-closed cleanup owners. If complete deletion or revocation cannot be proved, future access fails closed and the applicable owner reports degraded, restricted, or recovery-required state; it does not serve a stale cache, infer physical erasure, or create an Agent-specific repair workflow. Retry is a fresh owner-authorized deletion, rebuild, or access request from current truth and never a blind replay across Core storage and an external runtime effect domain.
 
-The durable lifecycle of raw audio and private reasoning is explicitly not applicable because current policy creates no durable record for them. Creation, update, termination, retry, and recovery remain applicable to every retained diagnostic, evidence, audit, or owner-specific resource through its existing owner. Observable acceptance requires default execution to persist no raw audio or private reasoning, every authorized bounded raw capture to be `restricted-raw`, every bounded diagnostic summary to use only its existing applicable class, source deletion or revocation to prevent future derived reads before cleanup finishes, independent accepted resources to remain under their own owners, and `legal-hold` to block deletion without granting access.
+A Core product-record lifecycle for raw audio and private reasoning is explicitly not applicable because current policy creates no such record. This does not negate opaque runtime-owned whole-volume retention. Creation, update, termination, retry, and recovery remain applicable to every retained diagnostic, evidence, audit, or owner-specific resource through its existing owner. Observable acceptance requires default OpenKit capture to persist no raw audio or private reasoning, every authorized bounded raw capture to be `restricted-raw`, every bounded diagnostic summary to use only its existing applicable class, source deletion or revocation to prevent future derived reads before cleanup finishes, independent accepted resources to remain under their own owners, and `legal-hold` to block deletion without granting access.
 
 ## Invariants
 

@@ -2,9 +2,13 @@
 status: Accepted
 implementation: Not Started
 date: 2026-08-01
-updated: 2026-09-08
+updated: 2026-09-10
 ---
 # NanoHost Workspace Data Boundary
+
+## Retained Volume Boundary
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns opaque durable storage associations, inherited image mount layouts, generic whole-volume retention and replacement. This specification retains byte-transfer and product-acceptance ownership. Retained volumes are neither a source mirror nor an operation journal; NanoCore owns association/attachment authority and the execution host retains the bytes. The earlier disposable-only classification no longer applies to these declared volumes. Export of a candidate or required evidence still uses the existing bounded transfer owners; persistence does not expand those transport limits or turn NanoCore into bulk storage.
 
 ## Owns
 
@@ -65,11 +69,11 @@ OpenKit separates worker execution from the durable product and data authority r
 
 This specification is the data-boundary projection of the substrate doctrine owned by `docs/core/runtime-model.md`. `Move bytes, not truth` is the rule this document exists to realize, and `push work down, not authority` is why a NanoHost may hold every materialization without owning any of them. Those rules are read from their Core owner and MUST NOT be restated here.
 
-NanoCore remains the only durable authority for Workspace, Thread, Turn, Item, AgentSession, scheduler, permission, Vault, audit, review, and canonical OpenKit storage. One configured NanoHost performs already-authorized runtime effects and holds only disposable materializations, caches, scratch state, transient transcripts, and backend-private evidence.
+NanoCore remains the only durable authority for Workspace, Thread, Turn, Item, AgentSession, scheduler, permission, Vault, audit, review, and canonical OpenKit storage. One configured NanoHost performs already-authorized runtime effects and holds generic retained working volumes under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md), separately from disposable materializations, caches, scratch state, transient transfer buffers and backend-private evidence.
 
 The separation is logical first. It does not require a third storage service, shared writable filesystem, general file-synchronization engine, or new universal data record. Native systems retain their own authority: Git owns commits and repository merge behavior; a specifically accepted object-store contract owns its object bytes and version preconditions; OpenKit Artifact, Material, and Workspace synchronization owners retain product review and apply authority.
 
-Data crosses the boundary through exact immutable references and bounded owner-specific transfer. A later Turn receives an exact reviewed Artifact version, remote Git commit, or external object version through a fresh materialization. Running sandboxes do not synchronize directly with each other and do not write canonical Workspace state.
+Data crosses the boundary through exact immutable references and bounded owner-specific transfer. A new imported source receives an exact reviewed Artifact version, remote Git commit or external object version through governed materialization. Continued work may reuse its authorized retained volume without resetting arbitrary working bytes; that reuse is not acceptance of those bytes as an imported source version. Running sandboxes do not synchronize directly with each other and do not write canonical Workspace state.
 
 Large bytes remain outside NanoCore-to-NanoHost control, readiness, and semantic-route streams. Native transfer paths carry their own bytes, while the exact V1 single-file effects and fixed Dockerfile input use one distinct fixed file-data stream on the same authoritative physical HTTP/2 connection; sharing that connection grants the data stream no control semantics or authority.
 
@@ -124,7 +128,7 @@ Only an existing owner may create or mutate those records. A NanoHost report, tr
 
 NanoHost-local runtime storage contains disposable materializations, caches, scratch files, temporary bundles, transcripts awaiting accepted transfer, backend state, and process-local evidence. The caches it may hold are caches of content it retrieved or produced, never of authority it was granted.
 
-It is not canonical Workspace, Artifact, Material, knowledge, review, or work history. It may be discarded at AgentSession or Runtime Epoch cleanup according to the runtime owner. Any evidence required after cleanup must first be imported into an existing durable owner.
+It is not canonical Workspace, Artifact, Material, knowledge, review, or work history. Only explicitly disposable runtime storage may be discarded by AgentSession or Runtime Epoch cleanup. The separately owned retained volumes survive those events in full, including unknown and ignored contents, without becoming product truth. Required product evidence still crosses the existing accepted import boundary; persistence alone is not evidence acceptance.
 
 ### Native Data Systems
 
@@ -194,14 +198,14 @@ It does not create a new Artifact lifecycle, make Artifact a universal editable 
 
 Use one independently deployed NanoHost projected by the configured `RuntimeTarget` while preserving NanoCore as the sole durable product and scheduling authority.
 
-For every worker attempt, NanoCore resolves exact existing authority into immutable references and bounded descriptors. The NanoHost materializes those inputs into disposable local storage, runs the worker under the separate runtime specification, collects bounded output, and returns exact digests, manifests, and transfer results to the existing Artifact, Material, Workspace synchronization, Item, and audit owners.
+For every worker attempt, NanoCore resolves exact existing authority into immutable references and bounded descriptors. The NanoHost refreshes disposable request inputs separately from retained work, initializes new working targets without overwrite or reuses an explicitly admitted existing target under current source checks, runs the worker under the separate runtime specification, collects bounded output, and returns exact digests, manifests, and transfer results to the existing Artifact, Material, Workspace synchronization, Item, and audit owners.
 
 The target flow is:
 
 ```text
 canonical OpenKit records and native source authority
   -> exact Git commit, Artifact version, object version, or bounded bundle descriptor
-  -> one-way NanoHost-local materialization
+  -> fresh request materialization plus first initialization or admitted retained-work reuse
   -> bounded worker execution
   -> staged native output plus exact digest and lineage
   -> Artifact Review, Material revision, or Workspace Sync Review
@@ -260,9 +264,9 @@ After NanoHost has produced a complete verified export result, uncertain deliver
 
 ## Cross-Turn And Cross-Agent Handoff
 
-A later worker Turn consumes an exact accepted Artifact version, Git commit, object version, Material revision, or Workspace snapshot through a new input descriptor and fresh NanoHost-local materialization.
+A later worker Turn imports another owner's accepted Artifact version, Git commit, object version, Material revision or Workspace snapshot through a new input descriptor. Continuing its own retained working volume follows the persistent-volume owner's current scope, source, single-attachment and no-overwrite admission instead of fresh destructive materialization.
 
-The handoff remains mediated by durable OpenKit and native source authority. Sandboxes do not synchronize directly, share a writable directory, exchange backend handles, or treat a previous sandbox's residual filesystem as input truth.
+The handoff remains mediated by durable OpenKit and native source authority. Independent Sandboxes do not synchronize directly, share a writable directory, exchange backend handles or treat another sandbox's residual filesystem as accepted input truth. An explicitly authorized replacement may reattach its own retained storage only after the predecessor effect domain is fenced; this is sequential volume reuse, not peer synchronization.
 
 Multiple agents may collaborate by producing and reviewing exact durable outputs under existing product records. This specification does not add a collaboration state machine, shared memory, multi-writer filesystem, or universal resource layer.
 
@@ -383,7 +387,7 @@ The rollout does not require object storage for bounded NanoCore-owned records o
 3. Every consumed input and accepted output has exact immutable identity, lineage, version or precondition, length, and digest proof appropriate to its owner.
 4. NanoHost cannot execute or interpret publish, apply, merge, rebase, push, or pull-request operations. A worker can invoke Git or hosting operations only under their separate source, permission, approval, Vault, and network-policy contracts and cannot use them to bypass canonical Workspace review or apply authority.
 5. Large data uses native or bounded transfer outside control and semantic-route streams; only the exact fixed V1 file-data stream may carry file-effect bytes and the fixed Dockerfile input response on the authoritative outer physical connection, and it carries no control semantics.
-6. A later Turn receives an exact durable version through fresh materialization rather than sandbox-to-sandbox synchronization or residual runtime state.
+6. Imported source versions retain exact durable lineage; continued work may reuse its own admitted retained volume without peer synchronization, destructive reset or automatic product acceptance.
 7. Missing, stale, conflicting, interrupted, and unknown outcomes remain truthful and produce no automatic merge, replay, replacement, or winner.
 8. No schema, service, state, test, or documentation implies a second NanoHost, second active slot, fleet, generic synchronization layer, shared writable filesystem, or universal Artifact abstraction.
 9. One distinct fixed file-data stream on the authoritative outer physical HTTP/2 connection carries the V1 single-file effects and the exact `image.build/input` response with at most one active stream. The file effects retain the current authenticated Gateway client, ready sandbox, directional import inventory proof, output path-only declaration, NanoHost-produced export facts, successor-only correlation, and canonical NanoCore handoff; the Dockerfile carriage retains inline AEP/package lineage, empty-context independence, pre-build verification, failure-result-only successor recovery, and no refetch. Neither adds a control payload, slot or path for Dockerfile input, listener, credential, SSH or CLI surface, second connection, queue, journal, service, framework, or generic envelope.

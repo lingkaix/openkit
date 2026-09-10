@@ -1,9 +1,13 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-08-21
+updated: 2026-09-10
 ---
 # AgentSession Continuity
+
+## Persistent Data Is Separate From Native Continuity
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) permits a freshly authorized successor to reattach its own group's complete retained volume after predecessor writers are fenced. This amends disposable-only successor/file fallback rules: unimported files and native data remain available as data, without becoming exact-version input or native continuation authority. Exact handle, immutable mode, Thread identity and sequence checks are unchanged; no `--last`, generic restore, hidden process-state inheritance or active-Turn replay is introduced. A successor gets fresh control/credentials even when it sees the same retained files.
 
 ## Owns
 
@@ -122,7 +126,7 @@ Restart recomputes desired inputs from current owners and adopts only an exact s
 
 A fresh successor AgentSession is allowed for a separately authorized attempt only after the predecessor is terminal and runtime-fenced and current manifest resolution, policy, Vault grants, Sandbox requirements, AEP compatibility, Workspace materialization, and scheduler admission succeed.
 
-The successor reads prior context from Core-owned Thread, Item, Artifact, Knowledge, and evidence records. It does not inherit unimported Sandbox files, worker-private caches, native provider sessions, raw resume handles, or hidden runtime state.
+The successor reads prior context from Core-owned Thread, Item, Artifact, Knowledge, and evidence records. It may reattach its authorized retained volume as working data, including unimported files and caches, but does not inherit native provider authority, raw resume handles or live hidden execution state.
 
 The fallback preserves the original attempt. It MUST NOT rewrite an interrupted Turn, claim that an uncertain external effect did not happen, or reuse the previous request identity to repeat a side effect.
 
@@ -158,7 +162,7 @@ Normal product admission now derives the exact static SessionCompatibilityKey be
 - Later-Turn tests prove exact same-Thread reuse, one current AgentSession, exact compatibility-key matching, every hygiene boundary, fresh authority and input lineage, predecessor retirement before successor creation, rejection of cross-Thread reuse, and absence of AgentSession controls and identity from ordinary App API projections.
 - No current tests are required for snapshot creation, restore precedence, rollback, fork, clone, superset compatibility, or an exhaustive recovery matrix.
 
-Acceptance requires exact or rejected reconnect, same-Thread exact-compatible idle reuse with fresh authority, sole-current successor replacement when reuse is forbidden, preserved prior history, no secret or unimported Workspace state inheritance, no automatic duplicate attempt, no ordinary product exposure, and a working successor path for a new authorized request.
+Acceptance requires exact or rejected reconnect, same-Thread exact-compatible idle reuse with fresh authority, sole-current successor replacement when reuse is forbidden, preserved prior history, no secret or unproved execution-authority inheritance, no automatic duplicate attempt, no ordinary product exposure, and a working successor path for a new authorized request.
 
 ## Consequences
 

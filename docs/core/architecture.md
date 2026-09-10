@@ -1,5 +1,6 @@
 ---
 status: Accepted
+updated: 2026-09-10
 ---
 # Core Architecture
 
@@ -58,7 +59,7 @@ Adding an agent runtime must not require runtime-specific branches in Core produ
 
 An Agent Runtime performs bounded heavy execution under the supplied assignment and authority. It may produce candidate output, evidence, native session state, and effect requests through its adapter.
 
-Runtime durability does not make runtime-native state authoritative. A runtime must not write Core-owned product state directly or bypass the adapter and Core validation boundary.
+Runtime durability preserves useful working bytes independently of a replaceable execution resource. Container or VM technology remains behind the execution boundary; retained storage and image selection MUST NOT turn NanoCore into a backend-specific VM manager. Runtime durability does not make runtime-native state authoritative for Core product records. A runtime must not write Core-owned product state directly or bypass the adapter and Core validation boundary.
 
 ## Workspace Services
 

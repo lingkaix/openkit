@@ -1,9 +1,15 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-06
+updated: 2026-09-10
 ---
 # Pi Worker Adapter
+
+## Generic Volume Retention Amendment
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch/control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory; closing still invalidates the exact binding/handle and proves writer absence. Retained native histories, memory, configuration and unknown files do not select a conversation or grant tools/credentials.
+
+The pinned native command, result parser and feature restrictions remain owned here. Whole-volume retention alone does not enable native session resume, hooks, extensions, saved-session discovery or ambient configuration that the current adapter does not support. A supported exact resume requires the existing current AgentSession proof; otherwise a fresh native conversation may use retained files as data. The existing runtime-state deletion implementation is not yet aligned with this amendment.
 
 ## Summary
 
@@ -46,7 +52,7 @@ The current bounded native command uses JSON mode with all ambient resource and 
 pi --mode json --no-approve --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --offline --provider <provider> --model <model> <turn-input>
 ```
 
-The safe child environment sets `PI_CODING_AGENT_DIR` to a fresh AEP-controlled turn root plus `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, and the one manifest-declared standard provider credential environment variable. The adapter spawns the argv directly without a shell and never uses `--api-key`.
+The safe child environment sets `PI_CODING_AGENT_DIR` to the admitted stable Thread-private data directory within a retained volume plus `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, and the one manifest-declared standard provider credential environment variable. The adapter spawns the argv directly without a shell and never uses `--api-key`.
 
 Pi also provides newline-delimited JSON RPC mode with native commands including prompt, steer, follow-up, abort, session operations, and extension UI request and response. OpenKit does not adopt RPC mode in this change because the accepted product envelope is one bounded worker turn and only interrupt has a current shared control mapping.
 
@@ -69,7 +75,7 @@ The adapter does not choose provider credentials, trust arbitrary project resour
 
 `prepare` returns the exact native launch command, the safe Pi environment above, and a request for bounded exact stdout capture. The plan has no config-artifact field.
 
-The fixed fail-closed flags prevent the image from silently loading project extensions, Skills, prompt templates, themes, context files, or saved sessions. `--no-approve` bypasses project-trust approval for the already governed workspace; it is not a general approval-state control. The fresh `PI_CODING_AGENT_DIR` prevents global `SYSTEM.md`, `APPEND_SYSTEM.md`, settings, packages, auth, and other home-directory resources from entering the run.
+The fixed fail-closed flags prevent the image from silently loading project extensions, Skills, prompt templates, themes, context files, or saved sessions. `--no-approve` bypasses project-trust approval for the already governed workspace; it is not a general approval-state control. Retained `PI_CODING_AGENT_DIR` bytes survive collection; pinned discovery restrictions and current AEP authority continue to control what can execute. If that version cannot safely isolate an authority-bearing native configuration field, preparation rejects it or uses the existing ephemeral launch override; it does not erase retained data to obtain a clean run.
 
 No environment variable, AEP extension, test option, or image diagnostic may replace the adapter-produced argv. Tests inject a process runner or a static test adapter without creating a production command override, and NanoCore never constructs a Pi command.
 
@@ -126,7 +132,7 @@ Pi-specific install commands, binary paths, resource flags, event fixtures, and 
 - interruption wins over partial assistant content
 - worker-control failure stops Pi through the shared harness
 - undeclared resource or extension loading is an image/manifest policy failure, not a reason to broaden the adapter
-- the harness deletes the turn-scoped Pi agent root after collection and retains no native session state
+- the harness preserves the admitted Pi data root after collection and retains no native resume authority
 
 ## Capability Declaration
 
@@ -155,7 +161,7 @@ Required adapter tests cover:
 - malformed JSON, missing final output, and byte-bound failures
 - non-zero exit and redacted diagnostics
 - exact fail-closed resource, approval, session, provider, model, update, and telemetry controls
-- turn-scoped `PI_CODING_AGENT_DIR` isolation proving global prompts, settings, packages, and auth cannot load
+- retained Thread-private `PI_CODING_AGENT_DIR` with current launch controls proving unsupported global prompts, settings, packages and stale auth cannot become active authority; close preserves its opaque bytes
 - conformance with the shared `bounded-turn` adapter contract also used by OpenCode
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.

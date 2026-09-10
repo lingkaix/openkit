@@ -1,8 +1,13 @@
 ---
 status: Accepted
+updated: 2026-09-10
 implementation: Partial
 ---
 # Chat Mode And Core Assistant
+
+## Worker Environment Operations
+
+The private administration entry may prepare and apply an exact Worker environment change under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md), using the same current-authority, candidate/base revision, payload-bound confirmation and owned command paths as Desktop Skill operation. It may propose a Dockerfile/image declaration and inspect build/attachment results; the existing NanoHost image owner executes the build. Preparation does not activate an image or interrupt work. Activation previews the affected sharing group, drains or explicitly interrupts its writers, retains volumes and admits new execution only after checks. This narrow owned operation amends the earlier setup-inspection-only restriction; it grants no internal shell, Docker socket, arbitrary host file operation, service restart or privilege escalation.
 
 ## Owns
 

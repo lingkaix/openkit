@@ -1,6 +1,6 @@
 ---
 status: Accepted
-updated: 2026-08-28
+updated: 2026-09-10
 ---
 # Sandbox Model
 
@@ -120,7 +120,7 @@ When both thresholds are met and no resident AgentSession holds an active Turn, 
 
 The rebuild MUST NOT start while work is in flight and MUST NOT interrupt a Turn. If drain, close, initialization, materialization, or readiness fails, the old or partial Sandbox remains non-admitting, required cleanup follows the ordinary wider failure boundary, and the Workspace loses only warm latency; later work uses another fresh Sandbox or returns the existing typed unavailable or cleanup-required outcome.
 
-Off-peak rebuild MAY reduce the delta at the next freshness barrier, but it MUST NOT authorize stale reads, replace that barrier, prove credential revocation or security and adjudication isolation, preserve non-canonical local material, justify snapshots or restore, widen warm-pool scope, or become a recovery dependency. Observable conformance requires the trigger to be the configured idleness-plus-age pair, zero active Turns at drain, ordinary re-initialization from current owners, and a failed rebuild to yield no admitted capacity or correctness claim.
+Off-peak rebuild MAY reduce the delta at the next freshness barrier, but it MUST NOT authorize stale reads, replace that barrier, prove credential revocation or security and adjudication isolation, discard retained working volumes, justify process snapshots or restore, widen warm-pool scope, or become a recovery dependency. Observable conformance requires the trigger to be the configured idleness-plus-age pair, zero active Turns at drain, ordinary re-initialization from current owners, and a failed rebuild to yield no admitted capacity or correctness claim.
 
 ## Isolation Areas
 
@@ -167,13 +167,19 @@ For reusable container and managed-sandbox sessions, the sandbox should expose a
 
 The slot paths and access envelope are sandbox constraints.
 
-The files, repositories, generated context, object-store snapshots, artifacts, transcripts, and outputs placed inside those slots are workspace synchronization content.
+Files in declared source/output slots follow their synchronization owners. Generic retained working volumes also contain arbitrary working data outside Git, Artifact or synchronization inventories; slot refresh MUST NOT erase that data.
 
 When a backend cannot change mount paths, working directories, provider-visible process environment, or static filesystem policy after sandbox start, Core must choose a replacement sandbox rather than pretending the running sandbox changed.
 
 The sandbox summary may describe stable slot refs and access classes, but it must not expose raw host paths, backend mount handles, upload handles, temporary object-store keys, or provider credential material.
 
-## Deferred Snapshot And Persistence Boundary
+## Retained Working Volumes
+
+[Storage](storage.md) owns generic whole-volume retention. Sandbox owns only the admission and containment of their attachment. A replacement may attach the same retained storage after all previous writers are fenced and the image's inherited storage layout, access audience, mount policy and ownership remain compatible. A volume is not an execution identity or an authority cache. Contents need no per-file-format support to survive.
+
+A storage association MUST NOT grant access to another Sandbox's retained files merely because Workspace, user, image or backend matches. Sharing remains exactly the existing explicitly admitted Sandbox trust boundary; independent adjudication receives separate storage and only its authorized candidate inputs. Static mount changes require replacement when the backend cannot apply them safely in place. Containers derived from the same compatible base SHOULD reuse storage without copying only Git files or registered Artifacts. Root filesystem and process snapshots are separate features.
+
+## Deferred Backend Snapshot Boundary
 
 Backend snapshot, suspend, resume, rollback, and clone features have no current OpenKit record, lifecycle, or behavior contract. They are future and non-authorizing. Any later owning specification must distinguish:
 

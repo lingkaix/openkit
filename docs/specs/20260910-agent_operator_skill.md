@@ -5,6 +5,10 @@ date: "2026-09-10"
 ---
 # Agent Operator Skill
 
+## Persistent Worker Environment Procedure
+
+The packaged operations Skill must project [Persistent Worker Volumes](20260910-persistent_worker_volumes.md): prepare and verify the exact image first, preview and authorize affected work, stop/fence prior writers, reuse whole compatible volumes, observe readiness and preserve failure/unknown outcomes. Routine App update is separate from NanoHost update; neither permits volume deletion. Backup claims state execution-host coverage, and whole-storageRef purge requires its explicit authority. The same owned operations are available to internal administration; the Skill gains no Docker-socket or arbitrary-host privilege.
+
 ## Owns
 
 This specification owns the independently distributable `openkit-ops` Skill: its installation, configuration, upgrade, diagnosis and recovery guidance; its host capability boundary; the migration of user manuals into maintained Skill references; and its package completeness and verification requirements.

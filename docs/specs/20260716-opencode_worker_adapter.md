@@ -1,9 +1,15 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-06
+updated: 2026-09-10
 ---
 # OpenCode Worker Adapter
+
+## Generic Volume Retention Amendment
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch/control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory; closing still invalidates the exact binding/handle and proves writer absence. Retained native histories, memory, configuration and unknown files do not select a conversation or grant tools/credentials.
+
+The pinned native command, result parser and feature restrictions remain owned here. Whole-volume retention alone does not enable native session resume, hooks, extensions, saved-session discovery or ambient configuration that the current adapter does not support. A supported exact resume requires the existing current AgentSession proof; otherwise a fresh native conversation may use retained files as data. The existing runtime-state deletion implementation is not yet aligned with this amendment.
 
 ## Summary
 
@@ -63,7 +69,7 @@ The shared harness supplies the adapter with:
 
 The adapter does not resolve providers, credentials, models, permissions, Skills, MCP authorization, or workspace policy.
 
-The shared harness supplies one fresh empty session state root. `prepare` assigns a fresh `HOME` plus turn-scoped `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` directories beneath it and sets `OPENCODE_AUTH_CONTENT={}`, `OPENCODE_PURE=1`, `OPENCODE_DISABLE_SHARE=1`, `OPENCODE_AUTO_SHARE=0`, `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`, `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`, `OPENCODE_DISABLE_MODELS_FETCH=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1`.
+The shared harness supplies the admitted Thread-private retained home and separate ephemeral launch state. `prepare` assigns `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` within that retained home and sets `OPENCODE_AUTH_CONTENT={}`, `OPENCODE_PURE=1`, `OPENCODE_DISABLE_SHARE=1`, `OPENCODE_AUTO_SHARE=0`, `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`, `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`, `OPENCODE_DISABLE_MODELS_FETCH=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, and `OPENCODE_DISABLE_LSP_DOWNLOAD=1`.
 
 ## Launch Plan
 
@@ -147,7 +153,7 @@ OpenCode-specific install commands, binary paths, environment isolation, event f
 - a non-zero native exit returns a failed adapter classification with bounded, redacted diagnostics even when completed text exists
 - interruption wins over any partial final assistant content
 - worker-control failure stops the OpenCode process through the shared harness
-- the harness deletes the turn-scoped XDG roots after collection and never retains native session ids
+- the harness preserves the retained home/XDG data after collection while invalidating the bounded-turn binding and retaining no native resume authority
 
 ## Capability Declaration
 
@@ -172,7 +178,7 @@ Required adapter tests cover:
 - unknown event tolerance
 - malformed JSON, missing final output, and byte-bound failures
 - non-zero exit and redacted diagnostics
-- ambient config/plugin/share/MCP isolation, turn-scoped XDG state, and post-collection deletion
+- ambient config/plugin/share/MCP isolation under current launch policy, retained Thread-private HOME/XDG bytes, and post-collection deletion of only ephemeral control/output slots
 - conformance with the shared `bounded-turn` adapter contract also used by Pi
 
 Shared harness tests cover process-group interruption uniformly for Codex, OpenCode, and Pi.

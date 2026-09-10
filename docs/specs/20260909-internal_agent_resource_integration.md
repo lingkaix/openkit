@@ -5,6 +5,10 @@ date: 2026-09-09
 ---
 # Internal Agent Resource Integration
 
+## Owned Worker Environment Management
+
+The private administration entry may invoke the exact environment preparation/activation/status and whole-storageRef purge owners specified by [Persistent Worker Volumes](20260910-persistent_worker_volumes.md). This is a bounded Core command integration, not an internal shell, Docker client, generic Worker lifecycle API or Plugin-selected Tool. The existing runtime and authorization owners execute each effect; ordinary Assistant discovery still cannot enlarge its Tool array.
+
 ## Owns
 
 This specification owns trusted assembly of selected Skills, internal-capability MCP bindings and native Kernel/UI Tools for NanoCore's internal Assistant: selection/configuration, immutable per-run admission, internal capability lineage, bounded Skill reads, MCP approval/cancellation integration and the caller's publication handoff. It is the implementation seam between existing owners, not a second Agent Runtime, catalog, Plugin loader, Tool registry or effect runner.

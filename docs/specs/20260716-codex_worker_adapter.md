@@ -1,9 +1,15 @@
 ---
 status: Accepted
 implementation: Partial
-updated: 2026-09-05
+updated: 2026-09-10
 ---
 # Codex Worker Adapter
+
+## Generic Volume Retention Amendment
+
+[Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns complete opaque data/home volumes and supersedes this adapter's deletion of native data at ordinary Turn or AgentSession close. The adapter locates its data directory in its admitted stable Thread-private home and leaves all contents intact, without a list of known filenames. Generated launch/control material remains in separate ephemeral roots. Opening or closing a native binding must not recursively erase the retained data directory; closing still invalidates the exact binding/handle and proves writer absence. Retained native histories, memory, configuration and unknown files do not select a conversation or grant tools/credentials.
+
+The pinned native command, result parser and feature restrictions remain owned here. Whole-volume retention alone does not enable native session resume, hooks, extensions, saved-session discovery or ambient configuration that the current adapter does not support. A supported exact resume requires the existing current AgentSession proof; otherwise a fresh native conversation may use retained files as data. The existing runtime-state deletion implementation is not yet aligned with this amendment.
 
 ## Summary
 
@@ -72,7 +78,7 @@ The shared harness supplies the adapter with:
 
 The adapter must not read NanoCore private storage or invent missing provider, model, policy, or credential decisions.
 
-The shared Harness supplies one fresh empty AgentSession-private state root. `openSession` selects its fixed `CODEX_HOME`, reports the native handle `pending`, and starts no process because the pinned CLI creates a conversation only with the first prompt. `prepareTurn` selects a fresh Turn-private final-message path beneath that AgentSession, uses the first command when no handle exists, and uses exact UUID resume when the binding already holds one proved handle. It returns no config or authentication files. AEP-resolved authentication and provider material may enter the child only through backend-materialized credential bindings and adapter-owned argv or safe environment. For each exact selected MCP server id, the adapter adds only `mcp_servers.<id>.url="http://127.0.0.1:17892/capabilities/mcp/<id>"` and `mcp_servers.<id>.bearer_token_env_var="OPENKIT_WORKER_CAPABILITY_TOKEN"` through inline `-c`; the raw token remains only in that environment variable and never enters argv. Unselected executable MCP entries, hooks, memories, sibling AgentSessions, ambient user state, and config artifacts are absent. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating Workspace policy files as hidden execution authority.
+The shared Harness supplies the admitted retained Thread-private data root plus a fresh AgentSession-private control binding. `openSession` selects its fixed `CODEX_HOME`, reports the native handle `pending`, and starts no process because the pinned CLI creates a conversation only with the first prompt. `prepareTurn` selects a fresh Turn-private final-message path beneath that AgentSession, uses the first command when no handle exists, and uses exact UUID resume when the binding already holds one proved handle. It returns no config or authentication files. AEP-resolved authentication and provider material may enter the child only through backend-materialized credential bindings and adapter-owned argv or safe environment. For each exact selected MCP server id, the adapter adds only `mcp_servers.<id>.url="http://127.0.0.1:17892/capabilities/mcp/<id>"` and `mcp_servers.<id>.bearer_token_env_var="OPENKIT_WORKER_CAPABILITY_TOKEN"` through inline `-c`; the raw token remains only in that environment variable and never enters argv. Unselected executable MCP entries and hooks remain disabled; retained data/configuration does not widen current launch authority, and sibling AgentSessions remain separately addressed. `--ignore-user-config` and `--ignore-rules` prevent the native runtime from treating Workspace policy files as hidden execution authority.
 
 ## Launch Plan
 
@@ -82,7 +88,7 @@ No environment variable, AEP extension, test option, or image diagnostic may rep
 
 `collectTurn` requires exactly one `thread.started` event whose UUID equals the binding's existing native handle on resume or establishes the handle on the first Turn. It also requires the session-local rollout metadata to identify that same thread before returning the lowercase SHA-256 handle digest used by private Harness proof. The raw UUID remains only in the AgentSession-private adapter state and is never a product field, ordinary diagnostic, command result, or authorization input.
 
-`inspectSession` proves whether no child is active, whether the exact handle and same-thread session metadata remain available, and whether Turn-private writers are absent. `closeSession` is admitted only without an active child, removes the complete AgentSession-private `CODEX_HOME` and Turn-local outputs, and returns exact absence proof. The adapter contract has no separate interrupt or provenance operation; the shared Harness owns process-group termination, while `prepareTurn` may attach the existing Codex-local provenance sink lifecycle to the launch plan.
+`inspectSession` proves whether no child is active, whether the exact handle and same-thread session metadata remain available, and whether Turn-private writers are absent. `closeSession` is admitted only without an active child, removes its ephemeral native-handle/control binding and Turn-local outputs, preserves the complete retained `CODEX_HOME`, and returns exact writer/binding absence proof. The adapter contract has no separate interrupt or provenance operation; the shared Harness owns process-group termination, while `prepareTurn` may attach the existing Codex-local provenance sink lifecycle to the launch plan.
 
 ## Native Output Mapping
 
@@ -149,7 +155,7 @@ Codex runtime provenance is optional and governed by `docs/specs/20260711-worker
 
 The Codex adapter owns the optional capture lifecycle attached by `prepareTurn` that streams pinned native rollout evidence and projects its index and manifest into the shared session evidence directory. The shared Harness owns lifecycle timing and failure cleanup; NanoCore owns evidence verification and import.
 
-The AgentSession-private rollout forest is required native continuity state and remains until `session.close`, independent of whether S33 product-safe provenance export is enabled. S33 controls only bounded evidence projection into declared outputs; it does not control native state persistence. Turn-private final-message and transient capture files are removed after collection, while `session.close` removes the remaining private `CODEX_HOME` after exact child and writer absence.
+The AgentSession-private rollout forest is required native continuity state and remains across `session.close` as retained data, independent of whether S33 product-safe provenance export is enabled. S33 controls only bounded evidence projection into declared outputs; it does not control native state persistence. Turn-private final-message and transient capture files are removed after collection, while `session.close` revokes its binding after exact child and writer absence without deleting the retained `CODEX_HOME`.
 
 No other adapter is required to imitate Codex rollout files.
 
@@ -186,7 +192,7 @@ Required adapter tests cover:
 - proof that credential values never enter argv or evidence and direct routes fail before spawn
 - rejection of retired environment and AEP-extension command overrides
 - final-message success, absence, non-file, and size-bound behavior
-- distinct-Thread AgentSession-private `CODEX_HOME` roots, rejection of two current bindings for one Thread, ignored ambient config/rules, pending first-start settlement, exact handle establishment through terminal `collectTurn` and `session.inspect`, exact-UUID resume by a later process instance, sibling rejection, and complete AgentSession-close cleanup
+- distinct-Thread AgentSession-private `CODEX_HOME` roots, rejection of two current bindings for one Thread, ignored ambient config/rules, pending first-start settlement, exact handle establishment through terminal `collectTurn` and `session.inspect`, exact-UUID resume by a later process instance, sibling rejection, and complete ephemeral binding/control/Turn-output cleanup at AgentSession close while preserving the admitted opaque CODEX_HOME
 - non-zero exit and redacted failure diagnostics
 - exact stdout forwarding when provenance is enabled
 - conformance with the shared adapter contract
