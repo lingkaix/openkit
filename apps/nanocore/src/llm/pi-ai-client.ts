@@ -3073,19 +3073,12 @@ function cloneAdapterCost(cost: Model<string>['cost']): Model<string>['cost'] {
  * Replaces explicitly authored cost leaves on cloned stock tiers. Catalog flats stay off the tier rows. Thresholds and omitted leaves remain stock.
  *
  * @param tiers Cloned stock request-wide tiers.
- * @param authored Explicit operator cost leaves, models.dev names.
+ * @param authored Provider `modelMetadata` cost leaves. Zod optional keys may be omitted or undefined.
  * @returns New tier rows with authored leaves applied length-independently.
  */
 function overlayAuthoredCostLeavesOnTiers(
   tiers: NonNullable<Model<string>['cost']['tiers']>,
-  authored:
-    | {
-        readonly cache_read?: number;
-        readonly cache_write?: number;
-        readonly input?: number;
-        readonly output?: number;
-      }
-    | undefined
+  authored: NonNullable<ProviderProfile['modelMetadata']>[string]['cost']
 ): NonNullable<Model<string>['cost']['tiers']> {
   const overlay = readAuthoredAdapterCostLeaves(authored);
   if (!overlay) {
@@ -3104,18 +3097,11 @@ function overlayAuthoredCostLeavesOnTiers(
 /**
  * Reads explicitly authored adapter cost leaves without inheriting catalog flats.
  *
- * @param authored Operator cost object keyed by models.dev names.
+ * @param authored Provider `modelMetadata` cost leaves. Zod optional keys may be omitted or undefined.
  * @returns Known authored leaves, or undefined when none are present.
  */
 function readAuthoredAdapterCostLeaves(
-  authored:
-    | {
-        readonly cache_read?: number;
-        readonly cache_write?: number;
-        readonly input?: number;
-        readonly output?: number;
-      }
-    | undefined
+  authored: NonNullable<ProviderProfile['modelMetadata']>[string]['cost']
 ):
   | {
       cacheRead?: number;
