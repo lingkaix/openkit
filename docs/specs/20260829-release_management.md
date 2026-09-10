@@ -17,7 +17,7 @@ updated: 2026-09-09
 ## Does Not Own
 
 - Container image contents, image taxonomy, OCI labels, or GHCR naming, which are owned by `docs/specs/20260708-container_image_packaging.md`.
-- The end-user Skill package contents or host contract, which are owned by `docs/specs/20260713-openkit_agent_skill_interface.md`.
+- Skill package contents and host contracts, owned by `docs/specs/20260713-openkit_agent_skill_interface.md` and `docs/specs/20260910-agent_operator_skill.md`.
 - NanoHost runtime or distribution readiness, which is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 - Deployment host support profiles, installed dependencies, resource recommendations, and host-requirement verdicts, which are owned by `docs/specs/20260909-deployment_host_requirements.md`.
 - Test-layer semantics, which are owned by `docs/specs/20260529-test_strategy.md`.
@@ -91,8 +91,9 @@ The current release bundle contains exactly these controlled assets:
 | --- | --- | --- |
 | Catalog entries with `release: true` | GHCR | Exact version tag, version without `v`, source-revision tag, digest, and stable-only `latest` |
 | End-user `openkit` Skill | GitHub Release attachment | `openkit-skill-<tag>.tar.gz` containing the complete `skills/openkit/` tree and repository license |
+| Operations `openkit-ops` Skill | GitHub Release attachment | `openkit-ops-skill-<tag>.tar.gz` containing the complete `skills/openkit-ops/` tree and repository license |
 | NanoHost Distributions | GitHub Release attachments | `openkit-nanohost-<tag>-linux-amd64.tar.gz` and `openkit-nanohost-<tag>-linux-arm64.tar.gz`, each satisfying the exact target, tree, pin, installer, license, and reproducibility contract owned by the NanoHost specification |
-| Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over the attached Skill and NanoHost archives |
+| Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over both attached Skill archives and the NanoHost archives |
 | Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, automatic gate result, manual-gate disposition, and portable-asset checksum |
 
 GitHub-generated source archives are convenience snapshots and are not controlled release artifacts or checksum authorities.
@@ -177,7 +178,7 @@ For a newly promoted prerelease, the workflow MUST prove that it did not change 
 
 The workflow MUST log out of GHCR and inspect the exact `worker-common` digest without credentials.
 
-The workflow MUST download every controlled GitHub Release attachment and verify `SHA256SUMS`. It MUST inspect the Skill archive and run the bundled CLI's local operation discovery under the supported Node runtime without a NanoCore connection. It MUST run the same executable NanoHost release-asset verifier used before publication against both downloaded NanoHost archives, including exact tree, target and generated-manifest consistency, inner checksums, target-matched ELF identity, and a newly created contained `DESTDIR` installation. Cross-target staging makes no live NanoHost readiness claim; fresh target-matched real-host qualification is separate.
+The workflow MUST download every controlled GitHub Release attachment and verify `SHA256SUMS`. It MUST inspect both complete Skill archives. Run the public Skill CLI's local operation discovery under the supported Node runtime without a NanoCore connection, and verify the operations Skill entrypoint and resolvable packaged references from the extracted archive outside the checkout. It MUST run the same executable NanoHost release-asset verifier used before publication against both downloaded NanoHost archives, including exact tree, target and generated-manifest consistency, inner checksums, target-matched ELF identity, and a newly created contained `DESTDIR` installation. Cross-target staging makes no live NanoHost readiness claim; fresh target-matched real-host qualification is separate.
 
 The GitHub Release prerelease state MUST agree with the tag, and its notes MUST name the source commit, workflow run, image digests, automatic gates, manual-gate disposition, visibility posture, NanoHost target and current R001 runtime status, and portable-asset checksum.
 

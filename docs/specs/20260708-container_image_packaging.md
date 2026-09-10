@@ -642,7 +642,7 @@ Updated tests that enforce the manifest and Dockerfile paths:
 
 Runtime documentation updated with the new worker image name:
 
-- `docs/manual/nanocore-deployment-modes.en.md`
+- `skills/openkit-ops/references/nanocore-deployment-modes.en.md`
 - `apps/nanocore/README.md`
 
 Release workflow state:
@@ -855,5 +855,5 @@ CI acceptance:
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20260703-openshell_mechanism_internalization.md`
 - `docs/specs/superseded/20260518-staging_docker_distribution.md`
-- `docs/manual/nanocore-deployment-modes.en.md`
+- `skills/openkit-ops/references/nanocore-deployment-modes.en.md`
 - `.github/workflows/ci.yml`

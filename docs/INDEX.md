@@ -130,7 +130,8 @@ and are not listed here.
 - `docs/specs/20260909-persistent_deployment_acceptance.md` — Accepted, Partial — This specification owns ordinary functional acceptance on a persistent internal OpenKit deployment: the composition of in-product work and external Skill-drive…
 - `docs/specs/20260909-personal_memory_and_knowledge_learning.md` — Accepted, Not Started — This specification owns the User/Workspace/Server projections of the existing Knowledge Store, personal Memory retrieval, conversation-source intake, bounded a…
 - `docs/specs/20260909-thread_visibility_and_sharing.md` — Accepted, Not Started — This specification owns private versus Workspace-shared Thread defaults, durable visibility metadata, discovery and publication enforcement, explicit sharing,…
-- `docs/specs/20260910-agent_operator_skill.md` — Draft, Not Started — This specification owns the independently distributable `openkit-ops` Skill: its installation, configuration, upgrade, diagnosis and recovery guidance; its hos…
+- `docs/specs/20260910-agent_operator_skill.md` — Accepted, Not Started — This specification owns the independently distributable `openkit-ops` Skill: its installation, configuration, upgrade, diagnosis and recovery guidance; its hos…
+- `docs/specs/20260910-app_update_delivery.md` — Draft, Not Started — This specification owns explicitly administrator-directed NanoCore and Web replacement on one configured deployment: the bounded public update command, process…
 
 ## Terminal Specifications
 
@@ -213,12 +214,7 @@ Change plans are not indexed. List `docs/changes/` to see them.
 
 ## User Manuals
 
-- `docs/manual/getting-started.en.md` — Accepted — > Scope placeholder: This page intentionally records what the complete Getting Started manual must contain.
-- `docs/manual/nanocore-data-root-config.en.md` — Accepted — This manual describes the authored JSONC configuration loaded by NanoCore from `OPENKITDATAROOT`.
-- `docs/manual/nanocore-deployment-modes.en.md` — Accepted — This manual explains the two supported NanoCore product modes and their shared NanoHost worker-runtime boundary.
-- `docs/manual/nanocore-operations.en.md` — Accepted — > Scope placeholder: This page intentionally records the operator procedures that must be documented before OpenKit has a complete supported operations manual.
-- `docs/manual/sandbox-container-tests.en.md` — Accepted — A Worker Agent sandbox carries the OpenKit worker baseline and can provision a declared toolchain through mise, and that sandbox cannot start a container of it…
-- `docs/manual/using-openkit.en.md` — Accepted — > Scope placeholder: This page intentionally records what the complete end-user manual must contain.
+- `docs/manual/nanocore-data-root-config.en.md` — Accepted — The maintained NanoCore configuration reference is packaged in the operations Skill.
 
 ## External Snapshots
 

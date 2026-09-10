@@ -15,7 +15,7 @@ This file is the concise, always-loaded execution contract for work in this repo
 
 - [NONNEG-001] 我们的项目处在内部开发中，因此在做设计、决策、实现和修改时，不要考虑任何向后兼容的问题
 - [LANG-001] Repository code, comments, and documentation MUST be English Markdown where documentation applies. The two Chinese meta-instructions in this file and localized manuals are the only exceptions.
-- [LANG-002] `docs/manual/` follows the localized manual rules in `docs/documentation-model.md`.
+- [LANG-002] `skills/openkit-ops/references/` follows the localized manual rules in `docs/documentation-model.md`.
 - [NONNEG-002] 在输出任何文本时，禁止在一个完整的语句或段落内插入换行符
 
 The Safety Kernel stays hard for every task:
@@ -92,5 +92,5 @@ Apply these twelve principles as judgments, not as a mandatory workflow:
 - [LOCAL-001] Each important directory has a `README.md` for purpose, boundaries, commands, and workflow. An optional local `AGENTS.md` adds only directory-specific execution rules and must direct readers to the README first.
 - [LOCAL-006] Before app or package work, read its parent and local guides. For setup, CI, dependencies, generators, deployment, or operations, check `docs/toolchain.md` and the relevant cookbook.
 - [LOAD-001] Enter through `README.md`; use `docs/INDEX.md` to locate owners; load `docs/documentation-model.md` for documentation governance and `docs/change-execution.md` for material coordination.
-- [LOAD-003] `docs/manual/` contains non-authoritative user and operator projections. `CONTRIBUTING.md` owns human contribution workflow and is required for authorized commit work.
+- [LOAD-003] `skills/openkit-ops/` packages non-authoritative user and operator instructions; `docs/manual/` points there. `CONTRIBUTING.md` owns human contribution workflow and is required for authorized commit work.
 - [OM-011] External research stays uncommitted under `temp/research/`; promote only accepted conclusions into their canonical owner.

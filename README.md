@@ -43,23 +43,23 @@ OpenKit is in internal developer preview. The implemented product centers on Nan
 
 The NanoCore App API is the current stabilization boundary. The Web UI remains part of the product direction and follows stable NanoCore capabilities instead of defining Core behavior.
 
-For end-user guidance, start with the [Getting Started manual](./docs/manual/getting-started.en.md) and [Using OpenKit manual](./docs/manual/using-openkit.en.md). These two pages currently preserve the required manual scope while the release experience is still being completed.
+For end-user guidance, start with the [Getting Started manual](./skills/openkit-ops/references/getting-started.en.md) and [Using OpenKit manual](./skills/openkit-ops/references/using-openkit.en.md). These references are packaged in the independent `openkit-ops` Skill for Agent-assisted operation.
 
 ## For Operators
 
 ### Installation And Deployment
 
-Use the [NanoCore Deployment Modes manual](./docs/manual/nanocore-deployment-modes.en.md) for supported source and container deployment paths, prerequisites, startup, and verification. The [Deployment Model](./docs/deployment.md) is the cross-owner map for the underlying contracts.
+Use the [NanoCore Deployment Modes manual](./skills/openkit-ops/references/nanocore-deployment-modes.en.md) for supported source and container deployment paths, prerequisites, startup, and verification. The [Deployment Model](./docs/deployment.md) is the cross-owner map for the underlying contracts.
 
 ### Manual Configuration
 
-Use the [NanoCore DATA_ROOT Config manual](./docs/manual/nanocore-data-root-config.en.md) for server mode, authentication, NanoHost, Vault, providers, agents, defaults, and gateway configuration. Manual configuration is the operator escape hatch; it is not the intended day-to-day end-user experience.
+Use the [NanoCore DATA_ROOT Config manual](./skills/openkit-ops/references/nanocore-data-root-config.en.md) for server mode, authentication, NanoHost, Vault, providers, agents, defaults, and gateway configuration. Manual configuration is the operator escape hatch; it is not the intended day-to-day end-user experience.
 
 ### Updates, Maintenance, Backup, And Recovery
 
-The [NanoCore Operations manual](./docs/manual/nanocore-operations.en.md) records the required scope for upgrades, health checks, routine maintenance, backup and restore, credential continuity, runtime image changes, troubleshooting, and recovery. Its executable procedures will be filled in as the corresponding release paths stabilize.
+The [NanoCore Operations manual](./skills/openkit-ops/references/nanocore-operations.en.md) covers inspection, App updates, backup boundaries and offline recovery, distinguishing supported procedures from unavailable automation.
 
-Use the [Sandbox Container Tests manual](./docs/manual/sandbox-container-tests.en.md) only when verifying container behavior from an environment that cannot start nested containers.
+Use the [Sandbox Container Tests manual](./skills/openkit-ops/references/sandbox-container-tests.en.md) only when verifying container behavior from an environment that cannot start nested containers.
 
 ## For Developers And Contributors
 

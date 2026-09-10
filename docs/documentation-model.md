@@ -15,7 +15,7 @@ Engineers own current user intent. Documentation durably records interpreted int
 
 ## Document Types
 
-The following types are the complete set at any moment, and a file under `docs/` that does not fit one of them is a validation error. Complete is not the same as final: the set is closed against silent additions, not against growth. How it grows is defined under Type Induction.
+The following types are the complete set at any moment, and a file under `docs/` or the packaged operator-reference directory that does not fit one of them is a validation error. Complete is not the same as final: the set is closed against silent additions, not against growth. How it grows is defined under Type Induction.
 
 ### Intent Documents
 
@@ -118,7 +118,7 @@ These documents remain enumerated rather than directory-classified, which costs 
 
 ### User Manuals
 
-`docs/manual/*.<lang>.md`. Operator- and end-user-facing documentation of the built product: how to deploy, configure, run, and verify it. They carry no authority.
+`skills/openkit-ops/references/*.<lang>.md`. Operator- and end-user-facing instructions packaged for Agents operating the built product: how to deploy, configure, run, and verify it. They carry no authority. The independently distributable Skill is owned by `docs/specs/20260910-agent_operator_skill.md`; `docs/manual/README.md` is a discovery pointer, not a second instruction corpus. A localized discovery pointer may remain under `docs/manual/` only where a frozen historical link still needs that path; it contains no duplicated procedure and points to the single maintained reference. Other Skill references retain their local-guide classification.
 
 Manuals are the one localized type, because their readers are not required to read English. Every page states its language in a mandatory `.en.md` or `.zh.md` suffix, a page without one is a validation error, and `.en.md` is canonical: a translation may not exist without the English page it projects. Adding a language means extending the suffix set in `scripts/validate-doc-model.mjs`, not inventing a per-language type. Every other documentation type remains English-only and unsuffixed under the root `AGENTS.md`.
 
@@ -199,7 +199,7 @@ Documentation dependency direction is a hard rule. Authority flows one way; chan
 | **Specification** | allowed | allowed | **forbidden** |
 | **Change record** | required | required | n/a |
 
-Neither a Core document nor a specification may link to a change record in prose or metadata. Change records link the owning core, product, and specification documents for their change; authority never links back. Audit records link the specification or governance document whose rule produced them and the documents or surfaces they observed. Platform references and manuals link the contracts they project and do not restate rules another document owns: under Authority And Precedence a restated copy carries no authority, so it adds nothing while it agrees and misleads once it drifts. A platform reference path may not appear in a specification's `Core References` section, because that section names contract dependencies and a reference owns no behavioral contract; naming one in prose or Related Docs as a premise remains allowed. Specifications name their core dependencies in a Core References section and their peers in Related Docs. Links use repository-relative paths so they are mechanically checkable; every resolved link must name a file that exists.
+Neither a Core document nor a specification may link to a change record in prose or metadata. Change records link the owning core, product, and specification documents for their change; authority never links back. Audit records link the specification or governance document whose rule produced them and the documents or surfaces they observed. Platform references and manuals link the contracts they project and do not restate rules another document owns: under Authority And Precedence a restated copy carries no authority, so it adds nothing while it agrees and misleads once it drifts. A platform reference path may not appear in a specification's `Core References` section, because that section names contract dependencies and a reference owns no behavioral contract; naming one in prose or Related Docs as a premise remains allowed. Specifications name their core dependencies in a Core References section and their peers in Related Docs. Repository documents use repository-relative links so they are mechanically checkable; every resolved link must name a file that exists. Packaged operator references use sibling links for required installed material and may cite optional source authority through its public repository URL. An executable procedure cannot require an unresolved checkout-relative link; source-build procedures explicitly acquire the selected checkout before using its files.
 
 ## Index Contract
 

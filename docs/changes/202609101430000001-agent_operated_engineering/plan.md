@@ -25,6 +25,10 @@ The engineer offers another server for optional staging in response to the earli
 
 The engineer identifies the offered optional staging server as SSH alias `a1`. Read-only qualification may now use that alias; compare its destination with A2 before treating it as an independent machine. The existing two main paths remain the immediate delivery target.
 
+## Intent Epoch 6
+
+The engineer states that SSH a1 was a test/development server, all of its data may be deleted or overwritten, and requests complete cleanup of its accumulated temporary files. This authorizes identifying and removing A1 legacy test deployments, temporary artifacts and build caches after exact host/path identification. It does not authorize changing A2 or destroying the operating system and SSH access. Cursor `live-deployment` owns the bounded host cleanup; source/document writers remain unchanged.
+
 ## Owners
 
 Existing [persistent-deployment acceptance](../../specs/20260909-persistent_deployment_acceptance.md), [test strategy](../../specs/20260529-test_strategy.md)/L6, workflow, policy, Artifact/Evidence/Audit/Usage and [repository execution](../../change-execution.md) contracts retain authority. Gateway, Provider configuration and pi-ai backend owners define the model-parameter extension. A bounded update-delivery and operations-Skill owner must be accepted before new deployment behavior or a second distributable Skill is implemented. Release management retains publication and distribution identity; it does not own deployment effects.
@@ -57,3 +61,9 @@ The independent audit rejected making optional incomplete prices an inference pr
 Fresh Claude direction check (`2027a8ec-5859-46fc-981c-e1b8acbf9be9`) returns Continue for the required-context model slice, real Worker proof and operations Skill. It recommends `openkit-ops` to distinguish the Skill from the existing stopped-server `openkit-operator` executable. New host authority remains held for the concrete restricted design; there is no mandatory second instance or measured desktop-hop prerequisite. Independent model owner review reports no material objections after mandatory context and optional-price corrections; `git diff --check` passes.
 
 Model owner review, document-model validation (250 documents), lifecycle validation and generated-index check pass. The operations Skill remains a committed Draft proposal for independent review; it grants no host effect.
+
+Next host action is A1 cleanup under Intent Epoch 6: enumerate exact test/temp paths and services against the observed A1 identity, inspect the proposed deletions, then remove only that selected scope. Expected observable is reclaimed storage and absence of those legacy artifacts with SSH usable; a host-identity or mount-scope mismatch stops deletion. A2 operation and pending implementation continue independently.
+
+The exact Orca free-model context is absent from both public and authenticated Provider model discovery (HTTP 200, selected row present; `temp/live-review/model-context/authenticated-orca-v1-models.json`). The engineer has been asked for its required declared ceiling; A2 model activation waits for that number rather than inventing one. OpenRouter publishes 200000 for its exact free-router ID and the pinned catalog agrees. Code, Skill migration, Worker preparation and A1 cleanup proceed independently.
+
+Independent `ops_delivery_owner_review` reports no owner-level blocker for the operations Skill and manual migration. Claude agrees with its boundary and naming. The owner is Accepted; package/projection code will follow that committed contract. App-update remains Draft while correcting released-artifact identity and receipt-loss admission. These do not gate the separate Skill packaging or model slice.

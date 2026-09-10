@@ -1,15 +1,17 @@
-# OpenKit End-User Skill
+# OpenKit Skills
 
-This directory contains one repository-authored Skill named `openkit` for agents helping end users operate OpenKit. The accepted design is defined by [`docs/specs/20260713-openkit_agent_skill_interface.md`](../docs/specs/20260713-openkit_agent_skill_interface.md).
+OpenKit maintains two complementary packages. The [public `openkit` Skill](openkit/SKILL.md) operates running NanoCore through the bundled public CLI under [Agent Skill Interface](../docs/specs/20260713-openkit_agent_skill_interface.md). The independent [`openkit-ops` Skill](openkit-ops/SKILL.md) packages installation, configuration, upgrade, diagnosis and offline recovery guidance under [Agent Operator Skill](../docs/specs/20260910-agent_operator_skill.md).
 
-## Package
+## Public Product Interface
 
-The package contains one concise `skills/openkit/SKILL.md`, generated `agents/openai.yaml` metadata, one bundled `scripts/openkit` CLI entrypoint, and one-level `references/` material for setup, loop operation, knowledge, recovery, administration, capability discovery, and persistent-deployment acceptance.
+The public package contains its concise entrypoint, generated Agent-host metadata, bundled `scripts/openkit` executable and progressively loaded references. The CLI exposes supported public end-user and operator capabilities through operation search, description and invocation. Workflow truth, authorization, approvals and durable records remain in NanoCore. It has no arbitrary HTTP, source-editing, SSH or generic shell mode.
 
-The Skill operates the public product for users and authorized operators, including real-use acceptance and benchmark workloads. It combines connection setup, diagnostics, workspace operation, Chat Mode, Task Mode, Goal Mode, bounded loop guidance, Action Center decisions, artifacts, evidence, knowledge, recovery, runtime configuration, vault administration, NanoHost execution-host administration, audit, usage, automations, Git operations, and workspace portability without adding a developer audience switch or a source-editing/SSH mode. The desktop Agent may use separately authorized host tools outside this interface.
+## Operations Interface
 
-The bundled CLI progressively exposes every supported public end-user and operator NanoCore capability through operation search, description, and invocation. The Skill and CLI do not expose private NanoCore internals, generic shell access, arbitrary HTTP access, or worker-side capability supply.
+The operations package contains its entrypoint, directly linked canonical operator references and any bounded support scripts required by an accepted operation owner. It works from outside the source checkout and can guide recovery while NanoCore is unavailable. Procedures name required host tools and explicitly acquire source when needed. Credentials and host authority come from the user's Agent environment, not the Skill. NanoCore/Web updates and separately authorized NanoHost work remain distinct.
 
-## Boundary
+## Maintenance And Packaging
 
-Do not reintroduce user-facing MCP, setup-only, loop-only, developer, or self-improvement variants. Worker-side MCP tool supply belongs to the separate Agent Capability plane; it is not part of this Skill, and current AEPs expose no worker capability routes.
+Keep one maintained source per topic. `docs/manual/` points to the operations package; release packaging includes each complete Skill tree and license with matching checksums. Changes to supported behavior update the affected reference in the same slice. Skill metadata and package checks do not replace a real-use proof.
+
+Worker-side MCP and Skill supply retain their Agent Capability and catalog owners. Neither package introduces a user-facing MCP server, developer-mode product client, fleet, daemon or self-improvement harness.

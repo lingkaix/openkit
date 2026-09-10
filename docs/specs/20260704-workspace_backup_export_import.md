@@ -397,4 +397,4 @@ The accepted workspace export version is V2. The canonical archived extension re
 - `docs/specs/20260529-test_strategy.md`
 - `docs/specs/20260713-work_resource_interaction_model.md`
 - `docs/specs/20260703-worker_context_package.md`
-- `docs/manual/nanocore-data-root-config.en.md`
+- `skills/openkit-ops/references/nanocore-data-root-config.en.md`

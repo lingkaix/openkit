@@ -32,7 +32,7 @@ openkit/worker-codex:dev
 
 Production-style deployments should use an exact version tag or digest-pinned image reference and should not use `latest`.
 
-Use [Release Cookbook](../cookbooks/release.md) for release tags and [Docker App Image](../cookbooks/docker-app.md) for local app-image build, run, persistence smoke, and packaged UI checks.
+Use [Release Cookbook](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/release.md) for release tags and [Docker App Image](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/docker-app.md) for local app-image build, run, persistence smoke, and packaged UI checks.
 
 ## Shared Prerequisites
 
@@ -51,7 +51,7 @@ export OPENKIT_DATA_ROOT="$HOME/nano-data/openkit"
 mkdir -p "$OPENKIT_DATA_ROOT"
 ```
 
-Use `OPENKIT_DATA_ROOT/config/server.jsonc` for durable server, provider, agent, NanoHost identity, dedicated NanoHost listener bind, and NanoHost rendezvous configuration. See [NanoCore DATA_ROOT Config](./nanocore-data-root-config.en.md).
+Use `OPENKIT_DATA_ROOT/config/server.jsonc` for durable server and NanoHost transport configuration; Providers and Agents have their own files under `config/providers/` and `config/agents/`. See [NanoCore DATA_ROOT Config](nanocore-data-root-config.en.md).
 
 Use `PORT` to select the NanoCore HTTP port. Use `OPENKIT_BIND_HOST` only when the selected Core mode and deployment intentionally expose NanoCore beyond loopback.
 
@@ -71,9 +71,9 @@ docker run --rm --entrypoint openkit-operator \
   openkit/app:<exact-version> \
   admin recover-access --data-root /data/openkit \
   --owner-user-id user_example \
-  --expires-at 2026-09-02T12:00:00.000Z \
+  --expires-at <future-expiry-ISO8601> \
   --output /recovery/admin-recovery.json \
-  --confirm issue-server-admin-token:user_example:2026-09-02T12:00:00.000Z
+  --confirm issue-server-admin-token:user_example:<future-expiry-ISO8601>
 ```
 
 Use the deployment's named volume instead of the first bind mount when it owns `/data/openkit`. The command refuses a held data-root lock and never stops NanoCore. Do not run it against a live mount, print or inspect the recovery envelope, or reuse an output path for a different owner or expiry. Pass the complete `0600` envelope directly through stdin to the bundled Skill's `credential.store`; only its Token enters endpoint credential storage.
@@ -82,7 +82,7 @@ Use the deployment's named volume instead of the first bind mount when it owns `
 
 Local and server modes use the encrypted-file Vault under `DATA_ROOT/server/vault/`. The raw 32-byte master key remains in an exact-`0600` file outside the Data Root and is configured through `vault.encryptedFile.keyFilePath`.
 
-A missing, invalid, or wrong key leaves Vault locked and readiness degraded without exposing key or filesystem details. See [NanoCore DATA_ROOT Config](./nanocore-data-root-config.en.md) for key creation, backup warnings, and the complete config shape.
+A missing, invalid, or wrong key leaves Vault locked and readiness degraded without exposing key or filesystem details. See [NanoCore DATA_ROOT Config](nanocore-data-root-config.en.md) for key creation, backup warnings, and the complete config shape.
 
 ## Core Modes
 
@@ -110,32 +110,15 @@ PORT=3000 \
 pnpm --filter @openkit/nanocore start
 ```
 
-Create a user:
-
-```bash
-curl -i http://127.0.0.1:3000/api/auth/sign-up/email \
-  -H 'content-type: application/json' \
-  --data '{"email":"user@example.com","password":"password123456","name":"User"}'
-```
-
-Sign in and retain the returned session cookie only in the calling client:
-
-```bash
-curl -i http://127.0.0.1:3000/api/auth/sign-in/email \
-  -H 'content-type: application/json' \
-  --data '{"email":"user@example.com","password":"password123456"}'
-```
+Use the public Web sign-in/bootstrap flow for the configured server origin. Keep passwords, session cookies and one-time bootstrap material in the browser or protected credential mechanism rather than shell arguments or printed HTTP headers.
 
 ## NanoHost Runtime
 
 NanoCore accepts Worker Agent work only through the configured NanoHost identity and NanoHost-initiated authenticated HTTP/2 session. The App API remains on its HTTP/1.1 listener; `nanohost.bind` selects a separate native HTTP/2 listener on a different local port, while `nanohost.rendezvousUrl` is the endpoint advertised to NanoHost after any deployment mapping. The RuntimeTarget must be ready, predecessor-fenced, and fresh-empty before admission.
 
-Use [NanoHost Real-Use Host](../cookbooks/nanohost-real-use-host.md) for the current reviewed-host workflow:
+Use [NanoHost Real-Use Host](https://github.com/lingkaix/openkit/blob/main/docs/cookbooks/nanohost-real-use-host.md) for the current reviewed-host workflow:
 
-```bash
-pnpm host:provision a1
-pnpm host:assert a1
-```
+Supply the operator-selected host alias explicitly when following that source-checkout procedure. Its test-host examples are not a default target, and fixture teardown must not run against an existing persistent installation.
 
 The cookbook owns authenticated NanoHost bring-up and idempotent teardown. It does not authorize manual Sandbox repair, direct database mutation, credential retention, or a second runtime path.
 
@@ -151,7 +134,7 @@ Read deployment diagnostics through the authenticated deployment surface:
 curl -s http://127.0.0.1:3000/api/diagnostics
 ```
 
-Run deterministic local verification with the package and repository gates documented in [NanoCore](../../apps/nanocore/README.md).
+Run deterministic local verification with the package and repository gates documented in [NanoCore](https://github.com/lingkaix/openkit/blob/main/apps/nanocore/README.md).
 
 Run the explicit real Task Mode gate only after accepting provider quota and supplying its required current artifact identities:
 
@@ -159,7 +142,7 @@ Run the explicit real Task Mode gate only after accepting provider quota and sup
 pnpm -w test:e2e:real-task-mode
 ```
 
-NanoCore restart continuity, NanoHost fail-stop behavior, execution-server restart recovery, and Gateway failure recovery are stage acceptance scenarios owned by [NanoHost Runtime And Transport](../specs/20260802-nanohost_runtime_and_transport.md), not a separate Cell runner.
+NanoCore restart continuity, NanoHost fail-stop behavior, execution-server restart recovery, and Gateway failure recovery are stage acceptance scenarios owned by [NanoHost Runtime And Transport](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260802-nanohost_runtime_and_transport.md), not a separate Cell runner.
 
 ## Agent Skill Access
 
@@ -167,7 +150,7 @@ The accepted AI-native access path is the unified `openkit` Skill with its bundl
 
 The bundled CLI uses `OPENKIT_NANOCORE_URL` as explicit endpoint configuration. Server-mode access resolves a scoped token from supported credential storage or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override without printing credential material.
 
-Use [Skills](../../skills/README.md) and [Agent Skill Interface](../specs/20260713-openkit_agent_skill_interface.md) for the accepted setup and operation catalog.
+Use [Skills](https://github.com/lingkaix/openkit/blob/main/skills/README.md) and [Agent Skill Interface](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260713-openkit_agent_skill_interface.md) for the accepted setup and operation catalog.
 
 ## Operational Notes
 

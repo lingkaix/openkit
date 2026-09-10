@@ -17,7 +17,7 @@ This spec does not own NanoCore workflow state, App API routes, Core protocol re
 
 It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_catalog_versioning_pinning.md`, MCP catalog management in `docs/specs/20260907-mcp_catalog_management.md`, Agent Plugin packaging and worker supply in `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`, Agent Environment Package Skill supply, public Skill marketplace design, generic shell access, arbitrary HTTP access, or a repository-developer workflow.
 
-It does not own the proposed operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`.
+It does not own the separately owned operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`.
 
 It does not own product-wide release identity, authorization, channels, retry, or completion, which are owned by `docs/specs/20260829-release_management.md`.
 
@@ -42,7 +42,7 @@ Related specs:
 
 ## Summary
 
-OpenKit exposes one AI-native public-product interface: a single Skill named `openkit` with a bundled CLI. The Draft `20260910-agent_operator_skill.md` proposes a separate `openkit-ops` package for installation, host operations and offline recovery; that proposal does not add another product client or a developer mode to this interface.
+OpenKit exposes one AI-native public-product interface: a single Skill named `openkit` with a bundled CLI. The accepted `20260910-agent_operator_skill.md` defines a separate `openkit-ops` package for installation, host operations and offline recovery; that package does not add another product client or a developer mode to this interface.
 
 The Skill teaches an agent how to connect to NanoCore, discover available capabilities, select Chat Mode, Task Mode, or Goal Mode, operate bounded loops, surface Action Center decisions, inspect artifacts and evidence, use knowledge, recover interrupted work, and perform explicitly authorized operator actions.
 

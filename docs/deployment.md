@@ -42,7 +42,7 @@ This guide does not own any contract or implementation fact linked below. Core d
 - Vault and provider credentials: `docs/core/vault.md`, `docs/specs/20260704-vault_backend_implementation.md`, `docs/specs/20260721-provider_subscription_accounts.md`
 - Product releases and worker images: `docs/specs/20260829-release_management.md`, `docs/specs/20260708-container_image_packaging.md`, `docs/specs/20260721-worker_execution_environment_images.md`
 - Deployment host profiles, dependency classes, and requirement-check verdicts: `docs/specs/20260909-deployment_host_requirements.md`
-- Operator projections: `docs/manual/nanocore-deployment-modes.en.md`, `docs/manual/nanocore-data-root-config.en.md`
+- Operator projections: `skills/openkit-ops/references/nanocore-deployment-modes.en.md`, `skills/openkit-ops/references/nanocore-data-root-config.en.md`
 
 ## Known Debt
 
