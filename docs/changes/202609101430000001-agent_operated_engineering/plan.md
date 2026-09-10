@@ -1,7 +1,8 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 date: "2026-09-10"
+completed: "2026-09-10"
 ---
 # Agent-Operated Engineering
 
@@ -47,14 +48,13 @@ Existing [persistent-deployment acceptance](../../specs/20260909-persistent_depl
 
 ## Checkpoint
 
-A2 runs exact source `b920d42b9edd977e54d760b9307c1a250ced494b`, image `sha256:73c8714a0eb26d8e7eb5e55798722ceeb7ba17708edd0ebeab864cc81c38281e`, boot `boot_b6202595-5117-4dd9-96b2-90d3e92bf068`, after public Skill update `94a7e7c7-2d02-470b-9eeb-c584a1e61827` succeeds at 11:53:56 UTC with all nine predicates true. Selected-host readback confirms context 111000, unchanged provider-file digest and NanoHost PID 1263840 with zero restarts. The unrelated root README edit is retained and Product Vision is untouched.
+A2 runs exact source `62b549693ab19174c77f0d014dcf0e60260f1f42`, image `sha256:84d350e639a98de5d54287802cc592f1ec6d052df1067e7986e92bbf6364018b`, boot `boot_4a07fb0d-2041-4bfa-89a5-649895453217`, after public Skill update `57b6b721-c4ad-4847-8a16-e4da1218e04e` succeeds at 12:21:01 UTC with all nine predicates true. Selected-host readback confirms context 111000, unchanged provider-file digest and NanoHost PID 1263840 with zero restarts. The retained Workspace repository record still points to the deliberately missing receiving path. The unrelated root README edit is retained and Product Vision is untouched.
 
-The next real Task failed on a non-default namespace before inference output. Independent consultation and owner review accept a bounded correction: standard and message-anchored function declarations share one request-local provider-name mapping, with collision checks and exact native identity restoration across history and all output forms. Custom, deferred and search tools remain unsupported. The next observable remains one actual Web Task diff Artifact, independent content review and the existing UI rejection record after the reviewed correction is deployed. Another unsupported shape or absent output remains a failure whose actual cause must be inspected before a new submission.
+Both accepted operating paths now have direct evidence on this persistent deployment. The public packaged Skill completes the exact-commit App update; the Web submits Task `th_task_575e7d57a6130469c43405a1`, whose Turn `tu_conversation_144279f3b2c85933dc8a223b` completes and produces its own CONTRIBUTING-only diff Artifact. An independent reviewer verifies the exact 738-byte patch against the frozen base, and the Web Reject action resolves the durable Workspace Sync Review as `rejected` with no apply. Independent verification is imported as `ar_import_febacf6f5f2632efe8052dbc` version 1 and introduced into that Task; the final Web read displays its title. This is imported external verification, not a claim that a new internal judge service ran.
 
-Independent Auditor confirms original Skill story C/D/E repeated-run admission remains satisfied on its unchanged story bytes; no new three-run sequence, A1 rerun, offline recovery exercise, release publication, merge/push or recovered Codex-subscription Worker run is required by these two plans. It also settles the discretionary exact-tool-list enumeration request: the raw bundle does not contain those declarations, so a new capture harness solely for that list is unnecessary before a reviewed correction and one falsifiable real attempt. This is no claim that the full native vocabulary is known. Historical Codex inference failure stays explicitly unexplained; its currently healthy status and quota do not prove the failed call recovered.
+The namespace correction in `62b54969` preserves function identity on standard and message-anchored requests, passes 131 focused tests, and succeeds in the real Worker loop with 7/7 Gateway calls reconciled. Previous failed attempts retain their own evidence. The successful default-Orca Task does not prove recovery of the earlier unexplained Codex-subscription Worker failure.
 
-Desktop/Skill update and diagnosis, the installed helper's lifetime/concurrency/restoration evidence and bounded telemetry observations retain their value. The remaining frontier is real Web engineering output and decision on the same persistent deployment. No NanoHost maintenance or new platform service is implied.
-
+The bounded delivery is complete. No merge/push, published release, migration-bearing recovery, benchmark comparison, optional second-host rerun or autonomous customer maintenance is claimed. Existing C/D/E Skill story admission, external Actor/Judge evidence, telemetry outage/recovery and host-helper lifetime/concurrency/restoration retain their original fixed-build attribution. Other feature plans still require their own acceptance evidence.
 ## Acceptance
 
 - Provider declarations preserve models.dev naming/units and exact native-ID admission with a known context limit, drive existing capability/adapter consumers, validate invalid inputs and retain explicit zero/false values without changing auth or public identity redaction.
@@ -64,7 +64,23 @@ Desktop/Skill update and diagnosis, the installed helper's lifetime/concurrency/
 - A release/exact-commit App/Web update has reviewable target identity, bounded authorization, preserved data/credentials, a process-independent execution path, observed post-update health/identity and inspectable failure. No automatic NanoHost restart or assumed database rollback is introduced.
 - Desktop Agent plus packaged Skill can operate the same product and use separate authorized host tools for recovery. Optional second-host support is not a prerequisite or an HA/state-replication claim.
 
+## Closeout
+
+The accepted Gateway, App-update, operator-Skill and persistent-deployment owners remain authoritative. Runtime corrections are committed through `62b54969`; independent intent audit accepts the bounded delivery and closes the stale implementation-projection finding after the persistent-deployment owner and generated index are aligned. The final slice passes 131 tests across five Gateway/Worker suites, NanoCore typecheck, focused Biome, documentation model validation (253 documents), lifecycle/index and diff-whitespace checks. A2 runs the exact tested App/Web commit; its data, credentials, Workspace membership, Orca context 111000 and NanoHost PID are retained. The root README user edit remains uncommitted and Product Vision is untouched.
+
+## Verification Evidence
+
+The real Task Artifact patch is `sha256:e0d4b1dbe44f9d5bc69fea903501f576e683a55ff039ec7b1dfb53f3a75967eb`, based on unchanged source commit `1bc77878b4607f6b1b4fc7f175536ae1a8ee8de2`. Independent exact-base `git apply --check --whitespace=error-all` and apply both exit 0. The Worker command frame's omitted working-directory argument makes its empty diff-check output non-deciding; the independent check supplies the relevant evidence. The recorded Web rejection at 12:27:33.798 UTC confirms no source apply. An initial browser locator attempt loses selected Workspace across full navigation and sends no decision; selecting the Workspace on the target screen resolves the instrument issue without product changes.
+
+Named final observations are `temp/live-deployment/activate-62b54969/{post-observe.txt,completed-task-runtime.json,independent-artifact-check.json,verification-readback.json,task-final-ui.txt}`, the public update receipt `/tmp/openkit-packaged-desktop-20260910/update-62b54969/polls/011.json`, and `temp/app-update-builder/web-actor-prep/{task-run.json,artifact-diff.txt,review-decision.json}`. The independent report import succeeds before a local response-shape assumption stops its introduction; the existing returned Artifact identity is then introduced once, with no repeated import. The public Artifact and Task Item reads both return 200 and the Web displays the linked report.
+
 ## Evidence
+
+Final cleanup removes only the three temporary local token/session copies used for operator/browser handoff and the three hash-verified A2 transfer archives for `ea87238e`, `b920d42b` and `62b54969`. Durable deployment credentials, the encrypted public Skill store, immutable staged sources, host receipts and named task evidence are retained. Exact cleanup observations are `temp/live-deployment/activate-62b54969/local-secret-copy-cleanup.json` and `archive-cleanup.json`. No system login, token or NanoHost identity is revoked.
+
+The `62b54969` public update succeeds at 12:21:01 UTC with all nine predicates true (`/tmp/openkit-packaged-desktop-20260910/update-62b54969/polls/011.json`). Selected-host readback confirms image `84d350e6`, unchanged Orca provider digest and context 111000, NanoHost PID 1263840 with zero restarts; the public member read retains `task-mode-repository` with `missing` diagnostics. Evidence is `temp/live-deployment/activate-62b54969/post-observe.txt` and `repositories.json`. Codex submits one new Web Task on that fixed build and waits for actual terminal output before any review decision.
+
+Commit `62b54969` contains the six reviewed correction files. Exact-source staging verifies archive SHA-256 `9a8f2d4861d886278602dafbc447a1f4ef8fd14a8a31e5bb858260939d5587e2`, content digest `6975e604b6a87f5e2c640bab747b722fe224312bda5e2622339520bac7067022`, current `73c8714a` image, unchanged helper and NanoHost PID, and freshly read `core_0000_setup`. The protected compatibility binding alone changes. Public packaged Skill update evidence is retained under `/tmp/openkit-packaged-desktop-20260910/update-62b54969/`; no terminal outcome is inferred from start.
 
 Independent final reviewer accepts the exact namespace-mapping implementation, owner and local-guide alignment with no actionable findings. It inspects the six real regression failures, 131 passing tests, passing typecheck and independently passing Biome/diff checks. Codex now commits only the six scoped correction/documentation files, stages the exact commit through the existing selected-host procedure and invokes public prepare/start/status once. Success must precede the next actual Web Task; unsupported shapes or missing output remain falsifiers, not permission to strip capabilities.
 

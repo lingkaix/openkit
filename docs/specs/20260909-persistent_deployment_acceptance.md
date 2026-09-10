@@ -1,7 +1,8 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 date: "2026-09-09"
+updated: "2026-09-10"
 ---
 # Persistent Deployment Acceptance
 
@@ -96,4 +97,6 @@ PR publication, merge and deployment use their existing owners and explicit task
 
 ## Implementation Status
 
-Existing public operations, Task/Goal execution and evidence producers remain the substrate. The focused implementation adds the NanoHost runtime-target Skill/Core Client read, refreshed packaged Skill guidance, process diagnostics and optional HTTP telemetry. Local contract checks pass. The final deployed build has completed an independently judged external Skill run and a Collector outage/recovery observation without product interruption; the unchanged Skill story also retains its three-run admission evidence. NanoHost is publicly ready after initial restoration. The complete composition remains partial: Provider authentication and real model inference are now verified, but a real Worker Task with meaningful output on the current persistent deployment still needs its own completion evidence. Other roadmap plans retain their individual acceptance obligations.
+Existing public operations, Task/Goal execution and evidence producers remain the substrate. The implementation adds the NanoHost runtime-target Skill/Core Client read, refreshed packaged Skill guidance, process diagnostics and optional HTTP telemetry. The bounded two-path composition is implemented and verified on one persistent deployment. Independently judged external Skill use, unchanged-story repeated-run admission and Collector outage/recovery retain their original fixed-build attribution; subsequent App updates do not relabel those observations.
+
+On that same deployment, a later exact-commit App/Web update completes through the public packaged Skill, and an actual Web-directed Worker Task completes with a meaningful CONTRIBUTING-only diff Artifact. Independent exact-base patch/whitespace verification passes; the existing Web action resolves its durable Workspace Sync Review as rejected without applying the test change. The independent external verification report is imported through the existing Artifact interface and visible in the Task. Retained runtime evidence reconciles all seven Gateway calls in that Worker Turn. This proves the bounded composition, not a new internal judge service, a benchmark comparison, release publication, merge, destructive recovery or every Provider's Worker path. Other roadmap plans retain their individual acceptance obligations.

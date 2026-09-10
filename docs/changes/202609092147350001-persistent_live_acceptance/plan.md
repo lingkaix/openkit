@@ -1,7 +1,8 @@
 ---
 type: change-plan
-status: in-progress
+status: verified
 date: "2026-09-09"
+completed: "2026-09-10"
 ---
 # Persistent Live Acceptance
 
@@ -46,15 +47,22 @@ Claude consultation is through Herdr `live-consultant`; canonical writing is pri
 
 ## Checkpoint
 
-Intent Epochs 4–6 are implemented and deployed. Gateway fix `cf6cac65` makes models.dev optional metadata; owner clarification `26abdc124c0085a3f8cfd5e0ca51deddf5ce3f0a` is the exact App/Web source deployed to a2. The new image is `sha256:7308ed94188e87bfb7df862f27e8edea58e33f1d75e2fb1cd830f1d3a5cf0a3e`, container `895a1ea9abb4de065d69d2e3cbcdf8858860c99d4f81f4ffc65bb03717196df5`, boot `boot_1349af3a-7b94-4326-bcc0-46d8de019ccc`. App is healthy and accepts product work; the existing non-blocking `storage.index-rebuilt` diagnostic remains. Product Vision is untouched. Primary owns canonical Markdown; Cursor owns the dispatched implementation and external execution; independent review and audit remain read-only.
+Both accepted real-use paths are verified on the persistent A2 deployment. The original C/D/E Skill story admission and external Actor/Judge evidence retain their exact story/build attribution below. The remaining internal Worker frontier is now satisfied on App/Web source `62b549693ab19174c77f0d014dcf0e60260f1f42`, image `sha256:84d350e639a98de5d54287802cc592f1ec6d052df1067e7986e92bbf6364018b`, boot `boot_4a07fb0d-2041-4bfa-89a5-649895453217`: Web Task `th_task_575e7d57a6130469c43405a1` and Turn `tu_conversation_144279f3b2c85933dc8a223b` complete with a meaningful CONTRIBUTING-only diff Artifact, independent exact-base verification and a durable Web rejection without source apply.
 
-The authorized local Codex source was imported through the existing slot CredentialStore without device login, preserving `~/.codex/auth.json.1`. Codex remains `logged_in`. OpenRouter uses `openrouter/free`; OrcaRouter uses `https://api.orcarouter.ai/v1` and `deepseek/deepseek-v4-flash-free`, with their existing Vault keys. Revision-checked Gateway, internal-role and default Codex Agent updates were validated and reload applied as version 2 at `2026-09-10T04:07:27.277Z`, with no failed reload or pending restart. Gateway default, Assistant preference and default Agent preference are `orcarouter`. Unrelated Agent preferences remain unchanged.
+The default remains OrcaRouter `deepseek/deepseek-v4-flash-free`, with context 111000 and unchanged Provider-file digest. The existing Codex subscription and OpenRouter configuration are retained; earlier loopback inference evidence remains historical rather than proof of every Worker path. Selected-host observations retain NanoHost PID 1263840 with zero restarts during these App updates, existing Workspace membership and the deliberately missing receiving path. The latest public packaged Skill update `57b6b721-c4ad-4847-8a16-e4da1218e04e` succeeds at 12:21:01 UTC with all nine predicates true.
 
-All three logical models completed real authenticated NanoCore loopback Responses requests with text. This proves the requested Provider configuration and exact-ID dispatch through the app surface; it is not public HTTPS Gateway routing or real Worker Task acceptance. The public HTTPS `/v1/responses` path remains Caddy SPA HTML, while product `/api/app` configuration reads and `/api/health` work. No Caddy routing repair or Task fixture repair was added. Temporary credential handoff copies were removed; the Data Root, credential sink, existing Vault, NanoHost, Collector and unrelated R058 service were preserved. Exact observations are in `temp/live-deployment/deploy-26abdc12-evidence.json`.
+The engineer subsequently authorizes direct Codex execution after Cursor Grok quota exhaustion, as retained in the agent-operated engineering plan's Intent Epoch 9. Primary writes canonical Markdown and preserves the unrelated root README edit and Product Vision. Independent verification is imported into the completed Task as Artifact `ar_import_febacf6f5f2632efe8052dbc` version 1 and visible in Web; this is an external review result, not a newly implemented internal judge.
 
-Fresh Claude context `31535f5f-9c2e-49ab-8649-7fa9de7c5931` returned Continue before deployment after inspecting this primary context, source Intent and actual evidence. Its absent-profile clarification is explicit in the Gateway owner; actual authored routes were verified as single-member before activation. Independent code and documentation review closed the optional-inventory findings. Independent live readback passed the current configuration scope: the reviewer used Skill reads and SSH to confirm deployed identity, applied reload, requested defaults, Codex login and credential cleanup. NanoHost runtime target is generation 7, predecessor fenced, ready and fresh-empty. The report is `temp/live-review/a2-config-26abdc12.md`; it does not close the wider plan.
+This closes the two-mode delivery, not all roadmap plans. Earlier failed attempts, including the unexplained Codex-subscription Worker failure and preserved NanoHost failed-interval Artifact, remain failures in their original windows. No release publication, merge/push, crash/restart benchmark, migration-bearing recovery or customer autonomous-maintenance claim is added.
+## Closeout
 
-The overall two-mode plan remains in progress. The next acceptance frontier is still a real Worker Task with its own terminal product state and independently verified meaningful Artifact on this persistent deployment. The earlier external Actor F/Judge pass, C/D/E story admission, generation-5 NanoHost readiness and Collector outage/recovery remain attributed to their original `3a3986d4` build/configuration/boot windows below. No later model-inference success relabels those windows or the preserved NanoHost failed interval Artifact `ar_import_6fcd7e813cbdbe616f421418`.
+The exact final Web patch has 738 bytes and SHA-256 `e0d4b1dbe44f9d5bc69fea903501f576e683a55ff039ec7b1dfb53f3a75967eb`; it adds only the requested paragraph to CONTRIBUTING.md against unchanged base/head `1bc77878b4607f6b1b4fc7f175536ae1a8ee8de2`. Independent exact-base apply/whitespace checks pass. The public Workspace Sync Review reads `rejected` after the actual Web action at 12:27:33.798 UTC, with no apply result. Runtime evidence records complete provenance for 75 frames and 7/7 reconciled Gateway calls, successful teardown and completed terminal checkpoint.
+
+## Verification Evidence
+
+Final independent intent audit accepts the bounded delivery and closes the stale owner/index implementation projection after alignment. Temporary handoff credentials and hash-verified transfer archives are removed; durable deployment credentials, immutable staged sources, receipts and task evidence remain.
+
+Final evidence is `temp/live-deployment/activate-62b54969/{post-observe.txt,completed-task-runtime.json,independent-artifact-check.json,verification-readback.json,task-final-ui.txt}` and `temp/app-update-builder/web-actor-prep/{task-run.json,artifact-diff.txt,review-decision.json}`; the public exact-commit update receipt is `/tmp/openkit-packaged-desktop-20260910/update-62b54969/polls/011.json`. The final Gateway correction passes 131 tests across five suites, typecheck, focused Biome and documentation checks. Original story repetition, Collector outage/recovery and prior deployment evidence stay attributed below rather than being relabeled as this build's observations.
 
 ## Acceptance And Evidence
 
@@ -62,7 +70,7 @@ The initial Provider setup exposed the former mandatory nonempty catalog-family 
 
 Both real modes must complete on one persistent authorized deployment with exact build attribution, meaningful output and public terminal-state evidence. The external Skill L6 retains its required independent judgment and repeated-run admission, with current host context isolated from hidden answers. A repeated attempt must not recreate the product or Provider account. Record focused check results and real observations here before closure. Other plans close only against evidence that satisfies their own conditions.
 
-Temporary source/inspection/consultation evidence stays under `temp/live-*` and `temp/reviews/20260909-persistent-deployment-consultant/`. Implementation and deployment observations do not close the remaining real Worker acceptance.
+Temporary source/inspection/consultation evidence stays under `temp/live-*` and `temp/reviews/20260909-persistent-deployment-consultant/`. The final named Worker observations above close that formerly remaining seam; older implementation and deployment observations alone did not.
 
 ## Story Admission Argument
 
