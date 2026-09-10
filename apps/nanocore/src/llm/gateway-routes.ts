@@ -1069,7 +1069,7 @@ interface GatewayTerminalStreamOptions {
   readonly durableCall?: DurableLlmGatewayCall | null;
   /** Stable ledger error code used when downstream consumption is cancelled. */
   readonly cancellationCode?: string;
-  /** Stable ledger error code used when upstream streaming fails. */
+  /** Envelope ledger error code used as the classifier fallback when upstream streaming fails. */
   readonly failureCode?: string;
   /** Optional product-safe SSE message that hides internal provider details. */
   readonly failureMessage?: string;
@@ -1084,7 +1084,7 @@ interface GatewayTerminalStreamOptions {
  *
  * @param stream Upstream or bridged provider SSE stream.
  * @param endpoint Gateway endpoint family being streamed.
- * @param options Durable completion, cancellation, and error-normalization options.
+ * @param options Durable completion, cancellation, and error-normalization options. Non-cancelled failures store the classified OpenKit code with `failureCode` as the uncoded fallback.
  * @returns Stream that preserves bytes and appends a terminal error event on read failure.
  */
 function normalizeGatewayTerminalStream(
@@ -1151,13 +1151,14 @@ function normalizeGatewayTerminalStream(
         }
         terminal = true;
         const cancelled = isGatewayCancellation(error, options.signal);
+        const envelopeFailureCode = options.failureCode ?? 'llm_gateway_stream_failed';
         try {
           finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
             cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
             cancelled
               ? (options.cancellationCode ?? 'llm_gateway_cancelled')
-              : (options.failureCode ?? 'llm_gateway_stream_failed')
+              : classifyGatewayProviderFailure(error, envelopeFailureCode).code
           );
         } finally {
           releaseReader();

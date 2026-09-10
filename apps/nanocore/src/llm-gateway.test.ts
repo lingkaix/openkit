@@ -17,6 +17,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
+import { GatewayUnsupportedFeatureError } from './llm/gateway-converters.js';
 import { registerLlmGatewayRoutes } from './llm/gateway-routes.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -1775,10 +1776,11 @@ describe('OpenAI-compatible agent gateway', () => {
     }
   });
 
-  it('does not infer durable abort or timeout outcomes from pi-ai provider messages', async () => {
+  it('does not infer durable abort or timeout status from pi-ai provider messages', async () => {
     for (const testCase of [
       {
         code: 'gateway_stream_failed',
+        durableErrorCode: 'llm_gateway_stream_failed',
         message: 'client aborted token=tok_secret',
         requestId: '88888888-8888-4888-8888-888888888888',
         ledgerStatus: 'failed',
@@ -1787,6 +1789,7 @@ describe('OpenAI-compatible agent gateway', () => {
       },
       {
         code: 'gateway_provider_unavailable',
+        durableErrorCode: 'gateway_provider_unavailable',
         message: 'provider timeout token=tok_secret',
         requestId: '99999999-9999-4999-8999-999999999999',
         ledgerStatus: 'failed',
@@ -1856,7 +1859,7 @@ describe('OpenAI-compatible agent gateway', () => {
             capability_id: 'llm.chat_completions',
             operation: 'chat_completions',
             status: testCase.ledgerStatus,
-            error_code: 'llm_gateway_stream_failed',
+            error_code: testCase.durableErrorCode,
           });
           const usageCount = workspaceDb.sqlite
             .prepare('SELECT COUNT(*) AS count FROM usage_records')
@@ -2376,6 +2379,37 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(body).toContain('data: [DONE]');
       expect(body).not.toContain('tok_secret');
     }
+  });
+
+  it('classifies unsupported-feature stream failures as invalid request', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new GatewayUnsupportedFeatureError('pi-ai Responses reasoning stream'));
+      },
+    });
+    const app = createApp({
+      ...createOllamaProviderOptions(),
+      llmPiAiClient: {
+        createChatCompletionStream: async () => stream,
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'openai/gpt-5.1',
+        stream: true,
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('"code":"gateway_provider_request_invalid"');
+    expect(body).toContain('"message":"Provider rejected the request."');
+    expect(body).not.toContain('reasoning stream');
+    expect(body).not.toContain('unsupported_gateway_feature');
   });
 
   it('routes non-streaming Responses requests through native OpenAI responses support', async () => {

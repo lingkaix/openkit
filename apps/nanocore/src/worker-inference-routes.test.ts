@@ -8,6 +8,7 @@ import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
+import { GatewayUnsupportedFeatureError } from './llm/gateway-converters.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleProviderError,
@@ -52,6 +53,8 @@ class FakeWorkerInferenceDispatcher {
   public responsesResponseOverride: OpenAICompatibleResponsesResponse | null = null;
   /** Whether the Responses stream should fail after its first chunk. */
   public shouldFailResponsesStream = false;
+  /** Error thrown after the first Responses stream chunk when `shouldFailResponsesStream` is set. */
+  public responsesStreamFailure: Error = new Error('private upstream stream failure');
   /** Whether the Responses stream should stay open until its consumer cancels it. */
   public shouldHoldResponsesStream = false;
   /** Cancellation reasons observed by the upstream Responses stream. */
@@ -185,6 +188,7 @@ class FakeWorkerInferenceDispatcher {
     }
 
     if (this.shouldFailResponsesStream) {
+      const failure = this.responsesStreamFailure;
       let emitted = false;
       return new ReadableStream<Uint8Array>({
         pull(controller) {
@@ -193,7 +197,7 @@ class FakeWorkerInferenceDispatcher {
             controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
             return;
           }
-          controller.error(new Error('private upstream stream failure'));
+          controller.error(failure);
         },
       });
     }
@@ -1563,6 +1567,54 @@ describe('worker inference routes', () => {
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
       expect.objectContaining({
         errorCode: 'worker_inference_stream_failed',
+        status: 'failed',
+      }),
+    ]);
+  });
+
+  it('records classified worker stream failures as the public OpenKit code', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.dispatcher.shouldFailResponsesStream = true;
+    fixture.dispatcher.responsesStreamFailure = new Error('rate limit exceeded token=tok_secret');
+    const response = await postWorkerResponses(fixture, {
+      input: 'Hello',
+      model: WORKER_LOGICAL_MODEL_ID,
+      stream: true,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('gateway_provider_rate_limited');
+    expect(body).not.toContain('tok_secret');
+    expect(body).not.toContain('rate limit exceeded');
+    expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
+      expect.objectContaining({
+        errorCode: 'gateway_provider_rate_limited',
+        status: 'failed',
+      }),
+    ]);
+  });
+
+  it('records unsupported-feature stream failures as invalid request, not the uncoded envelope', async () => {
+    const fixture = createWorkerInferenceRouteFixture();
+    fixture.dispatcher.shouldFailResponsesStream = true;
+    fixture.dispatcher.responsesStreamFailure = new GatewayUnsupportedFeatureError(
+      'pi-ai Responses reasoning stream'
+    );
+    const response = await postWorkerResponses(fixture, {
+      input: 'Hello',
+      model: WORKER_LOGICAL_MODEL_ID,
+      stream: true,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('gateway_provider_request_invalid');
+    expect(body).not.toContain('reasoning stream');
+    expect(body).not.toContain('unsupported_gateway_feature');
+    expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
+      expect.objectContaining({
+        errorCode: 'gateway_provider_request_invalid',
         status: 'failed',
       }),
     ]);
