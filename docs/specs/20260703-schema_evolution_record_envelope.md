@@ -225,6 +225,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 | --- | --- | --- |
 | `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
+| `openkit.thread-entry.v1` | active | Thread records preserve the immutable server-authored conversation or administration entry path. |
 | `session.concurrent-turns` | active | A Harness may process active Turns concurrently only across distinct single-flight AgentSessions and Threads. |
 | `vault.injection.query-param` | active | Vault injection may place secret references into query parameters. |
 | `workspace.generative-kernel.v1` | active | Workspace export includes Light App identity, admitted definitions, native records, and app-local audit. |

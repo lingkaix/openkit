@@ -8,6 +8,10 @@ implementation: Not Started
 
 This specification owns private versus Workspace-shared Thread defaults, durable visibility metadata, discovery and publication enforcement, explicit sharing, and the disclosure boundary of Assistant-to-Task/Goal handoff.
 
+It also owns the durable administration-entry discriminator required before the broader project-Thread sharing implementation. `Thread.entryPath` is the server-authored immutable `conversation | administration` value. It selects a routing and Tool-set contract, not authorization. The dedicated administration command creates administration Threads only in the current user's owner-only Quick Chat Workspace in this first implementation. Administration implies private visibility; future project placement must preserve that invariant. Ordinary conversation submission rejects an administration Thread, and administration submission rejects a conversation Thread. Neither endpoint silently changes entry or Tool set. Every administration request and Tool call still checks current administrator authority and exact source/target audience.
+
+Existing records are explicitly classified as conversation during cutover; no prefix, title, trigger-summary text, expired command receipt or model input can classify a Thread as administration. Register `openkit.thread-entry.v1` on the existing record envelope before writing this field, and reject unsupported required features through the existing reader. The normal create/update API cannot set or mutate the field. Imported administration history is not a live management entry and requires a new locally admitted private administration Thread for further operations. This discriminator adds no separate registry and does not claim the broader visibility/sharing feature is implemented.
+
 ## Does Not Own
 
 It does not own user identity, Workspace membership, administrator authority, work execution, Artifact storage, Knowledge activation, retention policy, or a new collaboration protocol. Sharing grants no Tool, approval, credential, or external-effect authority.
