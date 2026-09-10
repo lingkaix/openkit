@@ -253,11 +253,13 @@ The OpenKit prompt, tail policy, or implementation may be optimized behind the s
 
 ## Current Implementation Projection
 
-The target is not implemented. `packages/config-schema/src/gateway.ts` currently gives logical models only `id`, `displayName`, and `routes`, and `apps/nanocore/src/llm/logical-models.ts` derives capabilities and `modelFamilyId` but does not project catalog context limits or a compaction policy.
+The pending implementation requires `packages/config-schema/src/gateway.ts` to admit one authored logical-model `contextManagement` entry and `apps/nanocore/src/llm/logical-models.ts` to validate its threshold against each route's effective context limit and known output reserve, and project the resolved policy without changing model identity. Missing policy must reject the configuration snapshot; shipped configuration must supply the required field. Existing deployments must update their configuration before that snapshot becomes eligible, under the existing last-known-good configuration owner.
 
 The Gateway exposes `POST /v1/responses`, but the pinned pi-ai Responses abstraction does not admit `context_management` or parse a compaction output item. The current Codex worker hint recognizes `request_kind: "compaction"` and a `compact` subagent classification only as ephemeral native provenance; those hints do not implement this contract.
 
-The accepted Internal Agent Runtime exists as a specification and partial profile implementation, while Quick Chat still performs one direct Chat Completions call in `apps/nanocore/src/mode-entry-routes.ts`. The current Quick Chat tests explicitly protect that old direct path. Those tests must be replaced by shared-loop coverage when implementation begins.
+The bounded shared Internal Agent Loop and Gateway adapter must pin this policy for the private administration entry. Until the OpenKit compactor exists, the adapter must conservatively check the assembled context before provider dispatch and return `context_compaction_unavailable` at the configured threshold. Below-threshold execution is not automatic-compaction conformance or proof of the complete administration workflow. Actual upstream overflow remains a separate provider failure.
+
+Ordinary Quick Chat still performs its direct provider call in `apps/nanocore/src/mode-entry-routes.ts`; its existing tests protect that implementation fact. Migrate it and replace those tests only when the shared path can perform the required compaction. New model-using roles must not extend the direct-provider exception. OpenKit compaction, strict Responses compaction-item mapping, all-role migration and the fixed evaluation set remain outstanding.
 
 The current AEP version 4 has no resolved context-management field, and the Codex, Pi, and OpenCode adapters do not consume one central threshold. Existing Harness-native defaults therefore remain implementation fact, not conformance with this design.
 
