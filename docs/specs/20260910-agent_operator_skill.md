@@ -55,7 +55,7 @@ Acceptance requires a complete archive used from outside the checkout, resolvabl
 
 ## Current Implementation Projection
 
-The existing public Skill and deployment cookbooks are available. The separate package and manual migration are not implemented yet. App-triggered host updates need their own accepted delivery contract before implementation; this Skill does not authorize that new effect path.
+The existing public Skill and deployment cookbooks are available. The separate package and manual migration are not implemented yet. App-triggered host updates follow the separately accepted `20260910-app_update_delivery.md`; this Skill does not independently authorize that effect path.
 
 ## Alternatives And Deferred Work
 
