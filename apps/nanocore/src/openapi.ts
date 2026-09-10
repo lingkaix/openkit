@@ -8,6 +8,7 @@ import {
   ApproveThreadGoalPlanRequestSchema,
   ApproveThreadGoalPlanResponseSchema,
   AppSearchResponseSchema,
+  AppUpdateStatusResponseSchema,
   AutomationRecordSchema,
   BindThreadMaterialRequestSchema,
   BindThreadMaterialResponseSchema,
@@ -143,6 +144,8 @@ import {
   NanoHostRuntimeTargetStatusResponseSchema,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
+  PrepareAppUpdateRequestSchema,
+  PrepareAppUpdateResponseSchema,
   ProviderSubscriptionAccountSchema,
   ProviderSubscriptionAccountsResponseSchema,
   ProviderSubscriptionQuotaSchema,
@@ -213,6 +216,7 @@ import {
   SetWorkspaceRepositoryRequestSchema,
   SetWorkspaceRepositoryResponseSchema,
   SkillCandidateResponseSchema,
+  StartAppUpdateRequestSchema,
   StartProviderSubscriptionAccountLoginRequestSchema,
   StartTaskModeRequestSchema,
   StartTaskModeResponseSchema,
@@ -4645,6 +4649,108 @@ export function createAppOpenApiDocument() {
           },
         },
       },
+      '/api/app/app-update/prepare': {
+        post: {
+          operationId: 'prepareAppUpdate',
+          tags: ['app-update'],
+          summary: 'Prepare one closed App-update source without replacing the running App.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/PrepareAppUpdateRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Prepared review object with a host-issued receipt id.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/PrepareAppUpdateResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/app-update/start': {
+        post: {
+          operationId: 'startAppUpdate',
+          tags: ['app-update'],
+          summary: 'Start one prepared App-update receipt after explicit maintenance consent.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          requestBody: {
+            required: true,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: '#/components/schemas/StartAppUpdateRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Host receipt projection after start handoff.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/AppUpdateStatusResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/app/app-update/{requestId}': {
+        get: {
+          operationId: 'getAppUpdateStatus',
+          tags: ['app-update'],
+          summary: 'Read one host-owned App-update receipt by id.',
+          security: DEPLOYMENT_ADMIN_SECURITY,
+          parameters: [
+            {
+              name: 'requestId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', format: 'uuid' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Host receipt projection.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/AppUpdateStatusResponse' },
+                },
+              },
+            },
+            default: {
+              description: 'Protocol error envelope.',
+              content: {
+                [JSON_CONTENT_TYPE]: {
+                  schema: { $ref: '#/components/schemas/ApiError' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/api/app/workspaces/{workspaceId}/export': {
         post: {
           operationId: 'exportWorkspace',
@@ -5735,6 +5841,7 @@ export function createAppOpenApiDocument() {
         UnbindThreadMaterialResponse: toJsonSchema(UnbindThreadMaterialResponseSchema),
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
+        AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
         ApproveThreadGoalPlanRequest: toJsonSchema(ApproveThreadGoalPlanRequestSchema),
         ApproveThreadGoalPlanResponse: toJsonSchema(ApproveThreadGoalPlanResponseSchema),
         AutomationRecord: toJsonSchema(AutomationRecordSchema),
@@ -5918,6 +6025,8 @@ export function createAppOpenApiDocument() {
         RetrieveKnowledgeRequest: toJsonSchema(RetrieveKnowledgeRequestSchema),
         PauseThreadGoalRequest: toJsonSchema(PauseThreadGoalRequestSchema),
         PauseThreadGoalResponse: toJsonSchema(PauseThreadGoalResponseSchema),
+        PrepareAppUpdateRequest: toJsonSchema(PrepareAppUpdateRequestSchema),
+        PrepareAppUpdateResponse: toJsonSchema(PrepareAppUpdateResponseSchema),
         ProviderSubscriptionAccount: toJsonSchema(ProviderSubscriptionAccountSchema),
         ProviderSubscriptionAccountsResponse: toJsonSchema(
           ProviderSubscriptionAccountsResponseSchema
@@ -5965,6 +6074,7 @@ export function createAppOpenApiDocument() {
         SubmitConversationRequest: toJsonSchema(SubmitConversationRequestSchema),
         SubmitConversationResponse: toJsonSchema(SubmitConversationResponseSchema),
         ConversationTargetCatalog: toJsonSchema(ConversationTargetCatalogSchema),
+        StartAppUpdateRequest: toJsonSchema(StartAppUpdateRequestSchema),
         StartProviderSubscriptionAccountLoginRequest: toJsonSchema(
           StartProviderSubscriptionAccountLoginRequestSchema
         ),

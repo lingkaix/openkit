@@ -22,6 +22,11 @@ import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { asApiError } from './api-errors.js';
 import { registerDashboardRoutes } from './app-dashboard.js';
+import { registerAppUpdateRoutes } from './app-update/app-update-routes.js';
+import {
+  type AppUpdateHostTransport,
+  createSshAppUpdateHostTransport,
+} from './app-update/host-transport.js';
 import { registerApprovalRoutes } from './approval-routes.js';
 import { registerArtifactRoutes } from './artifact-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
@@ -388,6 +393,13 @@ export interface CreateAppOptions {
    * When omitted, `createApp` installs a fresh connection-generation store.
    */
   nanohostTransportSessionAuthority?: NanoHostTransportSessionAuthority;
+  /**
+   * Optional App-update host transport.
+   *
+   * Tests inject an in-process transport. When omitted, boot-time `appUpdate` config
+   * creates the SSH transport; absence of that config disables the capability.
+   */
+  appUpdateHostTransport?: AppUpdateHostTransport | null;
   /** Optional dispatcher bound to the same process-local NanoHost session authority. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch;
   /** Shared worker lifecycle runtime that owns Harness continuations and Turn credentials. */
@@ -1221,6 +1233,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerDataRootAdminRoutes({
     app,
     dataRoot,
+  });
+
+  const appUpdateTransport =
+    options.appUpdateHostTransport !== undefined
+      ? options.appUpdateHostTransport
+      : startupOpenKitConfig.appUpdate
+        ? createSshAppUpdateHostTransport(startupOpenKitConfig.appUpdate, dataRoot)
+        : null;
+  registerAppUpdateRoutes({
+    app,
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    transport: appUpdateTransport,
   });
 
   registerWorkspaceTransferRoutes({

@@ -29,6 +29,11 @@ function makeClient(
         .mockResolvedValue({ items: [] } satisfies Awaited<
           ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
         >),
+      listOpenKitAccessTokens: vi.fn().mockRejectedValue(
+        new ApiCallError(403, 'Server-admin authority is required.', {
+          code: 'forbidden',
+        })
+      ),
     },
     core: {
       meta: metaOk ? vi.fn().mockResolvedValue({}) : vi.fn().mockRejectedValue(new Error('down')),
@@ -164,6 +169,17 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
+  it('mounts App update administration under Settings without a credential prompt', async () => {
+    await renderAt('/settings/app-update');
+    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
+    expect(screen.getByRole('button', { name: 'App update' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'App update' })).toBeInTheDocument();
+    expect(await screen.findByText('Access denied')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
   it('mounts the published AI interface under Settings without a credential prompt', async () => {
     await renderAt('/settings/ai-interface');
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
@@ -192,6 +208,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'New workspace' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Portability' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'App update' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Access tokens' })).toBeInTheDocument();
   });

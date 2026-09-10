@@ -11,6 +11,8 @@ import {
   ApproveThreadGoalPlanResponseSchema,
   type AppSearchResponse,
   AppSearchResponseSchema,
+  type AppUpdateStatusResponse,
+  AppUpdateStatusResponseSchema,
   type AutomationRecord,
   AutomationRecordSchema,
   type BindThreadMaterialRequest,
@@ -233,6 +235,10 @@ import {
   PauseThreadGoalRequestSchema,
   type PauseThreadGoalResponse,
   PauseThreadGoalResponseSchema,
+  type PrepareAppUpdateRequest,
+  PrepareAppUpdateRequestSchema,
+  type PrepareAppUpdateResponse,
+  PrepareAppUpdateResponseSchema,
   type PublishGenerativePresentationRequest,
   PublishGenerativePresentationRequestSchema,
   type PublishGenerativePresentationResponse,
@@ -333,6 +339,8 @@ import {
   SetProviderApiKeyResponseSchema,
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
+  type StartAppUpdateRequest,
+  StartAppUpdateRequestSchema,
   type StartTaskModeRequest,
   StartTaskModeRequestSchema,
   type StartTaskModeResponse,
@@ -1097,6 +1105,12 @@ export interface AppApiClient {
   getStorageLayoutReport(): Promise<StorageLayoutReportResponse>;
   /** Creates and verifies one server-managed hot data-root backup. */
   createDataRootBackup(): Promise<DataRootBackupCreateResponse>;
+  /** Prepares one closed App-update source without replacing the running App. */
+  prepareAppUpdate(input: PrepareAppUpdateRequest): Promise<PrepareAppUpdateResponse>;
+  /** Starts one prepared App-update receipt after explicit maintenance consent. */
+  startAppUpdate(input: StartAppUpdateRequest): Promise<AppUpdateStatusResponse>;
+  /** Reads one host-owned App-update receipt by id. */
+  getAppUpdateStatus(requestId: string): Promise<AppUpdateStatusResponse>;
   /** Consumes the one-time server bootstrap token and returns the first server-admin token. */
   consumeBootstrapToken(
     input: ConsumeOpenKitBootstrapTokenInput
@@ -1937,6 +1951,23 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson('/api/app/storage/layout-report', StorageLayoutReportResponseSchema),
     createDataRootBackup: () =>
       transport.postJson('/api/app/data-root/backups', {}, DataRootBackupCreateResponseSchema),
+    prepareAppUpdate: (input) =>
+      transport.postJson(
+        '/api/app/app-update/prepare',
+        PrepareAppUpdateRequestSchema.parse(input),
+        PrepareAppUpdateResponseSchema
+      ),
+    startAppUpdate: (input) =>
+      transport.postJson(
+        '/api/app/app-update/start',
+        StartAppUpdateRequestSchema.parse(input),
+        AppUpdateStatusResponseSchema
+      ),
+    getAppUpdateStatus: (requestId) =>
+      transport.getJson(
+        `/api/app/app-update/${encodeURIComponent(requestId)}`,
+        AppUpdateStatusResponseSchema
+      ),
     consumeBootstrapToken: (input) =>
       transport.postJson(
         '/api/app/auth/bootstrap/consume',

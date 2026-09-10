@@ -3,8 +3,8 @@ import { describe, it } from 'node:test';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 223;
-const EXPECTED_SERVER_SIZE = 46;
+const EXPECTED_CATALOG_SIZE = 226;
+const EXPECTED_SERVER_SIZE = 49;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 175;
 

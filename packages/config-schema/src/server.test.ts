@@ -262,4 +262,83 @@ describe('server config schema', () => {
       ])
     );
   });
+
+  it('accepts optional app-update host identity with absolute key paths', () => {
+    expect(
+      OpenKitConfigSchema.parse({
+        appUpdate: {
+          host: '127.0.0.1',
+          user: 'openkit-update',
+          port: 22,
+          identityFile: '/run/openkit/app-update/id_ed25519',
+          knownHostsFile: '/run/openkit/app-update/known_hosts',
+        },
+      }).appUpdate
+    ).toEqual({
+      host: '127.0.0.1',
+      user: 'openkit-update',
+      port: 22,
+      identityFile: '/run/openkit/app-update/id_ed25519',
+      knownHostsFile: '/run/openkit/app-update/known_hosts',
+    });
+  });
+
+  it.each([
+    {
+      identityFile: 'id_ed25519',
+      knownHostsFile: '/run/openkit/app-update/known_hosts',
+    },
+    {
+      identityFile: '/run/openkit/app-update/id_ed25519',
+      knownHostsFile: 'known_hosts',
+    },
+    {
+      identityFile: '/run/openkit/app-update/id_ed25519',
+      knownHostsFile: '/run/openkit/app-update/id_ed25519',
+    },
+  ])('rejects app-update key paths that are relative or not distinct: %j', (paths) => {
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        appUpdate: {
+          host: '127.0.0.1',
+          user: 'openkit-update',
+          port: 22,
+          ...paths,
+        },
+      })
+    ).toThrow();
+  });
+
+  it.each([
+    { command: '/usr/local/libexec/openkit-app-update' },
+    { repository: 'https://github.com/openkit/openkit.git' },
+    { dockerSocket: '/var/run/docker.sock' },
+  ])('rejects request-chosen app-update host fields: %j', (extra) => {
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        appUpdate: {
+          host: '127.0.0.1',
+          user: 'openkit-update',
+          port: 22,
+          identityFile: '/run/openkit/app-update/id_ed25519',
+          knownHostsFile: '/run/openkit/app-update/known_hosts',
+          ...extra,
+        },
+      })
+    ).toThrow();
+  });
+
+  it('marks app-update configuration restart-required and request-forbidden', () => {
+    expect(getConfigPolicyCatalog()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'server',
+          path: '$.appUpdate',
+          reloadClass: 'restart-required',
+          requestOverride: 'forbidden',
+          secretPolicy: 'no-secret',
+        }),
+      ])
+    );
+  });
 });

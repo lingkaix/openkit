@@ -2140,6 +2140,17 @@ describe('app api openapi projection', () => {
         },
       },
     });
+    expect(document.paths['/api/app/app-update/prepare']?.post).toMatchObject({
+      operationId: 'prepareAppUpdate',
+      tags: ['app-update'],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/PrepareAppUpdateRequest' },
+          },
+        },
+      },
+    });
     expect(document.paths['/api/app/vault/status']?.get).toMatchObject({
       operationId: 'getVaultAdminStatus',
       tags: ['vault'],
@@ -3471,6 +3482,9 @@ describe('app api openapi projection', () => {
       'getStorageLayoutReport',
       'createDataRootBackup',
       'verifyDataRootBackup',
+      'prepareAppUpdate',
+      'startAppUpdate',
+      'getAppUpdateStatus',
       'exportWorkspace',
       'downloadWorkspaceExportArchive',
       'dryRunWorkspaceArchiveImport',

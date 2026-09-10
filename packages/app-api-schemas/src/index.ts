@@ -1,6 +1,7 @@
 export * from './action-center.js';
 export * from './agent-environment.js';
 export * from './agents.js';
+export * from './app-update.js';
 export * from './audit.js';
 export * from './auth.js';
 export * from './automation.js';

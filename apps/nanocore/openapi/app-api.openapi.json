@@ -9251,6 +9251,154 @@
         }
       }
     },
+    "/api/app/app-update/prepare": {
+      "post": {
+        "operationId": "prepareAppUpdate",
+        "tags": [
+          "app-update"
+        ],
+        "summary": "Prepare one closed App-update source without replacing the running App.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrepareAppUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prepared review object with a host-issued receipt id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrepareAppUpdateResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/app-update/start": {
+      "post": {
+        "operationId": "startAppUpdate",
+        "tags": [
+          "app-update"
+        ],
+        "summary": "Start one prepared App-update receipt after explicit maintenance consent.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAppUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Host receipt projection after start handoff.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppUpdateStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/app-update/{requestId}": {
+      "get": {
+        "operationId": "getAppUpdateStatus",
+        "tags": [
+          "app-update"
+        ],
+        "summary": "Read one host-owned App-update receipt by id.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Host receipt projection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppUpdateStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/workspaces/{workspaceId}/export": {
       "post": {
         "operationId": "exportWorkspace",
@@ -20176,6 +20324,363 @@
         },
         "required": [
           "items"
+        ],
+        "additionalProperties": false
+      },
+      "AppUpdateStatusResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "candidateBoot": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "acceptingProductWork": {
+                    "type": "boolean"
+                  },
+                  "blockingReasons": {
+                    "maxItems": 32,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
+                  "bootId": {
+                    "type": "string",
+                    "pattern": "^boot_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "imageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "sourceCommit": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "acceptingProductWork",
+                  "blockingReasons",
+                  "bootId",
+                  "imageId",
+                  "sourceCommit"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidateImageId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expectedCurrentImageId": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "jobId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "prepared",
+              "running",
+              "succeeded",
+              "failed",
+              "unknown",
+              "recovery_required"
+            ]
+          },
+          "predicates": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "acceptingProductWork": {
+                    "type": "boolean"
+                  },
+                  "helperReachable": {
+                    "type": "boolean"
+                  },
+                  "imageMatch": {
+                    "type": "boolean"
+                  },
+                  "nanohostReady": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "newBoot": {
+                    "type": "boolean"
+                  },
+                  "noBlockingReadiness": {
+                    "type": "boolean"
+                  },
+                  "retainedAuthRead": {
+                    "type": "boolean"
+                  },
+                  "sourceMatch": {
+                    "type": "boolean"
+                  },
+                  "webAssets": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "acceptingProductWork",
+                  "helperReachable",
+                  "imageMatch",
+                  "nanohostReady",
+                  "newBoot",
+                  "noBlockingReadiness",
+                  "retainedAuthRead",
+                  "sourceMatch",
+                  "webAssets"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preparedAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "previousAppRestored": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previousBoot": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "acceptingProductWork": {
+                    "type": "boolean"
+                  },
+                  "blockingReasons": {
+                    "maxItems": 32,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  },
+                  "bootId": {
+                    "type": "string",
+                    "pattern": "^boot_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "imageId": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "sourceCommit": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "acceptingProductWork",
+                  "blockingReasons",
+                  "bootId",
+                  "imageId",
+                  "sourceCommit"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previousImageId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "appDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "release"
+                  },
+                  "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "tag": {
+                    "type": "string",
+                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+                  }
+                },
+                "required": [
+                  "appDigest",
+                  "kind",
+                  "sourceCommit",
+                  "tag"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "commit"
+                  },
+                  "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "sourceCommit"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "prepared",
+              "launching",
+              "applying",
+              "verifying",
+              "succeeded",
+              "failed",
+              "unknown",
+              "recovery_required"
+            ]
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "candidateBoot",
+          "candidateImageId",
+          "completedAt",
+          "error",
+          "expectedCurrentImageId",
+          "jobId",
+          "outcome",
+          "predicates",
+          "preparedAt",
+          "previousAppRestored",
+          "previousBoot",
+          "previousImageId",
+          "requestId",
+          "source",
+          "stage",
+          "startedAt"
         ],
         "additionalProperties": false
       },
@@ -38986,6 +39491,152 @@
         "required": [
           "outcome",
           "goal"
+        ],
+        "additionalProperties": false
+      },
+      "PrepareAppUpdateRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedCurrentImageId": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "appDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "release"
+                  },
+                  "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "tag": {
+                    "type": "string",
+                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+                  }
+                },
+                "required": [
+                  "appDigest",
+                  "kind",
+                  "sourceCommit",
+                  "tag"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "commit"
+                  },
+                  "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "sourceCommit"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "expectedCurrentImageId",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "PrepareAppUpdateResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedCurrentImageId": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "preparedAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "appDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "release"
+                  },
+                  "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "tag": {
+                    "type": "string",
+                    "pattern": "^v(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+                  }
+                },
+                "required": [
+                  "appDigest",
+                  "kind",
+                  "sourceCommit",
+                  "tag"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "commit"
+                  },
+                  "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "sourceCommit"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "stage": {
+            "type": "string",
+            "const": "prepared"
+          }
+        },
+        "required": [
+          "expectedCurrentImageId",
+          "preparedAt",
+          "requestId",
+          "source",
+          "stage"
         ],
         "additionalProperties": false
       },
@@ -61178,6 +61829,26 @@
           "threadId",
           "targets",
           "defaultTargetRef"
+        ],
+        "additionalProperties": false
+      },
+      "StartAppUpdateRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "maintenanceConsent": {
+            "type": "boolean",
+            "const": true
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "maintenanceConsent",
+          "requestId"
         ],
         "additionalProperties": false
       },
@@ -94872,5 +95543,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:f8fadd504c19df2806784cabd81a763a9ae2cf99131082af8d44080be18a8d3e"
+  "x-openkit-source-digest": "sha256:bb67aa1713c8a807a5abc5559c690a6cbf8da0a151e35eb363d871876b3e7e96"
 }

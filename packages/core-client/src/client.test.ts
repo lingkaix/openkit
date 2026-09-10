@@ -939,6 +939,41 @@ function dataRootBackupResponse() {
   };
 }
 
+/** Returns one prepared App-update review fixture. */
+function appUpdatePrepared() {
+  return {
+    expectedCurrentImageId: `sha256:${'b'.repeat(64)}`,
+    preparedAt: timestamp,
+    requestId: '11111111-1111-4111-8111-111111111111',
+    source: {
+      appDigest: `sha256:${'b'.repeat(64)}`,
+      kind: 'release' as const,
+      sourceCommit: 'a'.repeat(40),
+      tag: 'v0.1.0',
+    },
+    stage: 'prepared' as const,
+  };
+}
+
+/** Returns one App-update status fixture. */
+function appUpdateStatus() {
+  return {
+    ...appUpdatePrepared(),
+    candidateBoot: null,
+    candidateImageId: null,
+    completedAt: null,
+    error: null,
+    jobId: 'job_app-update.service',
+    outcome: 'running' as const,
+    predicates: null,
+    previousAppRestored: null,
+    previousBoot: null,
+    previousImageId: null,
+    stage: 'launching' as const,
+    startedAt: timestamp,
+  };
+}
+
 /** Returns one redacted OpenKit access-token record. */
 function accessTokenRecord(overrides: Record<string, unknown> = {}) {
   return {
@@ -2821,6 +2856,9 @@ describe('createCoreClient', () => {
       'GET /api/app/diagnostics': { body: appDiagnostics() },
       'GET /api/app/storage/layout-report': { body: storageLayoutReport() },
       'POST /api/app/data-root/backups': { body: dataRootBackupResponse() },
+      'POST /api/app/app-update/prepare': { body: appUpdatePrepared() },
+      'POST /api/app/app-update/start': { body: appUpdateStatus() },
+      'GET /api/app/app-update/11111111-1111-4111-8111-111111111111': { body: appUpdateStatus() },
       'POST /api/app/auth/bootstrap/consume': {
         body: {
           token: 'okt_owner_secret',
@@ -3435,6 +3473,26 @@ describe('createCoreClient', () => {
     await expect(client.app.getStorageLayoutReport()).resolves.toEqual(storageLayoutReport());
     await expect(client.app.createDataRootBackup()).resolves.toEqual(dataRootBackupResponse());
     await expect(
+      client.app.prepareAppUpdate({
+        expectedCurrentImageId: `sha256:${'b'.repeat(64)}`,
+        source: {
+          appDigest: `sha256:${'b'.repeat(64)}`,
+          kind: 'release',
+          sourceCommit: 'a'.repeat(40),
+          tag: 'v0.1.0',
+        },
+      })
+    ).resolves.toEqual(appUpdatePrepared());
+    await expect(
+      client.app.startAppUpdate({
+        maintenanceConsent: true,
+        requestId: '11111111-1111-4111-8111-111111111111',
+      })
+    ).resolves.toEqual(appUpdateStatus());
+    await expect(
+      client.app.getAppUpdateStatus('11111111-1111-4111-8111-111111111111')
+    ).resolves.toEqual(appUpdateStatus());
+    await expect(
       client.app.consumeBootstrapToken({
         displayName: 'Owner',
         ownerUserId: 'user_owner',
@@ -3760,6 +3818,9 @@ describe('createCoreClient', () => {
       'GET /api/app/diagnostics',
       'GET /api/app/storage/layout-report',
       'POST /api/app/data-root/backups',
+      'POST /api/app/app-update/prepare',
+      'POST /api/app/app-update/start',
+      'GET /api/app/app-update/11111111-1111-4111-8111-111111111111',
       'POST /api/app/auth/bootstrap/consume',
       'POST /api/app/data-root/backups/drb_demo/verify',
       'POST /api/app/workspaces/ws_demo/export',
@@ -3810,13 +3871,13 @@ describe('createCoreClient', () => {
       'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_queued/cancel',
       'GET /api/app/workspaces/ws_demo/scheduler/admissions',
     ]);
-    expect(requests[3]?.body).toEqual({
+    expect(requests[6]?.body).toEqual({
       displayName: 'Owner',
       ownerUserId: 'user_owner',
       token: 'okt_bootstrap_secret',
       tokenExpiresAt: timestamp,
     });
-    expect(requests[8]?.body).toEqual({
+    expect(requests[11]?.body).toEqual({
       materialBase64: Buffer.from('workspace-secret').toString('base64'),
     });
     expect(requests.at(-6)?.body).toBeNull();

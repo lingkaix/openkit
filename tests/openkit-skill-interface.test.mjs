@@ -347,6 +347,9 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(
     idsWithAccess('deployment admin: implicit local actor or server-admin bearer token'),
     [
+      'app-update.prepare',
+      'app-update.start',
+      'app-update.status',
       'audit.server-list',
       'backup.create',
       'backup.verify',

@@ -28,6 +28,8 @@ NanoCore-created linked-repository roots add a full `sourceCommit` object id bef
 
 The session workspace planner consumes the pure Worker protocol path projection to bind Context inputs to `/openkit/sessions/<agent-session-id>/context`; authored filesystem grants cannot select this Core-managed namespace.
 
+Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file and known-hosts file. It is deployment configuration requiring App restart, not a Workspace capability or editable request destination. NanoCore checks that the protected files remain outside Data Root; host installation owns the forced command and fixed deployment target.
+
 ## Commands
 
 - `pnpm --filter @openkit/config-schema test`

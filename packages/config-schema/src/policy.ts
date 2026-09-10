@@ -65,6 +65,19 @@ const POLICY_CATALOG: ConfigPolicyCatalogEntry[] = [
     summary:
       'NanoHost identity, rendezvous endpoint, and non-secret credential reference are server-owned and restart-required.',
   },
+  {
+    kind: 'server',
+    path: '$.appUpdate',
+    owner: 'server',
+    merge: 'replace',
+    workspaceOverride: 'forbidden',
+    userOverride: 'forbidden',
+    requestOverride: 'forbidden',
+    reloadClass: 'restart-required',
+    secretPolicy: 'no-secret',
+    summary:
+      'App-update SSH host identity is server-owned, restart-required, and not selectable from request data.',
+  },
 
   {
     kind: 'provider',

@@ -26,6 +26,8 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 Deprecated flat aliases are not exported.
 
+`client.app.prepareAppUpdate`, `startAppUpdate` and `getAppUpdateStatus` project the deployment-admin App-update contract. Keep the host-assigned request ID before starting; an uncertain response requires status for that ID, not a new update. The client does not perform host effects or infer completion from a successful HTTP submission.
+
 ## Commands
 
 - `pnpm --filter @openkit/core-client test`

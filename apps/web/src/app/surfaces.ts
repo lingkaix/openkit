@@ -296,6 +296,16 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
   {
+    id: 'app-update',
+    title: 'App update',
+    path: '/settings/app-update',
+    tier: 'A',
+    nav: 'settings-server',
+    icon: 'retry',
+    board: '10',
+    wp: 'WP-7',
+  },
+  {
     id: 'ai-interface',
     title: 'AI interface',
     path: '/settings/ai-interface',

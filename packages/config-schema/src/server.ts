@@ -192,10 +192,40 @@ export const OpenKitNanoHostConfigSchema = z
   });
 
 /**
+ * Restricted SSH identity used by NanoCore to invoke the installed App-update helper.
+ *
+ * Request data cannot choose the helper command, repository, Docker socket, or target path.
+ * The identity and known-hosts files are absolute host paths mounted as protected secrets.
+ */
+export const OpenKitAppUpdateConfigSchema = z
+  .object({
+    host: z.string().trim().min(1),
+    identityFile: z
+      .string()
+      .min(1)
+      .refine(isAbsolute, 'App-update identity file path must be absolute.'),
+    knownHostsFile: z
+      .string()
+      .min(1)
+      .refine(isAbsolute, 'App-update known-hosts file path must be absolute.'),
+    port: z.number().int().min(1).max(65_535),
+    user: z.string().trim().min(1),
+  })
+  .strict()
+  .refine(
+    (value) => value.identityFile !== value.knownHostsFile,
+    'App-update identity and known-hosts paths must be distinct.'
+  )
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+  });
+
+/**
  * File-backed NanoCore configuration schema.
  */
 export const OpenKitConfigSchema = z
   .object({
+    appUpdate: OpenKitAppUpdateConfigSchema.optional(),
     auth: OpenKitAuthConfigSchema.optional(),
     defaults: OpenKitConfigDefaultsSchema.optional(),
     mode: CoreModeSchema.optional(),
@@ -210,6 +240,11 @@ export const OpenKitConfigSchema = z
  * File-backed NanoCore configuration.
  */
 export type OpenKitConfig = z.infer<typeof OpenKitConfigSchema>;
+
+/**
+ * Restricted SSH identity for the installed App-update helper.
+ */
+export type OpenKitAppUpdateConfig = z.infer<typeof OpenKitAppUpdateConfigSchema>;
 
 /**
  * Secret-free NanoHost deployment projection.

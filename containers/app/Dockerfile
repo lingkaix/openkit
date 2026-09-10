@@ -55,6 +55,7 @@ RUN apt-get update \
     curl \
     git \
     libsqlite3-0 \
+    openssh-client \
     tini \
   && rm -rf /var/lib/apt/lists/*
 

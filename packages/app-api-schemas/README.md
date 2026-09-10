@@ -30,6 +30,8 @@ Do not add stable Core protocol records here. Core records, commands, events, er
 
 App Diagnostics includes a strict process sample with nested telemetry configuration booleans. The schema does not grant access or interpret exporter delivery; NanoCore samples only after deployment-admin authorization.
 
+App-update schemas define the closed release/exact-commit prepare request, maintenance-consented start, and redacted host receipt projection. A UUID identifies the prepared request across App restarts. These schemas do not grant deployment-admin authority or turn the host receipt into a Core Task lifecycle.
+
 ## Commands
 
 - `pnpm --filter @openkit/app-api-schemas test`

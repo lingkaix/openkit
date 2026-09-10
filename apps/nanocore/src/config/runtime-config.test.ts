@@ -444,6 +444,45 @@ describe('runtime config loading and reload planning', () => {
     ]);
   });
 
+  it('classifies appUpdate host-identity changes as restart-required', () => {
+    const baseRoot = createDataRoot();
+    const nextRoot = createDataRoot();
+    writeConfiguredServer(baseRoot, 'openai/gpt-5.1');
+    writeConfiguredServer(
+      nextRoot,
+      'openai/gpt-5.1',
+      `,
+    "appUpdate": {
+      "host": "127.0.0.1",
+      "identityFile": "/run/openkit/app-update/id_ed25519",
+      "knownHostsFile": "/run/openkit/app-update/known_hosts",
+      "port": 22,
+      "user": "openkit-update"
+    }`
+    );
+
+    const previous = loadRuntimeConfig(baseRoot, { version: 1 });
+    const next = loadRuntimeConfig(nextRoot, { version: 2 });
+    const plan = diffRuntimeConfig(previous, next);
+
+    expect(previous.openKitConfig.appUpdate).toBeUndefined();
+    expect(next.openKitConfig.appUpdate).toEqual({
+      host: '127.0.0.1',
+      identityFile: '/run/openkit/app-update/id_ed25519',
+      knownHostsFile: '/run/openkit/app-update/known_hosts',
+      port: 22,
+      user: 'openkit-update',
+    });
+    expect(plan.applied).toEqual([]);
+    expect(plan.requiresRestart).toEqual([
+      expect.objectContaining({
+        action: 'requires-restart',
+        category: 'restart-required',
+        path: 'appUpdate',
+      }),
+    ]);
+  });
+
   it('classifies agent config changes as session-scoped', () => {
     const baseRoot = createDataRoot();
     const nextRoot = createDataRoot();

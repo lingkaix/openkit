@@ -13,6 +13,7 @@ import { PortabilityScreen } from '../screens/portability';
 import {
   AccessTokensScreen,
   AiInterfaceScreen,
+  AppUpdateScreen,
   ConfigurationScreen,
   DebugScreen,
   GeneralSettingsScreen,
@@ -59,6 +60,7 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   account: <AccountScreen />,
   appearance: <ThemePicker />,
   configuration: <ConfigurationScreen />,
+  'app-update': <AppUpdateScreen />,
   settings: <GeneralSettingsScreen />,
   'ai-interface': <AiInterfaceScreen />,
   'my-admin-access': <MyAdminAccessScreen />,

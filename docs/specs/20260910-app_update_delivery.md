@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 date: "2026-09-10"
 ---
 # App Update Delivery
@@ -53,6 +53,8 @@ NanoCore writes its authorized start-request Audit observation before sending st
 
 Receipts retain the request/source identity, previous and candidate image IDs, old/new boot observations, stage, times, outcome, bounded redacted error, and whether the previous App was restored. They exclude secrets, raw logs, private environment values and product transcripts. The status response projects that receipt; absence or inability to read it is unavailable evidence, never success. Existing Core Audit records record authorization and the handoff observation. Existing Tasks or Artifacts may reference the request ID and later attach a retrieved receipt through ordinary public writes. The helper never writes Core storage, and a receipt does not accept an Artifact or complete an interrupted Turn.
 
+The public receipt includes a closed `predicates` object, null before verification, with `imageMatch`, `sourceMatch`, `acceptingProductWork`, `noBlockingReadiness`, `newBoot`, `retainedAuthRead`, `nanohostReady`, `helperReachable` and `webAssets`. A succeeded receipt requires each predicate true, except `nanohostReady` may be null when no NanoHost was connected before replacement and `webAssets` may be null when Web assets are contained in the verified App image. A true `nanohostReady` requires the pre-update identity and connection generation unchanged as well as readiness. Failure reports the observed checks without promoting an unmeasured result to success.
+
 ## Apply And Verification
 
 Prepare and smoke the exact candidate image before the maintenance window. Inspect active work and coordinate interruption under the persistent-acceptance owner. Immediately before replacement, re-check the expected current image and target identity under the host lock. A mismatch refuses the update. Do not flip a boot-readiness flag into a fabricated maintenance state or invent a second scheduler. The administrator's explicit maintenance consent permits interruption of the inspected work. An idle retained binding is not active execution and must not permanently block an update. Graceful App shutdown uses the existing shutdown and interrupted-work behavior; race-admitted work is recorded by those owners rather than claimed drained without a real admission barrier.
@@ -61,13 +63,17 @@ Preserve the deployment's Data Root, external Vault key, protected environment, 
 
 Before the first candidate boot, establish whether the current data/configuration is compatible with a return to the previous image. Existing schema migration/version evidence and an explicit compatible candidate assessment decide this; absence is not proof. Configuration edits required by a new parser are staged and applied while the App is stopped. Retain protected copies for inspection; do not infer that reverting image or configuration reverses a data migration.
 
+The initial helper keeps one operator-authored compatibility assessment in its existing protected host configuration, bound to the exact current image, candidate source/image and observed applied migrations. It introduces no separate assessment directory or lifecycle. A changed or unassessed binding refuses before stopping the App. The first implementation admits only an established migration-free candidate; a general compatibility boolean cannot admit migration-bearing work or authorize automatic restoration. An assessed parser/configuration-only change may still use the coordinated stopped-App edit above; it is not automatically a data migration. The separately verified host-recovery path remains a prerequisite for a later migration-bearing implementation, and a failed restoration still requires explicit host recovery.
+
 Success requires the candidate's actual image/source and Web asset identity, a new observed boot, `acceptingProductWork`, no blocking readiness reasons, an authenticated read of retained product data, the unchanged NanoHost identity/generation returning to readiness when it was connected before the update, and a successful read-only helper-status request through the new App so the update capability has not silently removed itself. Only explicitly admitted nonblocking readiness reasons, initially `storage.index-rebuilt`, may be tolerated. Record every predicate separately. These predicates establish App update operability, not all roadmap or L6 acceptance.
+
+For an exact-commit build, the same receipt binds independently verified source/archive bytes to the resulting observed immutable Docker image ID; verification then reads the actual running container image ID against that acquisition observation. Copying a request's source or image into a boot response is not evidence. No new image-label or build-manifest mechanism is required solely for this link. Published releases instead verify the fixed repository's OCI digest and release/source attribution; Docker's local image ID is not interchangeable with an OCI manifest digest. External Web verification compares the staged asset digest with the resolved live directory after the stopped-App switch, preserving the previous target for compatible restoration.
 
 On preparation failure, leave the running App unchanged. If candidate verification fails and the previous image is proved compatible with current data/configuration, the same host job must attempt to restore the previous App and its matching Web assets; record the update as failed with recovery observed. Otherwise stop to explicit host recovery and preserve both evidence and data. Never restore a data backup automatically, restart NanoHost to force a pass, or repeat the host effect after an uncertain response. The operations Skill provides the offline inspection path.
 
 ## Current Implementation Projection
 
-Existing deployment procedures already build and replace exact App/Web snapshots while retaining NanoHost. There is no first-party Web update capability or installed restricted helper yet. The first implementation targets the existing Linux/systemd/Docker deployment; other supported deployment shapes retain their normal operator procedures until a concrete equivalent is implemented. This is not a new hard qualification requirement for all NanoCore installations.
+The first-party administrator App API, Core Client, public Skill operations and Web update screen implement prepare/start/status against the configured restricted SSH transport. Missing deployment configuration disables the capability; unusable identity files fail its operation without taking Core down. The host helper is not yet accepted or installed, and no end-to-end self-update is claimed. Existing operator procedures already build and replace exact App/Web snapshots while retaining NanoHost. The first implementation targets the existing Linux/systemd/Docker deployment; other supported deployment shapes retain their normal operator procedures until a concrete equivalent is implemented. This is not a new hard qualification requirement for all NanoCore installations.
 
 ## Rollout And Acceptance
 
