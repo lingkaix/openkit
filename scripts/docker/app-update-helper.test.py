@@ -106,6 +106,7 @@ class RecordingEffects:
         self.candidate_boot_id = "boot_22222222-2222-4222-8222-222222222222"
         self.pull_error: Optional[str] = None
         self.privileged = False
+        self.runtime = "runc"
         self.devices: List[dict] = []
         self.extract_empty = False
         self.containers: Set[str] = {CONTAINER}
@@ -178,7 +179,7 @@ class RecordingEffects:
                 "PortBindings": {},
                 "Privileged": self.privileged,
                 "RestartPolicy": {"MaximumRetryCount": 0, "Name": "unless-stopped"},
-                "Runtime": "",
+                "Runtime": self.runtime,
             },
             "Mounts": [
                 {"Destination": "/data/openkit", "RW": True, "Source": self.data_root, "Type": "bind"},
@@ -903,6 +904,8 @@ class ApplyJobTests(unittest.TestCase):
                 run,
             )
             self.assertIn("--log-opt", run)
+            self.assertIn("--runtime", run)
+            self.assertEqual(run[run.index("--runtime") + 1], "runc")
             self.assertFalse(any(call[:1] == ["systemctl"] and "nanohost" in " ".join(call).lower() for call in effects.calls))
             self.assertEqual(str((root / "web" / "current").readlink()), COMMIT)
             self.assertTrue((root / "web" / COMMIT / "index.html").is_file())
@@ -1120,6 +1123,72 @@ class ApplyJobTests(unittest.TestCase):
                 stdin_bytes=b"",
             )[1]
             self.assertEqual(body["stage"], "failed")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_standard_runc_is_admitted_and_custom_runtime_refuses_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.runtime = "runc"
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "succeeded", body)
+            run = [call for call in effects.calls if call[:2] == ["docker", "run"] and "--detach" in call][0]
+            self.assertIn("--runtime", run)
+            self.assertEqual(run[run.index("--runtime") + 1], "runc")
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.runtime = "sysbox-runc"
+            config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            invoke(
+                module,
+                {
+                    "maintenanceConsent": True,
+                    "op": "start",
+                    "requestId": prepared["requestId"],
+                },
+                config_path,
+                effects=effects,
+            )
+            body = invoke(
+                module,
+                {},
+                config_path,
+                effects=effects,
+                extra_argv=["--apply", prepared["requestId"]],
+                stdin_bytes=b"",
+            )[1]
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"runtime is unsupported")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.runtime = ""
+            config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            invoke(
+                module,
+                {
+                    "maintenanceConsent": True,
+                    "op": "start",
+                    "requestId": prepared["requestId"],
+                },
+                config_path,
+                effects=effects,
+            )
+            body = invoke(
+                module,
+                {},
+                config_path,
+                effects=effects,
+                extra_argv=["--apply", prepared["requestId"]],
+                stdin_bytes=b"",
+            )[1]
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"runtime is unsupported")
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
     def test_empty_web_extract_refuses_before_stop(self) -> None:

@@ -940,7 +940,7 @@ class AppUpdateHelper:
                 raise HelperError("app_update_invalid_request", "App HostConfig %s is unsupported." % key)
         if host.get("PidMode") not in (None, "", "host"):
             raise HelperError("app_update_invalid_request", "App pid namespace is unsupported.")
-        if host.get("Runtime"):
+        if host.get("Runtime") != "runc":
             raise HelperError("app_update_invalid_request", "App runtime is unsupported.")
         if host.get("NetworkMode") != "host":
             raise HelperError("app_update_invalid_request", "App network mode must be host.")
@@ -1031,6 +1031,8 @@ class AppUpdateHelper:
             self.config["containerName"],
             "--restart",
             "unless-stopped",
+            "--runtime",
+            "runc",
             "--network",
             "host",
             "--volume",
