@@ -60,7 +60,7 @@ The historical pre-unification upgrade baseline was `0.80.3`, the subscription-u
 - The consuming package declares one exact version with no `^`, `~`, workspace override, patch artifact, or alternate source.
 - The selected release must expose provider-owned login discovery, a custom `CredentialStore` integration, automatic OAuth refresh, native Codex Responses, and xAI subscription login and inference sufficient for the accepted account and backend specs.
 - OpenKit injects its credential-store view and explicit provider settings. It must not let pi-ai read its default `auth.json`, execute credential commands, or fall through to ambient environment credentials for a configured OpenKit provider.
-- `@openkit/models-dev-catalog` remains canonical for model identity and provider-template traceability. Pi-ai catalog data is reviewed input, never product authority.
+- `@openkit/models-dev-catalog` supplies the shared optional inventory and provider-template traceability for entries it contains. Explicit Provider model lists and Gateway routes admit hand-authored IDs even without a catalog entry; the Gateway owner defines unknown metadata semantics. Pi-ai catalog data is reviewed input, never product admission authority.
 - Every pi-ai upgrade reconciles the overlapping catalog and re-runs focused authentication, native Responses, streaming, usage, cache, turn-state, and redaction tests before merge.
 
 ## Public Vocabulary Boundary
@@ -99,7 +99,7 @@ Pi-ai's documented support for a consumer subscription is evidence that the adap
 
 ## Models.dev Reconciliation
 
-- `@openkit/models-dev-catalog` decides model identity and provider-template traceability; pi-ai's vendored or refreshed catalog never supersedes it.
+- `@openkit/models-dev-catalog` owns shared inventory metadata and provider-template traceability for catalogued entries; pi-ai's vendored or refreshed catalog never supersedes that metadata. It is not an allowlist and does not replace authored Provider/Gateway model identity or reject hand-authored third-party IDs.
 - Repository validation compares provider ids, model ids, and pricing for entries shared by both catalogs during a pi-ai upgrade.
 - Provider-id and model-id mismatches have zero tolerance. The default relative price tolerance is 5% per token class; divergence beyond that tolerance blocks the upgrade until review records the exact provider, model, token class, models.dev price, and pi-ai price as one release-bound accepted difference. Repository validation still compares every shared entry and rejects any missing, stale, duplicate, or unobserved acknowledgement.
 - When shared entries differ within the accepted price tolerance, product-facing catalog data follows `@openkit/models-dev-catalog`.

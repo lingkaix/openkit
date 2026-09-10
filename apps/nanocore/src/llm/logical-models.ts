@@ -29,16 +29,17 @@ export interface ResolvedLogicalModelRoute {
   readonly providerModel: string;
 }
 
-/** Product-visible logical model with catalog-derived contract fields. */
+/** Product-visible logical model with optional catalog-derived contract fields. */
 export interface ResolvedLogicalModel {
   readonly id: string;
   readonly displayName: string;
   readonly capabilities: readonly string[];
-  readonly modelFamilyId: string;
+  /** Catalog family when inventory names one; null when family metadata is absent. */
+  readonly modelFamilyId: string | null;
   readonly routes: readonly ResolvedLogicalModelRoute[];
 }
 
-/** Resolves and validates every configured logical model against current Provider supply. */
+/** Resolves configured logical models using optional catalog metadata and current Provider supply. */
 export function resolveLogicalModelCatalog(
   config: GatewayConfig,
   providers: ProviderRegistry
@@ -48,6 +49,16 @@ export function resolveLogicalModelCatalog(
   }
 
   return config.logicalModels.flatMap((logicalModel) => {
+    const authoredFamilies = logicalModel.routes.map((route) => {
+      const profile = providers.get(route.providerProfileId);
+      return profile === null ? null : modelContract(profile, route.providerModel).modelFamilyId;
+    });
+    const families = new Set(authoredFamilies);
+    const unknownFamily = authoredFamilies.some((family) => family === null);
+    if (unknownFamily ? logicalModel.routes.length !== 1 : families.size !== 1) {
+      throw new Error(`Logical model routes cross model families: ${logicalModel.id}.`);
+    }
+
     const eligibleRoutes = logicalModel.routes.filter((route) => {
       const profile = providers.get(route.providerProfileId);
       return profile !== null && isProviderProfileDispatchable(profile);
@@ -60,10 +71,6 @@ export function resolveLogicalModelCatalog(
       }
       return modelContract(profile, route.providerModel);
     });
-    const families = new Set(contracts.map((contract) => contract.modelFamilyId));
-    if (families.size !== 1) {
-      throw new Error(`Logical model routes cross model families: ${logicalModel.id}.`);
-    }
 
     return [
       {
@@ -92,10 +99,17 @@ export function resolveLogicalModel(
   );
 }
 
+/**
+ * Derives one route contract from optional catalog metadata and the Provider endpoint matrix.
+ *
+ * @param profile Provider profile that lists the model.
+ * @param modelId Configured provider-native model id.
+ * @returns Endpoint capabilities plus catalog flags when present, with null family when unknown.
+ */
 function modelContract(
   profile: ProviderProfile,
   modelId: string
-): { capabilities: readonly string[]; modelFamilyId: string } {
+): { capabilities: readonly string[]; modelFamilyId: string | null } {
   const modelNamespace = modelId.includes('/') ? modelId.slice(0, modelId.indexOf('/')) : null;
   const provider = providerCatalog(profile, modelNamespace);
   const subscriptionFamily = resolveProviderSubscriptionFamily(profile);
@@ -108,24 +122,23 @@ function modelContract(
   ]
     .map((candidate) => provider?.models?.[candidate])
     .find((candidate) => candidate !== undefined);
-  if (!model?.family) {
-    throw new Error(
-      `Provider model is absent from the pinned models.dev catalog: ${profile.id}/${modelId}.`
-    );
-  }
 
   const capabilities = new Set<string>();
-  for (const modality of model.modalities?.input ?? []) capabilities.add(`input:${modality}`);
-  for (const modality of model.modalities?.output ?? []) capabilities.add(`output:${modality}`);
-  if (model.attachment) capabilities.add('attachment');
-  if (model.reasoning) capabilities.add('reasoning');
-  if (model.tool_call) capabilities.add('tool-calling');
-  if (model.temperature) capabilities.add('temperature');
+  if (model) {
+    for (const modality of model.modalities?.input ?? []) capabilities.add(`input:${modality}`);
+    for (const modality of model.modalities?.output ?? []) capabilities.add(`output:${modality}`);
+    if (model.attachment) capabilities.add('attachment');
+    if (model.reasoning) capabilities.add('reasoning');
+    if (model.tool_call) capabilities.add('tool-calling');
+    if (model.temperature) capabilities.add('temperature');
+  }
   const endpoints = gatewayCapabilitiesForProfile(profile);
   if (endpoints.chatCompletions !== 'unsupported') capabilities.add('chat-completions');
   if (endpoints.responses !== 'unsupported') capabilities.add('responses');
 
-  return { capabilities: [...capabilities].sort(), modelFamilyId: model.family };
+  const family =
+    typeof model?.family === 'string' && model.family.trim().length > 0 ? model.family : null;
+  return { capabilities: [...capabilities].sort(), modelFamilyId: family };
 }
 
 function providerCatalog(

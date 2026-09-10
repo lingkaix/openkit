@@ -47,7 +47,7 @@ interface InternalAgentLoopInput {
   model: {
     logicalModelId: string;
     capabilities: readonly string[];
-    modelFamilyId: string;
+    modelFamilyId: string | null;
   };
   contextManagement: {
     type: "compaction";

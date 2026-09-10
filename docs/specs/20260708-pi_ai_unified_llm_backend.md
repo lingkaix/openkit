@@ -106,6 +106,8 @@ A chat-native provider may serve a Responses request through pi-ai Chat Completi
 
 When no stock pi-ai catalog provider represents a configured custom endpoint, NanoCore synthesizes one bounded pi-ai provider definition from the OpenKit profile. The default API family is `openai-completions`; `openai-responses` requires an explicit OpenKit capability declaration. NanoCore must not guess capability from URL shape or model name.
 
+Neither the pi-ai model inventory nor models.dev is an allowlist for an explicitly configured API-key or custom endpoint. An unmatched configured model uses the existing synthesis path and retains its exact authored upstream ID. Optional catalog metadata may enrich adapter behavior; absence does not require an alias, a different vendor identity, or a catalog refresh. Existing synthetic context/output defaults are adapter operating values, not verified physical limits, and a zero synthetic price is not evidence of zero actual cost. Endpoint/request representability, explicit credential resolution, subscription-specific transport requirements, and actual Provider errors retain their existing authority.
+
 ### Provider Capability Matrix
 
 Endpoint capability remains OpenKit-owned configuration vocabulary:

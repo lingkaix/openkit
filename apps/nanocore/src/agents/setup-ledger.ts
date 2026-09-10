@@ -27,7 +27,8 @@ export interface RedactedResolvedAgentSetup {
     readonly allowed: Array<{
       readonly id: string;
       readonly capabilities: readonly string[];
-      readonly modelFamilyId: string;
+      /** Catalog family when known; null when inventory does not name a family. */
+      readonly modelFamilyId: string | null;
     }>;
   };
 }

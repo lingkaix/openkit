@@ -303,6 +303,94 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(JSON.stringify(body)).not.toContain('openai');
   });
 
+  it('discovers and dispatches an explicit handwritten custom logical model without rewriting the upstream model id', async () => {
+    const seen: Array<{ providerId: string; model: string }> = [];
+    const app = createApp({
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'local-free',
+        logicalModels: [
+          {
+            id: 'local-free',
+            displayName: 'Local Free',
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'orca-custom',
+                providerModel: 'handwritten/local-flash',
+              },
+            ],
+          },
+        ],
+      },
+      openKitConfig: {},
+      providerRegistry: new ProviderRegistry([
+        {
+          baseUrl: 'https://orca.example/v1',
+          defaultModel: 'handwritten/local-flash',
+          displayName: 'Orca',
+          id: 'orca-custom',
+          kind: 'custom',
+          models: ['handwritten/local-flash'],
+        },
+      ]),
+      llmPiAiClient: {
+        createChatCompletion: async (provider, request) => {
+          seen.push({ providerId: provider.id, model: request.model });
+          return {
+            id: 'chatcmpl_custom',
+            object: 'chat.completion',
+            created: 1,
+            model: request.model,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'custom ok' },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+        },
+      } as unknown as PiAiGatewayClient,
+    });
+
+    const listed = await app.request('/v1/models');
+    const listing = (await listed.json()) as { data: Array<Record<string, unknown>> };
+    expect(listed.status).toBe(200);
+    expect(listing.data).toEqual([
+      {
+        id: 'local-free',
+        object: 'model',
+        owned_by: 'openkit',
+        display_name: 'Local Free',
+        capabilities: ['chat-completions', 'responses'],
+      },
+    ]);
+    expect(JSON.stringify(listing)).not.toContain('orca-custom');
+    expect(JSON.stringify(listing)).not.toContain('handwritten/local-flash');
+
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'local-free',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      id: 'chatcmpl_custom',
+      model: 'local-free',
+      choices: [{ message: { content: 'custom ok' } }],
+    });
+    expect(JSON.stringify(body)).not.toContain('orca-custom');
+    expect(JSON.stringify(body)).not.toContain('handwritten/local-flash');
+    expect(seen).toEqual([{ providerId: 'orca-custom', model: 'handwritten/local-flash' }]);
+  });
+
   it('retains a logical model when at least one configured route is dispatchable', async () => {
     const app = createApp({
       gatewayConfig: {

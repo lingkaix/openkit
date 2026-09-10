@@ -75,6 +75,34 @@ describe('resolved agent setup ledger', () => {
     }
   });
 
+  it('persists a null logical-model family as unknown rather than inventing an identifier', () => {
+    const workspaceDb = createWorkspaceDb();
+    const base = resolvedSetup();
+    const setup: ResolvedAgentSetup = {
+      ...base,
+      logicalModels: {
+        ...base.logicalModels,
+        allowed: base.logicalModels.allowed.map((model) => ({ ...model, modelFamilyId: null })),
+      },
+    };
+
+    try {
+      const record = recordResolvedAgentSetup(workspaceDb, {
+        recordId: 'ras_unknown_family',
+        workspaceId: 'ws_1',
+        setup,
+        createdAt: '2026-07-06T00:00:00.000Z',
+      });
+
+      expect(record.setup.logicalModels.allowed).toEqual([
+        expect.objectContaining({ id: 'openai/gpt-5.2', modelFamilyId: null }),
+      ]);
+      expect(JSON.stringify(record.setup)).not.toContain('unlisted:');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('persists only the deliberate redacted setup projection', () => {
     const workspaceDb = createWorkspaceDb();
     const base = resolvedSetup();
