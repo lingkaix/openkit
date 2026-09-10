@@ -21,7 +21,9 @@ Preserve current mounts, secret files, network/port bindings, restart policy and
 
 Observe the new image/container, Web assets, boot identity, product-work readiness, retained Workspace records and the unchanged NanoHost connection before resuming work. A changed image, `docker ps` status or `/api/health` alone is insufficient. Retain failed or interrupted work as such; start a new authorized continuation after inspecting the result.
 
-The short-lived out-of-process App-update command and Web trigger are a separate delivery feature. Until the deployed version exposes that supported capability, an authorized external operator performs the procedure above; this reference does not invent a working Web update button.
+When the deployment has the restricted App-update helper installed, use Web Settings → App update or the public `openkit` Skill. Search for `app-update` and describe `app-update.prepare`, `app-update.start` and `app-update.status` before invoking them. Prepare supplies the exact source and expected current image for administrator review; it does not build or interrupt the App. Save its request ID before starting. Start requires consent to that exact prepared update and its maintenance interruption. Read status with the same ID after a disconnect or App restart; never create a second start to resolve an unknown handoff.
+
+Inspect the returned verification predicates and retained-data observation. A submitted update or successful handoff is not a completed replacement. Missing helper configuration reports the capability unavailable; unusable SSH identity files also fail the operation while Core remains available. Until the installed version and host configuration support the complete path, an authorized external operator performs the procedure above. An internal Agent cannot substitute its own decision for the required administrator approval.
 
 ## Backup And Restore
 
