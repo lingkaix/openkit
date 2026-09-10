@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,11 +6,13 @@ import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
+import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 
 import {
   createRuntimeConfigManager,
   diffRuntimeConfig,
   loadRuntimeConfig,
+  unknownModelContextFailure,
 } from './runtime-config.js';
 
 /**
@@ -551,5 +553,140 @@ describe('runtime config loading and reload planning', () => {
       'openai/gpt-5.1',
     ]);
     expect(manager.status().lastFailedReload?.message).toMatch(/provider.duplicate_id/i);
+  });
+
+  it('refuses a first composed runtime snapshot with unknown model context', () => {
+    const dataRoot = createDataRoot();
+    writeConfiguredServer(dataRoot, 'handwritten/local-flash');
+    writeGatewayConfig(dataRoot, 'handwritten/local-flash');
+    const snapshot = loadRuntimeConfig(dataRoot, { version: 1 });
+
+    expect(snapshot.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'provider.unknown_model_context',
+          severity: 'error',
+        }),
+      ])
+    );
+    expect(snapshot.diagnostics[0]?.message).toMatch(/handwritten\/local-flash/);
+    expect(unknownModelContextFailure(snapshot)).toEqual({
+      blocks: ['product_work'],
+      code: 'provider.unknown_model_context',
+      message: expect.stringMatching(/handwritten\/local-flash/),
+    });
+    expect(() => createRuntimeConfigManager({ dataRoot })).toThrow(
+      /provider\.unknown_model_context.*handwritten\/local-flash/s
+    );
+    expect(() => createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot })).toThrow(
+      /provider\.unknown_model_context.*handwritten\/local-flash/s
+    );
+  });
+
+  it('admits a catalogued model without authored metadata and an uncatalogued model with authored context', () => {
+    const catalogued = createDataRoot();
+    writeConfiguredServer(catalogued, 'openai/gpt-5.1');
+    writeGatewayConfig(catalogued);
+    expect(loadRuntimeConfig(catalogued, { version: 1 }).diagnostics).toEqual([]);
+    expect(unknownModelContextFailure(loadRuntimeConfig(catalogued, { version: 1 }))).toBeNull();
+    expect(createRuntimeConfigManager({ dataRoot: catalogued }).current().diagnostics).toEqual([]);
+
+    const authored = createDataRoot();
+    writeServerConfig(
+      authored,
+      `{
+      "schemaVersion": 1,
+      "defaults": {
+        "defaultAgentId": "agent_server"
+      }
+    }`
+    );
+    const providersRoot = join(authored, 'config', 'providers');
+    mkdirSync(providersRoot, { recursive: true });
+    writeFileSync(
+      join(providersRoot, 'orca-custom.provider.jsonc'),
+      JSON.stringify({
+        displayName: 'Orca',
+        id: 'orca-custom',
+        kind: 'custom',
+        models: ['handwritten/local-flash'],
+        modelMetadata: { 'handwritten/local-flash': { limit: { context: 8192 } } },
+      })
+    );
+    writeFileSync(
+      join(authored, 'config', 'gateway.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: 'local-free',
+        logicalModels: [
+          {
+            id: 'local-free',
+            displayName: 'Local Free',
+            routes: [
+              {
+                id: 'primary',
+                providerProfileId: 'orca-custom',
+                providerModel: 'handwritten/local-flash',
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    expect(loadRuntimeConfig(authored, { version: 1 }).diagnostics).toEqual([]);
+    expect(createRuntimeConfigManager({ dataRoot: authored }).current().diagnostics).toEqual([]);
+  });
+
+  it('rejects an unrouted configured model without known context and keeps the active snapshot', () => {
+    const dataRoot = createDataRoot();
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeGatewayConfig(dataRoot);
+    const manager = createRuntimeConfigManager({ dataRoot });
+    expect(manager.current().diagnostics).toEqual([]);
+    expect(manager.current().version).toBe(1);
+
+    writeFileSync(
+      join(dataRoot, 'config', 'providers', 'orca-custom.provider.jsonc'),
+      JSON.stringify({
+        displayName: 'Orca',
+        id: 'orca-custom',
+        kind: 'custom',
+        models: ['handwritten/local-flash'],
+      })
+    );
+
+    const failed = manager.reload({ dryRun: false, mode: 'safe' });
+
+    expect(failed.status).toBe('failed');
+    expect(manager.current().version).toBe(1);
+    expect(manager.current().providerRegistry.get('orca-custom')).toBeNull();
+    expect(manager.status().lastFailedReload?.message).toMatch(
+      /provider\.unknown_model_context.*handwritten\/local-flash/s
+    );
+  });
+
+  it('admits a genuinely seeded fresh data root without activating the custom placeholder', () => {
+    const dataRoot = createDataRoot();
+    ensureConfigTemplateSurface(dataRoot);
+    const snapshot = loadRuntimeConfig(dataRoot, { version: 1 });
+
+    expect(unknownModelContextFailure(snapshot)).toBeNull();
+    expect(() => createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot })).not.toThrow();
+    expect(
+      existsSync(join(dataRoot, 'config', 'providers', 'openai-compatible-custom.provider.jsonc'))
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(dataRoot, 'config', 'providers', 'openai-compatible-custom.provider.jsonc.example')
+      )
+    ).toBe(true);
+    expect(snapshot.providerRegistry.get('openai-compatible-custom')).toBeNull();
+    expect(snapshot.providerRegistry.get('openai')?.models).toEqual(['gpt-5.1']);
+    expect(snapshot.providerRegistry.get('anthropic')?.models).toEqual(['claude-sonnet-4-5']);
+    expect(snapshot.providerRegistry.get('openrouter')?.models).toEqual(['openai/gpt-5.1']);
+    expect(snapshot.providerRegistry.get('xai')?.models).toEqual(['grok-4.3']);
+    expect(snapshot.providerRegistry.get('google')?.models).toEqual(['gemini-2.5-pro']);
   });
 });

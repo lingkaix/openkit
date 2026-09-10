@@ -51,10 +51,12 @@ describe('GatewayUsageTracker', () => {
       })
     ).toEqual({
       completionTokens: 0,
-      costEstimateUsd: 0,
       inputTokens: 0,
       totalTokens: 0,
     });
+    expect(parseUsage({ input: 3, output: 4, totalTokens: 7 })).not.toHaveProperty(
+      'costEstimateUsd'
+    );
   });
 
   it('preserves provider-reported cache quantities in diagnostics', () => {

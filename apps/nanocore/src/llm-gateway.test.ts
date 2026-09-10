@@ -333,6 +333,9 @@ describe('OpenAI-compatible agent gateway', () => {
           id: 'orca-custom',
           kind: 'custom',
           models: ['handwritten/local-flash'],
+          modelMetadata: {
+            'handwritten/local-flash': { limit: { context: 8192 } },
+          },
         },
       ]),
       llmPiAiClient: {

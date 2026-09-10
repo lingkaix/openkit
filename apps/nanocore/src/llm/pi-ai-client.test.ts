@@ -6,6 +6,7 @@ import {
   type Context,
   type CredentialInfo,
   type CredentialStore,
+  calculateCost,
   createModels,
   fauxAssistantMessage,
   fauxProvider,
@@ -15,7 +16,9 @@ import {
   type Model,
   type OAuthCredential,
   type StreamOptions,
+  type Usage,
 } from '@earendil-works/pi-ai';
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { describe, expect, it, vi } from 'vitest';
@@ -35,7 +38,12 @@ import { WORKER_CLIENT_TOOL_SEARCH_FUNCTION } from './worker-inference-tool-poli
  * @param input Provider field overrides.
  * @returns Resolved provider config.
  */
-function providerConfig(input: Partial<ResolvedLLMProviderConfig> = {}): ResolvedLLMProviderConfig {
+function providerConfig(
+  input: Partial<ResolvedLLMProviderConfig> & {
+    readonly modelMetadata?: Readonly<Record<string, unknown>>;
+    readonly vendor?: string;
+  } = {}
+): ResolvedLLMProviderConfig {
   return {
     adapterId: 'anthropic',
     apiKey: 'explicit-secret',
@@ -48,6 +56,27 @@ function providerConfig(input: Partial<ResolvedLLMProviderConfig> = {}): Resolve
     requiresApiKey: true,
     ...input,
   } as unknown as ResolvedLLMProviderConfig;
+}
+
+/**
+ * Prices one usage payload with pi-ai calculateCost over the request-local model rates.
+ *
+ * @param model Request-local adapter model.
+ * @param usage Observed token usage.
+ * @returns Finite USD total from the stock calculator.
+ */
+function expectedAdapterCostTotal(
+  model: Model<string>,
+  usage: Pick<Usage, 'input' | 'output' | 'cacheRead' | 'cacheWrite'>
+): number {
+  return calculateCost(model, {
+    cacheRead: usage.cacheRead,
+    cacheWrite: usage.cacheWrite,
+    cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+    input: usage.input,
+    output: usage.output,
+    totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+  }).total;
 }
 
 describe('PiAiGatewayClient', () => {
@@ -332,8 +361,10 @@ describe('PiAiGatewayClient', () => {
     });
     const models = createModels();
     models.setProvider(faux.provider);
+    let pricedModel: Model<string> | undefined;
     faux.setResponses([
-      async (_context, options) => {
+      async (_context, options, _state, model) => {
+        pricedModel = model;
         await startup;
         await options?.onResponse?.(
           {
@@ -434,16 +465,19 @@ describe('PiAiGatewayClient', () => {
     );
     expect(body).toContain('call_stream_codex');
     expect(body).toContain('data: [DONE]');
-    expect(observedUsage).toEqual([
-      {
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
-        input: 36,
-        output: 13,
-        totalTokens: 49,
-      },
-    ]);
+    const pricedUsage = observedUsage[0] as Usage;
+    expect(pricedModel).toBeTruthy();
+    expect(pricedUsage).toMatchObject({
+      cacheRead: 0,
+      cacheWrite: 0,
+      input: 36,
+      output: 13,
+      totalTokens: 49,
+    });
+    expect(pricedUsage.cost.total).toBe(
+      expectedAdapterCostTotal(pricedModel as Model<string>, pricedUsage)
+    );
+    expect(Number.isFinite(pricedUsage.cost.total)).toBe(true);
     expect(JSON.stringify(completed.response.output)).toContain('stream state ready');
     expect(completed.response.usage).toEqual({
       input_tokens: 36,
@@ -670,6 +704,395 @@ describe('PiAiGatewayClient', () => {
         process.env.OPENAI_API_KEY = previousApiKey;
       }
     }
+  });
+
+  it('overlays authored context on stock models and does not invent a 128k custom window', async () => {
+    let seenModel: Model<string> | undefined;
+    const faux = fauxProvider({
+      models: [{ contextWindow: 4096, id: 'gpt-5.1', reasoning: true }],
+      provider: 'openai',
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      (_context, _options, _state, model) => {
+        seenModel = model;
+        return fauxAssistantMessage('overlay ok');
+      },
+    ]);
+
+    await new PiAiGatewayClient({ models }).createChatCompletion(
+      providerConfig({
+        adapterId: 'openai',
+        id: 'proxy-openai',
+        modelMetadata: {
+          'gpt-5.1': { limit: { context: 8192 }, reasoning: false },
+        },
+        models: ['gpt-5.1'],
+      }),
+      { messages: [{ content: 'Hello', role: 'user' }], model: 'gpt-5.1' }
+    );
+
+    expect(seenModel?.contextWindow).toBe(8192);
+    expect(seenModel?.reasoning).toBe(false);
+
+    const stockCost = { cacheRead: 0.1, cacheWrite: 1.25, input: 9, output: 8 };
+    let mergedModel: Model<string> | undefined;
+    const stockFaux = fauxProvider({
+      models: [{ cost: stockCost, id: 'stock-local-chat', input: ['text', 'image'] }],
+      provider: 'openai',
+    });
+    const stockModels = createModels();
+    stockModels.setProvider(stockFaux.provider);
+    stockFaux.setResponses([
+      (_context, _options, _state, model) => {
+        mergedModel = model;
+        return fauxAssistantMessage('merged cost ok');
+      },
+    ]);
+    await new PiAiGatewayClient({ models: stockModels }).createChatCompletion(
+      providerConfig({
+        adapterId: 'openai',
+        id: 'proxy-openai',
+        modelMetadata: {
+          'stock-local-chat': {
+            cost: { input: 1 },
+            limit: { context: 8192 },
+            modalities: { input: [] },
+          },
+        },
+        models: ['stock-local-chat'],
+      }),
+      { messages: [{ content: 'Hello', role: 'user' }], model: 'stock-local-chat' }
+    );
+    expect(mergedModel?.cost).toEqual({
+      cacheRead: 0.1,
+      cacheWrite: 1.25,
+      input: 1,
+      output: 8,
+    });
+    expect(mergedModel?.cost).not.toBe(stockCost);
+    expect(mergedModel?.input).toEqual([]);
+    expect(stockFaux.provider.getModels()[0]?.input).toEqual(['text', 'image']);
+
+    const customModels = createModels();
+    const customClient = new PiAiGatewayClient({ models: customModels });
+    await customClient
+      .createChatCompletion(
+        providerConfig({
+          adapterId: 'missing-adapter',
+          baseUrl: 'http://127.0.0.1:1',
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'unsupported' },
+          id: 'orca-custom',
+          modelMetadata: {
+            'handwritten/local-flash': {
+              cost: { input: 1 },
+              limit: { context: 8192 },
+              reasoning: true,
+            },
+          },
+          models: ['handwritten/local-flash'],
+        }),
+        {
+          messages: [{ content: 'Hello', role: 'user' }],
+          model: 'handwritten/local-flash',
+        }
+      )
+      .catch(() => undefined);
+
+    const registered = customModels.getModel('orca-custom', 'handwritten/local-flash');
+    expect(registered?.contextWindow).toBe(8192);
+    expect(registered?.reasoning).toBe(true);
+    expect(registered?.cost).toEqual({ cacheRead: 0, cacheWrite: 0, input: 1, output: 0 });
+  });
+
+  it('applies a partial authored cost leaf onto cloned stock tiers for a long 1h-cache request', async () => {
+    const stock = openaiProvider()
+      .getModels()
+      .find((model) => model.id === 'gpt-5.4');
+    expect(stock?.cost.tiers?.[0]?.inputTokensAbove).toBe(272000);
+    const stockCost = {
+      cacheRead: stock!.cost.cacheRead,
+      cacheWrite: stock!.cost.cacheWrite,
+      input: stock!.cost.input,
+      output: stock!.cost.output,
+      tiers: stock!.cost.tiers!.map((tier) => ({ ...tier })),
+    };
+    const stockTier = stockCost.tiers[0]!;
+    let seenModel: Model<string> | undefined;
+    const faux = fauxProvider({
+      models: [{ cost: stockCost, id: 'gpt-5.4' }],
+      provider: 'openai',
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      (_context, _options, _state, model) => {
+        seenModel = model;
+        return fauxAssistantMessage('tier overlay ok');
+      },
+    ]);
+
+    await new PiAiGatewayClient({ models }).createChatCompletion(
+      providerConfig({
+        adapterId: 'openai',
+        id: 'proxy-openai',
+        modelMetadata: { 'gpt-5.4': { cost: { input: 1 } } },
+        models: ['gpt-5.4'],
+      }),
+      { messages: [{ content: 'Hello', role: 'user' }], model: 'gpt-5.4' }
+    );
+
+    expect(seenModel?.cost).toEqual({
+      cacheRead: stockCost.cacheRead,
+      cacheWrite: stockCost.cacheWrite,
+      input: 1,
+      output: stockCost.output,
+      tiers: [{ ...stockTier, input: 1 }],
+    });
+    expect(seenModel?.cost.tiers?.[0]).not.toBe(stockTier);
+    expect(stockTier).toEqual({
+      cacheRead: 0.5,
+      cacheWrite: 0,
+      input: 5,
+      inputTokensAbove: 272000,
+      output: 22.5,
+    });
+
+    const longUsage = {
+      cacheRead: 20000,
+      cacheWrite: 20000,
+      cacheWrite1h: 8000,
+      input: 250000,
+      output: 10,
+    };
+    const priced = calculateCost(seenModel as Model<string>, {
+      ...longUsage,
+      cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+      totalTokens: longUsage.input + longUsage.output + longUsage.cacheRead + longUsage.cacheWrite,
+    });
+    const expected = calculateCost(
+      {
+        ...(seenModel as Model<string>),
+        cost: { ...seenModel!.cost, tiers: [{ ...stockTier, input: 1 }] },
+      },
+      {
+        ...longUsage,
+        cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+        totalTokens:
+          longUsage.input + longUsage.output + longUsage.cacheRead + longUsage.cacheWrite,
+      }
+    );
+    const unoverlaid = calculateCost(
+      { ...(seenModel as Model<string>), cost: stockCost },
+      {
+        ...longUsage,
+        cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+        totalTokens:
+          longUsage.input + longUsage.output + longUsage.cacheRead + longUsage.cacheWrite,
+      }
+    );
+
+    expect(longUsage.input + longUsage.cacheRead + longUsage.cacheWrite).toBeGreaterThan(
+      stockTier.inputTokensAbove
+    );
+    expect(priced.total).toBe(expected.total);
+    expect(priced.total).not.toBe(unoverlaid.total);
+    expect(priced.cacheWrite).toBe((1 * 2 * longUsage.cacheWrite1h) / 1_000_000);
+    expect(priced.output).toBe((stockTier.output / 1_000_000) * longUsage.output);
+  });
+
+  it('clones a subscription pair model without mutating nested pair objects', async () => {
+    const nestedCost = { cacheRead: 0.1, cacheWrite: 1, input: 1, output: 2 };
+    const nestedInput: Array<'text'> = ['text'];
+    let seenModel: Model<string> | undefined;
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      models: [
+        {
+          contextWindow: 100,
+          cost: nestedCost,
+          id: 'pair-local-codex',
+          input: nestedInput,
+        },
+      ],
+      provider: 'openai-codex',
+    });
+    const pairModels = createModels();
+    pairModels.setProvider(faux.provider);
+    const original = pairModels.getModel('openai-codex', 'pair-local-codex');
+    faux.setResponses([
+      (_context, _options, _state, model) => {
+        seenModel = model;
+        return fauxAssistantMessage('pair ok');
+      },
+    ]);
+
+    await new PiAiGatewayClient().createChatCompletion(
+      providerConfig({
+        accountSlotId: 'work',
+        adapterId: 'openai-codex',
+        id: 'codex-work',
+        modelMetadata: { 'pair-local-codex': { limit: { context: 8192 } } },
+        models: ['pair-local-codex'],
+        subscriptionProviderId: 'openai-codex',
+      }),
+      { messages: [{ content: 'Hello', role: 'user' }], model: 'pair-local-codex' },
+      undefined,
+      {},
+      pairModels
+    );
+
+    expect(seenModel).not.toBe(original);
+    expect(seenModel?.contextWindow).toBe(8192);
+    expect(original?.contextWindow).toBe(100);
+    expect(original?.cost).toBe(nestedCost);
+    expect(original?.input).toBe(nestedInput);
+    expect(seenModel?.cost).not.toBe(nestedCost);
+    expect(seenModel?.input).not.toBe(nestedInput);
+    expect(seenModel?.cost).toEqual(nestedCost);
+    expect(seenModel?.input).toEqual(['text']);
+    if (seenModel?.cost) {
+      seenModel.cost.input = 99;
+    }
+    (seenModel?.input as string[] | undefined)?.push('image');
+    expect(nestedCost.input).toBe(1);
+    expect(nestedInput).toEqual(['text']);
+  });
+
+  it('prices complete adapter rates with pi-ai calculateCost and omits fabricated USD when rates are incomplete', async () => {
+    const completeRates = { cacheRead: 0.5, cacheWrite: 1.5, input: 1, output: 2 };
+    let completeModel: Model<string> | undefined;
+    const completeFaux = fauxProvider({
+      models: [{ cost: completeRates, id: 'gpt-5.1' }],
+      provider: 'openai',
+    });
+    const completeModels = createModels();
+    completeModels.setProvider(completeFaux.provider);
+    completeFaux.setResponses([
+      (_context, _options, _state, model) => {
+        completeModel = model;
+        return fauxAssistantMessage('priced ok');
+      },
+    ]);
+    const completeObserved: unknown[] = [];
+    await new PiAiGatewayClient({ models: completeModels }).createChatCompletion(
+      providerConfig({
+        adapterId: 'openai',
+        id: 'proxy-openai',
+        models: ['gpt-5.1'],
+      }),
+      { messages: [{ content: 'Hello', role: 'user' }], model: 'gpt-5.1' },
+      (usage) => completeObserved.push(usage)
+    );
+    const completeUsage = completeObserved[0] as Usage;
+    expect(completeModel).toBeTruthy();
+    expect(completeUsage.cost.total).toBe(
+      expectedAdapterCostTotal(completeModel as Model<string>, completeUsage)
+    );
+    expect(Number.isFinite(completeUsage.cost.total)).toBe(true);
+
+    const incompleteProvider = providerConfig({
+      adapterId: 'openai',
+      id: 'proxy-openai',
+      modelMetadata: { 'gpt-5.1': { cost: { input: 1 }, limit: { context: 8192 } } },
+      models: ['gpt-5.1'],
+    });
+    const incompleteNonstream: unknown[] = [];
+    const incompleteFaux = fauxProvider({
+      models: [{ cost: { input: 1 } as Model<string>['cost'], id: 'gpt-5.1' }],
+      provider: 'openai',
+    });
+    const incompleteModels = createModels();
+    incompleteModels.setProvider(incompleteFaux.provider);
+    incompleteFaux.setResponses([fauxAssistantMessage('incomplete nonstream')]);
+    await new PiAiGatewayClient({ models: incompleteModels }).createChatCompletion(
+      incompleteProvider,
+      {
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'gpt-5.1',
+      },
+      (usage) => incompleteNonstream.push(usage)
+    );
+    expect(incompleteNonstream[0]).toEqual(
+      expect.objectContaining({
+        input: expect.any(Number),
+        output: expect.any(Number),
+      })
+    );
+    expect(incompleteNonstream[0]).not.toHaveProperty('cost');
+
+    const streamFaux = fauxProvider({
+      models: [{ cost: { input: 1 } as Model<string>['cost'], id: 'gpt-5.1' }],
+      provider: 'openai',
+    });
+    const streamModels = createModels();
+    streamModels.setProvider(streamFaux.provider);
+    streamFaux.setResponses([fauxAssistantMessage('incomplete stream')]);
+    const incompleteStream: unknown[] = [];
+    const stream = await new PiAiGatewayClient({ models: streamModels }).createChatCompletionStream(
+      providerConfig({
+        adapterId: 'openai',
+        id: 'proxy-openai',
+        modelMetadata: { 'gpt-5.1': { cost: { input: 1 }, limit: { context: 8192 } } },
+        models: ['gpt-5.1'],
+      }),
+      {
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'gpt-5.1',
+        stream: true,
+      },
+      (usage) => incompleteStream.push(usage)
+    );
+    await new Response(stream).text();
+    expect(incompleteStream[0]).toEqual(
+      expect.objectContaining({
+        input: expect.any(Number),
+        output: expect.any(Number),
+      })
+    );
+    expect(incompleteStream[0]).not.toHaveProperty('cost');
+
+    const nativeFaux = fauxProvider({
+      api: 'openai-codex-responses',
+      models: [
+        {
+          cost: { input: 1 } as Model<string>['cost'],
+          id: 'gpt-5.1-codex',
+        },
+      ],
+      provider: 'openai-codex',
+    });
+    const nativeModels = createModels();
+    nativeModels.setProvider(nativeFaux.provider);
+    nativeFaux.setResponses([fauxAssistantMessage('incomplete native')]);
+    const incompleteNative: unknown[] = [];
+    await new PiAiGatewayClient().createResponses(
+      providerConfig({
+        accountSlotId: 'work',
+        adapterId: 'openai-codex',
+        apiKey: null,
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        id: 'codex-work',
+        models: ['gpt-5.1-codex'],
+        requiresApiKey: false,
+        subscriptionProviderId: 'openai-codex',
+      } as Partial<ResolvedLLMProviderConfig>),
+      {
+        input: [{ content: [{ text: 'Hello', type: 'input_text' }], role: 'user' }],
+        model: 'gpt-5.1-codex',
+      },
+      (usage) => incompleteNative.push(usage),
+      {},
+      nativeModels
+    );
+    expect(incompleteNative[0]).toEqual(
+      expect.objectContaining({
+        input: expect.any(Number),
+        output: expect.any(Number),
+      })
+    );
+    expect(incompleteNative[0]).not.toHaveProperty('cost');
   });
 
   it('uses native Codex Responses and preserves tools, history, reasoning, and usage', async () => {
@@ -2013,7 +2436,11 @@ describe('PiAiGatewayClient', () => {
       }),
     ]);
     expect((observed[0] as { cacheWrite: number }).cacheWrite).toBeGreaterThan(0);
-    expect((observed[0] as { cost: { total: number } }).cost.total).toBe(0);
+    const priced = observed[0] as Usage;
+    const pricedModel = models.getModel('anthropic_primary', 'faux-chat');
+    expect(pricedModel).toBeTruthy();
+    expect(priced.cost.total).toBe(expectedAdapterCostTotal(pricedModel as Model<string>, priced));
+    expect(Number.isFinite(priced.cost.total)).toBe(true);
   });
 
   it.each([
@@ -2063,7 +2490,11 @@ describe('PiAiGatewayClient', () => {
       }),
     ]);
     expect((observed[0] as { cacheWrite: number }).cacheWrite).toBeGreaterThan(0);
-    expect((observed[0] as { cost: { total: number } }).cost.total).toBe(0);
+    const priced = observed[0] as Usage;
+    const pricedModel = models.getModel('anthropic_primary', 'faux-chat');
+    expect(pricedModel).toBeTruthy();
+    expect(priced.cost.total).toBe(expectedAdapterCostTotal(pricedModel as Model<string>, priced));
+    expect(Number.isFinite(priced.cost.total)).toBe(true);
   });
 
   it('maps chat function tools and tool choice into the pi-ai request', async () => {

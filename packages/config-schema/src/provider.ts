@@ -62,6 +62,48 @@ export const ProviderReadinessSchema = z
   })
   .strict();
 
+const ModelModalitySchema = z.enum(['audio', 'image', 'pdf', 'text', 'video']);
+
+/** One models.dev-shaped Provider model metadata entry. */
+export const ProviderModelMetadataEntrySchema = z
+  .object({
+    attachment: z.boolean().optional(),
+    cost: z
+      .object({
+        cache_read: z.number().finite().nonnegative().optional(),
+        cache_write: z.number().finite().nonnegative().optional(),
+        input: z.number().finite().nonnegative().optional(),
+        output: z.number().finite().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
+    family: z.string().min(1).optional(),
+    limit: z
+      .object({
+        context: z.number().int().positive().optional(),
+        output: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    modalities: z
+      .object({
+        input: z.array(ModelModalitySchema).optional(),
+        output: z.array(ModelModalitySchema).optional(),
+      })
+      .strict()
+      .optional(),
+    reasoning: z.boolean().optional(),
+    temperature: z.boolean().optional(),
+    tool_call: z.boolean().optional(),
+  })
+  .strict();
+
+/** Per-native-id Provider model metadata map. */
+export const ProviderModelMetadataSchema = z.record(
+  z.string().min(1),
+  ProviderModelMetadataEntrySchema
+);
+
 /** Shared provider-profile fields before cross-field validation. */
 const ProviderProfileObjectSchema = z
   .object({
@@ -83,6 +125,7 @@ const ProviderProfileObjectSchema = z
     extensions: ProviderExtensionsSchema.optional(),
     id: z.string().min(1),
     kind: ProviderKindSchema,
+    modelMetadata: ProviderModelMetadataSchema.optional(),
     models: z.array(z.string().min(1)).min(1),
     readiness: ProviderReadinessSchema.optional(),
     secretRef: z.string().min(1).optional(),
@@ -142,6 +185,16 @@ function addProviderProfileCrossFieldIssues(
       message: 'Subscription accounts require a supported OAuth provider family.',
       path: ['extensions', 'openkit', 'subscriptionAccount'],
     });
+  }
+
+  for (const modelId of Object.keys(profile.modelMetadata ?? {})) {
+    if (!profile.models.includes(modelId)) {
+      context.addIssue({
+        code: 'custom',
+        message: `modelMetadata key is not in the provider model list: ${modelId}.`,
+        path: ['modelMetadata', modelId],
+      });
+    }
   }
 }
 

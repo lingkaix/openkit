@@ -24,6 +24,8 @@ const CONFIG_TEMPLATE_SUFFIXES = {
   providers: '.provider.jsonc',
   agents: '.agent.jsonc',
 } as const;
+/** Provider templates copied as `.example` so they stay discoverable without becoming active first-boot profiles. */
+const EXAMPLE_PROVIDER_TEMPLATE_FILES = new Set(['openai-compatible-custom.provider.jsonc']);
 const DATA_ROOT_LAYOUT_VERSION = 2;
 const DATA_ROOT_TEXT_RECORD_EXTENSIONS = new Set([
   '.json',
@@ -901,7 +903,11 @@ function copyConfigTemplates(
     }
 
     const sourcePath = join(templateRoot, fileName);
-    const targetPath = join(targetRoot, fileName);
+    const seededName =
+      templateKind === 'providers' && EXAMPLE_PROVIDER_TEMPLATE_FILES.has(fileName)
+        ? `${fileName}.example`
+        : fileName;
+    const targetPath = join(targetRoot, seededName);
 
     if (!statSync(sourcePath).isFile() || existsSync(targetPath)) {
       continue;

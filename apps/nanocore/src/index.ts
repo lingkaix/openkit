@@ -44,6 +44,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
   type RuntimeConfigSnapshot,
+  unknownModelContextFailure,
 } from './config/runtime-config.js';
 import { classifyGoalStepCheckpointAfterSchedulerRecovery } from './goal-routes.js';
 import { FsStore } from './lib/store.js';
@@ -184,6 +185,11 @@ const bootResult = await runBootPhases({
 
         for (const diagnostic of runtimeConfigSnapshot.diagnostics) {
           console.warn(diagnostic.message);
+        }
+
+        const unknownContext = unknownModelContextFailure(runtimeConfigSnapshot);
+        if (unknownContext) {
+          return { status: 'failed', reason: unknownContext };
         }
 
         return { status: 'ok' };

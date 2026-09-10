@@ -16,6 +16,7 @@ describe('provider config schema', () => {
       'extensions',
       'id',
       'kind',
+      'modelMetadata',
       'models',
       'secretRef',
     ] as const;
@@ -368,5 +369,77 @@ describe('provider config schema', () => {
         },
       })
     ).toThrow();
+  });
+
+  it('accepts optional models.dev modelMetadata for listed native ids, including omitted context', () => {
+    const parsed = ProviderProfileSchema.parse({
+      displayName: 'Custom',
+      id: 'custom',
+      kind: 'custom',
+      models: ['example/vision-model', 'example/bare-id'],
+      modelMetadata: {
+        'example/vision-model': {
+          cost: { input: 1 },
+          family: 'example',
+          limit: { context: 131072, output: 8192 },
+          modalities: { input: ['text', 'image'], output: ['text'] },
+          reasoning: false,
+          tool_call: true,
+        },
+      },
+    });
+
+    expect(parsed.modelMetadata?.['example/vision-model']).toEqual({
+      cost: { input: 1 },
+      family: 'example',
+      limit: { context: 131072, output: 8192 },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      reasoning: false,
+      tool_call: true,
+    });
+    expect(parsed.modelMetadata?.['example/bare-id']).toBeUndefined();
+    expect(
+      ProviderProfileSchema.safeParse({
+        displayName: 'OpenRouter',
+        id: 'openrouter',
+        kind: 'gateway',
+        models: ['openai/gpt-5.1'],
+        vendor: 'openrouter',
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects metadata keys outside the model list, unknown leaves, and camelCase cost fields', () => {
+    const base = {
+      displayName: 'Custom',
+      id: 'custom',
+      kind: 'custom' as const,
+      models: ['listed'],
+    };
+
+    expect(
+      ProviderProfileSchema.safeParse({
+        ...base,
+        modelMetadata: { other: { limit: { context: 1024 } } },
+      }).success
+    ).toBe(false);
+    expect(
+      ProviderProfileSchema.safeParse({
+        ...base,
+        modelMetadata: { listed: { cacheRead: 1 } },
+      }).success
+    ).toBe(false);
+    expect(
+      ProviderProfileSchema.safeParse({
+        ...base,
+        modelMetadata: { listed: { extra: true } },
+      }).success
+    ).toBe(false);
+    expect(
+      ProviderProfileSchema.safeParse({
+        ...base,
+        modelMetadata: { listed: { limit: { context: 0 } } },
+      }).success
+    ).toBe(false);
   });
 });

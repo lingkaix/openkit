@@ -28,6 +28,10 @@ export interface ResolvedLLMProviderConfig {
   readonly id: string;
   /** Models explicitly authorized by the provider profile. */
   readonly models: readonly string[];
+  /** Optional authored models.dev-shaped metadata keyed by native model id. */
+  readonly modelMetadata?: ProviderProfile['modelMetadata'];
+  /** Configured vendor identity used for catalog lookup. */
+  readonly vendor?: string;
   /** Whether dispatch requires an explicit credential. */
   readonly requiresApiKey: boolean;
   /** Provider-neutral subscription family for strict OAuth account profiles. */
@@ -69,6 +73,8 @@ export function resolveProviderProfileToLLMConfig(
     gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
     id: profile.id,
     models: [...profile.models],
+    ...(profile.modelMetadata ? { modelMetadata: profile.modelMetadata } : {}),
+    ...(profile.vendor ? { vendor: profile.vendor } : {}),
     requiresApiKey: isSubscriptionProfile ? false : providerRequiresCredentials(profile),
     ...(isSubscriptionProfile ? { accountSlotId, subscriptionProviderId } : {}),
   };

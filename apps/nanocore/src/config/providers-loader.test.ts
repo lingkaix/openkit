@@ -1,4 +1,11 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -49,15 +56,16 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     kind: 'direct',
     secretRef: 'vault://provider_google',
   },
-  {
-    baseUrl: 'https://example.invalid/v1',
-    displayName: 'Custom OpenAI-Compatible',
-    fileName: 'openai-compatible-custom.provider.jsonc',
-    id: 'openai-compatible-custom',
-    kind: 'custom',
-    secretRef: 'vault://provider_openai_compatible_custom',
-  },
 ] as const;
+
+const EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE = {
+  baseUrl: 'https://example.invalid/v1',
+  displayName: 'Custom OpenAI-Compatible',
+  fileName: 'openai-compatible-custom.provider.jsonc.example',
+  id: 'openai-compatible-custom',
+  kind: 'custom',
+  secretRef: 'vault://provider_openai_compatible_custom',
+} as const;
 
 /**
  * Creates a temporary data root with a providers config directory.
@@ -110,6 +118,27 @@ describe('loadProviderProfiles', () => {
       expect(profile?.secretRef).toBe(template.secretRef);
       expect(parsed.secretRef).toBe(template.secretRef);
     }
+
+    expect(existsSync(join(providersRoot, EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.fileName))).toBe(
+      true
+    );
+    expect(profilesById.has(EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.id)).toBe(false);
+
+    const exampleParsed = parseJsoncObject(
+      readFileSync(join(providersRoot, EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.fileName), 'utf8'),
+      EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.fileName
+    );
+
+    expect(exampleParsed).toEqual(
+      expect.objectContaining({
+        baseUrl: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.baseUrl,
+        displayName: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.displayName,
+        id: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.id,
+        kind: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.kind,
+        models: ['custom-model'],
+        secretRef: EXPECTED_V003_EXAMPLE_PROVIDER_TEMPLATE.secretRef,
+      })
+    );
   });
 
   it('loads JSONC provider profiles from data/config/providers', () => {

@@ -29,7 +29,10 @@ import {
   loadWorkspaceResourceCatalog,
   projectEffectiveWorkspaceMcpCatalog,
 } from '../catalog/resource-catalog.js';
-import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
+import {
+  assertConfiguredModelsHaveKnownContext,
+  resolveLogicalModelCatalog,
+} from '../llm/logical-models.js';
 import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
@@ -268,6 +271,16 @@ export function loadRuntimeConfig(
   const workspaceMcpServerCatalogs = loadWorkspaceMcpServerCatalogs(dataRoot);
   const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
   try {
+    assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry);
+  } catch (error) {
+    gatewayDiagnostics.push({
+      code: 'provider.unknown_model_context',
+      message: error instanceof Error ? error.message : 'Provider model context limit is unknown.',
+      severity: 'error',
+      source: 'DATA_ROOT/config/providers/*.provider.jsonc',
+    });
+  }
+  try {
     resolveLogicalModelCatalog(gatewayConfig, providerLoadResult.providerRegistry);
   } catch (error) {
     gatewayDiagnostics.push({
@@ -335,6 +348,29 @@ export function loadRuntimeConfig(
 }
 
 /**
+ * Returns a product-work blocking reason when required model context is unknown.
+ *
+ * @param snapshot Candidate runtime config snapshot.
+ * @returns Failure reason when unknown context is present; otherwise null.
+ */
+export function unknownModelContextFailure(
+  snapshot: RuntimeConfigSnapshot
+): { code: string; message: string; blocks: string[] } | null {
+  const diagnostics = snapshot.diagnostics.filter(
+    (diagnostic) =>
+      diagnostic.code === 'provider.unknown_model_context' && diagnostic.severity === 'error'
+  );
+  if (diagnostics.length === 0) {
+    return null;
+  }
+  return {
+    blocks: ['product_work'],
+    code: 'provider.unknown_model_context',
+    message: diagnostics.map((diagnostic) => diagnostic.message).join('; '),
+  };
+}
+
+/**
  * Creates a runtime config manager backed by one data root.
  *
  * @param options Manager construction input.
@@ -344,6 +380,7 @@ export function createRuntimeConfigManager(
   options: RuntimeConfigManagerOptions
 ): RuntimeConfigManager {
   let current = options.initialSnapshot ?? loadRuntimeConfig(requireDataRoot(options.dataRoot));
+  assertUnknownModelContext(current);
   let lastReload: RuntimeConfigReloadSummary | null = null;
   let lastFailedReload: RuntimeConfigReloadSummary | null = null;
   let pendingRestart: RuntimeConfigChange[] = [];
@@ -860,6 +897,19 @@ function assertNoBlockingDiagnostics(snapshot: RuntimeConfigSnapshot): void {
       .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
       .join('; ')}`
   );
+}
+
+/**
+ * Rejects a first composed snapshot that lacks required model context.
+ *
+ * @param snapshot Candidate runtime config snapshot.
+ */
+function assertUnknownModelContext(snapshot: RuntimeConfigSnapshot): void {
+  const failure = unknownModelContextFailure(snapshot);
+  if (!failure) {
+    return;
+  }
+  throw new Error(`Runtime config has blocking diagnostics: ${failure.code}: ${failure.message}`);
 }
 
 /**

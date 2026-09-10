@@ -2,16 +2,26 @@ import type { GatewayConfig, ProviderProfile } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 
 import { ProviderRegistry } from '../providers/registry.js';
-import { resolveLogicalModel, resolveLogicalModelCatalog } from './logical-models.js';
+import {
+  assertConfiguredModelsHaveKnownContext,
+  hasCompleteCostRates,
+  mergeAdapterCostRates,
+  resolveEffectiveModelMetadata,
+  resolveLogicalModel,
+  resolveLogicalModelCatalog,
+} from './logical-models.js';
 
 function profile(
-  input: Partial<ProviderProfile> & Pick<ProviderProfile, 'id' | 'models'>
+  input: Partial<ProviderProfile> &
+    Pick<ProviderProfile, 'id' | 'models'> & {
+      readonly modelMetadata?: Readonly<Record<string, unknown>>;
+    }
 ): ProviderProfile {
   return {
     displayName: input.displayName ?? input.id,
     kind: input.kind ?? 'custom',
     ...input,
-  };
+  } as ProviderProfile;
 }
 
 function gateway(input: {
@@ -330,5 +340,134 @@ describe('resolveLogicalModelCatalog', () => {
         ])
       )
     ).toThrow('Logical model route model is not provided: primary.');
+  });
+
+  it('inherits pinned catalog context and applies authored false, zero, and replacement leaves', () => {
+    const effective = resolveEffectiveModelMetadata(
+      profile({
+        id: 'openrouter-test',
+        kind: 'gateway',
+        modelMetadata: {
+          'openai/gpt-5.1': {
+            cost: { input: 0 },
+            limit: { output: 16 },
+            reasoning: false,
+          },
+        },
+        models: ['openai/gpt-5.1'],
+        vendor: 'openrouter',
+      }),
+      'openai/gpt-5.1'
+    );
+
+    expect(effective.limit?.context).toBeGreaterThan(0);
+    expect(effective.limit?.output).toBe(16);
+    expect(effective.reasoning).toBe(false);
+    expect(effective.cost?.input).toBe(0);
+  });
+
+  it('treats authored empty modality arrays as replacements rather than catalog inherit', () => {
+    const inherited = resolveEffectiveModelMetadata(
+      profile({
+        id: 'openrouter-test',
+        kind: 'gateway',
+        models: ['openai/gpt-5.1'],
+        vendor: 'openrouter',
+      }),
+      'openai/gpt-5.1'
+    );
+    expect((inherited.modalities?.input ?? []).length).toBeGreaterThan(0);
+    expect((inherited.modalities?.output ?? []).length).toBeGreaterThan(0);
+
+    const replaced = resolveEffectiveModelMetadata(
+      profile({
+        id: 'openrouter-test',
+        kind: 'gateway',
+        modelMetadata: {
+          'openai/gpt-5.1': {
+            limit: { context: 8192 },
+            modalities: { input: [], output: [] },
+          },
+        },
+        models: ['openai/gpt-5.1'],
+        vendor: 'openrouter',
+      }),
+      'openai/gpt-5.1'
+    );
+
+    expect(replaced.modalities?.input).toEqual([]);
+    expect(replaced.modalities?.output).toEqual([]);
+  });
+
+  it('does not invent context for an uncatalogued model and requires authored or catalog context', () => {
+    const unknown = profile({
+      id: 'orca-custom',
+      models: ['handwritten/local-flash'],
+    });
+
+    expect(
+      resolveEffectiveModelMetadata(unknown, 'handwritten/local-flash').limit?.context
+    ).toBeUndefined();
+    expect(() => assertConfiguredModelsHaveKnownContext(new ProviderRegistry([unknown]))).toThrow(
+      /orca-custom.*handwritten\/local-flash.*known positive context/s
+    );
+    expect(() =>
+      assertConfiguredModelsHaveKnownContext(
+        new ProviderRegistry([
+          profile({
+            id: 'orca-custom',
+            modelMetadata: { 'handwritten/local-flash': { limit: { context: 8192 } } },
+            models: ['handwritten/local-flash'],
+          }),
+        ])
+      )
+    ).not.toThrow();
+    expect(
+      hasCompleteCostRates(
+        resolveEffectiveModelMetadata(
+          profile({
+            id: 'orca-custom',
+            modelMetadata: {
+              'handwritten/local-flash': { cost: { input: 1 }, limit: { context: 8192 } },
+            },
+            models: ['handwritten/local-flash'],
+          }),
+          'handwritten/local-flash'
+        )
+      )
+    ).toBe(false);
+    expect(
+      mergeAdapterCostRates(
+        { cacheRead: 0.1, cacheWrite: 1.25, input: 9, output: 8 },
+        resolveEffectiveModelMetadata(
+          profile({
+            id: 'orca-custom',
+            modelMetadata: {
+              'handwritten/local-flash': { cost: { input: 1 }, limit: { context: 8192 } },
+            },
+            models: ['handwritten/local-flash'],
+          }),
+          'handwritten/local-flash'
+        )
+      )
+    ).toEqual({
+      complete: true,
+      rates: { cacheRead: 0.1, cacheWrite: 1.25, input: 1, output: 8 },
+    });
+    expect(
+      mergeAdapterCostRates(
+        undefined,
+        resolveEffectiveModelMetadata(
+          profile({
+            id: 'orca-custom',
+            modelMetadata: {
+              'handwritten/local-flash': { cost: { input: 1 }, limit: { context: 8192 } },
+            },
+            models: ['handwritten/local-flash'],
+          }),
+          'handwritten/local-flash'
+        )
+      )
+    ).toEqual({ complete: false, rates: { input: 1 } });
   });
 });

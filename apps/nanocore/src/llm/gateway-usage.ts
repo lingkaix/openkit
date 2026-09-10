@@ -249,7 +249,7 @@ interface ParsedUsage {
   totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
-  costEstimateUsd: number;
+  costEstimateUsd?: number;
 }
 
 /**
@@ -270,16 +270,17 @@ export function parseUsage(usage: unknown): ParsedUsage {
     readNumber(inputDetails.cached_tokens) ??
     readNumber(record.cached_tokens);
   const cacheWriteTokens = readNumber(record.cacheWrite) ?? readNumber(record.cache_write);
+  const costEstimateUsd = readNumber(cost.total);
 
   return {
     ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
     ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(costEstimateUsd === undefined ? {} : { costEstimateUsd }),
     completionTokens:
       readNumber(record.output) ??
       readNumber(record.completion_tokens) ??
       readNumber(record.output_tokens) ??
       0,
-    costEstimateUsd: readNumber(cost.total) ?? 0,
     inputTokens:
       readNumber(record.input) ??
       readNumber(record.prompt_tokens) ??

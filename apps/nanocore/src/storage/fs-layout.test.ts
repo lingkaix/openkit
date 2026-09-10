@@ -507,6 +507,14 @@ describe('ensureLayout', () => {
     expect(existsSync(join(root, 'config', 'providers', 'openai-default.provider.jsonc'))).toBe(
       true
     );
+    expect(
+      existsSync(join(root, 'config', 'providers', 'openai-compatible-custom.provider.jsonc'))
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(root, 'config', 'providers', 'openai-compatible-custom.provider.jsonc.example')
+      )
+    ).toBe(true);
     expect(existsSync(join(root, 'config', 'agents', 'codex.agent.jsonc'))).toBe(true);
     expect(readFileSync(join(root, 'config', 'agents', 'codex.agent.jsonc'), 'utf8')).toContain(
       '"kind": "reference"'

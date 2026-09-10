@@ -127,6 +127,12 @@ describe('NanoCore boot phase order', () => {
     expect(bindValidation).toBeLessThan(templateWrite);
     expect(secretValidation).toBeLessThan(templateWrite);
     expect(templateWrite).toBeLessThan(finalConfigLoad);
+    const unknownContextGate = source.indexOf(
+      'unknownModelContextFailure(runtimeConfigSnapshot)',
+      finalConfigLoad
+    );
+    expect(unknownContextGate).toBeGreaterThan(finalConfigLoad);
+    expect(unknownContextGate).toBeLessThan(layoutPhase);
     expect(finalConfigLoad).toBeLessThan(layoutPhase);
   });
 

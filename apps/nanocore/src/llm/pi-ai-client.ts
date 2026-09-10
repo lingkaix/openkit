@@ -3,6 +3,7 @@ import {
   type AssistantMessage,
   type AssistantMessageEvent,
   type Context,
+  calculateCost,
   createModels,
   createProvider,
   type Model,
@@ -13,6 +14,7 @@ import {
   type ProviderStreams,
   type StreamOptions,
   type ToolCall,
+  type Usage,
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
@@ -25,6 +27,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { zaiProvider } from '@earendil-works/pi-ai/providers/zai';
+import type { ProviderProfile } from '@openkit/config-schema';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
   convertChatCompletionResponseToResponsesResponse,
@@ -32,14 +35,15 @@ import {
   convertResponsesRequestToChatCompletionRequest,
   GatewayUnsupportedFeatureError,
 } from './gateway-converters.js';
-import type {
-  OpenAICompatibleChatCompletionRequest,
-  OpenAICompatibleChatCompletionResponse,
-  OpenAICompatibleChatMessage,
-  OpenAICompatibleResponsesRequest,
-  OpenAICompatibleResponsesResponse,
+import { mergeAdapterCostRates, resolveEffectiveModelMetadata } from './logical-models.js';
+import {
+  type OpenAICompatibleChatCompletionRequest,
+  type OpenAICompatibleChatCompletionResponse,
+  type OpenAICompatibleChatMessage,
+  OpenAICompatibleProviderError,
+  type OpenAICompatibleResponsesRequest,
+  type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
-import { OpenAICompatibleProviderError } from './openai-compatible-client.js';
 import type { LLMGatewayTransportContext } from './provider-dispatcher.js';
 import {
   isWorkerAdditionalToolsItem,
@@ -186,7 +190,7 @@ export class PiAiGatewayClient {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: false });
 
-    const model = this.resolveModel(provider, request.model, models);
+    const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const response = await raceProviderWithSignal(
       () =>
         models.complete(
@@ -196,7 +200,7 @@ export class PiAiGatewayClient {
         ),
       transport.signal
     );
-    onUsage?.(response.usage);
+    publishObservedUsage(onUsage, response.usage, model, knownCost);
 
     if (response.stopReason === 'error' || response.stopReason === 'aborted') {
       throw new OpenAICompatibleProviderError({
@@ -230,7 +234,7 @@ export class PiAiGatewayClient {
     this.assertExplicitCredential(provider);
     this.assertSupportedRequest(request, { allowStream: true });
 
-    const model = this.resolveModel(provider, request.model, models);
+    const { knownCost, model } = this.resolveModel(provider, request.model, models);
     const localAbortController = new AbortController();
     const signal = transport.signal
       ? AbortSignal.any([transport.signal, localAbortController.signal])
@@ -242,9 +246,15 @@ export class PiAiGatewayClient {
     );
     const iterator = events[Symbol.asyncIterator]();
 
-    return this.toChatCompletionSseStream(iterator, request.model, onUsage, signal, (reason) => {
-      localAbortController.abort(reason);
-    });
+    return this.toChatCompletionSseStream(
+      iterator,
+      request.model,
+      (usage) => publishObservedUsage(onUsage, usage, model, knownCost),
+      signal,
+      (reason) => {
+        localAbortController.abort(reason);
+      }
+    );
   }
 
   /**
@@ -267,7 +277,7 @@ export class PiAiGatewayClient {
     if (provider.subscriptionProviderId === 'openai-codex') {
       const additionalTools = assertCodexResponsesRequestAdmission(request, false);
       this.assertExplicitCredential(provider);
-      const model = this.resolveModel(provider, request.model, models);
+      const { knownCost, model } = this.resolveModel(provider, request.model, models);
       const response = await raceProviderWithSignal(
         () =>
           models.complete(
@@ -277,7 +287,7 @@ export class PiAiGatewayClient {
           ),
         transport.signal
       );
-      onUsage?.(response.usage);
+      publishObservedUsage(onUsage, response.usage, model, knownCost);
       if (response.stopReason === 'error' || response.stopReason === 'aborted') {
         throw new OpenAICompatibleProviderError({
           code: 'provider_error',
@@ -325,7 +335,7 @@ export class PiAiGatewayClient {
         assertCodexResponsesRequestAdmission(request, true);
       }
       this.assertExplicitCredential(provider);
-      const model = this.resolveModel(provider, request.model, models);
+      const { knownCost, model } = this.resolveModel(provider, request.model, models);
       const localAbortController = new AbortController();
       const signal = transport.signal
         ? AbortSignal.any([transport.signal, localAbortController.signal])
@@ -353,7 +363,7 @@ export class PiAiGatewayClient {
         request.model,
         additionalTools,
         Array.isArray(request.include) && request.include.includes('reasoning.encrypted_content'),
-        onUsage,
+        (usage) => publishObservedUsage(onUsage, usage, model, knownCost),
         signal,
         (reason) => localAbortController.abort(reason)
       );
@@ -429,13 +439,13 @@ export class PiAiGatewayClient {
    * @param provider Resolved OpenKit provider config.
    * @param modelId Requested model id.
    * @param models Per-call model collection.
-   * @returns pi-ai model record.
+   * @returns Request-local model and whether four adapter rates are known financial facts.
    */
   private resolveModel(
     provider: ResolvedLLMProviderConfig,
     modelId: string,
     models: Models
-  ): Model<string> {
+  ): ResolvedAdapterModel {
     if (models !== this.models) {
       const providerId = provider.subscriptionProviderId;
       const exact = providerId ? models.getModel(providerId, modelId) : undefined;
@@ -451,22 +461,22 @@ export class PiAiGatewayClient {
           `Provider ${provider.id} does not expose model ${modelId}.`
         );
       }
-      return pairModel;
+      return this.applyEffectiveModel(provider, modelId, pairModel);
     }
 
-    const model = this.registerConfiguredProviderModel(
+    const registered = this.registerConfiguredProviderModel(
       provider,
       modelId,
       this.lookupAdapterModel(provider, modelId)
     );
 
-    if (!model) {
+    if (!registered) {
       throw new PiAiGatewayConfigurationError(
         `Provider ${provider.id} does not expose model ${modelId}.`
       );
     }
 
-    return model;
+    return registered;
   }
 
   /**
@@ -475,22 +485,22 @@ export class PiAiGatewayClient {
    * @param provider Resolved OpenKit provider config.
    * @param modelId Requested model id.
    * @param template Optional catalog model and adapter implementation to preserve.
-   * @returns Registered instance model, or null when the backend cannot resolve the model safely.
+   * @returns Registered instance model and known-cost fact, or null when the backend cannot resolve the model safely.
    */
   private registerConfiguredProviderModel(
     provider: ResolvedLLMProviderConfig,
     modelId: string,
     template: { readonly model: Model<string>; readonly provider: Provider } | null
-  ): Model<string> | null {
-    let model: Model<string>;
+  ): ResolvedAdapterModel | null {
+    let applied: ResolvedAdapterModel;
     let api: ProviderStreams;
 
     if (template) {
-      model = {
+      applied = this.applyEffectiveModel(provider, modelId, {
         ...template.model,
         baseUrl: provider.baseUrl ?? template.model.baseUrl,
         provider: provider.id,
-      };
+      });
       api = template.provider;
     } else {
       if (!provider.baseUrl) {
@@ -501,18 +511,28 @@ export class PiAiGatewayClient {
         provider.gatewayCapabilities.responses === 'native'
           ? 'openai-responses'
           : 'openai-completions';
-      model = {
-        api: apiName,
-        baseUrl: provider.baseUrl,
-        contextWindow: 128000,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        id: modelId,
-        input: ['text'],
-        maxTokens: 32000,
-        name: modelId,
-        provider: provider.id,
-        reasoning: false,
-      };
+      const effective = resolveEffectiveModelMetadata(metadataProfile(provider), modelId);
+      const context = effective.limit?.context;
+      if (typeof context !== 'number') {
+        return null;
+      }
+      applied = this.applyEffectiveModel(
+        provider,
+        modelId,
+        {
+          api: apiName,
+          baseUrl: provider.baseUrl,
+          contextWindow: context,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          id: modelId,
+          input: ['text'],
+          maxTokens: 32000,
+          name: modelId,
+          provider: provider.id,
+          reasoning: false,
+        },
+        false
+      );
       api = apiName === 'openai-responses' ? openAIResponsesApi() : openAICompletionsApi();
     }
 
@@ -520,7 +540,7 @@ export class PiAiGatewayClient {
       createProvider({
         id: provider.id,
         name: provider.displayName,
-        baseUrl: model.baseUrl,
+        baseUrl: applied.model.baseUrl,
         auth: {
           apiKey: {
             name: `${provider.displayName} API key`,
@@ -529,12 +549,12 @@ export class PiAiGatewayClient {
             }),
           },
         },
-        models: [model],
+        models: [applied.model],
         api,
       })
     );
 
-    return model;
+    return applied;
   }
 
   /**
@@ -578,6 +598,60 @@ export class PiAiGatewayClient {
       provider.id,
       ...(PI_AI_PROVIDER_ALIASES[provider.id] ?? []),
     ].filter((value, index, values) => values.indexOf(value) === index);
+  }
+
+  /**
+   * Applies effective Provider metadata onto a request-local model clone. Explicitly authored cost leaves replace that rate on cloned stock tiers; catalog flats do not; omitted leaves and thresholds stay stock.
+   *
+   * @param provider Resolved OpenKit provider config.
+   * @param modelId Requested native model id.
+   * @param base Adapter or pair model to clone.
+   * @param inheritStockCost When true, real stock or pair rates fill omitted authored leaves.
+   * @returns Cloned model and whether four adapter rates are known financial facts.
+   */
+  private applyEffectiveModel(
+    provider: ResolvedLLMProviderConfig,
+    modelId: string,
+    base: Model<string>,
+    inheritStockCost = true
+  ): ResolvedAdapterModel {
+    const effective = resolveEffectiveModelMetadata(metadataProfile(provider), modelId);
+    const context = effective.limit?.context;
+    const output = effective.limit?.output;
+    const merged = mergeAdapterCostRates(
+      inheritStockCost ? adapterCostRates(base.cost) : undefined,
+      effective
+    );
+    const overlayInput = effective.modalities?.input;
+    const clonedCost = cloneAdapterCost(base.cost);
+    const cost = {
+      ...clonedCost,
+      cacheRead: merged.rates.cacheRead ?? 0,
+      cacheWrite: merged.rates.cacheWrite ?? 0,
+      input: merged.rates.input ?? 0,
+      output: merged.rates.output ?? 0,
+      ...(clonedCost.tiers
+        ? {
+            tiers: overlayAuthoredCostLeavesOnTiers(
+              clonedCost.tiers,
+              provider.modelMetadata?.[modelId]?.cost
+            ),
+          }
+        : {}),
+    };
+    return {
+      knownCost: merged.complete,
+      model: {
+        ...base,
+        cost,
+        input: [
+          ...(overlayInput !== undefined ? overlayInput : base.input),
+        ] as Model<string>['input'],
+        ...(typeof context === 'number' ? { contextWindow: context } : {}),
+        ...(typeof output === 'number' ? { maxTokens: output } : {}),
+        ...(effective.reasoning !== undefined ? { reasoning: effective.reasoning } : {}),
+      },
+    };
   }
 
   /**
@@ -2877,4 +2951,263 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+/**
+ * Builds the metadata lookup profile for one resolved LLM provider.
+ *
+ * @param provider Secret-bearing dispatch config.
+ * @returns Provider profile fields required by the shared metadata resolver.
+ */
+function metadataProfile(provider: ResolvedLLMProviderConfig): ProviderProfile {
+  return {
+    displayName: provider.displayName,
+    id: provider.id,
+    kind: provider.subscriptionProviderId ? 'oauth' : 'custom',
+    models: [...provider.models],
+    ...(provider.modelMetadata ? { modelMetadata: provider.modelMetadata } : {}),
+    ...(provider.vendor ? { vendor: provider.vendor } : { vendor: provider.adapterId }),
+    ...(provider.subscriptionProviderId && provider.accountSlotId
+      ? {
+          extensions: {
+            openkit: {
+              subscriptionAccount: { accountSlotId: provider.accountSlotId },
+            },
+          },
+        }
+      : {}),
+  };
+}
+
+/** Request-local adapter model plus whether four USD rates are known facts. */
+interface ResolvedAdapterModel {
+  readonly model: Model<string>;
+  readonly knownCost: boolean;
+}
+
+/**
+ * Publishes adapter usage, omitting USD unless four rates are known and calculateCost is finite.
+ *
+ * @param onUsage Optional observer for the provider-native usage payload.
+ * @param usage Provider usage payload.
+ * @param model Request-local model whose rates feed calculateCost.
+ * @param knownCost Whether authored, catalog, and real stock rates are complete.
+ */
+function publishObservedUsage(
+  onUsage: ((usage: unknown) => void) | undefined,
+  usage: unknown,
+  model: Model<string>,
+  knownCost: boolean
+): void {
+  if (!onUsage) {
+    return;
+  }
+  const record = readRecord(usage);
+  if (!record) {
+    onUsage(usage);
+    return;
+  }
+  if (!knownCost) {
+    const { cost: _cost, ...rest } = record;
+    onUsage(rest);
+    return;
+  }
+  const computed = usageForCost(record);
+  if (!computed) {
+    const { cost: _cost, ...rest } = record;
+    onUsage(rest);
+    return;
+  }
+  calculateCost(model, computed);
+  if (!Number.isFinite(computed.cost.total) || computed.cost.total < 0) {
+    const { cost: _cost, ...rest } = record;
+    onUsage(rest);
+    return;
+  }
+  onUsage({ ...record, cost: computed.cost });
+}
+
+/**
+ * Reads a pi-ai usage object that calculateCost can price.
+ *
+ * @param record Provider usage record.
+ * @returns Usage with a fresh cost object, or null when token counts are missing.
+ */
+function usageForCost(record: Record<string, unknown>): Usage | null {
+  const input = readNumber(record.input);
+  const output = readNumber(record.output);
+  if (input === undefined || output === undefined) {
+    return null;
+  }
+  const cacheRead = readNumber(record.cacheRead) ?? readNumber(record.cache_read) ?? 0;
+  const cacheWrite = readNumber(record.cacheWrite) ?? readNumber(record.cache_write) ?? 0;
+  const cacheWrite1h = readNumber(record.cacheWrite1h);
+  return {
+    cacheRead,
+    cacheWrite,
+    cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+    input,
+    output,
+    totalTokens: readNumber(record.totalTokens) ?? input + output + cacheRead + cacheWrite,
+    ...(cacheWrite1h === undefined ? {} : { cacheWrite1h }),
+  };
+}
+
+/**
+ * Copies adapter cost including request-wide tiers.
+ *
+ * @param cost Adapter cost object.
+ * @returns A new cost object that does not alias nested tier rows.
+ */
+function cloneAdapterCost(cost: Model<string>['cost']): Model<string>['cost'] {
+  return {
+    cacheRead: cost.cacheRead,
+    cacheWrite: cost.cacheWrite,
+    input: cost.input,
+    output: cost.output,
+    ...(cost.tiers ? { tiers: cost.tiers.map((tier) => ({ ...tier })) } : {}),
+  };
+}
+
+/**
+ * Replaces explicitly authored cost leaves on cloned stock tiers. Catalog flats stay off the tier rows. Thresholds and omitted leaves remain stock.
+ *
+ * @param tiers Cloned stock request-wide tiers.
+ * @param authored Explicit operator cost leaves, models.dev names.
+ * @returns New tier rows with authored leaves applied length-independently.
+ */
+function overlayAuthoredCostLeavesOnTiers(
+  tiers: NonNullable<Model<string>['cost']['tiers']>,
+  authored:
+    | {
+        readonly cache_read?: number;
+        readonly cache_write?: number;
+        readonly input?: number;
+        readonly output?: number;
+      }
+    | undefined
+): NonNullable<Model<string>['cost']['tiers']> {
+  const overlay = readAuthoredAdapterCostLeaves(authored);
+  if (!overlay) {
+    return tiers;
+  }
+
+  return tiers.map((tier) => ({
+    cacheRead: overlay.cacheRead ?? tier.cacheRead,
+    cacheWrite: overlay.cacheWrite ?? tier.cacheWrite,
+    input: overlay.input ?? tier.input,
+    inputTokensAbove: tier.inputTokensAbove,
+    output: overlay.output ?? tier.output,
+  }));
+}
+
+/**
+ * Reads explicitly authored adapter cost leaves without inheriting catalog flats.
+ *
+ * @param authored Operator cost object keyed by models.dev names.
+ * @returns Known authored leaves, or undefined when none are present.
+ */
+function readAuthoredAdapterCostLeaves(
+  authored:
+    | {
+        readonly cache_read?: number;
+        readonly cache_write?: number;
+        readonly input?: number;
+        readonly output?: number;
+      }
+    | undefined
+):
+  | {
+      cacheRead?: number;
+      cacheWrite?: number;
+      input?: number;
+      output?: number;
+    }
+  | undefined {
+  if (!authored) {
+    return undefined;
+  }
+
+  const rates: {
+    cacheRead?: number;
+    cacheWrite?: number;
+    input?: number;
+    output?: number;
+  } = {};
+  if (
+    typeof authored.input === 'number' &&
+    Number.isFinite(authored.input) &&
+    authored.input >= 0
+  ) {
+    rates.input = authored.input;
+  }
+  if (
+    typeof authored.output === 'number' &&
+    Number.isFinite(authored.output) &&
+    authored.output >= 0
+  ) {
+    rates.output = authored.output;
+  }
+  if (
+    typeof authored.cache_read === 'number' &&
+    Number.isFinite(authored.cache_read) &&
+    authored.cache_read >= 0
+  ) {
+    rates.cacheRead = authored.cache_read;
+  }
+  if (
+    typeof authored.cache_write === 'number' &&
+    Number.isFinite(authored.cache_write) &&
+    authored.cache_write >= 0
+  ) {
+    rates.cacheWrite = authored.cache_write;
+  }
+
+  return rates.input !== undefined ||
+    rates.output !== undefined ||
+    rates.cacheRead !== undefined ||
+    rates.cacheWrite !== undefined
+    ? rates
+    : undefined;
+}
+
+/**
+ * Reads known stock or pair adapter rates without treating missing leaves as zero.
+ *
+ * @param cost Adapter cost object.
+ * @returns Known finite nonnegative leaves.
+ */
+function adapterCostRates(cost: Model<string>['cost']): {
+  cacheRead?: number;
+  cacheWrite?: number;
+  input?: number;
+  output?: number;
+} {
+  const rates: {
+    cacheRead?: number;
+    cacheWrite?: number;
+    input?: number;
+    output?: number;
+  } = {};
+  if (typeof cost.input === 'number' && Number.isFinite(cost.input) && cost.input >= 0) {
+    rates.input = cost.input;
+  }
+  if (typeof cost.output === 'number' && Number.isFinite(cost.output) && cost.output >= 0) {
+    rates.output = cost.output;
+  }
+  if (
+    typeof cost.cacheRead === 'number' &&
+    Number.isFinite(cost.cacheRead) &&
+    cost.cacheRead >= 0
+  ) {
+    rates.cacheRead = cost.cacheRead;
+  }
+  if (
+    typeof cost.cacheWrite === 'number' &&
+    Number.isFinite(cost.cacheWrite) &&
+    cost.cacheWrite >= 0
+  ) {
+    rates.cacheWrite = cost.cacheWrite;
+  }
+  return rates;
 }

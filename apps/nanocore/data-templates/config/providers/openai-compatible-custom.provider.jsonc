@@ -1,6 +1,6 @@
-// Custom OpenAI-compatible provider template.
+// Custom OpenAI-compatible provider template. Source filename stays openai-compatible-custom.provider.jsonc for catalog snapshot provenance.
 // Replace the placeholder baseUrl and create the matching vault reference before using this provider.
-// The starter model keeps this template compatible with ProviderProfileSchema until US-008 vendors catalog metadata.
+// Fresh data roots install this file as openai-compatible-custom.provider.jsonc.example so the provider loader does not admit it as an active first-boot profile.
 {
   "id": "openai-compatible-custom",
   "displayName": "Custom OpenAI-Compatible",
