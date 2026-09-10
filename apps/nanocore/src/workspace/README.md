@@ -1,10 +1,10 @@
 # Workspace Repository Resources
 
-This directory owns repository resources attached to a workspace: persistence helpers, path validation, product-safe diagnostics, and repository data-source catalogs.
+This directory owns repository resources attached to a workspace: persistence helpers, path validation, and product-safe diagnostics.
 
 ## Boundaries
 
-- Keep repository resource storage, validation, diagnostics, and data-source catalog synchronization here.
+- Keep repository resource storage, validation, and diagnostics here. Runtime data-source catalogs are separately authored through runtime configuration; linking a Core host repository must not overwrite their network locators or status.
 - Root workspace and repository route modules own HTTP behavior and product mutations.
 - `../runtime/` owns worker materialization, workspace synchronization, and Git execution; `../storage/` owns canonical workspace records and transfer.
 - Do not expand this directory into a general workspace service or duplicate workspace lifecycle ownership.
@@ -13,4 +13,4 @@ This directory owns repository resources attached to a workspace: persistence he
 
 ## Verification
 
-Run the focused repository store, validation, diagnostics, catalog, and route tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
+Run the focused repository store, validation, diagnostics, and route tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).

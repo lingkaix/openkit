@@ -51,7 +51,6 @@ import { getVaultReference } from './vault/vault-references.js';
 import { createVaultUseAuditedBackend } from './vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import { createVaultInjectionReceipt } from './vault-injection-receipts.js';
-import { syncRepositoryDataSourceCatalog } from './workspace/repository-data-source-catalog.js';
 import {
   createWorkspaceRepositoryDiagnostic,
   safeWorkspaceRepositoryDisplayName,
@@ -634,11 +633,6 @@ export function registerRepositoryRoutes({
           localPath: parsed.data.localPath,
           ...(parsed.data.git ? { git: parsed.data.git } : {}),
           ...(parsed.data.resourceId ? { resourceId: parsed.data.resourceId } : {}),
-        });
-        syncRepositoryDataSourceCatalog({
-          dataRoot: workspaceDb.dataRoot,
-          workspaceId,
-          record: repository,
         });
 
         return c.json(

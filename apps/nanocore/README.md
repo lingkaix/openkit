@@ -145,6 +145,8 @@ Set `OPENKIT_DATA_ROOT` to persist canonical Workspace records under `temp/nanoc
 
 The retained NanoCore-hosted repository resource remains the current owner for bounded Chat repository inspection and the separate host-side apply/push surfaces. NanoHost Task and Goal worker Turns use the remote Git catalog flow documented below and do not consume this host path.
 
+Linking this resource does not create or rewrite a runtime data-source catalog entry. Author the credential-free HTTPS URL and immutable commit through the existing runtime-config surface. When importing Git changes for later application, use the same resource ID for the receiving Core repository and the Worker source; their storage and materialization remain separate.
+
 Link the default repository resource with:
 
 ```bash

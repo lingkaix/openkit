@@ -1,6 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  parseWorkspaceDataSourceCatalog,
+  requireCredentialFreeHttpsGitLocator,
+  resolveWorkspaceDataSourceReference,
+} from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { createDemoWorkspaceForUser, FsStore } from './lib/store.js';
@@ -131,6 +136,103 @@ describe('workspace repository app API', () => {
     }
   });
 
+  it('preserves an existing network git catalog when setDefault links a missing apply-target path', async () => {
+    const coreDb = createCoreDb();
+    const catalogPath = join(
+      coreDb.dataRoot,
+      'workspaces',
+      'ws_demo',
+      'config',
+      'data-sources.jsonc'
+    );
+    const gitUrl = 'https://github.com/lingkaix/openkit.git';
+    const gitCommit = '1bc77878b4607f6b1b4fc7f175536ae1a8ee8de2';
+    const catalog = {
+      schemaVersion: 1,
+      sources: [
+        {
+          access: 'read-write',
+          allowedSlotKinds: ['worktree'],
+          displayName: 'OpenKit public main',
+          id: 'task-mode-repository',
+          kind: 'git',
+          locator: { commit: gitCommit, url: gitUrl },
+          sensitivity: 'public',
+          status: 'active',
+        },
+      ],
+    };
+    mkdirSync(join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config'), { recursive: true });
+    writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+    const missingPath = join(
+      mkdtempSync(join(tmpdir(), 'openkit-absent-apply-target-')),
+      'not-cloned'
+    );
+
+    try {
+      const app = createApp({ coreDb });
+      const setRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          displayName: 'OpenKit public main',
+          localPath: missingPath,
+          resourceId: 'task-mode-repository',
+        }),
+      });
+
+      expect(setRes.status).toBe(200);
+      expect(await setRes.json()).toMatchObject({
+        repository: {
+          diagnosticsStatus: 'missing',
+          resourceId: 'task-mode-repository',
+        },
+      });
+
+      const parsed = parseWorkspaceDataSourceCatalog(JSON.parse(readFileSync(catalogPath, 'utf8')));
+      const source = parsed.sources.find((candidate) => candidate.id === 'task-mode-repository');
+      expect(source).toMatchObject({
+        id: 'task-mode-repository',
+        locator: { commit: gitCommit, url: gitUrl },
+        status: 'active',
+      });
+      expect(Object.keys(source?.locator ?? {}).sort()).toEqual(['commit', 'url']);
+      expect(requireCredentialFreeHttpsGitLocator(source?.locator)).toEqual({
+        commit: gitCommit,
+        url: gitUrl,
+      });
+      expect(
+        resolveWorkspaceDataSourceReference({
+          access: 'read-write',
+          catalog: parsed,
+          slotKind: 'worktree',
+          sourceRef: 'task-mode-repository',
+        })
+      ).toMatchObject({
+        sourceId: 'task-mode-repository',
+        sourceKind: 'git',
+      });
+
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      try {
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              'SELECT resource_id AS resourceId, diagnostics_status AS diagnosticsStatus FROM workspace_repository_resources WHERE resource_id = ?'
+            )
+            .get('task-mode-repository')
+        ).toEqual({
+          diagnosticsStatus: 'missing',
+          resourceId: 'task-mode-repository',
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('uses PUT as the only default repository write method', async () => {
     const coreDb = createCoreDb();
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-ready-route-repository-'));
@@ -212,26 +314,10 @@ describe('workspace repository app API', () => {
           'config',
           'data-sources.jsonc'
         );
-        const catalogText = readFileSync(catalogPath, 'utf8');
-        const catalog = JSON.parse(catalogText) as {
-          sources: Array<Record<string, unknown>>;
-        };
 
         expect(serverRepositoryTable.count).toBe(0);
         expect(workspaceRepositoryCount.count).toBe(1);
-        expect(catalog.sources).toEqual([
-          expect.objectContaining({
-            access: 'read-write',
-            allowedSlotKinds: ['worktree'],
-            displayName: 'OpenKit',
-            id: 'repo_default',
-            kind: 'git',
-            locator: { repositoryResourceId: 'repo_default' },
-            sensitivity: 'internal',
-            status: 'active',
-          }),
-        ]);
-        expect(catalogText).not.toContain(repositoryPath);
+        expect(existsSync(catalogPath)).toBe(false);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -638,13 +724,13 @@ describe('workspace repository app API', () => {
       });
 
       expect(seedRes.status).toBe(200);
+      expect(existsSync(catalogPath)).toBe(false);
 
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
       try {
         const beforeRow = workspaceDb.sqlite
           .prepare('SELECT * FROM workspace_repository_resources')
           .get();
-        const beforeCatalogBytes = readFileSync(catalogPath);
         const containedPath = join(coreDb.dataRoot, 'contained-repo');
 
         const replaceRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
@@ -660,14 +746,13 @@ describe('workspace repository app API', () => {
         const afterRow = workspaceDb.sqlite
           .prepare('SELECT * FROM workspace_repository_resources')
           .get();
-        const afterCatalogBytes = readFileSync(catalogPath);
 
         expect(replaceRes.status).toBe(400);
         expect(replacePayload).toMatchObject({
           code: 'repository_resource_failed',
         });
         expect(afterRow).toEqual(beforeRow);
-        expect(afterCatalogBytes.equals(beforeCatalogBytes)).toBe(true);
+        expect(existsSync(catalogPath)).toBe(false);
         expect(replaceJson).not.toContain(containedPath);
         expect(replaceJson).not.toContain(coreDb.dataRoot);
         expect(replaceJson).not.toContain(repositoryPath);
