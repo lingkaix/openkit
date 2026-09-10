@@ -75,7 +75,7 @@ On preparation failure, leave the running App unchanged. If candidate verificati
 
 ## Current Implementation Projection
 
-The first-party administrator App API, Core Client, public Skill operations and Web update screen implement prepare/start/status against the configured restricted SSH transport. Missing deployment configuration disables the capability; unusable identity files fail its operation without taking Core down. The host helper is not yet accepted or installed, and no end-to-end self-update is claimed. Existing operator procedures already build and replace exact App/Web snapshots while retaining NanoHost. The first implementation targets the existing Linux/systemd/Docker deployment; other supported deployment shapes retain their normal operator procedures until a concrete equivalent is implemented. This is not a new hard qualification requirement for all NanoCore installations.
+The first-party administrator App API, Core Client, public Skill operations and Web update screen implement prepare/start/status against the configured restricted SSH transport. Missing deployment configuration disables the capability; unusable identity files fail its operation without taking Core down. The host helper is implemented but not yet installed on the selected deployment, and no public end-to-end self-update is claimed. Existing operator procedures already build and replace exact App/Web snapshots while retaining NanoHost. The first implementation targets the existing Linux/systemd/Docker deployment; other supported deployment shapes retain their normal operator procedures until a concrete equivalent is implemented. This is not a new hard qualification requirement for all NanoCore installations.
 
 ## Rollout And Acceptance
 

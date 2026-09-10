@@ -11,10 +11,12 @@ import os
 import subprocess
 import tarfile
 import tempfile
+import threading
 import unittest
 import uuid
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 HELPER_PATH = Path(__file__).with_name("app-update-helper.py")
 REPO_ROOT = HELPER_PATH.resolve().parents[2]
@@ -68,6 +70,47 @@ def token_record(**overrides) -> dict:
 
 
 RETAINED_TOKENS = {"items": [token_record(tokenId="tok_b"), token_record(tokenId="tok_a")]}
+BOOT_SUBSYSTEM_NAMES = (
+    "config",
+    "knowledgeIndex",
+    "llmGateway",
+    "policy",
+    "scheduler",
+    "storage",
+    "vault",
+)
+CRITICAL_SUBSYSTEM_NAMES = frozenset({"config", "policy", "storage"})
+PREVIOUS_BOOT_ID = "boot_11111111-1111-4111-8111-111111111111"
+CANDIDATE_BOOT_ID = "boot_22222222-2222-4222-8222-222222222222"
+
+
+def boot_reason(code: str, message: str, blocks: Optional[List[str]] = None) -> dict:
+    return {"blocks": list(blocks or []), "code": code, "message": message}
+
+
+def ready_boot_subsystems(**overrides) -> dict:
+    subsystems = {name: {"reasons": [], "state": "ready"} for name in BOOT_SUBSYSTEM_NAMES}
+    subsystems.update(overrides)
+    return subsystems
+
+
+def typed_boot(boot_id: str, accepting: Optional[bool] = None, overall: Optional[str] = None, **subsystem_overrides) -> dict:
+    subsystems = ready_boot_subsystems(**subsystem_overrides)
+    has_critical = any(
+        subsystems[name]["state"] == "failed" for name in CRITICAL_SUBSYSTEM_NAMES
+    )
+    has_nonready = any(item["state"] != "ready" for item in subsystems.values())
+    computed_overall = "failed" if has_critical else ("degraded" if has_nonready else "ready")
+    return {
+        "acceptingProductWork": (not has_critical) if accepting is None else accepting,
+        "bootId": boot_id,
+        "overall": computed_overall if overall is None else overall,
+        "subsystems": subsystems,
+    }
+
+
+def api_error(code: str, message: str = "NanoHost runtime target is unavailable.") -> dict:
+    return {"code": code, "message": message, "protocolVersion": "0.1.0"}
 
 
 def load_helper():
@@ -93,17 +136,26 @@ class RecordingEffects:
         self.container_running = True
         self.nanohost_ready = True
         self.nanohost_identity = "staging-nanohost-a2"
+        self.nanohost_deployment = "staging-a2"
         self.nanohost_generation = 7
-        self.boot_id = "boot_11111111-1111-4111-8111-111111111111"
+        self.nanohost_identity_after: Optional[str] = None
+        self.nanohost_generation_after: Optional[int] = None
+        self.nanohost_ready_after: Optional[bool] = None
+        self.nanohost_http: Optional[Tuple[int, Any]] = None
+        self.boot_id = PREVIOUS_BOOT_ID
         self.accepting_product_work = True
+        self.accepting_product_work_after: Optional[bool] = None
         self.blocking_reasons: List[dict] = []
+        self.boot_payload_before: Optional[dict] = None
+        self.boot_payload_after: Optional[dict] = None
+        self.diagnostics_status = 200
         self.applied_migrations = ["core_0000_setup"]
         self.tokens = json.loads(json.dumps(RETAINED_TOKENS))
         self.status_probe: Optional[dict] = None
         self.fail_commands: Dict[str, int] = {}
         self.ancestor_ok = True
         self.replaced = False
-        self.candidate_boot_id = "boot_22222222-2222-4222-8222-222222222222"
+        self.candidate_boot_id = CANDIDATE_BOOT_ID
         self.pull_error: Optional[str] = None
         self.privileged = False
         self.runtime = "runc"
@@ -347,20 +399,27 @@ class RecordingEffects:
     def http_get(self, url: str, headers: Optional[dict] = None, timeout: Optional[float] = None):
         self.http_calls.append(url)
         if url.endswith("/api/app/diagnostics"):
-            boot_id = self.candidate_boot_id if self.replaced else self.boot_id
-            payload = {
-                "boot": {
+            if self.diagnostics_status != 200:
+                return self.diagnostics_status, None
+            if self.replaced and self.boot_payload_after is not None:
+                boot = self.boot_payload_after
+            elif not self.replaced and self.boot_payload_before is not None:
+                boot = self.boot_payload_before
+            else:
+                accepting = self.accepting_product_work
+                if self.replaced and self.accepting_product_work_after is not None:
+                    accepting = self.accepting_product_work_after
+                boot_id = self.candidate_boot_id if self.replaced else self.boot_id
+                subsystems = ready_boot_subsystems(
+                    storage={"reasons": list(self.blocking_reasons), "state": "ready"}
+                )
+                boot = {
+                    "acceptingProductWork": accepting,
                     "bootId": boot_id,
-                    "acceptingProductWork": self.accepting_product_work,
                     "overall": "ready",
-                    "subsystems": {
-                        "storage": {
-                            "state": "ready",
-                            "reasons": self.blocking_reasons,
-                        }
-                    },
+                    "subsystems": subsystems,
                 }
-            }
+            payload = {"boot": boot}
             self.diagnostics_payloads.append(payload)
             return 200, payload
         if url.endswith("/api/diagnostics"):
@@ -372,16 +431,30 @@ class RecordingEffects:
                 return 200, self.tokens_after
             return 200, self.tokens
         if url.endswith("/api/app/nanohost/runtime-target"):
-            if self.nanohost_identity is None:
-                return 404, None
+            if self.nanohost_http is not None:
+                return self.nanohost_http
+            identity = self.nanohost_identity
+            generation = self.nanohost_generation
+            ready = self.nanohost_ready
+            if self.replaced:
+                if self.nanohost_identity_after is not None:
+                    identity = self.nanohost_identity_after
+                if self.nanohost_generation_after is not None:
+                    generation = self.nanohost_generation_after
+                elif identity is not None:
+                    generation = self.nanohost_generation + 1
+                if self.nanohost_ready_after is not None:
+                    ready = self.nanohost_ready_after
+            if identity is None:
+                return 404, api_error("nanohost_runtime_target_not_found")
             return 200, {
-                "identityId": self.nanohost_identity,
-                "deploymentId": "staging-a2",
-                "connectionGeneration": self.nanohost_generation,
-                "predecessorFenced": True,
-                "ready": self.nanohost_ready,
+                "connectionGeneration": generation,
+                "deploymentId": self.nanohost_deployment,
                 "freshEmpty": True,
+                "identityId": identity,
                 "observedAt": "2026-09-10T00:00:00.000Z",
+                "predecessorFenced": True,
+                "ready": ready,
             }
         if "/api/app/app-update/" in url:
             return 200, self.status_probe or {"requestId": url.rsplit("/", 1)[-1]}
@@ -1052,7 +1125,7 @@ class ApplyJobTests(unittest.TestCase):
                 config_path,
                 effects=effects,
             )
-            effects.accepting_product_work = False
+            effects.accepting_product_work_after = False
             body = invoke(
                 module,
                 {},
@@ -1562,7 +1635,7 @@ class ContractCorrectionTests(unittest.TestCase):
             root = Path(tmp)
             effects = RecordingEffects()
             effects.fail_restore_stop = True
-            effects.accepting_product_work = False
+            effects.accepting_product_work_after = False
             _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
             self.assertEqual(body["stage"], "recovery_required")
             self.assertNotEqual(body.get("previousAppRestored"), True)
@@ -1724,6 +1797,302 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertEqual(mismatched.get("candidateBoot", {}).get("sourceCommit") if mismatched.get("candidateBoot") else None, None)
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects_mismatch.calls))
             self.assertFalse(any(call[:2] == ["docker", "pull"] for call in effects_mismatch.calls))
+
+
+class OwnerAmendmentTests(unittest.TestCase):
+    def test_missing_previous_boot_refuses_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.boot_payload_before = {}
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"Previous App boot")
+            self.assertFalse(body.get("previousBoot"))
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_malformed_previous_boot_refuses_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.boot_payload_before = {
+                "acceptingProductWork": True,
+                "bootId": PREVIOUS_BOOT_ID,
+                "overall": "ready",
+                "subsystems": {
+                    "storage": {
+                        "reasons": [{"code": "storage.index-rebuilt", "message": "Rebuilt."}],
+                        "state": "ready",
+                    }
+                },
+            }
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"Previous App boot")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_nonempty_blocks_fail_closed_and_retain_reason_code(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 8
+            effects.boot_payload_after = typed_boot(
+                CANDIDATE_BOOT_ID,
+                vault={
+                    "reasons": [
+                        boot_reason("vault.locked", "Vault is locked.", ["vault.read"]),
+                    ],
+                    "state": "degraded",
+                },
+            )
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertIs(body["predicates"]["noBlockingReadiness"], False)
+            self.assertIn("vault.locked", body["candidateBoot"]["blockingReasons"])
+            self.assertNotIn("blocks", body["candidateBoot"])
+            self.assertTrue(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_malformed_candidate_reasons_fail_closed(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 8
+            effects.boot_payload_after = typed_boot(CANDIDATE_BOOT_ID)
+            effects.boot_payload_after["subsystems"]["scheduler"] = {
+                "reasons": ["scheduler.checkpoint_recovery_required"],
+                "state": "degraded",
+            }
+            effects.boot_payload_after["overall"] = "degraded"
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"boot observation is missing|noBlockingReadiness|malformed")
+            self.assertTrue(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_nonblocking_warning_is_retained_without_admitted_codes(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 8
+            effects.boot_payload_after = typed_boot(
+                CANDIDATE_BOOT_ID,
+                scheduler={
+                    "reasons": [
+                        boot_reason(
+                            "scheduler.checkpoint_recovery_required",
+                            "Scheduler checkpoint recovery is required.",
+                        )
+                    ],
+                    "state": "degraded",
+                },
+                storage={
+                    "reasons": [boot_reason("storage.index-rebuilt", "Storage index was rebuilt.")],
+                    "state": "degraded",
+                },
+            )
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "succeeded", body)
+            self.assertTrue(body["predicates"]["noBlockingReadiness"])
+            self.assertTrue(body["predicates"]["acceptingProductWork"])
+            self.assertEqual(
+                body["candidateBoot"]["blockingReasons"],
+                ["storage.index-rebuilt", "scheduler.checkpoint_recovery_required"],
+            )
+            self.assertNotIn("overall", body["candidateBoot"])
+            self.assertNotIn("blocks", body["candidateBoot"])
+
+    def test_critical_failed_cannot_pass(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 8
+            effects.boot_payload_after = typed_boot(
+                CANDIDATE_BOOT_ID,
+                accepting=True,
+                overall="ready",
+                storage={
+                    "reasons": [
+                        boot_reason(
+                            "storage.migration_failed",
+                            "Storage migration failed.",
+                            ["product_work"],
+                        )
+                    ],
+                    "state": "failed",
+                },
+            )
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertTrue(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+            predicates = body.get("predicates") or {}
+            self.assertFalse(
+                predicates.get("noBlockingReadiness") is True and predicates.get("acceptingProductWork") is True
+            )
+
+    def test_nanohost_equal_generation_fails(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 7
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertIs(body["predicates"]["nanohostReady"], False)
+
+    def test_nanohost_lower_generation_fails(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 6
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertIs(body["predicates"]["nanohostReady"], False)
+
+    def test_nanohost_different_identity_fails(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 8
+            effects.nanohost_identity_after = "other-nanohost"
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertIs(body["predicates"]["nanohostReady"], False)
+
+    def test_nanohost_successor_generation_passes(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_generation_after = 8
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "succeeded", body)
+            self.assertTrue(body["predicates"]["nanohostReady"])
+            self.assertFalse(
+                any(call[:1] == ["systemctl"] and "nanohost" in " ".join(call).lower() for call in effects.calls)
+            )
+
+
+class ReviewFindingTests(unittest.TestCase):
+    def test_httperror_parses_bounded_json_body(self) -> None:
+        module = load_helper()
+        payload = api_error("nanohost_runtime_target_not_found")
+        url, closer = _serve_json(404, payload)
+        try:
+            status, body = module.CommandEffects().http_get(url, timeout=2)
+        finally:
+            closer()
+        self.assertIsInstance(body, dict)
+        self.assertEqual(status, 404)
+        self.assertEqual(body.get("code"), "nanohost_runtime_target_not_found")
+
+    def test_typed_nanohost_absence_is_null_ready(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_identity = None
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "succeeded", body)
+            self.assertIsNone(body["predicates"]["nanohostReady"])
+            self.assertTrue(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_non_server_mode_404_fails_before_stop(self) -> None:
+        self._assert_nanohost_fails_before_stop(
+            404, api_error("nanohost_transport_admin_server_mode_required")
+        )
+
+    def test_forbidden_nanohost_fails_before_stop(self) -> None:
+        self._assert_nanohost_fails_before_stop(403, api_error("nanohost_transport_admin_forbidden"))
+
+    def test_unavailable_nanohost_fails_before_stop(self) -> None:
+        self._assert_nanohost_fails_before_stop(503, api_error("nanohost_transport_storage_unavailable"))
+
+    def test_transport_failure_fails_before_stop(self) -> None:
+        self._assert_nanohost_fails_before_stop(0, None)
+
+    def test_malformed_200_nanohost_fails_before_stop(self) -> None:
+        self._assert_nanohost_fails_before_stop(200, None)
+
+    def test_integer_ready_fails_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_http = (
+                200,
+                {
+                    "connectionGeneration": 7,
+                    "deploymentId": "staging-a2",
+                    "freshEmpty": True,
+                    "identityId": "staging-nanohost-a2",
+                    "observedAt": "2026-09-10T00:00:00.000Z",
+                    "predecessorFenced": True,
+                    "ready": 1,
+                },
+            )
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"NanoHost")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_silent_degraded_previous_boot_fails_before_stop(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.boot_payload_before = typed_boot(
+                PREVIOUS_BOOT_ID,
+                vault={"reasons": [], "state": "degraded"},
+            )
+            _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"Previous App boot")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def _assert_nanohost_fails_before_stop(self, status: int, body: Any) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.nanohost_http = (status, body)
+            _config_path, effects, _prepared, result = _start_apply(module, root, effects=effects)
+            self.assertEqual(result["stage"], "failed", result)
+            self.assertRegex(result["error"] or "", r"NanoHost")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+
+def _serve_json(status: int, payload: Optional[dict]) -> Tuple[str, Callable[[], None]]:
+    raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            if raw:
+                self.wfile.write(raw)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    host, port = server.server_address
+
+    def closer() -> None:
+        thread.join(timeout=2)
+        server.server_close()
+
+    return "http://%s:%s/" % (host, port), closer
 
 
 def _init_annotated_release_repo(repo: Path, tag: str) -> Tuple[str, str]:

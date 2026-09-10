@@ -63,7 +63,17 @@ SHELL_FRAGMENT_RE = re.compile(r"[;`|&$]|\$\(|\$\{")
 SECRET_RE = re.compile(
     r"(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]+|hf_[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_-]+|okt_[A-Za-z0-9_-]+)"
 )
-ADMITTED_NONBLOCKING = frozenset({"storage.index-rebuilt"})
+BOOT_SUBSYSTEM_NAMES = (
+    "config",
+    "storage",
+    "policy",
+    "vault",
+    "scheduler",
+    "llmGateway",
+    "knowledgeIndex",
+)
+CRITICAL_SUBSYSTEM_NAMES = frozenset({"config", "policy", "storage"})
+BOOT_STATES = frozenset({"degraded", "failed", "ready"})
 REQUIRED_MOUNT_DESTS = (
     "/data/openkit",
     "/run/nanohost-credentials",
@@ -202,12 +212,16 @@ class CommandEffects:
         request = urllib.request.Request(url, headers=dict(headers or {}), method="GET")
         try:
             with urllib.request.urlopen(request, timeout=timeout or 15) as response:
-                raw = response.read(RECEIPT_LIMIT_BYTES)
-                if not raw:
-                    return response.status, None
-                return response.status, json.loads(raw.decode("utf-8"))
+                raw = response.read(RECEIPT_LIMIT_BYTES + 1)
+                return response.status, _decode_bounded_json(raw)
         except urllib.error.HTTPError as error:
-            return error.code, None
+            try:
+                raw = error.read(RECEIPT_LIMIT_BYTES + 1)
+            except Exception:
+                raw = b""
+            finally:
+                error.close()
+            return error.code, _decode_bounded_json(raw)
         except Exception:
             return 0, None
 
@@ -244,6 +258,15 @@ def main(
     stdout.write(json.dumps(result, separators=(",", ":"), sort_keys=True) + "\n")
     stdout.flush()
     return 0
+
+
+def _decode_bounded_json(raw: bytes) -> Any:
+    if not raw or len(raw) > RECEIPT_LIMIT_BYTES:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
 
 
 def time_now() -> float:
@@ -596,6 +619,7 @@ class AppUpdateHelper:
                     )
                 receipt["previousImageId"] = current_identity["id"]
                 receipt["previousBoot"] = self._boot_from_diagnostics(current_identity["id"], None)
+                self._require_previous_boot(receipt["previousBoot"])
                 self._snapshot_nanohost(receipt)
                 self._snapshot_retained_auth(receipt)
                 applied = self._live_applied_migrations()
@@ -1241,44 +1265,164 @@ class AppUpdateHelper:
                 "Active writable Data Root users do not match the configured App.",
             )
 
-    def _boot_from_diagnostics(self, image_id: Optional[str], source_commit: Optional[str]) -> Optional[Dict[str, Any]]:
-        """Projects boot readiness plus independently verified image/source identities."""
-        status, body = self._authorized_get("/api/app/diagnostics")
-        if status != 200 or not isinstance(body, dict):
+    def _parse_boot_readiness(self, body: Any) -> Optional[Dict[str, Any]]:
+        """Parses the typed boot projection and fail-closes on malformed or inconsistent state."""
+        if not isinstance(body, dict):
             return None
-        boot = body.get("boot") or {}
-        boot_id = boot.get("bootId") if isinstance(boot, dict) else None
+        boot = body.get("boot")
+        if not isinstance(boot, dict):
+            return None
+        if set(boot) != {"acceptingProductWork", "bootId", "overall", "subsystems"}:
+            return None
+        boot_id = boot.get("bootId")
         if not isinstance(boot_id, str) or not BOOT_ID_RE.match(boot_id):
             return None
-        reasons = []
-        subsystems = boot.get("subsystems") or {}
-        if isinstance(subsystems, dict):
-            for item in subsystems.values():
-                if not isinstance(item, dict):
-                    continue
-                for reason in item.get("reasons") or []:
-                    code = reason.get("code") if isinstance(reason, dict) else None
-                    if code:
-                        reasons.append(str(code)[:128])
-        if image_id is not None and not DIGEST_RE.match(str(image_id)):
+        accepting = boot.get("acceptingProductWork")
+        if not isinstance(accepting, bool):
+            return None
+        overall = boot.get("overall")
+        if overall not in BOOT_STATES:
+            return None
+        subsystems = boot.get("subsystems")
+        if not isinstance(subsystems, dict) or set(subsystems) != set(BOOT_SUBSYSTEM_NAMES):
+            return None
+        codes: List[str] = []
+        has_nonempty_blocks = False
+        has_critical_failure = False
+        has_nonready = False
+        for name in BOOT_SUBSYSTEM_NAMES:
+            item = subsystems[name]
+            if not isinstance(item, dict) or set(item) != {"reasons", "state"}:
+                return None
+            state = item.get("state")
+            if state not in BOOT_STATES:
+                return None
+            if state != "ready":
+                has_nonready = True
+            if name in CRITICAL_SUBSYSTEM_NAMES and state == "failed":
+                has_critical_failure = True
+            reasons = item.get("reasons")
+            if not isinstance(reasons, list):
+                return None
+            if state in {"degraded", "failed"} and not reasons:
+                return None
+            for reason in reasons:
+                if not isinstance(reason, dict) or set(reason) != {"blocks", "code", "message"}:
+                    return None
+                code = reason.get("code")
+                message = reason.get("message")
+                blocks = reason.get("blocks")
+                if not isinstance(code, str) or not code or len(code) > 128:
+                    return None
+                if not isinstance(message, str) or not message:
+                    return None
+                if not isinstance(blocks, list) or any(
+                    not isinstance(entry, str) or not entry for entry in blocks
+                ):
+                    return None
+                if blocks:
+                    has_nonempty_blocks = True
+                if len(codes) >= 32:
+                    return None
+                codes.append(code)
+        expected_overall = "failed" if has_critical_failure else ("degraded" if has_nonready else "ready")
+        if overall != expected_overall:
+            return None
+        if accepting != (not has_critical_failure):
             return None
         return {
-            "acceptingProductWork": bool(boot.get("acceptingProductWork")),
-            "blockingReasons": reasons[:32],
+            "acceptingProductWork": accepting,
+            "blockingReasons": codes,
             "bootId": boot_id,
-            "imageId": image_id,
-            "sourceCommit": source_commit,
+            "noBlockingReadiness": (
+                not has_nonempty_blocks and not has_critical_failure and overall in {"degraded", "ready"}
+            ),
         }
+
+    def _observe_boot(
+        self, image_id: Optional[str], source_commit: Optional[str]
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        status, body = self._authorized_get("/api/app/diagnostics")
+        if status != 200:
+            return None
+        parsed = self._parse_boot_readiness(body)
+        if parsed is None:
+            return None
+        if image_id is not None and not DIGEST_RE.match(str(image_id)):
+            return None
+        return (
+            {
+                "acceptingProductWork": parsed["acceptingProductWork"],
+                "blockingReasons": list(parsed["blockingReasons"]),
+                "bootId": parsed["bootId"],
+                "imageId": image_id,
+                "sourceCommit": source_commit,
+            },
+            parsed,
+        )
+
+    def _boot_from_diagnostics(self, image_id: Optional[str], source_commit: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Projects boot readiness plus independently verified image/source identities."""
+        observed = self._observe_boot(image_id, source_commit)
+        if observed is None:
+            return None
+        return observed[0]
+
+    def _require_previous_boot(self, previous: Any) -> None:
+        if not isinstance(previous, dict) or not BOOT_ID_RE.match(str(previous.get("bootId") or "")):
+            raise HelperError(
+                "app_update_unavailable",
+                "Previous App boot observation is missing or malformed.",
+            )
+        if not DIGEST_RE.match(str(previous.get("imageId") or "")):
+            raise HelperError(
+                "app_update_unavailable",
+                "Previous App boot observation is missing or malformed.",
+            )
+
+    def _positive_int(self, value: Any) -> Optional[int]:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None
+        return value
+
+    def _typed_nanohost_absent(self, status: int, body: Any) -> bool:
+        return (
+            status == 404
+            and isinstance(body, dict)
+            and body.get("code") == "nanohost_runtime_target_not_found"
+        )
 
     def _snapshot_nanohost(self, receipt: Dict[str, Any]) -> None:
         status, body = self._authorized_get("/api/app/nanohost/runtime-target")
-        if status == 404 or not isinstance(body, dict) or not body.get("identityId"):
+        if self._typed_nanohost_absent(status, body):
             receipt["previousNanoHost"] = None
             return
+        if status != 200 or not isinstance(body, dict):
+            raise HelperError(
+                "app_update_unavailable",
+                "Previous NanoHost observation is missing or malformed.",
+            )
+        identity = body.get("identityId")
+        deployment = body.get("deploymentId")
+        generation = self._positive_int(body.get("connectionGeneration"))
+        ready = body.get("ready")
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or not isinstance(deployment, str)
+            or not deployment
+            or generation is None
+            or not isinstance(ready, bool)
+        ):
+            raise HelperError(
+                "app_update_unavailable",
+                "Previous NanoHost observation is missing or malformed.",
+            )
         receipt["previousNanoHost"] = {
-            "connectionGeneration": body.get("connectionGeneration"),
-            "identityId": body.get("identityId"),
-            "ready": body.get("ready") is True,
+            "connectionGeneration": generation,
+            "deploymentId": deployment,
+            "identityId": identity,
+            "ready": ready is True,
         }
 
     def _snapshot_retained_auth(self, receipt: Dict[str, Any]) -> None:
@@ -1370,27 +1514,32 @@ class AppUpdateHelper:
         return observed == receipt.get("retainedAuthSnapshot")
 
     def _verify(self, receipt: Dict[str, Any], candidate: Mapping[str, Any]) -> Dict[str, Any]:
-        previous = receipt.get("previousBoot") or {}
+        previous = receipt.get("previousBoot")
+        previous_boot_id = (
+            previous.get("bootId")
+            if isinstance(previous, dict) and BOOT_ID_RE.match(str(previous.get("bootId") or ""))
+            else None
+        )
         boot = None
+        parsed: Optional[Dict[str, Any]] = None
         running_identity: Optional[Dict[str, Any]] = None
         timeout = int(self.config["readyTimeoutSeconds"])
         for attempt in range(timeout + 1):
             running = self._inspect_container(self.config["containerName"])
             running_identity = self._image_identity(str(running.get("Image") or ""))
-            observed = self._boot_from_diagnostics(running_identity["id"], candidate["source_commit"])
+            observed = self._observe_boot(running_identity["id"], candidate["source_commit"])
             if (
                 observed
-                and observed["bootId"] != previous.get("bootId")
-                and BOOT_ID_RE.match(str(observed["bootId"]))
+                and observed[0]["bootId"] != previous_boot_id
+                and BOOT_ID_RE.match(str(observed[0]["bootId"]))
             ):
-                boot = observed
+                boot, parsed = observed
                 break
             if attempt < timeout:
                 self._sleep(1)
-        if boot is None or running_identity is None:
+        if boot is None or parsed is None or running_identity is None:
             raise RuntimeError("candidate boot observation is missing")
-        admitted = ADMITTED_NONBLOCKING
-        blocking = [item for item in boot["blockingReasons"] if item not in admitted]
+        receipt["candidateBoot"] = boot
         image_match = self._running_matches_candidate(running_identity, candidate)
         mapped = receipt.get("sourceImageMap") if isinstance(receipt.get("sourceImageMap"), dict) else {}
         source_match = (
@@ -1407,13 +1556,7 @@ class AppUpdateHelper:
         nanohost_ok: Optional[bool]
         if previous_nanohost:
             status, body = self._authorized_get("/api/app/nanohost/runtime-target")
-            nanohost_ok = (
-                status == 200
-                and isinstance(body, dict)
-                and body.get("ready") is True
-                and body.get("identityId") == previous_nanohost.get("identityId")
-                and body.get("connectionGeneration") == previous_nanohost.get("connectionGeneration")
-            )
+            nanohost_ok = self._nanohost_successor_ready(previous_nanohost, status, body)
         else:
             nanohost_ok = None
         helper_status, helper_body = self._authorized_get("/api/app/app-update/%s" % receipt["requestId"])
@@ -1433,8 +1576,8 @@ class AppUpdateHelper:
             "helperReachable": helper_ok,
             "imageMatch": image_match,
             "nanohostReady": nanohost_ok,
-            "newBoot": True,
-            "noBlockingReadiness": not blocking,
+            "newBoot": previous_boot_id is not None and boot["bootId"] != previous_boot_id,
+            "noBlockingReadiness": parsed["noBlockingReadiness"] is True,
             "retainedAuthRead": retained_ok,
             "sourceMatch": source_match,
             "webAssets": web_ok,
@@ -1459,6 +1602,20 @@ class AppUpdateHelper:
         if not COMMIT_RE.match(str(boot.get("sourceCommit") or "")):
             raise RuntimeError("candidate source identity is unknown")
         return boot
+
+    def _nanohost_successor_ready(self, previous: Mapping[str, Any], status: int, body: Any) -> bool:
+        if status != 200 or not isinstance(body, dict) or not isinstance(previous, Mapping):
+            return False
+        generation = self._positive_int(body.get("connectionGeneration"))
+        previous_generation = self._positive_int(previous.get("connectionGeneration"))
+        if generation is None or previous_generation is None:
+            return False
+        return (
+            body.get("ready") is True
+            and body.get("identityId") == previous.get("identityId")
+            and body.get("deploymentId") == previous.get("deploymentId")
+            and generation > previous_generation
+        )
 
     def _running_matches_candidate(self, running: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
         if candidate["published_digest"]:
