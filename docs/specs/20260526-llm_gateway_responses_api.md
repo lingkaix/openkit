@@ -206,7 +206,7 @@ The bounded bridge supports:
 
 - text-only chat messages and Responses input items
 - `system` and `developer` instructions
-- simple function tools and tool results
+- simple function tools and tool results, including standard top-level Responses function declarations grouped under the canonical default `functions` namespace; that namespace is equivalent to an unqualified function name, not a new tool-name encoding
 - `temperature`
 - `max_tokens`, `max_completion_tokens`, and `max_output_tokens`
 - reasoning-effort mapping
@@ -221,7 +221,9 @@ The bridge rejects:
 - computer-use tools
 - file and image input
 - structured content that cannot be reduced to text without semantic loss
-- non-function tool schemas
+- non-function tool schemas, non-default namespaces and deferred function declarations on the chat-native bridge
+
+The pi-ai Responses path preserves admitted function-call identity and arguments, text tool outputs, developer/system instructions and terminal streamed or non-streamed output across a complete tool round trip. Standard declarations use the existing pi-ai context and Responses event projection without introducing an `additional_tools` item into the caller or provider payload. A default namespace description, when present, is prepended to each member description so its instructions survive flattening. Conflicting default-namespace aliases and undeclared or unmatched history fail before provider access. Native Codex namespace/custom-tool support retains its separate admission boundary.
 
 ## Cache Scope
 

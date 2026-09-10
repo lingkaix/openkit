@@ -25,3 +25,5 @@ This directory owns LLM Gateway behavior, provider dispatch, upstream clients an
 ## Verification
 
 Run the focused Gateway, dispatcher, upstream client, provider-subscription, usage, converter, and prompt-cache tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
+
+The chat-native Responses bridge reuses pi-ai context and event projection for standard function tools, including the default `functions` namespace and its description as a prefix on each member description. It preserves complete function-call/result history and developer instructions; arbitrary namespaces, custom tools, deferred declarations and tool search remain unsupported on that bridge.

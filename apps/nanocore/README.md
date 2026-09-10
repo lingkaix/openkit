@@ -351,3 +351,5 @@ The intended pair is:
 
 - `apps/web` for the SPA
 - `apps/nanocore` for the real prototype HTTP + SSE backend
+
+The chat-native Responses bridge reuses pi-ai context and event projection for standard function tools, including the default `functions` namespace. It preserves complete function-call/result history and developer instructions; arbitrary namespaces, custom tools, deferred declarations and tool search remain unsupported on that bridge.

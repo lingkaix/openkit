@@ -343,13 +343,9 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
           tools: [
             {
               description: 'Run code.',
-              format: {
-                definition: 'start: SOURCE\nSOURCE: /[\\s\\S]+/',
-                syntax: 'lark',
-                type: 'grammar',
-              },
               name: 'exec',
-              type: 'custom',
+              parameters: { type: 'object', properties: { code: { type: 'string' } } },
+              type: 'function',
             },
           ],
           type: 'additional_tools',

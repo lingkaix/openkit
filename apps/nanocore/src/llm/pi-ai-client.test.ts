@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
-
 import {
   type AuthInteraction,
   type Context,
@@ -30,6 +29,7 @@ import {
   PiAiGatewayClient,
   PiAiGatewayConfigurationError,
 } from './pi-ai-client.js';
+import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 import { WORKER_CLIENT_TOOL_SEARCH_FUNCTION } from './worker-inference-tool-policy.js';
 
 /**
@@ -1899,6 +1899,153 @@ describe('PiAiGatewayClient', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('preserves a standard Responses function loop through a chat provider (stream=%s)', async (stream) => {
+    const contexts: Context[] = [];
+    const faux = fauxProvider({
+      api: 'openai-completions',
+      provider: 'openrouter',
+      models: [{ id: 'stealth/ox-alpha' }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      async (context) => {
+        contexts.push(context);
+        return fauxAssistantMessage(
+          [fauxToolCall('read_file', { path: 'README.md' }, { id: 'call_read' })],
+          { stopReason: 'toolUse' }
+        );
+      },
+      async (context) => {
+        contexts.push(context);
+        return fauxAssistantMessage([fauxText('Verified.')]);
+      },
+    ]);
+    const provider = providerConfig({
+      adapterId: 'openrouter',
+      apiKey: 'test-secret',
+      gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      id: 'openrouter-a1',
+      models: ['stealth/ox-alpha'],
+      subscriptionProviderId: 'openrouter',
+    });
+    const client = new LLMGatewayProviderDispatcher({
+      piAiClient: new PiAiGatewayClient({ models }),
+    });
+    const request = {
+      model: 'stealth/ox-alpha',
+      instructions: 'Be precise.',
+      input: [
+        { role: 'developer', content: 'Keep this instruction.' },
+        { role: 'user', content: 'Read README.md.' },
+      ],
+      tools: [
+        {
+          type: 'namespace',
+          name: 'functions',
+          description: 'Workspace tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'read_file',
+              description: 'Read a file.',
+              parameters: { type: 'object', properties: { path: { type: 'string' } } },
+            },
+          ],
+        },
+      ],
+    };
+    let call: Record<string, unknown>;
+    if (stream) {
+      const body = await new Response(
+        await client.createResponsesStream(provider, { ...request, stream: true }, { models })
+      ).text();
+      const events = body
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)));
+      call = events.find(
+        (event) =>
+          event.type === 'response.output_item.done' && event.item?.type === 'function_call'
+      ).item;
+      expect(events.some((event) => event.type === 'response.completed')).toBe(true);
+    } else {
+      const response = await client.createResponses(provider, request, { models });
+      call = response.output.find((item) => item.type === 'function_call')!;
+    }
+    expect(call).toMatchObject({
+      type: 'function_call',
+      name: 'read_file',
+      call_id: 'call_read',
+      arguments: '{"path":"README.md"}',
+    });
+    const response = await client.createResponses(
+      provider,
+      {
+        ...request,
+        input: [
+          ...request.input,
+          { ...call, namespace: 'functions' },
+          { type: 'function_call_output', call_id: call.call_id, output: 'File contents.' },
+        ],
+      },
+      { models }
+    );
+    expect(response.output).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'message',
+          content: [expect.objectContaining({ text: 'Verified.' })],
+        }),
+      ])
+    );
+    expect(contexts).toHaveLength(2);
+    expect(contexts[0]?.systemPrompt).toBe('Be precise.\n\nKeep this instruction.');
+    expect(contexts[0]?.tools).toEqual([
+      expect.objectContaining({
+        name: 'read_file',
+        description: 'Workspace tools.\n\nRead a file.',
+      }),
+    ]);
+    expect(contexts[1]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          content: [
+            expect.objectContaining({
+              type: 'toolCall',
+              id: expect.stringContaining('call_read'),
+              name: 'read_file',
+              arguments: { path: 'README.md' },
+            }),
+          ],
+        }),
+      ])
+    );
+    expect(contexts[1]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'toolResult',
+          toolName: 'read_file',
+          content: [{ type: 'text', text: 'File contents.' }],
+        }),
+      ])
+    );
+    for (const tools of [
+      [{ ...request.tools[0], name: 'other' }],
+      [request.tools[0], request.tools[0].tools[0]],
+      [{ type: 'custom', name: 'patch', format: { type: 'text' } }],
+    ]) {
+      await expect(
+        client.createResponses(provider, { ...request, tools }, { models })
+      ).rejects.toThrow(GatewayUnsupportedFeatureError);
+    }
+    expect(contexts).toHaveLength(2);
   });
 
   it('advertises function-only additional_tools when bridging Responses through Chat Completions', async () => {

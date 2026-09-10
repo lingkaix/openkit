@@ -1,9 +1,7 @@
 import type { Models } from '@earendil-works/pi-ai';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
-  convertChatCompletionResponseToResponsesResponse,
   convertChatCompletionToResponsesRequest,
-  convertResponsesRequestToChatCompletionRequest,
   convertResponsesResponseToChatCompletionResponse,
   convertResponsesStreamToChatCompletionStream,
   GatewayUnsupportedFeatureError,
@@ -229,7 +227,10 @@ export class LLMGatewayProviderDispatcher {
     const capability = provider.gatewayCapabilities.responses;
     const endpoint = context.usageEndpoint ?? 'responses';
 
-    if (capability === 'native') {
+    if (
+      capability === 'native' ||
+      (capability === 'bridged' && provider.gatewayCapabilities.chatCompletions === 'native')
+    ) {
       const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
         provider,
         request,
@@ -244,22 +245,6 @@ export class LLMGatewayProviderDispatcher {
       );
 
       return response;
-    }
-    if (capability === 'bridged' && provider.gatewayCapabilities.chatCompletions === 'native') {
-      const chatRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-        provider,
-        convertResponsesRequestToChatCompletionRequest(request),
-        context.promptCacheScope
-      );
-      const response = await this.piAiClient.createChatCompletion(
-        provider,
-        chatRequest,
-        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        context.transport,
-        models
-      );
-
-      return convertChatCompletionResponseToResponsesResponse(response);
     }
 
     throw new GatewayUnsupportedFeatureError('responses');

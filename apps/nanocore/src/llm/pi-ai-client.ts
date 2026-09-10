@@ -280,7 +280,7 @@ export class PiAiGatewayClient {
       false,
       !codexProvider
     );
-    if (codexProvider || additionalTools) {
+    if (codexProvider || additionalTools || bridgedFunctionTools) {
       this.assertExplicitCredential(provider);
       const { knownCost, model } = this.resolveModel(provider, request.model, models);
       const response = await raceProviderWithSignal(
@@ -339,7 +339,7 @@ export class PiAiGatewayClient {
       true,
       !codexProvider
     );
-    if (codexProvider || additionalTools) {
+    if (codexProvider || additionalTools || bridgedFunctionTools) {
       this.assertExplicitCredential(provider);
       const { knownCost, model } = this.resolveModel(provider, request.model, models);
       const localAbortController = new AbortController();
@@ -387,10 +387,10 @@ export class PiAiGatewayClient {
   }
 
   /**
-   * Maps admitted Responses Lite options onto a Chat Completions transport.
+   * Maps admitted Responses tool-request options onto a Chat Completions transport.
    *
    * @param provider Resolved OpenKit provider config.
-   * @param request Admitted Responses Lite request.
+   * @param request Admitted standard or message-anchored Responses tool request.
    * @param transport Gateway cancellation state.
    * @returns pi-ai Chat Completions options without native Responses fields.
    */
@@ -415,6 +415,8 @@ export class PiAiGatewayClient {
       provider,
       {
         messages: [],
+        metadata: request.metadata,
+        temperature: request.temperature,
         model: request.model,
         max_tokens: maxOutputTokens,
         prompt_cache_key: request.prompt_cache_key,
@@ -1569,7 +1571,7 @@ function readResponsesAdditionalTools(
 
 /**
  * Admits a native Responses request for Codex or a chat-native bridge.
- * Bridged callers restore function-only tools first, then reuse Codex field and history admission so unknown request fields and unrepresentable history fail closed. Custom, namespace, tool_search, and native builtins are not translated.
+ * Bridged callers restore function-only tools first, then reuse field and history admission. Standard top-level tools may use the equivalent default functions namespace; custom tools, other namespaces, deferred tools, search and native builtins fail closed.
  *
  * @param request Responses request.
  * @param allowStream Whether this call owns a streaming response.
@@ -1589,7 +1591,37 @@ function admitPiResponsesNativeRequest(
   }
   const additionalTools = readResponsesAdditionalTools(request.input);
   if (!additionalTools) {
-    return { additionalTools: undefined };
+    if (!Array.isArray(request.tools) || request.tools.length === 0) {
+      return { additionalTools: undefined };
+    }
+    // Reuse declaration validation without adding a transport-only item to the request.
+    const declarations = readResponsesAdditionalTools([
+      { role: 'developer', type: 'additional_tools', tools: request.tools },
+    ]);
+    if (!declarations || declarations.hasToolSearch) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses function tools');
+    }
+    const tools = declarations.item.tools.flatMap((tool) => {
+      if (tool.type !== 'namespace') return [tool];
+      if (tool.name !== 'functions') {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses non-default namespace');
+      }
+      return (tool.tools as Record<string, unknown>[]).map((child) => ({
+        ...child,
+        description: [tool.description, child.description].filter(Boolean).join('\n\n'),
+      }));
+    });
+    if (tools.some((tool) => tool.defer_loading === true)) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses deferred function tools');
+    }
+    const bridgedFunctionTools = toPiTools(tools);
+    const { metadata, temperature: _temperature, ...nativeRequest } = request;
+    if (metadata !== undefined && !readRecord(metadata)) {
+      throw new GatewayUnsupportedFeatureError('pi-ai metadata');
+    }
+    assertCodexResponsesRequestAdmission(nativeRequest, allowStream);
+    assertResponsesToolHistoryDeclarations(request.input, declarations);
+    return { additionalTools: undefined, bridgedFunctionTools };
   }
   const bridgedFunctionTools = bridgedFunctionToolsFromAdditionalTools(additionalTools);
   return {
