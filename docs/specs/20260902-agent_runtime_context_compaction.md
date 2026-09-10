@@ -52,7 +52,7 @@ The immediate blocker is the missing OpenKit compaction path for internal roles.
 
 ## Definitions And Exclusions
 
-`Physical Context Window` is the maximum context capacity reported for one Provider-native model by available pinned catalog metadata. It is a capability fact, not an authored runtime target, and remains unknown when that optional metadata is absent.
+`Physical Context Window` is the maximum context capacity reported for one Provider-native model by effective catalog or authored Provider metadata. It is a capability declaration, not the runtime compaction target. Every configured model must resolve this positive limit from the pinned catalog or authored Provider metadata under the Gateway owner; an adapter default cannot substitute for it.
 
 `Compaction Threshold` is the centrally configured token count at which OpenKit requires an active context to be compacted before ordinary inference continues. It is an operational working-set boundary below the Physical Context Window, not a claim that the model has a smaller physical window.
 
@@ -108,7 +108,7 @@ Configuration uses repository-standard camel case, while the HTTP request uses O
 
 The example keeps the catalog-derived Physical Context Window at 1,000,000 tokens and sets the managed Compaction Threshold to 400,000 tokens. OpenKit MUST NOT rewrite `model_context_window`, model catalog data, or Provider metadata to pretend that the physical model is a 400,000-token model.
 
-The logical-model resolver uses route context and maximum-output limits when available from the pinned optional model catalog. For every authored route member with a known Physical Context Window, it requires `compactThreshold` not to exceed that window, and additionally requires `compactThreshold + maximumOutputTokens` not to exceed it when the output limit is known. Missing physical or output metadata remains unknown and MUST NOT by itself prevent admission of a hand-authored model under the Gateway owner; the configuration does not claim that its threshold is proven to fit an unknown physical window or output reserve. Adapter operating defaults do not become verified physical limits. A non-positive threshold, duplicate context-management entries, an unknown entry type, or a known route limit that cannot honor the threshold rejects the snapshot before the logical model becomes eligible. An actual upstream context-overflow error remains explicit and follows the existing failure path rather than silently substituting a model or inventing a physical limit.
+The logical-model resolver uses each route's required context limit and optional maximum-output limit from the Gateway-owned effective Provider model metadata. For every authored route member, it requires `compactThreshold` not to exceed that window, and additionally requires `compactThreshold + maximumOutputTokens` not to exceed it when the output limit is known. Missing effective context rejects configuration under the Gateway owner. Missing output metadata remains unknown and does not prevent admission; the configuration does not claim its threshold is proven to fit an unknown output reserve. Adapter operating defaults do not become verified physical limits. A non-positive threshold, duplicate context-management entries, an unknown entry type, or a known route limit that cannot honor the threshold rejects the snapshot before the logical model becomes eligible. An actual upstream context-overflow error remains explicit and follows the existing failure path rather than silently substituting a model or inventing a physical limit.
 
 There are no Server-global numeric fallback, Provider-route override, Agent override, internal-role override, Workspace override, User override, percentage mode, summary-model selection, retained-tail knob, or prompt override in V1. Models have different physical limits, so the policy belongs to each logical model; every internal role and Worker that resolves that logical model receives the same value.
 
@@ -263,7 +263,7 @@ The current AEP version 4 has no resolved context-management field, and the Code
 
 ## Implementation Order
 
-1. Add and validate the required logical-model `contextManagement` policy, derive physical limits from the pinned catalog, and expose the resolved policy without changing model identity.
+1. Add and validate the required logical-model `contextManagement` policy, derive physical limits from the shared effective Provider metadata resolver, and expose the resolved policy without changing model identity.
 2. Add the OpenKit compactor and strict Responses control and item mapping behind the existing `POST /v1/responses`; do not add a standalone route.
 3. Extend the shared Internal Agent Loop with the transient compaction checkpoint, route every model-using internal role through it, and delete the Quick Chat direct-provider exception and its inverse tests.
 4. Update `docs/specs/20260703-audit_usage_evidence_records.md` and its existing record producers with the normalized audit, usage, and failure projection, add the fixed evaluation evidence, then roll out the threshold only for new internal runs.
@@ -297,7 +297,7 @@ Rejected because rewriting a one-million-token model as 400,000 tokens corrupts 
 
 ## Acceptance Predicates
 
-- Every logical model has one validated Server-authored compaction threshold distinct from physical context and output limits; absent catalog limits remain unknown without blocking hand-authored model admission. Every authored route's known physical window bounds the threshold, including the output reserve when known; unavailable sibling routes do not bypass that check.
+- Every logical model has one validated Server-authored compaction threshold distinct from physical context and output limits; each configured model requires a known positive context limit from catalog inheritance or authored Provider metadata while output limits remain optional. Every authored route's physical window bounds the threshold, including the output reserve when known; unavailable sibling routes do not bypass that check.
 - A one-million-token model configured with `compactThreshold: 400000` remains physically identified as one million tokens while all new executions resolving that logical model receive the 400,000-token policy.
 - `POST /v1/responses` accepts or injects exactly one `{ type: "compaction", compact_threshold }` control for OpenKit authority and rejects a mismatch before Provider dispatch.
 - The OpenKit compactor emits `{ type: "compaction", id, summary }`, applies it as low-authority continuation context, and never labels plaintext as `encrypted_content`.
