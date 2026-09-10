@@ -5701,6 +5701,190 @@ describe('nanocore server', () => {
     }
   });
 
+  it.each([
+    {
+      expected: 'complete' as const,
+      receipt: 'exact' as const,
+      stopReason: 'completed' as const,
+    },
+    {
+      expected: 'complete' as const,
+      receipt: 'exact' as const,
+      stopReason: 'error' as const,
+    },
+    {
+      expected: 'reject' as const,
+      receipt: 'missing' as const,
+      stopReason: 'completed' as const,
+    },
+    {
+      expected: 'reject' as const,
+      receipt: 'chat-thread' as const,
+      stopReason: 'completed' as const,
+    },
+  ])('classifies a conversation-owned $stopReason checkpoint from its $receipt owner receipt', async ({
+    expected,
+    receipt,
+    stopReason,
+  }) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const chatThreadId = 'th_demo';
+    const taskThreadId = 'th_task_conversation_boot';
+    const turnId = 'tu_conversation_23b052e60543c617577173cc';
+    const requestId = '0190f4c8-0000-7000-8000-000000000410';
+    const requestInputHash = 'sha256:conversation-worker-boot';
+    const agentSessionId = 'as_conversation_boot';
+    const failed = stopReason === 'error';
+    const completedAt = '2026-09-10T09:11:15.000Z';
+    store.createThread('ws_demo', 'Conversation worker Task thread', taskThreadId);
+    const turn = store.createTurn(
+      'ws_demo',
+      taskThreadId,
+      'Conversation-owned worker Turn',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { turnId }
+    );
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: turn.startedAt ?? completedAt,
+      id: agentSessionId,
+      message: null,
+      status: failed ? 'failed' : 'idle',
+      threadId: taskThreadId,
+      updatedAt: completedAt,
+      workspaceId: 'ws_demo',
+    });
+    const closedTurn = store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentSessionId,
+      completedAt,
+      status: failed ? 'failed' : 'completed',
+    });
+    store.emitTurnEvent(turn.id, {
+      data: { stopReason, turn: closedTurn, type: 'turn-completed' },
+      event: 'turn.completed',
+      requestId,
+      threadId: taskThreadId,
+      turnId: turn.id,
+      workspaceId: 'ws_demo',
+    });
+    createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+      priorityClass: 'interactive',
+      profileRef: 'agent_codex_host',
+      queueEntryId: `queue_${turn.id}`,
+      requestId,
+      requestedAgentId: 'agent_codex_host',
+      requiredPoolConstraints: ['openshell.local'],
+      threadId: taskThreadId,
+      turnId: turn.id,
+      turnInput: 'Conversation-owned worker Turn',
+      workspaceId: 'ws_demo',
+    });
+    createSchedulerPlacementPlan(coreDb, {
+      degradedOptionalFeatures: [],
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      planId: `plan_${turn.id}`,
+      plannedLeaseDurationMs: 900_000,
+      policyDecisionIds: [],
+      queueEntryId: `queue_${turn.id}`,
+      schedulerEpoch: 1,
+      selectedPoolId: 'pool_local',
+      selectedTargetId: 'target_local',
+    });
+    createSchedulerSessionLease(coreDb, {
+      agentSessionId,
+      expiresAt: '2099-01-01T01:00:00.000Z',
+      heartbeatDeadline: '2099-01-01T00:10:00.000Z',
+      leaseId: `lease_${turn.id}`,
+      packageSnapshotId: `aepsnap_${turn.id}`,
+      planId: `plan_${turn.id}`,
+      sandboxTokenBindingRef: `lease-binding:lease_${turn.id}`,
+      startupDeadline: '2099-01-01T00:05:00.000Z',
+    });
+    coreDb.sqlite
+      .prepare(
+        `UPDATE scheduler_session_leases
+           SET status = ?, release_reason = ?, recovery_state = ?, recovery_deadline = ?
+           WHERE lease_id = ?`
+      )
+      .run(
+        failed ? 'failed' : 'released',
+        failed ? 'turn-failed' : 'turn-completed',
+        failed ? 'needs-evidence' : null,
+        null,
+        `lease_${turn.id}`
+      );
+    if (receipt !== 'missing') {
+      store.recordCommandRequest({
+        command: 'conversation.submit',
+        requestId,
+        scope: {
+          actorId: LOCAL_USER_ID,
+          threadId: chatThreadId,
+          workspaceId: 'ws_demo',
+        },
+        inputHash: requestInputHash,
+        response: {
+          kind: 'turn',
+          id: turn.id,
+          conversationMetadata: {
+            downstream: { kind: 'task', turnId: turn.id },
+            targetRef: 'internal-role:assistant',
+            logicalModelId: 'orcarouter',
+            receivingWorkspaceId: 'ws_demo',
+            receivingThreadId: receipt === 'exact' ? taskThreadId : chatThreadId,
+            resultKind: 'worker-turn',
+            status: 202,
+          },
+        },
+      });
+    }
+    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
+    try {
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        iteration: 0,
+        requestId,
+        requestInputHash,
+        stage: failed ? 'failed' : 'completed',
+        stopReason,
+        threadId: taskThreadId,
+        turnId: turn.id,
+        workerSessionId: agentSessionId,
+        workspaceId: 'ws_demo',
+      });
+      const classification = classifyDirectTaskCheckpointAfterSchedulerRecovery({
+        checkpoint,
+        coreDb,
+        store,
+        workspaceDb,
+      });
+      if (expected === 'complete') {
+        await expect(classification).resolves.toBe('complete');
+        expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', taskThreadId, turn.id)).toBeNull();
+        expect(
+          store.listCommandRequests().filter((record) => record.command === 'task.start')
+        ).toEqual([]);
+        expect(
+          store.listCommandRequests().filter((record) => record.command === 'conversation.submit')
+        ).toHaveLength(1);
+        return;
+      }
+      await expect(classification).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', taskThreadId, turn.id)).toEqual(
+        checkpoint
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('rejects Task Mode in the Quick Chat workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();

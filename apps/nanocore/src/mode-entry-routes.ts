@@ -77,6 +77,7 @@ import { getGoalRecord, listGoalRecordsForThread } from './runtime/goal-store.js
 import {
   chatTaskModeTurnId,
   commandInputHash,
+  findExactConversationWorkerOwnerReceipt,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -791,7 +792,7 @@ function recoverDirectTaskModeCheckpoint(input: {
 }
 
 /**
- * Classifies one direct Task checkpoint after scheduler restart fencing.
+ * Classifies one conversation-owned Task checkpoint or one direct task.start checkpoint after scheduler restart fencing.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
  * @returns `live` for a reconnectable or human-gated Turn, otherwise `complete` after receipt-first cleanup.
@@ -823,6 +824,55 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     throw directTaskModeRecoveryError(
       'The boot Task scheduler admission contradicts its human command identity.'
     );
+  }
+  const conversationOwner = findExactConversationWorkerOwnerReceipt(input.store, {
+    actorId: admission.triggerActor.id,
+    workspaceId: checkpoint.workspaceId,
+    receivingThreadId: checkpoint.threadId,
+    requestId: checkpoint.requestId,
+    requestInputHash: checkpoint.requestInputHash,
+    turnId: checkpoint.turnId,
+  });
+  if (conversationOwner) {
+    if (checkpoint.goalId !== null || checkpoint.taskId !== null || checkpoint.iteration !== 0) {
+      throw directTaskModeRecoveryError(
+        'The boot Task checkpoint contradicts its command identity.'
+      );
+    }
+    const conversationRetryDecision = resolveInterruptedWorkerRetryDecision(
+      input.coreDb,
+      input.store,
+      input.workspaceDb,
+      checkpoint
+    );
+    if (conversationRetryDecision.status === 'reconnect-pending') {
+      return 'live';
+    }
+    recoverWorkerCheckpointStopReason(input.coreDb, input.store, input.workspaceDb, checkpoint);
+    const recoveredConversationCheckpoint = getWorkerCheckpoint(
+      input.workspaceDb,
+      checkpoint.workspaceId,
+      checkpoint.threadId,
+      checkpoint.turnId
+    );
+    if (!recoveredConversationCheckpoint) {
+      throw directTaskModeRecoveryError(
+        'The boot Task checkpoint disappeared during classification.'
+      );
+    }
+    if (recoveredConversationCheckpoint.stage === 'waiting_for_user') {
+      return 'live';
+    }
+    if (
+      !(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, {
+        workspaceId: checkpoint.workspaceId,
+        threadId: checkpoint.threadId,
+        turnId: checkpoint.turnId,
+      }))
+    ) {
+      throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
+    }
+    return 'complete';
   }
   const expectedTurnId = directTaskModeTurnId(
     admission.triggerActor.id,
