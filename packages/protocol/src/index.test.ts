@@ -733,11 +733,25 @@ describe('protocol schemas', () => {
       name: 'Protocol design review',
       preview: 'Update the protocol package to thin workspace payloads.',
       status: 'active',
+      entryPath: 'conversation',
       createdAt: '2026-04-15T00:00:00Z',
       updatedAt: '2026-04-15T00:00:00Z',
     });
 
     expect(parsed.preview).toContain('thin workspace payloads');
+    expect(parsed.entryPath).toBe('conversation');
+    expect(
+      ThreadSchema.safeParse({
+        ...parsed,
+        entryPath: undefined,
+      }).success
+    ).toBe(false);
+    expect(
+      ThreadSchema.parse({
+        ...parsed,
+        entryPath: 'administration',
+      }).entryPath
+    ).toBe('administration');
   });
 
   it('parses a codex-like turn with separately streamed items', () => {
@@ -1598,6 +1612,7 @@ describe('protocol schemas', () => {
           name: 'Updated thread',
           preview: 'Some preview',
           status: 'active',
+          entryPath: 'conversation',
           createdAt: '2026-04-15T00:00:00Z',
           updatedAt: '2026-04-15T00:00:01Z',
         },
@@ -1690,6 +1705,7 @@ describe('protocol schemas', () => {
           name: 'Thread one',
           preview: 'First thread',
           status: 'active',
+          entryPath: 'conversation',
           createdAt: '2026-04-15T00:00:00Z',
           updatedAt: '2026-04-15T00:00:00Z',
         },
@@ -1708,6 +1724,7 @@ describe('protocol schemas', () => {
       name: null,
       preview: 'Preview text',
       status: 'active',
+      entryPath: 'conversation',
       createdAt: '2026-04-15T00:00:00Z',
       updatedAt: '2026-04-15T00:00:00Z',
     });

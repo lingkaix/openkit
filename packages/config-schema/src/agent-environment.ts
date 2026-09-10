@@ -24,6 +24,16 @@ const WORKER_RUNTIME_CREDENTIAL_FILE_PATH_SCHEMA = z
     'Runtime credential files cannot target OpenKit-managed sandbox paths.'
   );
 const WORKER_SANDBOX_ACCESS_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const WORKER_SANDBOX_FIXED_READ_ONLY_ROOTS = [
+  '/usr',
+  '/lib',
+  '/proc',
+  '/dev/urandom',
+  '/app',
+  '/etc',
+  '/opt',
+  '/var/log',
+] as const;
 const TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY = 'trusted-worker-inference-relay';
 const LOWERCASE_SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const UNPAIRED_SURROGATE_PATTERN =
@@ -753,10 +763,30 @@ export const WorkerSandboxFilesystemGrantSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (!isCanonicalAbsoluteWorkerPath(value.targetPath)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Worker sandbox filesystem grants require a canonical absolute target path.',
+        path: ['targetPath'],
+      });
+      return;
+    }
     if (isBlockedWorkerSandboxFilesystemPath(value.targetPath)) {
       ctx.addIssue({
         code: 'custom',
         message: 'Worker sandbox filesystem grants cannot target Core-managed paths.',
+        path: ['targetPath'],
+      });
+    }
+    if (
+      value.access === 'read-write' &&
+      WORKER_SANDBOX_FIXED_READ_ONLY_ROOTS.some((root) =>
+        workerSandboxPathsOverlap(value.targetPath, root)
+      )
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Worker sandbox read-write grants cannot overlap fixed read-only image paths.',
         path: ['targetPath'],
       });
     }
@@ -1414,6 +1444,31 @@ function isBlockedWorkerSandboxFilesystemPath(targetPath: string): boolean {
     targetPath.startsWith('/openkit/server/') ||
     targetPath === '/openkit/vault' ||
     targetPath.startsWith('/openkit/vault/')
+  );
+}
+
+/** Returns whether a worker path is absolute without aliases or redundant separators. */
+function isCanonicalAbsoluteWorkerPath(targetPath: string): boolean {
+  if (!targetPath.startsWith('/') || (targetPath.length > 1 && targetPath.endsWith('/'))) {
+    return false;
+  }
+  return (
+    targetPath === '/' ||
+    targetPath
+      .slice(1)
+      .split('/')
+      .every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+  );
+}
+
+/** Returns whether either canonical worker path contains the other at a path boundary. */
+function workerSandboxPathsOverlap(left: string, right: string): boolean {
+  return (
+    left === '/' ||
+    right === '/' ||
+    left === right ||
+    left.startsWith(`${right}/`) ||
+    right.startsWith(`${left}/`)
   );
 }
 

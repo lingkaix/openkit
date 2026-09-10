@@ -226,6 +226,12 @@ export interface SessionWorkspacePlanningPackage {
   policy?: unknown;
   /** Backend requirements section. */
   backend?: unknown;
+  /** Runtime-private extension facts already pinned into the package. */
+  extensions?: {
+    openkit?: {
+      workerStorage?: { workSlotRef?: string };
+    };
+  };
 }
 
 /** Workspace input shape consumed by the pure planner. */
@@ -239,6 +245,8 @@ export interface PlanSessionWorkspaceMaterializationInput {
   environmentPackage: SessionWorkspacePlanningPackage;
   /** Optional existing AgentSession to evaluate for strict V1 reuse. */
   existingSession?: ExistingSessionCompatibility;
+  /** Exact admitted mutable-worktree slot for initial package projection. */
+  workSlotRef?: string;
 }
 
 /** Pure planner result for one package and optional existing AgentSession. */
@@ -265,7 +273,10 @@ export interface SessionWorkspaceMaterializationPlan {
 export function planSessionWorkspaceMaterialization(
   input: PlanSessionWorkspaceMaterializationInput
 ): SessionWorkspaceMaterializationPlan {
-  const layout = createDefaultSessionWorkspaceLayout(input.environmentPackage);
+  const workSlotRef = requireWorkSlotRef(
+    input.workSlotRef ?? input.environmentPackage.extensions?.openkit?.workerStorage?.workSlotRef
+  );
+  const layout = createDefaultSessionWorkspaceLayout(input.environmentPackage, workSlotRef);
   const compatibilityKey = computeSessionCompatibilityKey(layout, input.environmentPackage);
   const materialization = TurnWorkspaceMaterializationSchema.parse({
     schemaVersion: 1,
@@ -331,21 +342,23 @@ export function computeSessionCompatibilityKey(
  * @returns Parsed default layout.
  */
 function createDefaultSessionWorkspaceLayout(
-  environmentPackage: SessionWorkspacePlanningPackage
+  environmentPackage: SessionWorkspacePlanningPackage,
+  workSlotRef: string
 ): SessionWorkspaceLayout {
   const root = environmentPackage.workspace?.root ?? '/workspace';
   const { contextRoot } = workerSessionInputPaths(environmentPackage.scope?.agentSessionId);
+  const worktreeRoot = `${root}/worktrees/${workSlotRef}`;
 
   return SessionWorkspaceLayoutSchema.parse({
     schemaVersion: 1,
-    layoutId: `swl_${safeId(root)}`,
+    layoutId: `swl_${safeId(`${root}-${workSlotRef}`)}`,
     root,
-    workingDirectory: root,
+    workingDirectory: worktreeRoot,
     slots: [
       slot(
         'main-worktree',
         'worktree',
-        `${root}/worktrees/main`,
+        worktreeRoot,
         'read-write',
         ['git', 'workspace-dir'],
         ['checkout', 'fetch', 'bind', 'copy', 'upload', 'rsync'],
@@ -668,6 +681,18 @@ function isAncestorPath(parent: string, child: string): boolean {
  */
 function safeId(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+/** Validates the opaque work-slot identity before using it as one path segment. */
+function requireWorkSlotRef(value: string | undefined): string {
+  if (
+    typeof value !== 'string' ||
+    value.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+  ) {
+    throw new Error('Session workspace requires one safe Worker storage workSlotRef.');
+  }
+  return value;
 }
 
 /**

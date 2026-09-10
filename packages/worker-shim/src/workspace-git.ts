@@ -89,59 +89,53 @@ export async function materializeWorkspaceGitInputs(
 
     await prepareWorkspaceTargetParent(root, dirname(target));
 
-    await rm(target, { force: true, recursive: true });
-    try {
-      await mkdir(target, { recursive: true });
-      await requireGitText(
-        target,
-        sessionDir,
-        ['init', `--object-format=${input.source.commit.length === 64 ? 'sha256' : 'sha1'}`],
-        {},
-        'Remote Git workspace initialization failed.'
-      );
-      await requireGitText(
-        target,
-        sessionDir,
-        ['remote', 'add', 'origin', input.source.url],
-        {},
-        'Remote Git origin configuration failed.'
-      );
-      await requireGitText(
-        target,
-        sessionDir,
-        ['fetch', '--no-tags', '--depth=1', 'origin', input.source.commit],
-        {},
-        'Remote Git commit fetch failed.'
-      );
-      await requireGitText(
-        target,
-        sessionDir,
-        ['checkout', '--detach', input.source.commit],
-        {},
-        'Remote Git commit checkout failed.'
-      );
-      if (
-        (await requireGitCommit(
-          target,
-          sessionDir,
-          'HEAD',
-          'Remote Git workspace HEAD is unavailable.'
-        )) !== input.source.commit
-      ) {
-        throw new Error('Remote Git workspace HEAD does not match the declared commit.');
-      }
-      return await prepareWorkspaceGitSnapshots(inputs, sessionDir);
-    } catch (error) {
-      try {
-        await rm(target, { force: true, recursive: true });
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          'Remote Git workspace materialization and cleanup failed.'
-        );
-      }
-      throw error;
+    const existing = await lstatIfExists(target);
+    if (existing) {
+      await assertPlainDirectory(target);
+      await assertRetainedWorkspaceSource(input, sessionDir);
+      return await captureWorkspaceGitSnapshots(inputs, sessionDir, false);
     }
+
+    await mkdir(target);
+    await requireGitText(
+      target,
+      sessionDir,
+      ['init', `--object-format=${input.source.commit.length === 64 ? 'sha256' : 'sha1'}`],
+      {},
+      'Remote Git workspace initialization failed.'
+    );
+    await requireGitText(
+      target,
+      sessionDir,
+      ['remote', 'add', 'origin', input.source.url],
+      {},
+      'Remote Git origin configuration failed.'
+    );
+    await requireGitText(
+      target,
+      sessionDir,
+      ['fetch', '--no-tags', '--depth=1', 'origin', input.source.commit],
+      {},
+      'Remote Git commit fetch failed.'
+    );
+    await requireGitText(
+      target,
+      sessionDir,
+      ['checkout', '--detach', input.source.commit],
+      {},
+      'Remote Git commit checkout failed.'
+    );
+    if (
+      (await requireGitCommit(
+        target,
+        sessionDir,
+        'HEAD',
+        'Remote Git workspace HEAD is unavailable.'
+      )) !== input.source.commit
+    ) {
+      throw new Error('Remote Git workspace HEAD does not match the declared commit.');
+    }
+    return await prepareWorkspaceGitSnapshots(inputs, sessionDir);
   }
 
   return new Map();
@@ -239,6 +233,15 @@ export async function prepareWorkspaceGitSnapshots(
   inputs: readonly WorkspaceGitInput[],
   sessionDir: string
 ): Promise<Map<string, string>> {
+  return await captureWorkspaceGitSnapshots(inputs, sessionDir, true);
+}
+
+/** Captures exact Git bases while optionally admitting pre-existing retained work bytes. */
+async function captureWorkspaceGitSnapshots(
+  inputs: readonly WorkspaceGitInput[],
+  sessionDir: string,
+  requireClean: boolean
+): Promise<Map<string, string>> {
   if (inputs.length > 1) {
     throw new Error('Only one writable Git workspace input is supported per worker session.');
   }
@@ -257,7 +260,7 @@ export async function prepareWorkspaceGitSnapshots(
     await assertVisibleIndex(input.target, sessionDir);
     const candidatePaths = await workspaceCandidatePaths(input.target, sessionDir, baseCommit);
     await assertReviewableCandidatePaths(input.target, sessionDir, candidatePaths);
-    if (candidatePaths.length > 0) {
+    if (requireClean && candidatePaths.length > 0) {
       throw new Error('Git workspace must be clean before the worker starts.');
     }
     if (
@@ -274,6 +277,34 @@ export async function prepareWorkspaceGitSnapshots(
   }
 
   return bases;
+}
+
+/** Verifies that a retained worktree still belongs to the requested exact source and baseline. */
+async function assertRetainedWorkspaceSource(
+  input: WorkspaceGitInput,
+  sessionDir: string
+): Promise<void> {
+  const head = await requireGitCommit(
+    input.target,
+    sessionDir,
+    'HEAD',
+    'Retained Git workspace baseline is unavailable.'
+  );
+  if (head !== input.source.commit) {
+    throw new Error('Retained Git workspace baseline conflicts with the requested commit.');
+  }
+  const origin = (
+    await requireGitText(
+      input.target,
+      sessionDir,
+      ['config', '--local', '--no-includes', '--get', 'remote.origin.url'],
+      {},
+      'Retained Git workspace source is unavailable.'
+    )
+  ).trim();
+  if (origin !== input.source.url) {
+    throw new Error('Retained Git workspace source conflicts with the requested origin.');
+  }
 }
 
 /**

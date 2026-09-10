@@ -27,6 +27,187 @@ const skillRoot = join(repoRoot, 'skills', 'openkit');
 const cliPath = join(skillRoot, 'scripts', 'openkit');
 const protocolExports = new Map(Object.entries(protocol));
 
+test('Worker environment discovery preserves admin scope and exact target routing', async () => {
+  const { operationCatalog } = await operations();
+  const status = operationCatalog.find((entry) => entry.id === 'worker-environment.status');
+  assert.ok(status);
+  assert.match(status.requiredAccess, /deployment admin.*Workspace.*source-audience/);
+  const storageRef = `wst_${'a'.repeat(32)}`;
+  const input = status.inputSchema.parse({ workspaceId: 'ws_engineering', storageRef });
+  let observed;
+  const result = await status.handler(
+    {
+      client: {
+        app: {
+          getWorkerEnvironmentStatus: async (...args) => {
+            observed = args;
+            return { inspected: true };
+          },
+        },
+      },
+    },
+    input
+  );
+  assert.deepEqual(observed, ['ws_engineering', storageRef]);
+  assert.deepEqual(result, { inspected: true });
+  assert.equal(
+    status.inputSchema.safeParse({ ...input, hostPath: '/private/other' }).success,
+    false
+  );
+  assert.equal(status.inputSchema.safeParse({ ...input, storageRef: '../other' }).success, false);
+  const administration = operationCatalog.find(
+    (entry) => entry.id === 'administration.conversation-submit'
+  );
+  assert.ok(administration);
+  assert.match(administration.requiredAccess, /deployment admin.*private Quick Chat/);
+  assert.equal(
+    administration.inputSchema.safeParse({
+      requestId: '11111111-1111-4111-8111-111111111111',
+      input: 'inspect',
+      adminToken: 'supplied',
+    }).success,
+    false
+  );
+});
+
+test('Worker environment preparation and activation use the global Agent contract', async () => {
+  const { operationCatalog } = await operations();
+  const prepare = operationCatalog.find((entry) => entry.id === 'worker-environment.prepare');
+  const activate = operationCatalog.find((entry) => entry.id === 'worker-environment.activate');
+  assert.ok(prepare);
+  assert.ok(activate);
+  assert.match(
+    prepare.requiredAccess,
+    /deployment admin.*Agent configuration.*affected Workspace\/source-audience/
+  );
+  assert.match(
+    activate.requiredAccess,
+    /deployment admin.*Agent configuration.*affected Workspace\/source-audience/
+  );
+
+  const configuration = {
+    expectedRevision: `sha256:${'c'.repeat(64)}`,
+    fileId: 'agents/codex.agent.jsonc',
+  };
+  const target = { agentId: 'codex', kind: 'agent' };
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  const prepareInput = prepare.inputSchema.parse({
+    administrationThreadId: 'thread_admin',
+    configuration,
+    declaration: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'d'.repeat(64)}` },
+    mode: 'prepare',
+    replaceNow: {
+      prompt: 'Continue the current work with browser support.',
+      threadId: 'thread_work',
+      workspaceId: 'ws_engineering',
+    },
+    requestId,
+    target,
+  });
+  let observedPrepare;
+  assert.deepEqual(
+    await prepare.handler(
+      {
+        client: {
+          app: {
+            prepareWorkerEnvironment: async (...args) => {
+              observedPrepare = args;
+              return { prepared: true };
+            },
+          },
+        },
+      },
+      prepareInput
+    ),
+    { prepared: true }
+  );
+  assert.deepEqual(observedPrepare, [prepareInput]);
+  assert.equal(
+    prepare.inputSchema.safeParse({ ...prepareInput, workspaceId: 'ws_path' }).success,
+    false
+  );
+  assert.equal(
+    prepare.inputSchema.safeParse({
+      ...prepareInput,
+      configuration: { ...configuration, expectedRevision: 7 },
+    }).success,
+    false
+  );
+  assert.equal(
+    prepare.inputSchema.safeParse({
+      ...prepareInput,
+      target: { agentId: 'codex', kind: 'worker-profile', profileId: 'default' },
+    }).success,
+    false
+  );
+
+  const recoverInput = prepare.inputSchema.parse({
+    administrationThreadId: 'thread_admin_recovery',
+    mode: 'recover',
+    recoverFrom: {
+      artifactId: 'artifact_authored',
+      artifactVersion: 1,
+      contentDigest: `sha256:${'e'.repeat(64)}`,
+    },
+    requestId: '22222222-2222-4222-8222-222222222222',
+  });
+  assert.equal(recoverInput.mode, 'recover');
+  assert.equal(
+    prepare.inputSchema.safeParse({ ...recoverInput, declaration: prepareInput.declaration })
+      .success,
+    false
+  );
+  assert.equal(
+    prepare.inputSchema.safeParse({
+      ...recoverInput,
+      recoverFrom: { ...recoverInput.recoverFrom, artifactVersion: 2 },
+    }).success,
+    false
+  );
+
+  const activation = {
+    affectedStorage: [{ expectedRevision: 4, storageRef: `wst_${'a'.repeat(32)}` }],
+    configuration,
+    replaceNow: prepareInput.replaceNow,
+    resolvedCandidate: {
+      artifactId: 'artifact_resolved',
+      artifactVersion: 1,
+      contentDigest: `sha256:${'f'.repeat(64)}`,
+    },
+    target,
+  };
+  const activateInput = activate.inputSchema.parse({
+    ...activation,
+    confirmation: appSchemas.workerEnvironmentActivationConfirmation(activation),
+    requestId,
+  });
+  let observedActivate;
+  assert.deepEqual(
+    await activate.handler(
+      {
+        client: {
+          app: {
+            activateWorkerEnvironment: async (...args) => {
+              observedActivate = args;
+              return { activated: true };
+            },
+          },
+        },
+      },
+      activateInput
+    ),
+    { activated: true }
+  );
+  assert.deepEqual(observedActivate, [activateInput]);
+  assert.equal(
+    activate.inputSchema.safeParse({
+      ...activateInput,
+      affectedStorage: [{ ...activateInput.affectedStorage[0], expectedRevision: 5 }],
+    }).success,
+    false
+  );
+});
+
 test('the OpenKit Skill ships only the accepted release tree', () => {
   assert.deepEqual(listFiles(skillRoot), [
     'SKILL.md',
@@ -995,6 +1176,128 @@ test('the bundled CLI performs one typed call with fixed audit headers', async (
   );
   assert.equal(invalid.code, 2);
   assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
+});
+
+test('the bundled CLI sends Worker environment preparation and activation to global routes', async () => {
+  const configuration = {
+    expectedRevision: `sha256:${'c'.repeat(64)}`,
+    fileId: 'agents/codex.agent.jsonc',
+  };
+  const target = { agentId: 'codex', kind: 'agent' };
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  const prepareInput = {
+    administrationThreadId: 'thread_admin',
+    configuration,
+    declaration: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'d'.repeat(64)}` },
+    mode: 'prepare',
+    requestId,
+    target,
+  };
+  const resolvedCandidate = {
+    artifactId: 'artifact_resolved',
+    artifactVersion: 1,
+    contentDigest: `sha256:${'f'.repeat(64)}`,
+  };
+  const activation = {
+    affectedStorage: [],
+    configuration,
+    replaceNow: null,
+    resolvedCandidate,
+    target,
+  };
+  const activationConfirmation = appSchemas.workerEnvironmentActivationConfirmation(activation);
+  const preparedResponse = {
+    activationConfirmation,
+    affectedStorage: [],
+    authoredCandidate: {
+      artifactId: 'artifact_authored',
+      artifactVersion: 1,
+      contentDigest: `sha256:${'e'.repeat(64)}`,
+    },
+    configuration,
+    image: {
+      digest: `sha256:${'d'.repeat(64)}`,
+      platform: { architecture: 'arm64', os: 'linux' },
+      storageLayout: {
+        family: 'openkit-worker',
+        gid: 1000,
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        uid: 1000,
+        version: '1',
+        workingDirectory: '/tmp/openkit-bootstrap',
+      },
+    },
+    preparedAt: '2026-09-11T00:00:00.000Z',
+    replaceNow: null,
+    requestId,
+    resolvedCandidate,
+    target,
+  };
+  const prepared = await runCli(
+    ['ops', 'call', 'worker-environment.prepare', '--input', '-'],
+    {
+      OPENKIT_NANOCORE_TOKEN: 'okt_administrator',
+      OPENKIT_NANOCORE_URL: 'http://nanocore.example',
+    },
+    JSON.stringify(prepareInput),
+    [
+      dataModule(`
+        globalThis.fetch = async (url, options) => {
+          if (url !== 'http://nanocore.example/api/app/worker-environments/prepare') throw new Error('unexpected URL');
+          if (options.method !== 'POST') throw new Error('unexpected method');
+          const body = JSON.parse(options.body);
+          if (body.workspaceId !== undefined || body.mode !== 'prepare' || body.target?.kind !== 'agent') throw new Error('unexpected body');
+          return new Response(${JSON.stringify(JSON.stringify(preparedResponse))}, {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        };
+      `),
+    ]
+  );
+  assert.equal(prepared.code, 0, `${prepared.stdout}\n${prepared.stderr}`);
+  assert.equal(JSON.parse(prepared.stdout).data.activationConfirmation, activationConfirmation);
+
+  const activateInput = {
+    ...activation,
+    confirmation: activationConfirmation,
+    requestId,
+  };
+  const activatedResponse = {
+    affected: [],
+    configuration: {
+      fileId: configuration.fileId,
+      revision: `sha256:${'a'.repeat(64)}`,
+    },
+    replaceNow: null,
+    requestId,
+    resolvedCandidate,
+    target,
+  };
+  const activated = await runCli(
+    ['ops', 'call', 'worker-environment.activate', '--input', '-'],
+    {
+      OPENKIT_NANOCORE_TOKEN: 'okt_administrator',
+      OPENKIT_NANOCORE_URL: 'http://nanocore.example',
+    },
+    JSON.stringify(activateInput),
+    [
+      dataModule(`
+        globalThis.fetch = async (url, options) => {
+          if (url !== 'http://nanocore.example/api/app/worker-environments/activate') throw new Error('unexpected URL');
+          if (options.method !== 'POST') throw new Error('unexpected method');
+          const body = JSON.parse(options.body);
+          if (body.workspaceId !== undefined || body.target?.kind !== 'agent' || !body.confirmation) throw new Error('unexpected body');
+          return new Response(${JSON.stringify(JSON.stringify(activatedResponse))}, {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        };
+      `),
+    ]
+  );
+  assert.equal(activated.code, 0, `${activated.stdout}\n${activated.stderr}`);
+  assert.deepEqual(JSON.parse(activated.stdout).data, activatedResponse);
 });
 
 test('the bundled CLI downloads a portable archive only to a new exact destination', async (t) => {

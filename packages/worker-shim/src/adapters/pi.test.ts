@@ -18,6 +18,7 @@ function piInput(): WorkerAdapterPrepareInput {
       ANTHROPIC_API_KEY: 'provider-credential-value',
       PATH: process.env.PATH ?? '',
     },
+    controlRoot: join(root, 'control'),
     llmRoute: {
       credentialVisibility: 'environment',
       endpoint: {

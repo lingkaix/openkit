@@ -580,7 +580,9 @@ describe('private NanoHost Harness records', () => {
         agentSessionId: 'agent-session-1',
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         effectiveSetupGeneration: 1,
+        storageRef: 'storage-1',
         threadId: 'thread-1',
+        workSlotRef: 'work-slot-1',
         workspaceId: 'workspace-1',
       };
       queueNanoHostHarnessOperation(coreDb, {

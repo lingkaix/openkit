@@ -370,6 +370,7 @@ const ExportedGoalRecordSchema = z
     planItemId: z.string().min(1).nullable(),
     currentTaskId: z.string().min(1).nullable(),
     terminalStopReason: ExportedStopReasonSchema.nullable(),
+    workerStorageChoice: z.null(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })

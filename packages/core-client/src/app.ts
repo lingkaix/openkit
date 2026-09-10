@@ -3,6 +3,10 @@ import {
   AbortNanoHostTransportRotationResponseSchema,
   type AcceptWorkspaceInvitationRequest,
   AcceptWorkspaceInvitationRequestSchema,
+  type ActivateWorkerEnvironmentRequest,
+  ActivateWorkerEnvironmentRequestSchema,
+  type ActivateWorkerEnvironmentResponse,
+  ActivateWorkerEnvironmentResponseSchema,
   type AppDiagnosticsResponse,
   AppDiagnosticsResponseSchema,
   type ApproveThreadGoalPlanRequest,
@@ -97,6 +101,8 @@ import {
   GetLightAppResponseSchema,
   type GetThreadMaterialResponse,
   GetThreadMaterialResponseSchema,
+  type GetWorkerEnvironmentStatusResponse,
+  GetWorkerEnvironmentStatusResponseSchema,
   type GetWorkspaceApplyResultResponse,
   GetWorkspaceApplyResultResponseSchema,
   type GetWorkspaceMaterialResponse,
@@ -187,6 +193,10 @@ import {
   ListServerVaultUseRecordsResponseSchema,
   type ListStagedWorkspaceReviewsResponse,
   ListStagedWorkspaceReviewsResponseSchema,
+  type ListWorkerEnvironmentsQuery,
+  ListWorkerEnvironmentsQuerySchema,
+  type ListWorkerEnvironmentsResponse,
+  ListWorkerEnvironmentsResponseSchema,
   type ListWorkerOutputManifestsResponse,
   ListWorkerOutputManifestsResponseSchema,
   type ListWorkspaceApplyPlansResponse,
@@ -239,10 +249,18 @@ import {
   PrepareAppUpdateRequestSchema,
   type PrepareAppUpdateResponse,
   PrepareAppUpdateResponseSchema,
+  type PrepareWorkerEnvironmentRequest,
+  PrepareWorkerEnvironmentRequestSchema,
+  type PrepareWorkerEnvironmentResponse,
+  PrepareWorkerEnvironmentResponseSchema,
   type PublishGenerativePresentationRequest,
   PublishGenerativePresentationRequestSchema,
   type PublishGenerativePresentationResponse,
   PublishGenerativePresentationResponseSchema,
+  type PurgeWorkerEnvironmentRequest,
+  PurgeWorkerEnvironmentRequestSchema,
+  type PurgeWorkerEnvironmentResponse,
+  PurgeWorkerEnvironmentResponseSchema,
   type QuickChatRequest,
   QuickChatRequestSchema,
   type QuickChatResponse,
@@ -329,6 +347,10 @@ import {
   SaveWorkspaceMaterialRevisionRequestSchema,
   type SaveWorkspaceMaterialRevisionResponse,
   SaveWorkspaceMaterialRevisionResponseSchema,
+  type SelectWorkerEnvironmentRequest,
+  SelectWorkerEnvironmentRequestSchema,
+  type SelectWorkerEnvironmentResponse,
+  SelectWorkerEnvironmentResponseSchema,
   type SetMyAdminAccessTokenDefaultRequest,
   SetMyAdminAccessTokenDefaultRequestSchema,
   type SetMyAdminAccessTokenDefaultResponse,
@@ -351,6 +373,10 @@ import {
   StartThreadGoalResponseSchema,
   type StorageLayoutReportResponse,
   StorageLayoutReportResponseSchema,
+  type SubmitAdministrationConversationRequest,
+  SubmitAdministrationConversationRequestSchema,
+  type SubmitAdministrationConversationResponse,
+  SubmitAdministrationConversationResponseSchema,
   type SubmitArtifactReviewDecisionRequest,
   SubmitArtifactReviewDecisionRequestSchema,
   type SubmitArtifactReviewDecisionResponse,
@@ -609,6 +635,39 @@ export function parseWorkspaceSharingError(error: unknown): WorkspaceSharingErro
 export interface AppApiClient {
   /** Lists workspaces authorized for the current principal. */
   listAuthorizedWorkspaces(): Promise<ListAuthorizedWorkspacesResponse>;
+  /** Lists one bounded page of currently authorized retained Worker environments. */
+  listWorkerEnvironments(
+    workspaceId: string,
+    query?: Partial<ListWorkerEnvironmentsQuery>
+  ): Promise<ListWorkerEnvironmentsResponse>;
+  /** Rechecks one explicit retained Worker environment selection. */
+  selectWorkerEnvironment(
+    workspaceId: string,
+    input: SelectWorkerEnvironmentRequest
+  ): Promise<SelectWorkerEnvironmentResponse>;
+  /** Prepares one immutable Worker environment candidate without interrupting work. */
+  prepareWorkerEnvironment(
+    input: PrepareWorkerEnvironmentRequest
+  ): Promise<PrepareWorkerEnvironmentResponse>;
+  /** Activates one exact human-confirmed prepared Worker environment candidate. */
+  activateWorkerEnvironment(
+    input: ActivateWorkerEnvironmentRequest
+  ): Promise<ActivateWorkerEnvironmentResponse>;
+  /** Reads current Core and host facts for one exact retained Worker environment. */
+  getWorkerEnvironmentStatus(
+    workspaceId: string,
+    storageRef: string
+  ): Promise<GetWorkerEnvironmentStatusResponse>;
+  /** Purges one exact idle retained Worker environment. */
+  purgeWorkerEnvironment(
+    workspaceId: string,
+    storageRef: string,
+    input: PurgeWorkerEnvironmentRequest
+  ): Promise<PurgeWorkerEnvironmentResponse>;
+  /** Submits one private system-administration conversation turn. */
+  submitAdministrationConversation(
+    input: SubmitAdministrationConversationRequest
+  ): Promise<SubmitAdministrationConversationResponse>;
   /** Lists memberships for one workspace. */
   listWorkspaceMembers(workspaceId: string): Promise<ListWorkspaceMembersResponse>;
   /** Lists invitations issued for one workspace. */
@@ -1271,6 +1330,55 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
   return {
     listAuthorizedWorkspaces: () =>
       transport.getJson('/api/app/workspaces', ListAuthorizedWorkspacesResponseSchema),
+    listWorkerEnvironments: (workspaceId, query = {}) => {
+      const parsed = ListWorkerEnvironmentsQuerySchema.parse(query);
+      const parameters = new URLSearchParams({ limit: String(parsed.limit) });
+      if (parsed.after) parameters.set('after', parsed.after);
+      return transport.getJson(
+        `/api/app/workspaces/${workspaceId}/worker-environments?${parameters.toString()}`,
+        ListWorkerEnvironmentsResponseSchema
+      );
+    },
+    selectWorkerEnvironment: (workspaceId, input) =>
+      transport.postJson(
+        `/api/app/workspaces/${workspaceId}/worker-environments/select`,
+        SelectWorkerEnvironmentRequestSchema.parse(input),
+        SelectWorkerEnvironmentResponseSchema
+      ),
+    prepareWorkerEnvironment: (input) =>
+      transport.postJson(
+        '/api/app/worker-environments/prepare',
+        PrepareWorkerEnvironmentRequestSchema.parse(input),
+        PrepareWorkerEnvironmentResponseSchema
+      ),
+    activateWorkerEnvironment: (input) =>
+      transport.postJson(
+        '/api/app/worker-environments/activate',
+        ActivateWorkerEnvironmentRequestSchema.parse(input),
+        ActivateWorkerEnvironmentResponseSchema
+      ),
+    getWorkerEnvironmentStatus: (workspaceId, storageRef) =>
+      transport.getJson(
+        `/api/app/workspaces/${workspaceId}/worker-environments/${storageRef}/status`,
+        GetWorkerEnvironmentStatusResponseSchema
+      ),
+    purgeWorkerEnvironment: (workspaceId, storageRef, input) => {
+      const parsed = PurgeWorkerEnvironmentRequestSchema.parse(input);
+      if (parsed.storageRef !== storageRef) {
+        throw new TypeError('Worker environment purge path and body references must match.');
+      }
+      return transport.postJson(
+        `/api/app/workspaces/${workspaceId}/worker-environments/${storageRef}/purge`,
+        parsed,
+        PurgeWorkerEnvironmentResponseSchema
+      );
+    },
+    submitAdministrationConversation: (input) =>
+      transport.postJson(
+        '/api/app/administration/conversation-turns',
+        SubmitAdministrationConversationRequestSchema.parse(input),
+        SubmitAdministrationConversationResponseSchema
+      ),
     listWorkspaceMembers: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/members`,

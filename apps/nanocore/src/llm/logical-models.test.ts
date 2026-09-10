@@ -15,16 +15,26 @@ function profile(
   input: Partial<ProviderProfile> &
     Pick<ProviderProfile, 'id' | 'models'> & {
       readonly modelMetadata?: Readonly<Record<string, unknown>>;
+      readonly omitContextMetadata?: boolean;
     }
 ): ProviderProfile {
+  const { omitContextMetadata, ...profileInput } = input;
   return {
     displayName: input.displayName ?? input.id,
     kind: input.kind ?? 'custom',
-    ...input,
+    ...profileInput,
+    modelMetadata:
+      input.modelMetadata ??
+      (omitContextMetadata
+        ? undefined
+        : Object.fromEntries(
+            input.models.map((model) => [model, { limit: { context: 1_000_000 } }])
+          )),
   } as ProviderProfile;
 }
 
 function gateway(input: {
+  readonly contextManagement?: GatewayConfig['logicalModels'][number]['contextManagement'];
   readonly id?: string;
   readonly routes: GatewayConfig['logicalModels'][number]['routes'];
 }): GatewayConfig {
@@ -37,6 +47,9 @@ function gateway(input: {
       {
         id,
         displayName: id,
+        contextManagement: input.contextManagement ?? [
+          { type: 'compaction', compactThreshold: 8_000 },
+        ],
         routes: input.routes,
       },
     ],
@@ -69,6 +82,7 @@ describe('resolveLogicalModelCatalog', () => {
         id: 'local-free',
         displayName: 'local-free',
         modelFamilyId: null,
+        contextManagement: { type: 'compaction', compactThreshold: 8_000 },
         capabilities: ['chat-completions', 'responses'],
         routes: [
           {
@@ -108,6 +122,7 @@ describe('resolveLogicalModelCatalog', () => {
         id: 'openrouter-free',
         displayName: 'openrouter-free',
         modelFamilyId: null,
+        contextManagement: { type: 'compaction', compactThreshold: 8_000 },
         capabilities: [
           'attachment',
           'chat-completions',
@@ -309,6 +324,7 @@ describe('resolveLogicalModelCatalog', () => {
       id: 'local-free',
       displayName: 'local-free',
       modelFamilyId: null,
+      contextManagement: { type: 'compaction', compactThreshold: 8_000 },
       capabilities: ['chat-completions', 'responses'],
       routes: [
         {
@@ -340,6 +356,77 @@ describe('resolveLogicalModelCatalog', () => {
         ])
       )
     ).toThrow('Logical model route model is not provided: primary.');
+  });
+
+  it('rejects an internal context policy that cannot fit every eligible route', () => {
+    expect(() =>
+      resolveLogicalModelCatalog(
+        gateway({
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'orca-custom',
+              providerModel: 'handwritten/local-flash',
+            },
+          ],
+        }),
+        new ProviderRegistry([
+          profile({
+            id: 'orca-custom',
+            modelMetadata: {
+              'handwritten/local-flash': { limit: { context: 8_100, output: 200 } },
+            },
+            models: ['handwritten/local-flash'],
+          }),
+        ])
+      )
+    ).toThrow('Logical model context management exceeds a route limit: local-free.');
+  });
+
+  it('rejects an internal context policy that cannot fit a disabled sibling route', () => {
+    expect(() =>
+      resolveLogicalModelCatalog(
+        gateway({
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'primary-provider',
+              providerModel: 'handwritten/local-flash',
+            },
+            {
+              id: 'disabled',
+              providerProfileId: 'disabled-provider',
+              providerModel: 'handwritten/local-flash',
+            },
+          ],
+        }),
+        new ProviderRegistry([
+          profile({
+            id: 'primary-provider',
+            modelMetadata: {
+              'handwritten/local-flash': {
+                family: 'local-flash',
+                limit: { context: 20_000, output: 1_000 },
+              },
+            },
+            models: ['handwritten/local-flash'],
+          }),
+          profile({
+            id: 'disabled-provider',
+            modelMetadata: {
+              'handwritten/local-flash': {
+                family: 'local-flash',
+                limit: { context: 8_100, output: 200 },
+              },
+            },
+            models: ['handwritten/local-flash'],
+            readiness: { status: 'disabled', detail: 'Unavailable for dispatch.' },
+          }),
+        ])
+      )
+    ).toThrow('Logical model context management exceeds a route limit: local-free.');
   });
 
   it('inherits pinned catalog context and applies authored false, zero, and replacement leaves', () => {
@@ -403,6 +490,7 @@ describe('resolveLogicalModelCatalog', () => {
     const unknown = profile({
       id: 'orca-custom',
       models: ['handwritten/local-flash'],
+      omitContextMetadata: true,
     });
 
     expect(

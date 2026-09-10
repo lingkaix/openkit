@@ -3,6 +3,7 @@
  * Appearance remains the ThemePicker mounted at `/settings/appearance`.
  */
 export { AccessTokensScreen } from './AccessTokensScreen';
+export { AdministrationScreen } from './AdministrationScreen';
 export { AiInterfaceScreen } from './AiInterfaceScreen';
 export { AppUpdateScreen } from './AppUpdateScreen';
 export { ConfigurationScreen } from './ConfigurationScreen';

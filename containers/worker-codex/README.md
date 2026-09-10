@@ -1,6 +1,6 @@
 # Codex Worker Image
 
-This image packages the shared OpenKit development environment, the generic worker shim, the static Codex adapter, and Codex `0.153.4` for governed OpenShell execution.
+This image packages the shared OpenKit development environment, its inherited persistent `/workspace` and `/sandbox` layout, the generic worker shim, the static Codex adapter, and Codex `0.153.4` for governed OpenShell execution.
 
 The image pins Codex 0.153.4. Update the `worker-codex` target in `containers/workers/Dockerfile` and `packages/codex-app-server-schema/metadata.json` together; NanoCore tests reject version drift between the executable image contract and the vendored schema evidence.
 

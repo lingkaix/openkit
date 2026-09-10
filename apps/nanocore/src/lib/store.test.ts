@@ -120,6 +120,21 @@ function createImportedArtifact(
 }
 
 describe('FsStore persistence', () => {
+  it('creates conversation Threads by default and preserves an administration entry path', () => {
+    const store = new FsStore();
+    store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
+    const conversation = store.createThread('ws_quick_chat', 'Conversation');
+    const administration = store.createThread(
+      'ws_quick_chat',
+      'Administration',
+      'th_administration',
+      'administration'
+    );
+
+    expect(conversation.entryPath).toBe('conversation');
+    expect(administration.entryPath).toBe('administration');
+  });
+
   it('keeps Turn and human-input attribution immutable', () => {
     const store = new FsStore();
     store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);

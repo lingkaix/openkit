@@ -334,7 +334,7 @@ describe('ensureLayout', () => {
         contentDigest: 'sha256:export',
         redactionLevel: 'none',
         sensitivity: 'internal',
-        requiredFeatures: ['workspace.mount.fuse'],
+        requiredFeatures: ['workspace.mount.future'],
       })}\n`
     );
 

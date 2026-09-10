@@ -84,6 +84,8 @@ export interface StartTurnInput {
   workspaceSourceRefs?: TurnStartRuntimeContext['workspaceSourceRefs'];
   /** Host-local working directory selected for worker startup. */
   workspaceCwd?: string | null;
+  /** Exact retained-storage choice captured by scheduler admission. */
+  workerStorageChoice?: TurnStartRuntimeContext['workerStorageChoice'];
   /** Workspace id that owns the thread. */
   workspaceId: string;
 }
@@ -347,6 +349,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
       ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
       : {}),
     workspaceRoots: input.workspaceRoots ?? [],
+    ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
     ...(Object.keys(workspaceSourceRefs).length > 0 ? { workspaceSourceRefs } : {}),
     workspaceCwd: input.workspaceCwd ?? null,
   });

@@ -54,6 +54,8 @@ export const goalRecords = sqliteTable(
     currentTaskId: text('current_task_id'),
     /** Optional terminal stop reason after closeout. */
     terminalStopReason: text('terminal_stop_reason').$type<StopReason | null>(),
+    /** Explicit retained-storage choice inherited by Goal child work. */
+    workerStorageChoiceJson: text('worker_storage_choice_json'),
     /** ISO timestamp for goal creation. */
     createdAt: text('created_at').notNull(),
     /** ISO timestamp for latest goal update. */

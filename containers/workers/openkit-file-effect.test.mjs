@@ -28,7 +28,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = {
   context: '/openkit/sessions',
   'external-data': '/workspace/data',
   instructions: '/openkit/instructions',
-  'main-worktree': '/workspace/worktrees/main',
+  'main-worktree': '/workspace/worktrees',
   scratch: '/workspace/scratch',
   session: '/openkit/session',
   'turn-inputs': '/workspace/inputs',
@@ -88,6 +88,8 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
   const helperSource = await readFile(helperPath, 'utf8');
 
   assert.deepEqual(installedSlotRoots, CANONICAL_SLOT_ROOTS);
+  assert.equal(installedSlotRoots['main-worktree'], '/workspace/worktrees');
+  assert.notEqual(installedSlotRoots['main-worktree'], '/workspace/worktrees/main');
   assert.deepEqual(
     Object.fromEntries(
       Object.entries(installedSlotRoots).filter(
@@ -202,6 +204,28 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
 
     const credentialPath = 'sandbox/.config/example/credentials.json';
     const credentialTarget = join(slotRoots['runtime-credential'], credentialPath);
+    const retainedCredentialBytes = Buffer.from('must-not-enter-retained-storage');
+    const retainedCredentialDigest = `sha256:${createHash('sha256').update(retainedCredentialBytes).digest('hex')}`;
+    await assertRejected(
+      runFileEffect,
+      { ...slotRoots, 'runtime-credential': '/' },
+      {
+        argv: [
+          'reference.import',
+          '--slot',
+          'runtime-credential',
+          '--path',
+          credentialPath,
+          '--length',
+          String(retainedCredentialBytes.length),
+          '--sha256',
+          retainedCredentialDigest,
+        ],
+        input: retainedCredentialBytes,
+        label: 'retained runtime credential sink',
+        privateValues: [retainedCredentialBytes.toString('utf8')],
+      }
+    );
     for (const credentialBytes of [Buffer.from('first-secret'), Buffer.from('rotated-secret')]) {
       const credentialDigest = `sha256:${createHash('sha256').update(credentialBytes).digest('hex')}`;
       const credentialImport = await invokeFileEffect(
@@ -292,6 +316,22 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
     assert.equal(exported.stderr.length, 0);
     assert.deepEqual(exported.stdout, exportedBytes);
 
+    const worktreeExportPath = 'work-slot-a/reports/result.bin';
+    const worktreeExportTarget = join(slotRoots['main-worktree'], worktreeExportPath);
+    await mkdir(dirname(worktreeExportTarget), { recursive: true });
+    await writeFile(worktreeExportTarget, exportedBytes, { mode: 0o600 });
+    const worktreeExport = await invokeFileEffect(runFileEffect, slotRoots, [
+      'file.export',
+      '--slot',
+      'main-worktree',
+      '--path',
+      worktreeExportPath,
+      '--max-length',
+      String(MAX_FILE_BYTES),
+    ]);
+    assert.equal(worktreeExport.exitCode, 0);
+    assert.deepEqual(worktreeExport.stdout, exportedBytes);
+
     const optionalAbsentPath = 'reports/no-workspace-changes.json';
     const optionalAbsent = await invokeFileEffect(runFileEffect, slotRoots, [
       'file.export',
@@ -361,6 +401,32 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
       importedDigest,
     ];
     for (const rejection of [
+      {
+        argv: [
+          'file.export',
+          '--slot',
+          'main-worktree',
+          '--path',
+          '../other-slot/private-file',
+          '--max-length',
+          String(MAX_FILE_BYTES),
+        ],
+        label: 'main worktree slot traversal',
+        privateValues: ['../other-slot/private-file'],
+      },
+      {
+        argv: [
+          'file.export',
+          '--slot',
+          'main-worktree',
+          '--path',
+          '.hidden/private-file',
+          '--max-length',
+          String(MAX_FILE_BYTES),
+        ],
+        label: 'invalid main worktree slot identity',
+        privateValues: ['.hidden/private-file'],
+      },
       {
         argv: validImportArgs('unknown-private-slot', 'unknown-file'),
         input: importedBytes,

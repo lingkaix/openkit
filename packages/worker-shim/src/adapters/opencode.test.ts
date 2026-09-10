@@ -18,6 +18,7 @@ function opencodeInput(): WorkerAdapterPrepareInput {
       OPENKIT_WORKER_INFERENCE_TOKEN: 'openshell-placeholder-value',
       PATH: process.env.PATH ?? '',
     },
+    controlRoot: join(root, 'control'),
     llmRoute: {
       credentialVisibility: 'placeholder',
       endpoint: {

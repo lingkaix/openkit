@@ -26,6 +26,7 @@ const gatewayConfig = {
     {
       id: 'reasoning',
       displayName: 'Reasoning',
+      contextManagement: [{ type: 'compaction' as const, compactThreshold: 8_000 }],
       routes: [{ id: 'primary', providerProfileId: 'openai', providerModel: 'gpt-5.2' }],
     },
   ],

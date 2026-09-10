@@ -35,6 +35,7 @@ import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
+import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 
 type Turn = z.infer<typeof TurnSchema>;
 
@@ -118,6 +119,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   triggerActor: ActorRef;
   /** Host-local cwd selected for this turn. */
   workspaceCwd?: string | null;
+  /** Exact admitted retained-storage slot selected before package pinning. */
+  workerStorageWorkSlotRef?: string;
   /** Materialized workspace roots captured for this turn. */
   workspaceRoots: MaterializedWorkspaceRoot[];
   /** Optional workspace data source catalog for sourceRef-backed roots. */
@@ -271,8 +274,11 @@ function resolveOpenShellAgentEnvironmentPackage(
   };
   const backendRequirements = sandboxAccess.backend;
   const requiredCapabilities = backendRequirements?.requiredCapabilities ?? [];
-  const workingDirectory =
-    input.workspaceRoots[0]?.workerPath ?? input.workspaceCwd ?? '/workspace';
+  const workspaceRoot = '/workspace';
+  const workSlotRef =
+    input.workerStorageWorkSlotRef ??
+    workerStorageDefaultWorkSlotRef(input.turn.workspaceId, input.turn.threadId);
+  const workingDirectory = `${workspaceRoot}/worktrees/${workSlotRef}`;
   const packageId = `aepkg_${input.turn.id}_${input.agentSessionId}`;
   const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
   const createdAt = input.createdAt ?? new Date().toISOString();
@@ -442,7 +448,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       },
     },
     workspace: {
-      root: workingDirectory,
+      root: workspaceRoot,
       inputs: workspaceInputs,
       generatedFiles: [
         {
@@ -662,10 +668,14 @@ function resolveOpenShellAgentEnvironmentPackage(
     extensions: {
       openkit: {
         turnInput,
+        workerStorage: { workSlotRef },
       },
     },
   });
-  const sessionWorkspace = planSessionWorkspaceMaterialization({ environmentPackage });
+  const sessionWorkspace = planSessionWorkspaceMaterialization({
+    environmentPackage,
+    workSlotRef,
+  });
   const materializedWorkspaceInputs = environmentPackage.workspace.inputs.map((workspaceInput) => {
     const materializationInput = sessionWorkspace.materialization.inputs.find(
       (candidate) => candidate.inputId === workspaceInput.id
@@ -683,6 +693,9 @@ function resolveOpenShellAgentEnvironmentPackage(
       target: slot.path,
     };
   });
+  const materializedTargets = new Map(
+    materializedWorkspaceInputs.map((workspaceInput) => [workspaceInput.id, workspaceInput.target])
+  );
   const openkitExtensions = environmentPackage.extensions.openkit as Record<string, unknown>;
 
   return AgentEnvironmentPackageSchema.parse({
@@ -690,6 +703,26 @@ function resolveOpenShellAgentEnvironmentPackage(
     workspace: {
       ...environmentPackage.workspace,
       inputs: materializedWorkspaceInputs,
+      outputs: environmentPackage.workspace.outputs.map((output) => {
+        const rootId = output.id.endsWith('-output') ? output.id.slice(0, -'-output'.length) : null;
+        const target = rootId ? materializedTargets.get(rootId) : undefined;
+        return target ? { ...output, path: target } : output;
+      }),
+    },
+    policy: {
+      ...environmentPackage.policy,
+      ...(environmentPackage.policy.filesystem
+        ? {
+            filesystem: {
+              ...environmentPackage.policy.filesystem,
+              rules: environmentPackage.policy.filesystem.rules.map((rule) => {
+                if (!rule || typeof rule !== 'object' || !('id' in rule)) return rule;
+                const target = materializedTargets.get(String(rule.id));
+                return target ? { ...rule, workerPath: target } : rule;
+              }),
+            },
+          }
+        : {}),
     },
     extensions: {
       ...environmentPackage.extensions,

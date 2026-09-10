@@ -57,6 +57,7 @@ function gatewayConfig(): GatewayConfig {
       {
         id: 'reasoning',
         displayName: 'Reasoning',
+        contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
         routes: [
           {
             id: 'primary',
@@ -137,6 +138,7 @@ describe('resolveAgentSetup', () => {
         {
           id: 'fast',
           displayName: 'Fast',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
           routes: [
             {
               id: 'primary',

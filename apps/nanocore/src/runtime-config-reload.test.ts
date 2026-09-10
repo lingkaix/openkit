@@ -70,6 +70,7 @@ function writeServerConfig(dataRoot: string, model: string): void {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               { id: 'primary', providerProfileId: 'agent-openrouter', providerModel: model },
             ],
@@ -174,6 +175,7 @@ describe('runtime config reload API', () => {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
                 id: 'primary',

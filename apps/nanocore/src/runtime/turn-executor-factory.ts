@@ -20,7 +20,9 @@ import { FsStore } from '../lib/store.js';
 import { requireSchedulerSessionLeaseAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import { resolveWorkspaceRole } from '../workspace-membership.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -54,6 +56,7 @@ import {
   getWorkerControlAcceptedFinalStatus,
   waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
+import { parseNanoHostImageInspection } from './worker-environment-runtime-effects.js';
 import type {
   NanoHostContextPackageImport,
   WorkerGovernanceAgentSessionContinuityDisposition,
@@ -80,6 +83,20 @@ import {
   resolveNanoHostExportPath,
 } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
+import {
+  activateWorkerStorageAttachment,
+  admitWorkerStorageContributor,
+  authorizeAttachedWorkerStorageReplacement,
+  createWorkerStorageBinding,
+  getWorkerStorageBindingForSandbox,
+  markWorkerStorageAttachmentUnknown,
+  releaseWorkerStorageAttachment,
+  reserveWorkerStorageAttachment,
+  type WorkerStorageBinding,
+  type WorkerStorageContributor,
+  type WorkerStorageSelectionInput,
+  type WorkerStorageTarget,
+} from './worker-storage-bindings.js';
 import type {
   WorkerRuntimeProvenanceCollection,
   WorkerTranscriptPayload,
@@ -94,7 +111,6 @@ const NANO_HOST_FILE_EXPORT_MAX_BYTES = 256 * 1024 * 1024;
 /** Maximum raw value accepted for one process environment credential. */
 const NANO_HOST_RUNTIME_ENV_VALUE_MAX_BYTES = 64 * 1024;
 /** Maximum raw value accepted for one runtime credential file. */
-const NANO_HOST_RUNTIME_CREDENTIAL_FILE_MAX_BYTES = 1024 * 1024;
 const NANO_HOST_RUNTIME_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Existing worker-control outage budget applied to one dispatched private Harness result. */
@@ -240,6 +256,8 @@ function createNanoHostWorkerLifecycleRuntime(
             }),
           backend,
           coreDb,
+          resolveResidentWorkerStorageWorkSlotRef: (environmentPackage) =>
+            backend.resolveResidentWorkerStorageWorkSlotRef(environmentPackage),
           ...(vaultBackend ? { vaultBackend } : {}),
           ...(workerControlGateway ? { workerControlGateway } : {}),
           ...(workspaceMutationAdmission ? { workspaceMutationAdmission } : {}),
@@ -366,6 +384,7 @@ interface NanoHostSharedSandbox {
   readonly sandboxCompatibilityKey: string;
   readonly sandboxIntegrationBindingRef: string;
   readonly sandboxRuntimeId: string;
+  workerStorageBinding: WorkerStorageBinding;
 }
 
 /** One incompatible resident Sandbox whose complete private occupancy is proved idle. */
@@ -611,6 +630,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sandboxCompatibilityKey,
       sandboxIntegrationBindingRef: row.sandboxIntegrationBindingRef,
       sandboxRuntimeId: row.sandboxRuntimeId,
+      workerStorageBinding: requireAttachedWorkerStorageBinding(
+        this.coreDb,
+        row.sandboxBindingRef,
+        runtimeTargetId
+      ),
     };
     this.sharedSandboxes.set(sandboxCompatibilityKey, sandbox);
     return sandbox;
@@ -701,6 +725,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sandboxCompatibilityKey,
       sandboxIntegrationBindingRef: row.sandboxIntegrationBindingRef,
       sandboxRuntimeId: row.sandboxRuntimeId,
+      workerStorageBinding: requireAttachedWorkerStorageBinding(
+        this.coreDb,
+        row.sandboxBindingRef,
+        runtimeTargetId
+      ),
     };
     this.sharedSandboxes.set(sandboxCompatibilityKey, sandbox);
     const sharedHarness: NanoHostSharedHarness = {
@@ -906,6 +935,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return 'closed';
   }
 
+  /** Resolves a retained work slot only from one compatible resident Sandbox attachment. */
+  public resolveResidentWorkerStorageWorkSlotRef(
+    environmentPackage: AgentEnvironmentPackage
+  ): string | null {
+    const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
+    if (!responsibleUserId) return null;
+    const sandbox = this.sharedSandboxes.get(nanoHostSandboxCompatibilityKey(environmentPackage));
+    return (
+      sandbox?.workerStorageBinding.contributors.findLast(
+        (contributor) =>
+          contributor.threadId === environmentPackage.scope.threadId &&
+          contributor.responsibleUserId === responsibleUserId
+      )?.workSlotRef ?? null
+    );
+  }
+
   /** Reads whether this backend instance owns the exact live native binding inventory. */
   private hasProcessLocalAgentSession(
     inspection: NanoHostAgentSessionContinuityInspection
@@ -969,6 +1014,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           durableSandbox.updatedAt,
           identity.deploymentId
         );
+        this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
         removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
         return;
       }
@@ -1035,6 +1081,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               ...fenceInput,
               timestamp: new Date().toISOString(),
             });
+            this.fenceWorkerStorageForSandbox(
+              session?.sharedHarness.sandbox.sandboxBindingRef ?? durableSandbox!.sandboxBindingRef
+            );
           }
           if (session) {
             session.nativeSessionReusable = false;
@@ -1043,9 +1092,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           throw error;
         }
         if (session) {
+          this.releaseWorkerStorageForSandbox(session.sharedHarness.sandbox.sandboxBindingRef);
           removeNanoHostSandboxRuntimeForHarness(this.coreDb, session.harnessInstanceId);
           this.forgetSharedSandbox(session.sharedHarness.sandbox.sandboxCompatibilityKey);
         } else if (durableSandbox) {
+          this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
           removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
         }
       }
@@ -1066,6 +1117,32 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         this.sharedHarnesses.delete(key);
       }
     }
+  }
+
+  /** Releases one exact retained attachment after complete Sandbox writer cleanup proof. */
+  private releaseWorkerStorageForSandbox(sandboxBindingRef: string): WorkerStorageBinding {
+    const binding = getWorkerStorageBindingForSandbox(this.coreDb, { sandboxBindingRef });
+    if (!binding) {
+      throw new Error('NanoHost Sandbox storage binding is missing.');
+    }
+    return releaseWorkerStorageAttachment(this.coreDb, {
+      attachmentGeneration: binding.attachmentGeneration,
+      cleanupProved: true,
+      expectedRevision: binding.revision,
+      sandboxBindingRef,
+      storageRef: binding.storageRef,
+    });
+  }
+
+  /** Fences only one retained association after Sandbox cleanup becomes uncertain. */
+  private fenceWorkerStorageForSandbox(sandboxBindingRef: string): void {
+    const binding = getWorkerStorageBindingForSandbox(this.coreDb, { sandboxBindingRef });
+    if (!binding || binding.state === 'unknown') return;
+    markWorkerStorageAttachmentUnknown(this.coreDb, {
+      attachmentGeneration: binding.attachmentGeneration,
+      expectedRevision: binding.revision,
+      storageRef: binding.storageRef,
+    });
   }
 
   /** Reports one-Sandbox capacity without changing durable or physical runtime state. */
@@ -1239,10 +1316,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     environmentPackage: AgentEnvironmentPackage,
     identity: WorkerGovernanceBackendSessionIdentity,
     leaseId: string,
-    forceRetirement = false
-  ): Promise<void> {
+    forceRetirement = false,
+    replacementSelection?: Omit<WorkerStorageSelectionInput, 'layout'> & {
+      readonly reuseWorkSlotRef?: string;
+    }
+  ): Promise<WorkerStorageBinding | null> {
     this.coreDb.sqlite.exec('BEGIN IMMEDIATE');
     let eviction: NanoHostIdleSandboxEviction | null = null;
+    let authorizedReplacementBinding: WorkerStorageBinding | null = null;
     try {
       const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
       if (inspected === 'capacity-saturated') {
@@ -1250,6 +1331,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       eviction = inspected;
       if (eviction) {
+        const attachedBinding = getWorkerStorageBindingForSandbox(this.coreDb, {
+          sandboxBindingRef: eviction.sandboxBindingRef,
+        });
+        if (
+          replacementSelection &&
+          attachedBinding?.storageRef === replacementSelection.storageRef
+        ) {
+          authorizedReplacementBinding = authorizeAttachedWorkerStorageReplacement(this.coreDb, {
+            ...replacementSelection,
+            sandboxBindingRef: eviction.sandboxBindingRef,
+          });
+        }
         const timestamp = new Date().toISOString();
         const sandboxUpdate = this.coreDb.sqlite
           .prepare(
@@ -1279,7 +1372,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw error;
     }
     if (!eviction) {
-      return;
+      return null;
     }
     try {
       if (eviction.closeAgentSessions) {
@@ -1297,13 +1390,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         await this.effect(identity, leaseId, 'bridge.close', cleanupInput);
       }
       await this.effect(identity, leaseId, 'sandbox.delete', cleanupInput);
+      const releasedBinding = this.releaseWorkerStorageForSandbox(eviction.sandboxBindingRef);
       removeNanoHostSandboxRuntimeByBinding(this.coreDb, eviction.sandboxBindingRef);
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
+      return authorizedReplacementBinding &&
+        releasedBinding.storageRef === authorizedReplacementBinding.storageRef &&
+        releasedBinding.attachmentGeneration ===
+          authorizedReplacementBinding.attachmentGeneration &&
+        releasedBinding.revision === authorizedReplacementBinding.revision + 1
+        ? releasedBinding
+        : null;
     } catch (error) {
       fenceNanoHostSandboxRuntime(this.coreDb, {
         sandboxBindingRef: eviction.sandboxBindingRef,
         timestamp: new Date().toISOString(),
       });
+      this.fenceWorkerStorageForSandbox(eviction.sandboxBindingRef);
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
       throw error;
     }
@@ -1329,6 +1431,34 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const runtimeCredentialImports = nanoHostRuntimeCredentialImports(
       context.runtimeFileCredentials ?? []
     );
+    const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
+    if (!responsibleUserId) {
+      throw new Error('Worker storage requires one responsible user.');
+    }
+    const choice = context.workerStorageChoice;
+    const authorizeContributor = currentWorkerStorageAudienceAuthorizer(
+      this.coreDb,
+      environmentPackage.scope.workspaceId,
+      responsibleUserId
+    );
+    const replacementSelection =
+      choice?.kind === 'selected'
+        ? {
+            ...(choice.adjudicatedThreadIds
+              ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
+              : {}),
+            authorizeContributor,
+            expectedRevision: choice.expectedRevision,
+            ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
+            purpose: choice.purpose,
+            responsibleUserId,
+            ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
+            storageRef: choice.storageRef,
+            ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
+            threadId: environmentPackage.scope.threadId,
+            workspaceId: environmentPackage.scope.workspaceId,
+          }
+        : undefined;
     if (
       image.kind === 'build' &&
       (image.contextRef !== EMPTY_BUILD_CONTEXT_REF ||
@@ -1339,7 +1469,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
       throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
     }
-    await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId);
+    const releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
+      environmentPackage,
+      identity,
+      leaseId,
+      false,
+      replacementSelection
+    );
     let sharedHarness = this.restoreSharedHarness(
       sandboxCompatibilityKey,
       harnessCompatibilityKey,
@@ -1351,6 +1487,32 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     let sharedSandbox =
       sharedHarness?.sandbox ??
       this.restoreSharedSandbox(sandboxCompatibilityKey, requireNanoHostRuntimeTargetId(identity));
+    const existingContributor = sharedSandbox?.workerStorageBinding.contributors.some(
+      (contributor) =>
+        contributor.threadId === environmentPackage.scope.threadId &&
+        contributor.responsibleUserId === responsibleUserId
+    );
+    const plannedWorkSlotRef = packageWorkerStorageWorkSlotRef(environmentPackage);
+    if (sharedSandbox && existingContributor) {
+      const residentWorkSlotRef = requireWorkerStorageWorkSlot(
+        sharedSandbox.workerStorageBinding,
+        environmentPackage.scope.threadId,
+        responsibleUserId
+      );
+      if (plannedWorkSlotRef !== residentWorkSlotRef) {
+        throw new Error('Worker storage work slot changed after package planning.');
+      }
+    }
+    if (
+      sharedSandbox &&
+      !existingContributor &&
+      (choice?.kind !== 'selected' ||
+        choice.storageRef !== sharedSandbox.workerStorageBinding.storageRef)
+    ) {
+      await this.evictIncompatibleIdleSandbox(environmentPackage, identity, leaseId, true);
+      sharedHarness = null;
+      sharedSandbox = null;
+    }
     if (!sharedSandbox) {
       const deploymentImageDigest =
         image.kind === 'reference' &&
@@ -1378,20 +1540,97 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 timeLimitSeconds: image.timeLimitSeconds,
               });
       const imageDigest = requireNanoHostResultString(imageResult, 'digest');
+      const imageInspection = parseNanoHostImageInspection(
+        await this.effect(identity, leaseId, 'image.inspect', { imageDigest })
+      );
+      if (imageInspection.imageDigest !== imageDigest) {
+        throw new Error('NanoHost image inspection returned a different digest.');
+      }
+      const storageBinding = this.coreDb.sqlite.transaction(() =>
+        choice?.kind === 'selected'
+          ? reserveWorkerStorageAttachment(this.coreDb, {
+              ...(choice.adjudicatedThreadIds
+                ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
+                : {}),
+              agentSessionId: environmentPackage.scope.agentSessionId,
+              authorizeContributor,
+              expectedRevision:
+                releasedSelectedBinding?.storageRef === choice.storageRef &&
+                releasedSelectedBinding.revision === choice.expectedRevision + 1
+                  ? releasedSelectedBinding.revision
+                  : choice.expectedRevision,
+              ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
+              layout: imageInspection.layout,
+              purpose: choice.purpose,
+              responsibleUserId,
+              ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
+              runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+              storageRef: choice.storageRef,
+              ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
+              threadId: environmentPackage.scope.threadId,
+              workspaceId: environmentPackage.scope.workspaceId,
+            })
+          : reserveWorkerStorageAttachment(this.coreDb, {
+              agentSessionId: environmentPackage.scope.agentSessionId,
+              authorizeContributor,
+              expectedRevision: 1,
+              ...(choice?.kind === 'fresh' ? { goalId: choice.goalId } : {}),
+              layout: imageInspection.layout,
+              purpose: 'work',
+              responsibleUserId,
+              runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+              storageRef: createWorkerStorageBinding(this.coreDb, {
+                deploymentId: identity.deploymentId,
+                layout: imageInspection.layout,
+                runtimeTargetId: requireNanoHostRuntimeTargetId(identity),
+                workspaceId: environmentPackage.scope.workspaceId,
+              }).storageRef,
+              ...(choice?.kind === 'fresh' ? { taskId: choice.taskId } : {}),
+              threadId: environmentPackage.scope.threadId,
+              workspaceId: environmentPackage.scope.workspaceId,
+            })
+      )();
       const sandboxId = nanoHostSandboxId(sandboxCompatibilityKey);
-      const sandboxResult = await this.effect(identity, leaseId, 'sandbox.create', {
-        environment: runtimeEnvironment,
-        imageDigest,
-        leaseId,
-        policy: projectOpenShellWorkerPolicy({
-          additionalFilesystemGrants:
-            openShellFilesystemGrantsFromPackagePolicy(environmentPackage),
-          additionalNetworkEndpoints:
-            openShellNetworkEndpointsFromPackagePolicy(environmentPackage),
-        }),
-        sandboxId,
-      });
+      let sandboxResult: Record<string, unknown>;
+      try {
+        sandboxResult = await this.effect(identity, leaseId, 'sandbox.create', {
+          environment: runtimeEnvironment,
+          imageDigest,
+          leaseId,
+          policy: projectOpenShellWorkerPolicy({
+            additionalFilesystemGrants:
+              openShellFilesystemGrantsFromPackagePolicy(environmentPackage),
+            additionalNetworkEndpoints:
+              openShellNetworkEndpointsFromPackagePolicy(environmentPackage),
+          }),
+          sandboxId,
+          storage: {
+            attachmentGeneration: storageBinding.attachmentGeneration,
+            layoutDigest: storageBinding.layoutDigest,
+            scopeDigest: storageBinding.scopeDigest,
+            storageRef: storageBinding.storageRef,
+            targets: storageBinding.targets
+              .filter(({ active }) => active)
+              .map(({ target, volumeRef }) => ({ target, volumeRef })),
+          },
+        });
+      } catch (error) {
+        markWorkerStorageAttachmentUnknown(this.coreDb, {
+          attachmentGeneration: storageBinding.attachmentGeneration,
+          expectedRevision: storageBinding.revision,
+          storageRef: storageBinding.storageRef,
+        });
+        throw error;
+      }
       requireNanoHostResultString(sandboxResult, 'sandboxId');
+      const attachedStorage = activateWorkerStorageAttachment(this.coreDb, {
+        attachmentGeneration: storageBinding.attachmentGeneration,
+        expectedRevision: storageBinding.revision,
+        sandboxBindingRef:
+          context.sandboxBindingRef ?? `sandbox-binding-${sandboxCompatibilityKey.slice(0, 24)}`,
+        storageRef: storageBinding.storageRef,
+        targets: requireNanoHostSandboxStorageProof(sandboxResult, storageBinding),
+      });
       const sandboxIdentity = sandboxCompatibilityKey.slice(0, 24);
       sharedSandbox = {
         bridgeOpen: false,
@@ -1402,11 +1641,44 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         sandboxCompatibilityKey,
         sandboxIntegrationBindingRef: `integration-binding-${sandboxIdentity}`,
         sandboxRuntimeId: `sandbox-runtime-${sandboxIdentity}`,
+        workerStorageBinding: attachedStorage,
       };
       evidence.push(
         nanoHostEffectEvidence(environmentPackage.createdAt, imageResult, 'image'),
         nanoHostEffectEvidence(environmentPackage.createdAt, sandboxResult, 'sandbox')
       );
+    }
+    const attachedContributor = sharedSandbox.workerStorageBinding.contributors.some(
+      (contributor) =>
+        contributor.threadId === environmentPackage.scope.threadId &&
+        contributor.responsibleUserId === responsibleUserId
+    );
+    if (!attachedContributor) {
+      if (
+        choice?.kind !== 'selected' ||
+        choice.storageRef !== sharedSandbox.workerStorageBinding.storageRef
+      ) {
+        throw new Error('Fresh Worker storage requires a separate idle Sandbox.');
+      }
+      sharedSandbox.workerStorageBinding = admitWorkerStorageContributor(this.coreDb, {
+        ...(choice.adjudicatedThreadIds
+          ? { adjudicatedThreadIds: choice.adjudicatedThreadIds }
+          : {}),
+        authorizeContributor: currentWorkerStorageAudienceAuthorizer(
+          this.coreDb,
+          environmentPackage.scope.workspaceId,
+          responsibleUserId
+        ),
+        expectedRevision: sharedSandbox.workerStorageBinding.revision,
+        ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
+        layout: sharedSandbox.workerStorageBinding.layout,
+        purpose: choice.purpose,
+        responsibleUserId,
+        storageRef: sharedSandbox.workerStorageBinding.storageRef,
+        ...(choice.taskId === undefined ? {} : { taskId: choice.taskId }),
+        threadId: environmentPackage.scope.threadId,
+        workspaceId: environmentPackage.scope.workspaceId,
+      });
     }
     if (!sharedHarness) {
       const harnessIdentity = createHash('sha256')
@@ -1538,7 +1810,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         effectiveSetupGeneration: 1,
+        storageRef: session.sharedHarness.sandbox.workerStorageBinding.storageRef,
         threadId: session.environmentPackage.scope.threadId,
+        workSlotRef: requireWorkerStorageWorkSlot(
+          session.sharedHarness.sandbox.workerStorageBinding,
+          session.environmentPackage.scope.threadId,
+          responsibleUserIdForActor(session.environmentPackage.scope.triggerActor)
+        ),
         workspaceId: session.environmentPackage.scope.workspaceId,
       });
       if (
@@ -2250,6 +2528,111 @@ function requireNanoHostResultString(result: Record<string, unknown>, name: stri
   return value;
 }
 
+/** Requires one attached storage association for a restored durable Sandbox. */
+function requireAttachedWorkerStorageBinding(
+  coreDb: CoreDb,
+  sandboxBindingRef: string,
+  runtimeTargetId: string
+): WorkerStorageBinding {
+  const binding = getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef });
+  if (!binding || binding.state !== 'attached' || binding.runtimeTargetId !== runtimeTargetId) {
+    throw new Error('NanoHost persisted Sandbox storage binding is missing or fenced.');
+  }
+  return binding;
+}
+
+/**
+ * Captures the current requester-aware audience required to reuse retained Worker bytes.
+ *
+ * Until durable Thread visibility exists, one requester may only reuse contributors they own,
+ * while they still have Workspace access and every contributing Thread remains present there.
+ */
+function currentWorkerStorageAudienceAuthorizer(
+  coreDb: CoreDb,
+  workspaceId: string,
+  requesterUserId: string
+): (contributor: WorkerStorageContributor) => boolean {
+  const requesterHasAccess = resolveWorkspaceRole(coreDb, workspaceId, requesterUserId) !== null;
+  const threadIds = new Set(
+    loadWorkspaceFileRecords(coreDb.dataRoot)
+      .find((records) => records.workspace.id === workspaceId)
+      ?.threads.map((thread) => thread.id) ?? []
+  );
+  return (contributor) =>
+    requesterHasAccess &&
+    contributor.workspaceId === workspaceId &&
+    contributor.responsibleUserId === requesterUserId &&
+    threadIds.has(contributor.threadId);
+}
+
+/** Selects the stable private work slot admitted for one exact Thread and responsible user. */
+function requireWorkerStorageWorkSlot(
+  binding: WorkerStorageBinding,
+  threadId: string,
+  responsibleUserId: string | null
+): string {
+  const contributor = binding.contributors.findLast(
+    (candidate) =>
+      candidate.threadId === threadId && candidate.responsibleUserId === responsibleUserId
+  );
+  if (!contributor) {
+    throw new Error('Worker storage work slot is missing.');
+  }
+  return contributor.workSlotRef;
+}
+
+/** Reads the exact work slot already validated into one Agent Environment Package. */
+function packageWorkerStorageWorkSlotRef(environmentPackage: AgentEnvironmentPackage): string {
+  return (
+    environmentPackage.extensions.openkit as {
+      workerStorage: { workSlotRef: string };
+    }
+  ).workerStorage.workSlotRef;
+}
+
+/** Parses and matches the host-proved storage attachment returned by sandbox.create. */
+function requireNanoHostSandboxStorageProof(
+  result: Record<string, unknown>,
+  binding: WorkerStorageBinding
+): WorkerStorageTarget[] {
+  const storage = result.storage;
+  if (!storage || typeof storage !== 'object' || Array.isArray(storage)) {
+    throw new Error('NanoHost Sandbox storage proof is required.');
+  }
+  const record = storage as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join(',') !==
+      'attachmentGeneration,layoutDigest,scopeDigest,storageRef,targets' ||
+    record.storageRef !== binding.storageRef ||
+    record.attachmentGeneration !== binding.attachmentGeneration ||
+    record.scopeDigest !== binding.scopeDigest ||
+    record.layoutDigest !== binding.layoutDigest ||
+    !Array.isArray(record.targets)
+  ) {
+    throw new Error('NanoHost Sandbox storage proof does not match admission.');
+  }
+  return record.targets.map((target) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) {
+      throw new Error('NanoHost Sandbox storage target proof is invalid.');
+    }
+    const entry = target as Record<string, unknown>;
+    if (
+      Object.keys(entry).sort().join(',') !== 'initialized,target,volumeRef' ||
+      typeof entry.initialized !== 'boolean' ||
+      typeof entry.target !== 'string' ||
+      typeof entry.volumeRef !== 'string'
+    ) {
+      throw new Error('NanoHost Sandbox storage target proof is invalid.');
+    }
+    return {
+      active: true,
+      initialized: entry.initialized,
+      target: entry.target,
+      volumeRef: entry.volumeRef,
+    };
+  });
+}
+
 /** Reads the RuntimeTarget identity already proved by NanoHost session planning. */
 function requireNanoHostRuntimeTargetId(identity: WorkerGovernanceBackendSessionIdentity): string {
   if (!identity.runtimeTargetId) {
@@ -2324,29 +2707,12 @@ function nanoHostRuntimeEnvironment(
 function nanoHostRuntimeCredentialImports(
   credentials: readonly WorkerGovernanceRuntimeFileCredential[]
 ): NanoHostContextPackageImport[] {
-  const paths = new Set<string>();
-  return credentials.map((credential) => {
-    if (
-      !credential.targetPath.startsWith('/sandbox/') ||
-      credential.targetPath === '/sandbox/openkit' ||
-      credential.targetPath.startsWith('/sandbox/openkit/') ||
-      paths.has(credential.targetPath)
-    ) {
-      throw new Error('NanoHost runtime credential path is invalid.');
-    }
-    const body = Buffer.from(credential.credentialValue, 'utf8');
-    if (body.byteLength > NANO_HOST_RUNTIME_CREDENTIAL_FILE_MAX_BYTES) {
-      throw new Error('NanoHost runtime credential file is too large.');
-    }
-    paths.add(credential.targetPath);
-    return {
-      body,
-      byteLength: body.byteLength,
-      contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-      relativePath: credential.targetPath.slice(1),
-      slot: 'runtime-credential',
-    };
-  });
+  if (credentials.length > 0) {
+    throw new Error(
+      'NanoHost persistent Worker images do not admit runtime-file credential materialization.'
+    );
+  }
+  return [];
 }
 
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */
@@ -2356,6 +2722,7 @@ function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPac
     environmentPackage.scope.agentSessionId
   );
   const { layout, materialization } = planSessionWorkspaceMaterialization({ environmentPackage });
+  const mainWorktreePath = layout.slots.find((slot) => slot.id === 'main-worktree')?.path;
   const filesystem = environmentPackage.policy.filesystem;
   return createHash('sha256')
     .update(
@@ -2368,17 +2735,26 @@ function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPac
             ? {
                 filesystem: {
                   ...filesystem,
-                  rules: filesystem.rules.map((rule) =>
-                    rule &&
-                    typeof rule === 'object' &&
-                    !Array.isArray(rule) &&
-                    'id' in rule &&
-                    rule.id === 'openkit-context-package' &&
-                    'workerPath' in rule &&
-                    rule.workerPath === contextRoot
-                      ? { ...rule, workerPath: 'agent-session-context' }
-                      : rule
-                  ),
+                  rules: filesystem.rules.map((rule) => {
+                    if (
+                      !rule ||
+                      typeof rule !== 'object' ||
+                      Array.isArray(rule) ||
+                      !('workerPath' in rule)
+                    ) {
+                      return rule;
+                    }
+                    if (
+                      'id' in rule &&
+                      rule.id === 'openkit-context-package' &&
+                      rule.workerPath === contextRoot
+                    ) {
+                      return { ...rule, workerPath: 'agent-session-context' };
+                    }
+                    return rule.workerPath === mainWorktreePath
+                      ? { ...rule, workerPath: 'worker-storage-worktree' }
+                      : rule;
+                  }),
                 },
               }
             : {}),
@@ -2403,16 +2779,29 @@ function nanoHostSandboxCompatibilityKey(environmentPackage: AgentEnvironmentPac
           })),
           id: environmentPackage.scope.workspaceId,
           inputs: environmentPackage.workspace.inputs.map((input, index) =>
-            nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId === 'context')
+            nanoHostStaticWorkspaceInput(input, materialization.inputs[index]?.slotId)
           ),
           layout: {
             ...layout,
+            layoutId: 'worker-storage-layout',
+            workingDirectory:
+              layout.workingDirectory === mainWorktreePath
+                ? 'worker-storage-worktree'
+                : layout.workingDirectory,
             slots: layout.slots.map((slot) =>
-              slot.id === 'context' ? { ...slot, path: 'agent-session-context' } : slot
+              slot.id === 'context'
+                ? { ...slot, path: 'agent-session-context' }
+                : slot.id === 'main-worktree'
+                  ? { ...slot, path: 'worker-storage-worktree' }
+                  : slot
             ),
             control: { ...layout.control, contextRoot: 'agent-session-context' },
           },
-          outputs: environmentPackage.workspace.outputs,
+          outputs: environmentPackage.workspace.outputs.map((output) =>
+            output.path === mainWorktreePath
+              ? { ...output, path: 'worker-storage-worktree' }
+              : output
+          ),
         },
       })
     )
@@ -2442,6 +2831,7 @@ function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPac
   const {
     turnInput: _turnInput,
     sessionWorkspace: _sessionWorkspace,
+    workerStorage: _workerStorage,
     ...staticOpenkit
   } = openkitRecord ?? {};
   return createHash('sha256')
@@ -2460,7 +2850,10 @@ function nanoHostHarnessCompatibilityKey(environmentPackage: AgentEnvironmentPac
         resources: environmentPackage.resources,
         runtime: {
           binaries: environmentPackage.runtime.binaries,
-          command: environmentPackage.runtime.command,
+          command: {
+            ...environmentPackage.runtime.command,
+            workingDirectory: 'worker-storage-worktree',
+          },
           process: environmentPackage.runtime.process ?? null,
           session: environmentPackage.runtime.session ?? null,
         },
@@ -2493,18 +2886,23 @@ function nanoHostSharedHarnessMapKey(
 /** Removes Turn content lineage while retaining one input's static isolation envelope. */
 function nanoHostStaticWorkspaceInput(
   input: AgentEnvironmentPackage['workspace']['inputs'][number],
-  isContext: boolean
+  slotId: string | undefined
 ): Record<string, unknown> {
   const { commit: _commit, ...source } = input.source;
   const { contentDigest: _contentDigest, ...materialization } = input.materialization ?? {};
   return {
     access: input.access,
-    id: isContext ? 'context' : input.id,
+    id: slotId === 'context' ? 'context' : input.id,
     kind: input.kind,
     materialization,
     mount: input.mount ?? null,
-    source: isContext ? { kind: source.kind } : source,
-    target: isContext ? 'agent-session-context' : input.target,
+    source: slotId === 'context' ? { kind: source.kind } : source,
+    target:
+      slotId === 'context'
+        ? 'agent-session-context'
+        : slotId === 'main-worktree'
+          ? 'worker-storage-worktree'
+          : input.target,
   };
 }
 

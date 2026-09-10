@@ -4,7 +4,7 @@ This directory owns tests for NanoCore container build and run artifacts; the ar
 
 ## File Map
 
-- `app-dockerfile.test.ts` and `openshell-worker-dockerfile.test.ts` validate image definitions.
+- `app-dockerfile.test.ts` and `openshell-worker-dockerfile.test.ts` validate image definitions, including the inherited Worker volume, numeric-user, ephemeral-control, bootstrap WorkingDir, and immutable Python boundaries.
 - `app-run-script.test.ts` and `app-persistence-smoke.test.ts` validate container startup and persistence contracts.
 - `container-images-manifest.test.ts` validates the image manifest.
 

@@ -77,6 +77,7 @@ function writeGatewayConfig(dataRoot: string, model = 'openai/gpt-5.1'): void {
         {
           id: 'reasoning',
           displayName: 'Reasoning',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
           routes: [{ id: 'primary', providerProfileId: 'agent-openrouter', providerModel: model }],
         },
       ],
@@ -662,6 +663,7 @@ describe('runtime config loading and reload planning', () => {
           {
             id: 'local-free',
             displayName: 'Local Free',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
                 id: 'primary',

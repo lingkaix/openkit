@@ -93,14 +93,20 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
 }
 
 /** Builds one accepted Codex session.open body. */
-function openBody(bindingId: string, agentSessionId: string) {
+function openBody(
+  bindingId: string,
+  agentSessionId: string,
+  workSlotRef = `work-${agentSessionId}`
+) {
   return {
     adapterId: 'codex',
     agentSessionCompatibilityKey: DIGEST,
     agentSessionId,
     agentSessionRuntimeBindingId: bindingId,
     effectiveSetupGeneration: 1,
+    storageRef: 'storage-one',
     threadId: `thread-${agentSessionId}`,
+    workSlotRef,
     workspaceId: 'workspace-one',
   };
 }
@@ -414,6 +420,7 @@ describe('shared Worker Harness', () => {
     const harness = new WorkerHarness({
       environment: harnessEnvironment,
       integration,
+      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
       rootDirectory: join(root, 'private'),
       runner: {
         async run(input) {
@@ -480,6 +487,14 @@ describe('shared Worker Harness', () => {
     await harness.handle(command('session.open', 0, openBody('binding-b', 'as-b')));
     await expect(
       harness.handle(command('session.open', 0, openBody('binding-duplicate', 'as-a')))
+    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
+    await expect(
+      harness.handle(
+        command('session.open', 0, {
+          ...openBody('binding-other-storage', 'as-other-storage'),
+          storageRef: 'storage-two',
+        })
+      )
     ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
     await importPackage(1);
     await importContext('as-a', 'current.txt', 'AgentSession A Turn 1\n');
@@ -744,6 +759,7 @@ describe('shared Worker Harness', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-'));
     const harness = new WorkerHarness({
       integration: {} as SandboxIntegrationClient,
+      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
       rootDirectory: root,
       sandboxRoot: root,
     });
@@ -758,9 +774,16 @@ describe('shared Worker Harness', () => {
       state: 'open',
     });
     expect(second.disposition).toBe('succeeded');
+    const retainedDataRoot = join(root, 'sandbox', 'native', 'codex', 'work-as-a');
+    writeFileSync(join(retainedDataRoot, 'unknown.bin'), Buffer.from([4, 3, 2, 1]));
+    await expect(
+      harness.handle(
+        command('session.open', 2, openBody('binding-conflict', 'as-conflict', 'work-as-a'))
+      )
+    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
 
     const inspected = await harness.handle(
-      command('session.inspect', 2, {
+      command('session.inspect', 3, {
         agentSessionId: 'as-b',
         agentSessionRuntimeBindingId: 'binding-b',
       })
@@ -771,7 +794,7 @@ describe('shared Worker Harness', () => {
     });
 
     const closed = await harness.handle(
-      command('session.close', 3, {
+      command('session.close', 4, {
         agentSessionId: 'as-a',
         agentSessionRuntimeBindingId: 'binding-a',
       })
@@ -781,9 +804,19 @@ describe('shared Worker Harness', () => {
       disposition: 'succeeded',
     });
     expect(existsSync(root)).toBe(true);
+    expect(readFileSync(join(retainedDataRoot, 'unknown.bin'))).toEqual(Buffer.from([4, 3, 2, 1]));
     await expect(
       harness.handle(
-        command('session.inspect', 4, {
+        command('session.open', 5, openBody('binding-successor', 'as-successor', 'work-as-a'))
+      )
+    ).resolves.toMatchObject({
+      body: { nativeHandleState: 'pending', state: 'open' },
+      disposition: 'succeeded',
+    });
+    expect(readFileSync(join(retainedDataRoot, 'unknown.bin'))).toEqual(Buffer.from([4, 3, 2, 1]));
+    await expect(
+      harness.handle(
+        command('session.inspect', 6, {
           agentSessionId: 'as-b',
           agentSessionRuntimeBindingId: 'binding-b',
         })
@@ -791,11 +824,81 @@ describe('shared Worker Harness', () => {
     ).resolves.toMatchObject({ disposition: 'succeeded' });
   });
 
+  it('enforces one storage association and one live work-slot writer across Harness instances', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-worker-multi-harness-'));
+    const sandboxRoot = join(root, 'openkit');
+    const nativeDataRootDirectory = join(root, 'sandbox', 'native');
+    let nativeRuns = 0;
+    const runner = {
+      async run() {
+        nativeRuns += 1;
+        throw new Error('No native process may start during session admission.');
+      },
+    };
+    const first = new WorkerHarness({
+      integration: {} as SandboxIntegrationClient,
+      nativeDataRootDirectory,
+      rootDirectory: join(root, 'control-a'),
+      runner,
+      sandboxRoot,
+    });
+    const second = new WorkerHarness({
+      integration: {} as SandboxIntegrationClient,
+      nativeDataRootDirectory,
+      rootDirectory: join(root, 'control-b'),
+      runner,
+      sandboxRoot,
+    });
+
+    await expect(
+      first.handle(command('session.open', 0, openBody('binding-a', 'as-a', 'shared-work')))
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    await expect(
+      second.handle(
+        command('session.open', 0, {
+          ...openBody('binding-other-storage', 'as-other-storage', 'other-work'),
+          storageRef: 'storage-two',
+        })
+      )
+    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
+    await expect(
+      second.handle(
+        command('session.open', 1, openBody('binding-competing', 'as-competing', 'shared-work'))
+      )
+    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
+    expect(existsSync(join(root, 'control-b'))).toBe(false);
+
+    await expect(
+      first.handle(
+        command('session.close', 1, {
+          agentSessionId: 'as-a',
+          agentSessionRuntimeBindingId: 'binding-a',
+        })
+      )
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    await expect(
+      second.handle(
+        command('session.open', 2, openBody('binding-successor', 'as-successor', 'shared-work'))
+      )
+    ).resolves.toMatchObject({ disposition: 'succeeded' });
+    await expect(
+      second.handle(
+        command('session.open', 3, {
+          ...openBody('binding-late-storage', 'as-late-storage', 'other-work'),
+          storageRef: 'storage-two',
+        })
+      )
+    ).resolves.toMatchObject({ body: { reasonCode: 'conflict' }, disposition: 'refused' });
+    expect(existsSync(join(nativeDataRootDirectory, 'codex', 'other-work'))).toBe(false);
+    expect(nativeRuns).toBe(0);
+  });
+
   it('binds one Harness instance to a non-Codex registry adapter', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-worker-harness-opencode-'));
     const harness = new WorkerHarness({
       adapterId: 'opencode',
       integration: {} as SandboxIntegrationClient,
+      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
       rootDirectory: root,
       sandboxRoot: root,
     });
@@ -810,6 +913,8 @@ describe('shared Worker Harness', () => {
       body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'open' },
       disposition: 'succeeded',
     });
+    const retainedDataRoot = join(root, 'sandbox', 'native', 'opencode', 'work-as-opencode');
+    writeFileSync(join(retainedDataRoot, 'unknown.bin'), Buffer.from([1, 3, 5, 7]));
     await expect(
       harness.handle(
         command('session.close', 1, {
@@ -821,6 +926,7 @@ describe('shared Worker Harness', () => {
       body: { childState: 'absent', privateState: 'absent', state: 'closed' },
       disposition: 'succeeded',
     });
+    expect(readFileSync(join(retainedDataRoot, 'unknown.bin'))).toEqual(Buffer.from([1, 3, 5, 7]));
   });
 
   it('keeps a bounded-turn OpenCode binding private to one Turn', async () => {
@@ -908,6 +1014,7 @@ describe('shared Worker Harness', () => {
     const harness = new WorkerHarness({
       adapterId: 'opencode',
       integration,
+      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
       rootDirectory: join(root, 'private'),
       runner: {
         async run(input) {
@@ -1005,6 +1112,7 @@ describe('shared Worker Harness', () => {
     let runs = 0;
     const harness = new WorkerHarness({
       integration: {} as SandboxIntegrationClient,
+      nativeDataRootDirectory: join(root, 'sandbox', 'native'),
       rootDirectory: root,
       runner: {
         async run() {

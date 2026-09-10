@@ -22,7 +22,7 @@ Use the existing `openkit` Skill for its public operation discovery, configurati
 - [Getting started](references/getting-started.en.md): choose a release/source installation, establish prerequisites and verify the first real task.
 - [Deployment modes](references/nanocore-deployment-modes.en.md): NanoCore local/server modes, App images, initial NanoHost setup and stopped-server credential recovery.
 - [Configuration](references/nanocore-data-root-config.en.md): authored JSONC scopes, Providers, model metadata, Agent defaults, Vault references and revision-checked reload.
-- [Operations](references/nanocore-operations.en.md): inspect health, update the App, preserve data and keys, back up, diagnose and recover.
+- [Operations](references/nanocore-operations.en.md): inspect health, update the App, prepare and reuse Worker environments, preserve whole execution volumes, back up, diagnose and recover.
 - [Product use](references/using-openkit.en.md): delegate bounded work, use human decisions and inspect outputs through Web or the public Skill.
 - [Container-dependent tests](references/sandbox-container-tests.en.md): place container effects outside Worker sandboxes.
 

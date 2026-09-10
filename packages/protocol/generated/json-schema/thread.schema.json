@@ -32,6 +32,13 @@
         "archived"
       ]
     },
+    "entryPath": {
+      "type": "string",
+      "enum": [
+        "conversation",
+        "administration"
+      ]
+    },
     "createdAt": {
       "type": "string",
       "minLength": 1
@@ -47,6 +54,7 @@
     "name",
     "preview",
     "status",
+    "entryPath",
     "createdAt",
     "updatedAt"
   ],

@@ -1,6 +1,17 @@
 import { constants } from 'node:fs';
-import { cp, mkdir, open, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import {
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readlink,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 
 import type {
   WorkerAdapterCollectInput,
@@ -109,13 +120,26 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
   await mkdir(input.stateRoot, { mode: 0o700, recursive: true });
   const skillsHome = join(input.stateRoot, 'skills');
   await mkdir(skillsHome, { recursive: true });
-  for (const skill of input.skillTargetPaths ?? []) {
+  const skills = input.skillTargetPaths ?? [];
+  const selectedSkillIds = new Set(skills.map((skill) => skill.id));
+  if ((await readdir(skillsHome)).some((name) => !selectedSkillIds.has(name))) {
+    throw new Error('Retained Codex Skill supply conflicts with the current launch policy.');
+  }
+  for (const skill of skills) {
     const discoveryPath = join(skillsHome, skill.id);
-    await rm(discoveryPath, { force: true, recursive: true });
     try {
+      const status = await lstat(discoveryPath);
+      if (
+        !status.isSymbolicLink() ||
+        resolve(dirname(discoveryPath), await readlink(discoveryPath)) !== resolve(skill.targetPath)
+      ) {
+        throw new Error('Retained Codex Skill supply conflicts with the current launch policy.');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
       await symlink(skill.targetPath, discoveryPath);
-    } catch {
-      await cp(skill.targetPath, discoveryPath, { recursive: true });
     }
   }
   const nativeTurnDirectory = input.nativeTurnDirectory ?? input.sessionDirectory;
@@ -147,7 +171,7 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
         ),
       })
     : null;
-  const nativeHandle = await readNativeHandle(input.stateRoot);
+  const nativeHandle = await readNativeHandle(input.controlRoot);
   const command = nativeHandle ? ['codex', 'exec', 'resume'] : ['codex', 'exec'];
   // Resume has no --cd; the Harness spawn cwd is the working-directory owner.
   const cwdArgs = nativeHandle ? [] : ['--cd', input.workingDirectory];
@@ -162,6 +186,8 @@ async function prepareCodex(input: WorkerAdapterPrepareInput): Promise<WorkerAda
       '--output-last-message',
       finalMessagePath,
       ...cwdArgs,
+      '-c',
+      'skills.bundled.enabled=false',
       '-c',
       `model_provider=${quoteTomlString(RELAY_PROVIDER_ID)}`,
       '-c',
@@ -422,10 +448,14 @@ async function collectCodex(input: WorkerAdapterCollectInput): Promise<WorkerAda
   }
 }
 
-/** Creates one empty AgentSession-private Codex root without launching a process. */
-async function openCodexSession(input: { readonly stateRoot: string }) {
-  await rm(input.stateRoot, { force: true, recursive: true });
+/** Creates fresh handle authority without deleting the retained Codex home. */
+async function openCodexSession(input: {
+  readonly controlRoot: string;
+  readonly stateRoot: string;
+}) {
   await mkdir(input.stateRoot, { mode: 0o700, recursive: true });
+  await rm(input.controlRoot, { force: true, recursive: true });
+  await mkdir(input.controlRoot, { mode: 0o700, recursive: true });
   return {
     nativeHandle: null,
     nativeHandleDigest: null,
@@ -434,7 +464,9 @@ async function openCodexSession(input: { readonly stateRoot: string }) {
 }
 
 /** Collects one Codex Turn and establishes or verifies its exact native UUID. */
-async function collectCodexTurn(input: WorkerAdapterCollectInput & { readonly stateRoot: string }) {
+async function collectCodexTurn(
+  input: WorkerAdapterCollectInput & { readonly controlRoot: string; readonly stateRoot: string }
+) {
   const result = await collectCodex(input);
   if (result.status !== 'completed') {
     return {
@@ -449,13 +481,16 @@ async function collectCodexTurn(input: WorkerAdapterCollectInput & { readonly st
     codexHome: input.stateRoot,
     stdout: input.processResult.stdout,
   });
-  await writeNativeHandle(input.stateRoot, proof.nativeHandle);
+  await writeNativeHandle(input.controlRoot, proof.nativeHandle);
   return { ...result, ...proof, nativeHandleState: 'ready' as const };
 }
 
 /** Proves the current private handle and rollout without selecting ambient state. */
-async function inspectCodexSession(input: { readonly stateRoot: string }) {
-  const nativeHandle = await readNativeHandle(input.stateRoot);
+async function inspectCodexSession(input: {
+  readonly controlRoot: string;
+  readonly stateRoot: string;
+}) {
+  const nativeHandle = await readNativeHandle(input.controlRoot);
   if (!nativeHandle) {
     return { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
   }
@@ -467,12 +502,12 @@ async function inspectCodexSession(input: { readonly stateRoot: string }) {
   return { nativeHandleDigest: proof.nativeHandleDigest, nativeHandleState: 'ready' as const };
 }
 
-/** Removes one exact AgentSession's native root and Turn-local outputs. */
+/** Removes one exact AgentSession's control binding and Turn-local outputs. */
 async function closeCodexSession(input: {
+  readonly controlRoot: string;
   readonly sessionDirectory: string;
-  readonly stateRoot: string;
 }) {
-  await rm(input.stateRoot, { force: true, recursive: true });
+  await rm(input.controlRoot, { force: true, recursive: true });
   await rm(input.sessionDirectory, { force: true, recursive: true });
   return { privateState: 'absent' as const };
 }

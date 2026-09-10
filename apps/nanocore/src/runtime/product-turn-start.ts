@@ -13,6 +13,8 @@ import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
   ensureConfiguredSchedulerBaseline,
+  requireSchedulerAdmissionEntry,
+  type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
@@ -44,6 +46,8 @@ interface StartProductTurnInput {
   readonly requestedAgentId?: string | null;
   /** Optional turn id reserved by an upper-level worker loop. */
   readonly reservedTurnId?: string;
+  /** Explicit retained-storage choice captured with scheduler admission. */
+  readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   /** Whether a synchronous caller should cancel its admission when dispatch is deferred. */
   readonly cancelDeferredAdmission?: boolean;
 }
@@ -139,57 +143,86 @@ export async function startProductTurn(input: StartProductTurnInput) {
     threadId: input.input.threadId,
     turnId,
     turnInput: input.input.input,
+    ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
     triggerActor: canonicalTriggerActor,
     workspaceCwd,
     workspaceId: input.input.workspaceId,
     workspaceRoots,
   });
 
-  const dispatch = await runSchedulerDispatchLoop({
-    agentManifests: input.snapshot.agentManifests,
-    coreDb: input.coreDb,
-    createAgentSessionId: () => `as_${suffix}`,
-    createLeaseId: () => `lease_${suffix}`,
-    createPlanId: () => `plan_${suffix}`,
-    dependencies: { providerCredentialResolver: input.providerCredentialResolver },
-    expectedControlMode: 'poll',
-    expectedDataPlaneMode: 'openshell-files',
-    heartbeatIntervalMs: 10_000,
-    heartbeatTimeoutMs: 30_000,
-    leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
-    maxDispatches: 1,
-    providerRegistry: input.snapshot.providerRegistry,
-    gatewayConfig: input.snapshot.gatewayConfig,
-    workspaceConfigs: input.snapshot.workspaceConfigs,
-    userConfigs: input.snapshot.userConfigs,
-    schedulerEpoch: input.schedulerEpoch,
-    startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
-    store: input.store,
-    turnExecutor: input.turnExecutor,
-    configVersion: input.snapshot.version,
-    workspaceDataSourceCatalogs: input.snapshot.workspaceDataSourceCatalogs,
-    workspaceMcpServerCatalogs: input.snapshot.workspaceMcpServerCatalogs,
-  });
-  const started = dispatch.startedTurns.find(
-    (turn) => turn.dispatch.entry.queueEntryId === queueEntryId
-  );
+  try {
+    const dispatch = await runSchedulerDispatchLoop({
+      agentManifests: input.snapshot.agentManifests,
+      coreDb: input.coreDb,
+      createAgentSessionId: () => `as_${suffix}`,
+      createLeaseId: () => `lease_${suffix}`,
+      createPlanId: () => `plan_${suffix}`,
+      dependencies: { providerCredentialResolver: input.providerCredentialResolver },
+      expectedControlMode: 'poll',
+      expectedDataPlaneMode: 'openshell-files',
+      heartbeatIntervalMs: 10_000,
+      heartbeatTimeoutMs: 30_000,
+      leaseDurationMs: CONFIGURED_WORKER_INITIAL_LEASE_DURATION_MS,
+      maxDispatches: 1,
+      providerRegistry: input.snapshot.providerRegistry,
+      gatewayConfig: input.snapshot.gatewayConfig,
+      workspaceConfigs: input.snapshot.workspaceConfigs,
+      userConfigs: input.snapshot.userConfigs,
+      schedulerEpoch: input.schedulerEpoch,
+      startupTimeoutMs: CONFIGURED_WORKER_STARTUP_TIMEOUT_MS,
+      store: input.store,
+      turnExecutor: input.turnExecutor,
+      configVersion: input.snapshot.version,
+      workspaceDataSourceCatalogs: input.snapshot.workspaceDataSourceCatalogs,
+      workspaceMcpServerCatalogs: input.snapshot.workspaceMcpServerCatalogs,
+    });
+    const started = dispatch.startedTurns.find(
+      (turn) => turn.dispatch.entry.queueEntryId === queueEntryId
+    );
 
-  if (!started) {
+    if (!started) {
+      throw new TurnStartValidationError(
+        'scheduler_admission_deferred',
+        'Turn was queued but not dispatched in this scheduler iteration.',
+        409
+      );
+    }
+
+    return started.handle;
+  } catch (error) {
     if (input.cancelDeferredAdmission) {
-      cancelSchedulerAdmissionEntry(input.coreDb, {
+      cancelOwnedDeferredAdmission(input.coreDb, {
         queueEntryId,
         workspaceId: input.input.workspaceId,
       });
     }
-
-    throw new TurnStartValidationError(
-      'scheduler_admission_deferred',
-      'Turn was queued but not dispatched in this scheduler iteration.',
-      409
-    );
+    throw error;
   }
+}
 
-  return started.handle;
+/**
+ * Cancels one exact synchronous caller admission only while it remains deferred.
+ *
+ * Dispatch may fail after external work has already been admitted. Re-reading the durable entry before cancellation prevents this cleanup from cancelling dispatched or active work. Cleanup races preserve the original dispatch failure instead of replacing it with a cancellation error.
+ *
+ * @param coreDb Open Core database handle.
+ * @param input Exact queued admission owner.
+ */
+function cancelOwnedDeferredAdmission(
+  coreDb: CoreDb,
+  input: { readonly queueEntryId: string; readonly workspaceId: string }
+): void {
+  try {
+    const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, {
+      workspaceId: input.workspaceId,
+    });
+    if (entry.status !== 'queued' && entry.status !== 'denied') {
+      return;
+    }
+    cancelSchedulerAdmissionEntry(coreDb, input);
+  } catch {
+    // The dispatch failure remains authoritative when concurrent admission progress blocks cleanup.
+  }
 }
 
 /**

@@ -16,6 +16,7 @@ import type {
 import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import type { FsStore } from '../lib/store.js';
+import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 
 type Agent = z.infer<typeof AgentSchema>;
 
@@ -189,6 +190,8 @@ export interface PrepareAgentSessionForTurnInput {
   readonly turn: z.infer<typeof TurnSchema>;
   /** Exact input that the future Turn will execute. */
   readonly turnInput: string;
+  /** Exact retained-storage choice captured with scheduler admission. */
+  readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   /** Host-local cwd selected for the future worker. */
   readonly workspaceCwd: string | null;
   /** Materialized roots captured by scheduler admission. */
@@ -338,6 +341,8 @@ export interface TurnStartRuntimeContext {
   sessionCompatibilityKey?: string;
   /** Host-local worker working directory selected for this turn. */
   workspaceCwd?: string | null;
+  /** Exact retained-storage choice captured with scheduler admission. */
+  workerStorageChoice?: SchedulerWorkerStorageChoice;
   /** Request id for the client command that accepted this turn. */
   requestId?: string | null;
   /** Exact actor whose action triggered this turn. */

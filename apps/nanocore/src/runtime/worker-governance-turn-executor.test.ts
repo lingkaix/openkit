@@ -117,6 +117,7 @@ import {
   type ImportWorkerRuntimeProvenanceInput,
   importWorkerRuntimeProvenance,
 } from './worker-runtime-provenance.js';
+import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
 import { getFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
@@ -1696,7 +1697,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       runtimeVersion: 'test',
     });
     expect(backend.lastPackage?.llm.routes[0]?.model).toBe('openai/gpt-5.2');
-    expect(backend.lastPackage?.runtime.command.workingDirectory).toBe('/workspace/openkit');
+    const expectedWorktree = `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(
+      turn.workspaceId,
+      turn.threadId
+    )}`;
+    expect(backend.lastPackage?.runtime.command.workingDirectory).toBe(expectedWorktree);
     expect(backend.lastContext?.workspaceRoots).toEqual([
       expect.objectContaining({
         id: 'repo',
@@ -1742,7 +1747,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect.objectContaining({
         id: expect.stringMatching(/^wmr_/),
         inputSnapshotId: expect.stringMatching(/^wis_/),
-        materializedRootRef: '/workspace/openkit/worktrees/main',
+        materializedRootRef: expectedWorktree,
         workerSessionId: 'sandbox_governance_1',
       }),
     ]);

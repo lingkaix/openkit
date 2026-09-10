@@ -19,6 +19,106 @@ import {
 } from './nanohost-session-dispatch.js';
 
 describe('authoritative NanoHost session dispatch', () => {
+  it('defers image settlement on storage failure and acknowledges only durable outcomes', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-settlement-')));
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = {
+      coreDb,
+      deploymentId: 'deployment-settlement',
+      identityId: 'host-settlement',
+      targetId: 'host-settlement',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: '2026-08-10T00:00:00.000Z',
+    });
+    let accept!: (connection: object) => void;
+    const physicalReady = new Promise<object>((resolve) => {
+      accept = resolve;
+    });
+    const server = createHttp2Server((request, response) => {
+      const physical = readNanoHostPhysicalConnectionContext(request);
+      if (physical) accept(physical);
+      response.writeHead(204).end();
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client.request({ ':method': 'POST', ':path': '/' }).end();
+      const physical = await physicalReady;
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: target.identityId,
+        physicalConnection: physical,
+      });
+      await dispatch.readiness!(physical, Buffer.from('{}'), target);
+      const requestId = 'e'.repeat(64);
+      const imageSettlement = {
+        authoredArtifactId: 'artifact_settlement',
+        authoredArtifactVersion: 1,
+        authoredContentDigest: `sha256:${'a'.repeat(64)}`,
+        inputDigest: `sha256:${'b'.repeat(64)}`,
+      };
+      const pending = dispatch.effect({
+        kind: 'image.acquire',
+        requestId,
+        input: { imageReference: 'openkit:test' },
+        imageSettlement,
+      });
+      void pending.catch(() => undefined);
+      await expect(dispatch.poll(physical, 'image.acquire')).resolves.toEqual({
+        imageReference: 'openkit:test',
+        requestId,
+      });
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+      const result = { requestId, digest: `sha256:${'c'.repeat(64)}` };
+      await expect(dispatch.result(physical, 'image.acquire', result)).rejects.toMatchObject({
+        status: 503,
+      });
+      await expect(pending).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(authority.mayCarryWork(physical)).toBe(true);
+      coreDb.sqlite.exec('PRAGMA query_only = OFF');
+      await dispatch.result(physical, 'image.acquire', result);
+      const restarted = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      await expect(restarted.result(physical, 'image.acquire', result)).resolves.toBeUndefined();
+      await restarted.readiness!(physical, Buffer.from('{}'), target);
+      const replay = restarted.effect({
+        kind: 'image.acquire',
+        requestId,
+        input: { imageReference: 'openkit:test' },
+        imageSettlement,
+      });
+      await expect(restarted.poll(physical, 'image.acquire')).resolves.toBeNull();
+      await expect(replay).resolves.toEqual({ digest: result.digest });
+
+      await expect(
+        restarted.expectResultOnly!([{ kind: 'image.acquire', requestId, imageSettlement }])
+      ).resolves.toEqual({ kind: 'image.acquire', result: { digest: result.digest } });
+      await expect(
+        restarted.result(physical, 'image.acquire', {
+          ...result,
+          digest: `sha256:${'d'.repeat(64)}`,
+        })
+      ).rejects.toMatchObject({ status: 409 });
+      coreDb.sqlite
+        .prepare('UPDATE worker_image_settlements SET image_digest = ? WHERE request_id = ?')
+        .run('malformed-digest', requestId);
+      await expect(restarted.result(physical, 'image.acquire', result)).rejects.toMatchObject({
+        status: 409,
+      });
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
+  });
+
   it('rejects caller-created connection identities before route or effect dispatch', async () => {
     const authority = createNanoHostTransportSessionAuthority();
     const retiredHandle = authority.admit({
@@ -78,6 +178,9 @@ describe('authoritative NanoHost session dispatch', () => {
       'bridge.close',
       'image.acquire',
       'image.build',
+      'image.inspect',
+      'storage.inspect',
+      'storage.purge',
       'file.export',
       'reference.import',
     ]) {
@@ -152,6 +255,7 @@ describe('authoritative NanoHost session dispatch', () => {
     let firstClient: ReturnType<typeof connectHttp2> | undefined;
     let successorClient: ReturnType<typeof connectHttp2> | undefined;
     let thirdClient: ReturnType<typeof connectHttp2> | undefined;
+    let fourthClient: ReturnType<typeof connectHttp2> | undefined;
 
     try {
       server.listen(0, '127.0.0.1');
@@ -338,13 +442,6 @@ describe('authoritative NanoHost session dispatch', () => {
         ).rejects.toThrow(/special|sensitive|raw|failure|result/i);
       }
 
-      const unknownRequestId = '9'.repeat(64);
-      const unknownOutcome = dispatch.expectResultOnly!([
-        { kind: 'sandbox.delete', requestId: unknownRequestId },
-      ]).then(
-        () => null,
-        (error: unknown) => error
-      );
       const pollOrder = [
         'sandbox.create',
         'sandbox.delete',
@@ -352,10 +449,42 @@ describe('authoritative NanoHost session dispatch', () => {
         'bridge.close',
         'image.acquire',
         'image.build',
+        'image.inspect',
+        'storage.inspect',
+        'storage.purge',
         'file.export',
         'reference.import',
       ] as const;
       expect(NANO_HOST_EFFECT_OPERATIONS).toEqual(pollOrder);
+
+      const ephemeralRequests = [
+        {
+          input: { imageDigest: `sha256:${'a'.repeat(64)}` },
+          kind: 'image.inspect' as const,
+          requestId: '1'.repeat(64),
+        },
+        {
+          input: { attachmentGeneration: 1, storageRef: 'wst_inspect' },
+          kind: 'storage.inspect' as const,
+          requestId: '2'.repeat(64),
+        },
+        {
+          input: { attachmentGeneration: 1, storageRef: 'wst_purge' },
+          kind: 'storage.purge' as const,
+          requestId: '3'.repeat(64),
+        },
+      ];
+      const ephemeralOutcomes = ephemeralRequests.map((request) =>
+        dispatch.effect(request).then(
+          () => null,
+          (error: unknown) => error
+        )
+      );
+      for (const request of ephemeralRequests) {
+        await expect(dispatch.poll(successorPhysical, request.kind)).resolves.toMatchObject({
+          requestId: request.requestId,
+        });
+      }
 
       allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
@@ -378,18 +507,72 @@ describe('authoritative NanoHost session dispatch', () => {
       authority.fencePredecessor(target.identityId, 2);
       await dispatch.readiness?.(thirdPhysical, new TextEncoder().encode('{}'), target);
 
-      await expect(dispatch.poll(thirdPhysical, pollOrder[0])).rejects.toThrow(/unknown|fenc/i);
+      for (const request of ephemeralRequests) {
+        await expect(dispatch.poll(thirdPhysical, request.kind)).resolves.toBeNull();
+      }
+      for (const outcome of ephemeralOutcomes) {
+        const error = await outcome;
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toMatch(/unknown|connection replacement/i);
+      }
+      expect(authority.mayCarryWork(thirdPhysical)).toBe(true);
+
+      const freshInspectRequestId = '4'.repeat(64);
+      const freshInspect = dispatch.effect({
+        input: { imageDigest: `sha256:${'a'.repeat(64)}` },
+        kind: 'image.inspect',
+        requestId: freshInspectRequestId,
+      });
+      await expect(dispatch.poll(thirdPhysical, 'image.inspect')).resolves.toMatchObject({
+        requestId: freshInspectRequestId,
+      });
+      await dispatch.result(thirdPhysical, 'image.inspect', {
+        digest: `sha256:${'a'.repeat(64)}`,
+        requestId: freshInspectRequestId,
+      });
+      await expect(freshInspect).resolves.toEqual({ digest: `sha256:${'a'.repeat(64)}` });
+
+      const unknownRequestId = '9'.repeat(64);
+      const unknownOutcome = dispatch.expectResultOnly!([
+        { kind: 'sandbox.delete', requestId: unknownRequestId },
+      ]).then(
+        () => null,
+        (error: unknown) => error
+      );
+      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: '2026-08-10T00:00:03.000Z',
+      });
+      const fourthPhysicalPromise = new Promise<object>((resolve) => {
+        acceptConnection = resolve;
+      });
+      fourthClient = connectHttp2(origin);
+      await once(fourthClient, 'connect');
+      fourthClient.request({ ':method': 'POST', ':path': '/' }).end();
+      const fourthPhysical = await fourthPhysicalPromise;
+      expect(
+        authority.admit({
+          connectionGeneration: 4,
+          identityId: target.identityId,
+          physicalConnection: fourthPhysical,
+        }).role
+      ).toBe('candidate');
+      authority.fencePredecessor(target.identityId, 3);
+      await dispatch.readiness?.(fourthPhysical, new TextEncoder().encode('{}'), target);
+
+      await expect(dispatch.poll(fourthPhysical, pollOrder[0])).rejects.toThrow(/unknown|fenc/i);
       const unknownError = await unknownOutcome;
       expect(unknownError).toBeInstanceOf(Error);
       expect((unknownError as Error).message).toMatch(/unknown/i);
-      expect(authority.mayCarryWork(thirdPhysical)).toBe(false);
-      await expect(dispatch.poll(thirdPhysical, pollOrder[1])).rejects.toThrow(
+      expect(authority.mayCarryWork(fourthPhysical)).toBe(false);
+      await expect(dispatch.poll(fourthPhysical, pollOrder[1])).rejects.toThrow(
         /authoritative|fenc/i
       );
     } finally {
       firstClient?.destroy();
       successorClient?.destroy();
       thirdClient?.destroy();
+      fourthClient?.destroy();
       server.close();
       await once(server, 'close');
       coreDb.sqlite.close();

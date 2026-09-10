@@ -18,6 +18,7 @@ function createConfiguredProviderOptions(gateway: { enabled?: boolean } = {}) {
         {
           id: 'quick-chat',
           displayName: 'Quick Chat',
+          contextManagement: [{ type: 'compaction' as const, compactThreshold: 8_000 }],
           routes: [
             {
               id: 'primary',

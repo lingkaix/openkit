@@ -51,12 +51,31 @@ pip --version >/dev/null
 npm --version >/dev/null
 git --version >/dev/null
 
-test "$(id -u)" -ne 0
-test "$(command -v python)" = "/sandbox/.venv/bin/python"
-test "$(command -v pip)" = "/sandbox/.venv/bin/pip"
+test "$(id -u)" = "1000"
+test "$(id -g)" = "1000"
+test "$(id -un)" = "sandbox"
+test "$(id -gn)" = "sandbox"
+test "$(getent passwd sandbox | cut -d: -f3,4,6)" = "1000:1000:/sandbox"
+test "${HOME}" = "/sandbox"
+test ! -e /home/node
+test "$(command -v python)" = "/opt/openkit/venv/bin/python"
+test "$(command -v pip)" = "/opt/openkit/venv/bin/pip"
 test ! -e /etc/openshell/policy.yaml
 test ! -w /opt/uv/python
+test ! -w /opt/openkit/venv
+test ! -w /opt/openkit/.bashrc
 test ! -w /usr/local/lib/openkit/worker-shim
+test "${BASH_ENV}" = "/opt/openkit/.bashrc"
+test "${ENV}" = "/opt/openkit/.bashrc"
+test "${VIRTUAL_ENV}" = "/opt/openkit/venv"
+test "${TEMP}" = "/tmp/openkit-bootstrap"
+test "${TMP}" = "/tmp/openkit-bootstrap"
+test "${TMPDIR}" = "/tmp/openkit-bootstrap"
+test "${PWD}" = "/tmp/openkit-bootstrap"
+test "$(stat -c '%u:%g:%a' /tmp/openkit-bootstrap)" = "1000:1000:700"
+test -w /tmp/openkit-bootstrap
+test -d /openkit
+test ! -L /openkit
 
 for path in \
   /sandbox \
@@ -64,8 +83,7 @@ for path in \
   /sandbox/.config \
   /sandbox/.local \
   /sandbox/.npm \
-  /sandbox/.venv \
-  /workspace/worktrees/main \
+  /workspace/worktrees \
   /workspace/inputs \
   /workspace/data \
   /workspace/artifacts/in \
@@ -78,6 +96,14 @@ for path in \
   test -d "${path}"
   test -w "${path}"
 done
+
+workspace_unknown="/workspace/.openkit-image-smoke-unknown"
+sandbox_unknown="/sandbox/.openkit-image-smoke-unknown"
+printf 'workspace-unknown\n' > "${workspace_unknown}"
+printf 'sandbox-unknown\n' > "${sandbox_unknown}"
+test "$(cat "${workspace_unknown}")" = "workspace-unknown"
+test "$(cat "${sandbox_unknown}")" = "sandbox-unknown"
+rm -f "${workspace_unknown}" "${sandbox_unknown}"
 
 command -v openkit-worker-shim >/dev/null
 bash -n /usr/local/bin/openkit-worker-shim

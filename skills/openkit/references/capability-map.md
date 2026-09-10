@@ -24,6 +24,7 @@ Use this intent map to choose search terms; do not treat it as the authoritative
 | Retrieve or govern knowledge | `knowledge`, `claim`, `conflict`, `context`, `proposal` | [knowledge.md](knowledge.md) |
 | Recover interrupted work | `interrupted`, `checkpoint`, `retry`, `recovery`, `stale` | [recovery.md](recovery.md) |
 | Configure worker runtime | `runtime`, `configuration`, `session` | [administration.md](administration.md) |
+| Prepare, recover, activate, or reuse a Worker environment | `worker-environment`, `prepare`, `activate`, `administration` | [administration.md](administration.md) |
 | Administer secrets and grants | `vault`, `grant`, `injection`, `rebind` | [administration.md](administration.md) |
 | Schedule recurring work | `automation`, `schedule`, `trigger` | [administration.md](administration.md) |
 | Move, delete, recover, or protect workspace data | `backup`, `export`, `import`, `restore`, `delete`, `recovery`, `portability` | [administration.md](administration.md) or [recovery.md](recovery.md) |

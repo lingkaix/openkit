@@ -11,7 +11,7 @@ import type {
   SessionWorkspaceMaterializationPlan,
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import type { StopReason } from '@openkit/protocol';
+import { responsibleUserIdForActor, type StopReason } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
@@ -115,6 +115,11 @@ import {
   type WorkerGovernanceWorkspaceChangeRecord,
 } from './worker-governance-backend.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
+import {
+  getWorkerStorageBinding,
+  resolveWorkerStorageWorkSlotRef,
+  workerStorageDefaultWorkSlotRef,
+} from './worker-storage-bindings.js';
 import {
   importWorkerTranscript,
   workerTranscriptHasMaterialProposal,
@@ -578,6 +583,10 @@ export interface WorkerGovernanceTurnExecutorOptions {
   now?: (() => string) | undefined;
   /** Optional deterministic runtime provenance importer for tests. */
   runtimeProvenanceImporter?: typeof importWorkerRuntimeProvenance | undefined;
+  /** Resolves an exact work slot from a compatible resident Sandbox without effects. */
+  resolveResidentWorkerStorageWorkSlotRef?:
+    | ((environmentPackage: AgentEnvironmentPackage) => string | null)
+    | undefined;
   /** Optional vault backend used for grant-derived provider attachments. */
   vaultBackend?: (() => VaultBackend) | undefined;
   /** Optional shared worker-control gateway used to enqueue live-session interrupts. */
@@ -620,6 +629,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly coreDb: CoreDb | null;
   private readonly createAgentSessionId: () => string;
   private readonly now: () => string;
+  private readonly resolveResidentWorkerStorageWorkSlotRef:
+    | ((environmentPackage: AgentEnvironmentPackage) => string | null)
+    | null;
   private readonly runtimeProvenanceImporter: typeof importWorkerRuntimeProvenance;
   private readonly vaultBackend: (() => VaultBackend) | null;
   private readonly workerControlGateway: WorkerControlGateway | null;
@@ -644,6 +656,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.coreDb = options.coreDb ?? null;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => generateUuidV7());
     this.now = options.now ?? (() => new Date().toISOString());
+    this.resolveResidentWorkerStorageWorkSlotRef =
+      options.resolveResidentWorkerStorageWorkSlotRef ?? null;
     this.runtimeProvenanceImporter =
       options.runtimeProvenanceImporter ?? importWorkerRuntimeProvenance;
     this.vaultBackend = options.vaultBackend ?? null;
@@ -1079,25 +1093,40 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     agentSessionId: string,
     input: PrepareAgentSessionForTurnInput
   ): AgentEnvironmentPackage {
-    return resolveAgentEnvironmentPackageMetadata({
-      agentSessionId,
-      agentSetup: input.agentSetup,
-      backend: { kind: 'openshell' },
-      ...(this.coreDb ? { coreDb: this.coreDb } : {}),
-      requestId: input.requestId,
-      turn: input.turn,
-      turnInput: input.turnInput,
-      triggerActor: input.turn.triggerActor,
-      workspaceCwd: input.workspaceCwd,
-      workspaceRoots: input.workspaceRoots,
-      ...(input.workspaceDataSourceCatalog
-        ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
-        : {}),
-      ...(input.workspaceMcpServerCatalog
-        ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
-        : {}),
-      ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
-    });
+    const resolvePackage = (workSlotRef: string) =>
+      resolveAgentEnvironmentPackageMetadata({
+        agentSessionId,
+        agentSetup: input.agentSetup,
+        backend: { kind: 'openshell' },
+        ...(this.coreDb ? { coreDb: this.coreDb } : {}),
+        requestId: input.requestId,
+        turn: input.turn,
+        turnInput: input.turnInput,
+        triggerActor: input.turn.triggerActor,
+        workspaceCwd: input.workspaceCwd,
+        workerStorageWorkSlotRef: workSlotRef,
+        workspaceRoots: input.workspaceRoots,
+        ...(input.workspaceDataSourceCatalog
+          ? { workspaceDataSourceCatalog: input.workspaceDataSourceCatalog }
+          : {}),
+        ...(input.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: input.workspaceMcpServerCatalog }
+          : {}),
+        ...(input.workspaceSourceRefs ? { workspaceSourceRefs: input.workspaceSourceRefs } : {}),
+      });
+    const plannedWorkSlotRef = workerStorageWorkSlotRef(
+      input.workerStorageChoice,
+      input.turn.workspaceId,
+      input.turn.threadId,
+      this.coreDb,
+      responsibleUserIdForActor(input.turn.triggerActor)
+    );
+    const planned = resolvePackage(plannedWorkSlotRef);
+    if (input.workerStorageChoice?.kind === 'selected') return planned;
+    const residentWorkSlotRef = this.resolveResidentWorkerStorageWorkSlotRef?.(planned);
+    return residentWorkSlotRef && residentWorkSlotRef !== plannedWorkSlotRef
+      ? resolvePackage(residentWorkSlotRef)
+      : planned;
   }
 
   /**
@@ -1157,27 +1186,29 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       const resolvedAgentSessionId = agentSessionId ?? this.createAgentSessionId();
       agentSessionId = resolvedAgentSessionId;
-      const launchCompatibilityKey = this.previewAgentSessionCompatibilityKey(
-        resolvedAgentSessionId,
-        {
-          agentSetup: context.agentSetup,
-          freshAgentSessionId: resolvedAgentSessionId,
-          requestId,
-          turn,
-          turnInput: input,
-          workspaceCwd: workerVisibleWorkspaceCwd(context, { kind: 'openshell' }),
-          workspaceRoots: context.workspaceRoots,
-          ...(context.workspaceDataSourceCatalog
-            ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
-            : {}),
-          ...(context.workspaceMcpServerCatalog
-            ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
-            : {}),
-          ...(context.workspaceSourceRefs
-            ? { workspaceSourceRefs: context.workspaceSourceRefs }
-            : {}),
-        }
-      );
+      const launchEnvironmentPackage = this.previewAgentEnvironmentPackage(resolvedAgentSessionId, {
+        agentSetup: context.agentSetup,
+        freshAgentSessionId: resolvedAgentSessionId,
+        requestId,
+        turn,
+        turnInput: input,
+        ...(context.workerStorageChoice
+          ? { workerStorageChoice: context.workerStorageChoice }
+          : {}),
+        workspaceCwd: workerVisibleWorkspaceCwd(context, { kind: 'openshell' }),
+        workspaceRoots: context.workspaceRoots,
+        ...(context.workspaceDataSourceCatalog
+          ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
+          : {}),
+        ...(context.workspaceMcpServerCatalog
+          ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
+          : {}),
+        ...(context.workspaceSourceRefs
+          ? { workspaceSourceRefs: context.workspaceSourceRefs }
+          : {}),
+      });
+      const launchCompatibilityKey =
+        agentSessionCompatibilityKeyFromPackage(launchEnvironmentPackage);
       if (
         context.sessionCompatibilityKey &&
         context.sessionCompatibilityKey !== launchCompatibilityKey
@@ -1257,6 +1288,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? { workspaceMcpServerCatalog: context.workspaceMcpServerCatalog }
           : {}),
         workspaceCwd: workerVisibleWorkspaceCwd(context, { kind: 'openshell' }),
+        workerStorageWorkSlotRef: requirePackageWorkerStorageWorkSlotRef(launchEnvironmentPackage),
         workspaceRoots: context.workspaceRoots,
         ...(context.workspaceSourceRefs
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
@@ -1428,6 +1460,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         runtimeEnvCredentials,
         runtimeFileCredentials,
         ...(context.sandboxBindingRef ? { sandboxBindingRef: context.sandboxBindingRef } : {}),
+        ...(context.workerStorageChoice
+          ? { workerStorageChoice: context.workerStorageChoice }
+          : {}),
         workspaceRoots: preparedWorkerContext
           ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
           : context.workspaceRoots,
@@ -2746,6 +2781,25 @@ function agentSessionCompatibilityKeyFromPackage(
   ).sessionWorkspace.compatibilityKey.digest;
 }
 
+/** Reads the exact work-slot identity already validated into one metadata-only AEP. */
+function requirePackageWorkerStorageWorkSlotRef(
+  environmentPackage: AgentEnvironmentPackage
+): string {
+  const workSlotRef = (
+    environmentPackage.extensions.openkit as {
+      workerStorage: { workSlotRef: string };
+    }
+  ).workerStorage.workSlotRef;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(workSlotRef)) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'The Agent Environment Package Worker storage slot is invalid.',
+      409
+    );
+  }
+  return workSlotRef;
+}
+
 /** Verifies that the restored package, Core session, and backend plan have one authority lineage. */
 function assertRestoredSession(
   environmentPackage: AgentEnvironmentPackage,
@@ -2826,4 +2880,30 @@ export function workerVisibleWorkspaceCwd(
       (root) => root.sourceKind !== 'remote-git' && root.sourcePath === workspaceCwd
     )?.workerPath ?? workspaceCwd
   );
+}
+
+/** Selects the exact storage work slot before the immutable package is planned. */
+export function workerStorageWorkSlotRef(
+  choice: TurnStartRuntimeContext['workerStorageChoice'],
+  workspaceId: string,
+  threadId: string,
+  coreDb: CoreDb | null,
+  responsibleUserId: string | null
+): string {
+  if (choice?.kind !== 'selected') return workerStorageDefaultWorkSlotRef(workspaceId, threadId);
+  const binding = coreDb
+    ? getWorkerStorageBinding(coreDb, { storageRef: choice.storageRef })
+    : null;
+  if (!binding || binding.workspaceId !== workspaceId || !responsibleUserId) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Selected Worker storage is unavailable.',
+      409
+    );
+  }
+  return resolveWorkerStorageWorkSlotRef(binding, {
+    threadId,
+    responsibleUserId,
+    ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
+  });
 }

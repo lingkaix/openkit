@@ -228,6 +228,7 @@ describe('workspace export verifier', () => {
           name: 'Demo thread',
           preview: 'Demo thread',
           status: 'active',
+          entryPath: 'conversation',
           createdAt: timestamp,
           updatedAt: timestamp,
         },
@@ -359,6 +360,7 @@ describe('workspace export verifier', () => {
       name: 'History thread',
       preview: 'Canonical history',
       status: 'active',
+      entryPath: 'conversation',
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -1680,6 +1682,7 @@ describe('workspace export verifier', () => {
       name: 'Worker evidence thread',
       preview: 'Worker evidence',
       status: 'active',
+      entryPath: 'conversation',
       createdAt: timestamp,
       updatedAt: timestamp,
     };

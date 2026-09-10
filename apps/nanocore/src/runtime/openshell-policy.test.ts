@@ -39,12 +39,54 @@ describe('projectOpenShellWorkerPolicy', () => {
     expect(projectOpenShellWorkerPolicy(representativeInput)).toEqual(expectedPolicy);
   });
 
+  it('grants persistent data, ephemeral control, and immutable image supply separately', () => {
+    const policy = projectOpenShellWorkerPolicy({});
+
+    expect(policy.filesystem.includeWorkdir).toBe(false);
+    expect(policy.filesystem.readOnly).toContain('/opt');
+    expect(policy.filesystem.readWrite).toEqual(
+      expect.arrayContaining(['/sandbox', '/workspace', '/openkit', '/tmp/openkit-bootstrap'])
+    );
+    expect(policy.filesystem.readWrite).not.toContain('/tmp');
+  });
+
   it('rejects filesystem paths that OpenShell cannot enforce', () => {
     expect(() =>
       projectOpenShellWorkerPolicy({
         additionalFilesystemGrants: [{ access: 'read-only', path: 'relative' }],
       })
-    ).toThrow('OpenShell additional filesystem grant path must be absolute.');
+    ).toThrow('OpenShell additional filesystem grant path must be canonical and absolute.');
+
+    expect(() =>
+      projectOpenShellWorkerPolicy({
+        additionalFilesystemGrants: [{ access: 'read-write', path: '/opt/../sandbox' }],
+      })
+    ).toThrow('OpenShell additional filesystem grant path must be canonical and absolute.');
+  });
+
+  it.each([
+    '/usr',
+    '/lib',
+    '/proc',
+    '/dev/urandom',
+    '/app',
+    '/etc',
+    '/opt',
+    '/var/log',
+  ])('rejects read-write grants that overlap fixed read-only root %s', (root) => {
+    for (const path of ['/', root, `${root}/nested`]) {
+      expect(() =>
+        projectOpenShellWorkerPolicy({
+          additionalFilesystemGrants: [{ access: 'read-write', path }],
+        })
+      ).toThrow(
+        'OpenShell additional read-write filesystem grant overlaps a fixed read-only root.'
+      );
+    }
+  });
+
+  it('retains authored read-only supply and read-write data grants', () => {
+    expect(() => projectOpenShellWorkerPolicy(representativeInput)).not.toThrow();
   });
 
   it.each([

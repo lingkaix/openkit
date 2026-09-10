@@ -8,6 +8,14 @@ export const InternalRoleExecutionProfileSchema = z
     preferredLogicalModelId: z.string().min(1).optional(),
     compatibleLogicalModelIds: z.array(z.string().min(1)).default([]),
     requiredLogicalModelCapabilities: z.array(z.string().min(1)).default([]),
+    limits: z
+      .object({
+        maxModelTurns: z.number().int().positive(),
+        maxToolCalls: z.number().int().positive(),
+        deadlineMs: z.number().int().positive(),
+      })
+      .strict()
+      .default({ maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 }),
   })
   .strict();
 

@@ -107,6 +107,7 @@ const WORKSPACE_B = workspaceRecord('ws2', 'Ops workspace', 'operations', {
 
 const THREAD_NAME = 'Competitive teardown';
 const THREAD = ThreadSchema.parse({
+  entryPath: 'conversation',
   id: 'th_intro',
   workspaceId: WORKSPACE.id,
   name: THREAD_NAME,

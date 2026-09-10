@@ -293,6 +293,11 @@ pub struct RecoveryObservation {
 }
 
 impl RecoveryObservation {
+    /// Returns whether startup has proved every prior Runtime Epoch writer absent.
+    pub fn prior_epoch_writers_fenced(&self) -> bool {
+        self.fence_started.is_some() || self.absent_prior_epochs.is_some()
+    }
+
     /// Removes the exact prior state and runtime roots observed before fresh planning.
     ///
     /// # Errors
@@ -591,6 +596,28 @@ mod tests {
                 .fence_started,
             Some(first)
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persisted_fence_without_residual_roots_still_proves_prior_writers_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "openkit-fenced-empty-recovery-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).expect("recovery root");
+        let state = root.join("state");
+        fs::create_dir(&state).expect("state root");
+        let marker = root.join("fence-started");
+        record_fence_started_at(&marker, UNIX_EPOCH + Duration::from_secs(1))
+            .expect("fence marker");
+
+        let recovery = observe_recovery_at(&state, &marker).expect("recovery observation");
+
+        assert_eq!(recovery.residual_roots, 0);
+        assert!(recovery.absent_prior_epochs.is_none());
+        assert!(recovery.prior_epoch_writers_fenced());
         let _ = fs::remove_dir_all(root);
     }
 

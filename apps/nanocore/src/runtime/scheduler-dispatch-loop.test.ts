@@ -297,6 +297,100 @@ function localProviderRegistry(): ProviderRegistry {
 }
 
 describe('scheduler dispatch loop', () => {
+  it.each([
+    { cancelDeferredAdmission: true, expectedStatus: 'cancelled' as const },
+    { cancelDeferredAdmission: false, expectedStatus: 'queued' as const },
+  ])('settles only the synchronous caller admission after pre-dispatch recovery failure: $expectedStatus', async ({
+    cancelDeferredAdmission,
+    expectedStatus,
+  }) => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore();
+    const turnExecutor = new RecordingTurnExecutor();
+    const manifest = agentManifest();
+    const requestId = cancelDeferredAdmission
+      ? '00000000-0000-4000-8000-00000000f101'
+      : '00000000-0000-4000-8000-00000000f102';
+    turnExecutor.prepareAgentSessionForTurn = async () => {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The active predecessor requires recovery before replacement.',
+        409
+      );
+    };
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [manifest],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+      providerRegistry: localProviderRegistry(),
+    });
+
+    try {
+      seedLocalSchedulerTarget(coreDb);
+      await expect(
+        startProductTurn({
+          cancelDeferredAdmission,
+          coreDb,
+          input: {
+            agentId: manifest.id,
+            input: 'Replace the active Worker after recovery.',
+            modelId: 'openai/gpt-5.2',
+            profileId: 'default',
+            requestId,
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+          },
+          providerCredentialResolver: () => null,
+          schedulerEpoch: 1,
+          snapshot,
+          store,
+          triggerActor: { kind: 'user', id: 'user_local' },
+          turnExecutor,
+          workerPlacement: 'local',
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
+
+      const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        statuses: ['queued', 'cancelled'],
+        workspaceId: 'ws_demo',
+      }).find((entry) => entry.requestId === requestId);
+      expect(admission).toMatchObject({ requestId, status: expectedStatus });
+
+      if (cancelDeferredAdmission) {
+        const laterExecutor = new RecordingTurnExecutor();
+        await expect(
+          runSchedulerDispatchLoop({
+            agentManifests: [manifest],
+            coreDb,
+            createAgentSessionId: () => 'as_cancelled_followup',
+            createLeaseId: () => 'lease_cancelled_followup',
+            createPlanId: () => 'plan_cancelled_followup',
+            expectedControlMode: 'poll',
+            expectedDataPlaneMode: 'openshell-files',
+            gatewayConfig: createTestGatewayConfig(),
+            heartbeatIntervalMs: 10_000,
+            heartbeatTimeoutMs: 30_000,
+            leaseDurationMs: 900_000,
+            maxDispatches: 1,
+            providerRegistry: localProviderRegistry(),
+            schedulerEpoch: 1,
+            startupTimeoutMs: 120_000,
+            store,
+            turnExecutor: laterExecutor,
+          })
+        ).resolves.toEqual({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'no-queued-entry' },
+        });
+        expect(laterExecutor.prepareCalls).toEqual([]);
+        expect(laterExecutor.calls).toEqual([]);
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('leaves admission queued when the runtime reports one-Sandbox capacity saturation', async () => {
     const coreDb = createMigratedCoreDb();
     const store = createDemoStore();

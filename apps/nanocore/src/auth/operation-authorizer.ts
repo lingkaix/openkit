@@ -20,6 +20,11 @@ import {
   type WorkspaceRole,
 } from '../workspace-membership.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
+import {
+  listOpenKitAccessTokenRecords,
+  resolveSessionDeploymentAdminTokenId,
+} from './access-token-store.js';
 import type { Actor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import {
@@ -27,6 +32,7 @@ import {
   type PublicOperationAccess,
   type WorkspaceOperationAccess,
 } from './operation-access.js';
+import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const GatewayWorkspaceAttributionSchema = z
   .object({
@@ -79,6 +85,63 @@ export interface RegisterOperationAccessGuardsInput {
   readonly store: FsStore;
   /** Process-local owner that fences ordinary Workspace mutations during deletion. */
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
+}
+
+/** Current non-secret deployment-administrator authority proved from durable Token state. */
+export interface CurrentDeploymentAdminAuthority {
+  /** Token id that currently grants server administration, absent only in local mode. */
+  readonly tokenId: string | null;
+  /** Canonical user that owns the authority. */
+  readonly userId: string;
+}
+
+/** Raised when an operation has no current usable deployment-administrator authority. */
+export class DeploymentAdminRequiredError extends Error {
+  public constructor() {
+    super('Current deployment administrator authority is required.');
+    this.name = 'DeploymentAdminRequiredError';
+  }
+}
+
+/**
+ * Rechecks current deployment-administrator authority from durable user and Token owners.
+ *
+ * @param coreDb Core identity and Token authority.
+ * @param actor Authenticated request actor whose authority must still be usable.
+ * @param now Current time for Token expiration and rotation-grace evaluation.
+ * @returns Current non-secret administrator authority.
+ * @throws DeploymentAdminRequiredError when the actor or its current Token authority is unusable.
+ */
+export function requireCurrentDeploymentAdmin(
+  coreDb: CoreDb,
+  actor: Actor | undefined,
+  now = new Date()
+): CurrentDeploymentAdminAuthority {
+  if (!actor || !isCanonicalUserActive(coreDb, actor.userId)) {
+    throw new DeploymentAdminRequiredError();
+  }
+  if (actor.kind === 'local') {
+    return { tokenId: null, userId: actor.userId };
+  }
+  if (actor.kind === 'session') {
+    const tokenId = resolveSessionDeploymentAdminTokenId(coreDb, actor.userId, now);
+    if (tokenId) {
+      return { tokenId, userId: actor.userId };
+    }
+    throw new DeploymentAdminRequiredError();
+  }
+  const token = actor.tokenId
+    ? listOpenKitAccessTokenRecords(coreDb).find((candidate) => candidate.tokenId === actor.tokenId)
+    : undefined;
+  if (
+    token?.ownerUserId === actor.userId &&
+    token.scope === 'server-admin' &&
+    actor.tokenScope === 'server-admin' &&
+    evaluateOpenKitAccessTokenUsability(token, now).usable
+  ) {
+    return { tokenId: token.tokenId, userId: actor.userId };
+  }
+  throw new DeploymentAdminRequiredError();
 }
 
 /** One exact method and Hono path owned by a catalog operation. */
@@ -207,7 +270,9 @@ export function isWorkspaceOperationAuthorized(
   coreDb: CoreDb,
   actor: Actor,
   workspaceId: string,
-  access: Pick<PublicOperationAccess, 'mutating' | 'policyOperation'>
+  access: Pick<PublicOperationAccess, 'mutating' | 'policyOperation'> & {
+    readonly authentication?: PublicOperationAccess['authentication'];
+  }
 ): boolean {
   return authorizeWorkspace(coreDb, actor, workspaceId, access) !== null;
 }
@@ -270,7 +335,16 @@ async function authorizeOperation(
   if (route.access.scope !== 'workspace') {
     return null;
   }
-  if (actor.kind === 'token' && actor.tokenScope === 'server-admin') {
+  if (route.access.authentication === 'deployment-admin') {
+    try {
+      requireCurrentDeploymentAdmin(input.coreDb, actor);
+    } catch (error) {
+      if (error instanceof DeploymentAdminRequiredError) {
+        return workspaceAccessDenied();
+      }
+      throw error;
+    }
+  } else if (actor.kind === 'token' && actor.tokenScope === 'server-admin') {
     return workspaceAccessDenied();
   }
 
@@ -450,9 +524,14 @@ function authorizeWorkspace(
   coreDb: CoreDb,
   actor: Actor,
   workspaceId: string,
-  access: Pick<PublicOperationAccess, 'mutating' | 'policyOperation'>
+  access: Pick<PublicOperationAccess, 'mutating' | 'policyOperation'> & {
+    readonly authentication?: PublicOperationAccess['authentication'];
+  }
 ): AuthorizedWorkspace | null {
-  if (!tokenIncludesWorkspace(actor, workspaceId) || readonlyTokenCannotMutate(actor, access)) {
+  if (
+    !tokenIncludesWorkspace(actor, workspaceId, access.authentication) ||
+    readonlyTokenCannotMutate(actor, access)
+  ) {
     return null;
   }
   const effectiveRole = currentWorkspaceAuthority(
@@ -551,9 +630,16 @@ async function gatewayWorkspaceId(
  * @param workspaceId Canonical target Workspace id.
  * @returns True when the actor's credential may address the Workspace.
  */
-function tokenIncludesWorkspace(actor: Actor, workspaceId: string): boolean {
+function tokenIncludesWorkspace(
+  actor: Actor,
+  workspaceId: string,
+  authentication: PublicOperationAccess['authentication']
+): boolean {
   if (actor.kind !== 'token') {
     return true;
+  }
+  if (actor.tokenScope === 'server-admin') {
+    return authentication === 'deployment-admin';
   }
   if (actor.tokenScope !== 'workspace' && actor.tokenScope !== 'workspace-readonly') {
     return false;

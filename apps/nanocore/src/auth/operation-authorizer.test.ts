@@ -11,6 +11,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import { type Actor, ensureLocalUser } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
@@ -129,6 +130,9 @@ function createFixture() {
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.post('/api/turns/:turnId/feedback', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.get('/api/app/workspaces/:workspaceId/dashboard', (c) =>
+    c.json(c.get('workspaceAccess') ?? null)
+  );
+  app.get('/api/app/workspaces/:workspaceId/worker-environments', (c) =>
     c.json(c.get('workspaceAccess') ?? null)
   );
   app.get('/api/app/workspaces/:workspaceId/threads/:threadId/dashboard', (c) => {
@@ -537,6 +541,73 @@ describe('central Workspace operation authorizer', () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+  });
+
+  it('intersects current usable deployment administration with current Workspace access', async () => {
+    const route = `/api/app/workspaces/${fixture.workspace.id}/worker-environments`;
+    const withoutAdmin = await fixture.app.request(route);
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_current_admin',
+      workspaceIds: [],
+    });
+    const withAdmin = await fixture.app.request(route);
+    fixture.coreDb.sqlite
+      .prepare(
+        `UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?`
+      )
+      .run(new Date().toISOString(), 'token_current_admin');
+    const afterRevocation = await fixture.app.request(route);
+
+    expect(withoutAdmin.status).toBe(403);
+    expect(withAdmin.status).toBe(200);
+    await expect(withAdmin.json()).resolves.toMatchObject({
+      effectiveRole: 'owner',
+      workspaceId: fixture.workspace.id,
+    });
+    expect(afterRevocation.status).toBe(403);
+  });
+
+  it('requires a presented admin Token to remain usable and independently requires membership', async () => {
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      tokenId: 'token_presented_admin',
+      workspaceIds: [],
+    });
+    fixture.actorState.current = {
+      kind: 'token',
+      tokenId: 'token_presented_admin',
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_local',
+    };
+    const allowed = await fixture.app.request(
+      `/api/app/workspaces/${fixture.workspace.id}/worker-environments`
+    );
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: 'user_missing',
+      scope: 'server-admin',
+      tokenId: 'token_admin_without_membership',
+      workspaceIds: [],
+    });
+    fixture.actorState.current = {
+      kind: 'token',
+      tokenId: 'token_admin_without_membership',
+      tokenScope: 'server-admin',
+      tokenWorkspaceIds: [],
+      userId: 'user_missing',
+    };
+    const denied = await fixture.app.request(
+      `/api/app/workspaces/${fixture.workspace.id}/worker-environments`
+    );
+
+    expect(allowed.status).toBe(200);
+    expect(denied.status).toBe(403);
   });
 
   it('intersects Workspace token bindings with current membership', async () => {

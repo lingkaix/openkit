@@ -19,6 +19,7 @@ import {
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import { skillSnapshotPath } from '../catalog/resource-catalog.js';
+import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 import type { OpenShellFilesystemGrant, OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
@@ -101,6 +102,8 @@ export interface WorkerGovernanceMaterializationContext {
   runtimeFileCredentials?: WorkerGovernanceRuntimeFileCredential[];
   /** Scheduler-owned non-secret sandbox binding reference for worker-control auth. */
   sandboxBindingRef?: string;
+  /** Explicit retained-storage choice; absence requests a fresh retained association. */
+  workerStorageChoice?: SchedulerWorkerStorageChoice;
   /** Host-side workspace roots available to NanoCore but not uploaded in raw form to workers. */
   workspaceRoots: MaterializedWorkspaceRoot[];
 }
@@ -485,7 +488,24 @@ export function resolveNanoHostExportPath(
   if (!relativePath || relativePath.startsWith('../') || posix.isAbsolute(relativePath)) {
     throw new Error('NanoHost export path is not one declared regular file.');
   }
-  return { relativePath, slot: slot.id };
+  if (slot.id !== 'main-worktree') {
+    return { relativePath, slot: slot.id };
+  }
+  const workerStorage =
+    openkit && typeof openkit === 'object'
+      ? (openkit as { workerStorage?: { workSlotRef?: unknown } }).workerStorage
+      : undefined;
+  const workSlotRef = workerStorage?.workSlotRef;
+  if (
+    typeof workSlotRef !== 'string' ||
+    workSlotRef.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(workSlotRef) ||
+    environmentPackage.workspace.root !== '/workspace' ||
+    slot.path !== `/workspace/worktrees/${workSlotRef}`
+  ) {
+    throw new Error('NanoHost main-worktree export has no exact admitted Worker storage slot.');
+  }
+  return { relativePath: `${workSlotRef}/${relativePath}`, slot: slot.id };
 }
 
 /**

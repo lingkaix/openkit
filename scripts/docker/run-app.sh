@@ -170,6 +170,7 @@ function gatewayConfig() {
         {
           id: 'reasoning-free',
           displayName: 'Reasoning Free',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
           routes: [
             { id: 'openrouter-primary', providerProfileId: 'openrouter', providerModel: defaultModel },
           ],

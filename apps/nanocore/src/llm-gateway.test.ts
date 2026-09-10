@@ -61,6 +61,7 @@ function logicalGatewayConfig(profile: ProviderProfile & { defaultModel: string 
       {
         id: profile.defaultModel,
         displayName: profile.defaultModel,
+        contextManagement: [{ type: 'compaction' as const, compactThreshold: 8_000 }],
         routes: [
           {
             id: 'primary',
@@ -197,6 +198,7 @@ function createDirectGatewayApp(input: {
         {
           id: defaultProfile.defaultModel,
           displayName: defaultProfile.defaultModel,
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
           routes: [
             {
               id: 'primary',
@@ -315,6 +317,7 @@ describe('OpenAI-compatible agent gateway', () => {
           {
             id: 'local-free',
             displayName: 'Local Free',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
                 id: 'primary',
@@ -404,6 +407,7 @@ describe('OpenAI-compatible agent gateway', () => {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               { id: 'blocked', providerProfileId: 'blocked', providerModel: 'gpt-5.1' },
               { id: 'ready', providerProfileId: 'ready', providerModel: 'gpt-5.1' },
@@ -563,6 +567,7 @@ describe('OpenAI-compatible agent gateway', () => {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               { id: 'primary', providerProfileId: 'openai-primary', providerModel: 'gpt-5.1' },
               {
@@ -642,6 +647,7 @@ describe('OpenAI-compatible agent gateway', () => {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [{ id: 'primary', providerProfileId: 'openai', providerModel: 'gpt-5.1' }],
           },
         ],
@@ -2454,26 +2460,26 @@ describe('OpenAI-compatible agent gateway', () => {
       readonly messages: readonly unknown[];
       readonly prompt_cache_key?: unknown;
     }> = [];
+    const piAiClient = new PiAiGatewayClient();
+    vi.spyOn(piAiClient, 'createChatCompletion').mockImplementation(async (_provider, request) => {
+      seenRequests.push(request);
+      return {
+        id: 'chatcmpl_bridge',
+        object: 'chat.completion',
+        created: 1,
+        model: request.model,
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Bridged response' },
+            finish_reason: 'stop',
+          },
+        ],
+      };
+    });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
-        createChatCompletion: async (_provider, request) => {
-          seenRequests.push(request);
-          return {
-            id: 'chatcmpl_bridge',
-            object: 'chat.completion',
-            created: 1,
-            model: request.model,
-            choices: [
-              {
-                index: 0,
-                message: { role: 'assistant', content: 'Bridged response' },
-                finish_reason: 'stop',
-              },
-            ],
-          };
-        },
-      } as unknown as PiAiGatewayClient,
+      llmPiAiClient: piAiClient,
     });
 
     const res = await app.request('/v1/responses', {
@@ -2501,7 +2507,7 @@ describe('OpenAI-compatible agent gateway', () => {
   it('returns unsupported feature errors when Responses built-in tools target chat-only providers', async () => {
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {} as unknown as PiAiGatewayClient,
+      llmPiAiClient: new PiAiGatewayClient(),
     });
 
     const res = await app.request('/v1/responses', {

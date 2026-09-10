@@ -221,19 +221,19 @@ describe('workspace Git materialization', () => {
     }
   );
 
-  it('replaces a dirty prior Turn worktree with a fresh exact checkout only', async () => {
+  it('reuses an exact retained worktree without deleting tracked, untracked, or ignored bytes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-rematerialize-'));
     const workspaceRoot = join(root, 'workspace');
     const sessionDir = join(root, 'session');
     const target = join(workspaceRoot, 'worktrees', 'main');
-    const nativeStatePath = join(sessionDir, 'native-state');
     const remote = createBareGitRemote({ 'README.md': '# Exact remote source\n' });
     mkdirSync(sessionDir);
-    writeFixtureFile(sessionDir, 'native-state', 'native session state\n');
     const input = createWorkspaceGitInput(target, remote.commit, remote.path);
     await materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir);
+    writeFixtureFile(target, '.gitignore', 'temp/\n');
     writeFixtureFile(target, 'README.md', '# Dirty prior Turn\n');
-    writeFixtureFile(target, 'untracked.txt', 'discard me\n');
+    writeFixtureFile(target, 'untracked.txt', 'retain me\n');
+    writeFixtureFile(target, 'temp/unknown.bin', Buffer.from([0, 1, 2, 3]));
 
     await expect(
       materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)
@@ -241,10 +241,78 @@ describe('workspace Git materialization', () => {
 
     expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
     expect(gitText(target, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('HEAD');
-    expect(gitText(target, ['status', '--porcelain'])).toBe('');
-    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Exact remote source\n');
-    expect(existsSync(join(target, 'untracked.txt'))).toBe(false);
-    expect(readFileSync(nativeStatePath, 'utf8')).toBe('native session state\n');
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Dirty prior Turn\n');
+    expect(readFileSync(join(target, 'untracked.txt'), 'utf8')).toBe('retain me\n');
+    expect(readFileSync(join(target, 'temp/unknown.bin'))).toEqual(Buffer.from([0, 1, 2, 3]));
+  });
+
+  it('rejects a retained worktree from another exact source without changing its bytes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-source-conflict-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const first = createBareGitRemote({ 'README.md': '# First source\n' });
+    mkdirSync(sessionDir);
+    const input = createWorkspaceGitInput(target, first.commit, first.path);
+    await materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir);
+    git(target, ['remote', 'set-url', 'origin', 'poison']);
+    git(target, ['config', `url.${first.path}.insteadOf`, 'poison']);
+    writeFixtureFile(target, 'unknown.bin', Buffer.from([9, 8, 7]));
+
+    await expect(materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)).rejects.toThrow(
+      /source|origin/i
+    );
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(first.commit);
+    expect(gitText(target, ['remote', 'get-url', 'origin'])).toBe(first.path);
+    expect(gitText(target, ['config', '--local', '--get', 'remote.origin.url'])).toBe('poison');
+    expect(gitText(target, ['config', '--local', '--get', `url.${first.path}.insteadOf`])).toBe(
+      'poison'
+    );
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# First source\n');
+    expect(readFileSync(join(target, 'unknown.bin'))).toEqual(Buffer.from([9, 8, 7]));
+  });
+
+  it('rejects a retained worktree at another baseline without changing its bytes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-baseline-conflict-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    const remote = createBareGitRemote({ 'README.md': '# Exact source\n' });
+    mkdirSync(sessionDir);
+    await materializeWorkspaceGitInputs(
+      [createWorkspaceGitInput(target, remote.commit, remote.path)],
+      workspaceRoot,
+      sessionDir
+    );
+    writeFixtureFile(target, 'unknown.bin', Buffer.from([6, 5, 4]));
+
+    await expect(
+      materializeWorkspaceGitInputs(
+        [createWorkspaceGitInput(target, 'f'.repeat(40), remote.path)],
+        workspaceRoot,
+        sessionDir
+      )
+    ).rejects.toThrow(/baseline|commit/i);
+
+    expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
+    expect(readFileSync(join(target, 'unknown.bin'))).toEqual(Buffer.from([6, 5, 4]));
+  });
+
+  it('preserves an incomplete first initialization for explicit reconciliation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-incomplete-init-'));
+    const workspaceRoot = join(root, 'workspace');
+    const sessionDir = join(root, 'session');
+    const target = join(workspaceRoot, 'worktrees', 'main');
+    mkdirSync(sessionDir);
+    const input = createWorkspaceGitInput(target, '1'.repeat(40), join(root, 'missing-remote.git'));
+
+    await expect(materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)).rejects.toThrow(
+      /fetch|initialization|source/i
+    );
+
+    expect(existsSync(target)).toBe(true);
+    expect(existsSync(join(target, '.git'))).toBe(true);
   });
 });
 

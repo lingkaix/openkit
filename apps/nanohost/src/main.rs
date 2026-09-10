@@ -13,6 +13,7 @@ mod image_store;
 mod nanocore_session;
 mod openshell_client;
 mod openshell_release;
+mod persistent_volume;
 mod sandbox_bridge;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -45,6 +46,7 @@ use openshell_sdk::raw::proto::{
     FilesystemPolicy, L7Allow, L7Rule, LandlockPolicy, NetworkBinary, NetworkEndpoint,
     NetworkPolicyRule, ProcessPolicy, SandboxPolicy,
 };
+use persistent_volume::{PersistentVolumeStore, StorageAttachmentRequest, StorageTargetBinding};
 use sandbox_bridge::{
     FILE_EFFECT_MAX_BYTES, FileEffectKind, FileEffectPresence, FileEffectRequest,
     RetainedExportResult,
@@ -283,7 +285,7 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
             .get("runAsUser")
             .ok_or("sandbox process policy invalid")?,
     )?;
-    if !include_workdir
+    if include_workdir
         || compatibility != "best_effort"
         || run_as_group != "sandbox"
         || run_as_user != "sandbox"
@@ -538,6 +540,87 @@ fn parse_sandbox_environment(
     Ok(environment)
 }
 
+/// Parses one Core-owned storage association without admitting host paths.
+fn parse_storage_attachment(
+    value: Option<&serde_json::Value>,
+) -> Result<StorageAttachmentRequest, &'static str> {
+    let object = value
+        .and_then(serde_json::Value::as_object)
+        .filter(|object| {
+            object.len() == 5
+                && [
+                    "storageRef",
+                    "scopeDigest",
+                    "attachmentGeneration",
+                    "layoutDigest",
+                    "targets",
+                ]
+                .iter()
+                .all(|key| object.contains_key(*key))
+        })
+        .ok_or("sandbox storage attachment invalid")?;
+    let string = |name| {
+        object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
+            .map(str::to_string)
+            .ok_or("sandbox storage attachment invalid")
+    };
+    let targets = object
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .filter(|targets| !targets.is_empty() && targets.len() <= 32)
+        .ok_or("sandbox storage targets invalid")?
+        .iter()
+        .map(|target| {
+            let target = target
+                .as_object()
+                .filter(|target| {
+                    target.len() == 2
+                        && target.contains_key("target")
+                        && target.contains_key("volumeRef")
+                })
+                .ok_or("sandbox storage target invalid")?;
+            Ok(StorageTargetBinding {
+                target: target
+                    .get("target")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("sandbox storage target invalid")?
+                    .to_string(),
+                volume_ref: target
+                    .get("volumeRef")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("sandbox storage target invalid")?
+                    .to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    Ok(StorageAttachmentRequest {
+        storage_ref: string("storageRef")?,
+        scope_digest: string("scopeDigest")?,
+        attachment_generation: object
+            .get("attachmentGeneration")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|generation| *generation > 0 && *generation <= 9_007_199_254_740_991)
+            .ok_or("sandbox storage attachment generation invalid")?,
+        layout_digest: string("layoutDigest")?,
+        targets,
+    })
+}
+
+/// Requires every retained mount target to be writable under the admitted policy.
+fn storage_targets_allowed(policy: &SandboxPolicy, storage: &StorageAttachmentRequest) -> bool {
+    policy.filesystem.as_ref().is_some_and(|filesystem| {
+        storage.targets.iter().all(|binding| {
+            filesystem
+                .read_write
+                .iter()
+                .any(|grant| Path::new(&binding.target).starts_with(grant))
+        })
+    })
+}
+
 /// Calls the one existing local owner selected by a fixed effect path.
 ///
 /// # Errors
@@ -595,13 +678,62 @@ fn execute_effect_command(
             } else {
                 None
             };
+            let storage_attachment = if command.kind == RuntimeEffectKind::CreateSandbox {
+                Some(parse_storage_attachment(command.input.get("storage"))?)
+            } else {
+                None
+            };
+            let storage_mounts = if let Some(storage) = &storage_attachment {
+                if !create_policy
+                    .as_ref()
+                    .is_some_and(|policy| storage_targets_allowed(policy, storage))
+                {
+                    return Err("sandbox storage targets not writable by policy");
+                }
+                coordinator.prepare_storage(sandbox_id, string("imageDigest")?, storage)?
+            } else {
+                Vec::new()
+            };
             let state = coordinator
-                .execute_lifecycle_effect(&request, create_spec, create_policy, None)
+                .execute_lifecycle_effect(
+                    &request,
+                    create_spec,
+                    create_policy,
+                    storage_mounts,
+                    None,
+                )
                 .map_err(|_| "lifecycle effect failed")?;
-            Ok(ExecutedEffectResult::Json(serde_json::json!({
+            let mut result = serde_json::json!({
                 "sandboxId": sandbox_id,
                 "state": state,
-            })))
+            });
+            if let Some(storage) = storage_attachment {
+                let inspection = coordinator
+                    .inspect_storage(&storage.storage_ref, storage.attachment_generation);
+                if inspection.get("state").and_then(serde_json::Value::as_str) != Some("attached")
+                    || inspection
+                        .get("attachment")
+                        .and_then(|attachment| attachment.get("sandboxId"))
+                        .and_then(serde_json::Value::as_str)
+                        != Some(sandbox_id)
+                {
+                    return Err("sandbox storage attachment proof unavailable");
+                }
+                result
+                    .as_object_mut()
+                    .expect("lifecycle result object")
+                    .insert(
+                        "storage".to_string(),
+                        serde_json::json!({
+                            "storageRef": storage.storage_ref,
+                            "attachmentGeneration": storage.attachment_generation,
+                            "scopeDigest": inspection.get("scopeDigest"),
+                            "layoutDigest": inspection.get("layoutDigest"),
+                            "targets": inspection.get("targets"),
+                        }),
+                    );
+            }
+            Ok(ExecutedEffectResult::Json(result))
         }
         RuntimeEffectKind::OpenBridge => {
             let sandbox_integration_binding_ref =
@@ -622,7 +754,7 @@ fn execute_effect_command(
                 sandbox_integration_binding_ref,
             };
             let state = coordinator
-                .execute_lifecycle_effect(&request, None, None, Some(bootstrap))
+                .execute_lifecycle_effect(&request, None, None, Vec::new(), Some(bootstrap))
                 .map_err(|_| "bridge.open failed or unknown")?;
             Ok(ExecutedEffectResult::Json(serde_json::json!({
                 "accepted": true,
@@ -782,6 +914,31 @@ fn execute_effect_command(
             }));
             result.map(ExecutedEffectResult::Json)
         }
+        RuntimeEffectKind::InspectImage => Ok(ExecutedEffectResult::Json(
+            coordinator.inspect_image(string("imageDigest")?)?,
+        )),
+        RuntimeEffectKind::InspectStorage => {
+            let generation = command
+                .input
+                .get("attachmentGeneration")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|generation| *generation > 0 && *generation <= 9_007_199_254_740_991)
+                .ok_or("storage.inspect attachment generation invalid")?;
+            Ok(ExecutedEffectResult::Json(
+                coordinator.inspect_storage(string("storageRef")?, generation),
+            ))
+        }
+        RuntimeEffectKind::PurgeStorage => {
+            let generation = command
+                .input
+                .get("attachmentGeneration")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|generation| *generation > 0 && *generation <= 9_007_199_254_740_991)
+                .ok_or("storage.purge attachment generation invalid")?;
+            Ok(ExecutedEffectResult::Json(
+                coordinator.purge_storage(string("storageRef")?, generation),
+            ))
+        }
     }
 }
 
@@ -809,6 +966,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         .map_err(|_| "nanohost evidence root unavailable")?;
     let recovery = observe_recovery(Path::new("/var/lib/openkit/nanohost"))
         .map_err(|_| "nanohost recovery observation failed")?;
+    let prior_epoch_writers_fenced = recovery.prior_epoch_writers_fenced();
     let mut fence_started = recovery.fence_started;
     if let Some(prior_epochs) = &recovery.absent_prior_epochs {
         let observed_fence = SystemTime::now();
@@ -875,6 +1033,15 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         plan.docker_socket().to_path_buf(),
         plan.run_root().join("image-import"),
     ));
+    let mut persistent_volume_store =
+        PersistentVolumeStore::open(plan.docker_socket().to_path_buf())
+            .map_err(|_| "nanohost persistent volume store unavailable")?;
+    if prior_epoch_writers_fenced {
+        persistent_volume_store
+            .release_fenced_attachments()
+            .map_err(|_| "nanohost persistent attachment recovery unavailable")?;
+    }
+    let mut persistent_volumes = Some(persistent_volume_store);
     let client = NanoHostOpenShellClient::new(
         plan.gateway_endpoint(),
         plan.gateway_auth_path().to_path_buf(),
@@ -886,6 +1053,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         &mut image_store,
         &required_deployment,
         &mut image_backend,
+        &mut persistent_volumes,
     )
     .map_err(|_| "nanohost epoch startup failed")?;
     let selection_context = session_inputs.selection_context.clone();
@@ -1042,7 +1210,13 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                             if let Err(failure) = submission {
                                 let retry_on_successor =
                                     failure.disposition() == OuterSessionDisposition::Reconnect;
-                                if !retry_on_successor {
+                                let current_correlation_only = matches!(
+                                    command.kind,
+                                    RuntimeEffectKind::InspectImage
+                                        | RuntimeEffectKind::InspectStorage
+                                        | RuntimeEffectKind::PurgeStorage
+                                );
+                                if !retry_on_successor || current_correlation_only {
                                     *pending_result = None;
                                 }
                                 return Err(failure.with_reconnect_after(Some(generation)));
@@ -1137,6 +1311,8 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                                         command.kind,
                                         RuntimeEffectKind::AcquireImage
                                             | RuntimeEffectKind::BuildImage
+                                            | RuntimeEffectKind::InspectImage
+                                            | RuntimeEffectKind::InspectStorage
                                     ) =>
                                 {
                                     let operation = OuterSessionOperation::from(command.kind);
@@ -1182,7 +1358,13 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                                     );
                                     let delivery_uncertain = submission_failure.disposition()
                                         == OuterSessionDisposition::Reconnect;
-                                    if delivery_uncertain {
+                                    if delivery_uncertain
+                                        && !matches!(
+                                            command.kind,
+                                            RuntimeEffectKind::InspectImage
+                                                | RuntimeEffectKind::InspectStorage
+                                        )
+                                    {
                                         *pending_result = Some((
                                             command,
                                             ExecutedEffectResult::Json(failure_result),
@@ -1217,6 +1399,13 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                                         RuntimeEffectKind::AcquireImage
                                         | RuntimeEffectKind::BuildImage => {
                                             unreachable!("definite image failure handled above")
+                                        }
+                                        RuntimeEffectKind::InspectImage
+                                        | RuntimeEffectKind::InspectStorage => {
+                                            unreachable!("definite inspection failure handled above")
+                                        }
+                                        RuntimeEffectKind::PurgeStorage => {
+                                            OuterSessionOperation::PurgeStorage
                                         }
                                     };
                                     return Err(OuterSessionFailure::terminal(
@@ -1296,7 +1485,8 @@ mod tests {
     use super::{
         OUTER_SESSION_RECONNECT_BOUND, OUTER_SESSION_RECONNECT_DELAY,
         parse_nanohost_session_inputs, parse_required_deployment_image_digests,
-        parse_sandbox_environment, parse_sandbox_policy, successor_connect_remaining,
+        parse_sandbox_environment, parse_sandbox_policy, parse_storage_attachment,
+        storage_targets_allowed, successor_connect_remaining,
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
@@ -1435,6 +1625,31 @@ mod tests {
         ] {
             assert!(parse_sandbox_environment(Some(&rejected)).is_err());
         }
+    }
+
+    #[test]
+    fn retained_mount_targets_must_be_writable_under_the_admitted_policy() {
+        let policy_value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/support/openshell-worker-policy.json"
+        ))
+        .unwrap();
+        let policy = parse_sandbox_policy(&policy_value).unwrap();
+        let storage = parse_storage_attachment(Some(&serde_json::json!({
+            "storageRef": "storage-one",
+            "scopeDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "attachmentGeneration": 1,
+            "layoutDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "targets": [
+                {"target": "/sandbox", "volumeRef": "sandbox-volume"},
+                {"target": "/workspace", "volumeRef": "workspace-volume"}
+            ]
+        })))
+        .unwrap();
+        assert!(storage_targets_allowed(&policy, &storage));
+
+        let mut outside_policy = storage;
+        outside_policy.targets[0].target = "/data".into();
+        assert!(!storage_targets_allowed(&policy, &outside_policy));
     }
 
     #[test]

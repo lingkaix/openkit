@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   symlinkSync,
   writeFileSync,
@@ -53,6 +54,7 @@ function codexInput(): WorkerAdapterPrepareInput {
       OPENKIT_WORKER_INFERENCE_TOKEN: 'openshell-placeholder-value',
       PATH: process.env.PATH ?? '',
     },
+    controlRoot: join(root, 'session', 'native-control'),
     llmRoute: {
       credentialVisibility: 'placeholder',
       endpoint: {
@@ -117,10 +119,12 @@ async function collectTestTurn(
   launchPlan: Awaited<ReturnType<typeof codexAdapter.prepareTurn>>,
   processResult: WorkerNativeProcessResult
 ) {
+  mkdirSync(input.controlRoot, { recursive: true });
   if (processResult.exitCode === 0 && !processResult.interrupted) {
     writeRootRollout(input.stateRoot, TEST_THREAD_ID);
   }
   return codexAdapter.collectTurn({
+    controlRoot: input.controlRoot,
     launchPlan,
     processResult:
       processResult.exitCode === 0 && !processResult.interrupted
@@ -143,12 +147,17 @@ describe('Codex worker adapter', () => {
     mkdirSync(first.sessionDirectory, { recursive: true });
     mkdirSync(sibling.sessionDirectory, { recursive: true });
 
-    await expect(codexAdapter.openSession({ stateRoot: first.stateRoot })).resolves.toEqual({
+    await expect(
+      codexAdapter.openSession({ controlRoot: first.controlRoot, stateRoot: first.stateRoot })
+    ).resolves.toEqual({
       nativeHandle: null,
       nativeHandleDigest: null,
       nativeHandleState: 'pending',
     });
-    await codexAdapter.openSession({ stateRoot: sibling.stateRoot });
+    await codexAdapter.openSession({
+      controlRoot: sibling.controlRoot,
+      stateRoot: sibling.stateRoot,
+    });
     const initialPlan = await codexAdapter.prepareTurn(first);
     expect(initialPlan.argv).not.toContain('resume');
     expect(initialPlan.argv).not.toContain('--ephemeral');
@@ -167,12 +176,13 @@ describe('Codex worker adapter', () => {
         ...nativeResult(),
         stdout: Buffer.from(`${JSON.stringify({ thread_id: threadId, type: 'thread.started' })}\n`),
       },
+      controlRoot: first.controlRoot,
       stateRoot: first.stateRoot,
     });
     expect(collected.nativeHandle).toBe(threadId);
     expect(collected.nativeHandleDigest).toMatch(/^[0-9a-f]{64}$/);
     await expect(
-      codexAdapter.inspectSession({ stateRoot: first.stateRoot })
+      codexAdapter.inspectSession({ controlRoot: first.controlRoot, stateRoot: first.stateRoot })
     ).resolves.toMatchObject({
       nativeHandleDigest: collected.nativeHandleDigest,
       nativeHandleState: 'ready',
@@ -186,19 +196,44 @@ describe('Codex worker adapter', () => {
     expect(resumedPlan.argv).not.toContain('--cd');
     expect(resumedPlan.argv).not.toContain(first.workingDirectory);
     await expect(
-      codexAdapter.inspectSession({ stateRoot: sibling.stateRoot })
+      codexAdapter.inspectSession({
+        controlRoot: sibling.controlRoot,
+        stateRoot: sibling.stateRoot,
+      })
     ).resolves.toMatchObject({
       nativeHandleState: 'pending',
     });
+    writeFileSync(join(first.stateRoot, 'unknown-native-data.bin'), Buffer.from([0, 1, 2, 3]));
 
     await expect(
       codexAdapter.closeSession({
+        controlRoot: first.controlRoot,
         sessionDirectory: first.sessionDirectory,
-        stateRoot: first.stateRoot,
       })
     ).resolves.toEqual({ privateState: 'absent' });
-    expect(existsSync(first.stateRoot)).toBe(false);
+    expect(existsSync(first.stateRoot)).toBe(true);
+    expect(existsSync(first.controlRoot)).toBe(false);
+    expect(readFileSync(join(first.stateRoot, 'unknown-native-data.bin'))).toEqual(
+      Buffer.from([0, 1, 2, 3])
+    );
     expect(existsSync(sibling.stateRoot)).toBe(true);
+
+    const successor = {
+      ...first,
+      controlRoot: join(first.sessionDirectory, 'successor-control'),
+      sessionDirectory: join(first.sessionDirectory, 'successor'),
+    };
+    await expect(
+      codexAdapter.openSession({
+        controlRoot: successor.controlRoot,
+        stateRoot: successor.stateRoot,
+      })
+    ).resolves.toMatchObject({ nativeHandleState: 'pending' });
+    const successorPlan = await codexAdapter.prepareTurn(successor);
+    expect(successorPlan.argv).not.toContain('resume');
+    expect(readFileSync(join(successor.stateRoot, 'unknown-native-data.bin'))).toEqual(
+      Buffer.from([0, 1, 2, 3])
+    );
   });
 
   it('creates the isolated Codex home before launch', async () => {
@@ -224,6 +259,8 @@ describe('Codex worker adapter', () => {
       join(input.sessionDirectory, 'final-message.txt'),
       '--cd',
       input.workingDirectory,
+      '-c',
+      'skills.bundled.enabled=false',
       '-c',
       'model_provider="openkit-worker-inference"',
       '-c',
@@ -289,6 +326,24 @@ describe('Codex worker adapter', () => {
     const discoveryPath = join(input.stateRoot, 'skills', 'repo-guidelines');
     expect(lstatSync(discoveryPath).isSymbolicLink()).toBe(true);
     expect(existsSync(join(discoveryPath, 'SKILL.md'))).toBe(true);
+
+    await expect(codexAdapter.prepareTurn(input)).rejects.toThrow(
+      /retained.*Skill|Skill.*conflict/i
+    );
+    expect(lstatSync(discoveryPath).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(discoveryPath, 'SKILL.md'))).toBe(true);
+  });
+
+  it('rejects retained Codex system Skills as ambient authority without changing their bytes', async () => {
+    const input = codexInput();
+    const systemSkillPath = join(input.stateRoot, 'skills', '.system', 'runtime-help');
+    mkdirSync(systemSkillPath, { recursive: true });
+    writeFileSync(join(systemSkillPath, 'SKILL.md'), '# Runtime help\n');
+
+    await expect(codexAdapter.prepareTurn(input)).rejects.toThrow(
+      /retained.*Skill|Skill.*conflict/i
+    );
+    expect(readFileSync(join(systemSkillPath, 'SKILL.md'), 'utf8')).toBe('# Runtime help\n');
   });
 
   it('rejects direct-provider authority before launch', async () => {

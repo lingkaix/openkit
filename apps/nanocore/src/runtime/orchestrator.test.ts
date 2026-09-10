@@ -85,6 +85,7 @@ function gatewayConfigFor(...logicalModelIds: string[]) {
     logicalModels: logicalModelIds.map((id) => ({
       id,
       displayName: id,
+      contextManagement: [{ type: 'compaction' as const, compactThreshold: 8_000 }],
       routes: [
         {
           id: `${id}-route`,

@@ -9,6 +9,8 @@ import {
   createGoalRecord,
   createGoalTask,
   getGoalRecord,
+  importGoalRecords,
+  listExportableGoalRecords,
   listGoalRecordsForThread,
   listGoalTasks,
   reserveGoalTaskForWorkerTurn,
@@ -78,6 +80,13 @@ describe('goal store', () => {
         title: 'Ship release',
         objective: 'Make v0.0.6 ready for release.',
         createdByItemId: 'item_objective',
+        workerStorageChoice: {
+          expectedRevision: 3,
+          kind: 'selected',
+          purpose: 'work',
+          reuseWorkSlotRef: 'wsl_88888888888888888888888888888888',
+          storageRef: 'wst_77777777777777777777777777777777',
+        },
         now: () => '2026-05-31T00:00:00.000Z',
       });
 
@@ -92,6 +101,13 @@ describe('goal store', () => {
         planItemId: null,
         currentTaskId: null,
         terminalStopReason: null,
+        workerStorageChoice: {
+          expectedRevision: 3,
+          kind: 'selected',
+          purpose: 'work',
+          reuseWorkSlotRef: 'wsl_88888888888888888888888888888888',
+          storageRef: 'wst_77777777777777777777777777777777',
+        },
         createdAt: '2026-05-31T00:00:00.000Z',
         updatedAt: '2026-05-31T00:00:00.000Z',
       });
@@ -99,6 +115,21 @@ describe('goal store', () => {
       expect(
         listGoalRecordsForThread(workspaceDb, { workspaceId: 'ws_demo', threadId: 'th_demo' })
       ).toEqual([goal]);
+      const exported = listExportableGoalRecords(workspaceDb, 'ws_demo');
+      expect(JSON.stringify(exported)).not.toContain('wst_77777777777777777777777777777777');
+      expect(exported).toEqual([{ ...goal, workerStorageChoice: null }]);
+
+      const importedWorkspaceDb = createWorkspaceDb();
+      try {
+        importGoalRecords(importedWorkspaceDb, exported);
+        expect(getGoalRecord(importedWorkspaceDb, 'ws_demo', 'th_demo', 'goal_demo')).toMatchObject(
+          {
+            workerStorageChoice: null,
+          }
+        );
+      } finally {
+        importedWorkspaceDb.sqlite.close();
+      }
 
       const updated = updateGoalStatus(workspaceDb, {
         workspaceId: 'ws_demo',

@@ -30,6 +30,7 @@ import {
   type ThreadGoalCurrentTask,
   type ThreadGoalSummary,
   ThreadGoalSummaryResponseSchema,
+  type WorkerEnvironmentStorageChoice,
 } from '@openkit/app-api-schemas';
 import type { ActorRef, StopReason, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
@@ -129,11 +130,13 @@ import {
   recoverWorkerCheckpointStopReason,
   resolveInterruptedWorkerRetryDecision,
 } from './runtime/worker-recovery.js';
+import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import {
   completeSchedulerLeaseForTerminalTurn,
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
+  type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from './workspace-materials.js';
@@ -2059,7 +2062,7 @@ const WORKER_TURN_AWAIT_TIMEOUT_MS = 30 * 60 * 1000;
  * @returns Terminal turn read model.
  * @throws Error when the worker turn does not finish within the bounded wait window.
  */
-async function waitForWorkerTurnTerminalState(
+export async function waitForWorkerTurnTerminalState(
   store: FsStore,
   turnId: string
 ): Promise<TurnReadModel> {
@@ -2216,6 +2219,7 @@ function readGoalStartOwners(input: {
   readonly threadId: string;
   readonly objective: string;
   readonly title?: string | undefined;
+  readonly workerStorageChoice?: WorkerEnvironmentStorageChoice;
 }): GoalStartResult | null {
   const ids = goalStartOwnerIds({ ...input, actorId: input.triggerActor.id });
   const turn = input.store
@@ -2246,7 +2250,8 @@ function readGoalStartOwners(input: {
     !goal ||
     goal.createdByItemId !== objectiveItem.id ||
     goal.objective !== input.objective ||
-    goal.title !== deriveThreadGoalTitle(input.title, input.objective)
+    goal.title !== deriveThreadGoalTitle(input.title, input.objective) ||
+    JSON.stringify(goal.workerStorageChoice) !== JSON.stringify(input.workerStorageChoice ?? null)
   ) {
     throw new TurnStartValidationError(
       'recovery_required',
@@ -2276,6 +2281,46 @@ function readGoalStartOwners(input: {
       409
     );
   }
+}
+
+/**
+ * Binds a Goal-level retained-storage choice to the exact child work being admitted.
+ *
+ * @param goal Goal that owns the child work.
+ * @param task Goal Task selected for this worker turn.
+ * @returns Inherited choice with canonical child lineage.
+ */
+export function goalChildWorkerStorageChoice(
+  coreDb: CoreDb,
+  goal: Pick<GoalRecord, 'goalId' | 'workspaceId' | 'threadId' | 'workerStorageChoice'>,
+  task: Pick<GoalTaskRecord, 'taskId'>
+): SchedulerWorkerStorageChoice {
+  if (!goal.workerStorageChoice || goal.workerStorageChoice.kind === 'fresh') {
+    return { kind: 'fresh', goalId: goal.goalId, taskId: task.taskId };
+  }
+  const binding = getWorkerStorageBinding(coreDb, {
+    storageRef: goal.workerStorageChoice.storageRef,
+  });
+  const currentContributors =
+    binding?.contributors.filter(
+      (contributor) => contributor.attachmentGeneration === binding.attachmentGeneration
+    ) ?? [];
+  const currentGoalRevision =
+    currentContributors.length > 0 &&
+    currentContributors.every(
+      (contributor) =>
+        contributor.workspaceId === goal.workspaceId &&
+        contributor.threadId === goal.threadId &&
+        contributor.goalId === goal.goalId
+    )
+      ? binding!.revision
+      : null;
+  return {
+    ...goal.workerStorageChoice,
+    expectedRevision: currentGoalRevision ?? goal.workerStorageChoice.expectedRevision,
+    goalId: goal.goalId,
+    taskId: task.taskId,
+  };
 }
 
 /**
@@ -2310,6 +2355,8 @@ export function startGoalModeObjective(input: {
   readonly objective: string;
   /** Optional user-facing goal title. */
   readonly title?: string | undefined;
+  /** Explicit retained-storage choice inherited by Goal child work. */
+  readonly workerStorageChoice?: WorkerEnvironmentStorageChoice;
 }): GoalStartResult {
   if (!input.coreDb) {
     throw new TurnStartValidationError(
@@ -2402,6 +2449,7 @@ export function startGoalModeObjective(input: {
         title: deriveThreadGoalTitle(input.title, input.objective),
         objective: input.objective,
         createdByItemId: objectiveItem.id,
+        ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
         now: () => timestamp,
       });
     });
@@ -2497,6 +2545,7 @@ export function registerGoalRoutes({
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId: string;
+    readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   }) => Promise<z.infer<typeof TurnSchema>>;
   /** Starts and observes governed worker turns. */
   readonly turnExecutor: TurnExecutor;
@@ -2636,6 +2685,9 @@ export function registerGoalRoutes({
         threadId,
         objective: parsed.data.objective,
         title: parsed.data.title,
+        ...(parsed.data.workerStorageChoice
+          ? { workerStorageChoice: parsed.data.workerStorageChoice }
+          : {}),
       };
       /** Reads direct Goal start owners through one scoped database handle. */
       const readOwners = (): GoalStartResult | null => {
@@ -2653,7 +2705,11 @@ export function registerGoalRoutes({
         command: 'goal.start',
         requestId: parsed.data.requestId,
         scope: { actorId: ownerInput.triggerActor.id, workspaceId, threadId },
-        input: { objective: parsed.data.objective, title: parsed.data.title },
+        input: {
+          objective: parsed.data.objective,
+          title: parsed.data.title,
+          workerStorageChoice: parsed.data.workerStorageChoice,
+        },
         responseKind: 'goal',
         execute: () =>
           startGoalModeObjective({
@@ -3567,6 +3623,7 @@ export function registerGoalRoutes({
                     'Goal step Coordinator decision is unavailable before worker start.'
                   );
                 }
+                const workerStorageChoice = goalChildWorkerStorageChoice(coreDb, goal, task);
 
                 await startModeWorkerTurn({
                   triggerActor,
@@ -3577,6 +3634,7 @@ export function registerGoalRoutes({
                   requestId: parsed.data.requestId,
                   requestedAgentId: worker.agentId,
                   reservedTurnId: turnId,
+                  workerStorageChoice,
                 });
                 const session =
                   turnExecutor.getAgentSession?.(store, workspaceId, threadId) ?? null;

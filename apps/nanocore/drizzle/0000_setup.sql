@@ -1,5 +1,21 @@
 -- openkit:scope core
 
+CREATE TABLE `worker_image_settlements` (
+  `request_id` text PRIMARY KEY NOT NULL,
+  `operation` text NOT NULL CHECK (`operation` IN ('image.acquire', 'image.build')),
+  `authored_artifact_id` text NOT NULL,
+  `authored_artifact_version` integer NOT NULL CHECK (`authored_artifact_version` = 1),
+  `authored_content_digest` text NOT NULL,
+  `input_digest` text NOT NULL,
+  `outcome` text NOT NULL,
+  `image_digest` text,
+  `failure_code` text,
+  `created_at` text NOT NULL,
+  CHECK ((`outcome` = 'success' AND `image_digest` IS NOT NULL AND `failure_code` IS NULL)
+      OR (`outcome` = 'failure' AND `image_digest` IS NULL AND `failure_code` = 'effect_failed'))
+);
+--> statement-breakpoint
+
 CREATE TABLE `account` (
   `id` text PRIMARY KEY NOT NULL,
   `account_id` text NOT NULL,
@@ -224,6 +240,7 @@ CREATE TABLE `scheduler_admission_entries` (
 	`thread_id` text NOT NULL,
 	`turn_id` text NOT NULL,
 	`turn_input` text NOT NULL,
+	`worker_storage_choice_json` text,
 	`requested_agent_id` text NOT NULL,
 	`profile_ref` text,
 	`model_id` text,
@@ -496,6 +513,61 @@ CREATE TABLE `verification` (
   `expires_at` integer NOT NULL,
   `created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
   `updated_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL
+);
+
+CREATE TABLE `worker_storage_bindings` (
+	`storage_ref` text PRIMARY KEY NOT NULL,
+	`runtime_target_id` text NOT NULL REFERENCES `nanohost_runtime_targets`(`target_id`) ON DELETE RESTRICT,
+	`deployment_id` text NOT NULL,
+	`workspace_id` text NOT NULL,
+	`scope_digest` text NOT NULL,
+	`layout_digest` text NOT NULL,
+	`layout_family` text,
+	`layout_version` text,
+	`platform_os` text NOT NULL,
+	`platform_architecture` text NOT NULL,
+	`owner_uid` integer NOT NULL,
+	`owner_gid` integer NOT NULL,
+	`working_directory` text NOT NULL,
+	`targets_json` text NOT NULL,
+	`revision` integer NOT NULL,
+	`attachment_generation` integer NOT NULL,
+	`state` text NOT NULL,
+	`current_agent_session_id` text,
+	`current_thread_id` text,
+	`current_work_slot_ref` text,
+	`current_sandbox_binding_ref` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	`purged_at` text,
+	CONSTRAINT `worker_storage_bindings_revision_check` CHECK (`revision` >= 1),
+	CONSTRAINT `worker_storage_bindings_generation_check` CHECK (`attachment_generation` >= 0),
+	CONSTRAINT `worker_storage_bindings_owner_check` CHECK (`owner_uid` >= 0 AND `owner_gid` >= 0),
+	CONSTRAINT `worker_storage_bindings_state_check` CHECK (`state` IN ('idle', 'reserved', 'attached', 'unknown', 'purge-pending', 'purged')),
+	CONSTRAINT `worker_storage_bindings_attachment_check` CHECK (
+		(`state` = 'idle' AND `current_agent_session_id` IS NULL AND `current_thread_id` IS NULL AND `current_work_slot_ref` IS NULL AND `current_sandbox_binding_ref` IS NULL)
+		OR (`state` = 'reserved' AND `current_agent_session_id` IS NOT NULL AND `current_thread_id` IS NOT NULL AND `current_work_slot_ref` IS NOT NULL AND `current_sandbox_binding_ref` IS NULL)
+		OR (`state` = 'attached' AND `current_agent_session_id` IS NOT NULL AND `current_thread_id` IS NOT NULL AND `current_work_slot_ref` IS NOT NULL)
+		OR (`state` = 'unknown' AND ((`current_agent_session_id` IS NOT NULL AND `current_thread_id` IS NOT NULL AND `current_work_slot_ref` IS NOT NULL) OR (`current_agent_session_id` IS NULL AND `current_thread_id` IS NULL AND `current_work_slot_ref` IS NULL AND `current_sandbox_binding_ref` IS NULL)))
+		OR (`state` IN ('purge-pending', 'purged') AND `current_agent_session_id` IS NULL AND `current_thread_id` IS NULL AND `current_work_slot_ref` IS NULL AND `current_sandbox_binding_ref` IS NULL)
+	),
+	CONSTRAINT `worker_storage_bindings_purge_check` CHECK ((`state` = 'purged') = (`purged_at` IS NOT NULL))
+);
+
+CREATE TABLE `worker_storage_contributors` (
+	`contributor_ref` text PRIMARY KEY NOT NULL,
+	`storage_ref` text NOT NULL REFERENCES `worker_storage_bindings`(`storage_ref`) ON DELETE CASCADE,
+	`attachment_generation` integer NOT NULL,
+	`workspace_id` text NOT NULL,
+	`responsible_user_id` text NOT NULL,
+	`thread_id` text NOT NULL,
+	`goal_id` text,
+	`task_id` text,
+	`purpose` text NOT NULL,
+	`work_slot_ref` text NOT NULL,
+	`created_at` text NOT NULL,
+	CONSTRAINT `worker_storage_contributors_generation_check` CHECK (`attachment_generation` >= 1),
+	CONSTRAINT `worker_storage_contributors_purpose_check` CHECK (`purpose` IN ('work', 'independent-review'))
 );
 
 CREATE TABLE "worker_backend_sessions" (
@@ -792,6 +864,18 @@ CREATE INDEX `worker_backend_sessions_state_idx` ON `worker_backend_sessions` (`
 
 CREATE UNIQUE INDEX `worker_backend_sessions_transient_provider_idx` ON `worker_backend_sessions` (`transient_provider_instance_id`) WHERE `transient_provider_instance_id` IS NOT NULL;
 
+CREATE UNIQUE INDEX `worker_storage_bindings_current_sandbox_idx` ON `worker_storage_bindings` (`current_sandbox_binding_ref`);
+
+CREATE INDEX `worker_storage_bindings_target_idx` ON `worker_storage_bindings` (`runtime_target_id`,`state`);
+
+CREATE INDEX `worker_storage_bindings_workspace_idx` ON `worker_storage_bindings` (`workspace_id`,`state`);
+
+CREATE INDEX `worker_storage_contributors_audience_idx` ON `worker_storage_contributors` (`workspace_id`,`responsible_user_id`,`thread_id`);
+
+CREATE INDEX `worker_storage_contributors_slot_idx` ON `worker_storage_contributors` (`storage_ref`,`work_slot_ref`);
+
+CREATE INDEX `worker_storage_contributors_generation_idx` ON `worker_storage_contributors` (`storage_ref`,`attachment_generation`);
+
 CREATE INDEX `worker_control_commands_scope_idx` ON `worker_control_commands` (`workspace_id`,`thread_id`,`turn_id`,`agent_session_id`,`package_snapshot_id`,`status`,`sequence`);
 
 CREATE INDEX `worker_control_records_scope_idx` ON `worker_control_records` (`workspace_id`,`thread_id`,`turn_id`,`agent_session_id`,`package_snapshot_id`,`operation`,`record_key`);
@@ -1053,6 +1137,7 @@ CREATE TABLE `goal_records` (
 	`plan_item_id` text,
 	`current_task_id` text,
 	`terminal_stop_reason` text,
+	`worker_storage_choice_json` text,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
 	PRIMARY KEY(`workspace_id`,`thread_id`,`goal_id`)

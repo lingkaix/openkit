@@ -43,6 +43,17 @@ export interface OpenShellNetworkEndpoint {
   }>;
 }
 
+const FIXED_READ_ONLY_FILESYSTEM_ROOTS = [
+  '/usr',
+  '/lib',
+  '/proc',
+  '/dev/urandom',
+  '/app',
+  '/etc',
+  '/opt',
+  '/var/log',
+] as const;
+
 /**
  * Validates OpenKit-authored grants and projects the structured sandbox policy consumed by NanoHost.
  *
@@ -53,8 +64,16 @@ export interface OpenShellNetworkEndpoint {
 export function projectOpenShellWorkerPolicy(input: ProjectOpenShellWorkerPolicyInput) {
   const filesystemGrants = input.additionalFilesystemGrants ?? [];
   for (const grant of filesystemGrants) {
-    if (!grant.path.startsWith('/') || /[\r\n\0]/.test(grant.path)) {
-      throw new Error('OpenShell additional filesystem grant path must be absolute.');
+    if (!isCanonicalAbsolutePath(grant.path) || /[\r\n\0]/.test(grant.path)) {
+      throw new Error('OpenShell additional filesystem grant path must be canonical and absolute.');
+    }
+    if (
+      grant.access === 'read-write' &&
+      FIXED_READ_ONLY_FILESYSTEM_ROOTS.some((root) => pathsOverlap(grant.path, root))
+    ) {
+      throw new Error(
+        'OpenShell additional read-write filesystem grant overlaps a fixed read-only root.'
+      );
     }
   }
 
@@ -121,22 +140,18 @@ export function projectOpenShellWorkerPolicy(input: ProjectOpenShellWorkerPolicy
 
   return {
     filesystem: {
-      includeWorkdir: true,
+      includeWorkdir: false,
       readOnly: [
-        '/usr',
-        '/lib',
-        '/proc',
-        '/dev/urandom',
-        '/app',
-        '/etc',
-        '/var/log',
+        ...FIXED_READ_ONLY_FILESYSTEM_ROOTS,
         ...filesystemGrants
           .filter((grant) => grant.access === 'read-only')
           .map((grant) => grant.path),
       ],
       readWrite: [
         '/sandbox',
-        '/tmp',
+        '/workspace',
+        '/openkit',
+        '/tmp/openkit-bootstrap',
         '/dev/null',
         ...filesystemGrants
           .filter((grant) => grant.access === 'read-write')
@@ -149,4 +164,27 @@ export function projectOpenShellWorkerPolicy(input: ProjectOpenShellWorkerPolicy
     process: { runAsGroup: 'sandbox', runAsUser: 'sandbox' },
     version: 1,
   };
+}
+
+/** Returns whether a path is absolute without aliases, duplicate separators, or trailing separators. */
+function isCanonicalAbsolutePath(path: string): boolean {
+  if (!path.startsWith('/') || (path.length > 1 && path.endsWith('/'))) return false;
+  return (
+    path === '/' ||
+    path
+      .slice(1)
+      .split('/')
+      .every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+  );
+}
+
+/** Returns whether either canonical absolute path contains the other at a path boundary. */
+function pathsOverlap(left: string, right: string): boolean {
+  return (
+    left === '/' ||
+    right === '/' ||
+    left === right ||
+    left.startsWith(`${right}/`) ||
+    right.startsWith(`${left}/`)
+  );
 }

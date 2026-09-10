@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { GoalReviewResolutionOutcomeSchema, GoalReviewVerdictSchema } from './action-center.js';
 import { WorkspaceMaterialRevisionSummarySchema } from './material.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
+import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
 /** Product work modes surfaced by app-level dashboard read models. */
 export const ProductWorkModeSchema = z.enum([
@@ -198,6 +199,7 @@ export const StartThreadGoalRequestSchema = z.object({
   requestId: z.string().min(1),
   objective: z.string().min(1),
   title: z.string().min(1).optional(),
+  workerStorageChoice: WorkerEnvironmentStorageChoiceSchema.optional(),
 });
 
 /** Response payload returned after starting Goal Mode from one thread. */

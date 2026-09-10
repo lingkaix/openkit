@@ -346,6 +346,16 @@ export const SURFACES: Surface[] = [
     wp: 'WP-2',
   },
   {
+    id: 'administration',
+    title: 'Administration',
+    path: '/settings/administration',
+    tier: 'A',
+    nav: 'settings-admin',
+    icon: 'settings',
+    board: '10/11',
+    wp: 'WP-7',
+  },
+  {
     id: 'access-tokens',
     title: 'Access tokens',
     path: '/settings/access-tokens',

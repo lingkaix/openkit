@@ -775,10 +775,10 @@ export class RuntimeConfigFileService {
       { "id": "git", "path": "/usr/bin/git" },
       { "id": "gh", "path": "/usr/local/bin/gh" },
       { "id": "uv", "path": "/usr/local/bin/uv" },
-      { "id": "python", "path": "/sandbox/.venv/bin/python" },
-      { "id": "python3", "path": "/sandbox/.venv/bin/python3" },
-      { "id": "pip", "path": "/sandbox/.venv/bin/pip" },
-      { "id": "pip3", "path": "/sandbox/.venv/bin/pip3" },
+      { "id": "python", "path": "/opt/openkit/venv/bin/python" },
+      { "id": "python3", "path": "/opt/openkit/venv/bin/python3" },
+      { "id": "pip", "path": "/opt/openkit/venv/bin/pip" },
+      { "id": "pip3", "path": "/opt/openkit/venv/bin/pip3" },
       { "id": "codex", "path": "/usr/local/bin/codex" },
       { "id": "codex-native", "path": "/usr/local/lib/codex/bin/codex" }
     ]
@@ -840,10 +840,10 @@ export class RuntimeConfigFileService {
         "purpose": "Read Python package index metadata.",
         "binaries": [
           "/usr/local/bin/uv",
-          "/sandbox/.venv/bin/python",
-          "/sandbox/.venv/bin/python3",
-          "/sandbox/.venv/bin/pip",
-          "/sandbox/.venv/bin/pip3"
+          "/opt/openkit/venv/bin/python",
+          "/opt/openkit/venv/bin/python3",
+          "/opt/openkit/venv/bin/pip",
+          "/opt/openkit/venv/bin/pip3"
         ]
       },
       {
@@ -855,10 +855,10 @@ export class RuntimeConfigFileService {
         "purpose": "Download Python package archives.",
         "binaries": [
           "/usr/local/bin/uv",
-          "/sandbox/.venv/bin/python",
-          "/sandbox/.venv/bin/python3",
-          "/sandbox/.venv/bin/pip",
-          "/sandbox/.venv/bin/pip3"
+          "/opt/openkit/venv/bin/python",
+          "/opt/openkit/venv/bin/python3",
+          "/opt/openkit/venv/bin/pip",
+          "/opt/openkit/venv/bin/pip3"
         ]
       }
     ],

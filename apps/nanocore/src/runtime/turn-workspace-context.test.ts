@@ -10,6 +10,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
+import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 
 const REMOTE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const REMOTE_URL = 'https://git.example.test/openkit/repository.git';
@@ -63,6 +64,10 @@ describe('turn workspace context', () => {
     const remoteInput = environmentPackage.workspace.inputs.find(
       (input) => input.id === 'repo_remote'
     );
+    const expectedWorktree = `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(
+      turn.workspaceId,
+      turn.threadId
+    )}`;
 
     expect(workspaceRoots).toEqual([
       {
@@ -75,8 +80,8 @@ describe('turn workspace context', () => {
     ]);
     expect(workspaceRoots[0]).not.toHaveProperty('sourcePath');
     expect(sourceContext.workspaceSourceRefs).toEqual({ repo_remote: 'main-repo' });
-    expect(environmentPackage.runtime.command.workingDirectory).toBe('/workspace/openkit');
-    expect(environmentPackage.workspace.root).toBe('/workspace/openkit');
+    expect(environmentPackage.runtime.command.workingDirectory).toBe(expectedWorktree);
+    expect(environmentPackage.workspace.root).toBe('/workspace');
     expect(remoteInput).toEqual({
       access: 'read-write',
       id: 'repo_remote',
@@ -94,7 +99,7 @@ describe('turn workspace context', () => {
         sourceRef: 'main-repo',
         url: REMOTE_URL,
       },
-      target: '/workspace/openkit/worktrees/main',
+      target: expectedWorktree,
     });
     expect(remoteInput?.source).not.toHaveProperty('locator');
     expect(remoteInput?.source).not.toHaveProperty('pathRef');

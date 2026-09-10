@@ -13,9 +13,72 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
-import { prepareNanoHostContextPackageImports } from './worker-governance-backend.js';
+import {
+  prepareNanoHostContextPackageImports,
+  resolveNanoHostExportPath,
+} from './worker-governance-backend.js';
 
 describe('NanoHost worker governance helpers', () => {
+  it('prefixes a main-worktree export with the exact AEP-bound work slot', () => {
+    const environmentPackage = createNanoHostPackage();
+    const mainWorktree = (
+      environmentPackage.extensions.openkit as {
+        sessionWorkspace: { layout: { slots: Array<{ id: string; path: string }> } };
+      }
+    ).sessionWorkspace.layout.slots.find((slot) => slot.id === 'main-worktree');
+    if (!mainWorktree) {
+      throw new Error('Expected the main worktree slot.');
+    }
+    const withOutput = AgentEnvironmentPackageSchema.parse({
+      ...environmentPackage,
+      workspace: {
+        ...environmentPackage.workspace,
+        outputs: [
+          {
+            id: 'repo-output',
+            path: mainWorktree.path,
+            registerAsArtifacts: true,
+            retention: 'sync-on-turn-end',
+          },
+        ],
+      },
+    });
+    const workSlotRef = (
+      withOutput.extensions.openkit as { workerStorage: { workSlotRef: string } }
+    ).workerStorage.workSlotRef;
+
+    expect(
+      resolveNanoHostExportPath(withOutput, `${mainWorktree.path}/reports/result.json`)
+    ).toEqual({
+      relativePath: `${workSlotRef}/reports/result.json`,
+      slot: 'main-worktree',
+    });
+    expect(() =>
+      resolveNanoHostExportPath(
+        AgentEnvironmentPackageSchema.parse({
+          ...withOutput,
+          extensions: {
+            ...withOutput.extensions,
+            openkit: {
+              ...(withOutput.extensions.openkit as Record<string, unknown>),
+              workerStorage: { workSlotRef: 'wsl_different' },
+            },
+          },
+        }),
+        `${mainWorktree.path}/reports/result.json`
+      )
+    ).toThrow('no exact admitted Worker storage slot');
+    expect(() =>
+      resolveNanoHostExportPath(
+        AgentEnvironmentPackageSchema.parse({
+          ...withOutput,
+          workspace: { ...withOutput.workspace, root: '/workspace/altered' },
+        }),
+        `${mainWorktree.path}/reports/result.json`
+      )
+    ).toThrow('no exact admitted Worker storage slot');
+  });
+
   it('canonicalizes one strict AEP as the first immutable NanoHost import', async () => {
     const environmentPackage = createNanoHostPackage();
     const reordered = AgentEnvironmentPackageSchema.parse(

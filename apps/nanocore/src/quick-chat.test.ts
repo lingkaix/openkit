@@ -63,6 +63,7 @@ function createQuickChatProviderOptions() {
         {
           id: 'quick-chat',
           displayName: 'Quick Chat',
+          contextManagement: [{ type: 'compaction' as const, compactThreshold: 8_000 }],
           routes: [
             {
               id: 'primary',
@@ -97,6 +98,33 @@ function conversationRequest(input: string, requestId: string) {
 }
 
 describe('quick chat app API', () => {
+  it('rejects an administration Thread at the ordinary conversation entry', async () => {
+    const store = createDemoStore();
+    const thread = store.createThread(
+      'ws_demo',
+      'Private administration',
+      undefined,
+      'administration'
+    );
+    const app = createApp({
+      ...createQuickChatProviderOptions(),
+      store,
+      turnExecutor: new ThrowingTurnExecutor(),
+    });
+
+    const response = await app.request(
+      `/api/app/workspaces/ws_demo/threads/${thread.id}/conversation-turns`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(conversationRequest('Continue here.', 'req_wrong_entry')),
+      }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: 'thread_entry_path_mismatch' });
+  });
+
   it('falls back only to the configured default Worker when Assistant is unavailable', async () => {
     const workerSetup = createTestAgentSetup({
       logicalModelId: 'quick-chat',
@@ -966,6 +994,7 @@ describe('quick chat app API', () => {
             {
               id: 'quick-vault-model',
               displayName: 'Quick Vault Model',
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
               routes: [
                 {
                   id: 'primary',
@@ -1155,6 +1184,7 @@ describe('quick chat app API', () => {
           {
             id: 'codex-fast',
             displayName: 'Codex Fast',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
                 id: 'primary',

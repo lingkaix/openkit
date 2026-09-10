@@ -20,6 +20,24 @@ export type SchedulerSupplyRefreshAckStatus = 'applied' | 'rejected' | 'unsuppor
 /** Maximum evidence-finalization grace after a lease starts releasing. */
 const SCHEDULER_RELEASE_GRACE_MS = 300_000;
 
+/** Explicit retained-storage choice captured with one scheduler admission request. */
+export type SchedulerWorkerStorageChoice =
+  | {
+      readonly goalId: string | null;
+      readonly kind: 'fresh';
+      readonly taskId: string | null;
+    }
+  | {
+      readonly adjudicatedThreadIds?: readonly string[] | undefined;
+      readonly expectedRevision: number;
+      readonly goalId: string | null;
+      readonly kind: 'selected';
+      readonly purpose: 'work' | 'independent-review';
+      readonly reuseWorkSlotRef?: string | undefined;
+      readonly storageRef: string;
+      readonly taskId: string | null;
+    };
+
 /** Durable scheduler admission queue entry. */
 export interface SchedulerAdmissionEntryRecord {
   /** Stable queue entry id. */
@@ -40,6 +58,8 @@ export interface SchedulerAdmissionEntryRecord {
   readonly turnId: string;
   /** Worker turn input captured when the entry is queued. */
   readonly turnInput: string;
+  /** Exact retained-storage choice captured before package planning. */
+  readonly workerStorageChoice: SchedulerWorkerStorageChoice | null;
   /** Requested agent id. */
   readonly requestedAgentId: string;
   /** Requested agent profile reference. */
@@ -328,6 +348,7 @@ interface SchedulerAdmissionEntryRow {
   readonly thread_id: string;
   readonly turn_id: string;
   readonly turn_input: string;
+  readonly worker_storage_choice_json: string | null;
   readonly requested_agent_id: string;
   readonly profile_ref: string | null;
   readonly model_id: string | null;
@@ -500,6 +521,8 @@ export interface CreateSchedulerAdmissionEntryInput {
   readonly turnId: string;
   /** Worker turn input captured when the entry is queued. */
   readonly turnInput: string;
+  /** Exact retained-storage choice captured before package planning. */
+  readonly workerStorageChoice?: SchedulerWorkerStorageChoice | null;
   /** Requested agent id. */
   readonly requestedAgentId: string;
   /** Requested agent profile reference. */
@@ -987,6 +1010,7 @@ export function createSchedulerAdmissionEntry(
         thread_id,
         turn_id,
         turn_input,
+        worker_storage_choice_json,
         requested_agent_id,
         profile_ref,
         model_id,
@@ -1000,7 +1024,7 @@ export function createSchedulerAdmissionEntry(
         trigger_actor_json,
         workspace_cwd,
         workspace_roots_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.queueEntryId,
@@ -1009,6 +1033,9 @@ export function createSchedulerAdmissionEntry(
       input.threadId,
       input.turnId,
       input.turnInput,
+      input.workerStorageChoice
+        ? JSON.stringify(parseSchedulerWorkerStorageChoice(input.workerStorageChoice))
+        : null,
       input.requestedAgentId,
       input.profileRef ?? null,
       input.modelId ?? null,
@@ -3421,6 +3448,7 @@ function schedulerAdmissionSelectSql(): string {
     thread_id,
     turn_id,
     turn_input,
+    worker_storage_choice_json,
     requested_agent_id,
     profile_ref,
     model_id,
@@ -3601,6 +3629,9 @@ function mapSchedulerAdmissionEntryRow(
     threadId: row.thread_id,
     turnId: row.turn_id,
     turnInput: row.turn_input,
+    workerStorageChoice: row.worker_storage_choice_json
+      ? parseSchedulerWorkerStorageChoice(JSON.parse(row.worker_storage_choice_json))
+      : null,
     requestedAgentId: row.requested_agent_id,
     profileRef: row.profile_ref,
     modelId: row.model_id,
@@ -3612,6 +3643,82 @@ function mapSchedulerAdmissionEntryRow(
     status: row.status,
     denialReason: row.denial_reason,
   };
+}
+
+/** Parses the closed retained-storage choice carried by scheduler admission. */
+function parseSchedulerWorkerStorageChoice(input: unknown): SchedulerWorkerStorageChoice {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new Error('Scheduler Worker storage choice is invalid.');
+  }
+  const record = input as Record<string, unknown>;
+  if (
+    record.kind === 'fresh' &&
+    Object.keys(record).length === 3 &&
+    (record.goalId === null || isNonemptyString(record.goalId)) &&
+    (record.taskId === null || isNonemptyString(record.taskId))
+  ) {
+    return {
+      goalId: record.goalId as string | null,
+      kind: 'fresh',
+      taskId: record.taskId as string | null,
+    };
+  }
+  const allowed = new Set([
+    'adjudicatedThreadIds',
+    'expectedRevision',
+    'goalId',
+    'kind',
+    'purpose',
+    'reuseWorkSlotRef',
+    'storageRef',
+    'taskId',
+  ]);
+  const adjudicatedThreadIds = record.adjudicatedThreadIds;
+  if (
+    record.kind !== 'selected' ||
+    Object.keys(record).some((field) => !allowed.has(field)) ||
+    !Number.isSafeInteger(record.expectedRevision) ||
+    (record.expectedRevision as number) < 1 ||
+    (record.purpose !== 'work' && record.purpose !== 'independent-review') ||
+    !isSchedulerStorageIdentity(record.storageRef) ||
+    (record.reuseWorkSlotRef !== undefined &&
+      !isSchedulerStorageIdentity(record.reuseWorkSlotRef)) ||
+    (record.goalId !== null && !isNonemptyString(record.goalId)) ||
+    (record.taskId !== null && !isNonemptyString(record.taskId)) ||
+    (adjudicatedThreadIds !== undefined &&
+      (!Array.isArray(adjudicatedThreadIds) ||
+        adjudicatedThreadIds.length > 1_000 ||
+        !adjudicatedThreadIds.every(isNonemptyString) ||
+        new Set(adjudicatedThreadIds).size !== adjudicatedThreadIds.length))
+  ) {
+    throw new Error('Scheduler Worker storage choice is invalid.');
+  }
+  return {
+    ...(adjudicatedThreadIds === undefined
+      ? {}
+      : { adjudicatedThreadIds: [...adjudicatedThreadIds] as string[] }),
+    expectedRevision: record.expectedRevision as number,
+    goalId: record.goalId as string | null,
+    kind: 'selected',
+    purpose: record.purpose,
+    ...(record.reuseWorkSlotRef === undefined
+      ? {}
+      : { reuseWorkSlotRef: record.reuseWorkSlotRef as string }),
+    storageRef: record.storageRef,
+    taskId: record.taskId as string | null,
+  };
+}
+
+/** Returns whether one private storage identity is bounded and path-safe. */
+function isSchedulerStorageIdentity(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+  );
+}
+
+/** Returns whether one optional lineage id is a nonempty bounded string. */
+function isNonemptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512;
 }
 
 /**

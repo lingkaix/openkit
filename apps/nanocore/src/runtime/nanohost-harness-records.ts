@@ -1101,7 +1101,9 @@ function requireHarnessOperationBody(
       'agentSessionId',
       'agentSessionRuntimeBindingId',
       'effectiveSetupGeneration',
+      'storageRef',
       'threadId',
+      'workSlotRef',
       'workspaceId',
     ],
     'session.inspect': ['agentSessionId', 'agentSessionRuntimeBindingId'],
@@ -1143,7 +1145,9 @@ function requireHarnessOperationBody(
     requireSha256(body.agentSessionCompatibilityKey, 'AgentSession compatibility key');
     if (
       !['codex', 'opencode', 'pi'].includes(body.adapterId as string) ||
-      (body.effectiveSetupGeneration as number) < 1
+      (body.effectiveSetupGeneration as number) < 1 ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.storageRef as string) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.workSlotRef as string)
     ) {
       throw new Error('NanoHost Harness session.open adapter or setup generation is unsupported.');
     }

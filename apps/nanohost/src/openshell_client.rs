@@ -21,6 +21,7 @@ use openshell_sdk::{
     EdgeAuthInterceptor, ListOptions, OpenShellClient, SandboxPhase, SandboxRef, SandboxSpec,
     ServiceStatus,
 };
+use prost_types::{ListValue, Struct, Value as ProstValue, value::Kind};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -32,6 +33,7 @@ use tower::service_fn;
 use crate::epoch_coordinator::{CreateCertaintyLossPoint, CreateUncertainty, EpochFault};
 use crate::nanocore_session::OuterRouteProjection;
 use crate::openshell_release;
+use crate::persistent_volume::{PERSISTENT_VOLUME_ROOT, StorageMount};
 use crate::sandbox_bridge::{
     BRIDGE_REESTABLISH_HARD_BOUND, FORWARD_FRAME_CHANNEL_CAPACITY, OpenSandboxBridge,
     SANDBOX_INTEGRATION_TARGET, TcpForwardByteStream, serve_sandbox_http2,
@@ -86,6 +88,77 @@ fn classify_ready_observation(
             CreateCertaintyLossPoint::ReadyTimeout,
         )),
         _ => Ok(false),
+    }
+}
+
+/// Builds the sole NanoHost-generated Docker bind envelope for retained volumes.
+fn storage_driver_config(mounts: &[StorageMount]) -> Result<Option<Struct>, EpochFault> {
+    if mounts.is_empty() {
+        return Ok(None);
+    }
+    let mut targets = std::collections::BTreeSet::new();
+    let values = mounts
+        .iter()
+        .map(|mount| {
+            let source = mount
+                .source
+                .to_str()
+                .filter(|source| {
+                    mount.source.starts_with(PERSISTENT_VOLUME_ROOT)
+                        && !source.chars().any(char::is_control)
+                })
+                .ok_or(EpochFault::IdentityMismatch)?;
+            if !mount.target.starts_with('/')
+                || mount.target.chars().any(char::is_control)
+                || !targets.insert(mount.target.as_str())
+            {
+                return Err(EpochFault::IdentityMismatch);
+            }
+            Ok(ProstValue {
+                kind: Some(Kind::StructValue(Struct {
+                    fields: [
+                        ("type".to_string(), prost_string("bind")),
+                        ("source".to_string(), prost_string(source)),
+                        ("target".to_string(), prost_string(&mount.target)),
+                        (
+                            "read_only".to_string(),
+                            ProstValue {
+                                kind: Some(Kind::BoolValue(false)),
+                            },
+                        ),
+                        ("selinux_label".to_string(), prost_string("private")),
+                    ]
+                    .into_iter()
+                    .collect(),
+                })),
+            })
+        })
+        .collect::<Result<Vec<_>, EpochFault>>()?;
+    let docker = Struct {
+        fields: [(
+            "mounts".to_string(),
+            ProstValue {
+                kind: Some(Kind::ListValue(ListValue { values })),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    Ok(Some(Struct {
+        fields: [(
+            "docker".to_string(),
+            ProstValue {
+                kind: Some(Kind::StructValue(docker)),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    }))
+}
+
+fn prost_string(value: &str) -> ProstValue {
+    ProstValue {
+        kind: Some(Kind::StringValue(value.to_string())),
     }
 }
 
@@ -455,6 +528,7 @@ impl NanoHostOpenShellClient {
         spec: SandboxSpec,
         policy: SandboxPolicy,
         attempt_lineage: &str,
+        storage_mounts: &[StorageMount],
     ) -> Result<SandboxRef, EpochFault> {
         let started = Instant::now();
         let expected_name = spec
@@ -475,11 +549,13 @@ impl NanoHostOpenShellClient {
             ))
         };
         let client = self.connected()?;
+        let driver_config = storage_driver_config(storage_mounts)?;
         let request = CreateSandboxRequest {
             spec: Some(RawSandboxSpec {
                 environment: spec.environment,
                 template: spec.image.map(|image| SandboxTemplate {
                     image,
+                    driver_config,
                     ..SandboxTemplate::default()
                 }),
                 policy: Some(policy),
@@ -795,7 +871,7 @@ impl NanoHostOpenShellClient {
     pub async fn execute_lifecycle_effect(
         &self,
         request: &LifecycleEffectRequest,
-        create: Option<(SandboxSpec, SandboxPolicy)>,
+        create: Option<(SandboxSpec, SandboxPolicy, Vec<StorageMount>)>,
         bridge: Option<OpenSandboxBridge>,
         worker_bootstrap: Option<WorkerBootstrapRequest>,
         route_projection: Option<OuterRouteProjection>,
@@ -814,12 +890,12 @@ impl NanoHostOpenShellClient {
         }
         match request.kind {
             LifecycleEffectKind::CreateSandbox => {
-                let (spec, policy) = create.ok_or(EpochFault::IdentityMismatch)?;
+                let (spec, policy, storage_mounts) = create.ok_or(EpochFault::IdentityMismatch)?;
                 if spec.name.as_deref() != Some(request.sandbox_id()) {
                     return Err(EpochFault::IdentityMismatch);
                 }
                 let sandbox = self
-                    .create_sandbox(spec, policy, request.request_id())
+                    .create_sandbox(spec, policy, request.request_id(), &storage_mounts)
                     .await?;
                 request
                     .validate_result_identity(request.request_id(), &sandbox.name)
@@ -1082,6 +1158,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use openshell_sdk::SandboxPhase;
     use openshell_sdk::raw::proto::{
         ExecSandboxEvent, ExecSandboxExit, ExecSandboxStderr, ExecSandboxStdout, FilesystemPolicy,
@@ -1095,12 +1173,58 @@ mod tests {
     use super::{
         CompiledOpenShellClient, LifecycleEffectKind, LifecycleEffectRequest, ReadinessFailure,
         TypedOpenShellLifecycleClient, WorkerBootstrapMonitor, classify_ready_observation,
-        monitor_worker_bootstrap,
+        monitor_worker_bootstrap, storage_driver_config,
     };
     use crate::epoch_coordinator::CreateCertaintyLossPoint;
+    use crate::persistent_volume::StorageMount;
 
     /// Exact fixed worker-entry vocabulary accepted from stdout.
     const WORKER_ENTRY_MARKER: &[u8] = b"OPENKIT_WORKER_SHIM_ENTRY_V1\n";
+
+    #[test]
+    fn retained_storage_uses_the_pinned_docker_bind_driver_shape() {
+        let config = storage_driver_config(&[StorageMount {
+            source: PathBuf::from("/var/lib/openkit/nanohost-work/association/volumes/volume"),
+            target: "/workspace".into(),
+        }])
+        .unwrap()
+        .unwrap();
+        let docker = match config.fields["docker"].kind.as_ref() {
+            Some(prost_types::value::Kind::StructValue(docker)) => docker,
+            _ => panic!("driver-keyed Docker config"),
+        };
+        let mounts = match docker.fields["mounts"].kind.as_ref() {
+            Some(prost_types::value::Kind::ListValue(mounts)) => mounts,
+            _ => panic!("Docker mount list"),
+        };
+        let mount = match mounts.values[0].kind.as_ref() {
+            Some(prost_types::value::Kind::StructValue(mount)) => mount,
+            _ => panic!("Docker mount object"),
+        };
+        assert_eq!(
+            mount.fields["type"].kind,
+            Some(prost_types::value::Kind::StringValue("bind".into()))
+        );
+        assert_eq!(
+            mount.fields["source"].kind,
+            Some(prost_types::value::Kind::StringValue(
+                "/var/lib/openkit/nanohost-work/association/volumes/volume".into()
+            ))
+        );
+        assert_eq!(
+            mount.fields["target"].kind,
+            Some(prost_types::value::Kind::StringValue("/workspace".into()))
+        );
+        assert_eq!(
+            mount.fields["read_only"].kind,
+            Some(prost_types::value::Kind::BoolValue(false))
+        );
+        assert_eq!(
+            mount.fields["selinux_label"].kind,
+            Some(prost_types::value::Kind::StringValue("private".into()))
+        );
+        assert_eq!(mount.fields.len(), 5);
+    }
 
     /// Builds one real stdout response event for monitor behavior checks.
     fn stdout_event(data: impl Into<Vec<u8>>) -> Result<ExecSandboxEvent, Status> {

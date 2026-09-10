@@ -1,11 +1,13 @@
 import { ProductTurnSchema, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
 /** Request body for starting one bounded Task Mode worker delegation. */
 export const StartTaskModeRequestSchema = z.object({
   input: z.string().min(1),
   modelId: z.string().min(1).optional(),
   requestId: RequestIdSchema,
+  workerStorageChoice: WorkerEnvironmentStorageChoiceSchema.optional(),
 });
 
 /** Product-visible Task Mode worker target. */

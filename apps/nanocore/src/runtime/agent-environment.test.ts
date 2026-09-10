@@ -191,6 +191,7 @@ describe('agent environment package resolver', () => {
           {
             id: 'reasoning',
             displayName: 'Reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
                 id: 'primary',
@@ -712,6 +713,7 @@ describe('agent environment package resolver', () => {
         },
       ],
       workspaceSourceRefs: { repo: 'main-repo' },
+      workerStorageWorkSlotRef: 'wsl_selected_predecessor',
     });
 
     expect(resolved.workspace.inputs[0]?.source).toMatchObject({
@@ -721,6 +723,20 @@ describe('agent environment package resolver', () => {
       sourceRef: 'main-repo',
       vaultGrantRef: 'grant_github_read',
     });
+    expect(resolved.workspace).toMatchObject({
+      root: '/workspace',
+      inputs: [{ id: 'repo', target: '/workspace/worktrees/wsl_selected_predecessor' }],
+      outputs: [{ id: 'repo-output', path: '/workspace/worktrees/wsl_selected_predecessor' }],
+    });
+    expect(resolved.runtime.command.workingDirectory).toBe(
+      '/workspace/worktrees/wsl_selected_predecessor'
+    );
+    expect(resolved.policy.filesystem?.rules).toContainEqual(
+      expect.objectContaining({
+        id: 'repo',
+        workerPath: '/workspace/worktrees/wsl_selected_predecessor',
+      })
+    );
     expect(resolved).not.toHaveProperty('providers');
   });
 

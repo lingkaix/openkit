@@ -13,6 +13,7 @@ import {
   SubmitConversationResponseSchema,
   type TaskDelegationDecision,
   type TaskModeEvidence,
+  type WorkerEnvironmentStorageChoice,
 } from '@openkit/app-api-schemas';
 import { type ActorRef, type StopReason, TurnSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
@@ -105,6 +106,7 @@ import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
+  type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
@@ -1051,6 +1053,20 @@ function directTaskModeTurnId(
 }
 
 /**
+ * Clears caller-inaccessible Goal lineage from one direct Task storage admission.
+ *
+ * @param choice Public retained-storage choice for the Task command.
+ * @returns Scheduler choice bound to direct Task lineage.
+ */
+function directTaskWorkerStorageChoice(
+  choice: WorkerEnvironmentStorageChoice | undefined
+): SchedulerWorkerStorageChoice | undefined {
+  if (!choice) return undefined;
+  if (choice.kind === 'fresh') return { kind: 'fresh', goalId: null, taskId: null };
+  return { ...choice, goalId: null, taskId: null };
+}
+
+/**
  * Detects one Chat-subordinate worker checkpoint whose owning Chat receipt is absent.
  *
  * @param store Store that owns the outer Chat command receipt.
@@ -1855,6 +1871,7 @@ export function registerQuickAndChatModeRoutes({
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
+    readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
@@ -2299,7 +2316,14 @@ export function registerQuickAndChatModeRoutes({
     const threadId = c.req.param('threadId');
     const store = requestStore(c);
     try {
-      requireAuthorizedModeThread(c, store, workspaceId, threadId);
+      const thread = requireAuthorizedModeThread(c, store, workspaceId, threadId);
+      if (thread.entryPath !== 'conversation') {
+        return asApiError(
+          'Conversation submission cannot continue this Thread.',
+          'thread_entry_path_mismatch',
+          409
+        );
+      }
     } catch (error) {
       if (error instanceof HTTPException) throw error;
       return asApiError('Conversation Thread is unavailable.', 'target_missing', 409);
@@ -3456,6 +3480,7 @@ export function registerTaskModeRoute({
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
+    readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
@@ -3477,6 +3502,7 @@ export function registerTaskModeRoute({
     const requestInputHash = commandInputHash({
       input: taskInput.input,
       modelId: taskInput.modelId,
+      workerStorageChoice: taskInput.workerStorageChoice,
     });
 
     /**
@@ -3549,6 +3575,9 @@ export function registerTaskModeRoute({
           owningCommand: 'task.start',
           requestId: taskInput.requestId,
           objective: taskInput.input,
+          ...(taskInput.workerStorageChoice
+            ? { workerStorageChoice: taskInput.workerStorageChoice }
+            : {}),
         });
         const reason = delegation.coordinator.explanation;
         const timestamp = new Date().toISOString();
@@ -3587,6 +3616,7 @@ export function registerTaskModeRoute({
           409
         );
       }
+      const workerStorageChoice = directTaskWorkerStorageChoice(taskInput.workerStorageChoice);
 
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
@@ -3654,6 +3684,7 @@ export function registerTaskModeRoute({
               requestId: taskInput.requestId,
               requestedAgentId: taskDecision.worker.agentId,
               reservedTurnId: turnId,
+              ...(workerStorageChoice ? { workerStorageChoice } : {}),
             });
             return { workerSessionId: turn.agentSessionId ?? null };
           },
@@ -3709,7 +3740,11 @@ export function registerTaskModeRoute({
         command: 'task.start',
         execute: () => executeTaskCommand(store, workspaceId, threadId),
         inflightCommands,
-        input: { input: taskInput.input, modelId: taskInput.modelId },
+        input: {
+          input: taskInput.input,
+          modelId: taskInput.modelId,
+          workerStorageChoice: taskInput.workerStorageChoice,
+        },
         replay: (record) =>
           replayTaskModeCommand(
             store,

@@ -339,6 +339,23 @@ describe('scheduler records', () => {
         now: () => '2026-07-05T00:00:02.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: 'queue_goal_fresh',
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_goal',
+        threadId: 'thread_goal',
+        turnId: 'turn_goal',
+        turnInput: 'Run fresh Goal work',
+        requestedAgentId: 'agent_worker',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+        workerStorageChoice: {
+          goalId: 'goal_fresh',
+          kind: 'fresh',
+          taskId: 'task_fresh',
+        },
+        now: () => '2026-07-05T00:00:04.000Z',
+      });
+      createSchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_interactive',
         triggerActor: {
           kind: 'automation',
@@ -363,6 +380,16 @@ describe('scheduler records', () => {
             workerPath: '/workspace/project',
           },
         ],
+        workerStorageChoice: {
+          adjudicatedThreadIds: ['thread_predecessor'],
+          expectedRevision: 7,
+          goalId: 'goal_a',
+          kind: 'selected',
+          purpose: 'work',
+          reuseWorkSlotRef: 'wsl_predecessor',
+          storageRef: 'wst_selected',
+          taskId: 'task_a',
+        },
         now: () => '2026-07-05T00:00:03.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
@@ -381,7 +408,7 @@ describe('scheduler records', () => {
 
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)
-      ).toEqual(['queue_interactive', 'queue_automation', 'queue_maintenance']);
+      ).toEqual(['queue_interactive', 'queue_goal_fresh', 'queue_automation', 'queue_maintenance']);
       expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.turnInput).toBe(
         'Run interactive work'
       );
@@ -402,6 +429,57 @@ describe('scheduler records', () => {
           workerPath: '/workspace/project',
         },
       ]);
+      expect(listQueuedSchedulerAdmissionEntries(coreDb)[0]?.workerStorageChoice).toEqual({
+        adjudicatedThreadIds: ['thread_predecessor'],
+        expectedRevision: 7,
+        goalId: 'goal_a',
+        kind: 'selected',
+        purpose: 'work',
+        reuseWorkSlotRef: 'wsl_predecessor',
+        storageRef: 'wst_selected',
+        taskId: 'task_a',
+      });
+      expect(
+        listQueuedSchedulerAdmissionEntries(coreDb).find(
+          (entry) => entry.queueEntryId === 'queue_goal_fresh'
+        )?.workerStorageChoice
+      ).toEqual({ goalId: 'goal_fresh', kind: 'fresh', taskId: 'task_fresh' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects malformed persisted Worker storage choices instead of changing admission intent', () => {
+    const coreDb = createMigratedCoreDb();
+
+    try {
+      createSchedulerAdmissionEntry(coreDb, {
+        triggerActor: { kind: 'user', id: 'user_local' },
+        queueEntryId: 'queue_bad_storage_choice',
+        workspaceId: 'ws_demo',
+        threadId: 'thread_bad_storage_choice',
+        turnId: 'turn_bad_storage_choice',
+        turnInput: 'Reject malformed storage choice',
+        requestedAgentId: 'agent_worker',
+        profileRef: null,
+        priorityClass: 'interactive',
+        requiredPoolConstraints: [],
+        now: () => '2026-07-05T00:00:00.000Z',
+      });
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_admission_entries
+           SET worker_storage_choice_json = ?
+           WHERE queue_entry_id = ?`
+        )
+        .run(
+          JSON.stringify({ kind: 'fresh', storageRef: 'wst_smuggled' }),
+          'queue_bad_storage_choice'
+        );
+
+      expect(() => listQueuedSchedulerAdmissionEntries(coreDb)).toThrow(
+        'Scheduler Worker storage choice is invalid'
+      );
     } finally {
       coreDb.sqlite.close();
     }

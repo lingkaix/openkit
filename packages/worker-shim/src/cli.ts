@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { closeSync, readSync } from 'node:fs';
-import { access, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -54,15 +54,14 @@ const SAFE_WORKER_CHILD_ENVIRONMENT_KEYS = [
   'SHELL',
   'SSL_CERT_DIR',
   'SSL_CERT_FILE',
-  'TEMP',
   'TERM',
-  'TMP',
-  'TMPDIR',
   'USER',
   'http_proxy',
   'https_proxy',
   'no_proxy',
 ] as const;
+/** Fixed non-retained scratch root granted by the compiled Worker policy. */
+const NATIVE_SCRATCH_ROOT = '/tmp/openkit-bootstrap';
 
 /**
  * Parsed `openkit-worker-shim` arguments.
@@ -70,7 +69,7 @@ const SAFE_WORKER_CHILD_ENVIRONMENT_KEYS = [
 export interface WorkerShimArgs {
   /** Worker-visible Agent Environment Package path. */
   packagePath: string;
-  /** Durable session transcript directory. */
+  /** Disposable session transcript and output directory. */
   sessionDir: string;
   /** Whether to validate arguments and exit without launching a native runtime. */
   dryRun: boolean;
@@ -181,8 +180,10 @@ export interface WorkerShimRunOptions {
   signal?: AbortSignal | undefined;
   /** Existing Harness-lifetime Integration client. */
   integration?: SandboxIntegrationClient | undefined;
-  /** AgentSession-private native state root retained across sequential Turns. */
+  /** Retained work-slot native data root. */
   sessionStateRoot?: string | undefined;
+  /** Fresh AgentSession-private native handle and control root. */
+  sessionControlRoot?: string | undefined;
   /** Adapter already fixed by the owning Harness instance. */
   expectedAdapterId?: string | undefined;
   /** Turn-private native output directory removed after collection. */
@@ -481,10 +482,14 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
 
   if (options.args.dryRun) {
     const stateRoot = join(options.args.sessionDir, 'native-state');
+    const controlRoot = join(options.args.sessionDir, 'native-control');
     await rm(stateRoot, { force: true, recursive: true });
+    await rm(controlRoot, { force: true, recursive: true });
+    await mkdir(controlRoot, { mode: 0o700, recursive: true });
     try {
       await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
         childEnvironment: workerChildEnvironment(packageManifest, environment, llmRoute),
+        controlRoot,
         llmRoute,
         mcpServerIds,
         skillTargetPaths: skillSupply.map((skill) => ({
@@ -498,6 +503,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       });
     } finally {
       await rm(stateRoot, { force: true, recursive: true });
+      await rm(controlRoot, { force: true, recursive: true });
     }
     return {
       exitCode: 0,
@@ -530,13 +536,19 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   const childEnvironment = workerChildEnvironment(packageManifest, environment, llmRoute);
   const credentialValues = workerCredentialValues(packageManifest, childEnvironment, llmRoute);
   const stateRoot = options.sessionStateRoot ?? join(options.args.sessionDir, 'native-state');
+  const controlRoot = options.sessionControlRoot ?? join(options.args.sessionDir, 'native-control');
   if (!options.sessionStateRoot) {
     await rm(stateRoot, { force: true, recursive: true });
+  }
+  if (!options.sessionControlRoot) {
+    await rm(controlRoot, { force: true, recursive: true });
+    await mkdir(controlRoot, { mode: 0o700, recursive: true });
   }
   let launchPlan: WorkerAdapterLaunchPlan;
   try {
     launchPlan = await (adapter.mode === 'bounded-turn' ? adapter.prepare : adapter.prepareTurn)({
       childEnvironment,
+      controlRoot,
       llmRoute,
       mcpServerIds,
       skillTargetPaths: skillSupply.map((skill) => ({
@@ -555,6 +567,9 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
   } catch (error) {
     if (!options.sessionStateRoot) {
       await rm(stateRoot, { force: true, recursive: true });
+    }
+    if (!options.sessionControlRoot) {
+      await rm(controlRoot, { force: true, recursive: true });
     }
     throw error;
   }
@@ -781,6 +796,7 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
       adapter.mode === 'bounded-turn'
         ? await adapter.collect({ launchPlan, processResult: nativeResult })
         : await adapter.collectTurn({
+            controlRoot,
             launchPlan,
             processResult: nativeResult,
             stateRoot,
@@ -788,6 +804,9 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     await launchPlan.finalize?.();
     if (!options.sessionStateRoot) {
       await rm(stateRoot, { force: true, recursive: true });
+    }
+    if (!options.sessionControlRoot) {
+      await rm(controlRoot, { force: true, recursive: true });
     }
     await publishWorkspaceGitSnapshots({
       bases: workspaceBases,
@@ -895,6 +914,9 @@ export async function runWorkerShim(options: WorkerShimRunOptions): Promise<Work
     }
     if (!options.sessionStateRoot) {
       await rm(stateRoot, { force: true, recursive: true }).catch(() => undefined);
+    }
+    if (!options.sessionControlRoot) {
+      await rm(controlRoot, { force: true, recursive: true }).catch(() => undefined);
     }
     if (options.nativeTurnDirectory) {
       await rm(options.nativeTurnDirectory, { force: true, recursive: true }).catch(
@@ -1865,6 +1887,10 @@ function workerChildEnvironment(
       selected[key] = value;
     }
   }
+
+  selected.TEMP = NATIVE_SCRATCH_ROOT;
+  selected.TMP = NATIVE_SCRATCH_ROOT;
+  selected.TMPDIR = NATIVE_SCRATCH_ROOT;
 
   for (const key of ['NO_PROXY', 'no_proxy'] as const) {
     const entries = (selected[key] ?? '')

@@ -201,7 +201,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
     expect(screen.getByText('User')).toBeInTheDocument();
     expect(screen.getByText('Server')).toBeInTheDocument();
-    expect(screen.getByText('Administration')).toBeInTheDocument();
+    expect(screen.getAllByText('Administration')).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Appearance' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'My admin access' })).toBeInTheDocument();
@@ -210,6 +210,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'App update' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'AI interface' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Administration' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Access tokens' })).toBeInTheDocument();
   });
 

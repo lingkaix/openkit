@@ -84,6 +84,7 @@ function writeServerConfig(dataRoot: string): void {
           {
             id: 'openai/gpt-5.2',
             displayName: 'OpenAI GPT-5.2',
+            contextManagement: [{ type: 'compaction', compactThreshold: 200_000 }],
             routes: [
               {
                 id: 'primary',
@@ -363,6 +364,9 @@ describe('runtime config file API', () => {
     );
     expect(agentTemplate).toContain('"id": "new-agent"');
     expect(agentTemplate).toContain('"kind": "reference"');
+    expect(agentTemplate).toContain('"path": "/opt/openkit/venv/bin/python"');
+    expect(agentTemplate).toContain('"path": "/opt/openkit/venv/bin/pip"');
+    expect(agentTemplate).not.toContain('/sandbox/.venv');
   });
 
   it('updates config files with revision guards and rejects stale writes', async () => {

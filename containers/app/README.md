@@ -4,6 +4,8 @@ This image packages NanoCore, Web UI assets, Caddy, migrations, and data templat
 
 Both build stages use the exact digest-pinned Node base declared for `app` in `containers/images.json`.
 
+The local `scripts/docker/run-app.sh` seed helper authors an explicit 8,000-token compaction threshold for its default logical model. This is a context-management policy, not model capacity metadata; normal provider model/context admission still applies, and existing configuration files are preserved.
+
 The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before starting Caddy. Caddy uses that listener for public app routes and does not publish or connect to the separate private NanoHost HTTP/2 listener.
 
 The runtime image exposes the compiled stopped-server administrator recovery command as `/usr/local/bin/openkit-operator`. It acquires the ordinary NanoCore data-root lock and refuses a live deployment; the image entrypoint does not invoke it.

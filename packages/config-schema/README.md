@@ -6,7 +6,13 @@ Provider profiles retain string model IDs and may add a per-ID `modelMetadata` m
 
 Provider model declarations require an effective positive maximum context length, inherited from the pinned model catalog or explicitly authored as `modelMetadata[modelId].limit.context`. Other metadata remains optional. Structural validation admits omission for catalog inheritance; composed validation must reject a model with no known context before replacing active configuration.
 
+Every Gateway logical model declares one OpenKit-owned `contextManagement` compaction policy. NanoCore validates its threshold and output reserve against every authored route, including routes whose Provider is currently disabled; runtime consumers fail closed when compaction is required but no durable OpenKit compaction adapter is available.
+
 NanoCore consumes this package so runtime loading, draft validation, reload planning, and UI schema hints follow one contract instead of copying rules into routes or UI components.
+
+The required-feature registry includes `openkit.thread-entry.v1` for file-backed Thread records carrying the immutable server-authored conversation or administration entry path. Readers must name support before accepting those records.
+
+Worker sandbox filesystem grants must use canonical absolute paths. Authored read-write grants cannot equal, descend from, or contain any fixed read-only image root; read-only grants and writable paths beneath `/workspace` or `/sandbox` remain valid.
 
 Authored and resolved build images require exactly one nonempty inline Dockerfile of 1 through 268,435,456 UTF-8 bytes with matching canonical lowercase SHA-256, independently of exact zero-entry `build-context://empty/v1` plus its empty-byte digest, with no locator or compatibility form.
 

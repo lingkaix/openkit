@@ -24,6 +24,16 @@ import {
   settleNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
 import { upsertNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
+import {
+  readWorkerImageSettlement,
+  type WorkerImageSettlement,
+  WorkerImageSettlementConflict,
+  WorkerImageSettlementDeferred,
+  type WorkerImageSettlementIdentity,
+  WorkerImageSettlementIdentitySchema,
+  WorkerImageSettlementSchema,
+  writeWorkerImageSettlement,
+} from './worker-image-settlements.js';
 
 const CONTROL_BODY_MAX_BYTES = 1024 * 1024;
 /** Exact outer-session inference request ceiling preserved from its semantic owner. */
@@ -56,6 +66,9 @@ export const NANO_HOST_EFFECT_OPERATIONS = [
   'bridge.close',
   'image.acquire',
   'image.build',
+  'image.inspect',
+  'storage.inspect',
+  'storage.purge',
   'file.export',
   'reference.import',
 ] as const;
@@ -85,6 +98,10 @@ const NANO_HOST_EFFECT_PATHS = {
     command: '/api/nanohost/transport/effects/image.build',
     result: '/api/nanohost/transport/effects/image.build/result',
   },
+  'image.inspect': {
+    command: '/api/nanohost/transport/effects/image.inspect',
+    result: '/api/nanohost/transport/effects/image.inspect/result',
+  },
   'reference.import': {
     command: '/api/nanohost/transport/effects/reference.import',
     result: '/api/nanohost/transport/effects/reference.import/result',
@@ -96,6 +113,14 @@ const NANO_HOST_EFFECT_PATHS = {
   'sandbox.delete': {
     command: '/api/nanohost/transport/effects/sandbox.delete',
     result: '/api/nanohost/transport/effects/sandbox.delete/result',
+  },
+  'storage.inspect': {
+    command: '/api/nanohost/transport/effects/storage.inspect',
+    result: '/api/nanohost/transport/effects/storage.inspect/result',
+  },
+  'storage.purge': {
+    command: '/api/nanohost/transport/effects/storage.purge',
+    result: '/api/nanohost/transport/effects/storage.purge/result',
   },
 } as const satisfies Record<
   NanoHostEffectOperation,
@@ -115,6 +140,8 @@ export interface NanoHostSessionRouteRequest {
 
 /** One NanoHost-owned runtime effect request. */
 export interface NanoHostSessionEffectRequest {
+  /** Private preparation lineage; never copied into a command body. */
+  readonly imageSettlement?: WorkerImageSettlementIdentity;
   readonly input: Readonly<Record<string, unknown>>;
   readonly kind: NanoHostEffectOperation | string;
   /** Deterministic opaque effect identity produced from durable attempt lineage. */
@@ -123,7 +150,9 @@ export interface NanoHostSessionEffectRequest {
 
 /** One exact accepted effect identity reconstructed without replay authority. */
 export interface NanoHostResultOnlyExpectation {
-  readonly kind: 'bridge.close' | 'sandbox.delete';
+  /** Immutable provenance reconstructed from the authored preparation candidate. */
+  readonly imageSettlement?: WorkerImageSettlementIdentity;
+  readonly kind: 'bridge.close' | 'image.acquire' | 'image.build' | 'sandbox.delete';
   readonly requestId: string;
 }
 
@@ -135,6 +164,8 @@ export interface NanoHostResultOnlySettlement {
 
 /** Dependencies for authoritative session dispatch. */
 export interface CreateNanoHostSessionDispatchInput {
+  /** Server database required only for preparation-image settlement. */
+  readonly coreDb?: CoreDb | undefined;
   /** Optional direct handler used by lower-level dispatcher checks. */
   readonly effectHandler?: (request: NanoHostSessionEffectRequest) => Promise<unknown>;
   /** Optional semantic-route handler used by the shared outer session. */
@@ -200,6 +231,8 @@ export interface NanoHostSessionDispatch {
 
 /** One process-local pending effect owned by the dispatcher. */
 interface PendingNanoHostEffect {
+  imageSettlement?: WorkerImageSettlementIdentity;
+  imageSettlementDeferred?: boolean;
   acceptedConnection?: object;
   command: Readonly<Record<string, unknown>> | null;
   /** Rejects the existing caller promise for one acknowledged definite failure. */
@@ -287,6 +320,15 @@ export function createNanoHostSessionDispatch(
 
         const request = requestOrConnection as NanoHostSessionEffectRequest;
         const { operation, requestId } = requireEffectRequest(request);
+        if (request.imageSettlement) {
+          WorkerImageSettlementIdentitySchema.parse(request.imageSettlement);
+          if (!input.coreDb || !['image.acquire', 'image.build'].includes(operation)) {
+            throw new Error('Preparation image settlement is unavailable for this effect.');
+          }
+          const known = readWorkerImageSettlement(input.coreDb, requestId);
+          if (known)
+            return settledImageResult(known, request.imageSettlement, requestId, operation);
+        }
         let command: Readonly<Record<string, unknown>>;
         if (operation === 'reference.import') {
           command = requireReferenceImportCommand(request.input, requestId);
@@ -296,6 +338,10 @@ export function createNanoHostSessionDispatch(
           command = requireBridgeOpenCommand(request.input, requestId);
         } else if (operation === 'file.export') {
           command = requireFileExportCommand(request.input, requestId);
+        } else if (operation === 'image.inspect') {
+          command = requireImageInspectCommand(request.input, requestId);
+        } else if (operation === 'storage.inspect' || operation === 'storage.purge') {
+          command = requireStorageCommand(request.input, requestId);
         } else {
           command = { ...request.input, requestId };
         }
@@ -306,6 +352,7 @@ export function createNanoHostSessionDispatch(
         return new Promise<unknown>((resolve, reject) => {
           pendingEffects.set(operation, {
             accepted: false,
+            ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
             command,
             reject,
             requestId,
@@ -326,8 +373,28 @@ export function createNanoHostSessionDispatch(
         throw new Error('NanoHost result-only expectations are empty, duplicate, or unbounded.');
       }
       for (const expectation of expectations) {
+        if (!expectation.imageSettlement) continue;
+        WorkerImageSettlementIdentitySchema.parse(expectation.imageSettlement);
+        if (!input.coreDb || !['image.acquire', 'image.build'].includes(expectation.kind)) {
+          throw new Error('Preparation image settlement recovery is unavailable.');
+        }
+        const known = readWorkerImageSettlement(input.coreDb, expectation.requestId);
+        if (!known) continue;
+        return Promise.resolve({
+          kind: expectation.kind,
+          result: settledImageResult(
+            known,
+            expectation.imageSettlement,
+            expectation.requestId,
+            expectation.kind
+          ),
+        });
+      }
+      for (const expectation of expectations) {
         if (
-          !['bridge.close', 'sandbox.delete'].includes(expectation.kind) ||
+          !['bridge.close', 'image.acquire', 'image.build', 'sandbox.delete'].includes(
+            expectation.kind
+          ) ||
           !/^[0-9a-f]{64}$/.test(expectation.requestId) ||
           pendingEffects.has(expectation.kind)
         ) {
@@ -340,6 +407,9 @@ export function createNanoHostSessionDispatch(
           pendingEffects.set(expectation.kind, {
             accepted: false,
             command: null,
+            ...(expectation.imageSettlement
+              ? { imageSettlement: expectation.imageSettlement }
+              : {}),
             reject,
             requestId: expectation.requestId,
             resolve: (value) => resolve(value as NanoHostResultOnlySettlement),
@@ -376,10 +446,13 @@ export function createNanoHostSessionDispatch(
       if (pending.accepted && pending.acceptedConnection !== physicalConnection) {
         const unknown = effectTransportError(
           409,
-          'NanoHost accepted effect outcome is unknown; successor connection fenced.'
+          'NanoHost accepted effect outcome is unknown after connection replacement.'
         );
         removePendingEffectGroup(pendingEffects, operation, pending);
         pending.reject(unknown);
+        if (isConnectionEphemeralEffect(operation)) {
+          return null;
+        }
         input.sessionAuthority.closePhysicalConnection(physicalConnection);
         throw unknown;
       }
@@ -497,6 +570,18 @@ export function createNanoHostSessionDispatch(
       const resultJson = JSON.stringify(resultBody);
       const pending = pendingEffects.get(operation);
       if (!pending) {
+        if (input.coreDb && (operation === 'image.acquire' || operation === 'image.build')) {
+          const known = readWorkerImageSettlement(input.coreDb, requestId);
+          if (known) {
+            if (
+              known.operation !== operation ||
+              JSON.stringify(known.outcome) !== JSON.stringify(imageSettlementOutcome(resultBody))
+            ) {
+              throw new WorkerImageSettlementConflict();
+            }
+            return;
+          }
+        }
         const completed = completedEffects.get(operation);
         if (completed?.requestId === requestId && completed.resultJson === resultJson) {
           if (
@@ -533,6 +618,30 @@ export function createNanoHostSessionDispatch(
       }
       if (isExactFileAbsence && pending.command?.presence !== 'optional') {
         throw effectTransportError(409, 'NanoHost required file export cannot be absent.');
+      }
+      if (pending.imageSettlement) {
+        const settlement = WorkerImageSettlementSchema.parse({
+          ...pending.imageSettlement,
+          requestId,
+          operation,
+          outcome: imageSettlementOutcome(resultBody),
+        });
+        const coreDb = input.coreDb;
+        if (!coreDb) throw new Error('Missing image settlement database.');
+        try {
+          writeWorkerImageSettlement(coreDb, settlement);
+        } catch (error) {
+          if (error instanceof WorkerImageSettlementConflict) throw error;
+          const deferred = new WorkerImageSettlementDeferred();
+          if (!pending.imageSettlementDeferred) {
+            pending.imageSettlementDeferred = true;
+            console.warn('nanohost image settlement deferred');
+            pending.reject(deferred);
+          }
+          throw deferred;
+        }
+        if (pending.imageSettlementDeferred || pending.resultOnlyGroup)
+          console.info('nanohost image settlement recovered');
       }
       if (isExactEffectFailure) {
         removePendingEffectGroup(pendingEffects, operation, pending);
@@ -658,6 +767,15 @@ export function createNanoHostSessionDispatch(
       return input.routeHandler(request);
     },
   };
+}
+
+/** Identifies effects without successor replay; purge remains fenced by its Core purge-pending owner. */
+function isConnectionEphemeralEffect(operation: NanoHostEffectOperation): boolean {
+  return (
+    operation === 'image.inspect' ||
+    operation === 'storage.inspect' ||
+    operation === 'storage.purge'
+  );
 }
 
 /** Removes one ordinary pending effect or every member of its result-only correlation set. */
@@ -977,7 +1095,7 @@ function requireEffectRequest(request: NanoHostSessionEffectRequest): {
   return { operation: request.kind, requestId };
 }
 
-/** Returns whether a string is one of the eight fixed effect operations. */
+/** Returns whether a string is one of the fixed effect operations. */
 function isNanoHostEffectOperation(value: string): value is NanoHostEffectOperation {
   return (NANO_HOST_EFFECT_OPERATIONS as readonly string[]).includes(value);
 }
@@ -1027,6 +1145,40 @@ function requireFileExportCommand(
     throw effectTransportError(400, 'NanoHost file export presence is invalid.');
   }
   return { ...value, requestId };
+}
+
+/** Validates one exact local immutable-image inspection command. */
+function requireImageInspectCommand(
+  value: Readonly<Record<string, unknown>>,
+  requestId: string
+): Readonly<Record<string, unknown>> {
+  if (Object.keys(value).length !== 1 || !Object.hasOwn(value, 'imageDigest')) {
+    throw effectTransportError(400, 'NanoHost image inspection contains an unowned field.');
+  }
+  const imageDigest = value.imageDigest;
+  if (typeof imageDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(imageDigest)) {
+    throw effectTransportError(400, 'NanoHost image inspection digest is invalid.');
+  }
+  return { imageDigest, requestId };
+}
+
+/** Validates one exact retained-storage inspection or purge command. */
+function requireStorageCommand(
+  value: Readonly<Record<string, unknown>>,
+  requestId: string
+): Readonly<Record<string, unknown>> {
+  if (
+    Object.keys(value).sort().join(',') !== 'attachmentGeneration,storageRef' ||
+    !Number.isSafeInteger(value.attachmentGeneration) ||
+    (value.attachmentGeneration as number) < 1
+  ) {
+    throw effectTransportError(400, 'NanoHost storage command is invalid.');
+  }
+  return {
+    attachmentGeneration: value.attachmentGeneration,
+    storageRef: readBoundedIdentity(value.storageRef, 'Worker storage'),
+    requestId,
+  };
 }
 
 /**
@@ -1615,6 +1767,7 @@ function requirePhysicalConnection(environment: unknown): object {
 
 /** Returns a bounded private transport error without exposing runtime inputs. */
 function privateEffectError(error: unknown): Response {
+  if (error instanceof WorkerImageSettlementDeferred) return new Response(null, { status: 503 });
   const message = error instanceof Error ? error.message : 'NanoHost effect request failed.';
   const explicitStatus = (error as { readonly status?: unknown } | null)?.status;
   const status =
@@ -1641,4 +1794,36 @@ function requireAuthoritativeSession(
   if (!authority.mayCarryWork(physicalConnection)) {
     throw new Error('NanoHost physical connection is not authoritative or has been fenced.');
   }
+}
+
+/** Validates exact image result bytes before any durable write or retryable deferral. */
+function imageSettlementOutcome(
+  result: Readonly<Record<string, unknown>>
+): WorkerImageSettlement['outcome'] {
+  if (Object.keys(result).length !== 1) throw new WorkerImageSettlementConflict();
+  if (result.failureCode === 'effect_failed')
+    return { kind: 'failure', failureCode: 'effect_failed' };
+  if (typeof result.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.digest)) {
+    throw new WorkerImageSettlementConflict();
+  }
+  return { kind: 'success', imageDigest: result.digest };
+}
+
+/** Reuses only an identical durable preparation outcome, without dispatching its command again. */
+function settledImageResult(
+  known: WorkerImageSettlement,
+  identity: WorkerImageSettlementIdentity,
+  requestId: string,
+  operation: string
+): { digest: string } {
+  const expected = WorkerImageSettlementSchema.parse({
+    ...identity,
+    requestId,
+    operation,
+    outcome: known.outcome,
+  });
+  if (JSON.stringify(known) !== JSON.stringify(expected)) throw new WorkerImageSettlementConflict();
+  if (known.outcome.kind === 'failure')
+    throw effectTransportError(500, 'NanoHost effect failed: effect_failed.');
+  return { digest: known.outcome.imageDigest };
 }

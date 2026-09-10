@@ -1,3 +1,7 @@
+import {
+  type WorkerEnvironmentStorageChoice,
+  WorkerEnvironmentStorageChoiceSchema,
+} from '@openkit/app-api-schemas';
 import type { StopReason } from '@openkit/protocol';
 
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -44,6 +48,8 @@ export interface GoalRecord {
   readonly currentTaskId: string | null;
   /** Optional terminal stop reason after closeout. */
   readonly terminalStopReason: StopReason | null;
+  /** Explicit retained-storage choice inherited by Goal child work. */
+  readonly workerStorageChoice: WorkerEnvironmentStorageChoice | null;
   /** ISO timestamp for goal creation. */
   readonly createdAt: string;
   /** ISO timestamp for latest goal update. */
@@ -127,6 +133,7 @@ interface GoalRecordRow {
   readonly plan_item_id: string | null;
   readonly current_task_id: string | null;
   readonly terminal_stop_reason: StopReason | null;
+  readonly worker_storage_choice_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -185,6 +192,8 @@ export interface CreateGoalRecordInput {
   readonly createdByItemId?: string | null;
   /** Optional initial goal status. */
   readonly status?: GoalRecordStatus;
+  /** Explicit retained-storage choice for Goal child work. */
+  readonly workerStorageChoice?: WorkerEnvironmentStorageChoice | null;
   /** Optional clock used by deterministic tests. */
   readonly now?: () => string;
 }
@@ -348,9 +357,10 @@ export function createGoalRecord(
         plan_item_id,
         current_task_id,
         terminal_stop_reason,
+        worker_storage_choice_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.goalId,
@@ -363,6 +373,7 @@ export function createGoalRecord(
       null,
       null,
       null,
+      input.workerStorageChoice ? JSON.stringify(input.workerStorageChoice) : null,
       timestamp,
       timestamp
     );
@@ -419,12 +430,28 @@ export function listGoalRecordsForThread(
   ).map(mapGoalRecordRow);
 }
 
+/** Reports whether unfinished Goal work still selects a retained storage association. */
+export function hasNonterminalGoalWorkerStorageReference(
+  workspaceDb: WorkspaceDb,
+  storageRef: string
+): boolean {
+  return Boolean(
+    workspaceDb.sqlite
+      .prepare(
+        `SELECT 1 FROM goal_records WHERE workspace_id = ?
+     AND status NOT IN ('completed', 'aborted', 'failed')
+     AND json_extract(worker_storage_choice_json, '$.storageRef') = ? LIMIT 1`
+      )
+      .get(workspaceDb.workspaceId, storageRef)
+  );
+}
+
 /**
  * Lists all goal records for one workspace in stable export order.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param workspaceId Workspace id.
- * @returns Goal records in oldest-first order.
+ * @returns Goal records in oldest-first order with operational storage selection cleared.
  */
 export function listExportableGoalRecords(
   workspaceDb: WorkspaceDb,
@@ -438,7 +465,9 @@ export function listExportableGoalRecords(
         ORDER BY updated_at ASC, thread_id ASC, goal_id ASC`
       )
       .all(workspaceId) as GoalRecordRow[]
-  ).map(mapGoalRecordRow);
+  )
+    .map(mapGoalRecordRow)
+    .map((goal) => ({ ...goal, workerStorageChoice: null }));
 }
 
 /**
@@ -706,7 +735,7 @@ export function listExportableGoalTasks(
  * Replays imported goal records without emitting goal audit events.
  *
  * @param workspaceDb Open target workspace database handle.
- * @param goals Goal rows to replay.
+ * @param goals Goal rows to replay with fresh operational storage selection.
  */
 export function importGoalRecords(workspaceDb: WorkspaceDb, goals: readonly GoalRecord[]): void {
   for (const goal of goals) {
@@ -723,9 +752,10 @@ export function importGoalRecords(workspaceDb: WorkspaceDb, goals: readonly Goal
           plan_item_id,
           current_task_id,
           terminal_stop_reason,
+          worker_storage_choice_json,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         goal.goalId,
@@ -738,6 +768,7 @@ export function importGoalRecords(workspaceDb: WorkspaceDb, goals: readonly Goal
         goal.planItemId,
         goal.currentTaskId,
         goal.terminalStopReason,
+        null,
         goal.createdAt,
         goal.updatedAt
       );
@@ -1225,6 +1256,9 @@ function mapGoalRecordRow(row: GoalRecordRow): GoalRecord {
     planItemId: row.plan_item_id,
     currentTaskId: row.current_task_id,
     terminalStopReason: row.terminal_stop_reason,
+    workerStorageChoice: row.worker_storage_choice_json
+      ? WorkerEnvironmentStorageChoiceSchema.parse(JSON.parse(row.worker_storage_choice_json))
+      : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1306,6 +1340,7 @@ function goalRecordSelectSql(): string {
     plan_item_id,
     current_task_id,
     terminal_stop_reason,
+    worker_storage_choice_json,
     created_at,
     updated_at
   FROM goal_records`;

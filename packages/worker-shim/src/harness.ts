@@ -64,13 +64,25 @@ interface HarnessSession {
   readonly agentSessionId: string;
   readonly bindingId: string;
   readonly compatibilityKey: string;
+  readonly controlRoot: string;
   readonly sessionDirectory: string;
   readonly stateRoot: string;
+  readonly storageRef: string;
   readonly threadId: string;
   turnStarted: boolean;
+  readonly workSlotRef: string;
   readonly workspaceId: string;
   cleanupState: 'clean' | 'pending' | 'failed';
 }
+
+interface SandboxAdmission {
+  readonly liveBindings: Map<string, string>;
+  readonly liveWorkSlots: Map<string, string>;
+  readonly storageRef: string;
+}
+
+/** Process-wide admission state for every logical Sandbox root served by this shim process. */
+const SANDBOX_ADMISSIONS = new Map<string, SandboxAdmission>();
 
 /** Options for one adapter-selected Harness instance. */
 export interface WorkerHarnessOptions {
@@ -78,7 +90,9 @@ export interface WorkerHarnessOptions {
   readonly adapterId?: string | undefined;
   /** Harness-lifetime Sandbox Integration client. */
   readonly integration: SandboxIntegrationClient;
-  /** Private writable root for AgentSession state and Turn outputs. */
+  /** Fixed retained native-data root inside the `/sandbox` volume. */
+  readonly nativeDataRootDirectory?: string | undefined;
+  /** Private writable root for disposable AgentSession control and Turn outputs. */
   readonly rootDirectory?: string | undefined;
   /** Fixed Turn output root exported through the existing file-effect slots. */
   readonly turnOutputDirectory?: string | undefined;
@@ -97,6 +111,7 @@ export class WorkerHarness {
   private draining = false;
   private readonly environment: WorkerShimEnvironment;
   private readonly integration: SandboxIntegrationClient;
+  private readonly nativeDataRootDirectory: string;
   private readonly rootDirectory: string;
   private readonly runner: WorkerProcessRunner | undefined;
   private readonly sandboxRoot: string;
@@ -112,6 +127,9 @@ export class WorkerHarness {
     }
     this.adapter = adapter;
     this.integration = options.integration;
+    this.nativeDataRootDirectory = resolve(
+      options.nativeDataRootDirectory ?? '/sandbox/openkit/native'
+    );
     this.environment = options.environment ?? process.env;
     this.rootDirectory = resolve(options.rootDirectory ?? '/openkit/harness/agent-sessions');
     this.sandboxRoot = resolve(options.sandboxRoot ?? '/openkit');
@@ -182,6 +200,8 @@ export class WorkerHarness {
       'adapterId',
       'agentSessionCompatibilityKey',
       'effectiveSetupGeneration',
+      'storageRef',
+      'workSlotRef',
     ]);
     if (this.draining || this.sessions.size >= 8) {
       throw harnessError('busy');
@@ -191,6 +211,8 @@ export class WorkerHarness {
     const workspaceId = requireIdentity(body.workspaceId);
     const threadId = requireIdentity(body.threadId);
     const compatibilityKey = requireDigest(body.agentSessionCompatibilityKey);
+    const storageRef = requireIdentity(body.storageRef);
+    const workSlotRef = requirePathSegment(body.workSlotRef);
     if (
       body.adapterId !== this.adapterId ||
       !isPositiveSafeInteger(body.effectiveSetupGeneration)
@@ -199,48 +221,65 @@ export class WorkerHarness {
     }
     if (
       this.sessions.has(bindingId) ||
-      [...this.sessions.values()].some((session) => session.agentSessionId === agentSessionId)
+      [...this.sessions.values()].some(
+        (session) =>
+          session.agentSessionId === agentSessionId ||
+          session.storageRef !== storageRef ||
+          session.workSlotRef === workSlotRef
+      )
     ) {
       throw harnessError('conflict');
     }
-    const privateName = createHash('sha256').update(bindingId).digest('hex');
-    const sessionDirectory = resolve(this.rootDirectory, privateName);
-    const stateRoot = resolve(sessionDirectory, 'native-state');
-    const inputPaths = workerSessionInputPaths(agentSessionId);
-    await mkdir(sessionDirectory, { mode: 0o700, recursive: true });
-    await mkdir(
-      mapSandboxPath(inputPaths.packagePath, this.sandboxRoot).replace(/\/package\.json$/, ''),
-      {
+    reserveSandboxWorkSlot(this.sandboxRoot, storageRef, workSlotRef, bindingId);
+    try {
+      const privateName = createHash('sha256').update(bindingId).digest('hex');
+      const sessionDirectory = resolve(this.rootDirectory, privateName);
+      const controlRoot = resolve(sessionDirectory, 'native-control');
+      const stateRoot = resolve(this.nativeDataRootDirectory, this.adapterId, workSlotRef);
+      const inputPaths = workerSessionInputPaths(agentSessionId);
+      await rm(sessionDirectory, { force: true, recursive: true });
+      await mkdir(sessionDirectory, { mode: 0o700, recursive: true });
+      await mkdir(stateRoot, { mode: 0o700, recursive: true });
+      await mkdir(
+        mapSandboxPath(inputPaths.packagePath, this.sandboxRoot).replace(/\/package\.json$/, ''),
+        {
+          mode: 0o700,
+          recursive: true,
+        }
+      );
+      await mkdir(mapSandboxPath(inputPaths.contextRoot, this.sandboxRoot), {
         mode: 0o700,
         recursive: true,
-      }
-    );
-    await mkdir(mapSandboxPath(inputPaths.contextRoot, this.sandboxRoot), {
-      mode: 0o700,
-      recursive: true,
-    });
-    const opened =
-      this.adapter.mode === 'session-continuity'
-        ? await this.adapter.openSession({ stateRoot })
-        : { nativeHandle: null, nativeHandleDigest: null, nativeHandleState: 'pending' as const };
-    this.sessions.set(bindingId, {
-      activeTurn: null,
-      agentSessionId,
-      bindingId,
-      compatibilityKey,
-      sessionDirectory,
-      stateRoot,
-      threadId,
-      workspaceId,
-      cleanupState: 'clean',
-      turnStarted: false,
-    });
-    return {
-      maxActiveTurns: 1,
-      nativeHandleDigest: opened.nativeHandleDigest,
-      nativeHandleState: opened.nativeHandleState,
-      state: 'open',
-    };
+      });
+      const opened =
+        this.adapter.mode === 'session-continuity'
+          ? await this.adapter.openSession({ controlRoot, stateRoot })
+          : { nativeHandle: null, nativeHandleDigest: null, nativeHandleState: 'pending' as const };
+      this.sessions.set(bindingId, {
+        activeTurn: null,
+        agentSessionId,
+        bindingId,
+        compatibilityKey,
+        controlRoot,
+        sessionDirectory,
+        stateRoot,
+        storageRef,
+        threadId,
+        workspaceId,
+        cleanupState: 'clean',
+        turnStarted: false,
+        workSlotRef,
+      });
+      return {
+        maxActiveTurns: 1,
+        nativeHandleDigest: opened.nativeHandleDigest,
+        nativeHandleState: opened.nativeHandleState,
+        state: 'open',
+      };
+    } catch (error) {
+      releaseSandboxWorkSlot(this.sandboxRoot, storageRef, workSlotRef, bindingId);
+      throw error;
+    }
   }
 
   /** Inspects only the named Session's native proof and supervised child. */
@@ -253,7 +292,10 @@ export class WorkerHarness {
     if (session.activeTurn?.barrierReached) {
       await session.activeTurn.promise.catch(() => undefined);
     }
-    const inspected = await this.adapter.inspectSession({ stateRoot: session.stateRoot });
+    const inspected = await this.adapter.inspectSession({
+      controlRoot: session.controlRoot,
+      stateRoot: session.stateRoot,
+    });
     return {
       childState: session.activeTurn && !session.activeTurn.barrierReached ? 'running' : 'absent',
       cleanupState: session.cleanupState,
@@ -328,7 +370,10 @@ export class WorkerHarness {
     }
     const prior =
       this.adapter.mode === 'session-continuity'
-        ? await this.adapter.inspectSession({ stateRoot: session.stateRoot })
+        ? await this.adapter.inspectSession({
+            controlRoot: session.controlRoot,
+            stateRoot: session.stateRoot,
+          })
         : { nativeHandleDigest: null, nativeHandleState: 'pending' as const };
     session.turnStarted = true;
     const abort = new AbortController();
@@ -369,6 +414,7 @@ export class WorkerHarness {
       },
       ...(this.runner ? { runner: this.runner } : {}),
       sessionStateRoot: session.stateRoot,
+      sessionControlRoot: session.controlRoot,
       signal: abort.signal,
     });
     const promise = runPromise.finally(async () => {
@@ -450,12 +496,18 @@ export class WorkerHarness {
     const closed =
       this.adapter.mode === 'session-continuity'
         ? await this.adapter.closeSession({
+            controlRoot: session.controlRoot,
             sessionDirectory: session.sessionDirectory,
-            stateRoot: session.stateRoot,
           })
         : await rm(session.sessionDirectory, { force: true, recursive: true }).then(() => ({
             privateState: 'absent' as const,
           }));
+    releaseSandboxWorkSlot(
+      this.sandboxRoot,
+      session.storageRef,
+      session.workSlotRef,
+      session.bindingId
+    );
     this.sessions.delete(session.bindingId);
     return { childState: 'absent', ...closed, state: 'closed' };
   }
@@ -670,6 +722,61 @@ function requireIdentity(value: unknown): string {
     throw harnessError('stale');
   }
   return value;
+}
+
+/** Reserves one binding and work-slot writer within the mounted Sandbox association. */
+function reserveSandboxWorkSlot(
+  sandboxRoot: string,
+  storageRef: string,
+  workSlotRef: string,
+  bindingId: string
+): void {
+  let admission = SANDBOX_ADMISSIONS.get(sandboxRoot);
+  if (!admission) {
+    admission = {
+      liveBindings: new Map(),
+      liveWorkSlots: new Map(),
+      storageRef,
+    };
+    SANDBOX_ADMISSIONS.set(sandboxRoot, admission);
+  }
+  if (
+    admission.storageRef !== storageRef ||
+    admission.liveBindings.has(bindingId) ||
+    admission.liveWorkSlots.has(workSlotRef)
+  ) {
+    throw harnessError('conflict');
+  }
+  admission.liveBindings.set(bindingId, workSlotRef);
+  admission.liveWorkSlots.set(workSlotRef, bindingId);
+}
+
+/** Releases only the exact closed binding while retaining the Sandbox storage association. */
+function releaseSandboxWorkSlot(
+  sandboxRoot: string,
+  storageRef: string,
+  workSlotRef: string,
+  bindingId: string
+): void {
+  const admission = SANDBOX_ADMISSIONS.get(sandboxRoot);
+  if (
+    admission?.storageRef !== storageRef ||
+    admission.liveBindings.get(bindingId) !== workSlotRef ||
+    admission.liveWorkSlots.get(workSlotRef) !== bindingId
+  ) {
+    throw harnessError('conflict');
+  }
+  admission.liveBindings.delete(bindingId);
+  admission.liveWorkSlots.delete(workSlotRef);
+}
+
+/** Requires one opaque identity that is also safe as one fixed-root path segment. */
+function requirePathSegment(value: unknown): string {
+  const identity = requireIdentity(value);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(identity)) {
+    throw harnessError('unsupported');
+  }
+  return identity;
 }
 
 /** Requires one lowercase SHA-256 digest. */

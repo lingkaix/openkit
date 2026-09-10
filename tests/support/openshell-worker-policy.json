@@ -1,6 +1,6 @@
 {
   "filesystem": {
-    "includeWorkdir": true,
+    "includeWorkdir": false,
     "readOnly": [
       "/usr",
       "/lib",
@@ -8,10 +8,18 @@
       "/dev/urandom",
       "/app",
       "/etc",
+      "/opt",
       "/var/log",
       "/opt/toolchains"
     ],
-    "readWrite": ["/sandbox", "/tmp", "/dev/null", "/sandbox/.cache/npm"]
+    "readWrite": [
+      "/sandbox",
+      "/workspace",
+      "/openkit",
+      "/tmp/openkit-bootstrap",
+      "/dev/null",
+      "/sandbox/.cache/npm"
+    ]
   },
   "landlock": { "compatibility": "best_effort" },
   "networkMiddlewares": {},

@@ -66,6 +66,11 @@ export interface ResolvedLogicalModel {
   readonly id: string;
   readonly displayName: string;
   readonly capabilities: readonly string[];
+  /** Required OpenKit-owned context policy admitted against every authored route. */
+  readonly contextManagement: {
+    readonly type: 'compaction';
+    readonly compactThreshold: number;
+  };
   /** Catalog family when inventory names one; null when family metadata is absent. */
   readonly modelFamilyId: string | null;
   readonly routes: readonly ResolvedLogicalModelRoute[];
@@ -81,34 +86,55 @@ export function resolveLogicalModelCatalog(
   }
 
   return config.logicalModels.flatMap((logicalModel) => {
-    const authoredFamilies = logicalModel.routes.map((route) => {
+    const authoredContracts = logicalModel.routes.map((route) => {
       const profile = providers.get(route.providerProfileId);
-      return profile === null ? null : modelContract(profile, route.providerModel).modelFamilyId;
+      if (profile === null) return null;
+      if (!profile.models.includes(route.providerModel)) {
+        throw new Error(`Logical model route model is not provided: ${route.id}.`);
+      }
+      return modelContract(profile, route.providerModel);
     });
+    const authoredFamilies = authoredContracts.map((contract) => contract?.modelFamilyId ?? null);
     const families = new Set(authoredFamilies);
     const unknownFamily = authoredFamilies.some((family) => family === null);
     if (unknownFamily ? logicalModel.routes.length !== 1 : families.size !== 1) {
       throw new Error(`Logical model routes cross model families: ${logicalModel.id}.`);
     }
 
-    const eligibleRoutes = logicalModel.routes.filter((route) => {
-      const profile = providers.get(route.providerProfileId);
-      return profile !== null && isProviderProfileDispatchable(profile);
-    });
-    if (eligibleRoutes.length === 0) return [];
-    const contracts = eligibleRoutes.map((route) => {
-      const profile = providers.get(route.providerProfileId)!;
-      if (!profile.models.includes(route.providerModel)) {
-        throw new Error(`Logical model route model is not provided: ${route.id}.`);
+    const contextManagement = logicalModel.contextManagement?.[0];
+    if (!contextManagement) {
+      throw new Error(`Logical model context management is missing: ${logicalModel.id}.`);
+    }
+    for (const contract of authoredContracts) {
+      if (!contract) continue;
+      if (
+        contract.contextLimit === null ||
+        contextManagement.compactThreshold > contract.contextLimit ||
+        (contract.outputLimit !== null &&
+          contextManagement.compactThreshold + contract.outputLimit > contract.contextLimit)
+      ) {
+        throw new Error(
+          `Logical model context management exceeds a route limit: ${logicalModel.id}.`
+        );
       }
-      return modelContract(profile, route.providerModel);
-    });
+    }
+
+    const eligibleRouteIndexes = logicalModel.routes
+      .map((route, index) => ({ route, index }))
+      .filter(({ route }) => {
+        const profile = providers.get(route.providerProfileId);
+        return profile !== null && isProviderProfileDispatchable(profile);
+      });
+    if (eligibleRouteIndexes.length === 0) return [];
+    const contracts = eligibleRouteIndexes.map(({ index }) => authoredContracts[index]!);
+    const eligibleRoutes = eligibleRouteIndexes.map(({ route }) => route);
 
     return [
       {
         id: logicalModel.id,
         displayName: logicalModel.displayName,
         capabilities: intersectCapabilities(contracts.map((contract) => contract.capabilities)),
+        contextManagement,
         modelFamilyId: contracts[0]!.modelFamilyId,
         routes: eligibleRoutes.map((route) => ({ ...route })),
       },
@@ -141,7 +167,12 @@ export function resolveLogicalModel(
 function modelContract(
   profile: ProviderProfile,
   modelId: string
-): { capabilities: readonly string[]; modelFamilyId: string | null } {
+): {
+  capabilities: readonly string[];
+  contextLimit: number | null;
+  modelFamilyId: string | null;
+  outputLimit: number | null;
+} {
   const model = resolveEffectiveModelMetadata(profile, modelId);
   const capabilities = new Set<string>();
   for (const modality of model.modalities?.input ?? []) capabilities.add(`input:${modality}`);
@@ -156,7 +187,12 @@ function modelContract(
 
   const family =
     typeof model.family === 'string' && model.family.trim().length > 0 ? model.family : null;
-  return { capabilities: [...capabilities].sort(), modelFamilyId: family };
+  return {
+    capabilities: [...capabilities].sort(),
+    contextLimit: model.limit?.context ?? null,
+    modelFamilyId: family,
+    outputLimit: model.limit?.output ?? null,
+  };
 }
 
 /**

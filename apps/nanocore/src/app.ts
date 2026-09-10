@@ -17,6 +17,11 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import { registerActionCenterRoutes } from './action-center.js';
+import { registerAdministrationRoutes } from './administration/administration-routes.js';
+import {
+  createAdministrationEnvironmentPrepareTool,
+  createAdministrationEnvironmentTools,
+} from './administration/environment-tools.js';
 import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
@@ -48,7 +53,11 @@ import {
   createNanoHostTransportSessionAuthority,
   type NanoHostTransportSessionAuthority,
 } from './auth/nanohost-transport-session.js';
-import { registerOperationAccessGuards } from './auth/operation-authorizer.js';
+import {
+  isWorkspaceOperationAuthorized,
+  registerOperationAccessGuards,
+  requireCurrentDeploymentAdmin,
+} from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
@@ -68,7 +77,7 @@ import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js'
 import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import { registerGenerativeUiRoutes } from './generative-ui-routes.js';
-import { registerGoalRoutes } from './goal-routes.js';
+import { registerGoalRoutes, waitForWorkerTurnTerminalState } from './goal-routes.js';
 import { registerGovernanceRoutes } from './governance-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { registerKernelRoutes } from './kernel-routes.js';
@@ -131,11 +140,13 @@ import {
 } from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
+import { createWorkerEnvironmentRuntimeEffects } from './runtime/worker-environment-runtime-effects.js';
 import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
 } from './runtime/worker-mcp-gateway.js';
 import { registerWorkerRecoveryRoutes } from './runtime/worker-recovery-routes.js';
+import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import { registerWorkspaceSyncRoutes } from './runtime/workspace-sync-routes.js';
 import {
@@ -145,6 +156,7 @@ import {
   markSchedulerSessionLeaseReleasing,
   resolveSchedulerLeaseTokenBinding,
   SchedulerLeaseHeartbeatRejectedError,
+  type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
 import { registerSearchRoutes } from './search-routes.js';
 import { mapRuntimeCapabilitiesToFlags, registerServiceRoutes } from './service-routes.js';
@@ -156,9 +168,16 @@ import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-ro
 import { createHttpTelemetryMiddleware } from './telemetry.js';
 import { registerThreadRoutes } from './thread-routes.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
-import { registerTurnRoutes } from './turn-routes.js';
+import { interruptProductTurn, registerTurnRoutes } from './turn-routes.js';
 import { registerVaultAdminRoutes } from './vault/vault-admin-routes.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
+import {
+  createWorkerEnvironmentActivation,
+  createWorkerEnvironmentAffectedStorageDeriver,
+} from './worker-environments/worker-environment-activation.js';
+import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
+import { createWorkerEnvironmentPreparation } from './worker-environments/worker-environment-preparation.js';
+import { registerWorkerEnvironmentRoutes } from './worker-environments/worker-environment-routes.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import {
   isTerminalWorkspaceDeletionRequest,
@@ -760,8 +779,204 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const nanoHostSessionDispatch =
     options.nanoHostSessionDispatch ??
     createNanoHostSessionDispatch({
+      ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       sessionAuthority: nanohostTransportSessionAuthority,
     });
+  const workerEnvironmentRuntimeEffects =
+    createWorkerEnvironmentRuntimeEffects(nanoHostSessionDispatch);
+  const workerEnvironmentOperations = options.coreDb
+    ? createWorkerEnvironmentOperations({
+        coreDb: options.coreDb,
+        inflightCommands,
+        runtimeEffects: workerEnvironmentRuntimeEffects,
+        store: sharedStore,
+      })
+    : null;
+  const workerEnvironmentPreparation = options.coreDb
+    ? createWorkerEnvironmentPreparation({
+        store: sharedStore,
+        inflightCommands,
+        runtimeEffects: workerEnvironmentRuntimeEffects,
+        configFilesForActor: (actor) => runtimeConfigFileService({ get: () => actor }),
+        privateWorkspaceIdForUser: quickChatWorkspaceIdForUser,
+        requireCurrentAdministrator: (actor) => {
+          requireCurrentDeploymentAdmin(options.coreDb!, actor);
+        },
+        authorizePrivateHome: ({ actor, workspaceId, threadId, turnId }) => {
+          if (workspaceId !== quickChatWorkspaceIdForUser(actor.userId)) return false;
+          try {
+            const thread = sharedStore.getThread(workspaceId, threadId);
+            if (thread.entryPath !== 'administration') return false;
+            const turn = sharedStore
+              .listThreadTurns(workspaceId, threadId)
+              .find((candidate) => candidate.id === turnId);
+            // Preparation authorizes its private home before creating the direct Turn.
+            return (
+              !turn || (turn.triggerActor.kind === 'user' && turn.triggerActor.id === actor.userId)
+            );
+          } catch {
+            return false;
+          }
+        },
+        deriveAffectedStorage: createWorkerEnvironmentAffectedStorageDeriver({
+          coreDb: options.coreDb,
+          store: sharedStore,
+        }),
+      })
+    : null;
+  const workerEnvironmentActivation =
+    options.coreDb && workerEnvironmentPreparation
+      ? createWorkerEnvironmentActivation({
+          coreDb: options.coreDb,
+          store: sharedStore,
+          preparation: workerEnvironmentPreparation,
+          inflightCommands,
+          configFilesForActor: (actor) => runtimeConfigFileService({ get: () => actor }),
+          requireCurrentAdministrator: (actor) => {
+            requireCurrentDeploymentAdmin(options.coreDb!, actor);
+          },
+          reloadRuntimeConfig: () => runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }),
+          replaceResidentWork: async (input) => {
+            const { actor, replaceNow, affectedStorage, residentMembers, requestId, target } =
+              input;
+            const coreDb = options.coreDb!;
+            const requireAuthority = () => {
+              workerEnvironmentPreparation.readResolved({ actor }, input.resolvedCandidate);
+              for (const ref of affectedStorage) {
+                const binding = getWorkerStorageBinding(coreDb, { storageRef: ref.storageRef });
+                if (
+                  !binding ||
+                  !binding.contributors.every(
+                    (contributor) =>
+                      contributor.workspaceId === replaceNow.workspaceId &&
+                      contributor.responsibleUserId === actor.userId &&
+                      sharedStore.getThread(contributor.workspaceId, contributor.threadId)
+                        .workspaceId === replaceNow.workspaceId
+                  )
+                )
+                  throw new Error('Worker source audience changed.');
+              }
+              requireCurrentDeploymentAdmin(coreDb, actor);
+              if (
+                !isWorkspaceOperationAuthorized(coreDb, actor, replaceNow.workspaceId, {
+                  authentication: 'deployment-admin',
+                  mutating: true,
+                  policyOperation: 'workspace.configure',
+                })
+              )
+                throw new Error('Worker environment authority changed.');
+            };
+            requireAuthority();
+            if (affectedStorage.length !== 1)
+              throw new Error('Resident storage group is unavailable.');
+            const expected = affectedStorage[0]!;
+            const before = getWorkerStorageBinding(coreDb, { storageRef: expected.storageRef });
+            if (!before || before.revision !== expected.expectedRevision)
+              throw new Error('Worker storage changed.');
+            for (const member of residentMembers) {
+              if (!member.turnId) continue;
+              requireAuthority();
+              const turn = sharedStore.getTurn(
+                replaceNow.workspaceId,
+                member.threadId,
+                member.turnId
+              );
+              if (!['pending', 'running', 'awaiting_human'].includes(turn.status)) continue;
+              await interruptProductTurn({
+                store: sharedStore,
+                coreDb,
+                inflightCommands,
+                turnExecutor,
+                workspaceId: replaceNow.workspaceId,
+                threadId: member.threadId,
+                turnId: member.turnId,
+                requestId,
+              });
+            }
+            for (const member of residentMembers) {
+              if (!member.turnId) continue;
+              const terminal = await waitForWorkerTurnTerminalState(sharedStore, member.turnId);
+              if (!['completed', 'failed', 'interrupted'].includes(terminal.status))
+                throw new Error('Worker still requires human intervention.');
+              completeSchedulerLeaseForTerminalTurn(coreDb, terminal);
+            }
+            requireAuthority();
+            const released = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
+            if (
+              !released ||
+              released.scopeDigest !== before.scopeDigest ||
+              released.layoutDigest !== before.layoutDigest ||
+              released.attachmentGeneration !== before.attachmentGeneration ||
+              !(
+                (released.revision === before.revision &&
+                  released.state === before.state &&
+                  released.currentSandboxBindingRef === before.currentSandboxBindingRef) ||
+                (released.revision === before.revision + 1 &&
+                  released.state === 'idle' &&
+                  released.currentSandboxBindingRef === null)
+              )
+            )
+              throw new Error('Worker storage changed during interruption.');
+            // The ordinary scheduler resolves the new AEP and refuses occupied capacity before dispatch.
+            try {
+              await startModeWorkerTurn({
+                store: sharedStore,
+                triggerActor: { kind: 'user', id: actor.userId },
+                workspaceId: replaceNow.workspaceId,
+                threadId: replaceNow.threadId,
+                prompt: replaceNow.prompt,
+                requestedAgentId: target.agentId,
+                requestId,
+                workerStorageChoice: {
+                  kind: 'selected',
+                  storageRef: before.storageRef,
+                  expectedRevision: released.revision,
+                  purpose: 'work',
+                  goalId: null,
+                  taskId: null,
+                },
+              });
+            } catch (error) {
+              // A refused admission ran no successor; uncertain runtime failures retain unknown.
+              if (
+                !(error instanceof TurnStartValidationError) ||
+                error.code !== 'scheduler_admission_deferred'
+              )
+                throw error;
+            }
+            requireAuthority();
+            const after = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
+            const image = workerEnvironmentPreparation.readResolved(
+              { actor },
+              input.resolvedCandidate
+            ).resolved.image;
+            const sandbox = after?.currentSandboxBindingRef
+              ? (coreDb.sqlite
+                  .prepare(
+                    'SELECT image_digest AS imageDigest, health_state AS health, cleanup_state AS cleanup FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?'
+                  )
+                  .get(after.currentSandboxBindingRef) as
+                  | { imageDigest: string; health: string; cleanup: string }
+                  | undefined)
+              : undefined;
+            const disposition =
+              after?.state === 'attached' &&
+              after.attachmentGeneration > before.attachmentGeneration &&
+              sandbox?.imageDigest === image.digest &&
+              sandbox.health === 'ready' &&
+              sandbox.cleanup === 'clean'
+                ? ('reattached' as const)
+                : after?.state === 'idle' && after.currentSandboxBindingRef === null
+                  ? ('fenced' as const)
+                  : after?.state === 'attached' &&
+                      after.currentSandboxBindingRef === before.currentSandboxBindingRef &&
+                      after.attachmentGeneration === before.attachmentGeneration
+                    ? ('unchanged' as const)
+                    : ('unknown' as const);
+            return [{ ...expected, disposition }];
+          },
+        })
+      : null;
   nanoHostTransportSessionAuthorities.set(app, nanohostTransportSessionAuthority);
   const configuredWorkerRuntime =
     options.workerLifecycleRuntime ??
@@ -923,6 +1138,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly requestId: string;
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
+    readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
@@ -938,6 +1154,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       providerCredentialResolver,
       requestedAgentId: input.requestedAgentId,
       ...(input.reservedTurnId ? { reservedTurnId: input.reservedTurnId } : {}),
+      ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
       schedulerEpoch,
       snapshot,
       store: input.store,
@@ -1287,6 +1504,34 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfig,
   });
 
+  registerAdministrationRoutes({
+    app,
+    coreDb: options.coreDb,
+    environmentToolsForTurn: (context) => {
+      if (!workerEnvironmentOperations || !workerEnvironmentPreparation) {
+        throw new Error('Worker environment operations are not configured.');
+      }
+      return createAdministrationEnvironmentTools({
+        actor: context.actor,
+        operations: workerEnvironmentOperations,
+        prepareTool: createAdministrationEnvironmentPrepareTool({
+          actor: context.actor,
+          administrationThreadId: context.administrationThreadId,
+          administrationTurnId: context.administrationTurnId,
+          prepare: workerEnvironmentPreparation.prepare,
+        }),
+      });
+    },
+    inflightCommands,
+    llmGatewayDispatcher,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+    quickChatWorkspaceIdForUser,
+    requestStore,
+    resolveGatewayProvider,
+    runtimeConfig,
+    runtimeConfigFiles: runtimeConfigFileService,
+  });
+
   registerQuickAndChatModeRoutes({
     app,
     assertProjectWorkspace,
@@ -1496,6 +1741,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerAgentEnvironmentRoutes({ app, repositoryWorkspaceDb });
+  registerWorkerEnvironmentRoutes({
+    app,
+    operations: workerEnvironmentOperations,
+    ...(workerEnvironmentPreparation ? { prepare: workerEnvironmentPreparation.prepare } : {}),
+    ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
+  });
 
   registerReviewDecisionRoutes({
     app,

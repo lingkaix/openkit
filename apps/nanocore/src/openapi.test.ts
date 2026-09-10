@@ -41,7 +41,7 @@ const NON_APP_API_ROUTE_PATTERNS = [
   /^\/api\/worker-inference(?:\/|$)/,
   /^\/api\/worker-capabilities(?:\/|$)/,
   /^\/api\/nanohost\/transport\/session\/admit$/,
-  /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|bridge\.(?:open|close)|image\.(?:acquire|build)|file\.export|reference\.import)(?:\/result)?$/,
+  /^\/api\/nanohost\/transport\/effects\/(?:sandbox\.(?:create|delete)|storage\.(?:inspect|purge)|bridge\.(?:open|close)|image\.(?:acquire|build|inspect)|file\.export|reference\.import)(?:\/result)?$/,
   /^\/api\/workspaces(?:\/|$)/,
   /^\/api\/approvals(?:\/|$)/,
   /^\/(?:api\/)?health$/,
@@ -63,6 +63,9 @@ const PRIVATE_NANOHOST_EFFECT_ROUTES = [
   'bridge.close',
   'image.acquire',
   'image.build',
+  'image.inspect',
+  'storage.inspect',
+  'storage.purge',
   'file.export',
   'reference.import',
 ].flatMap((operation) => [
@@ -2981,6 +2984,45 @@ describe('app api openapi projection', () => {
     });
   });
 
+  it('projects the bounded Worker environment and private administration operations', () => {
+    const document = createAppOpenApiDocument();
+    const operations = [
+      ['get', '/api/app/workspaces/{workspaceId}/worker-environments', 'listWorkerEnvironments'],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/worker-environments/select',
+        'selectWorkerEnvironment',
+      ],
+      ['post', '/api/app/worker-environments/prepare', 'prepareWorkerEnvironment'],
+      ['post', '/api/app/worker-environments/activate', 'activateWorkerEnvironment'],
+      [
+        'get',
+        '/api/app/workspaces/{workspaceId}/worker-environments/{storageRef}/status',
+        'getWorkerEnvironmentStatus',
+      ],
+      [
+        'post',
+        '/api/app/workspaces/{workspaceId}/worker-environments/{storageRef}/purge',
+        'purgeWorkerEnvironment',
+      ],
+      ['post', '/api/app/administration/conversation-turns', 'submitAdministrationConversation'],
+    ] as const;
+
+    for (const [method, path, operationId] of operations) {
+      expect(document.paths[path]?.[method]).toMatchObject({ operationId });
+    }
+    const serialized = JSON.stringify(
+      Object.fromEntries(
+        Object.entries(document.components.schemas).filter(
+          ([name]) =>
+            name.includes('WorkerEnvironment') || name.includes('AdministrationConversation')
+        )
+      )
+    );
+    expect(serialized).not.toContain('adminToken');
+    expect(serialized).not.toContain('hostPath');
+  });
+
   it('keeps live public app api routes and openapi operations aligned', () => {
     const app = createApp();
     const unsupportedMethodRoutes = app.routes
@@ -3111,7 +3153,7 @@ describe('app api openapi projection', () => {
             ? authentication === 'bootstrap-secret' || authentication === 'deployment-admin'
             : scope === 'user'
               ? authentication === 'canonical-user' || authentication === 'gateway-actor'
-              : !Object.hasOwn(metadata, 'authentication');
+              : !Object.hasOwn(metadata, 'authentication') || authentication === 'deployment-admin';
         const gatewayAuthenticationIsConsistent =
           authentication === 'gateway-actor'
             ? workspaceResolver === 'gateway-metadata-workspace'
@@ -3500,6 +3542,7 @@ describe('app api openapi projection', () => {
       'updateRuntimeConfigFile',
       'getRuntimeConfigSchemas',
       'validateRuntimeConfig',
+      'submitAdministrationConversation',
       'getConversationTargets',
       'quickChat',
       'submitConversation',
@@ -3642,6 +3685,12 @@ describe('app api openapi projection', () => {
       'getWorkspaceApplyResult',
       'listAgentEnvironmentPackageSnapshots',
       'getAgentEnvironmentPackageSnapshot',
+      'listWorkerEnvironments',
+      'selectWorkerEnvironment',
+      'getWorkerEnvironmentStatus',
+      'purgeWorkerEnvironment',
+      'prepareWorkerEnvironment',
+      'activateWorkerEnvironment',
       'submitKnowledgeProposalDecision',
       'reverseKnowledgeProposal',
       'submitGoalReviewDecision',

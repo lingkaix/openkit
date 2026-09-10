@@ -9,11 +9,20 @@ export const GatewayRouteMemberSchema = z
   })
   .strict();
 
+/** OpenKit-owned context policy for one logical model. */
+export const GatewayContextManagementSchema = z
+  .object({
+    type: z.literal('compaction'),
+    compactThreshold: z.number().int().positive(),
+  })
+  .strict();
+
 /** One logical model and its ordered private route members. */
 export const GatewayLogicalModelSchema = z
   .object({
     id: z.string().min(1),
     displayName: z.string().trim().min(1),
+    contextManagement: z.array(GatewayContextManagementSchema).length(1),
     routes: z.array(GatewayRouteMemberSchema).min(1),
   })
   .strict()

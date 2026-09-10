@@ -27,6 +27,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection.',
   },
+  'openkit.thread-entry.v1': {
+    id: 'openkit.thread-entry.v1',
+    status: 'active',
+    description:
+      'Thread records preserve the immutable server-authored conversation or administration entry path.',
+  },
   'workspace.mount.fuse': {
     id: 'workspace.mount.fuse',
     status: 'active',

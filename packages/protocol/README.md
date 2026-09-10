@@ -10,6 +10,8 @@ The TypeScript and Zod schemas in this package are the machine-readable source o
 - TypeScript and Zod schema sources.
 - Generated JSON Schema outputs derived from the Zod source.
 
+`Thread.entryPath` is a required immutable server-authored routing discriminator. Storage cutover explicitly stamps historical records as `conversation`; public create and update commands cannot set it.
+
 ## Commands
 
 - `pnpm --filter @openkit/protocol test`

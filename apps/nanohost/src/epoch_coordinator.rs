@@ -40,6 +40,7 @@ use crate::openshell_client::{
     WorkerBootstrapMonitor, WorkerBootstrapRequest,
 };
 use crate::openshell_release;
+use crate::persistent_volume::{PersistentVolumeStore, StorageAttachmentRequest, StorageMount};
 use crate::sandbox_bridge::{
     EffectCarriage, FILE_EFFECT_CHUNK_BYTES, FileEffectKind, FileEffectPresence, FileEffectRequest,
     OpenSandboxBridge, RetainedExportResult, read_import_staging, stage_export,
@@ -515,6 +516,12 @@ pub enum RuntimeEffectKind {
     ExportFile,
     /// Imports one immutable bounded reference.
     ImportReference,
+    /// Inspects one exact verified local image.
+    InspectImage,
+    /// Inspects one exact retained storage association.
+    InspectStorage,
+    /// Purges one exact fenced storage association.
+    PurgeStorage,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -534,6 +541,9 @@ impl RuntimeEffectKind {
             "image.build" => Ok(Self::BuildImage),
             "file.export" => Ok(Self::ExportFile),
             "reference.import" => Ok(Self::ImportReference),
+            "image.inspect" => Ok(Self::InspectImage),
+            "storage.inspect" => Ok(Self::InspectStorage),
+            "storage.purge" => Ok(Self::PurgeStorage),
             _ => Err("runtime effect rejected"),
         }
     }
@@ -835,6 +845,7 @@ pub struct EpochCoordinator {
     client: NanoHostOpenShellClient,
     image_store: ImageStore,
     image_backend: DockerImageBackend,
+    persistent_volumes: PersistentVolumeStore,
     required_images: BTreeSet<String>,
     run_root: PathBuf,
     bridge: Option<OpenSandboxBridge>,
@@ -941,6 +952,17 @@ impl EpochMemberMonitor {
     fn invalidate_startup(&mut self) {
         self.fence(EpochFault::PartialStart);
     }
+
+    /// Stops and joins every epoch member before host-side attachments are released.
+    #[allow(dead_code)]
+    fn stop(&mut self) {
+        if self.worker.is_some() {
+            let _ = self.fence.send(None);
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl Drop for EpochMemberMonitor {
@@ -969,9 +991,11 @@ impl EpochCoordinator {
         image_store: &mut Option<ImageStore>,
         required_images: &BTreeSet<String>,
         image_backend: &mut Option<DockerImageBackend>,
+        persistent_volumes: &mut Option<PersistentVolumeStore>,
     ) -> Result<Self, EpochFault> {
         let mut image_store = image_store.take().ok_or(EpochFault::PartialStart)?;
         let mut image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
+        let persistent_volumes = persistent_volumes.take().ok_or(EpochFault::PartialStart)?;
         let mut children = Vec::with_capacity(plan.members().len());
         let runtime = {
             let export_before_fence = |fault: EpochFault| {
@@ -1163,6 +1187,7 @@ impl EpochCoordinator {
             client,
             image_store,
             image_backend,
+            persistent_volumes,
             required_images: required_images.clone(),
             run_root: plan.run_root().to_path_buf(),
             bridge: None,
@@ -1183,6 +1208,44 @@ impl EpochCoordinator {
             .as_ref()
             .map(|sandbox| sandbox.name.as_str())
             .ok_or(EpochFault::IdentityMismatch)
+    }
+
+    /// Inspects one exact verified local image without acquisition.
+    pub fn inspect_image(&self, digest: &str) -> Result<serde_json::Value, &'static str> {
+        self.persistent_volumes
+            .inspect_image(digest)
+            .map(|layout| layout.result_json())
+    }
+
+    /// Verifies the selected image and prepares one exact retained attachment.
+    pub fn prepare_storage(
+        &mut self,
+        sandbox_id: &str,
+        image_digest: &str,
+        request: &StorageAttachmentRequest,
+    ) -> Result<Vec<StorageMount>, &'static str> {
+        let layout = self.persistent_volumes.inspect_image(image_digest)?;
+        self.persistent_volumes.attach(sandbox_id, request, &layout)
+    }
+
+    /// Inspects one exact association without creating or mounting it.
+    pub fn inspect_storage(
+        &self,
+        storage_ref: &str,
+        attachment_generation: u64,
+    ) -> serde_json::Value {
+        self.persistent_volumes
+            .inspect(storage_ref, attachment_generation)
+    }
+
+    /// Purges one exact detached association through the local partial-removal fence.
+    pub fn purge_storage(
+        &mut self,
+        storage_ref: &str,
+        attachment_generation: u64,
+    ) -> serde_json::Value {
+        self.persistent_volumes
+            .purge(storage_ref, attachment_generation)
     }
 
     /// Returns whether the accepted Harness bridge and its lifetime monitor remain live.
@@ -1227,8 +1290,10 @@ impl EpochCoordinator {
         attempt_lineage: &str,
     ) -> Result<SandboxRef, EpochFault> {
         let result = tokio::task::block_in_place(|| {
-            self.runtime
-                .block_on(self.client.create_sandbox(spec, policy, attempt_lineage))
+            self.runtime.block_on(
+                self.client
+                    .create_sandbox(spec, policy, attempt_lineage, &[]),
+            )
         });
         self.settle(result)
     }
@@ -1307,6 +1372,7 @@ impl EpochCoordinator {
         request: &LifecycleEffectRequest,
         create_spec: Option<SandboxSpec>,
         create_policy: Option<SandboxPolicy>,
+        storage_mounts: Vec<StorageMount>,
         worker_bootstrap: Option<WorkerBootstrapRequest>,
     ) -> Result<String, EpochFault> {
         // For OpenBridge the client composes the fixed Harness bootstrap before
@@ -1317,8 +1383,8 @@ impl EpochCoordinator {
             return Err(EpochFault::IdentityMismatch);
         }
         let create = match (create_spec, create_policy) {
-            (Some(spec), Some(policy)) => Some((spec, policy)),
-            (None, None) => None,
+            (Some(spec), Some(policy)) => Some((spec, policy, storage_mounts)),
+            (None, None) if storage_mounts.is_empty() => None,
             _ => return Err(EpochFault::IdentityMismatch),
         };
         if let Some(result) = preflight_lifecycle_result(
@@ -1330,6 +1396,11 @@ impl EpochCoordinator {
             self.worker_bootstrap_monitor.is_some(),
             create.is_some() || worker_bootstrap.is_some(),
         )? {
+            if request.kind() == LifecycleEffectKind::DeleteSandbox {
+                self.persistent_volumes
+                    .detach(request.sandbox_id())
+                    .map_err(|_| EpochFault::IdentityMismatch)?;
+            }
             return Ok(result.to_string());
         }
         // OpenBridge orders fixed Start before `open_sandbox_bridge` and retains
@@ -1385,7 +1456,17 @@ impl EpochCoordinator {
             }
             result => result,
         };
-        let result = self.settle(result)?;
+        let result = match self.settle(result) {
+            Ok(result) => result,
+            Err(fault) => {
+                if request.kind() == LifecycleEffectKind::CreateSandbox {
+                    self.persistent_volumes
+                        .detach(request.sandbox_id())
+                        .map_err(|_| EpochFault::IdentityMismatch)?;
+                }
+                return Err(fault);
+            }
+        };
         match result {
             LifecycleEffectResult::SandboxCreated(sandbox) => {
                 if self.current_sandbox.replace(sandbox.clone()).is_some() {
@@ -1395,6 +1476,9 @@ impl EpochCoordinator {
             }
             LifecycleEffectResult::SandboxDeleted => {
                 self.settle_definite_sandbox_deletion(request.sandbox_id())?;
+                self.persistent_volumes
+                    .detach(request.sandbox_id())
+                    .map_err(|_| EpochFault::IdentityMismatch)?;
                 Ok("deleted".to_string())
             }
             LifecycleEffectResult::BridgeOpened {
@@ -1797,6 +1881,16 @@ impl EpochCoordinator {
     }
 }
 
+impl Drop for EpochCoordinator {
+    /// Stops the whole epoch before releasing its exact retained storage writer hint.
+    fn drop(&mut self) {
+        self.monitor.stop();
+        if let Some(sandbox) = self.current_sandbox.take() {
+            let _ = self.persistent_volumes.detach(&sandbox.name);
+        }
+    }
+}
+
 /// Starts exactly one bounded invalidation export before fencing owned children.
 fn fence_initiated(evidence: &mut EpochEvidenceWriter, children: &mut [Child], fault: &EpochFault) {
     let mut writer = evidence.clone();
@@ -1861,7 +1955,7 @@ fn gateway_config(docker_socket: &Path, auth_path: &Path) -> io::Result<String> 
     let supervisor_image = openshell_release::supervisor_image()
         .ok_or_else(|| io::Error::other("OpenShell release metadata is invalid"))?;
     Ok(format!(
-        "[openshell]\nversion = 1\n\n[openshell.gateway.tls]\ncert_path = \"{auth}/server/tls.crt\"\nkey_path = \"{auth}/server/tls.key\"\nclient_ca_path = \"{auth}/ca.crt\"\nrequire_client_auth = true\n\n[openshell.gateway.mtls_auth]\nenabled = true\n\n[openshell.gateway.gateway_jwt]\nsigning_key_path = \"{auth}/jwt/signing.pem\"\npublic_key_path = \"{auth}/jwt/public.pem\"\nkid_path = \"{auth}/jwt/kid\"\ngateway_id = \"openkit-nanohost\"\nttl_secs = 3600\n\n[openshell.drivers.docker]\nsocket_path = \"{}\"\nsupervisor_image = \"{supervisor_image}\"\n",
+        "[openshell]\nversion = 1\n\n[openshell.gateway.tls]\ncert_path = \"{auth}/server/tls.crt\"\nkey_path = \"{auth}/server/tls.key\"\nclient_ca_path = \"{auth}/ca.crt\"\nrequire_client_auth = true\n\n[openshell.gateway.mtls_auth]\nenabled = true\n\n[openshell.gateway.gateway_jwt]\nsigning_key_path = \"{auth}/jwt/signing.pem\"\npublic_key_path = \"{auth}/jwt/public.pem\"\nkid_path = \"{auth}/jwt/kid\"\ngateway_id = \"openkit-nanohost\"\nttl_secs = 3600\n\n[openshell.drivers.docker]\nsocket_path = \"{}\"\nsupervisor_image = \"{supervisor_image}\"\nenable_bind_mounts = true\n",
         docker_socket.display(),
         auth = auth_path.display(),
     ))
@@ -2722,6 +2816,7 @@ mod tests {
         assert!(gateway_config.contains(&first.gateway_auth_path().display().to_string()));
         let supervisor_image = crate::openshell_release::supervisor_image().unwrap();
         assert!(gateway_config.contains(&format!("supervisor_image = \"{supervisor_image}\"")));
+        assert!(gateway_config.contains("enable_bind_mounts = true"));
         assert!(
             !gateway_config.contains(
                 "sha256:ea3632b6e9528e2309103af5b6949606fcdc83ca1f69e8db81482a25bea84bb6"

@@ -149,6 +149,9 @@ const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
 const workspaceMutationAdmission = new WorkspaceMutationAdmission();
 const nanoHostSessionDispatch = createNanoHostSessionDispatch({
+  get coreDb() {
+    return coreDb;
+  },
   sessionAuthority: nanohostTransportSessionAuthority,
 });
 

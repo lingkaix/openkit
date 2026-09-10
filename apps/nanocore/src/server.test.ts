@@ -182,6 +182,7 @@ import {
   createSchedulerSessionLease,
   denySchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
+  listSchedulerAdmissionEntriesForWorkspace,
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLease,
 } from './scheduler-records.js';
@@ -4401,6 +4402,13 @@ describe('nanocore server', () => {
         title: 'Import goal',
         workspaceExists: () => true,
         workspaceId: 'ws_demo',
+        workerStorageChoice: {
+          expectedRevision: 6,
+          kind: 'selected',
+          purpose: 'work',
+          reuseWorkSlotRef: 'wsl_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          storageRef: 'wst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
         now: () => '2026-07-06T00:05:00.000Z',
       });
       createGoalPlanRecord(sourceDb, {
@@ -4440,6 +4448,21 @@ describe('nanocore server', () => {
 
     expect(exported.checkedFiles).toContain('records/goal-records.jsonl');
     expect(exported.checkedFiles).toContain('records/goal-tasks.jsonl');
+    const exportedGoalBytes = readFileSync(
+      join(
+        dataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        'ws_demo',
+        exported.exportId,
+        'records',
+        'goal-records.jsonl'
+      ),
+      'utf8'
+    );
+    expect(exportedGoalBytes).not.toContain('wst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(JSON.parse(exportedGoalBytes.trim())).toMatchObject({ workerStorageChoice: null });
 
     const importRes = await app.request('/api/app/workspace-imports', {
       method: 'POST',
@@ -4471,6 +4494,7 @@ describe('nanocore server', () => {
           objective: 'Import this goal.',
           status: 'running',
           title: 'Import goal',
+          workerStorageChoice: null,
           workspaceId: body.importedWorkspaceId,
         }),
       ]);
@@ -5183,6 +5207,13 @@ describe('nanocore server', () => {
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-repository-'));
     const requestId = '0190f4c8-0000-7000-8000-000000000301';
     const input = 'Implement the focused Task Mode fix.';
+    const workerStorageChoice = {
+      expectedRevision: 7,
+      kind: 'selected' as const,
+      purpose: 'work' as const,
+      reuseWorkSlotRef: 'wsl_22222222222222222222222222222222',
+      storageRef: 'wst_11111111111111111111111111111111',
+    };
 
     seedWritableGitRepository(repositoryPath);
 
@@ -5196,9 +5227,34 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
+      const forgedLineageRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/task',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000300',
+            input,
+            workerStorageChoice: {
+              ...workerStorageChoice,
+              goalId: 'goal_forged',
+              taskId: 'task_forged',
+            },
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+      expect(forgedLineageRes.status).toBe(400);
+      await expect(forgedLineageRes.json()).resolves.toMatchObject({ code: 'invalid_request' });
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['admitted'],
+        })
+      ).toEqual([]);
+
       const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
-        body: JSON.stringify({ requestId, input }),
+        body: JSON.stringify({ requestId, input, workerStorageChoice }),
         headers: { 'content-type': 'application/json' },
       });
 
@@ -5212,6 +5268,18 @@ describe('nanocore server', () => {
       expect(parsed.turn.agentId).toBe('agent_fourth_runtime');
       expect(parsed.turn.id).toMatch(/^turn_0190f4c8-0000-7000-8000-000000000301/);
       expect(executor.startContexts[0]?.agentSetup?.manifest.id).toBe('agent_fourth_runtime');
+      const admittedWorkerStorageChoice = {
+        ...workerStorageChoice,
+        goalId: null,
+        taskId: null,
+      };
+      expect(executor.startContexts[0]?.workerStorageChoice).toEqual(admittedWorkerStorageChoice);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['admitted'],
+        })
+      ).toEqual([expect.objectContaining({ workerStorageChoice: admittedWorkerStorageChoice })]);
       expect(parsed.completion).toEqual({
         itemId: `it_assistant_${parsed.turn.id}`,
         text: 'Completed by fake executor.',
@@ -5270,9 +5338,17 @@ describe('nanocore server', () => {
       });
       const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
-        body: JSON.stringify({ requestId, input }),
+        body: JSON.stringify({ requestId, input, workerStorageChoice }),
         headers: { 'content-type': 'application/json' },
       });
+      const storageConflictRes = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/task',
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId, input, workerStorageChoice: { kind: 'fresh' } }),
+          headers: { 'content-type': 'application/json' },
+        }
+      );
       const conflictRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
         method: 'POST',
         body: JSON.stringify({ requestId, input: 'Implement a different focused Task Mode fix.' }),
@@ -5281,6 +5357,10 @@ describe('nanocore server', () => {
 
       expect(replayRes.status).toBe(202);
       expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
+      expect(storageConflictRes.status).toBe(409);
+      await expect(storageConflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
       expect(
         readWorkspaceKnowledgeRetrievalTrace(
           join(coreDb.dataRoot, 'workspaces', 'ws_demo'),
@@ -5292,7 +5372,7 @@ describe('nanocore server', () => {
         '/api/app/workspaces/ws_demo/threads/th_demo/task',
         {
           method: 'POST',
-          body: JSON.stringify({ requestId, input }),
+          body: JSON.stringify({ requestId, input, workerStorageChoice }),
           headers: { 'content-type': 'application/json' },
         }
       );
@@ -5447,6 +5527,7 @@ describe('nanocore server', () => {
         ],
         workspaceSourceRefs: { repo_remote: 'main-repo' },
       });
+      expect(executor.startContexts[0]?.workerStorageChoice).toBeUndefined();
       const checkpointPayload = JSON.parse(checkpointDiagnostics ?? 'null') as {
         contextAssembly?: Record<string, unknown>;
       };
@@ -13451,7 +13532,7 @@ describe('nanocore server', () => {
       .run('2026-08-10T00:00:00.000Z');
     const issued = createNanoHostTransportTokenRecord(coreDb, {
       deploymentId: 'deployment-main',
-      expiresAt: '2026-09-10T00:00:00.000Z',
+      expiresAt: '2999-01-01T00:00:00.000Z',
       now: new Date('2026-08-10T00:00:00.000Z'),
       ownerNanoHostIdentityId: 'integration_nanohost_main',
       responsibleServerAdminActorId: 'user_admin',

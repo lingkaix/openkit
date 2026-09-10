@@ -658,6 +658,59 @@ describe('agent environment package schema', () => {
       ).toThrow();
     }
 
+    for (const readOnlyRoot of [
+      '/usr',
+      '/lib',
+      '/proc',
+      '/dev/urandom',
+      '/app',
+      '/etc',
+      '/opt',
+      '/var/log',
+    ]) {
+      for (const targetPath of ['/', readOnlyRoot, `${readOnlyRoot}/nested`]) {
+        expect(() =>
+          WorkerSandboxAccessSchema.parse({
+            filesystem: [
+              { access: 'read-write', id: 'immutable', purpose: 'Immutable path', targetPath },
+            ],
+          })
+        ).toThrow();
+      }
+    }
+
+    expect(() =>
+      WorkerSandboxAccessSchema.parse({
+        filesystem: [
+          {
+            access: 'read-write',
+            id: 'aliased',
+            purpose: 'Aliased path',
+            targetPath: '/sandbox/../opt',
+          },
+        ],
+      })
+    ).toThrow();
+
+    expect(() =>
+      WorkerSandboxAccessSchema.parse({
+        filesystem: [
+          {
+            access: 'read-write',
+            id: 'workspace_cache',
+            purpose: 'Workspace cache',
+            targetPath: '/workspace/.cache',
+          },
+          {
+            access: 'read-only',
+            id: 'python_supply',
+            purpose: 'Python supply',
+            targetPath: '/opt/openkit/venv',
+          },
+        ],
+      })
+    ).not.toThrow();
+
     expect(() =>
       WorkerSandboxAccessSchema.parse({
         network: [

@@ -67,8 +67,8 @@ export interface GatewayOperationAccess extends PublicOperationAccessBase {
 
 /** Access declaration for one Workspace-scoped operation. */
 export interface WorkspaceOperationAccess extends PublicOperationAccessBase {
-  /** Workspace operations rely on the authenticated request actor. */
-  readonly authentication?: never;
+  /** Optional deployment-admin authority intersected with current Workspace access. */
+  readonly authentication?: 'deployment-admin';
   /** Authoritative Workspace-resolution strategy. */
   readonly resolver: PublicOperationResolver;
   /** Workspace-scoped operation discriminator. */
@@ -156,6 +156,8 @@ registerOperations(
     'logoutProviderSubscriptionAccount',
     'createDataRootBackup',
     'prepareAppUpdate',
+    'prepareWorkerEnvironment',
+    'activateWorkerEnvironment',
     'startAppUpdate',
     'unlockVaultAdminBackend',
     'lockVaultAdminBackend',
@@ -257,6 +259,13 @@ registerOperations(catalog, ['POST /v1/chat/completions', 'POST /v1/responses'],
 });
 
 registerOperations(catalog, ['quickChat'], {
+  mutating: true,
+  policyOperation: 'turn.run',
+  resolver: 'actor-quick-chat-workspace',
+  scope: 'workspace',
+});
+registerOperations(catalog, ['submitAdministrationConversation'], {
+  authentication: 'deployment-admin',
   mutating: true,
   policyOperation: 'turn.run',
   resolver: 'actor-quick-chat-workspace',
@@ -610,6 +619,24 @@ registerOperations(catalog, ['submitConversation'], {
 registerOperations(catalog, ['getConversationTargets'], {
   mutating: false,
   policyOperation: 'thread.read',
+  resolver: 'path-workspace',
+  scope: 'workspace',
+});
+registerOperations(
+  catalog,
+  ['listWorkerEnvironments', 'selectWorkerEnvironment', 'getWorkerEnvironmentStatus'],
+  {
+    authentication: 'deployment-admin',
+    mutating: false,
+    policyOperation: 'workspace.read',
+    resolver: 'path-workspace',
+    scope: 'workspace',
+  }
+);
+registerOperations(catalog, ['purgeWorkerEnvironment'], {
+  authentication: 'deployment-admin',
+  mutating: true,
+  policyOperation: 'workspace.configure',
   resolver: 'path-workspace',
   scope: 'workspace',
 });

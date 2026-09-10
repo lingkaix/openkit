@@ -228,6 +228,9 @@ export type CommandRequestName =
   | 'goal.steering.follow_up'
   | 'goal.steering.cancel'
   | 'worker.recovery.retry'
+  | 'worker_environment.purge'
+  | 'worker_environment.prepare'
+  | 'worker_environment.activate'
   | 'artifact.import'
   | 'artifact.introduce'
   | 'artifact.review.decide'
@@ -280,7 +283,8 @@ export type CommandRequestResponseKind =
   | 'light_app'
   | 'light_app_record'
   | 'light_app_batch'
-  | 'generative_presentation';
+  | 'generative_presentation'
+  | 'worker_environment';
 
 /**
  * Non-secret scope identifiers used to isolate idempotency keys.
@@ -819,6 +823,7 @@ export function createDemoWorkspaceForUser(userId: string): DemoWorkspaceFixture
     name: 'Protocol design review',
     preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
     status: 'active',
+    entryPath: 'conversation',
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -2165,7 +2170,13 @@ export class FsStore {
     return [...this.threads.values()].filter((thread) => thread.workspaceId === workspaceId);
   }
 
-  public createThread(workspaceId: string, title: string, threadId?: string): Thread {
+  /** Creates one Thread with a server-authored continuation entry path. */
+  public createThread(
+    workspaceId: string,
+    title: string,
+    threadId?: string,
+    entryPath: Thread['entryPath'] = 'conversation'
+  ): Thread {
     const id = threadId ?? threadIdForUser(LOCAL_USER_ID, String(this.threads.size + 1));
     if (this.threads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
@@ -2176,6 +2187,7 @@ export class FsStore {
       name: title,
       preview: title,
       status: 'active',
+      entryPath,
       createdAt: now(),
       updatedAt: now(),
     };

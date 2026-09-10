@@ -75,6 +75,7 @@ function packageFixture(overrides: Record<string, unknown> = {}) {
       allowedKinds: ['openshell'],
       requiredCapabilities: ['git-materialization', 'file-upload-download'],
     },
+    extensions: { openkit: { workerStorage: { workSlotRef: 'wsl_demo' } } },
     ...overrides,
   };
 }
@@ -110,7 +111,17 @@ describe('session workspace layout schema', () => {
     expect(planned.layout.slots.map((slot) => slot.id)).toEqual(
       expect.arrayContaining(['main-worktree', 'turn-inputs', 'external-data', 'turn-output'])
     );
-    expect(planned.layout.workingDirectory).toBe('/workspace');
+    expect(planned.layout.workingDirectory).toBe('/workspace/worktrees/wsl_demo');
+    expect(planned.layout.slots.find((slot) => slot.id === 'main-worktree')?.path).toBe(
+      '/workspace/worktrees/wsl_demo'
+    );
+    expect(() =>
+      planSessionWorkspaceMaterialization({
+        environmentPackage: packageFixture({
+          extensions: { openkit: { workerStorage: { workSlotRef: '../escape' } } },
+        }),
+      })
+    ).toThrow('safe Worker storage workSlotRef');
     expect(() =>
       SessionWorkspaceLayoutSchema.parse({
         ...planned.layout,
@@ -161,6 +172,27 @@ describe('session workspace layout schema', () => {
 });
 
 describe('session workspace planner', () => {
+  it('isolates distinct work slots and preserves one explicitly transferred slot', () => {
+    const first = planSessionWorkspaceMaterialization({
+      environmentPackage: packageFixture(),
+      workSlotRef: 'wsl_thread_a',
+    });
+    const second = planSessionWorkspaceMaterialization({
+      environmentPackage: packageFixture(),
+      workSlotRef: 'wsl_thread_b',
+    });
+    const sequentialSuccessor = planSessionWorkspaceMaterialization({
+      environmentPackage: packageFixture(),
+      workSlotRef: 'wsl_thread_a',
+    });
+
+    expect(first.layout.workingDirectory).toBe('/workspace/worktrees/wsl_thread_a');
+    expect(second.layout.workingDirectory).toBe('/workspace/worktrees/wsl_thread_b');
+    expect(second.compatibilityKey.digest).not.toBe(first.compatibilityKey.digest);
+    expect(sequentialSuccessor.layout).toEqual(first.layout);
+    expect(sequentialSuccessor.compatibilityKey).toEqual(first.compatibilityKey);
+  });
+
   it('routes the dedicated generated Context Package input to the existing context slot', () => {
     const planned = planSessionWorkspaceMaterialization({
       environmentPackage: packageFixture({

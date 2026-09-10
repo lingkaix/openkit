@@ -360,6 +360,7 @@ function createWorkerInferenceRouteFixture(
           {
             id: WORKER_LOGICAL_MODEL_ID,
             displayName: 'Worker reasoning',
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
             routes: [
               {
                 id: 'primary',

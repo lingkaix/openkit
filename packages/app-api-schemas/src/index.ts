@@ -1,4 +1,5 @@
 export * from './action-center.js';
+export * from './administration.js';
 export * from './agent-environment.js';
 export * from './agents.js';
 export * from './app-update.js';
@@ -28,5 +29,6 @@ export * from './task-mode.js';
 export * from './vault-admin.js';
 export * from './vault-injection.js';
 export * from './vault-use.js';
+export * from './worker-environment.js';
 export * from './workspace-sharing.js';
 export * from './workspace-sync.js';

@@ -32,6 +32,8 @@ export const schedulerAdmissionEntries = sqliteTable(
     turnId: text('turn_id').notNull(),
     /** Worker turn input captured when the entry is queued. */
     turnInput: text('turn_input').notNull(),
+    /** Exact retained-storage choice captured before package planning. */
+    workerStorageChoiceJson: text('worker_storage_choice_json'),
     /** Requested agent id. */
     requestedAgentId: text('requested_agent_id').notNull(),
     /** Requested agent profile reference. */

@@ -82,6 +82,29 @@ import {
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
+const OPENKIT_GENERATIVE_SERVER = {
+  health: 'ready',
+  id: 'openkit-generative',
+  toolNames: [
+    'kernel_apps_list',
+    'kernel_apps_create',
+    'kernel_apps_get',
+    'kernel_schema_update',
+    'kernel_apps_retire',
+    'kernel_records_list',
+    'kernel_records_get',
+    'kernel_records_create',
+    'kernel_records_update',
+    'kernel_records_batch',
+    'generative_ui_publish',
+    'generative_ui_get',
+    'generative_ui_resource',
+    'generative_ui_refresh',
+    'generative_ui_action',
+  ],
+  transport: 'stdio',
+} as const;
+
 describe('worker MCP routes', () => {
   it.each([
     'same',
@@ -202,7 +225,10 @@ describe('worker MCP routes', () => {
       });
       expect({ body: await inactiveServers.json(), status: inactiveServers.status }).toEqual({
         body: {
-          servers: [{ health: 'inactive', id: 'echo', toolNames: [], transport: 'stdio' }],
+          servers: [
+            { health: 'inactive', id: 'echo', toolNames: [], transport: 'stdio' },
+            OPENKIT_GENERATIVE_SERVER,
+          ],
         },
         status: 200,
       });
@@ -226,7 +252,10 @@ describe('worker MCP routes', () => {
       const listedServersBody = await listedServers.json();
       expect({ body: listedServersBody, status: listedServers.status }).toEqual({
         body: {
-          servers: [{ health: 'ready', id: 'echo', toolNames: ['echo'], transport: 'stdio' }],
+          servers: [
+            { health: 'ready', id: 'echo', toolNames: ['echo'], transport: 'stdio' },
+            OPENKIT_GENERATIVE_SERVER,
+          ],
         },
         status: 200,
       });
@@ -759,8 +788,32 @@ describe('worker MCP routes', () => {
       ): Promise<unknown> {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+        if (request.kind === 'image.inspect') {
+          return {
+            digest: request.input.imageDigest,
+            platform: { architecture: 'arm64', os: 'linux' },
+            storageLayout: {
+              family: 'openkit-worker',
+              gid: 1000,
+              targets: [{ target: '/workspace' }],
+              uid: 1000,
+              version: '1',
+              workingDirectory: '/workspace',
+            },
+          };
+        }
         if (request.kind === 'sandbox.create') {
-          return { sandboxId: request.input.sandboxId, state: 'created' };
+          return {
+            sandboxId: request.input.sandboxId,
+            state: 'created',
+            storage: {
+              ...request.input.storage,
+              targets: request.input.storage.targets.map((target) => ({
+                ...target,
+                initialized: true,
+              })),
+            },
+          };
         }
         if (request.kind === 'reference.import') return { state: 'imported' };
         if (request.kind === 'bridge.open') {

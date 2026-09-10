@@ -2654,6 +2654,9 @@ describe('worker shim CLI parsing', () => {
       OPENKIT_CONTROL_TOKEN_FD: String(controlTokenDescriptor),
       OPENKIT_PARENT_ONLY_SECRET: parentSecret,
       OPENKIT_WORKER_INFERENCE_TOKEN: inferencePlaceholder,
+      TEMP: '/tmp/ambient-temp',
+      TMP: '/tmp/ambient-tmp',
+      TMPDIR: '/tmp/ambient-tmpdir',
     };
     delete injectedEnvironment.OPENKIT_CONTROL_TOKEN;
     for (const [key, value] of Object.entries(injectedEnvironment)) {
@@ -2676,6 +2679,11 @@ describe('worker shim CLI parsing', () => {
     expect(captured.childEnvironment).not.toHaveProperty('OPENKIT_CONTROL_TOKEN');
     expect(captured.childEnvironment).not.toHaveProperty('OPENKIT_PARENT_ONLY_SECRET');
     expect(captured.childEnvironment.OPENKIT_WORKER_INFERENCE_TOKEN).toBe(inferencePlaceholder);
+    expect(captured.childEnvironment).toMatchObject({
+      TEMP: '/tmp/openkit-bootstrap',
+      TMP: '/tmp/openkit-bootstrap',
+      TMPDIR: '/tmp/openkit-bootstrap',
+    });
     for (const key of ['NO_PROXY', 'no_proxy']) {
       expect(captured.childEnvironment).toHaveProperty(key);
       expect(captured.childEnvironment[key]?.split(',').map((entry) => entry.trim())).toContain(
@@ -3242,7 +3250,8 @@ describe('worker shim CLI parsing', () => {
 
     expect(connections).toBeGreaterThan(0);
     expect(runner.calls).toHaveLength(0);
-    expect(existsSync(repoDir)).toBe(false);
+    expect(existsSync(repoDir)).toBe(true);
+    expect(existsSync(join(repoDir, '.git'))).toBe(true);
   });
 
   it.each([

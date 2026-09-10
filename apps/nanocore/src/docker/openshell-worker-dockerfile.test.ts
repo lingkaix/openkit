@@ -59,14 +59,14 @@ const commonToolPaths = [
   '/usr/local/bin/pnpm',
   '/usr/local/bin/pnpx',
   '/usr/local/bin/uv',
-  '/sandbox/.venv/bin/python',
-  '/sandbox/.venv/bin/python3',
-  '/sandbox/.venv/bin/pip',
-  '/sandbox/.venv/bin/pip3',
+  '/opt/openkit/venv/bin/python',
+  '/opt/openkit/venv/bin/python3',
+  '/opt/openkit/venv/bin/pip',
+  '/opt/openkit/venv/bin/pip3',
 ] as const;
 
 const canonicalWorkspaceRoots = [
-  '/workspace/worktrees/main',
+  '/workspace/worktrees',
   '/workspace/inputs',
   '/workspace/data',
   '/workspace/artifacts/in',
@@ -144,7 +144,7 @@ describe('governed worker image contracts', () => {
       expect(dockerfile).toContain(systemPackage);
     }
     expect(dockerfile).toContain(`uv python install "\${PYTHON_VERSION}"`);
-    expect(dockerfile).toContain(`uv venv --python "\${PYTHON_VERSION}" --seed /sandbox/.venv`);
+    expect(dockerfile).toContain(`uv venv --python "\${PYTHON_VERSION}" --seed /opt/openkit/venv`);
     expect(dockerfile).toContain('ln -s /usr/bin/fdfind /usr/local/bin/fd');
     expect(dockerfile).not.toContain('/etc/openshell/policy.yaml');
     expect(dockerfile).not.toMatch(/COPY\s+.*policy\.ya?ml/);
@@ -169,22 +169,45 @@ describe('governed worker image contracts', () => {
     expect(dockerfile).toContain(
       'COPY containers/workers/openkit-file-effect /usr/local/bin/openkit-file-effect'
     );
-    expect(dockerfile).toContain('/usr/sbin/groupadd --system sandbox');
-    expect(dockerfile).toContain('/usr/sbin/useradd --system --gid sandbox --home-dir /sandbox');
-    expect(dockerfile).toContain('/sandbox/openkit/session');
-    expect(commonRuntimeSetup).toContain('/sandbox/openkit/sessions');
-    expect(dockerfile).toContain('ln -s /sandbox/openkit /openkit');
-    expect(dockerfile).toContain('chown -R sandbox:sandbox /sandbox /workspace');
+    expect(dockerfile).toContain('/usr/sbin/groupmod --new-name sandbox node');
+    expect(dockerfile).toContain(
+      '/usr/sbin/usermod --login sandbox --home /sandbox --shell /bin/bash node'
+    );
+    expect(commonRuntimeSetup).toContain('/openkit/sessions');
+    expect(dockerfile).not.toContain('ln -s /sandbox/openkit /openkit');
+    expect(dockerfile).toContain(
+      'chown -R 1000:1000 /openkit /sandbox /tmp/openkit-bootstrap /workspace'
+    );
     expect(workerCommonBuildWrites).not.toContain('/openkit/config/package.json');
     expect(workerCommonBuild).not.toMatch(/^(?:COPY|ADD)\s+.*\s+\/openkit\/config(?:\/|\s|$)/m);
-    expect(dockerCommonSection(dockerfile)).toContain('USER sandbox');
+    expect(dockerCommonSection(dockerfile)).toContain('USER 1000:1000');
     for (const { id } of workerImageContracts) {
-      expect(dockerTargetSection(dockerfile, id)).toContain('USER sandbox');
+      expect(dockerTargetSection(dockerfile, id)).toContain('USER 1000:1000');
     }
     expect(smoke).toContain('test -x /usr/local/bin/openkit-file-effect');
     for (const root of canonicalWorkspaceRoots) {
       expect(commonRuntimeSetup).toContain(root);
       expect(smoke).toContain(root);
+    }
+  });
+
+  it('declares the inherited persistent layout and keeps control and base Python outside it', () => {
+    const dockerfile = readFileSync(sharedDockerfilePath, 'utf8');
+    const common = dockerCommonSection(dockerfile);
+
+    expect(common).toContain('LABEL org.openkit.storage.family="openkit-worker"');
+    expect(common).toContain('LABEL org.openkit.storage.version="1"');
+    expect(common).toContain('VOLUME ["/workspace", "/sandbox"]');
+    expect(common).toContain('WORKDIR /tmp/openkit-bootstrap');
+    expect(common).toContain('chmod 0700 /tmp/openkit-bootstrap');
+    expect(common).toContain('USER 1000:1000');
+    expect(common).toContain('VIRTUAL_ENV="/opt/openkit/venv"');
+    expect(common).toContain('BASH_ENV="/opt/openkit/.bashrc"');
+    expect(common).toContain('TMPDIR="/tmp/openkit-bootstrap"');
+    expect(common).not.toContain('VIRTUAL_ENV="/sandbox/.venv"');
+    expect(common).not.toContain('WORKDIR /workspace');
+    for (const { id } of workerImageContracts) {
+      expect(dockerTargetSection(dockerfile, id)).toContain('USER 1000:1000');
     }
   });
 
@@ -208,7 +231,7 @@ describe('governed worker image contracts', () => {
     expect(declaredRuntimes).toEqual([runtime]);
     expect(targetSection).toContain(`LABEL org.openkit.worker.runtime="${runtime}"`);
     expect(targetSection).toContain(`COPY containers/${id}/smoke.sh`);
-    expect(targetSection).toContain('USER sandbox');
+    expect(targetSection).toContain('USER 1000:1000');
     expect(agentManifest.runtime).toMatchObject({
       adapter: runtime,
       image: { kind: 'reference', ref: image?.localTag },
@@ -335,7 +358,10 @@ describe('governed worker image contracts', () => {
       ALL_PROXY: 'http://proxy.invalid:8080',
       HOME: '/sandbox',
       NO_PROXY: '127.0.0.1,localhost',
-      PATH: '/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin',
+      PATH: '/opt/openkit/venv/bin:/usr/local/bin:/usr/bin:/bin',
+      TEMP: '/tmp/unadmitted-temp',
+      TMP: '/tmp/unadmitted-tmp',
+      TMPDIR: '/tmp/unadmitted-tmpdir',
       no_proxy: 'localhost,127.0.0.1',
     };
     const output = execFileSync('/bin/bash', ['-c', environmentLauncher], {
@@ -360,7 +386,12 @@ describe('governed worker image contracts', () => {
     expect(environment.ALL_PROXY).toBe(inherited.ALL_PROXY);
     expect(environment.NO_PROXY).toBe(inherited.NO_PROXY);
     expect(environment.no_proxy).toBe(inherited.no_proxy);
-    expect(environment.VIRTUAL_ENV).toBe('/sandbox/.venv');
+    expect(environment.BASH_ENV).toBe('/opt/openkit/.bashrc');
+    expect(environment.ENV).toBe('/opt/openkit/.bashrc');
+    expect(environment.VIRTUAL_ENV).toBe('/opt/openkit/venv');
+    expect(environment.TEMP).toBe('/tmp/openkit-bootstrap');
+    expect(environment.TMP).toBe('/tmp/openkit-bootstrap');
+    expect(environment.TMPDIR).toBe('/tmp/openkit-bootstrap');
     expect(environment).not.toHaveProperty('OPENKIT_AGENT_SESSION_ID');
     expect(environment).not.toHaveProperty('OPENKIT_CONTROL_TOKEN');
     expect(environment).not.toHaveProperty('OPENKIT_CONTROL_TOKEN_FD');
@@ -427,7 +458,10 @@ describe('governed worker image contracts', () => {
     expect(smoke).toContain('test ! -w /usr/local/bin/mise');
     expect(smoke).toContain('test ! -e /etc/openshell/policy.yaml');
     expect(smoke).toContain('find /sandbox /workspace -xdev -uid 0 -print -quit');
-    expect(smoke).toContain('/sandbox/.venv');
+    expect(smoke).toContain('/opt/openkit/venv');
+    expect(smoke).toContain('/tmp/openkit-bootstrap');
+    expect(smoke).toContain('test ! -L /openkit');
+    expect(smoke).toContain('.openkit-image-smoke-unknown');
   });
 
   it('pins mise 2026.8.14 into the common stage with architecture-specific SHA256 and ends as sandbox', () => {
@@ -445,7 +479,7 @@ describe('governed worker image contracts', () => {
     expect(common).toContain('/usr/local/bin/mise');
     expect(common).toContain('LABEL org.openkit.image="worker-common"');
     expect(common).toMatch(/LABEL org.openkit.smoke="/);
-    expect(common).toContain('USER sandbox');
+    expect(common).toContain('USER 1000:1000');
     expect(common).not.toContain('USER root');
   });
 
@@ -455,9 +489,9 @@ describe('governed worker image contracts', () => {
     for (const { id } of workerImageContracts) {
       const targetSection = dockerTargetSection(dockerfile, id);
 
-      expect(targetSection).toMatch(/USER root[\s\S]*USER sandbox/);
+      expect(targetSection).toMatch(/USER root[\s\S]*USER 1000:1000/);
       expect(targetSection.match(/USER root/g)).toHaveLength(1);
-      expect(targetSection.match(/USER sandbox/g)).toHaveLength(1);
+      expect(targetSection.match(/USER 1000:1000/g)).toHaveLength(1);
     }
   });
 

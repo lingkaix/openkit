@@ -101,6 +101,12 @@ export type {
   WorkerBackendWorkspaceHandoffState,
 } from './worker-backend-sessions.js';
 export { workerBackendSessions } from './worker-backend-sessions.js';
+export { workerImageSettlements } from './worker-image-settlements.js';
+export type { WorkerStorageBindingState } from './worker-storage-bindings.js';
+export {
+  workerStorageBindings,
+  workerStorageContributors,
+} from './worker-storage-bindings.js';
 export { workerTurnCheckpoints } from './worker-turn-checkpoints.js';
 export { workspaceApplyPlans } from './workspace-apply-plans.js';
 export type { WorkspaceApplyResultStatus } from './workspace-apply-results.js';

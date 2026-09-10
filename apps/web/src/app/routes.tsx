@@ -12,6 +12,7 @@ import { RecoveryScreen } from '../screens/operations';
 import { PortabilityScreen } from '../screens/portability';
 import {
   AccessTokensScreen,
+  AdministrationScreen,
   AiInterfaceScreen,
   AppUpdateScreen,
   ConfigurationScreen,
@@ -56,6 +57,7 @@ function NotFound() {
  * placeholder (WP-10 dead-asset sweep). Exported for the catalog-coverage test.
  */
 export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
+  administration: <AdministrationScreen />,
   debug: <DebugScreen />,
   account: <AccountScreen />,
   appearance: <ThemePicker />,

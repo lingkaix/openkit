@@ -457,64 +457,98 @@ export function registerTurnRoutes({
     }
 
     try {
-      const turn = await runIdempotentCommand({
+      const turn = await interruptProductTurn({
         store,
         inflightCommands,
-        command: 'turn.interrupt',
+        coreDb,
+        turnExecutor,
+        workspaceId,
+        threadId,
+        turnId,
         requestId: parsed.data.requestId,
-        scope: {
-          workspaceId,
-          threadId,
-          turnId,
-        },
-        input: {
-          ...parsed.data,
-          workspaceId,
-          threadId,
-          turnId,
-        },
-        responseKind: 'turn',
-        execute: async () => {
-          const currentTurn = store.getTurn(workspaceId, threadId, turnId);
-
-          if (
-            currentTurn.status === 'completed' ||
-            currentTurn.status === 'interrupted' ||
-            currentTurn.status === 'cancelled' ||
-            currentTurn.status === 'failed'
-          ) {
-            throw new TurnStartValidationError(
-              'turn_not_interruptible',
-              `Turn is already terminal: ${turnId}.`,
-              409
-            );
-          }
-
-          if (!turnExecutor.capabilities.interrupts) {
-            throw new TurnStartValidationError(
-              'interrupts_not_supported',
-              'The active agent runtime cannot interrupt turns.',
-              501
-            );
-          }
-
-          await turnExecutor.interruptTurn(store, turnId, {
-            requestId: parsed.data.requestId,
-          });
-          return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
-        },
-        replay: (record) =>
-          TurnSchema.parse(store.getTurn(workspaceId, threadId, record.response.id)),
-        responseId: (result) => result.id,
       });
-
-      completeSchedulerLeaseForTerminalTurn(coreDb, turn);
 
       return c.json(projectOrdinaryTurn(turn));
     } catch (error) {
       return asCommandError(error, 'turn_interrupt_failed');
     }
   });
+}
+
+/** Interrupts one exact Turn through its existing command receipt and scheduler lease owner. */
+export async function interruptProductTurn(input: {
+  readonly store: FsStore;
+  readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly coreDb: CoreDb | undefined;
+  readonly turnExecutor: TurnExecutor;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly requestId: string;
+}): Promise<z.infer<typeof TurnSchema>> {
+  const {
+    store,
+    inflightCommands,
+    coreDb,
+    turnExecutor,
+    workspaceId,
+    threadId,
+    turnId,
+    requestId,
+  } = input;
+  const turn = await runIdempotentCommand({
+    store,
+    inflightCommands,
+    command: 'turn.interrupt',
+    requestId: requestId,
+    scope: {
+      workspaceId,
+      threadId,
+      turnId,
+    },
+    input: {
+      requestId,
+      workspaceId,
+      threadId,
+      turnId,
+    },
+    responseKind: 'turn',
+    execute: async () => {
+      const currentTurn = store.getTurn(workspaceId, threadId, turnId);
+
+      if (
+        currentTurn.status === 'completed' ||
+        currentTurn.status === 'interrupted' ||
+        currentTurn.status === 'cancelled' ||
+        currentTurn.status === 'failed'
+      ) {
+        throw new TurnStartValidationError(
+          'turn_not_interruptible',
+          `Turn is already terminal: ${turnId}.`,
+          409
+        );
+      }
+
+      if (!turnExecutor.capabilities.interrupts) {
+        throw new TurnStartValidationError(
+          'interrupts_not_supported',
+          'The active agent runtime cannot interrupt turns.',
+          501
+        );
+      }
+
+      await turnExecutor.interruptTurn(store, turnId, {
+        requestId: requestId,
+      });
+      return TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+    },
+    replay: (record) => TurnSchema.parse(store.getTurn(workspaceId, threadId, record.response.id)),
+    responseId: (result) => result.id,
+  });
+
+  completeSchedulerLeaseForTerminalTurn(coreDb, turn);
+
+  return turn;
 }
 
 /** Structured user-input command that closes one existing Human Gate. */

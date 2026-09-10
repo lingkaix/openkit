@@ -69,6 +69,10 @@ describe('schema evolution record envelope', () => {
     );
   });
 
+  it('registers the immutable Thread entry-path record feature', () => {
+    expect(() => assertRegisteredRequiredFeatures(['openkit.thread-entry.v1'])).not.toThrow();
+  });
+
   it('keeps the required-feature registry aligned with the accepted spec table', () => {
     const spec = readFileSync(
       new URL('../../../docs/specs/20260703-schema_evolution_record_envelope.md', import.meta.url),

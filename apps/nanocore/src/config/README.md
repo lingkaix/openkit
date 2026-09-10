@@ -11,6 +11,7 @@ This directory owns NanoCore-specific configuration discovery, loading, preceden
 - Cross-package contract schemas remain in their owning packages; this directory performs NanoCore-specific file I/O and runtime projection.
 - `../agents/` and `../providers/` own resolved runtime concepts after loading, so configuration code must not introduce parallel registries.
 - Secret values must remain behind explicit references or backend-private state and must not enter snapshots, diagnostics, or generated configuration.
+- New Agent config templates must name the immutable image-owned Python environment under `/opt/openkit/venv`; writable user-created environments remain runtime data and are not default template authority.
 - MCP catalog changes are session-scoped; stdio enablement requires deployment-admin. Catalog App API mutations reload the runtime snapshot and close Gateway sessions for that Workspace.
 - A failed reload must not publish a partially updated runtime snapshot.
 - Reload failure diagnostics must redact the concrete data root. Accepted Workspace-name changes refresh the joined store projection immediately; session-scoped Agent changes apply to later composition, while startup-captured Provider changes remain restart-required.

@@ -32,6 +32,8 @@ App Diagnostics includes a strict process sample with nested telemetry configura
 
 App-update schemas define the closed release/exact-commit prepare request, maintenance-consented start, and redacted host receipt projection. A UUID identifies the prepared request across App restarts. These schemas do not grant deployment-admin authority or turn the host receipt into a Core Task lifecycle.
 
+Worker environment schemas project bounded retained-storage summaries, explicit ordinary Task and Goal storage choices, exact host observations, immutable authored/resolved candidate references, canonical human activation and purge confirmations, and truthful unknown outcomes. They expose no administrator Token, host path, native runtime handle, credential, or retained file content. The administration conversation request names only private conversation input and optional continuity; NanoCore derives and authorizes its private Workspace.
+
 ## Commands
 
 - `pnpm --filter @openkit/app-api-schemas test`

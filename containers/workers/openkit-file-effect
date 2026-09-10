@@ -19,7 +19,7 @@ const CANONICAL_WORKSPACE_SLOT_ROOTS = Object.freeze({
   context: '/openkit/sessions',
   'external-data': '/workspace/data',
   instructions: '/openkit/instructions',
-  'main-worktree': '/workspace/worktrees/main',
+  'main-worktree': '/workspace/worktrees',
   scratch: '/workspace/scratch',
   session: '/openkit/session',
   'turn-inputs': '/workspace/inputs',
@@ -132,10 +132,25 @@ function parseCommand(argv, slotRoots) {
     const slot = argv[2];
     const root = resolveSlotRoot(slotRoots, slot, EXPORT_SLOTS);
     const relativePath = parseRelativePath(argv[4]);
+    if (slot === 'main-worktree') {
+      validateMainWorktreeExportPath(relativePath);
+    }
     return { allowMissing: argv.length === 8, operation: 'file.export', relativePath, root };
   }
 
   throw new Error('invalid arguments');
+}
+
+/** Requires a selected work-slot prefix before a main-worktree export path. */
+function validateMainWorktreeExportPath(relativePath) {
+  const [workSlotRef, ...pathSegments] = relativePath.split('/');
+  if (
+    workSlotRef.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(workSlotRef) ||
+    pathSegments.length === 0
+  ) {
+    throw new Error('invalid main worktree export path');
+  }
 }
 
 /** Resolves one AgentSession-private context namespace. */
@@ -183,7 +198,17 @@ function resolveRuntimeCredentialRoot(slotRoots, relativePath) {
   ) {
     throw new Error('invalid runtime credential path');
   }
-  return resolveSlotRoot(slotRoots, 'runtime-credential', RUNTIME_CREDENTIAL_SLOTS);
+  const root = resolveSlotRoot(slotRoots, 'runtime-credential', RUNTIME_CREDENTIAL_SLOTS);
+  const target = posix.resolve(root, relativePath);
+  if (
+    target === '/sandbox' ||
+    target.startsWith('/sandbox/') ||
+    target === '/workspace' ||
+    target.startsWith('/workspace/')
+  ) {
+    throw new Error('runtime credentials cannot target retained storage');
+  }
+  return root;
 }
 
 /**

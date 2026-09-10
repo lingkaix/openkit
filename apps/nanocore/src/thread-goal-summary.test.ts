@@ -64,6 +64,13 @@ import {
 } from './runtime/worker-checkpoints.js';
 import { recordWorkerControlAcceptedRecord } from './runtime/worker-control-records.js';
 import {
+  activateWorkerStorageAttachment,
+  createWorkerStorageBinding,
+  releaseWorkerStorageAttachment,
+  reserveWorkerStorageAttachment,
+  type WorkerStorageLayout,
+} from './runtime/worker-storage-bindings.js';
+import {
   ensureConfiguredSchedulerBaseline,
   listSchedulerAdmissionEntriesForWorkspace,
   listSchedulerSessionLeasesForTurn,
@@ -1007,6 +1014,13 @@ describe('thread goal summary app API', () => {
       requestId: 'goal-start-1',
       objective: 'Make v0.0.6 ready to publish.',
       title: 'Ship v0.0.6',
+      workerStorageChoice: {
+        expectedRevision: 4,
+        kind: 'selected' as const,
+        purpose: 'work' as const,
+        reuseWorkSlotRef: 'wsl_44444444444444444444444444444444',
+        storageRef: 'wst_33333333333333333333333333333333',
+      },
     };
 
     try {
@@ -1016,6 +1030,18 @@ describe('thread goal summary app API', () => {
       });
       expect(missingRequestIdRes.status).toBe(400);
       await expect(missingRequestIdRes.json()).resolves.toMatchObject({ code: 'invalid_request' });
+      const forgedLineageRes = await postGoalStart(app, thread.id, {
+        ...request,
+        requestId: 'goal-start-forged-lineage',
+        workerStorageChoice: {
+          ...request.workerStorageChoice,
+          goalId: 'goal_forged',
+          taskId: 'task_forged',
+        },
+      });
+      expect(forgedLineageRes.status).toBe(400);
+      await expect(forgedLineageRes.json()).resolves.toMatchObject({ code: 'invalid_request' });
+      expect(store.listThreadTurns('ws_demo', thread.id)).toEqual([]);
       const res = await postGoalStart(app, thread.id, request);
 
       expect(res.status).toBe(200);
@@ -1050,6 +1076,14 @@ describe('thread goal summary app API', () => {
       const replayRes = await postGoalStart(app, thread.id, request);
       expect(replayRes.status).toBe(200);
       await expect(replayRes.json()).resolves.toEqual(payload);
+      const storageConflictRes = await postGoalStart(app, thread.id, {
+        ...request,
+        workerStorageChoice: { kind: 'fresh' },
+      });
+      expect(storageConflictRes.status).toBe(409);
+      await expect(storageConflictRes.json()).resolves.toMatchObject({
+        code: 'idempotency_key_conflict',
+      });
       const conflictRes = await postGoalStart(app, thread.id, {
         ...request,
         objective: 'Replace the original objective.',
@@ -1071,6 +1105,11 @@ describe('thread goal summary app API', () => {
       ]);
       const workspaceDb = createWorkspaceDb(coreDb);
       try {
+        expect(getGoalRecord(workspaceDb, 'ws_demo', thread.id, payload.goal.goalId)).toMatchObject(
+          {
+            workerStorageChoice: request.workerStorageChoice,
+          }
+        );
         expect(
           listGoalRecordsForThread(workspaceDb, { workspaceId: 'ws_demo', threadId: thread.id })
         ).toEqual([
@@ -3088,6 +3127,62 @@ describe('thread goal summary app API', () => {
         createdAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
         completedAt: contextTurn.startedAt ?? '2026-05-31T00:00:00.000Z',
       });
+      const storageLayout: WorkerStorageLayout = {
+        family: 'openkit-worker',
+        version: '1',
+        uid: 1000,
+        gid: 1000,
+        workingDirectory: '/tmp/openkit-bootstrap',
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/workspace' }, { target: '/sandbox' }],
+      };
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_goal_storage', 'identity_goal_storage', 'deployment_goal_storage',
+                     1, 1, 1, 1, '2026-05-31T00:00:00.000Z', 1)`
+        )
+        .run();
+      const initialStorage = createWorkerStorageBinding(coreDb, {
+        deploymentId: 'deployment_goal_storage',
+        layout: storageLayout,
+        now: '2026-05-31T00:00:00.000Z',
+        runtimeTargetId: 'target_goal_storage',
+        workspaceId: 'ws_demo',
+      });
+      const priorReservation = reserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: 'session_prior_goal_task',
+        authorizeContributor: () => true,
+        expectedRevision: initialStorage.revision,
+        goalId: 'goal_real_step',
+        layout: storageLayout,
+        purpose: 'work',
+        responsibleUserId: LOCAL_USER_ID,
+        runtimeTargetId: 'target_goal_storage',
+        storageRef: initialStorage.storageRef,
+        taskId: 'task_prior_real_step',
+        threadId: thread.id,
+        workspaceId: 'ws_demo',
+      });
+      const priorAttachment = activateWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: priorReservation.attachmentGeneration,
+        expectedRevision: priorReservation.revision,
+        sandboxBindingRef: 'sandbox_prior_goal_task',
+        storageRef: initialStorage.storageRef,
+        targets: priorReservation.targets.map((target) => ({ ...target, initialized: true })),
+      });
+      const idleStorage = releaseWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: priorAttachment.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: priorAttachment.revision,
+        sandboxBindingRef: 'sandbox_prior_goal_task',
+        storageRef: initialStorage.storageRef,
+      });
+      const priorWorkSlotRef = idleStorage.contributors[0]?.workSlotRef;
+      expect(priorWorkSlotRef).toBeDefined();
+      expect(idleStorage.revision).toBeGreaterThan(initialStorage.revision);
       createGoalRecord(workspaceDb, {
         workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
         goalId: 'goal_real_step',
@@ -3096,6 +3191,13 @@ describe('thread goal summary app API', () => {
         title: 'Run real step',
         objective: 'Run one bounded worker step.',
         status: 'running',
+        workerStorageChoice: {
+          expectedRevision: initialStorage.revision,
+          kind: 'selected',
+          purpose: 'work',
+          reuseWorkSlotRef: priorWorkSlotRef!,
+          storageRef: initialStorage.storageRef,
+        },
         now: () => '2026-05-31T00:00:00.000Z',
       });
       updateGoalStatus(workspaceDb, {
@@ -3314,6 +3416,15 @@ describe('thread goal summary app API', () => {
             },
           ],
           workspaceSourceRefs: { repo_remote: 'main-repo' },
+          workerStorageChoice: {
+            expectedRevision: idleStorage.revision,
+            goalId: 'goal_real_step',
+            kind: 'selected',
+            purpose: 'work',
+            reuseWorkSlotRef: priorWorkSlotRef,
+            storageRef: initialStorage.storageRef,
+            taskId: 'task_real_step',
+          },
         }),
       ]);
       expect(JSON.stringify(startContexts[0])).not.toContain(coreDb.dataRoot);
@@ -3336,6 +3447,15 @@ describe('thread goal summary app API', () => {
         expect.objectContaining({
           requestedAgentId: 'agent_codex_host',
           turnId: workerTurnId,
+          workerStorageChoice: {
+            expectedRevision: idleStorage.revision,
+            goalId: 'goal_real_step',
+            kind: 'selected',
+            purpose: 'work',
+            reuseWorkSlotRef: priorWorkSlotRef,
+            storageRef: initialStorage.storageRef,
+            taskId: 'task_real_step',
+          },
           workspaceCwd: '/workspace/openkit',
           workspaceRoots: [
             {
@@ -3689,6 +3809,12 @@ describe('thread goal summary app API', () => {
         workspaceId: 'ws_demo',
         statuses: ['admitted'],
       })[0]!;
+      expect(admission.workerStorageChoice).toEqual({
+        goalId: 'goal_failing_step',
+        kind: 'fresh',
+        taskId: 'task_failing_step',
+      });
+      expect(startContexts[0]?.workerStorageChoice).toEqual(admission.workerStorageChoice);
       const sandboxBindingRef = startContexts[0]!.sandboxBindingRef!;
       const lease = requireSchedulerSessionLease(
         coreDb,
@@ -3783,6 +3909,7 @@ describe('thread goal summary app API', () => {
         title: 'Defer one worker step',
         objective: 'Cancel a worker admission that cannot dispatch immediately.',
         status: 'running',
+        workerStorageChoice: { kind: 'fresh' },
       });
       updateGoalStatus(workspaceDb, {
         workspaceId: 'ws_demo',
@@ -3849,7 +3976,16 @@ describe('thread goal summary app API', () => {
           workspaceId: 'ws_demo',
           statuses: ['cancelled'],
         })
-      ).toEqual([expect.objectContaining({ requestId: 'req_goal_deferred_step' })]);
+      ).toEqual([
+        expect.objectContaining({
+          requestId: 'req_goal_deferred_step',
+          workerStorageChoice: {
+            goalId: 'goal_deferred_step',
+            kind: 'fresh',
+            taskId: 'task_deferred_step',
+          },
+        }),
+      ]);
       expect(
         listGoalTasks(workspaceDb, {
           workspaceId: 'ws_demo',

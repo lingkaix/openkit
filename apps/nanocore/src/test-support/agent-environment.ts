@@ -101,6 +101,7 @@ export function createTestAgentSetup(
             'responses',
             'tool-calling',
           ],
+          contextManagement: { type: 'compaction', compactThreshold: 8_000 },
           modelFamilyId: 'gpt',
           routes: [
             {
@@ -129,6 +130,7 @@ export function createTestGatewayConfig(
       {
         id: logicalModel.id,
         displayName: logicalModel.displayName,
+        contextManagement: [logicalModel.contextManagement],
         routes: logicalModel.routes.map((route) => ({ ...route })),
       },
     ],

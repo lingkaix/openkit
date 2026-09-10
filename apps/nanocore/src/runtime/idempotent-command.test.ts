@@ -161,7 +161,7 @@ describe('workspace-transaction idempotent commands', () => {
           },
           coreDb
         )
-      ).toThrow('must name exactly one Core, User, or Workspace owner');
+      ).toThrow('must name exactly one Core, User, Workspace, or App owner');
     } finally {
       coreDb.sqlite.close();
     }

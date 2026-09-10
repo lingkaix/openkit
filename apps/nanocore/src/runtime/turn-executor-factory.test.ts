@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +9,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
+import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import {
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
@@ -20,6 +22,7 @@ import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   createNanoHostHarnessRuntime,
@@ -50,6 +53,14 @@ import {
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
 } from './worker-governance-backend.js';
+import {
+  activateWorkerStorageAttachment,
+  createWorkerStorageBinding,
+  getWorkerStorageBindingForSandbox,
+  releaseWorkerStorageAttachment,
+  reserveWorkerStorageAttachment,
+  workerStorageDefaultWorkSlotRef,
+} from './worker-storage-bindings.js';
 
 /** Creates the durable deployment identity required by real executor construction. */
 function createFactoryCoreDb() {
@@ -61,6 +72,140 @@ function createFactoryCoreDb() {
 }
 
 const factoryCoreDb = createFactoryCoreDb();
+
+/** Returns the fixed persistent-image facts used by NanoHost materialization fixtures. */
+function nanoHostImageInspection(request: NanoHostSessionEffectRequest) {
+  return {
+    digest: request.input.imageDigest,
+    platform: { architecture: 'amd64', os: 'linux' },
+    storageLayout: {
+      family: 'openkit-worker',
+      gid: 1000,
+      targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+      uid: 1000,
+      version: '1',
+      workingDirectory: '/tmp/openkit-bootstrap',
+    },
+  };
+}
+
+/** Returns the exact host-proved storage attachment for one sandbox.create fixture. */
+function nanoHostSandboxCreated(request: NanoHostSessionEffectRequest) {
+  const storage = request.input.storage as {
+    readonly attachmentGeneration: number;
+    readonly layoutDigest: string;
+    readonly scopeDigest: string;
+    readonly storageRef: string;
+    readonly targets: readonly { readonly target: string; readonly volumeRef: string }[];
+  };
+  return {
+    sandboxId: request.input.sandboxId,
+    state: 'created',
+    storage: {
+      ...storage,
+      targets: storage.targets.map((target) => ({ ...target, initialized: true })),
+    },
+  };
+}
+
+/** Creates the current user, Workspace membership, and Thread facts required by storage admission. */
+function authorizeNanoHostPackage(
+  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  environmentPackage: AgentEnvironmentPackage
+): void {
+  const triggerActor = environmentPackage.scope.triggerActor;
+  const userId = triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
+  if (!userId) throw new Error('Test package requires one responsible user.');
+  coreDb.sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO users (
+         id, display_name, email, email_verified, kind, status, created_at, updated_at
+       ) VALUES (?, ?, ?, 0, 'human', 'active', 0, 0)`
+    )
+    .run(userId, userId, `${userId}@worker-fixture.openkit.invalid`);
+  const store = new FsStore({ dataRoot: coreDb.dataRoot });
+  try {
+    store.getWorkspace(environmentPackage.scope.workspaceId);
+  } catch {
+    const fixture = createDemoWorkspaceForUser(userId);
+    store.importWorkspaceSnapshot({
+      agentSessions: [],
+      artifacts: [],
+      itemRevisions: [],
+      knowledge: [],
+      threads: [],
+      turnEvents: [],
+      turns: [],
+      workspace: {
+        ...fixture.workspace,
+        counts: { artifactCount: 0, knowledgeEntryCount: 0, threadCount: 0 },
+        id: environmentPackage.scope.workspaceId,
+      },
+    });
+  }
+  try {
+    store.getThread(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId);
+  } catch {
+    store.createThread(
+      environmentPackage.scope.workspaceId,
+      'Worker storage fixture',
+      environmentPackage.scope.threadId
+    );
+  }
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: userId,
+    workspaceId: environmentPackage.scope.workspaceId,
+  });
+}
+
+/** Adds the attached retained-storage owner required by one directly-authored Sandbox fixture. */
+function attachNanoHostStorageFixture(
+  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  input: {
+    readonly agentSessionId: string;
+    readonly deploymentId: string;
+    readonly runtimeTargetId: string;
+    readonly sandboxBindingRef: string;
+    readonly threadId: string;
+    readonly workspaceId: string;
+  }
+) {
+  const layout = {
+    family: 'openkit-worker',
+    gid: 1000,
+    platform: { architecture: 'amd64', os: 'linux' },
+    targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+    uid: 1000,
+    version: '1',
+    workingDirectory: '/tmp/openkit-bootstrap',
+  };
+  const binding = createWorkerStorageBinding(coreDb, {
+    deploymentId: input.deploymentId,
+    layout,
+    runtimeTargetId: input.runtimeTargetId,
+    workspaceId: input.workspaceId,
+  });
+  const reserved = reserveWorkerStorageAttachment(coreDb, {
+    agentSessionId: input.agentSessionId,
+    authorizeContributor: () => true,
+    expectedRevision: binding.revision,
+    layout,
+    purpose: 'work',
+    responsibleUserId: 'user_fixture',
+    runtimeTargetId: input.runtimeTargetId,
+    storageRef: binding.storageRef,
+    threadId: input.threadId,
+    workspaceId: input.workspaceId,
+  });
+  return activateWorkerStorageAttachment(coreDb, {
+    attachmentGeneration: reserved.attachmentGeneration,
+    expectedRevision: reserved.revision,
+    sandboxBindingRef: input.sandboxBindingRef,
+    storageRef: reserved.storageRef,
+    targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+  });
+}
 
 /** Completes the compatibility inputs omitted by narrow backend test fixtures. */
 function completeNanoHostPackage(input: {
@@ -95,6 +240,9 @@ function completeNanoHostPackage(input: {
     workspaceRoots: [],
   });
   const runtime = input.runtime as Partial<AgentEnvironmentPackage['runtime']> | undefined;
+  const extensions = input.extensions as AgentEnvironmentPackage['extensions'] | undefined;
+  const baseOpenkit = base.extensions.openkit as Record<string, unknown>;
+  const inputOpenkit = extensions?.openkit as Record<string, unknown> | undefined;
   return {
     ...base,
     ...input,
@@ -105,6 +253,11 @@ function completeNanoHostPackage(input: {
     },
     scope: { ...base.scope, ...input.scope },
     workspace: { ...base.workspace, ...input.workspace },
+    extensions: {
+      ...base.extensions,
+      ...extensions,
+      openkit: { ...baseOpenkit, ...inputOpenkit },
+    },
   } as AgentEnvironmentPackage;
 }
 
@@ -566,6 +719,14 @@ describe('createConfiguredTurnExecutor', () => {
         runtimeTargetId: 'target_factory_restore',
         timestamp: '2026-08-21T00:00:00.000Z',
       });
+      attachNanoHostStorageFixture(coreDb, {
+        agentSessionId: 'agent-session-one',
+        deploymentId: 'deployment_factory_restore',
+        runtimeTargetId: 'target_factory_restore',
+        sandboxBindingRef: 'sandbox-binding-factory-restore',
+        threadId: 'thread-one',
+        workspaceId: 'workspace-factory-restore',
+      });
       for (const suffix of ['one', 'two']) {
         openNanoHostAgentSessionBinding(coreDb, {
           agentSessionCompatibilityKey: suffix === 'one' ? 'b'.repeat(64) : 'c'.repeat(64),
@@ -648,6 +809,14 @@ describe('createConfiguredTurnExecutor', () => {
         runtimeTargetId: 'target_continuity_key',
         timestamp: '2026-08-21T00:00:00.000Z',
       });
+      const storageBinding = attachNanoHostStorageFixture(coreDb, {
+        agentSessionId: 'as-continuity-key',
+        deploymentId: 'deployment_continuity_key',
+        runtimeTargetId: 'target_continuity_key',
+        sandboxBindingRef: 'sandbox-binding-continuity-key',
+        threadId: 'thread-continuity-key',
+        workspaceId: 'workspace-continuity-key',
+      });
       openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: runtimeCompatibilityKey,
         agentSessionId: 'as-continuity-key',
@@ -665,7 +834,9 @@ describe('createConfiguredTurnExecutor', () => {
           agentSessionId: 'as-continuity-key',
           agentSessionRuntimeBindingId: 'binding-continuity-key',
           effectiveSetupGeneration: 1,
+          storageRef: storageBinding.storageRef,
           threadId: 'thread-continuity-key',
+          workSlotRef: storageBinding.currentWorkSlotRef,
           workspaceId: 'workspace-continuity-key',
         },
         harnessInstanceId: 'harness-continuity-key',
@@ -818,6 +989,363 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it('carries a resident predecessor handoff slot into a no-choice successor AEP and session.open', async () => {
+    const coreDb = createFactoryCoreDb();
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-selected-work-slot-'));
+    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
+      cwd: repositoryPath,
+    });
+    execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
+    writeFileSync(join(repositoryPath, 'README.md'), '# Selected slot\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
+    execFileSync('git', ['commit', '-m', 'initial'], {
+      cwd: repositoryPath,
+      stdio: 'ignore',
+    });
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        if (request.kind === 'image.acquire') return { digest: `sha256:${'6'.repeat(64)}` };
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+        if (request.kind === 'sandbox.create') return nanoHostSandboxCreated(request);
+        if (request.kind === 'bridge.open') {
+          return { accepted: true, integrationReady: true, state: 'open' };
+        }
+        throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+           ) VALUES ('target_selected_slot', 'identity_selected_slot',
+                     'deployment_selected_slot', 1, 1, 1, 1, ?, 1)`
+        )
+        .run('2026-09-11T00:00:00.000Z');
+      const layout = {
+        family: 'openkit-worker',
+        gid: 1000,
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        uid: 1000,
+        version: '1',
+        workingDirectory: '/tmp/openkit-bootstrap',
+      };
+      const created = createWorkerStorageBinding(coreDb, {
+        deploymentId: 'deployment_selected_slot',
+        layout,
+        runtimeTargetId: 'target_selected_slot',
+        workspaceId: 'workspace_selected_slot',
+      });
+      const predecessor = reserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: 'as_selected_slot_predecessor',
+        authorizeContributor: () => true,
+        expectedRevision: created.revision,
+        layout,
+        purpose: 'work',
+        responsibleUserId: 'user-factory',
+        runtimeTargetId: 'target_selected_slot',
+        storageRef: created.storageRef,
+        threadId: 'thread_selected_slot_predecessor',
+        workspaceId: 'workspace_selected_slot',
+      });
+      const predecessorAttached = activateWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: predecessor.attachmentGeneration,
+        expectedRevision: predecessor.revision,
+        sandboxBindingRef: 'sandbox_selected_slot_predecessor',
+        storageRef: predecessor.storageRef,
+        targets: predecessor.targets.map((target) => ({ ...target, initialized: true })),
+      });
+      const idle = releaseWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: predecessorAttached.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: predecessorAttached.revision,
+        sandboxBindingRef: 'sandbox_selected_slot_predecessor',
+        storageRef: predecessorAttached.storageRef,
+      });
+      const selectedWorkSlotRef = predecessor.currentWorkSlotRef!;
+      const triggerActor = { id: 'user-factory', kind: 'user' as const };
+      const environmentPackage = resolveAgentEnvironmentPackage({
+        agentSessionId: 'as_selected_slot_successor',
+        agentSetup: createTestAgentSetup(),
+        backend: { kind: 'openshell' },
+        createdAt: '2026-09-11T00:00:01.000Z',
+        requestId: 'request_selected_slot_successor',
+        triggerActor,
+        turn: {
+          completedAt: null,
+          configVersion: null,
+          durationMs: null,
+          error: null,
+          humanGate: null,
+          id: 'turn_selected_slot_successor',
+          items: [],
+          startedAt: '2026-09-11T00:00:01.000Z',
+          status: 'running',
+          threadId: 'thread_selected_slot_successor',
+          triggerActor,
+          workspaceId: 'workspace_selected_slot',
+        },
+        turnInput: 'Continue predecessor work',
+        workspaceCwd: null,
+        workspaceDataSourceCatalog: {
+          schemaVersion: 1,
+          sources: [
+            {
+              access: 'read-write',
+              allowedSlotKinds: ['worktree'],
+              displayName: 'Main repository',
+              id: 'main-repo',
+              kind: 'git',
+              locator: { defaultRef: 'main', url: 'https://example.invalid/repository.git' },
+              sensitivity: 'internal',
+              status: 'active',
+              vaultGrantRef: null,
+            },
+          ],
+        },
+        workspaceRoots: [
+          {
+            access: 'read-write',
+            id: 'repo',
+            sourceKind: 'host-dir',
+            sourcePath: repositoryPath,
+            workerPath: '/workspace/legacy-root',
+          },
+        ],
+        workspaceSourceRefs: { repo: 'main-repo' },
+        workerStorageWorkSlotRef: selectedWorkSlotRef,
+      });
+      authorizeNanoHostPackage(coreDb, environmentPackage);
+      new FsStore({ dataRoot: coreDb.dataRoot }).createThread(
+        environmentPackage.scope.workspaceId,
+        'Predecessor',
+        'thread_selected_slot_predecessor'
+      );
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
+        )
+        .run(
+          'lease_selected_slot',
+          'plan_selected_slot',
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.threadId,
+          environmentPackage.scope.turnId,
+          environmentPackage.scope.agentSessionId,
+          environmentPackage.snapshotId,
+          'pool_selected_slot',
+          'target_selected_slot',
+          '2026-09-11T00:00:01.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          'sandbox-binding:selected-slot'
+        );
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+      ).backend;
+      await backend.materialize(environmentPackage, {
+        workerStorageChoice: {
+          expectedRevision: idle.revision,
+          goalId: null,
+          kind: 'selected',
+          purpose: 'work',
+          reuseWorkSlotRef: selectedWorkSlotRef,
+          storageRef: idle.storageRef,
+          taskId: null,
+        },
+        workspaceRoots: [],
+      });
+      const expectedWorktree = `/workspace/worktrees/${selectedWorkSlotRef}`;
+      expect(environmentPackage.workspace.inputs[0]?.target).toBe(expectedWorktree);
+      expect(environmentPackage.runtime.command.workingDirectory).toBe(expectedWorktree);
+      expect(
+        workerStorageDefaultWorkSlotRef(
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.threadId
+        )
+      ).not.toBe(selectedWorkSlotRef);
+
+      const successorTurn = {
+        completedAt: null,
+        configVersion: null,
+        durationMs: null,
+        error: null,
+        humanGate: null,
+        id: 'turn_selected_slot_no_choice',
+        items: [],
+        startedAt: '2026-09-11T00:00:02.000Z',
+        status: 'running' as const,
+        threadId: environmentPackage.scope.threadId,
+        triggerActor,
+        workspaceId: environmentPackage.scope.workspaceId,
+      };
+      const previewPackage = (
+        runtime.turnExecutor as unknown as {
+          previewAgentEnvironmentPackage(
+            agentSessionId: string,
+            input: Record<string, unknown>
+          ): AgentEnvironmentPackage;
+        }
+      ).previewAgentEnvironmentPackage.bind(runtime.turnExecutor);
+      const successorPreparation = {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: 'as_selected_slot_no_choice',
+        requestId: 'request_selected_slot_no_choice',
+        turn: successorTurn,
+        turnInput: 'Continue in the resident handoff worktree',
+        workspaceCwd: null,
+        workspaceDataSourceCatalog: {
+          schemaVersion: 1,
+          sources: [
+            {
+              access: 'read-write',
+              allowedSlotKinds: ['worktree'],
+              displayName: 'Main repository',
+              id: 'main-repo',
+              kind: 'git',
+              locator: { defaultRef: 'main', url: 'https://example.invalid/repository.git' },
+              sensitivity: 'internal',
+              status: 'active',
+              vaultGrantRef: null,
+            },
+          ],
+        },
+        workspaceRoots: [
+          {
+            access: 'read-write',
+            id: 'repo',
+            sourceKind: 'host-dir',
+            sourcePath: repositoryPath,
+            workerPath: '/workspace/legacy-root',
+          },
+        ],
+        workspaceSourceRefs: { repo: 'main-repo' },
+      };
+      const successorPackage = previewPackage('as_selected_slot_no_choice', successorPreparation);
+      const freshSuccessorPackage = previewPackage('as_selected_slot_fresh', {
+        ...successorPreparation,
+        freshAgentSessionId: 'as_selected_slot_fresh',
+        requestId: 'request_selected_slot_fresh',
+        turn: {
+          ...successorTurn,
+          id: 'turn_selected_slot_fresh',
+        },
+        workerStorageChoice: { goalId: null, kind: 'fresh', taskId: null },
+      });
+      expect(freshSuccessorPackage.workspace.inputs[0]?.target).toBe(expectedWorktree);
+      expect(freshSuccessorPackage.runtime.command.workingDirectory).toBe(expectedWorktree);
+      const unrelatedThreadId = 'thread_selected_slot_unrelated';
+      const unrelatedPackage = previewPackage('as_selected_slot_unrelated', {
+        ...successorPreparation,
+        freshAgentSessionId: 'as_selected_slot_unrelated',
+        requestId: 'request_selected_slot_unrelated',
+        turn: {
+          ...successorTurn,
+          id: 'turn_selected_slot_unrelated',
+          threadId: unrelatedThreadId,
+        },
+      });
+      const unrelatedWorktree = `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(
+        environmentPackage.scope.workspaceId,
+        unrelatedThreadId
+      )}`;
+      expect(unrelatedPackage.workspace.inputs[0]?.target).toBe(unrelatedWorktree);
+      expect(unrelatedPackage.runtime.command.workingDirectory).toBe(unrelatedWorktree);
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO scheduler_session_leases (
+             lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+             heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+             sandbox_binding_ref
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
+        )
+        .run(
+          'lease_selected_slot_no_choice',
+          'plan_selected_slot_no_choice',
+          successorPackage.scope.workspaceId,
+          successorPackage.scope.threadId,
+          successorPackage.scope.turnId,
+          successorPackage.scope.agentSessionId,
+          successorPackage.snapshotId,
+          'pool_selected_slot',
+          'target_selected_slot',
+          '2026-09-11T00:00:02.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          '2999-01-01T00:00:00.000Z',
+          'sandbox-binding:selected-slot-no-choice'
+        );
+      const successorMaterialization = await backend.materialize(successorPackage, {
+        workspaceRoots: [],
+      });
+      expect(successorPackage.workspace.inputs[0]?.target).toBe(expectedWorktree);
+      expect(successorPackage.runtime.command.workingDirectory).toBe(expectedWorktree);
+
+      const launch = backend.launch(successorMaterialization);
+      const integration = coreDb.sqlite
+        .prepare(
+          `SELECT sandbox_integration_binding_ref AS integrationRef
+           FROM sandbox_runtime_records LIMIT 1`
+        )
+        .get() as { readonly integrationRef: string };
+      let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+      for (let attempt = 0; attempt < 20 && !command; attempt += 1) {
+        command = dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: integration.integrationRef,
+        });
+        if (!command) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(command?.operation).toBe('session.open');
+      expect(command?.body).toMatchObject({
+        storageRef: idle.storageRef,
+        workSlotRef: selectedWorkSlotRef,
+      });
+      if (!command) throw new Error('Expected no-choice successor session.open command.');
+      runtime.acceptNanoHostHarnessCommand(command);
+      const rejection = {
+        body: { reasonCode: 'unsupported' },
+        disposition: 'refused' as const,
+        harnessInstanceId: command.harnessInstanceId,
+        operationId: command.operationId,
+        schemaVersion: 2 as const,
+        sequence: command.sequence,
+      };
+      settleNanoHostHarnessOperation(coreDb, {
+        result: rejection,
+        sandboxIntegrationBindingRef: integration.integrationRef,
+        timestamp: '2026-09-11T00:00:02.000Z',
+      });
+      runtime.acceptNanoHostHarnessResult(rejection);
+      await expect(launch).rejects.toThrow('unsupported');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     ['definite delete', false],
     ['uncertain delete', true],
@@ -891,6 +1419,14 @@ describe('createConfiguredTurnExecutor', () => {
         sandboxRuntimeId: 'sandbox-runtime-absent-cleanup',
         runtimeTargetId: 'target_absent_cleanup',
         timestamp: '2026-08-21T00:00:00.000Z',
+      });
+      attachNanoHostStorageFixture(coreDb, {
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        deploymentId: 'deployment_absent_cleanup',
+        runtimeTargetId: 'target_absent_cleanup',
+        sandboxBindingRef: identity.backendSessionId,
+        threadId: environmentPackage.scope.threadId,
+        workspaceId: environmentPackage.scope.workspaceId,
       });
 
       const cleanup = runtime.cleanupBackendSession(identity);
@@ -1002,6 +1538,14 @@ describe('createConfiguredTurnExecutor', () => {
         sandboxRuntimeId: 'sandbox-runtime-post-fence',
         runtimeTargetId: identity.runtimeTargetId,
         timestamp: '2026-08-21T00:00:00.000Z',
+      });
+      attachNanoHostStorageFixture(coreDb, {
+        agentSessionId: identity.agentSessionId,
+        deploymentId: identity.deploymentId,
+        runtimeTargetId: identity.runtimeTargetId,
+        sandboxBindingRef: 'sandbox-binding-post-fence',
+        threadId: 'thread_post_fence',
+        workspaceId: 'workspace_post_fence',
       });
       coreDb.sqlite
         .prepare(
@@ -1524,6 +2068,7 @@ describe('createConfiguredTurnExecutor', () => {
           capabilities: {},
           control: { adapter: { targetRuntime: 'codex' } },
           credentials: {},
+          extensions: { openkit: { workerStorage: { workSlotRef: `wsl_${turnId}` } } },
           llm: {},
           policy: {
             filesystem: {
@@ -1722,8 +2267,9 @@ describe('createConfiguredTurnExecutor', () => {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
         if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
-          return { sandboxId: request.input.sandboxId, state: 'created' };
+          return nanoHostSandboxCreated(request);
         }
         if (request.kind === 'reference.import') return { state: 'imported' };
         if (request.kind === 'bridge.open') {
@@ -1761,6 +2307,7 @@ describe('createConfiguredTurnExecutor', () => {
         },
         snapshotId: 'aepsnap_human_gate',
       });
+      authorizeNanoHostPackage(coreDb, environmentPackage);
       coreDb.sqlite
         .prepare(
           `INSERT INTO scheduler_session_leases (
@@ -1797,12 +2344,6 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       const materialization = await backend.materialize(environmentPackage, {
-        runtimeFileCredentials: [
-          {
-            credentialValue: 'runtime-file-secret',
-            targetPath: '/sandbox/.config/example/credentials',
-          },
-        ],
         workspaceRoots: [],
       });
       expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
@@ -1840,16 +2381,10 @@ describe('createConfiguredTurnExecutor', () => {
             effects
               .filter((effect) => effect.kind === 'reference.import')
               .map((effect) => effect.input.slot)
-          ).toEqual(['package-config', 'runtime-credential']);
+          ).toEqual(['package-config']);
           expect(command.body).toMatchObject({
             aepRef: '/openkit/sessions/as_human_gate/config/package.json',
             contextRef: '/openkit/sessions/as_human_gate/context',
-          });
-          expect(
-            effects.find((effect) => effect.input.slot === 'runtime-credential')?.input
-          ).toMatchObject({
-            body: Buffer.from('runtime-file-secret'),
-            relativePath: 'sandbox/.config/example/credentials',
           });
         }
         runtime.acceptNanoHostHarnessCommand(command);
@@ -1944,9 +2479,9 @@ describe('createConfiguredTurnExecutor', () => {
       await cleanup;
       expect(effects.map((effect) => effect.kind)).toEqual([
         'image.acquire',
+        'image.inspect',
         'sandbox.create',
         'bridge.open',
-        'reference.import',
         'reference.import',
       ]);
       expect(
@@ -2047,8 +2582,9 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'image.acquire') {
           return { digest: `sha256:${'a'.repeat(64)}` };
         }
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
-          return { sandboxId: 'nanohost-as_factory_pre_bridge_failure' };
+          return nanoHostSandboxCreated(request);
         }
         if (request.kind === 'sandbox.delete') {
           throw new Error('NanoHost sandbox delete outcome is cleanup-required.');
@@ -2124,15 +2660,109 @@ describe('createConfiguredTurnExecutor', () => {
         ],
       },
     });
+    authorizeNanoHostPackage(factoryCoreDb, environmentPackage);
     const identity = backend.planSession(environmentPackage);
 
     await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
       'NanoHost Context Package lineage or private root is invalid.'
     );
     await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow('cleanup-required');
-    expect(operations).toEqual(['image.acquire', 'sandbox.create', 'sandbox.delete']);
+    expect(operations).toEqual([
+      'image.acquire',
+      'image.inspect',
+      'sandbox.create',
+      'sandbox.delete',
+    ]);
     expect(operations).not.toContain('bridge.open');
     expect(operations).not.toContain('bridge.close');
+  });
+
+  it('rolls back fresh storage creation when contributor reservation fails', async () => {
+    const packageSnapshotId = 'aepsnap_factory_reservation_failure';
+    const operations: string[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(
+        requestOrConnection: object,
+        carriedRequest?: NanoHostSessionEffectRequest
+      ): Promise<unknown> {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        operations.push(request.kind);
+        if (request.kind === 'image.acquire') {
+          return { digest: `sha256:${'a'.repeat(64)}` };
+        }
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+        throw new Error(`Unexpected NanoHost effect ${request.kind}.`);
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    factoryCoreDb.sqlite
+      .prepare(
+        `INSERT INTO nanohost_runtime_targets (
+           target_id, identity_id, deployment_id, connection_generation,
+           predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+         ) VALUES (?, ?, ?, 1, 1, 1, 1, ?, 1)`
+      )
+      .run(
+        'target_factory_reservation_failure',
+        'identity_factory_reservation_failure',
+        'deployment_factory_reservation_failure',
+        '2026-08-10T00:00:00.000Z'
+      );
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb: factoryCoreDb,
+      env: {},
+      nanoHostSessionDispatch: sessionDispatch,
+      workerControlGateway: new WorkerControlGateway(),
+    });
+    const backend = (
+      runtime.turnExecutor as unknown as {
+        readonly backend: WorkerGovernanceBackend & {
+          requireLeaseId(packageSnapshotId: string): string;
+        };
+      }
+    ).backend;
+    backend.requireLeaseId = () => 'lease_factory_reservation_failure';
+    const environmentPackage = completeNanoHostPackage({
+      policy: {
+        filesystem: { default: 'deny', rules: [] },
+        network: { default: 'deny', enforcement: 'openshell', rules: [] },
+        process: { default: 'deny', rules: [] },
+        snapshotId: 'policy_factory_reservation_failure',
+      },
+      runtime: { image: { kind: 'reference', ref: 'openkit/worker:test' } },
+      scope: {
+        agentSessionId: 'as_factory_reservation_failure',
+        threadId: 'thread_factory_reservation_failure',
+        turnId: 'turn_factory_reservation_failure',
+        workspaceId: 'ws_factory_reservation_failure',
+      },
+      snapshotId: packageSnapshotId,
+    });
+    authorizeNanoHostPackage(factoryCoreDb, environmentPackage);
+    factoryCoreDb.sqlite.exec(`CREATE TEMP TRIGGER reject_test_storage_contributor
+      BEFORE INSERT ON worker_storage_contributors BEGIN
+        SELECT RAISE(ABORT, 'test reservation write failure');
+      END`);
+
+    try {
+      await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
+        'test reservation write failure'
+      );
+      expect(
+        factoryCoreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings WHERE workspace_id = ?')
+          .get(environmentPackage.scope.workspaceId)
+      ).toEqual({ count: 0 });
+      expect(operations).toEqual(['image.acquire', 'image.inspect']);
+    } finally {
+      factoryCoreDb.sqlite.exec('DROP TRIGGER reject_test_storage_contributor');
+    }
   });
 
   it('uses an exact preloaded deployment digest with the newest lease and no acquisition', async () => {
@@ -2146,6 +2776,7 @@ describe('createConfiguredTurnExecutor', () => {
       ): Promise<unknown> {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         throw new Error('first NanoHost effect reached');
       },
       async poll() {
@@ -2226,12 +2857,13 @@ describe('createConfiguredTurnExecutor', () => {
         },
         snapshotId: packageSnapshotId,
       });
+      authorizeNanoHostPackage(coreDb, environmentPackage);
 
       await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
         'first NanoHost effect reached'
       );
-      expect(effects).toHaveLength(1);
-      expect(effects[0]).toMatchObject({
+      expect(effects).toHaveLength(2);
+      expect(effects[1]).toMatchObject({
         input: { imageDigest: deploymentDigest, leaseId: 'lease_b_current' },
         kind: 'sandbox.create',
       });
@@ -2249,13 +2881,14 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'image.acquire') {
           return { digest: `sha256:${'f'.repeat(64)}` };
         }
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'reference.import') {
           return { state: 'imported' };
         }
         if (request.kind !== 'sandbox.create') {
           throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
         }
-        return { sandboxId: request.input.sandboxId, state: 'created' };
+        return nanoHostSandboxCreated(request);
       },
       async poll() {
         return null;
@@ -2310,7 +2943,7 @@ describe('createConfiguredTurnExecutor', () => {
             items: [],
             startedAt: '2026-08-21T00:00:00.000Z',
             status: 'running',
-            threadId: `thread-${suffix}`,
+            threadId: 'thread-multi-harness',
             triggerActor,
             workspaceId: 'workspace-multi-harness',
           },
@@ -2320,9 +2953,15 @@ describe('createConfiguredTurnExecutor', () => {
         });
       };
 
-      await backend.materialize(packageFor('codex'), { workspaceRoots: [] });
-      await backend.materialize(packageFor('opencode'), { workspaceRoots: [] });
-      await backend.materialize(packageFor('codex', 'codex-next'), { workspaceRoots: [] });
+      const codexPackage = packageFor('codex');
+      const openCodePackage = packageFor('opencode');
+      const nextCodexPackage = packageFor('codex', 'codex-next');
+      authorizeNanoHostPackage(coreDb, codexPackage);
+      authorizeNanoHostPackage(coreDb, openCodePackage);
+      authorizeNanoHostPackage(coreDb, nextCodexPackage);
+      await backend.materialize(codexPackage, { workspaceRoots: [] });
+      await backend.materialize(openCodePackage, { workspaceRoots: [] });
+      await backend.materialize(nextCodexPackage, { workspaceRoots: [] });
 
       expect(effects.filter((effect) => effect.kind === 'image.acquire')).toHaveLength(1);
       expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
@@ -2341,15 +2980,16 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('evicts one clean idle incompatible Sandbox before creating its replacement', async () => {
+  it('reattaches selected storage after its proved idle Sandbox is replaced', async () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
-          return { sandboxId: request.input.sandboxId, state: 'created' };
+          return nanoHostSandboxCreated(request);
         }
         if (request.kind === 'bridge.open') {
           return { accepted: true, integrationReady: true, state: 'open' };
@@ -2404,16 +3044,18 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const secondPackage = completeNanoHostPackage({
         runtime: {
-          image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
+          image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
         scope: {
           agentSessionId: 'as_idle_eviction_b',
-          threadId: 'thread_idle_eviction_b',
+          threadId: 'thread_idle_eviction_a',
           turnId: 'turn_idle_eviction_b',
-          workspaceId: 'workspace_idle_eviction_b',
+          workspaceId: 'workspace_idle_eviction_a',
         },
         snapshotId: 'snapshot_idle_eviction_b',
       });
+      authorizeNanoHostPackage(coreDb, firstPackage);
+      authorizeNanoHostPackage(coreDb, secondPackage);
       coreDb.sqlite
         .prepare(
           `INSERT INTO scheduler_session_leases (
@@ -2476,6 +3118,7 @@ describe('createConfiguredTurnExecutor', () => {
             'NanoHost one-Sandbox capacity is occupied or unproved.'
           );
           expect(effects.map((effect) => effect.kind)).toEqual([
+            'image.inspect',
             'sandbox.create',
             'bridge.open',
             'reference.import',
@@ -2565,6 +3208,13 @@ describe('createConfiguredTurnExecutor', () => {
         cleanupState: 'clean',
         lifecycleState: 'open',
       });
+      const sandboxBindingRef = (
+        coreDb.sqlite
+          .prepare('SELECT sandbox_binding_ref AS sandboxBindingRef FROM sandbox_runtime_records')
+          .get() as { readonly sandboxBindingRef: string }
+      ).sandboxBindingRef;
+      const selectedBinding = getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef });
+      if (!selectedBinding) throw new Error('Expected attached retained storage.');
       coreDb.sqlite
         .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_compatible'")
         .run();
@@ -2606,7 +3256,33 @@ describe('createConfiguredTurnExecutor', () => {
           '2026-09-06T00:00:00.000Z'
         );
 
-      const replacement = backend.materialize(secondPackage, { workspaceRoots: [] });
+      const selectedChoice = {
+        expectedRevision: selectedBinding.revision,
+        goalId: null,
+        kind: 'selected' as const,
+        purpose: 'work' as const,
+        storageRef: selectedBinding.storageRef,
+        taskId: null,
+      };
+      const effectsBeforeReplacement = effects.length;
+      await expect(
+        backend.materialize(secondPackage, {
+          workerStorageChoice: {
+            ...selectedChoice,
+            expectedRevision: selectedBinding.revision - 1,
+          },
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('revision changed');
+      expect(effects).toHaveLength(effectsBeforeReplacement);
+      expect(
+        coreDb.sqlite.prepare('SELECT drain_state AS drainState FROM sandbox_runtime_records').get()
+      ).toEqual({ drainState: 'accepting' });
+
+      const replacement = backend.materialize(secondPackage, {
+        workerStorageChoice: selectedChoice,
+        workspaceRoots: [],
+      });
       await settleNext('session.close', {
         childState: 'absent',
         privateState: 'absent',
@@ -2614,12 +3290,27 @@ describe('createConfiguredTurnExecutor', () => {
       });
       await replacement;
 
+      const reattachedBinding = getWorkerStorageBindingForSandbox(coreDb, {
+        sandboxBindingRef: (
+          coreDb.sqlite
+            .prepare('SELECT sandbox_binding_ref AS sandboxBindingRef FROM sandbox_runtime_records')
+            .get() as { readonly sandboxBindingRef: string }
+        ).sandboxBindingRef,
+      });
+      expect(reattachedBinding).toMatchObject({
+        attachmentGeneration: selectedBinding.attachmentGeneration + 1,
+        state: 'attached',
+        storageRef: selectedBinding.storageRef,
+      });
+
       expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.inspect',
         'sandbox.create',
         'bridge.open',
         'reference.import',
         'bridge.close',
         'sandbox.delete',
+        'image.inspect',
         'sandbox.create',
       ]);
       expect(
@@ -2760,8 +3451,9 @@ describe('createConfiguredTurnExecutor', () => {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
-          return { sandboxId: request.input.sandboxId, state: 'created' };
+          return nanoHostSandboxCreated(request);
         }
         if (request.kind === 'bridge.close') return { state: 'closed' };
         if (request.kind === 'sandbox.delete') return { state: 'deleted' };
@@ -2809,6 +3501,7 @@ describe('createConfiguredTurnExecutor', () => {
         'turn_restart_unproved_old',
         'snapshot_restart_unproved_old'
       );
+      authorizeNanoHostPackage(coreDb, firstPackage);
       const firstRuntime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         env: {},
@@ -2973,6 +3666,7 @@ describe('createConfiguredTurnExecutor', () => {
         'turn_restart_unproved_fresh',
         'snapshot_restart_unproved_fresh'
       );
+      authorizeNanoHostPackage(coreDb, secondPackage);
       coreDb.sqlite
         .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_restart_unproved'")
         .run();
@@ -3079,6 +3773,7 @@ describe('createConfiguredTurnExecutor', () => {
         })
       ).resolves.toBe('closed');
       expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.inspect',
         'sandbox.create',
         'bridge.close',
         'sandbox.delete',
@@ -3093,9 +3788,11 @@ describe('createConfiguredTurnExecutor', () => {
       await restartedBackend.materialize(secondPackage, { workspaceRoots: [] });
 
       expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.inspect',
         'sandbox.create',
         'bridge.close',
         'sandbox.delete',
+        'image.inspect',
         'sandbox.create',
       ]);
       expect(
@@ -3109,15 +3806,16 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('delivers runtime credentials to NanoHost effects and rejects unsupported Providers first', async () => {
+  it('rejects persistent runtime-file credentials and unsupported Providers before effects', async () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch = {
       async effect(request: NanoHostSessionEffectRequest) {
         effects.push(request);
         if (request.kind === 'image.acquire') return { digest: `sha256:${'e'.repeat(64)}` };
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
-          return { sandboxId: request.input.sandboxId, state: 'created' };
+          return nanoHostSandboxCreated(request);
         }
         if (request.kind === 'reference.import') return { state: 'imported' };
         throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
@@ -3163,27 +3861,22 @@ describe('createConfiguredTurnExecutor', () => {
         snapshotId: 'snapshot-credentials',
       });
 
-      await backend.materialize(environmentPackage, {
-        runtimeEnvCredentials: [
-          { credentialValue: 'runtime-env-secret', targetEnvVarName: 'EXAMPLE_TOKEN' },
-        ],
-        runtimeFileCredentials: [
-          {
-            credentialValue: 'runtime-file-secret',
-            targetPath: '/sandbox/.config/example/credentials',
-          },
-        ],
-        workspaceRoots: [],
-      });
+      await expect(
+        backend.materialize(environmentPackage, {
+          runtimeFileCredentials: [
+            {
+              credentialValue: 'runtime-file-secret',
+              targetPath: '/sandbox/.config/example/credentials',
+            },
+          ],
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow('do not admit runtime-file credential materialization');
+      expect(effects).toEqual([]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 0 });
 
-      expect(effects.find((effect) => effect.kind === 'sandbox.create')?.input.environment).toEqual(
-        {
-          EXAMPLE_TOKEN: 'runtime-env-secret',
-        }
-      );
-      expect(effects.some((effect) => effect.kind === 'reference.import')).toBe(false);
-
-      effects.length = 0;
       await expect(
         backend.materialize(
           { ...environmentPackage, snapshotId: 'snapshot-provider-rejected' },
@@ -3218,6 +3911,7 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'image.acquire') {
           return { digest: `sha256:${'b'.repeat(64)}` };
         }
+        if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
           sandboxCreates.push(request);
           throw new Error('first sandbox.create reached');
@@ -3304,6 +3998,7 @@ describe('createConfiguredTurnExecutor', () => {
           },
           snapshotId,
         });
+        authorizeNanoHostPackage(coreDb, environmentPackage);
         const firstPlan = backend.planSession(environmentPackage);
         const secondPlan = backend.planSession(environmentPackage);
         expect(secondPlan.backendSessionId).toBe(firstPlan.backendSessionId);
@@ -3312,7 +4007,7 @@ describe('createConfiguredTurnExecutor', () => {
           backend.materialize(environmentPackage, { workspaceRoots: [] })
         ).rejects.toThrow('first sandbox.create reached');
         const sandboxCreate = sandboxCreates.at(-1);
-        expect(sandboxCreate?.input).toEqual({
+        expect(sandboxCreate?.input).toMatchObject({
           backendSessionId: firstPlan.backendSessionId,
           environment: {},
           imageDigest: `sha256:${'b'.repeat(64)}`,
@@ -3320,7 +4015,7 @@ describe('createConfiguredTurnExecutor', () => {
           packageSnapshotId: snapshotId,
           policy: {
             filesystem: {
-              includeWorkdir: true,
+              includeWorkdir: false,
               readOnly: [
                 '/usr',
                 '/lib',
@@ -3328,10 +4023,18 @@ describe('createConfiguredTurnExecutor', () => {
                 '/dev/urandom',
                 '/app',
                 '/etc',
+                '/opt',
                 '/var/log',
                 '/workspace/vendor-sdk',
               ],
-              readWrite: ['/sandbox', '/tmp', '/dev/null', '/sandbox/.cache/npm'],
+              readWrite: [
+                '/sandbox',
+                '/workspace',
+                '/openkit',
+                '/tmp/openkit-bootstrap',
+                '/dev/null',
+                '/sandbox/.cache/npm',
+              ],
             },
             landlock: { compatibility: 'best_effort' },
             networkMiddlewares: {},
@@ -3354,6 +4057,22 @@ describe('createConfiguredTurnExecutor', () => {
             version: 1,
           },
           sandboxId: firstPlan.backendSessionId.slice(0, 19),
+          storage: {
+            attachmentGeneration: 1,
+            layoutDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+            scopeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+            storageRef: expect.stringMatching(/^wst_[0-9a-f]{32}$/),
+            targets: [
+              {
+                target: '/sandbox',
+                volumeRef: expect.stringMatching(/^wsv_[0-9a-f]{32}$/),
+              },
+              {
+                target: '/workspace',
+                volumeRef: expect.stringMatching(/^wsv_[0-9a-f]{32}$/),
+              },
+            ],
+          },
         });
         expect(sandboxCreate?.kind).toBe('sandbox.create');
         expect(firstPlan.backendSessionId.length).toBeLessThanOrEqual(36);

@@ -23,7 +23,7 @@ import {
   KnowledgeSourceSchema,
   MaterializedWorkspaceRootSchema,
 } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { parseRecordEnvelope, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   AgentSandboxSummarySchema,
   AgentSessionSchema,
@@ -61,6 +61,8 @@ type Turn = import('zod').infer<typeof TurnSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
+
+const THREAD_ENTRY_REQUIRED_FEATURE = 'openkit.thread-entry.v1' as const;
 
 const CanonicalTimestampSchema = z.string().datetime();
 export const WorkspaceSystemRecordSchema = WorkspaceRecordSchema.omit({
@@ -952,7 +954,11 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
       throw new Error(`Canonical thread directory is missing thread.json: ${threadId}.`);
     }
 
-    const thread = ThreadSchema.parse(readJson(threadPath));
+    const rawThread = readJson(threadPath);
+    const thread = parseCanonicalThreadRecord(rawThread, workspaceId, threadId);
+    if (!isCanonicalThreadEnvelope(rawThread)) {
+      writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread));
+    }
 
     if (thread.id !== threadId || thread.workspaceId !== workspaceId) {
       throw new Error(`Thread record ${thread.id} has invalid workspace or directory lineage.`);
@@ -1781,6 +1787,92 @@ function assertExistingWorkspaceDirectoryParents(workspaceRoot: string): void {
   }
 }
 
+/** Parses one Thread envelope or performs the one-time conversation cutover for a raw record. */
+function parseCanonicalThreadRecord(input: unknown, workspaceId: string, threadId: string): Thread {
+  if (!looksLikeThreadEnvelope(input)) {
+    if (typeof input === 'object' && input !== null && 'entryPath' in input) {
+      throw new Error(`Thread entryPath requires its canonical envelope: ${threadId}.`);
+    }
+    return ThreadSchema.parse({
+      ...(typeof input === 'object' && input !== null ? input : {}),
+      entryPath: 'conversation',
+    });
+  }
+
+  const envelope = parseRecordEnvelope(input, {
+    supportedFeatures: [THREAD_ENTRY_REQUIRED_FEATURE],
+  });
+  if (
+    envelope.schemaVersion !== 1 ||
+    envelope.recordType !== 'thread' ||
+    envelope.ownerScope !== 'workspace' ||
+    envelope.id !== threadId ||
+    envelope.lineage.workspaceId !== workspaceId ||
+    envelope.lineage.threadId !== threadId ||
+    !envelope.requiredFeatures.includes(THREAD_ENTRY_REQUIRED_FEATURE)
+  ) {
+    throw new Error(`Canonical Thread envelope has invalid ownership or lineage: ${threadId}.`);
+  }
+  const thread = ThreadSchema.parse(input);
+  if (envelope.contentDigest !== canonicalThreadContentDigest(thread)) {
+    throw new Error(`Canonical Thread envelope content digest does not match: ${threadId}.`);
+  }
+  return thread;
+}
+
+/** Projects one Thread into its authority-gated canonical record envelope. */
+function projectCanonicalThreadRecord(
+  threadInput: Thread,
+  previous?: unknown
+): Record<string, unknown> {
+  const thread = ThreadSchema.parse(threadInput);
+  let preserved: Record<string, unknown> = {};
+  if (looksLikeThreadEnvelope(previous)) {
+    preserved = parseRecordEnvelope(previous, {
+      supportedFeatures: [THREAD_ENTRY_REQUIRED_FEATURE],
+    });
+  }
+  return {
+    ...preserved,
+    ...thread,
+    schemaVersion: 1,
+    recordType: 'thread',
+    ownerScope: 'workspace',
+    lineage: { workspaceId: thread.workspaceId, threadId: thread.id },
+    contentDigest: canonicalThreadContentDigest(thread),
+    redactionLevel: 'none',
+    sensitivity: 'workspace',
+    requiredFeatures: [THREAD_ENTRY_REQUIRED_FEATURE],
+    extensions:
+      typeof preserved.extensions === 'object' && preserved.extensions !== null
+        ? preserved.extensions
+        : {},
+  };
+}
+
+/** Computes the stable content digest over the strict current Thread payload. */
+function canonicalThreadContentDigest(thread: Thread): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(ThreadSchema.parse(thread)))
+    .digest('hex')}`;
+}
+
+/** Returns whether a record claims any canonical envelope discriminator. */
+function looksLikeThreadEnvelope(input: unknown): input is Record<string, unknown> {
+  return (
+    typeof input === 'object' &&
+    input !== null &&
+    ['schemaVersion', 'recordType', 'ownerScope', 'lineage', 'requiredFeatures'].some(
+      (field) => field in input
+    )
+  );
+}
+
+/** Returns whether a record is an already gated canonical Thread envelope. */
+function isCanonicalThreadEnvelope(input: unknown): boolean {
+  return looksLikeThreadEnvelope(input);
+}
+
 /**
  * Writes thread and turn metadata while preserving append-only item and event logs.
  *
@@ -1802,7 +1894,9 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
 
     ensureCanonicalDirectory(threadRoot);
     ensureCanonicalDirectory(turnsRoot);
-    writeJsonAtomic(join(threadRoot, 'thread.json'), thread);
+    const threadPath = join(threadRoot, 'thread.json');
+    const previous = existsSync(threadPath) ? readJson(threadPath) : undefined;
+    writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread, previous));
     removeStaleDirectories(turnsRoot, expectedTurnIds);
 
     for (const turn of threadTurns) {

@@ -50,24 +50,24 @@ ARG MISE_ARM64_SHA256="bc2c447a7e498b0bed0a421cc2101b407fef09a3195670d35a4aa3f43
 ARG PYTHON_VERSION="3.14.6"
 
 ENV DEBIAN_FRONTEND="noninteractive" \
+    BASH_ENV="/opt/openkit/.bashrc" \
+    ENV="/opt/openkit/.bashrc" \
     HOME="/sandbox" \
     NPM_CONFIG_AUDIT="false" \
     NPM_CONFIG_FUND="false" \
     NPM_CONFIG_UPDATE_NOTIFIER="false" \
     OPENKIT_ARTIFACT_DIR="/openkit/artifacts" \
     OPENKIT_SESSION_DIR="/openkit/session" \
-    PATH="/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin" \
+    PATH="/opt/openkit/venv/bin:/usr/local/bin:/usr/bin:/bin" \
     PIP_DISABLE_PIP_VERSION_CHECK="1" \
     PYTHONDONTWRITEBYTECODE="1" \
     PYTHONUNBUFFERED="1" \
     UV_PYTHON_INSTALL_DIR="/opt/uv/python" \
-    VIRTUAL_ENV="/sandbox/.venv" \
+    VIRTUAL_ENV="/opt/openkit/venv" \
     XDG_CACHE_HOME="/sandbox/.cache" \
     XDG_CONFIG_HOME="/sandbox/.config" \
     XDG_DATA_HOME="/sandbox/.local/share" \
     XDG_STATE_HOME="/sandbox/.local/state"
-
-WORKDIR /workspace
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -146,48 +146,61 @@ COPY containers/workers/openkit-worker-shim /usr/local/bin/openkit-worker-shim
 COPY containers/workers/smoke-common.sh /usr/local/bin/openkit-worker-common-smoke
 COPY containers/workers/openkit-worker-common-base-smoke.sh /usr/local/bin/openkit-worker-common-base-smoke
 
-RUN /usr/sbin/groupadd --system sandbox \
-  && /usr/sbin/useradd --system --gid sandbox --home-dir /sandbox --create-home --shell /bin/bash sandbox \
+RUN /usr/sbin/groupmod --new-name sandbox node \
+  && /usr/sbin/usermod --login sandbox --home /sandbox --shell /bin/bash node \
+  && rm -rf /home/node \
+  && test "$(id -u sandbox)" = "1000" \
+  && test "$(id -g sandbox)" = "1000" \
   && mkdir -p \
+    /openkit/artifacts \
+    /openkit/instructions \
+    /openkit/session \
+    /openkit/sessions \
+    /opt/openkit \
     /sandbox/.cache \
     /sandbox/.config \
     /sandbox/.local/share \
     /sandbox/.local/state \
     /sandbox/.npm \
-    /sandbox/openkit/artifacts \
-    /sandbox/openkit/sessions \
-    /sandbox/openkit/session \
+    /tmp/openkit-bootstrap \
     /workspace \
-  && ln -s /sandbox/openkit /openkit \
   && mkdir -p \
-    /workspace/worktrees/main \
+    /workspace/worktrees \
     /workspace/inputs \
     /workspace/data \
     /workspace/artifacts/in \
     /workspace/outputs \
     /workspace/scratch \
     /workspace/.openkit/cache \
-    /openkit/session \
-    /openkit/instructions \
-  && uv venv --python "${PYTHON_VERSION}" --seed /sandbox/.venv \
+  && uv venv --python "${PYTHON_VERSION}" --seed /opt/openkit/venv \
   && uv cache clean \
   && printf '%s\n' \
-    'export PATH="/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin"' \
-    'export VIRTUAL_ENV="/sandbox/.venv"' \
+    'export PATH="/opt/openkit/venv/bin:/usr/local/bin:/usr/bin:/bin"' \
+    'export VIRTUAL_ENV="/opt/openkit/venv"' \
     'export UV_PYTHON_INSTALL_DIR="/opt/uv/python"' \
     'export PS1="\u@\h:\w\$ "' \
-    > /sandbox/.bashrc \
-  && printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' > /sandbox/.profile \
+    > /opt/openkit/.bashrc \
   && chmod +x /usr/local/bin/openkit-file-effect /usr/local/bin/openkit-worker-shim /usr/local/bin/openkit-worker-common-smoke /usr/local/bin/openkit-worker-common-base-smoke \
-  && chown -R sandbox:sandbox /sandbox /workspace
+  && chown -R 1000:1000 /openkit /sandbox /tmp/openkit-bootstrap /workspace \
+  && chmod 0700 /tmp/openkit-bootstrap
+
+ENV TEMP="/tmp/openkit-bootstrap" \
+    TMP="/tmp/openkit-bootstrap" \
+    TMPDIR="/tmp/openkit-bootstrap"
 
 LABEL org.openkit.image="worker-common"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-common-base-smoke"
+LABEL org.openkit.storage.family="openkit-worker"
+LABEL org.openkit.storage.version="1"
+
+VOLUME ["/workspace", "/sandbox"]
+
+WORKDIR /tmp/openkit-bootstrap
 
 ENTRYPOINT ["tini", "-g", "--"]
 CMD ["openkit-worker-shim"]
 
-USER sandbox
+USER 1000:1000
 
 FROM worker-common AS worker-codex
 
@@ -239,7 +252,7 @@ COPY containers/worker-codex/smoke.sh /usr/local/bin/openkit-worker-codex-smoke
 
 RUN chmod +x /usr/local/bin/openkit-worker-codex-smoke
 
-USER sandbox
+USER 1000:1000
 
 FROM worker-common AS worker-opencode
 
@@ -270,7 +283,7 @@ COPY containers/worker-opencode/smoke.sh /usr/local/bin/openkit-worker-opencode-
 
 RUN chmod +x /usr/local/bin/openkit-worker-opencode-smoke
 
-USER sandbox
+USER 1000:1000
 
 FROM worker-common AS worker-pi
 
@@ -302,4 +315,4 @@ COPY containers/worker-pi/smoke.sh /usr/local/bin/openkit-worker-pi-smoke
 
 RUN chmod +x /usr/local/bin/openkit-worker-pi-smoke
 
-USER sandbox
+USER 1000:1000

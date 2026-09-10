@@ -1275,6 +1275,7 @@ dependencies = [
  "libc",
  "oci-client",
  "openshell-sdk",
+ "prost-types",
  "rustls",
  "serde_json",
  "sha2 0.10.9",

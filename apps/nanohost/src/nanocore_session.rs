@@ -319,8 +319,8 @@ pub struct RawImportFile {
     pub bytes: Vec<u8>,
 }
 
-/// The exact eight command/result pairs carried on the authoritative connection.
-const EFFECT_PATHS: [(&str, &str, RuntimeEffectKind); 8] = [
+/// The exact eleven command/result pairs carried on the authoritative connection.
+const EFFECT_PATHS: [(&str, &str, RuntimeEffectKind); 11] = [
     (
         "/api/nanohost/transport/effects/sandbox.create",
         "/api/nanohost/transport/effects/sandbox.create/result",
@@ -360,6 +360,21 @@ const EFFECT_PATHS: [(&str, &str, RuntimeEffectKind); 8] = [
         "/api/nanohost/transport/effects/reference.import",
         "/api/nanohost/transport/effects/reference.import/result",
         RuntimeEffectKind::ImportReference,
+    ),
+    (
+        "/api/nanohost/transport/effects/image.inspect",
+        "/api/nanohost/transport/effects/image.inspect/result",
+        RuntimeEffectKind::InspectImage,
+    ),
+    (
+        "/api/nanohost/transport/effects/storage.inspect",
+        "/api/nanohost/transport/effects/storage.inspect/result",
+        RuntimeEffectKind::InspectStorage,
+    ),
+    (
+        "/api/nanohost/transport/effects/storage.purge",
+        "/api/nanohost/transport/effects/storage.purge/result",
+        RuntimeEffectKind::PurgeStorage,
     ),
 ];
 /// Fixed effect count used to retain the round-robin start after a successor result delivery.
@@ -975,6 +990,12 @@ pub enum OuterSessionOperation {
     ExportFile,
     /// `reference.import`.
     ImportReference,
+    /// Inspects one exact verified local image.
+    InspectImage,
+    /// Inspects one exact retained storage association.
+    InspectStorage,
+    /// Purges one exact fenced storage association.
+    PurgeStorage,
 }
 
 impl From<RuntimeEffectKind> for OuterSessionOperation {
@@ -989,6 +1010,9 @@ impl From<RuntimeEffectKind> for OuterSessionOperation {
             RuntimeEffectKind::BuildImage => Self::BuildImage,
             RuntimeEffectKind::ExportFile => Self::ExportFile,
             RuntimeEffectKind::ImportReference => Self::ImportReference,
+            RuntimeEffectKind::InspectImage => Self::InspectImage,
+            RuntimeEffectKind::InspectStorage => Self::InspectStorage,
+            RuntimeEffectKind::PurgeStorage => Self::PurgeStorage,
         }
     }
 }
@@ -1006,6 +1030,9 @@ impl OuterSessionOperation {
             Self::BuildImage => "image.build",
             Self::ExportFile => "file.export",
             Self::ImportReference => "reference.import",
+            Self::InspectImage => "image.inspect",
+            Self::InspectStorage => "storage.inspect",
+            Self::PurgeStorage => "storage.purge",
         }
     }
 }
@@ -1530,8 +1557,9 @@ pub async fn poll_effect_command(
     let first_poll = *cursor == 0;
     let kind = effect_kind_for_cursor(*cursor);
     let operation = OuterSessionOperation::from(kind);
-    let (path, _, _) = EFFECT_PATHS[*cursor % EFFECT_PATHS.len()];
-    *cursor = cursor.checked_add(1).unwrap_or(EFFECT_OPERATION_COUNT);
+    let index = *cursor % EFFECT_PATHS.len();
+    let (path, _, _) = EFFECT_PATHS[index];
+    *cursor = (index + 1) % EFFECT_PATHS.len();
     if kind == RuntimeEffectKind::ImportReference {
         return poll_reference_import(authority, sender, path).await;
     }
@@ -1932,7 +1960,8 @@ async fn poll_reference_import(
 /// # Errors
 ///
 /// Rejects malformed identity, an oversized result, transport failure, or a
-/// response other than an empty `204`. Callers retain the same result for a successor rather
+/// definitive response other than an empty `204`. Exact empty `503` image settlement deferral
+/// redelivers the same result once per second without ending the epoch. Callers retain a result for a successor rather
 /// than re-executing the accepted local effect.
 pub async fn submit_effect_result(
     authority: &str,
@@ -1966,38 +1995,52 @@ pub async fn submit_effect_result(
     if body.len() > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES {
         return Err(terminal_without_status("effect result body exceeded bound"));
     }
-    let (status, response) = match send_effect_request(authority, sender, path, &body).await {
-        Ok(response) => response,
-        Err(error) => {
-            let delivery_uncertain = matches!(
-                error,
-                "effect connection closed"
-                    | "effect request send failed"
-                    | "effect request body send failed"
-                    | "effect response failed"
-            );
-            return Err(if delivery_uncertain {
-                OuterSessionFailure::reconnect(
-                    OuterSessionStage::Result,
-                    operation,
-                    None,
+    loop {
+        let (status, response) = match send_effect_request(authority, sender, path, &body).await {
+            Ok(response) => response,
+            Err(error) => {
+                let delivery_uncertain = matches!(
                     error,
-                    None,
-                )
-            } else {
-                terminal_without_status(error)
-            });
+                    "effect connection closed"
+                        | "effect request send failed"
+                        | "effect request body send failed"
+                        | "effect response failed"
+                );
+                return Err(if delivery_uncertain {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Result,
+                        operation,
+                        None,
+                        error,
+                        None,
+                    )
+                } else {
+                    terminal_without_status(error)
+                });
+            }
+        };
+        if status == StatusCode::SERVICE_UNAVAILABLE
+            && response.is_empty()
+            && matches!(
+                command.kind,
+                RuntimeEffectKind::AcquireImage | RuntimeEffectKind::BuildImage
+            )
+        {
+            // The Core defers only a validated preparation result whose local persistence failed.
+            // Keep the single completed result; never re-execute its command or poll another effect.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
         }
-    };
-    if status != StatusCode::NO_CONTENT || !response.is_empty() {
-        return Err(OuterSessionFailure::terminal(
-            OuterSessionStage::Result,
-            operation,
-            Some(status.as_u16()),
-            "effect result rejected",
-        ));
+        if status != StatusCode::NO_CONTENT || !response.is_empty() {
+            return Err(OuterSessionFailure::terminal(
+                OuterSessionStage::Result,
+                operation,
+                Some(status.as_u16()),
+                "effect result rejected",
+            ));
+        }
+        return Ok(());
     }
-    Ok(())
 }
 
 /// Sends one retained complete `file.export` body on its fixed result path.
@@ -2417,6 +2460,105 @@ mod tests {
         NANOHOST_CONTROL_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
         PER_STREAM_RECEIVE_WINDOW_BYTES, WORKER_CONTROL_IN_FLIGHT_BYTES,
     };
+
+    #[tokio::test]
+    async fn image_settlement_deferral_redelivers_without_new_effect_or_connection() {
+        for (kind, nonempty) in [
+            (RuntimeEffectKind::AcquireImage, false),
+            (RuntimeEffectKind::BuildImage, false),
+            (RuntimeEffectKind::InspectImage, false),
+            (RuntimeEffectKind::AcquireImage, true),
+        ] {
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let (mut sender, connection) = h2::client::handshake(client_io)
+                .await
+                .expect("client handshake");
+            let client_driver = tokio::spawn(connection);
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = requests.clone();
+            let server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io)
+                    .await
+                    .expect("server handshake");
+                let mut count = 0;
+                while let Some(request) = connection.accept().await {
+                    let (request, mut respond) = request.expect("result request");
+                    let path = request.uri().path().to_string();
+                    let mut body = request.into_body();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.expect("body");
+                        body.flow_control()
+                            .release_capacity(chunk.len())
+                            .expect("flow control");
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    observed.lock().expect("observations").push((path, bytes));
+                    count += 1;
+                    let mut stream = respond
+                        .send_response(
+                            Response::builder()
+                                .status(if count == 1 {
+                                    StatusCode::SERVICE_UNAVAILABLE
+                                } else {
+                                    StatusCode::NO_CONTENT
+                                })
+                                .body(())
+                                .expect("response"),
+                            !nonempty,
+                        )
+                        .expect("send response");
+                    if nonempty {
+                        stream
+                            .send_data(Bytes::from_static(b"invalid"), true)
+                            .expect("body");
+                    }
+                }
+            });
+            let command = PolledEffectCommand {
+                kind,
+                request_id: "a".repeat(64),
+                input: serde_json::json!({}),
+                file_data: None,
+            };
+            let started = tokio::time::Instant::now();
+            let delivered = submit_effect_result(
+                "http://nanocore.test",
+                &mut sender,
+                &command,
+                serde_json::json!({"digest": format!("sha256:{}", "b".repeat(64))}),
+            )
+            .await;
+            client_driver.abort();
+            server.abort();
+            let observations = requests.lock().expect("observations");
+            if !nonempty
+                && matches!(
+                    kind,
+                    RuntimeEffectKind::AcquireImage | RuntimeEffectKind::BuildImage
+                )
+            {
+                assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+                assert!(
+                    delivered.is_ok(),
+                    "image result must be deferred, not rejected: {delivered:?}"
+                );
+                assert_eq!(observations.len(), 2);
+                assert_eq!(
+                    observations[0], observations[1],
+                    "only identical result delivery may repeat"
+                );
+            } else {
+                assert_eq!(
+                    delivered
+                        .expect_err("non-image deferral is forbidden")
+                        .disposition(),
+                    OuterSessionDisposition::Terminal
+                );
+                assert_eq!(observations.len(), 1);
+            }
+        }
+    }
 
     #[test]
     fn wp5_outer_session_is_one_authenticated_outbound_h2_client_runner() {
@@ -3583,14 +3725,17 @@ mod tests {
         assert_eq!(
             observed,
             vec![
+                "/api/nanohost/transport/effects/sandbox.delete",
+                "/api/nanohost/transport/effects/bridge.open",
+                "/api/nanohost/transport/effects/bridge.close",
                 "/api/nanohost/transport/effects/image.acquire",
                 "/api/nanohost/transport/effects/image.build",
                 "/api/nanohost/transport/effects/file.export",
                 "/api/nanohost/transport/effects/reference.import",
+                "/api/nanohost/transport/effects/image.inspect",
+                "/api/nanohost/transport/effects/storage.inspect",
+                "/api/nanohost/transport/effects/storage.purge",
                 "/api/nanohost/transport/effects/sandbox.create",
-                "/api/nanohost/transport/effects/sandbox.delete",
-                "/api/nanohost/transport/effects/bridge.open",
-                "/api/nanohost/transport/effects/bridge.close",
             ],
             "the cursor boundary must wrap through one complete fair operation cycle instead of saturating on reference.import"
         );

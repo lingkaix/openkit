@@ -113,6 +113,7 @@ function workspaceImportPayload(
         name: 'Imported thread',
         preview: 'Imported thread',
         status: 'active',
+        entryPath: 'conversation',
         createdAt: timestamp,
         updatedAt: timestamp,
       }),
@@ -1295,9 +1296,30 @@ describe('FsStore canonical reload', () => {
     );
 
     mkdirSync(duplicateRoot, { recursive: true });
+    const duplicateThread = ThreadSchema.parse({
+      ...firstThread,
+      workspaceId: secondWorkspace.id,
+    });
     writeFileSync(
       join(duplicateRoot, 'thread.json'),
-      `${JSON.stringify({ ...firstThread, workspaceId: secondWorkspace.id }, null, 2)}\n`
+      `${JSON.stringify(
+        {
+          ...duplicateThread,
+          schemaVersion: 1,
+          recordType: 'thread',
+          ownerScope: 'workspace',
+          lineage: { workspaceId: secondWorkspace.id, threadId: firstThread.id },
+          contentDigest: `sha256:${createHash('sha256')
+            .update(JSON.stringify(duplicateThread))
+            .digest('hex')}`,
+          redactionLevel: 'none',
+          sensitivity: 'workspace',
+          requiredFeatures: ['openkit.thread-entry.v1'],
+          extensions: {},
+        },
+        null,
+        2
+      )}\n`
     );
 
     expect(() => new FsStore({ dataRoot })).toThrow(

@@ -57,15 +57,17 @@ export interface WorkerAdapterPrepareInput {
   readonly skillTargetPaths?:
     | readonly { readonly id: string; readonly targetPath: string }[]
     | undefined;
+  /** Fresh AgentSession-private native handle and control root. */
+  readonly controlRoot: string;
   /** The package's unique preferred LLM route selected by the Shim. */
   readonly llmRoute: WorkerAdapterLlmRoute;
-  /** Durable OpenKit session directory. */
+  /** Disposable OpenKit AgentSession control directory. */
   readonly sessionDirectory: string;
   /** Optional private directory for one Turn's native-only outputs. */
   readonly nativeTurnDirectory?: string | undefined;
   /** Optional separately owned bounded native provenance capture input. */
   readonly runtimeProvenance?: WorkerAdapterRuntimeProvenance | undefined;
-  /** Fresh turn-scoped native state root. */
+  /** Retained opaque native data root. */
   readonly stateRoot: string;
   /** Private worker turn input. */
   readonly turnInput: string;
@@ -151,8 +153,8 @@ export interface WorkerBoundedTurnAdapter {
 export interface WorkerSessionContinuityAdapter {
   /** Closed adapter lifecycle mode. */
   readonly mode: 'session-continuity';
-  /** Creates one private native Session root without launching a process. */
-  openSession(input: { readonly stateRoot: string }): Promise<{
+  /** Creates one fresh private control binding over a retained native data root. */
+  openSession(input: { readonly controlRoot: string; readonly stateRoot: string }): Promise<{
     readonly nativeHandle: string | null;
     readonly nativeHandleDigest: string | null;
     readonly nativeHandleState: 'pending' | 'ready';
@@ -162,7 +164,9 @@ export interface WorkerSessionContinuityAdapter {
     input: WorkerAdapterPrepareInput
   ): WorkerAdapterLaunchPlan | Promise<WorkerAdapterLaunchPlan>;
   /** Normalizes one Turn and proves its restricted native handle. */
-  collectTurn(input: WorkerAdapterCollectInput & { readonly stateRoot: string }): Promise<
+  collectTurn(
+    input: WorkerAdapterCollectInput & { readonly controlRoot: string; readonly stateRoot: string }
+  ): Promise<
     WorkerAdapterResult & {
       readonly nativeHandle: string | null;
       readonly nativeHandleDigest: string | null;
@@ -170,14 +174,14 @@ export interface WorkerSessionContinuityAdapter {
     }
   >;
   /** Proves the current private native handle without launching a process. */
-  inspectSession(input: { readonly stateRoot: string }): Promise<{
+  inspectSession(input: { readonly controlRoot: string; readonly stateRoot: string }): Promise<{
     readonly nativeHandleDigest: string | null;
     readonly nativeHandleState: 'pending' | 'ready';
   }>;
-  /** Removes the complete private Session state and Turn-local outputs. */
+  /** Removes the private control binding and Turn-local outputs while retaining native data. */
   closeSession(input: {
+    readonly controlRoot: string;
     readonly sessionDirectory: string;
-    readonly stateRoot: string;
   }): Promise<{ readonly privateState: 'absent' }>;
 }
 

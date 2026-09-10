@@ -517,7 +517,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
         body: JSON.stringify({
           targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
+          expiresAt: '2999-01-01T00:00:00.000Z',
         }),
       });
       expect(enrolled.status).toBe(201);
@@ -543,7 +543,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
         body: JSON.stringify({
           targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
+          expiresAt: '2999-01-01T00:00:00.000Z',
         }),
       });
       const issueBody = (await issued.json()) as Record<string, unknown> & {
@@ -674,7 +674,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         headers,
         body: JSON.stringify({
           targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
+          expiresAt: '2999-01-01T00:00:00.000Z',
         }),
       });
       const enrolledBody = (await enrolled.json()) as { record: { tokenId: string } };
@@ -1243,7 +1243,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
         body: JSON.stringify({
           targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
+          expiresAt: '2999-01-01T00:00:00.000Z',
         }),
       });
       expect(enrolled.status).toBe(201);

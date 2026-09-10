@@ -15,6 +15,7 @@ describe('scoped runtime config schemas', () => {
         {
           id: 'reasoning',
           displayName: 'Reasoning',
+          contextManagement: [{ type: 'compaction', compactThreshold: 100_000 }],
           routes: [
             { id: 'primary', providerProfileId: 'openai-primary', providerModel: 'gpt-5.2' },
             { id: 'backup', providerProfileId: 'openai-backup', providerModel: 'gpt-5.2' },
@@ -24,6 +25,9 @@ describe('scoped runtime config schemas', () => {
     });
 
     expect(config.logicalModels[0]?.routes.map((route) => route.id)).toEqual(['primary', 'backup']);
+    expect(config.logicalModels[0]?.contextManagement).toEqual([
+      { type: 'compaction', compactThreshold: 100_000 },
+    ]);
     expect(() =>
       GatewayConfigSchema.parse({
         schemaVersion: 1,
@@ -67,8 +71,11 @@ describe('scoped runtime config schemas', () => {
             preferredLogicalModelId: 'fast',
           },
         ],
-      }).profiles[0]?.roleId
-    ).toBe('assistant');
+      }).profiles[0]
+    ).toMatchObject({
+      roleId: 'assistant',
+      limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 },
+    });
     expect(() =>
       InternalRoleProfilesConfigSchema.parse({
         schemaVersion: 1,

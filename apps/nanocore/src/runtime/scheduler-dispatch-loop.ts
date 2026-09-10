@@ -223,6 +223,7 @@ export async function runSchedulerDispatchLoop(
       requestId: entry.requestId,
       turn: futureTurn,
       turnInput: entry.turnInput,
+      ...(entry.workerStorageChoice ? { workerStorageChoice: entry.workerStorageChoice } : {}),
       workspaceCwd: entry.workspaceCwd,
       workspaceRoots,
       ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
@@ -316,6 +317,9 @@ export async function runSchedulerDispatchLoop(
           turnExecutor: input.turnExecutor,
           turnId: dispatch.entry.turnId,
           workspaceCwd: dispatch.entry.workspaceCwd,
+          ...(dispatch.entry.workerStorageChoice
+            ? { workerStorageChoice: dispatch.entry.workerStorageChoice }
+            : {}),
           workspaceId: dispatch.entry.workspaceId,
           ...(workspaceConfig ? { workspaceConfig } : {}),
           ...(userConfig ? { userConfig } : {}),
