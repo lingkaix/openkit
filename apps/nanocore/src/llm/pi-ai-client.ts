@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AssistantMessage,
@@ -275,7 +276,7 @@ export class PiAiGatewayClient {
     models: Models = this.models
   ): Promise<OpenAICompatibleResponsesResponse> {
     const codexProvider = provider.subscriptionProviderId === 'openai-codex';
-    const { additionalTools, bridgedFunctionTools } = admitPiResponsesNativeRequest(
+    const { additionalTools, bridgedFunctionTools, bridgeNames } = admitPiResponsesNativeRequest(
       request,
       false,
       !codexProvider
@@ -287,7 +288,13 @@ export class PiAiGatewayClient {
         () =>
           models.complete(
             model,
-            toPiResponsesContext(request, model, additionalTools, bridgedFunctionTools),
+            toPiResponsesContext(
+              request,
+              model,
+              additionalTools,
+              bridgedFunctionTools,
+              bridgeNames
+            ),
             codexProvider
               ? this.toCodexResponsesOptions(request, model, transport, additionalTools)
               : this.toBridgedResponsesOptions(provider, request, transport)
@@ -303,7 +310,7 @@ export class PiAiGatewayClient {
           type: 'provider_error',
         });
       }
-      return toResponsesResponse(response, request.model, additionalTools);
+      return toResponsesResponse(response, request.model, additionalTools, bridgeNames);
     }
 
     const response = await this.createChatCompletion(
@@ -334,7 +341,7 @@ export class PiAiGatewayClient {
     models: Models = this.models
   ): Promise<ReadableStream<Uint8Array>> {
     const codexProvider = provider.subscriptionProviderId === 'openai-codex';
-    const { additionalTools, bridgedFunctionTools } = admitPiResponsesNativeRequest(
+    const { additionalTools, bridgedFunctionTools, bridgeNames } = admitPiResponsesNativeRequest(
       request,
       true,
       !codexProvider
@@ -348,7 +355,7 @@ export class PiAiGatewayClient {
         : localAbortController.signal;
       const events = models.stream(
         model,
-        toPiResponsesContext(request, model, additionalTools, bridgedFunctionTools),
+        toPiResponsesContext(request, model, additionalTools, bridgedFunctionTools, bridgeNames),
         codexProvider
           ? this.toCodexResponsesOptions(request, model, { ...transport, signal }, additionalTools)
           : this.toBridgedResponsesOptions(provider, request, { ...transport, signal })
@@ -371,7 +378,8 @@ export class PiAiGatewayClient {
         Array.isArray(request.include) && request.include.includes('reasoning.encrypted_content'),
         (usage) => publishObservedUsage(onUsage, usage, model, knownCost),
         signal,
-        (reason) => localAbortController.abort(reason)
+        (reason) => localAbortController.abort(reason),
+        bridgeNames
       );
     }
 
@@ -1172,6 +1180,19 @@ export class PiAiGatewayClient {
 
 type ResponsesToolKind = 'custom' | 'function';
 
+/** Request-local inverse of provider-private function names; native identity remains authoritative. */
+type ResponsesBridgeNames = ReadonlyMap<
+  string,
+  { readonly name: string; readonly namespace?: string }
+>;
+
+/** Produces a bounded provider name without truncating native callable identity. */
+function bridgedResponsesToolName(name: string, namespace?: string): string {
+  return isDefaultResponsesNamespace(namespace)
+    ? name
+    : `ns_${createHash('sha256').update(responsesToolKey(name, namespace)).digest('hex').slice(0, 60)}`;
+}
+
 interface ResponsesAdditionalTools {
   /** Exact message-anchored item replayed through pi-ai's payload hook. */
   readonly item: {
@@ -1351,13 +1372,15 @@ function assertResponsesToolHistoryDeclarations(
  * @param model Exact pi-ai model selected for assistant history.
  * @param additionalTools Admitted message-anchored tools, when present.
  * @param bridgedFunctionTools Chat-native function restore. Codex omits this so payload restore stays authoritative.
+ * @param bridgeNames Request-local function identities for bridged history.
  * @returns Text, function history, instructions, and tools without a Chat conversion.
  */
 function toPiResponsesContext(
   request: OpenAICompatibleResponsesRequest,
   model: AssistantModel,
   additionalTools: ResponsesAdditionalTools | undefined,
-  bridgedFunctionTools?: NonNullable<Context['tools']>
+  bridgedFunctionTools?: NonNullable<Context['tools']>,
+  bridgeNames?: ResponsesBridgeNames
 ): Context {
   const messages: Context['messages'] = [];
   const instructions = typeof request.instructions === 'string' ? [request.instructions] : [];
@@ -1425,8 +1448,11 @@ function toPiResponsesContext(
       if (!argumentsValue) {
         throw new GatewayUnsupportedFeatureError('pi-ai Responses custom_tool_call input');
       }
+      const providerName = bridgeNames
+        ? bridgedResponsesToolName(record.name, record.namespace as string | undefined)
+        : record.name;
       const calls = toolCalls.get(record.call_id) ?? [];
-      calls.push({ carrierId, kind, name: record.name });
+      calls.push({ carrierId, kind, name: providerName });
       toolCalls.set(record.call_id, calls);
       messages.push({
         role: 'assistant',
@@ -1437,9 +1463,11 @@ function toPiResponsesContext(
           {
             type: 'toolCall',
             id: carrierId,
-            name: record.name,
+            name: providerName,
             arguments: argumentsValue,
-            ...(typeof record.namespace === 'string' ? { namespace: record.namespace } : {}),
+            ...(!bridgeNames && typeof record.namespace === 'string'
+              ? { namespace: record.namespace }
+              : {}),
           },
         ],
         stopReason: 'toolUse',
@@ -1498,7 +1526,7 @@ function toPiResponsesContext(
     }
 
     if (record.role === 'system' || record.role === 'developer') {
-      if (!additionalTools) {
+      if (!additionalTools || bridgedFunctionTools) {
         instructions.push(readResponsesTextContent(record.content));
       }
       continue;
@@ -1571,7 +1599,7 @@ function readResponsesAdditionalTools(
 
 /**
  * Admits a native Responses request for Codex or a chat-native bridge.
- * Bridged callers restore function-only tools first, then reuse field and history admission. Standard top-level tools may use the equivalent default functions namespace; custom tools, other namespaces, deferred tools, search and native builtins fail closed.
+ * Bridged callers restore function-only tools first, then reuse field and history admission. Standard and message-anchored function tools share one namespace projection; custom tools, deferred tools, search and native builtins fail closed.
  *
  * @param request Responses request.
  * @param allowStream Whether this call owns a streaming response.
@@ -1585,6 +1613,7 @@ function admitPiResponsesNativeRequest(
 ): {
   readonly additionalTools: ResponsesAdditionalTools | undefined;
   readonly bridgedFunctionTools?: NonNullable<Context['tools']>;
+  readonly bridgeNames?: ResponsesBridgeNames;
 } {
   if (!bridged) {
     return { additionalTools: assertCodexResponsesRequestAdmission(request, allowStream) };
@@ -1601,49 +1630,73 @@ function admitPiResponsesNativeRequest(
     if (!declarations || declarations.hasToolSearch) {
       throw new GatewayUnsupportedFeatureError('pi-ai Responses function tools');
     }
-    const tools = declarations.item.tools.flatMap((tool) => {
-      if (tool.type !== 'namespace') return [tool];
-      if (tool.name !== 'functions') {
-        throw new GatewayUnsupportedFeatureError('pi-ai Responses non-default namespace');
-      }
-      return (tool.tools as Record<string, unknown>[]).map((child) => ({
-        ...child,
-        description: [tool.description, child.description].filter(Boolean).join('\n\n'),
-      }));
-    });
-    if (tools.some((tool) => tool.defer_loading === true)) {
-      throw new GatewayUnsupportedFeatureError('pi-ai Responses deferred function tools');
-    }
-    const bridgedFunctionTools = toPiTools(tools);
+    const { bridgedFunctionTools, bridgeNames } =
+      bridgedFunctionToolsFromAdditionalTools(declarations);
     const { metadata, temperature: _temperature, ...nativeRequest } = request;
     if (metadata !== undefined && !readRecord(metadata)) {
       throw new GatewayUnsupportedFeatureError('pi-ai metadata');
     }
     assertCodexResponsesRequestAdmission(nativeRequest, allowStream);
     assertResponsesToolHistoryDeclarations(request.input, declarations);
-    return { additionalTools: undefined, bridgedFunctionTools };
+    return { additionalTools: undefined, bridgedFunctionTools, bridgeNames };
   }
-  const bridgedFunctionTools = bridgedFunctionToolsFromAdditionalTools(additionalTools);
+  const { bridgedFunctionTools, bridgeNames } =
+    bridgedFunctionToolsFromAdditionalTools(additionalTools);
   return {
     additionalTools: assertCodexResponsesRequestAdmission(request, allowStream),
     bridgedFunctionTools,
+    bridgeNames,
   };
 }
 
 /**
  * Restores function-only message-anchored tools for a chat-native Responses bridge.
- * Custom, namespace, tool_search, and other unrepresentable shapes fail before credentials.
+ * Namespace identity is lowered through an exact request-local inverse; non-function, deferred and search tools fail before credentials.
  *
  * @param additionalTools Admitted additional-tools prefix.
  * @returns pi-ai Context tools for the bridged Chat Completions transport.
  */
-function bridgedFunctionToolsFromAdditionalTools(
-  additionalTools: ResponsesAdditionalTools
-): NonNullable<Context['tools']> {
+function bridgedFunctionToolsFromAdditionalTools(additionalTools: ResponsesAdditionalTools): {
+  readonly bridgedFunctionTools: NonNullable<Context['tools']>;
+  readonly bridgeNames: ResponsesBridgeNames;
+} {
   if (additionalTools.hasToolSearch) {
     throw new GatewayUnsupportedFeatureError('pi-ai Responses additional tools');
   }
-  return toPiTools(additionalTools.item.tools);
+  const names = new Map<string, { name: string; namespace?: string }>();
+  const tools = additionalTools.item.tools.flatMap((tool) => {
+    const namespace = tool.type === 'namespace' ? (tool.name as string) : undefined;
+    const children = tool.type === 'namespace' ? (tool.tools as Record<string, unknown>[]) : [tool];
+    return children.map((child) => {
+      if (child.type !== 'function' || child.defer_loading === true) {
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses function tools');
+      }
+      const name = child.name as string;
+      const providerName = bridgedResponsesToolName(name, namespace);
+      if (names.has(providerName))
+        throw new GatewayUnsupportedFeatureError('pi-ai Responses tool mapping collision');
+      names.set(providerName, {
+        name,
+        ...(namespace !== undefined && !isDefaultResponsesNamespace(namespace)
+          ? { namespace }
+          : {}),
+      });
+      return {
+        ...child,
+        name: providerName,
+        description: [
+          namespace !== undefined && !isDefaultResponsesNamespace(namespace)
+            ? `${namespace}.${name}`
+            : undefined,
+          tool.type === 'namespace' ? tool.description : undefined,
+          child.description,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+      };
+    });
+  });
+  return { bridgedFunctionTools: toPiTools(tools), bridgeNames: names };
 }
 
 /** Registers exact local declarations and rejects request-local definition conflicts. */
@@ -2101,12 +2154,15 @@ function readResponsesReasoningText(record: Record<string, unknown>): string {
  *
  * @param message Final pi-ai assistant message.
  * @param requestModel Model id authored by the caller.
+ * @param additionalTools Native tool declarations for output validation.
+ * @param bridgeNames Exact inverse of provider-private names.
  * @returns OpenAI-compatible Responses payload.
  */
 function toResponsesResponse(
   message: AssistantMessage,
   requestModel: string,
-  additionalTools?: ResponsesAdditionalTools
+  additionalTools?: ResponsesAdditionalTools,
+  bridgeNames?: ResponsesBridgeNames
 ): OpenAICompatibleResponsesResponse {
   return {
     id: message.responseId ?? `resp_pi_${message.timestamp}`,
@@ -2119,7 +2175,7 @@ function toResponsesResponse(
         return responsesReasoningItem(block, `reasoning_${index}`);
       }
       if (block.type === 'toolCall') {
-        return responsesToolCallItem(block, additionalTools, 'completed');
+        return responsesToolCallItem(block, additionalTools, 'completed', false, bridgeNames);
       }
       return {
         id: `message_${index}`,
@@ -2166,14 +2222,23 @@ function responsesReasoningItem(
  * @param additionalTools Message-anchored tool kinds for custom-call recovery.
  * @param status Public item lifecycle status.
  * @param empty Whether to emit the streaming start shape.
+ * @param bridgeNames Request-local function identities to restore.
  * @returns Function or custom Responses output item.
  */
 function responsesToolCallItem(
   block: ToolCall,
   additionalTools: ResponsesAdditionalTools | undefined,
   status: 'completed' | 'in_progress',
-  empty = false
+  empty = false,
+  bridgeNames?: ResponsesBridgeNames
 ): Record<string, unknown> {
+  if (bridgeNames) {
+    const identity = bridgeNames.get(block.name);
+    if (!identity || !isDefaultResponsesNamespace(block.namespace)) {
+      throw new GatewayUnsupportedFeatureError('pi-ai Responses undeclared provider tool output');
+    }
+    block = { ...block, ...identity };
+  }
   const [callId, itemId] = splitResponsesToolCallId(block.id);
   if (block.name === WORKER_CLIENT_TOOL_SEARCH_FUNCTION) {
     if (
@@ -2294,6 +2359,7 @@ function piAiStreamFailure(message: string, code: string, stopReason?: string): 
  * @param onUsage Optional raw terminal usage observer.
  * @param signal Combined caller and downstream cancellation signal.
  * @param abortUpstream Aborts provider work when the downstream stream stops.
+ * @param bridgeNames Request-local function identities to restore on public output.
  * @returns Native Responses SSE stream.
  */
 function toResponsesSseStream(
@@ -2304,7 +2370,8 @@ function toResponsesSseStream(
   requireEncryptedReasoning: boolean,
   onUsage: ((usage: unknown) => void) | undefined,
   signal: AbortSignal,
-  abortUpstream: (reason?: unknown) => void
+  abortUpstream: (reason?: unknown) => void,
+  bridgeNames?: ResponsesBridgeNames
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let pending: IteratorResult<AssistantMessageEvent> | undefined = first;
@@ -2342,7 +2409,7 @@ function toResponsesSseStream(
               encodeEvent({
                 type: 'response.created',
                 response: {
-                  ...toResponsesResponse(event.partial, requestModel, additionalTools),
+                  ...toResponsesResponse(event.partial, requestModel, additionalTools, bridgeNames),
                   output: [],
                   status: 'in_progress',
                 },
@@ -2507,7 +2574,7 @@ function toResponsesSseStream(
           }
           if (event.type === 'toolcall_start') {
             const block = readStreamToolCall(event.partial, event.contentIndex);
-            if (additionalTools && block.namespace === undefined) {
+            if (bridgeNames || (additionalTools && block.namespace === undefined)) {
               pendingToolCalls.add(event.contentIndex);
               continue;
             }
@@ -2515,7 +2582,13 @@ function toResponsesSseStream(
               encodeEvent({
                 type: 'response.output_item.added',
                 output_index: event.contentIndex,
-                item: responsesToolCallItem(block, additionalTools, 'in_progress', true),
+                item: responsesToolCallItem(
+                  block,
+                  additionalTools,
+                  'in_progress',
+                  true,
+                  bridgeNames
+                ),
               })
             );
             return;
@@ -2546,7 +2619,13 @@ function toResponsesSseStream(
             return;
           }
           if (event.type === 'toolcall_end') {
-            const item = responsesToolCallItem(event.toolCall, additionalTools, 'completed');
+            const item = responsesToolCallItem(
+              event.toolCall,
+              additionalTools,
+              'completed',
+              false,
+              bridgeNames
+            );
             const kind = additionalTools?.kinds.get(
               responsesToolKey(event.toolCall.name, event.toolCall.namespace)
             );
@@ -2557,7 +2636,13 @@ function toResponsesSseStream(
                 encodeEvent({
                   type: 'response.output_item.added',
                   output_index: event.contentIndex,
-                  item: responsesToolCallItem(event.toolCall, additionalTools, 'in_progress', true),
+                  item: responsesToolCallItem(
+                    event.toolCall,
+                    additionalTools,
+                    'in_progress',
+                    true,
+                    bridgeNames
+                  ),
                 })
               );
             }
@@ -2600,7 +2685,8 @@ function toResponsesSseStream(
                 encodeEvent({
                   arguments: JSON.stringify(event.toolCall.arguments ?? {}),
                   item_id: itemId,
-                  name: event.toolCall.name,
+                  name: item.name,
+                  ...(item.namespace ? { namespace: item.namespace } : {}),
                   output_index: event.contentIndex,
                   type: 'response.function_call_arguments.done',
                 })
@@ -2659,7 +2745,12 @@ function toResponsesSseStream(
             controller.enqueue(
               encodeEvent({
                 type: 'response.completed',
-                response: toResponsesResponse(event.message, requestModel, additionalTools),
+                response: toResponsesResponse(
+                  event.message,
+                  requestModel,
+                  additionalTools,
+                  bridgeNames
+                ),
               })
             );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));

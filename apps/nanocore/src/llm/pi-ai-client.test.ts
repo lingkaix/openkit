@@ -1902,9 +1902,15 @@ describe('PiAiGatewayClient', () => {
   });
 
   it.each([
-    false,
-    true,
-  ])('preserves a standard Responses function loop through a chat provider (stream=%s)', async (stream) => {
+    [false, 'functions', false],
+    [true, 'functions', false],
+    [false, 'mcp__openkit', false],
+    [true, 'mcp__openkit', false],
+    [false, 'functions', true],
+    [true, 'functions', true],
+    [false, 'mcp__openkit', true],
+    [true, 'mcp__openkit', true],
+  ] as const)('preserves a Responses function loop (stream=%s, namespace=%s, anchored=%s)', async (stream, namespace, anchored) => {
     const contexts: Context[] = [];
     const faux = fauxProvider({
       api: 'openai-completions',
@@ -1917,7 +1923,7 @@ describe('PiAiGatewayClient', () => {
       async (context) => {
         contexts.push(context);
         return fauxAssistantMessage(
-          [fauxToolCall('read_file', { path: 'README.md' }, { id: 'call_read' })],
+          [fauxToolCall(context.tools![0]!.name, { path: 'README.md' }, { id: 'call_read' })],
           { stopReason: 'toolUse' }
         );
       },
@@ -1947,7 +1953,7 @@ describe('PiAiGatewayClient', () => {
       tools: [
         {
           type: 'namespace',
-          name: 'functions',
+          name: namespace,
           description: 'Workspace tools.',
           tools: [
             {
@@ -1960,10 +1966,22 @@ describe('PiAiGatewayClient', () => {
         },
       ],
     };
+    if (namespace !== 'functions')
+      request.tools.push({ ...request.tools[0]!, name: 'another_namespace' });
+    const wireRequest = anchored
+      ? {
+          ...request,
+          tools: [],
+          input: [
+            { type: 'additional_tools', role: 'developer', tools: request.tools },
+            ...request.input,
+          ],
+        }
+      : request;
     let call: Record<string, unknown>;
     if (stream) {
       const body = await new Response(
-        await client.createResponsesStream(provider, { ...request, stream: true }, { models })
+        await client.createResponsesStream(provider, { ...wireRequest, stream: true }, { models })
       ).text();
       const events = body
         .split('\n')
@@ -1973,9 +1991,20 @@ describe('PiAiGatewayClient', () => {
         (event) =>
           event.type === 'response.output_item.done' && event.item?.type === 'function_call'
       ).item;
-      expect(events.some((event) => event.type === 'response.completed')).toBe(true);
+      expect(
+        events.find((event) => event.type === 'response.completed').response.output
+      ).toContainEqual(call);
+      expect(
+        events.find(
+          (event) =>
+            event.type === 'response.output_item.added' && event.item?.type === 'function_call'
+        ).item
+      ).toMatchObject({ name: 'read_file', ...(namespace === 'functions' ? {} : { namespace }) });
+      expect(
+        events.find((event) => event.type === 'response.function_call_arguments.done').name
+      ).toBe('read_file');
     } else {
-      const response = await client.createResponses(provider, request, { models });
+      const response = await client.createResponses(provider, wireRequest, { models });
       call = response.output.find((item) => item.type === 'function_call')!;
     }
     expect(call).toMatchObject({
@@ -1984,13 +2013,14 @@ describe('PiAiGatewayClient', () => {
       call_id: 'call_read',
       arguments: '{"path":"README.md"}',
     });
+    expect(call.namespace ?? 'functions').toBe(namespace);
     const response = await client.createResponses(
       provider,
       {
-        ...request,
+        ...wireRequest,
         input: [
-          ...request.input,
-          { ...call, namespace: 'functions' },
+          ...wireRequest.input,
+          { ...call, namespace },
           { type: 'function_call_output', call_id: call.call_id, output: 'File contents.' },
         ],
       },
@@ -2006,12 +2036,20 @@ describe('PiAiGatewayClient', () => {
     );
     expect(contexts).toHaveLength(2);
     expect(contexts[0]?.systemPrompt).toBe('Be precise.\n\nKeep this instruction.');
-    expect(contexts[0]?.tools).toEqual([
-      expect.objectContaining({
-        name: 'read_file',
-        description: 'Workspace tools.\n\nRead a file.',
-      }),
-    ]);
+    const providerName = contexts[0]!.tools![0]!.name;
+    expect(providerName).toMatch(/^[a-zA-Z0-9_]{1,64}$/);
+    if (namespace !== 'functions') {
+      expect(contexts[0]!.tools![0]!.description).toContain(`${namespace}.read_file`);
+    }
+    expect(new Set(contexts[0]!.tools!.map((tool) => tool.name)).size).toBe(request.tools.length);
+    expect(contexts[0]?.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: providerName,
+          description: expect.stringContaining('Workspace tools.\n\nRead a file.'),
+        }),
+      ])
+    );
     expect(contexts[1]?.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2020,7 +2058,7 @@ describe('PiAiGatewayClient', () => {
             expect.objectContaining({
               type: 'toolCall',
               id: expect.stringContaining('call_read'),
-              name: 'read_file',
+              name: providerName,
               arguments: { path: 'README.md' },
             }),
           ],
@@ -2031,21 +2069,38 @@ describe('PiAiGatewayClient', () => {
       expect.arrayContaining([
         expect.objectContaining({
           role: 'toolResult',
-          toolName: 'read_file',
+          toolName: providerName,
           content: [{ type: 'text', text: 'File contents.' }],
         }),
       ])
     );
     for (const tools of [
-      [{ ...request.tools[0], name: 'other' }],
-      [request.tools[0], request.tools[0].tools[0]],
+      [{ ...request.tools[0], name: 'functions' }, request.tools[0]!.tools[0]],
       [{ type: 'custom', name: 'patch', format: { type: 'text' } }],
+      [request.tools[0]!, { ...request.tools[0]!.tools[0]!, name: providerName }],
     ]) {
       await expect(
         client.createResponses(provider, { ...request, tools }, { models })
       ).rejects.toThrow(GatewayUnsupportedFeatureError);
     }
     expect(contexts).toHaveLength(2);
+    faux.setResponses([
+      async () =>
+        fauxAssistantMessage([fauxToolCall('undeclared', {}, { id: 'bad_call' })], {
+          stopReason: 'toolUse',
+        }),
+    ]);
+    if (stream) {
+      await expect(
+        new Response(
+          await client.createResponsesStream(provider, { ...wireRequest, stream: true }, { models })
+        ).text()
+      ).rejects.toThrow('undeclared provider tool output');
+    } else {
+      await expect(client.createResponses(provider, wireRequest, { models })).rejects.toThrow(
+        'undeclared provider tool output'
+      );
+    }
   });
 
   it('advertises function-only additional_tools when bridging Responses through Chat Completions', async () => {

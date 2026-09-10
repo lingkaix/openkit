@@ -12,7 +12,7 @@ NanoCore derives private AEP and Context input paths from the admitted AgentSess
 - implicit local actor `user_local`
 - governed container Worker AgentSessions
 - provider-neutral subscription account state for `openai-codex` and `xai`
-- agent-facing LLM Gateway endpoints for Chat Completions and Responses
+- agent-facing LLM Gateway endpoints for Chat Completions and Responses, with one-level function namespace identity preserved on the chat-native bridge
 - workspace repository resources for governed worker materialization
 - Goal Mode planning, task supervision, actionable human review, stored verification evidence, and terminal summaries
 - real HTTP + SSE protocol surface
