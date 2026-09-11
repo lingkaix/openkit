@@ -131,6 +131,76 @@ describe('Worker environment runtime effects', () => {
     ).toThrow('lineage is invalid');
   });
 
+  it('acquires an exact local digest before inspection and stops when acquisition fails', async () => {
+    const localImage = {
+      kind: 'reference',
+      pullPolicy: 'never',
+      ref: IMAGE_DIGEST,
+    } as const satisfies AgentEnvironmentPackage['runtime']['image'];
+    const requests: NanoHostSessionEffectRequest[] = [];
+    const effects = createWorkerEnvironmentRuntimeEffects(
+      createDispatch(async (request) => {
+        requests.push(request);
+        return request.kind === 'image.acquire' ? { digest: IMAGE_DIGEST } : IMAGE_INSPECTION;
+      })
+    );
+    const identity = workerEnvironmentPreparationIdentity(CANDIDATE, localImage);
+
+    await expect(
+      effects.prepareImage({ authorize: () => true, candidate: CANDIDATE, image: localImage })
+    ).resolves.toMatchObject({ imageDigest: IMAGE_DIGEST });
+    expect(requests).toEqual([
+      {
+        input: { imageReference: IMAGE_DIGEST },
+        kind: 'image.acquire',
+        imageSettlement: {
+          authoredArtifactId: CANDIDATE.artifactId,
+          authoredArtifactVersion: 1,
+          authoredContentDigest: CANDIDATE.contentDigest,
+          inputDigest: commandInputHash(localImage),
+        },
+        requestId: workerEnvironmentEffectRequestId(identity, 'image.acquire'),
+      },
+      {
+        input: { imageDigest: IMAGE_DIGEST },
+        kind: 'image.inspect',
+        requestId: workerEnvironmentEffectRequestId(identity, 'image.inspect'),
+      },
+    ]);
+
+    const mismatchedRequests: NanoHostSessionEffectRequest[] = [];
+    const mismatchedEffects = createWorkerEnvironmentRuntimeEffects(
+      createDispatch(async (request) => {
+        mismatchedRequests.push(request);
+        return { digest: `sha256:${'e'.repeat(64)}` };
+      })
+    );
+    await expect(
+      mismatchedEffects.prepareImage({
+        authorize: () => true,
+        candidate: CANDIDATE,
+        image: localImage,
+      })
+    ).rejects.toThrow('local image acquisition returned a different digest');
+    expect(mismatchedRequests.map((request) => request.kind)).toEqual(['image.acquire']);
+
+    const failedRequests: NanoHostSessionEffectRequest[] = [];
+    const failingEffects = createWorkerEnvironmentRuntimeEffects(
+      createDispatch(async (request) => {
+        failedRequests.push(request);
+        throw new Error('exact local image is unavailable');
+      })
+    );
+    await expect(
+      failingEffects.prepareImage({
+        authorize: () => true,
+        candidate: CANDIDATE,
+        image: localImage,
+      })
+    ).rejects.toThrow('exact local image is unavailable');
+    expect(failedRequests.map((request) => request.kind)).toEqual(['image.acquire']);
+  });
+
   it('parses capacity and conflicts mismatched host association facts', async () => {
     const layout = {
       family: IMAGE_INSPECTION.storageLayout.family,

@@ -2765,10 +2765,11 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('uses an exact preloaded deployment digest with the newest lease and no acquisition', async () => {
+  it('acquires an exact local digest before inspection and stops when acquisition fails', async () => {
     const coreDb = createFactoryCoreDb();
     const packageSnapshotId = 'aepsnap_factory_newest_lease';
     const effects: NanoHostSessionEffectRequest[] = [];
+    let acquisitionResult: 'failure' | 'mismatch' | 'match' = 'failure';
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(
         requestOrConnection: object,
@@ -2776,8 +2777,17 @@ describe('createConfiguredTurnExecutor', () => {
       ): Promise<unknown> {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (request.kind === 'image.acquire') {
+          if (acquisitionResult === 'failure') throw new Error('exact local image is unavailable');
+          return {
+            digest:
+              acquisitionResult === 'mismatch'
+                ? `sha256:${'e'.repeat(64)}`
+                : request.input.imageReference,
+          };
+        }
         if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
-        throw new Error('first NanoHost effect reached');
+        throw new Error('Sandbox creation reached');
       },
       async poll() {
         return null;
@@ -2844,10 +2854,10 @@ describe('createConfiguredTurnExecutor', () => {
           readonly backend: WorkerGovernanceBackend;
         }
       ).backend;
-      const deploymentDigest = `sha256:${'d'.repeat(64)}`;
+      const localDigest = `sha256:${'d'.repeat(64)}`;
       const environmentPackage = completeNanoHostPackage({
         runtime: {
-          image: { kind: 'reference', pullPolicy: 'never', ref: deploymentDigest },
+          image: { kind: 'reference', pullPolicy: 'never', ref: localDigest },
         },
         scope: {
           agentSessionId: 'as_factory_newest_lease',
@@ -2860,11 +2870,50 @@ describe('createConfiguredTurnExecutor', () => {
       authorizeNanoHostPackage(coreDb, environmentPackage);
 
       await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
-        'first NanoHost effect reached'
+        'exact local image is unavailable'
       );
-      expect(effects).toHaveLength(2);
+      expect(effects).toEqual([
+        expect.objectContaining({
+          input: expect.objectContaining({ imageReference: localDigest }),
+          kind: 'image.acquire',
+        }),
+      ]);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
+
+      effects.length = 0;
+      acquisitionResult = 'mismatch';
+      await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
+        'local image acquisition returned a different digest'
+      );
+      expect(effects.map((effect) => effect.kind)).toEqual(['image.acquire']);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_storage_bindings').get()
+      ).toEqual({ count: 0 });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
+
+      effects.length = 0;
+      acquisitionResult = 'match';
+      await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
+        'Sandbox creation reached'
+      );
+      expect(effects).toHaveLength(3);
+      expect(effects[0]).toMatchObject({
+        input: { imageReference: localDigest, leaseId: 'lease_b_current' },
+        kind: 'image.acquire',
+      });
       expect(effects[1]).toMatchObject({
-        input: { imageDigest: deploymentDigest, leaseId: 'lease_b_current' },
+        input: { imageDigest: localDigest, leaseId: 'lease_b_current' },
+        kind: 'image.inspect',
+      });
+      expect(effects[2]).toMatchObject({
+        input: { imageDigest: localDigest, leaseId: 'lease_b_current' },
         kind: 'sandbox.create',
       });
     } finally {
@@ -2987,6 +3036,9 @@ describe('createConfiguredTurnExecutor', () => {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (request.kind === 'image.acquire') {
+          return { digest: request.input.imageReference };
+        }
         if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
           return nanoHostSandboxCreated(request);
@@ -3118,6 +3170,7 @@ describe('createConfiguredTurnExecutor', () => {
             'NanoHost one-Sandbox capacity is occupied or unproved.'
           );
           expect(effects.map((effect) => effect.kind)).toEqual([
+            'image.acquire',
             'image.inspect',
             'sandbox.create',
             'bridge.open',
@@ -3304,12 +3357,14 @@ describe('createConfiguredTurnExecutor', () => {
       });
 
       expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
         'image.inspect',
         'sandbox.create',
         'bridge.open',
         'reference.import',
         'bridge.close',
         'sandbox.delete',
+        'image.acquire',
         'image.inspect',
         'sandbox.create',
       ]);
@@ -3451,6 +3506,9 @@ describe('createConfiguredTurnExecutor', () => {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (request.kind === 'image.acquire') {
+          return { digest: request.input.imageReference };
+        }
         if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
         if (request.kind === 'sandbox.create') {
           return nanoHostSandboxCreated(request);
@@ -3773,6 +3831,7 @@ describe('createConfiguredTurnExecutor', () => {
         })
       ).resolves.toBe('closed');
       expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
         'image.inspect',
         'sandbox.create',
         'bridge.close',
@@ -3788,10 +3847,12 @@ describe('createConfiguredTurnExecutor', () => {
       await restartedBackend.materialize(secondPackage, { workspaceRoots: [] });
 
       expect(effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
         'image.inspect',
         'sandbox.create',
         'bridge.close',
         'sandbox.delete',
+        'image.acquire',
         'image.inspect',
         'sandbox.create',
       ]);

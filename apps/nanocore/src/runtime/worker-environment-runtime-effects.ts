@@ -83,16 +83,14 @@ export function createWorkerEnvironmentRuntimeEffects(
       requireAuthorized(input.authorize);
       const image = input.image;
       const preparationId = workerEnvironmentPreparationIdentity(input.candidate, image);
-      const deploymentDigest =
+      const localImageDigest =
         image.kind === 'reference' &&
         image.pullPolicy === 'never' &&
         /^sha256:[0-9a-f]{64}$/.test(image.ref)
           ? image.ref
           : null;
       let imageDigest: string;
-      if (deploymentDigest) {
-        imageDigest = deploymentDigest;
-      } else if (image.kind === 'reference') {
+      if (image.kind === 'reference') {
         imageDigest = requireDigest(
           await dispatch.effect({
             input: { imageReference: image.ref },
@@ -101,6 +99,9 @@ export function createWorkerEnvironmentRuntimeEffects(
             requestId: effectRequestId(preparationId, 'image.acquire'),
           })
         );
+        if (localImageDigest !== null && imageDigest !== localImageDigest) {
+          throw new Error('NanoHost local image acquisition returned a different digest.');
+        }
       } else {
         if (
           image.contextRef !== EMPTY_BUILD_CONTEXT_REF ||

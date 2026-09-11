@@ -1514,32 +1514,33 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sharedSandbox = null;
     }
     if (!sharedSandbox) {
-      const deploymentImageDigest =
+      const localImageDigest =
         image.kind === 'reference' &&
         image.pullPolicy === 'never' &&
         /^sha256:[0-9a-f]{64}$/.test(image.ref)
           ? image.ref
           : null;
       const imageResult =
-        deploymentImageDigest !== null
-          ? { digest: deploymentImageDigest, source: 'deployment' }
-          : image.kind === 'reference'
-            ? await this.effect(identity, leaseId, 'image.acquire', {
-                imageReference: image.ref,
-              })
-            : await this.effect(identity, leaseId, 'image.build', {
-                arguments: image.arguments,
-                argumentsDigest: image.argumentsDigest,
-                contextDigest: image.contextDigest,
-                contextRef: image.contextRef,
-                dockerfile: image.input.content,
-                dockerfileDigest: image.input.digest,
-                egress: image.egress,
-                layerLimit: image.layerLimit,
-                outputLimitBytes: image.outputLimitBytes,
-                timeLimitSeconds: image.timeLimitSeconds,
-              });
+        image.kind === 'reference'
+          ? await this.effect(identity, leaseId, 'image.acquire', {
+              imageReference: image.ref,
+            })
+          : await this.effect(identity, leaseId, 'image.build', {
+              arguments: image.arguments,
+              argumentsDigest: image.argumentsDigest,
+              contextDigest: image.contextDigest,
+              contextRef: image.contextRef,
+              dockerfile: image.input.content,
+              dockerfileDigest: image.input.digest,
+              egress: image.egress,
+              layerLimit: image.layerLimit,
+              outputLimitBytes: image.outputLimitBytes,
+              timeLimitSeconds: image.timeLimitSeconds,
+            });
       const imageDigest = requireNanoHostResultString(imageResult, 'digest');
+      if (localImageDigest !== null && imageDigest !== localImageDigest) {
+        throw new Error('NanoHost local image acquisition returned a different digest.');
+      }
       const imageInspection = parseNanoHostImageInspection(
         await this.effect(identity, leaseId, 'image.inspect', { imageDigest })
       );

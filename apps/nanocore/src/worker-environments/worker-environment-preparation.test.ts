@@ -253,7 +253,11 @@ describe('Worker environment preparation', () => {
 
   it('recovers only the retained result on a fresh causation Turn without rewriting A history', async () => {
     const fixture = createFixture();
-    const initialRequest = prepareRequest(fixture.thread.id, fixture.configuration);
+    const initialRequest = prepareRequest(fixture.thread.id, fixture.configuration, {
+      kind: 'reference',
+      pullPolicy: 'never',
+      ref: imageDigest,
+    });
     vi.mocked(fixture.runtimeEffects.prepareImage).mockRejectedValueOnce(
       new Error('lost response')
     );
@@ -289,6 +293,11 @@ describe('Worker environment preparation', () => {
     const response = await fixture.createService().prepare({ actor }, recoveryRequest);
 
     expect(fixture.order).toEqual(['recover', 'prepare']);
+    expect(fixture.runtimeEffects.recoverImageEffect).toHaveBeenCalledWith({
+      candidate: recoveryRequest.recoverFrom,
+      image: initialRequest.declaration,
+      operation: 'image.acquire',
+    });
     const resolved = fixture.store.getArtifact(
       fixture.workspace.id,
       response.resolvedCandidate.artifactId

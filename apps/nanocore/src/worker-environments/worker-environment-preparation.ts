@@ -444,19 +444,17 @@ export function createWorkerEnvironmentPreparation(
     });
     return runWithPublicationTurn(context, turn, async () => {
       const runtimeImage = materializeRuntimeImage(authored.declaration);
-      if (requiresRecoverableImageEffect(runtimeImage)) {
-        try {
-          await dependencies.runtimeEffects.recoverImageEffect({
-            candidate: request.recoverFrom,
-            image: runtimeImage,
-            operation: runtimeImage.kind === 'build' ? 'image.build' : 'image.acquire',
-          });
-        } catch (error) {
-          if (error instanceof WorkerEnvironmentOperationError) throw error;
-          throw recoveryRequired(
-            error instanceof Error ? error.message : 'Prepared image settlement is unavailable.'
-          );
-        }
+      try {
+        await dependencies.runtimeEffects.recoverImageEffect({
+          candidate: request.recoverFrom,
+          image: runtimeImage,
+          operation: runtimeImage.kind === 'build' ? 'image.build' : 'image.acquire',
+        });
+      } catch (error) {
+        if (error instanceof WorkerEnvironmentOperationError) throw error;
+        throw recoveryRequired(
+          error instanceof Error ? error.message : 'Prepared image settlement is unavailable.'
+        );
       }
       return prepareAndPublish(
         context,
@@ -970,15 +968,6 @@ function canonicalAffectedStorage(
     throw candidateConflict('Affected Worker environment identities must be unique.');
   }
   return sorted;
-}
-
-/** Returns whether restart recovery must register an already dispatched image effect. */
-function requiresRecoverableImageEffect(image: RuntimeImage): boolean {
-  return !(
-    image.kind === 'reference' &&
-    image.pullPolicy === 'never' &&
-    /^sha256:[0-9a-f]{64}$/.test(image.ref)
-  );
 }
 
 /** Finds an Artifact without treating ordinary absence as corruption. */
