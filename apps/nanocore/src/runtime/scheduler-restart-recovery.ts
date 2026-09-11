@@ -193,7 +193,8 @@ export async function runSchedulerRecoveryMaintenance(
   schedulerEpoch: number,
   input: RunSchedulerRestartRecoveryInput
 ): Promise<void> {
-  const timestamp = (input.now ?? (() => new Date().toISOString()))();
+  const now = input.now ?? (() => new Date().toISOString());
+  const timestamp = now();
   const failures: RecoveryFailure[] = [];
   const expiredRows = listNonTerminalLeaseRows(coreDb).filter(
     (row) =>
@@ -238,7 +239,7 @@ export async function runSchedulerRecoveryMaintenance(
       if (!acceptedFinalStatus && !cleanupOwned && row.recoveryState !== 'needs-evidence') {
         continue;
       }
-      await recoverAnchoredLease(coreDb, row, session, schedulerEpoch, () => timestamp, input);
+      await recoverAnchoredLease(coreDb, row, session, schedulerEpoch, now, input);
     } catch (error) {
       failures.push({ error, leaseId: row.leaseId });
     }

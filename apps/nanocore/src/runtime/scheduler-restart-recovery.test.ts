@@ -407,10 +407,10 @@ describe('scheduler restart recovery', () => {
       });
     const recoveryInput = (
       runtime: ReturnType<typeof createConfiguredWorkerLifecycleRuntime>,
-      observedAt: string
+      now: () => string
     ): RunSchedulerRestartRecoveryInput => ({
       cleanupBackendSession: runtime.cleanupBackendSession,
-      now: () => observedAt,
+      now,
       prepareBackendCleanup: runtime.prepareBackendCleanup,
       projectRecoveredTurn: async () => ({ status: 'failed' }),
     });
@@ -478,7 +478,8 @@ describe('scheduler restart recovery', () => {
       expectFencedAuthority();
 
       const initialRuntime = createRuntime();
-      const initialInput = recoveryInput(initialRuntime, '2026-07-05T00:01:00.000Z');
+      let recoveryTime = '2026-07-05T00:01:00.000Z';
+      const initialInput = recoveryInput(initialRuntime, () => recoveryTime);
       const recovery = await runSchedulerRestartRecovery(coreDb, initialInput);
       expect(resultOnlyRegistrations).toBe(1);
       const initialMaintenance = runSchedulerRecoveryMaintenance(
@@ -486,6 +487,18 @@ describe('scheduler restart recovery', () => {
         recovery.schedulerEpoch,
         initialInput
       );
+      const sameCoordinatorReadyAt = '2026-07-05T00:01:01.000Z';
+      upsertNanoHostRuntimeTarget(coreDb, {
+        connectionGeneration: 1,
+        deploymentId: 'deployment-test',
+        freshEmpty: true,
+        identityId: `identity_${suffix}`,
+        observedAt: sameCoordinatorReadyAt,
+        predecessorFenced: true,
+        ready: true,
+        targetId: runtimeTargetId,
+      });
+      recoveryTime = '2026-07-05T00:01:02.000Z';
       resultOnlyRejectors[0]?.(
         new Error('NanoHost accepted effect outcome is unknown; successor connection fenced.')
       );
@@ -496,6 +509,8 @@ describe('scheduler restart recovery', () => {
       if (!fenceObservedAt) {
         throw new Error('Poll-first unknown did not retain a durable backend fence time.');
       }
+      expect(fenceObservedAt).toBe(recoveryTime);
+      await expectMaintenanceFenced(recovery.schedulerEpoch, initialInput);
 
       coreDb.sqlite
         .prepare(
@@ -507,7 +522,7 @@ describe('scheduler restart recovery', () => {
       await expectMaintenanceFenced(recovery.schedulerEpoch, initialInput);
 
       const restartedRuntime = createRuntime();
-      const restartedInput = recoveryInput(restartedRuntime, '2026-07-05T00:01:01.000Z');
+      const restartedInput = recoveryInput(restartedRuntime, () => '2026-07-05T00:01:03.000Z');
       const restartedRecovery = await runSchedulerRestartRecovery(coreDb, restartedInput);
       expect.soft(resultOnlyRegistrations).toBe(1);
       expectFencedAuthority();
@@ -792,6 +807,7 @@ describe('scheduler restart recovery', () => {
       '2026-07-05T00:01:00.000Z',
       '2026-07-05T00:01:01.000Z',
       '2026-07-05T00:01:02.000Z',
+      '2026-07-05T00:01:03.000Z',
     ];
 
     try {
@@ -807,16 +823,16 @@ describe('scheduler restart recovery', () => {
       await expect(
         runRestartRecoveryThroughMaintenance(coreDb, {
           cleanupBackendSession: async () => undefined,
-          now: () => clocks.shift() ?? '2026-07-05T00:01:03.000Z',
+          now: () => clocks.shift() ?? '2026-07-05T00:01:04.000Z',
           projectRecoveredTurn: async () => {
             throw new Error('product projection crash after handoff repair');
           },
         })
       ).rejects.toThrow('product projection crash after handoff repair');
       expect(getWorkerBackendSession(coreDb, `lease_${suffix}`)).toMatchObject({
-        physicalCleanedAt: '2026-07-05T00:01:01.000Z',
+        physicalCleanedAt: '2026-07-05T00:01:03.000Z',
         state: 'physical-cleaned',
-        updatedAt: '2026-07-05T00:01:01.000Z',
+        updatedAt: '2026-07-05T00:01:04.000Z',
         workspaceHandoffState: 'complete',
       });
 
@@ -833,7 +849,7 @@ describe('scheduler restart recovery', () => {
         )
       ).toEqual([
         expect.objectContaining({
-          completedAt: '2026-07-05T00:01:01.000Z',
+          completedAt: '2026-07-05T00:01:03.000Z',
           outcome: 'succeeded',
         }),
       ]);
