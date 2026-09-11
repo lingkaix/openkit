@@ -20,9 +20,14 @@ import {
   queueNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 
-const now = '2026-08-21T00:00:00.000Z';
+const now = '2098-08-21T00:00:00.000Z';
+const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
   it('retains two compatibility-keyed Harnesses in one Sandbox', () => {
@@ -41,6 +46,7 @@ describe('private NanoHost Harness records', () => {
           harnessCompatibilityKey: compatibilityKey,
           harnessInstanceId,
           imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: physicalEpoch,
           sandboxBindingRef: 'sandbox-binding-shared',
           sandboxCompatibilityKey: 'a'.repeat(64),
           sandboxIntegrationBindingRef: 'integration-binding-shared',
@@ -68,6 +74,100 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
+  it('expires a never-polled command from its enqueue time and never delivers it late', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-enqueue-budget-')));
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-expiry',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-expiry',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'sandbox-binding-expiry',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-expiry',
+        sandboxRuntimeId: 'sandbox-runtime-expiry',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: '2026-08-21T00:00:00.000Z',
+      });
+      queueNanoHostHarnessOperation(coreDb, {
+        body: {},
+        harnessInstanceId: 'harness-expiry',
+        operation: 'harness.drain',
+        timestamp: '2026-08-21T00:00:01.000Z',
+      });
+      expect(
+        dispatchNanoHostHarnessOperation(coreDb, {
+          now: () => '2026-08-21T00:05:01.000Z',
+          sandboxIntegrationBindingRef: 'integration-binding-expiry',
+        })
+      ).toBeNull();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT operation_state AS operationState, lifecycle_state AS lifecycleState FROM harness_instance_records WHERE harness_instance_id = ?'
+          )
+          .get('harness-expiry')
+      ).toEqual({ lifecycleState: 'failed', operationState: 'unknown' });
+      expect(
+        dispatchNanoHostHarnessOperation(coreDb, {
+          now: () => '2026-08-21T00:05:02.000Z',
+          sandboxIntegrationBindingRef: 'integration-binding-expiry',
+        })
+      ).toBeNull();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses Sandbox publication when the pre-effect physical Epoch is no longer current', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-sandbox-epoch-race-')));
+    try {
+      applyMigrations(coreDb);
+      seedRuntimeTarget(coreDb);
+      const replacement = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-a1',
+        identityId: 'nanohost-a1',
+        observedAt: '2098-08-21T00:00:01.000Z',
+        targetId: 'nanohost-a1',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...replacement,
+        freshEmpty: true,
+        observedAt: '2098-08-21T00:00:02.000Z',
+        physicalEpoch: 'f'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      expect(() =>
+        createNanoHostHarnessRuntime(coreDb, {
+          adapterId: 'codex',
+          adapterVersion: '0.153.4',
+          harnessBindingRef: 'harness-binding-old-epoch',
+          harnessCompatibilityKey: 'd'.repeat(64),
+          harnessInstanceId: 'harness-old-epoch',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: physicalEpoch,
+          sandboxBindingRef: 'sandbox-binding-old-epoch',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration-binding-old-epoch',
+          sandboxRuntimeId: 'sandbox-runtime-old-epoch',
+          runtimeTargetId: 'nanohost-a1',
+          timestamp: '2098-08-21T00:00:03.000Z',
+        })
+      ).toThrow(/publication physical Epoch is not current/i);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('keeps Sandbox, Harness, AgentSession, and Turn projections distinct', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-records-')));
     try {
@@ -80,6 +180,7 @@ describe('private NanoHost Harness records', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -185,6 +286,7 @@ describe('private NanoHost Harness records', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -346,6 +448,7 @@ describe('private NanoHost Harness records', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -447,6 +550,7 @@ describe('private NanoHost Harness records', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -556,6 +660,7 @@ describe('private NanoHost Harness records', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-1',
         imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
         sandboxBindingRef: 'sandbox-binding-1',
         sandboxCompatibilityKey: 'a'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -827,6 +932,7 @@ function openActiveTurnDb(prefix: string): ReturnType<typeof openCoreDb> {
     harnessCompatibilityKey: 'd'.repeat(64),
     harnessInstanceId: 'harness-1',
     imageDigest: `sha256:${'f'.repeat(64)}`,
+    originPhysicalEpoch: physicalEpoch,
     sandboxBindingRef: 'sandbox-binding-1',
     sandboxCompatibilityKey: 'a'.repeat(64),
     sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -963,8 +1069,8 @@ function seedRuntimeTarget(coreDb: ReturnType<typeof openCoreDb>): void {
     .prepare(
       `INSERT INTO nanohost_runtime_targets (
          target_id, identity_id, deployment_id, connection_generation,
-         predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-       ) VALUES ('nanohost-a1', 'nanohost-a1', 'deployment-a1', 1, 1, 1, 1, ?, 1)`
+         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+       ) VALUES ('nanohost-a1', 'nanohost-a1', 'deployment-a1', 1, 1, 1, 1, ?, ?, 1)`
     )
-    .run(now);
+    .run(physicalEpoch, now);
 }

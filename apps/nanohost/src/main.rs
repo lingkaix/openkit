@@ -1073,32 +1073,36 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             }
         };
         let readiness_fence = fence_started;
+        let physical_epoch = coordinator.physical_epoch().to_string();
         let session_result = nanocore_session::run_outer_session(
             io,
             &session_inputs.rendezvous_url,
             &selection_context,
             &presentation,
             reconnect_after,
-            move || {
-                let Some(started) = readiness_fence else {
-                    return Ok(None);
-                };
-                SystemTime::now()
-                    .duration_since(started)
-                    .ok()
-                    .filter(|elapsed| measure_fence_to_ready(*elapsed, true).ready)
-                    .and_then(|elapsed| REBUILD_HARD_LIMIT.checked_sub(elapsed))
-                    .and_then(|remaining| tokio::time::Instant::now().checked_add(remaining))
-                    .map(Some)
-                    .ok_or_else(|| {
-                        OuterSessionFailure::terminal(
-                            OuterSessionStage::Readiness,
-                            OuterSessionOperation::None,
-                            None,
-                            "epoch rebuild hard bound exceeded",
-                        )
-                    })
-            },
+            (
+                &physical_epoch,
+                move || {
+                    let Some(started) = readiness_fence else {
+                        return Ok(None);
+                    };
+                    SystemTime::now()
+                        .duration_since(started)
+                        .ok()
+                        .filter(|elapsed| measure_fence_to_ready(*elapsed, true).ready)
+                        .and_then(|elapsed| REBUILD_HARD_LIMIT.checked_sub(elapsed))
+                        .and_then(|remaining| tokio::time::Instant::now().checked_add(remaining))
+                        .map(Some)
+                        .ok_or_else(|| {
+                            OuterSessionFailure::terminal(
+                                OuterSessionStage::Readiness,
+                                OuterSessionOperation::None,
+                                None,
+                                "epoch rebuild hard bound exceeded",
+                            )
+                        })
+                },
+            ),
             |generation, mut sender| {
                 let readiness_commit = if fence_started.is_some() {
                     clear_fence_started().map_err(|_| {

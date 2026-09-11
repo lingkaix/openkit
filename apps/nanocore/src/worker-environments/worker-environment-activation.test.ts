@@ -474,11 +474,11 @@ function createResidentFixture(): ResidentFixture {
     .prepare(
       `INSERT INTO nanohost_runtime_targets (
          target_id, identity_id, deployment_id, connection_generation,
-         predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
        ) VALUES ('target_activation', 'identity_activation', 'deployment_activation',
-         1, 1, 1, 1, ?, 1)`
+         1, 1, 1, 1, ?, ?, 1)`
     )
-    .run(NOW);
+    .run('a'.repeat(64), NOW);
   const created = createWorkerStorageBinding(fixture.coreDb, {
     deploymentId: 'deployment_activation',
     layout: LAYOUT,
@@ -509,16 +509,16 @@ function createResidentFixture(): ResidentFixture {
     .prepare(
       `INSERT INTO sandbox_runtime_records (
          sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
-         sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest,
+         sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, origin_physical_epoch,
          environment_class, max_open_sessions, max_harnesses, max_active_turns,
          lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
        ) VALUES (
          'sandbox_runtime_activation', 'target_activation', 'sandbox_binding_activation',
-         'sandbox_integration_activation', 'compatibility_activation', ?,
+         'sandbox_integration_activation', 'compatibility_activation', ?, ?,
          'worker', 8, 8, 1, 'open', 'ready', 'accepting', 'clean', ?, ?
        )`
     )
-    .run(`sha256:${'f'.repeat(64)}`, NOW, NOW);
+    .run(`sha256:${'f'.repeat(64)}`, 'a'.repeat(64), NOW, NOW);
   fixture.coreDb.sqlite
     .prepare(
       `INSERT INTO harness_instance_records (

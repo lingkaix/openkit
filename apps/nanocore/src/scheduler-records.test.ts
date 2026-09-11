@@ -3,6 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from './runtime/nanohost-runtime-target.js';
+import {
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
@@ -45,6 +50,25 @@ function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-')));
   applyMigrations(coreDb);
   return coreDb;
+}
+
+/** Seeds the current physical Epoch required by backend-anchor fixtures. */
+function seedBackendRuntimeTarget(coreDb: ReturnType<typeof createMigratedCoreDb>): void {
+  if (getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) return;
+  const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: 'deployment-test',
+    identityId: 'identity-test',
+    observedAt: '2026-07-05T00:00:00.000Z',
+    targetId: 'runtime-target-test',
+  });
+  upsertNanoHostRuntimeTarget(coreDb, {
+    ...allocated,
+    freshEmpty: true,
+    observedAt: '2026-07-05T00:00:01.000Z',
+    physicalEpoch: 'a'.repeat(64),
+    predecessorFenced: true,
+    ready: true,
+  });
 }
 
 /**
@@ -1232,6 +1256,7 @@ describe('scheduler records', () => {
 
     try {
       createDispatchedLease(coreDb, 'lease_cleanup_barrier');
+      seedBackendRuntimeTarget(coreDb);
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
@@ -1404,6 +1429,7 @@ describe('scheduler records', () => {
 
     try {
       createDispatchedLease(coreDb, 'lease_cleanup_grace');
+      seedBackendRuntimeTarget(coreDb);
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
@@ -1605,6 +1631,7 @@ describe('scheduler records', () => {
 
     try {
       createDispatchedLease(coreDb, 'lease_anchored_startup_timeout');
+      seedBackendRuntimeTarget(coreDb);
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',

@@ -69,6 +69,8 @@ export const workerBackendSessions = sqliteTable(
     updatedAt: text('updated_at').notNull(),
     /** Configured RuntimeTarget selected by the final NanoHost cutover. */
     runtimeTargetId: text('runtime_target_id'),
+    /** Immutable physical Epoch captured before the first backend effect. */
+    originPhysicalEpoch: text('origin_physical_epoch').notNull(),
     /** Exact reference-or-build-result lineage written by the final cutover. */
     backendLineageJson: text('backend_lineage_json'),
     /** Durable scheduler-owned sandbox binding written by the final cutover. */

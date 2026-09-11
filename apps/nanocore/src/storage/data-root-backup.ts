@@ -6,12 +6,13 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   DATA_ROOT_BACKUP_FORMAT_VERSION,
   type DataRootBackupManifest,
@@ -88,6 +89,16 @@ export interface RegularFileInventoryEntry {
   readonly path: string;
 }
 
+/** Input for copying one stopped data root into a new external cold-backup root. */
+export interface CopyColdDataRootInput {
+  /** New external backup destination. */
+  readonly backupRoot: string;
+  /** Stopped source data root. */
+  readonly dataRoot: string;
+  /** Omit only the fixed data-root lock owned by the active maintenance process. */
+  readonly omitActiveDataRootLock?: true;
+}
+
 /**
  * Inventories every regular file under one real directory without following links.
  *
@@ -107,6 +118,88 @@ export function inventoryRegularFiles(root: string): RegularFileInventoryEntry[]
       return { bytes: statSync(filePath).size, digest: digestFile(filePath), path };
     })
     .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/**
+ * Rejects destructive or recursive external cold-backup destinations.
+ *
+ * @param dataRoot Source data root.
+ * @param backupRoot Caller-selected external destination.
+ * @throws Error when either tree contains the other or the destination already exists.
+ */
+export function assertExternalColdBackupDestination(dataRoot: string, backupRoot: string): void {
+  const resolvedBackup = resolvePotentialPath(backupRoot);
+  const resolvedDataRoot = resolvePotentialPath(dataRoot);
+
+  if (dirname(resolve(backupRoot)) === resolve(backupRoot)) {
+    throw new Error('External backup root must not be a filesystem root.');
+  }
+  if (
+    resolvedBackup === resolvedDataRoot ||
+    resolvedBackup.startsWith(`${resolvedDataRoot}${sep}`) ||
+    resolvedDataRoot.startsWith(`${resolvedBackup}${sep}`)
+  ) {
+    throw new Error('External backup root must be separate from the source data root.');
+  }
+  if (existsSync(backupRoot)) {
+    throw new Error('External backup root must not already exist.');
+  }
+}
+
+/**
+ * Copies one stopped data root to a new external cold-backup destination.
+ *
+ * @param input Source, destination, and fixed maintenance-lock handling.
+ * @throws Error when the copy fails.
+ */
+export function copyColdDataRoot(input: CopyColdDataRootInput): void {
+  const omittedLock = input.omitActiveDataRootLock
+    ? resolve(input.dataRoot, 'server', 'runtime', 'nanocore.lock')
+    : null;
+
+  mkdirSync(dirname(input.backupRoot), { recursive: true });
+  cpSync(input.dataRoot, input.backupRoot, {
+    errorOnExist: true,
+    filter: (source) => resolve(source) !== omittedLock,
+    force: false,
+    preserveTimestamps: true,
+    recursive: true,
+  });
+}
+
+/**
+ * Verifies that a backup manifest exactly matches a captured source inventory.
+ *
+ * @param backup Verified external cold backup.
+ * @param predecessorInventory Complete persistent predecessor inventory.
+ * @throws Error when any path, size, or digest differs.
+ */
+export function assertBackupMatchesPredecessor(
+  backup: VerifiedDataRootBackupManifest,
+  predecessorInventory: readonly RegularFileInventoryEntry[]
+): void {
+  const backupInventory = backup.manifest.contentInventory.map((entry) => ({
+    bytes: entry.bytes,
+    digest: entry.digest,
+    path: entry.path,
+  }));
+
+  if (JSON.stringify(predecessorInventory) !== JSON.stringify(backupInventory)) {
+    throw new Error('Verified backup does not match the complete predecessor inventory.');
+  }
+}
+
+/** Writes one storage-maintenance JSON document through a same-directory temporary file. */
+export function writeStorageJsonAtomically(path: string, value: unknown): void {
+  const temporaryPath = `${path}.tmp`;
+  mkdirSync(dirname(path), { recursive: true });
+
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`);
+    renameSync(temporaryPath, path);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
 }
 
 /**
@@ -383,6 +476,23 @@ function assertPathOutsideRoot(path: string, root: string, message: string): voi
   if (candidate === parent || candidate.startsWith(`${parent}${sep}`)) {
     throw new Error(message);
   }
+}
+
+/** Resolves a prospective path through its nearest existing ancestor. */
+function resolvePotentialPath(path: string): string {
+  let existingAncestor = resolve(path);
+  const missingSegments: string[] = [];
+
+  while (!existsSync(existingAncestor)) {
+    const parent = dirname(existingAncestor);
+    if (parent === existingAncestor) {
+      break;
+    }
+    missingSegments.unshift(basename(existingAncestor));
+    existingAncestor = parent;
+  }
+
+  return resolve(realpathSync(existingAncestor), ...missingSegments);
 }
 
 /** Writes one JSON file with a trailing newline. */

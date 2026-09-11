@@ -66,6 +66,7 @@ import {
   openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from './storage/db.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -777,6 +778,7 @@ describe('worker MCP routes', () => {
       ...target,
       freshEmpty: true,
       observedAt: '2026-09-03T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
       predecessorFenced: true,
       ready: true,
     });
@@ -1321,6 +1323,20 @@ describe('worker MCP routes', () => {
           },
         ],
       }),
+    });
+    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      identityId: 'identity_local',
+      observedAt: '2026-09-03T00:00:00.000Z',
+      targetId: 'target_local',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...runtimeTarget,
+      freshEmpty: true,
+      observedAt: '2026-09-03T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
     });
     let activePackage: AgentEnvironmentPackage | null = null;
     let gateStopCount = 0;

@@ -16,6 +16,8 @@ export const nanohostRuntimeTargets = sqliteTable('nanohost_runtime_targets', {
   ready: integer('ready', { mode: 'boolean' }).notNull(),
   /** Whether the current generation proved a fresh empty Runtime Epoch. */
   freshEmpty: integer('fresh_empty', { mode: 'boolean' }).notNull(),
+  /** Current authenticated physical-incarnation witness; null while non-ready. */
+  physicalEpoch: text('physical_epoch'),
   /** Timestamp of the current readiness observation. */
   observedAt: text('observed_at').notNull(),
   /** Fixed V1 worker-slot declaration; scheduler rows own capacity. */

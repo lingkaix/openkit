@@ -33,6 +33,11 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveAgentSessionCompatibilityKey } from './agent-environment.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target.js';
 import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn } from './product-turn-start.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
@@ -193,6 +198,25 @@ class RecordingTurnExecutor implements TurnExecutor {
    * No-op interrupt implementation.
    */
   public async interruptTurn(): Promise<void> {}
+}
+
+/** Seeds the current physical Epoch required by backend-anchor fixtures. */
+function seedBackendRuntimeTarget(coreDb: ReturnType<typeof createMigratedCoreDb>): void {
+  if (getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) return;
+  const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: 'deployment-test',
+    identityId: 'identity-test',
+    observedAt: '2026-07-05T00:00:00.000Z',
+    targetId: 'runtime-target-test',
+  });
+  upsertNanoHostRuntimeTarget(coreDb, {
+    ...allocated,
+    freshEmpty: true,
+    observedAt: '2026-07-05T00:00:01.000Z',
+    physicalEpoch: 'a'.repeat(64),
+    predecessorFenced: true,
+    ready: true,
+  });
 }
 
 class FailingTurnExecutor extends RecordingTurnExecutor {
@@ -1522,6 +1546,7 @@ describe('scheduler dispatch loop', () => {
       if (!context?.agentSessionId) {
         throw new Error('Expected scheduler-owned AgentSession lineage.');
       }
+      seedBackendRuntimeTarget(coreDb);
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
@@ -1619,6 +1644,7 @@ describe('scheduler dispatch loop', () => {
       if (!context?.agentSessionId) {
         throw new Error('Expected scheduler-owned AgentSession lineage.');
       }
+      seedBackendRuntimeTarget(coreDb);
       const lease = requireSchedulerSessionLease(coreDb, 'lease_human_gate_fallback');
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },

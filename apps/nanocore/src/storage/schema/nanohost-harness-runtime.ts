@@ -9,6 +9,8 @@ export const sandboxRuntimeRecords = sqliteTable(
     sandboxRuntimeId: text('sandbox_runtime_id').primaryKey().notNull(),
     /** Owning configured NanoHost RuntimeTarget. */
     runtimeTargetId: text('runtime_target_id').notNull(),
+    /** Immutable physical Epoch in which this Sandbox was created. */
+    originPhysicalEpoch: text('origin_physical_epoch').notNull(),
     /** Opaque NanoHost Sandbox binding. */
     sandboxBindingRef: text('sandbox_binding_ref').notNull(),
     /** Opaque private Sandbox Integration carriage binding. */

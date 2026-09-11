@@ -8,7 +8,7 @@ import {
   type AgentEnvironmentPackage,
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createNanoHostTransportSessionAuthority,
@@ -171,6 +171,104 @@ function authorizeNanoHostPackage(
     ownerUserId: userId,
     workspaceId: environmentPackage.scope.workspaceId,
   });
+}
+
+/** Adds the already-owned pre-effect backend anchor for direct backend-unit materialization. */
+function anchorNanoHostMaterialization(
+  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  backend: WorkerGovernanceBackend,
+  environmentPackage: AgentEnvironmentPackage
+): void {
+  const internal = backend as WorkerGovernanceBackend & {
+    requireLeaseId(packageSnapshotId: string): string;
+  };
+  const identity = backend.planSession(environmentPackage);
+  let leaseId: string;
+  try {
+    leaseId = internal.requireLeaseId(environmentPackage.snapshotId);
+  } catch {
+    leaseId = `lease-fixture:${environmentPackage.snapshotId}`;
+  }
+  if (
+    coreDb.sqlite.prepare('SELECT 1 FROM worker_backend_sessions WHERE lease_id = ?').get(leaseId)
+  ) {
+    return;
+  }
+  const target = coreDb.sqlite
+    .prepare(
+      'SELECT physical_epoch AS physicalEpoch FROM nanohost_runtime_targets WHERE target_id = ?'
+    )
+    .get(identity.runtimeTargetId) as { readonly physicalEpoch: string | null } | undefined;
+  if (!target?.physicalEpoch) throw new Error('Test materialization requires a physical Epoch.');
+  let lease = coreDb.sqlite
+    .prepare(
+      'SELECT sandbox_binding_ref AS sandboxBindingRef FROM scheduler_session_leases WHERE lease_id = ?'
+    )
+    .get(leaseId) as { readonly sandboxBindingRef: string } | undefined;
+  if (!lease) {
+    const sandboxBindingRef = `lease-binding:${leaseId}`;
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO scheduler_session_leases (
+           lease_id, plan_id, workspace_id, thread_id, turn_id, agent_session_id,
+           package_snapshot_id, pool_id, target_id, status, acquired_at, expires_at,
+           heartbeat_deadline, startup_deadline, renewal_count, scheduler_epoch,
+           sandbox_binding_ref
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'acquired', ?, ?, ?, ?, 0, 1, ?)`
+      )
+      .run(
+        leaseId,
+        `plan:${leaseId}`,
+        environmentPackage.scope.workspaceId,
+        environmentPackage.scope.threadId,
+        environmentPackage.scope.turnId,
+        environmentPackage.scope.agentSessionId,
+        environmentPackage.snapshotId,
+        `pool:${leaseId}`,
+        identity.runtimeTargetId,
+        environmentPackage.createdAt,
+        '2999-01-01T00:00:00.000Z',
+        '2999-01-01T00:00:00.000Z',
+        '2999-01-01T00:00:00.000Z',
+        sandboxBindingRef
+      );
+    lease = { sandboxBindingRef };
+  }
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO worker_backend_sessions (
+         lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+         package_snapshot_id, backend_kind, deployment_id, backend_version,
+         backend_session_id, runtime_target_id, origin_physical_epoch,
+         backend_lineage_json, sandbox_binding_ref, staging_directory_ref,
+         transient_provider_instance_id, workspace_handoff_state, state,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '0.0.99', ?, ?, ?, ?, ?, ?, ?,
+         'pending', 'materializing', ?, ?)`
+    )
+    .run(
+      leaseId,
+      environmentPackage.scope.workspaceId,
+      environmentPackage.scope.threadId,
+      environmentPackage.scope.turnId,
+      identity.agentSessionId,
+      identity.packageSnapshotId,
+      identity.backendKind,
+      identity.deploymentId,
+      identity.backendSessionId,
+      identity.runtimeTargetId,
+      target.physicalEpoch,
+      JSON.stringify(
+        environmentPackage.runtime.image.kind === 'reference'
+          ? { imageRef: environmentPackage.runtime.image.ref }
+          : { resultingImageDigest: environmentPackage.runtime.image.input.digest }
+      ),
+      lease?.sandboxBindingRef ?? `lease-binding:${leaseId}`,
+      identity.stagingDirectoryRef,
+      identity.transientProviderInstanceId,
+      environmentPackage.createdAt,
+      environmentPackage.createdAt
+    );
 }
 
 /** Adds the attached retained-storage owner required by one directly-authored Sandbox fixture. */
@@ -350,7 +448,11 @@ describe('createConfiguredTurnExecutor', () => {
         identityId: runtimeTarget.identityId,
         physicalConnection: physical,
       });
-      await dispatch.readiness!(physical, Buffer.from('{}'), runtimeTarget);
+      await dispatch.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        runtimeTarget
+      );
 
       const runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
@@ -449,6 +551,118 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rechecks the anchored physical Epoch immediately before effect dispatch', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effect = vi.fn(async () => ({}));
+    const sessionDispatch = {
+      effect,
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    } satisfies NanoHostSessionDispatch;
+    try {
+      const first = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment_epoch_race',
+        identityId: 'identity_epoch_race',
+        observedAt: '2026-08-21T00:00:00.000Z',
+        targetId: 'target_epoch_race',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...first,
+        freshEmpty: true,
+        observedAt: '2026-08-21T00:00:01.000Z',
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      const identity: WorkerGovernanceBackendSessionIdentity = {
+        agentSessionId: 'as_epoch_race',
+        backendKind: 'openshell',
+        backendSessionId: 'backend-epoch-race',
+        deploymentId: 'deployment_epoch_race',
+        packageSnapshotId: 'aepsnap_epoch_race',
+        runtimeTargetId: 'target_epoch_race',
+        stagingDirectoryRef: 'runtime-staging/epoch-race',
+        transientProviderInstanceId: null,
+      };
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO worker_backend_sessions (
+             lease_id, workspace_id, thread_id, turn_id, agent_session_id,
+             package_snapshot_id, backend_kind, deployment_id, backend_session_id,
+             runtime_target_id, origin_physical_epoch, backend_lineage_json,
+             sandbox_binding_ref, staging_directory_ref, workspace_handoff_state,
+             state, created_at, updated_at
+           ) VALUES ('lease_epoch_race', 'workspace_epoch_race', 'thread_epoch_race',
+             'turn_epoch_race', ?, ?, 'openshell', ?, ?, ?, ?, ?,
+             'sandbox-binding-epoch-race', ?, 'pending', 'materializing', ?, ?)`
+        )
+        .run(
+          identity.agentSessionId,
+          identity.packageSnapshotId,
+          identity.deploymentId,
+          identity.backendSessionId,
+          identity.runtimeTargetId,
+          'a'.repeat(64),
+          JSON.stringify({ imageRef: 'openkit/worker:test' }),
+          identity.stagingDirectoryRef,
+          '2026-08-21T00:00:01.000Z',
+          '2026-08-21T00:00:01.000Z'
+        );
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: {
+            effect(
+              identity: WorkerGovernanceBackendSessionIdentity,
+              leaseId: string,
+              operation: 'image.inspect',
+              input: Readonly<Record<string, unknown>>
+            ): Promise<Record<string, unknown>>;
+            requireLeaseId(packageSnapshotId: string): string;
+          };
+        }
+      ).backend;
+      backend.requireLeaseId = () => 'lease_epoch_race';
+      await expect(
+        backend.effect(identity, 'lease_epoch_race', 'image.inspect', {
+          imageDigest: `sha256:${'d'.repeat(64)}`,
+        })
+      ).resolves.toEqual({});
+      const replacement = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: identity.deploymentId,
+        identityId: 'identity_epoch_race',
+        observedAt: '2026-08-21T00:00:02.000Z',
+        targetId: identity.runtimeTargetId,
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...replacement,
+        freshEmpty: true,
+        observedAt: '2026-08-21T00:00:03.000Z',
+        physicalEpoch: 'b'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      await expect(
+        backend.effect(identity, 'lease_epoch_race', 'image.inspect', {
+          imageDigest: `sha256:${'d'.repeat(64)}`,
+        })
+      ).rejects.toThrow(/physical Epoch changed/i);
+      expect(effect).toHaveBeenCalledTimes(1);
+    } finally {
       coreDb.sqlite.close();
     }
   });
@@ -588,9 +802,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES ('target_optional_workspace_changes', 'identity_optional_workspace_changes',
-                     'deployment_optional_workspace_changes', 1, 1, 1, 1, ?, 1)`
+                     'deployment_optional_workspace_changes', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-22T00:00:00.000Z');
       const packageSnapshotId = 'aepsnap_optional_workspace_changes';
@@ -623,6 +837,7 @@ describe('createConfiguredTurnExecutor', () => {
         },
       });
       const identity = backend.planSession(environmentPackage);
+      anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       backend.sessions.set(packageSnapshotId, {
         environmentPackage,
         identity,
@@ -694,6 +909,7 @@ describe('createConfiguredTurnExecutor', () => {
     upsertNanoHostRuntimeTarget(coreDb, {
       ...firstGeneration,
       freshEmpty: true,
+      physicalEpoch: 'a'.repeat(64),
       predecessorFenced: true,
       ready: true,
       observedAt: '2026-08-21T00:00:01.000Z',
@@ -705,6 +921,7 @@ describe('createConfiguredTurnExecutor', () => {
       harnessCompatibilityKey: 'd'.repeat(64),
       harnessInstanceId: 'harness-unready-admission',
       imageDigest: `sha256:${'a'.repeat(64)}`,
+      originPhysicalEpoch: 'a'.repeat(64),
       sandboxBindingRef: 'sandbox-binding-unready-admission',
       sandboxCompatibilityKey: 'b'.repeat(64),
       sandboxIntegrationBindingRef: 'integration-sandbox-binding-unready-admission',
@@ -792,6 +1009,79 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it('rejects and fences a never-polled Harness operation from its enqueue deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-21T00:00:00.000Z'));
+    const coreDb = createFactoryCoreDb();
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+             target_id, identity_id, deployment_id, connection_generation,
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_never_polled', 'identity_never_polled',
+                     'deployment_never_polled', 1, 1, 1, 1,
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
+        )
+        .run('2026-08-21T00:00:00.000Z');
+      createNanoHostHarnessRuntime(coreDb, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        harnessBindingRef: 'harness-binding-never-polled',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'harness-never-polled',
+        imageDigest: `sha256:${'a'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
+        sandboxBindingRef: 'sandbox-binding-never-polled',
+        sandboxCompatibilityKey: 'b'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-never-polled',
+        sandboxRuntimeId: 'sandbox-runtime-never-polled',
+        runtimeTargetId: 'target_never_polled',
+        timestamp: '2026-08-21T00:00:00.000Z',
+      });
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: {
+            queueAndWaitForHarnessOperation(
+              session: unknown,
+              operation: 'harness.drain',
+              body: Readonly<Record<string, unknown>>
+            ): Promise<Readonly<Record<string, unknown>>>;
+          };
+        }
+      ).backend;
+      const session = {
+        harnessBindingRef: 'harness-binding-never-polled',
+        harnessInstanceId: 'harness-never-polled',
+        pendingHarnessOperation: null,
+      };
+      const pending = backend.queueAndWaitForHarnessOperation(session, 'harness.drain', {});
+      void pending.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(300_000);
+      await expect(pending).rejects.toThrow(/outage budget expired/i);
+      expect(
+        dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-never-polled',
+        })
+      ).toBeNull();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT operation_state AS operationState, lifecycle_state AS lifecycleState FROM harness_instance_records WHERE harness_instance_id = ?'
+          )
+          .get('harness-never-polled')
+      ).toEqual({ lifecycleState: 'failed', operationState: 'unknown' });
+    } finally {
+      vi.useRealTimers();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('prepares a fresh AgentSession when the sole RuntimeTarget is ready and unbound', async () => {
     const coreDb = createFactoryCoreDb();
     const generation = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
@@ -803,6 +1093,7 @@ describe('createConfiguredTurnExecutor', () => {
     upsertNanoHostRuntimeTarget(coreDb, {
       ...generation,
       freshEmpty: true,
+      physicalEpoch: 'a'.repeat(64),
       predecessorFenced: true,
       ready: true,
       observedAt: '2026-08-21T00:00:01.000Z',
@@ -855,8 +1146,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_factory_restore', 'identity_factory_restore', 'deployment_factory_restore', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_factory_restore', 'identity_factory_restore', 'deployment_factory_restore', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
@@ -866,6 +1157,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-factory-restore',
         imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-factory-restore',
         sandboxCompatibilityKey,
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-factory-restore',
@@ -945,8 +1237,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_continuity_key', 'identity_continuity_key', 'deployment_continuity_key', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_continuity_key', 'identity_continuity_key', 'deployment_continuity_key', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
@@ -956,6 +1248,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-continuity-key',
         imageDigest: `sha256:${'b'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-continuity-key',
         sandboxCompatibilityKey: 'c'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
@@ -998,8 +1291,8 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: '2026-08-21T00:00:01.000Z',
       });
       const command = dispatchNanoHostHarnessOperation(coreDb, {
+        now: () => '2026-08-21T00:00:02.000Z',
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
-        timestamp: '2026-08-21T00:00:02.000Z',
       });
       if (!command) {
         throw new Error('Expected the continuity fixture session.open command.');
@@ -1138,6 +1431,61 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases').get()
       ).toEqual({ count: 1 });
+      const replacementGeneration = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment_continuity_key',
+        identityId: 'identity_continuity_key',
+        observedAt: '2026-08-21T00:00:05.000Z',
+        targetId: 'target_continuity_key',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...replacementGeneration,
+        freshEmpty: true,
+        observedAt: '2026-08-21T00:00:06.000Z',
+        physicalEpoch: 'b'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      await expect(
+        backend.prepareAgentSessionContinuity?.({
+          ...input,
+          admissionAgentSessionId: input.agentSessionId,
+          admissionLeaseId: 'lease-continuity-commit',
+        })
+      ).resolves.toBe('sandbox-replacement-required');
+      const leasePackage = coreDb.sqlite
+        .prepare(
+          `SELECT package_snapshot_id AS packageSnapshotId
+           FROM scheduler_session_leases WHERE lease_id = 'lease-continuity-commit'`
+        )
+        .get() as { readonly packageSnapshotId: string };
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases SET agent_session_id = ?
+           WHERE lease_id = 'lease-continuity-commit'`
+        )
+        .run('as-continuity-successor');
+      const retirementPackage = completeNanoHostPackage({
+        scope: {
+          agentSessionId: 'as-continuity-successor',
+          threadId: input.threadId,
+          turnId: 'turn-continuity-commit',
+          workspaceId: input.workspaceId,
+        },
+        snapshotId: leasePackage.packageSnapshotId,
+      });
+      authorizeNanoHostPackage(coreDb, retirementPackage);
+      await expect(
+        backend.prepareAgentSessionContinuity?.({
+          ...input,
+          admissionAgentSessionId: retirementPackage.scope.agentSessionId,
+          admissionLeaseId: 'lease-continuity-commit',
+          environmentPackage: retirementPackage,
+          reuseAllowed: false,
+        })
+      ).resolves.toBe('closed');
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
     }
@@ -1181,9 +1529,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES ('target_selected_slot', 'identity_selected_slot',
-                     'deployment_selected_slot', 1, 1, 1, 1, ?, 1)`
+                     'deployment_selected_slot', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-11T00:00:00.000Z');
       const layout = {
@@ -1320,6 +1668,7 @@ describe('createConfiguredTurnExecutor', () => {
       const backend = (
         runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
       ).backend;
+      anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       await backend.materialize(environmentPackage, {
         workerStorageChoice: {
           expectedRevision: idle.revision,
@@ -1453,6 +1802,7 @@ describe('createConfiguredTurnExecutor', () => {
           '2999-01-01T00:00:00.000Z',
           'sandbox-binding:selected-slot-no-choice'
         );
+      anchorNanoHostMaterialization(coreDb, backend, successorPackage);
       const successorMaterialization = await backend.materialize(successorPackage, {
         workspaceRoots: [],
       });
@@ -1532,8 +1882,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_absent_cleanup', 'identity_absent_cleanup', 'deployment_absent_cleanup', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_absent_cleanup', 'identity_absent_cleanup', 'deployment_absent_cleanup', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -1567,6 +1917,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-absent-cleanup',
         imageDigest: `sha256:${'a'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: identity.backendSessionId,
         sandboxCompatibilityKey: `${identity.backendSessionId.slice(3, 19)}${'b'.repeat(48)}`,
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-absent-cleanup',
@@ -1639,9 +1990,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES ('target_reserved_cleanup', 'identity_reserved_cleanup',
-                     'deployment_reserved_cleanup', 1, 1, 1, 1, ?, 1)`
+                     'deployment_reserved_cleanup', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run(failureAt);
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -1673,10 +2024,11 @@ describe('createConfiguredTurnExecutor', () => {
           `INSERT INTO worker_backend_sessions (
              lease_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_session_id,
-             runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+             runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
-             'lease_reserved_cleanup', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?, ?,
+             'lease_reserved_cleanup', ?, ?, ?, ?, ?, 'openshell', ?, ?, ?,
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?,
              'lease-binding:reserved-cleanup', ?, 'pending', 'cleanup-failed', ?, ?
            )`
         )
@@ -1748,7 +2100,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
 
       await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow(
-        /no later fresh-ready proof/i
+        /no different fresh physical Epoch proof/i
       );
       expect(getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })).toMatchObject({
         currentAgentSessionId: identity.agentSessionId,
@@ -1764,7 +2116,8 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare(
           `UPDATE nanohost_runtime_targets
-           SET observed_at = ?, last_fresh_ready_at = ?
+           SET observed_at = ?, last_fresh_ready_at = ?,
+               physical_epoch = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
            WHERE target_id = ?`
         )
         .run(freshAt, freshAt, identity.runtimeTargetId);
@@ -1832,9 +2185,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES ('target_post_fence', 'identity_post_fence',
-                     'deployment_post_fence', 1, 1, 1, 1, ?, 1)`
+                     'deployment_post_fence', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       const initialRuntime = createConfiguredWorkerLifecycleRuntime({
@@ -1874,6 +2227,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-post-fence',
         imageDigest: `sha256:${'1'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-post-fence',
         sandboxCompatibilityKey,
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-post-fence',
@@ -1894,11 +2248,11 @@ describe('createConfiguredTurnExecutor', () => {
           `INSERT INTO worker_backend_sessions (
              lease_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_session_id,
-             runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+             runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
              'lease_post_fence', 'workspace_post_fence', 'thread_post_fence',
-             'turn_post_fence', ?, ?, 'openshell', ?, ?, ?, '{}',
+             'turn_post_fence', ?, ?, 'openshell', ?, ?, ?, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
              'lease-binding:post-fence', ?, 'pending', 'cleanup-pending', ?, ?
            )`
         )
@@ -1924,6 +2278,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-post-fence-sibling',
         imageDigest: `sha256:${'3'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-post-fence-sibling',
         sandboxCompatibilityKey: '4'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-post-fence-sibling',
@@ -2015,9 +2370,9 @@ describe('createConfiguredTurnExecutor', () => {
           .prepare(
             `INSERT INTO nanohost_runtime_targets (
                target_id, identity_id, deployment_id, connection_generation,
-               predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
              ) VALUES ('target_post_fence', 'identity_post_fence',
-                       'deployment_post_fence', 1, 1, 1, 1, ?, 1)`
+                       'deployment_post_fence', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
           )
           .run('2026-08-21T00:00:00.000Z');
         coreDb.sqlite.pragma('foreign_keys = ON');
@@ -2105,7 +2460,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `UPDATE nanohost_runtime_targets
            SET predecessor_fenced = 1, ready = 1, fresh_empty = 1, observed_at = ?,
-               last_fresh_ready_at = ?
+               last_fresh_ready_at = ?,
+               physical_epoch = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
            WHERE target_id = ?`
         )
         .run(
@@ -2149,8 +2505,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_lookup', 'identity_lookup', 'deployment_lookup', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_lookup', 'identity_lookup', 'deployment_lookup', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -2175,6 +2531,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-a',
         imageDigest: `sha256:${'1'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-lookup-a',
         sandboxCompatibilityKey: `${projectingPrefix}${'c'.repeat(48)}`,
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-a',
@@ -2201,6 +2558,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-dup',
         imageDigest: `sha256:${'2'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-lookup-dup',
         sandboxCompatibilityKey: `${projectingPrefix}${'d'.repeat(48)}`,
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-dup',
@@ -2225,6 +2583,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-worker',
         imageDigest: `sha256:${'3'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-lookup-worker',
         sandboxCompatibilityKey: 'b'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-worker',
@@ -2237,12 +2596,13 @@ describe('createConfiguredTurnExecutor', () => {
           `INSERT INTO worker_backend_sessions (
              lease_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_session_id,
-             runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+             runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
              'lease_lookup_worker', 'workspace_lookup', 'thread_lookup_worker',
              'turn_lookup_worker', 'as_lookup_worker', 'aepsnap_lookup_worker', 'openshell',
-             'deployment_lookup', 'nh-1111111111111111', 'target_lookup', '{}',
+             'deployment_lookup', 'nh-1111111111111111', 'target_lookup',
+             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}',
              'sandbox-binding-lookup-worker',
              'server/runtime/worker-backend-sessions/aepsnap_lookup_worker',
              'pending', 'cleanup-pending', ?, ?
@@ -2267,6 +2627,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-lookup-agent',
         imageDigest: `sha256:${'4'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-lookup-agent',
         sandboxCompatibilityKey: '9'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-lookup-agent',
@@ -2318,8 +2679,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_harness_unknown', 'identity_harness_unknown', 'deployment_harness_unknown', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_harness_unknown', 'identity_harness_unknown', 'deployment_harness_unknown', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
@@ -2329,6 +2690,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'harness-unknown',
         imageDigest: `sha256:${'c'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-unknown',
         sandboxCompatibilityKey: 'd'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-unknown',
@@ -2343,8 +2705,8 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: '2026-08-21T00:00:01.000Z',
       });
       const command = dispatchNanoHostHarnessOperation(coreDb, {
+        now: () => '2026-08-21T00:00:02.000Z',
         sandboxIntegrationBindingRef: 'integration-sandbox-binding-unknown',
-        timestamp: '2026-08-21T00:00:02.000Z',
       });
       if (!command) {
         throw new Error('Expected one dispatched Harness command.');
@@ -2382,8 +2744,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_factory_compatibility', 'identity_factory_compatibility', 'deployment_factory_compatibility', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_factory_compatibility', 'identity_factory_compatibility', 'deployment_factory_compatibility', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -2635,9 +2997,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES ('target_human_gate', 'identity_human_gate', 'deployment_human_gate',
-                     1, 1, 1, 1, ?, 1)`
+                     1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-03T00:00:00.000Z');
       const environmentPackage = completeNanoHostPackage({
@@ -2685,6 +3047,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
+      anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       const materialization = await backend.materialize(environmentPackage, {
         workspaceRoots: [],
       });
@@ -2948,8 +3311,8 @@ describe('createConfiguredTurnExecutor', () => {
       .prepare(
         `INSERT INTO nanohost_runtime_targets (
            target_id, identity_id, deployment_id, connection_generation,
-           predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-         ) VALUES (?, ?, ?, 1, 1, 1, 1, ?, 1)`
+           predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+         ) VALUES (?, ?, ?, 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
       )
       .run(
         'target_factory_pre_bridge_failure',
@@ -3005,6 +3368,7 @@ describe('createConfiguredTurnExecutor', () => {
     authorizeNanoHostPackage(factoryCoreDb, environmentPackage);
     const identity = backend.planSession(environmentPackage);
 
+    anchorNanoHostMaterialization(factoryCoreDb, backend, environmentPackage);
     await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
       'NanoHost Context Package lineage or private root is invalid.'
     );
@@ -3047,8 +3411,8 @@ describe('createConfiguredTurnExecutor', () => {
       .prepare(
         `INSERT INTO nanohost_runtime_targets (
            target_id, identity_id, deployment_id, connection_generation,
-           predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-         ) VALUES (?, ?, ?, 1, 1, 1, 1, ?, 1)`
+           predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+         ) VALUES (?, ?, ?, 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
       )
       .run(
         'target_factory_reservation_failure',
@@ -3093,6 +3457,7 @@ describe('createConfiguredTurnExecutor', () => {
       END`);
 
     try {
+      anchorNanoHostMaterialization(factoryCoreDb, backend, environmentPackage);
       await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
         'test reservation write failure'
       );
@@ -3145,8 +3510,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES (?, ?, ?, 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES (?, ?, ?, 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run(
           'target_factory_newest_lease',
@@ -3211,6 +3576,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
 
+      anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
       await expect(backend.materialize(environmentPackage, { workspaceRoots: [] })).rejects.toThrow(
         'exact local image is unavailable'
       );
@@ -3295,8 +3661,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_multi_harness', 'identity_multi_harness', 'deployment_multi_harness', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_multi_harness', 'identity_multi_harness', 'deployment_multi_harness', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -3351,8 +3717,11 @@ describe('createConfiguredTurnExecutor', () => {
       authorizeNanoHostPackage(coreDb, codexPackage);
       authorizeNanoHostPackage(coreDb, openCodePackage);
       authorizeNanoHostPackage(coreDb, nextCodexPackage);
+      anchorNanoHostMaterialization(coreDb, backend, codexPackage);
       await backend.materialize(codexPackage, { workspaceRoots: [] });
+      anchorNanoHostMaterialization(coreDb, backend, openCodePackage);
       await backend.materialize(openCodePackage, { workspaceRoots: [] });
+      anchorNanoHostMaterialization(coreDb, backend, nextCodexPackage);
       await backend.materialize(nextCodexPackage, { workspaceRoots: [] });
 
       expect(effects.filter((effect) => effect.kind === 'image.acquire')).toHaveLength(1);
@@ -3404,9 +3773,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES ('target_idle_eviction', 'identity_idle_eviction', 'deployment_idle_eviction',
-                     1, 1, 1, 1, ?, 1)`
+                     1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-06T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -3509,6 +3878,7 @@ describe('createConfiguredTurnExecutor', () => {
               .get()
           ).toEqual({ harnessDrainState: 'draining', sandboxDrainState: 'draining' });
           expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('capacity-saturated');
+          anchorNanoHostMaterialization(coreDb, backend, firstPackage);
           await expect(backend.materialize(firstPackage, { workspaceRoots: [] })).rejects.toThrow(
             'NanoHost one-Sandbox capacity is occupied or unproved.'
           );
@@ -3545,6 +3915,7 @@ describe('createConfiguredTurnExecutor', () => {
         runtime.acceptNanoHostHarnessResult(result);
       };
 
+      anchorNanoHostMaterialization(coreDb, backend, firstPackage);
       const firstMaterialization = await backend.materialize(firstPackage, { workspaceRoots: [] });
       const launch = backend.launch(firstMaterialization);
       await settleNext('session.open', {
@@ -3661,6 +4032,7 @@ describe('createConfiguredTurnExecutor', () => {
         taskId: null,
       };
       const effectsBeforeReplacement = effects.length;
+      anchorNanoHostMaterialization(coreDb, backend, secondPackage);
       await expect(
         backend.materialize(secondPackage, {
           workerStorageChoice: {
@@ -3736,9 +4108,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
                target_id, identity_id, deployment_id, connection_generation,
-               predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
              ) VALUES ('target_capacity_guard', 'identity_capacity_guard',
-                       'deployment_capacity_guard', 1, 1, 1, 1, ?, 1)`
+                       'deployment_capacity_guard', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-06T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
@@ -3748,6 +4120,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: 'c'.repeat(64),
         harnessInstanceId: 'harness-capacity-guard',
         imageDigest: `sha256:${'1'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         sandboxBindingRef: 'sandbox-binding-capacity-guard',
         sandboxCompatibilityKey: 'b'.repeat(64),
         sandboxIntegrationBindingRef: 'integration-binding-capacity-guard',
@@ -3873,9 +4246,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES ('target_restart_unproved', 'identity_restart_unproved',
-                     'deployment_restart_unproved', 1, 1, 1, 1, ?, 1)`
+                     'deployment_restart_unproved', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-06T00:00:00.000Z');
       const packageFor = (
@@ -3917,6 +4290,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       firstBackend.requireLeaseId = (snapshotId) => `lease-${snapshotId}`;
+      anchorNanoHostMaterialization(coreDb, firstBackend, firstPackage);
       await firstBackend.materialize(firstPackage, { workspaceRoots: [] });
       const harness = coreDb.sqlite
         .prepare(
@@ -3985,6 +4359,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: '8'.repeat(64),
         harnessInstanceId: 'harness-restart-unproved-other',
         imageDigest: harness.imageDigest,
+        originPhysicalEpoch: 'a'.repeat(64),
         runtimeTargetId: harness.runtimeTargetId,
         sandboxBindingRef: harness.sandboxBindingRef,
         sandboxCompatibilityKey: harness.sandboxCompatibilityKey,
@@ -4016,6 +4391,13 @@ describe('createConfiguredTurnExecutor', () => {
            WHERE agent_session_runtime_binding_id = 'binding-restart-unproved-other'`
         )
         .run('8'.repeat(64));
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_session_leases
+           SET status = 'released'
+           WHERE package_snapshot_id = ?`
+        )
+        .run(firstPackage.snapshotId);
 
       const recoveringRuntime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
@@ -4068,6 +4450,26 @@ describe('createConfiguredTurnExecutor', () => {
         'snapshot_restart_unproved_fresh'
       );
       authorizeNanoHostPackage(coreDb, secondPackage);
+      const retainedStorageBeforeCorruption = getWorkerStorageBindingForSandbox(coreDb, {
+        sandboxBindingRef: harness.sandboxBindingRef,
+      });
+      coreDb.sqlite
+        .prepare("UPDATE sandbox_runtime_records SET origin_physical_epoch = 'malformed'")
+        .run();
+      expect(() => restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toThrow(
+        /physical Epoch/i
+      );
+      expect(
+        getWorkerStorageBindingForSandbox(coreDb, {
+          sandboxBindingRef: harness.sandboxBindingRef,
+        })
+      ).toEqual(retainedStorageBeforeCorruption);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+      coreDb.sqlite
+        .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
+        .run('a'.repeat(64));
       coreDb.sqlite
         .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_restart_unproved'")
         .run();
@@ -4187,6 +4589,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(restartedBackend.planSession(secondPackage).backendSessionId.slice(0, 19)).toBe(
         firstBackend.planSession(firstPackage).backendSessionId.slice(0, 19)
       );
+      anchorNanoHostMaterialization(coreDb, restartedBackend, secondPackage);
       await restartedBackend.materialize(secondPackage, { workspaceRoots: [] });
 
       expect(effects.map((effect) => effect.kind)).toEqual([
@@ -4292,9 +4695,9 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
                target_id, identity_id, deployment_id, connection_generation,
-               predecessor_fenced, ready, fresh_empty, observed_at, slot_count
+               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
              ) VALUES ('target_restart_selected', 'identity_restart_selected',
-                       'deployment_restart_selected', 1, 1, 1, 1, ?, 1)`
+                       'deployment_restart_selected', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-11T00:00:00.000Z');
       createNanoHostHarnessRuntime(coreDb, {
@@ -4304,6 +4707,7 @@ describe('createConfiguredTurnExecutor', () => {
         harnessCompatibilityKey: '5'.repeat(64),
         harnessInstanceId: 'harness-restart-selected',
         imageDigest: `sha256:${'4'.repeat(64)}`,
+        originPhysicalEpoch: 'a'.repeat(64),
         runtimeTargetId: 'target_restart_selected',
         sandboxBindingRef: 'sandbox-binding-restart-selected',
         sandboxCompatibilityKey: '6'.repeat(64),
@@ -4548,8 +4952,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES ('target_credentials', 'identity_credentials', 'deployment_credentials', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES ('target_credentials', 'identity_credentials', 'deployment_credentials', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -4647,8 +5051,8 @@ describe('createConfiguredTurnExecutor', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES (?, ?, ?, 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES (?, ?, ?, 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run(
           'target_factory_dns_sandbox',
@@ -4669,7 +5073,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      backend.requireLeaseId = () => 'lease_factory_dns_sandbox';
+      backend.requireLeaseId = (snapshotId) => `lease-${snapshotId}`;
       const sandboxIds: string[] = [];
       const policy = {
         filesystem: {
@@ -4718,6 +5122,7 @@ describe('createConfiguredTurnExecutor', () => {
         const secondPlan = backend.planSession(environmentPackage);
         expect(secondPlan.backendSessionId).toBe(firstPlan.backendSessionId);
 
+        anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
         await expect(
           backend.materialize(environmentPackage, { workspaceRoots: [] })
         ).rejects.toThrow('first sandbox.create reached');
@@ -4726,7 +5131,7 @@ describe('createConfiguredTurnExecutor', () => {
           backendSessionId: firstPlan.backendSessionId,
           environment: {},
           imageDigest: `sha256:${'b'.repeat(64)}`,
-          leaseId: 'lease_factory_dns_sandbox',
+          leaseId: `lease-${snapshotId}`,
           packageSnapshotId: snapshotId,
           policy: {
             filesystem: {

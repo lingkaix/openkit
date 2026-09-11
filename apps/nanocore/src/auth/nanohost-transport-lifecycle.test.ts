@@ -3,6 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from '../runtime/nanohost-runtime-target.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { admitNanoHostTransportConnection } from './nanohost-transport-admission.js';
@@ -30,6 +35,8 @@ import {
 
 const IDENTITY = 'integration_nanohost_primary';
 const DEPLOYMENT = 'deploy_primary';
+const TARGET = 'target_primary';
+const PHYSICAL_EPOCH = 'a'.repeat(64);
 
 /**
  * Opens a migrated Core database under a unique temp root.
@@ -48,6 +55,33 @@ function openMigratedCoreDb(): CoreDb {
     )
     .run(IDENTITY, DEPLOYMENT, '2026-08-08T00:00:00.000Z');
   return coreDb;
+}
+
+/** Records one current authenticated RuntimeTarget for lifecycle fencing assertions. */
+function seedReadyRuntimeTarget(coreDb: CoreDb): void {
+  const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: DEPLOYMENT,
+    identityId: IDENTITY,
+    observedAt: '2026-08-08T00:00:00.000Z',
+    targetId: TARGET,
+  });
+  upsertNanoHostRuntimeTarget(coreDb, {
+    ...allocated,
+    freshEmpty: true,
+    observedAt: '2026-08-08T00:00:01.000Z',
+    physicalEpoch: PHYSICAL_EPOCH,
+    predecessorFenced: true,
+    ready: true,
+  });
+}
+
+/** Asserts that transport loss removed the current durable readiness witness. */
+function expectRuntimeTargetUnready(coreDb: CoreDb): void {
+  expect(getNanoHostRuntimeTarget(coreDb, TARGET)).toMatchObject({
+    freshEmpty: false,
+    physicalEpoch: null,
+    ready: false,
+  });
 }
 
 /**
@@ -169,6 +203,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
+      seedReadyRuntimeTarget(coreDb);
       const issued = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
@@ -182,6 +217,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       });
       expect(revoked?.status).toBe('revoked');
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
+      expectRuntimeTargetUnready(coreDb);
       expect(
         verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
           now: new Date('2026-08-08T02:00:00.000Z'),
@@ -204,6 +240,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
+      seedReadyRuntimeTarget(coreDb);
       const issued = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-08-08T01:00:00.000Z',
@@ -219,6 +256,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       expect(fenced.usable).toBe(false);
       expect(fenced.fenced).toBe(false);
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
+      expectRuntimeTargetUnready(coreDb);
       expect(
         admitNanoHostTransportConnection(coreDb, authority, {
           physicalConnection: null,
@@ -236,6 +274,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
+      seedReadyRuntimeTarget(coreDb);
       const first = createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
@@ -260,6 +299,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       );
       expect(revoked.every((row) => row.status === 'revoked')).toBe(true);
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
+      expectRuntimeTargetUnready(coreDb);
       expect(
         verifyNanoHostTransportTokenRecord(coreDb, first.secret, {
           now: new Date('2026-08-08T02:00:00.000Z'),

@@ -26,6 +26,8 @@ import {
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
+  assertExternalColdBackupDestination,
+  copyColdDataRoot,
   DATA_ROOT_BACKUP_MANIFEST_FILE,
   restoreDataRootBackup,
   verifyDataRootBackupManifest,
@@ -39,6 +41,23 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
 const timestamp = '2026-07-06T00:00:00.000Z';
 
 describe('data-root backup manifest', () => {
+  it('copies a cold backup without a maintenance-owned live lock', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-data-root-cold-copy-'));
+    const dataRoot = join(parent, 'data');
+    const backupRoot = join(parent, 'external', 'backup');
+    const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
+
+    mkdirSync(join(dataRoot, 'server', 'runtime'), { recursive: true });
+    writeFileSync(join(dataRoot, 'preserved.txt'), 'preserved\n');
+    writeFileSync(lockPath, 'maintenance lock\n');
+
+    assertExternalColdBackupDestination(dataRoot, backupRoot);
+    copyColdDataRoot({ backupRoot, dataRoot, omitActiveDataRootLock: true });
+
+    expect(readFileSync(join(backupRoot, 'preserved.txt'), 'utf8')).toBe('preserved\n');
+    expect(existsSync(join(backupRoot, 'server', 'runtime', 'nanocore.lock'))).toBe(false);
+  });
+
   it('writes and verifies a cold backup manifest over a copied data root', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-data-root-backup-'));
     mkdirSync(join(root, 'server'), { recursive: true });

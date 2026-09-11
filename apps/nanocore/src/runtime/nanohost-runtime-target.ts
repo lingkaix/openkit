@@ -16,6 +16,8 @@ export interface NanoHostRuntimeTargetRecord {
   readonly ready: boolean;
   /** Whether the current generation proved a fresh empty Runtime Epoch. */
   readonly freshEmpty: boolean;
+  /** Current authenticated physical-incarnation witness; null while non-ready. */
+  readonly physicalEpoch: string | null;
   /** Timestamp of the current readiness observation. */
   readonly observedAt: string;
   /** Fixed V1 slot count. */
@@ -38,6 +40,8 @@ export interface UpsertNanoHostRuntimeTargetInput {
   readonly ready: boolean;
   /** Whether the current generation proved a fresh empty Runtime Epoch. */
   readonly freshEmpty: boolean;
+  /** Authenticated physical-incarnation witness established by the coordinator. */
+  readonly physicalEpoch: string;
   /** Observation timestamp. */
   readonly observedAt: string;
 }
@@ -75,6 +79,7 @@ interface NanoHostRuntimeTargetRow {
   readonly predecessor_fenced: 0 | 1;
   readonly ready: 0 | 1;
   readonly fresh_empty: 0 | 1;
+  readonly physical_epoch: string | null;
   readonly observed_at: string;
   readonly slot_count: number;
 }
@@ -110,9 +115,9 @@ export function allocateNanoHostRuntimeTargetConnectionGeneration(
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at,
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at,
              slot_count
-           ) VALUES (?, ?, ?, 1, 0, 0, 0, ?, 1)`
+           ) VALUES (?, ?, ?, 1, 0, 0, 0, NULL, ?, 1)`
         )
         .run(input.targetId, input.identityId, input.deploymentId, input.observedAt);
     } else {
@@ -130,7 +135,7 @@ export function allocateNanoHostRuntimeTargetConnectionGeneration(
         .prepare(
           `UPDATE nanohost_runtime_targets
            SET connection_generation = ?, predecessor_fenced = 0, ready = 0,
-               fresh_empty = 0, observed_at = ?
+               fresh_empty = 0, physical_epoch = NULL, observed_at = ?
            WHERE target_id = ? AND identity_id = ? AND deployment_id = ?
              AND connection_generation = ?`
         )
@@ -182,6 +187,7 @@ export function recordNanoHostRuntimeTargetConnectionClose(
     input.authoritativeGeneration === current.connection_generation ||
     (input.closedGeneration === current.connection_generation &&
       input.authoritativeGeneration === null);
+  const closesCurrentGeneration = input.closedGeneration === current.connection_generation;
   const projected = coreDb.sqlite
     .prepare(
       `UPDATE nanohost_runtime_targets
@@ -189,11 +195,18 @@ export function recordNanoHostRuntimeTargetConnectionClose(
              WHEN predecessor_fenced = 1 OR ? = 1 THEN 1
              ELSE 0
            END,
-           ready = 0, fresh_empty = 0, observed_at = ?
+           ready = CASE WHEN ? = 1 THEN 0 ELSE ready END,
+           fresh_empty = CASE WHEN ? = 1 THEN 0 ELSE fresh_empty END,
+           physical_epoch = CASE WHEN ? = 1 THEN NULL ELSE physical_epoch END,
+           observed_at = CASE WHEN ? = 1 THEN ? ELSE observed_at END
        WHERE target_id = ? AND connection_generation = ?`
     )
     .run(
       provesPredecessorFenced ? 1 : 0,
+      closesCurrentGeneration ? 1 : 0,
+      closesCurrentGeneration ? 1 : 0,
+      closesCurrentGeneration ? 1 : 0,
+      closesCurrentGeneration ? 1 : 0,
       input.observedAt,
       input.targetId,
       current.connection_generation
@@ -264,11 +277,15 @@ export function upsertNanoHostRuntimeTarget(
     if (!isReadyObservation(input)) {
       throw new Error('NanoHost RuntimeTarget readiness proof is incomplete.');
     }
+    requireNanoHostPhysicalEpoch(input.physicalEpoch);
+    if (existing.ready === 1 && existing.physical_epoch !== input.physicalEpoch) {
+      throw new Error('NanoHost RuntimeTarget physical Epoch changed within one ready generation.');
+    }
 
     const update = coreDb.sqlite
       .prepare(
         `UPDATE nanohost_runtime_targets
-         SET predecessor_fenced = ?, ready = ?, fresh_empty = ?, observed_at = ?,
+         SET predecessor_fenced = ?, ready = ?, fresh_empty = ?, physical_epoch = ?, observed_at = ?,
              last_fresh_ready_at = ?
          WHERE target_id = ? AND identity_id = ? AND deployment_id = ?
            AND connection_generation = ?`
@@ -277,6 +294,7 @@ export function upsertNanoHostRuntimeTarget(
         input.predecessorFenced ? 1 : 0,
         input.ready ? 1 : 0,
         input.freshEmpty ? 1 : 0,
+        input.physicalEpoch,
         input.observedAt,
         input.observedAt,
         input.targetId,
@@ -324,7 +342,7 @@ function selectNanoHostRuntimeTarget(
   return coreDb.sqlite
     .prepare(
       `SELECT target_id, identity_id, deployment_id, connection_generation,
-              predecessor_fenced, ready, fresh_empty, observed_at,
+              predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at,
               slot_count
        FROM nanohost_runtime_targets
        WHERE target_id = ?`
@@ -349,6 +367,12 @@ function mapNanoHostRuntimeTargetRow(row: NanoHostRuntimeTargetRow): NanoHostRun
   if (row.slot_count !== 1) {
     throw new Error('NanoHost RuntimeTarget slot count is not the configured V1 value.');
   }
+  if (
+    (row.ready === 1 && (!row.physical_epoch || !/^[0-9a-f]{64}$/.test(row.physical_epoch))) ||
+    (row.ready === 0 && row.physical_epoch !== null)
+  ) {
+    throw new Error('NanoHost RuntimeTarget readiness and physical Epoch are inconsistent.');
+  }
   return {
     targetId: row.target_id,
     identityId: row.identity_id,
@@ -357,7 +381,22 @@ function mapNanoHostRuntimeTargetRow(row: NanoHostRuntimeTargetRow): NanoHostRun
     predecessorFenced: row.predecessor_fenced === 1,
     ready: row.ready === 1,
     freshEmpty: row.fresh_empty === 1,
+    physicalEpoch: row.physical_epoch,
     observedAt: row.observed_at,
     slotCount: 1,
   };
+}
+
+/** Validates one live physical Epoch witness and rejects the reserved cutover marker. */
+export function requireNanoHostPhysicalEpoch(value: string): string {
+  if (!/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error('NanoHost physical Epoch witness is invalid.');
+  }
+  return value;
+}
+
+/** Validates one immutable live origin or the sole cold-cutover provenance marker. */
+export function requireStoredNanoHostPhysicalEpoch(value: string): string {
+  if (value === 'pre-witness') return value;
+  return requireNanoHostPhysicalEpoch(value);
 }

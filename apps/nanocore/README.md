@@ -242,6 +242,16 @@ pnpm --filter @openkit/nanocore run workspace-storage:migrate -- \
 
 The command refuses to run while `server/runtime/nanocore.lock` exists, requires a new external backup destination that is separate from the data root, verifies the complete predecessor cold backup, performs the one-way migration, and writes the evidence-only relative-path report to `server/migrations/workspace-storage-v1-to-v2.json`. Retain the external backup for operator recovery; the report is not retry or resume authority and no compatibility reader remains.
 
+A deployment whose NanoHost runtime records predate physical Epoch witnesses requires a separate one-time stopped Core/Host cutover:
+
+```bash
+pnpm --filter @openkit/nanocore run physical-epoch:migrate -- \
+  --data-root /absolute/path/to/openkit-data \
+  --backup-root /absolute/path/to/openkit-pre-witness-backup
+```
+
+First prove the predecessor NanoHost effect domain fully stopped and preserve its Image Store and retained Worker volumes. The converter uses the existing cold-backup mechanism, refuses a running Core or repeat conversion, and atomically adds the current RuntimeTarget witness and immutable Sandbox/backend-session origins. Converted origins are `pre-witness`, never reusable live handles or defaults for normal writes; readiness starts cleared. Retain `server/migrations/physical-epoch-cutover.json` as evidence and the external backup for recovery. Deploy the matched Core and Host before normal startup; follow the [operator procedure](../../skills/openkit-ops/references/nanocore-operations.en.md#convert-a-pre-witness-deployment). Pending Tasks retain ordinary interrupted/unknown recovery rather than replay.
+
 If an existing authoritative Core, User, or Workspace SQLite database fails its boot integrity check, NanoCore stops before product admission, bootstrap credential issuance, or listener binding and leaves the original file unchanged. Derived indexes remain disposable and rebuildable.
 
 In local mode, NanoCore upserts the implicit `user_local` row on boot and accepts requests without auth headers. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.

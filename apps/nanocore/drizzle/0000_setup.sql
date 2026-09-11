@@ -149,6 +149,7 @@ CREATE TABLE `nanohost_runtime_targets` (
 	`predecessor_fenced` integer NOT NULL,
 	`ready` integer NOT NULL,
 	`fresh_empty` integer NOT NULL,
+	`physical_epoch` text,
 	`observed_at` text NOT NULL,
 	`slot_count` integer NOT NULL, `last_fresh_ready_at` text);
 
@@ -211,6 +212,7 @@ CREATE TABLE `permission_decisions` (
 CREATE TABLE `sandbox_runtime_records` (
 	`sandbox_runtime_id` text PRIMARY KEY NOT NULL,
 	`runtime_target_id` text NOT NULL REFERENCES `nanohost_runtime_targets`(`target_id`) ON DELETE RESTRICT,
+	`origin_physical_epoch` text NOT NULL,
 	`sandbox_binding_ref` text NOT NULL,
 	`sandbox_integration_binding_ref` text NOT NULL,
 	`sandbox_compatibility_key` text NOT NULL,
@@ -594,6 +596,7 @@ CREATE TABLE "worker_backend_sessions" (
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
 	`runtime_target_id` text,
+	`origin_physical_epoch` text NOT NULL,
 	`backend_lineage_json` text,
 	`sandbox_binding_ref` text
 );

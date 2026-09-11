@@ -6,12 +6,10 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 
 import { AgentEnvironmentPackageSnapshotRecordSchema } from '@openkit/app-api-schemas';
 import {
@@ -24,10 +22,14 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import {
+  assertBackupMatchesPredecessor,
+  assertExternalColdBackupDestination as assertExternalBackupDestination,
+  copyColdDataRoot,
   inventoryRegularFiles,
   type RegularFileInventoryEntry,
   type VerifiedDataRootBackupManifest,
   writeColdDataRootBackupManifest,
+  writeStorageJsonAtomically as writeJsonAtomically,
 } from './data-root-backup.js';
 import {
   type CoreDb,
@@ -303,7 +305,7 @@ export function migrateWorkspaceStorage(
 
     stage = 'backup';
     const backupStartedAt = now();
-    copyColdDataRoot(input.dataRoot, input.backupRoot);
+    copyColdDataRoot({ backupRoot: input.backupRoot, dataRoot: input.dataRoot });
     const backupCompletedAt = now();
     backup = writeColdDataRootBackupManifest({
       backupRoot: input.backupRoot,
@@ -693,54 +695,6 @@ function assertNanoCoreStopped(dataRoot: string): void {
 }
 
 /**
- * Rejects destructive or recursive cold-backup destinations.
- *
- * @param dataRoot Source data root.
- * @param backupRoot Caller-selected external destination.
- * @throws Error when either tree contains the other or the destination is unsafe.
- */
-function assertExternalBackupDestination(dataRoot: string, backupRoot: string): void {
-  const resolvedBackup = resolvePotentialPath(backupRoot);
-  const resolvedDataRoot = resolvePotentialPath(dataRoot);
-
-  if (dirname(resolve(backupRoot)) === resolve(backupRoot)) {
-    throw new Error('External backup root must not be a filesystem root.');
-  }
-  if (
-    resolvedBackup === resolvedDataRoot ||
-    resolvedBackup.startsWith(`${resolvedDataRoot}${sep}`) ||
-    resolvedDataRoot.startsWith(`${resolvedBackup}${sep}`)
-  ) {
-    throw new Error('External backup root must be separate from the source data root.');
-  }
-  if (existsSync(backupRoot)) {
-    throw new Error('External backup root must not already exist.');
-  }
-}
-
-/**
- * Resolves a path through its nearest existing ancestor without creating it.
- *
- * @param path Existing or prospective path.
- * @returns Canonical absolute path suitable for containment checks.
- */
-function resolvePotentialPath(path: string): string {
-  let existingAncestor = resolve(path);
-  const missingSegments: string[] = [];
-
-  while (!existsSync(existingAncestor)) {
-    const parent = dirname(existingAncestor);
-    if (parent === existingAncestor) {
-      break;
-    }
-    missingSegments.unshift(basename(existingAncestor));
-    existingAncestor = parent;
-  }
-
-  return resolve(realpathSync(existingAncestor), ...missingSegments);
-}
-
-/**
  * Reads and validates the only supported predecessor layout marker.
  *
  * @param dataRoot Predecessor data root.
@@ -828,22 +782,6 @@ function createMigrationSources(dataRoot: string): WorkspaceMigrationSource[] {
 }
 
 /**
- * Copies the stopped predecessor data root to an external destination.
- *
- * @param dataRoot Verified stopped source root.
- * @param backupRoot External destination to replace.
- */
-function copyColdDataRoot(dataRoot: string, backupRoot: string): void {
-  mkdirSync(dirname(backupRoot), { recursive: true });
-  cpSync(dataRoot, backupRoot, {
-    errorOnExist: true,
-    force: false,
-    preserveTimestamps: true,
-    recursive: true,
-  });
-}
-
-/**
  * Creates a deterministic backup id from predecessor lineage and capture time.
  *
  * @param deploymentId Preserved deployment identity.
@@ -856,28 +794,6 @@ function createBackupId(deploymentId: string, startedAt: string): string {
     .digest('hex')
     .slice(0, 24);
   return `backup_workspace_storage_${suffix}`;
-}
-
-/**
- * Verifies that the external manifest exactly matches the captured predecessor data root.
- *
- * @param backup Verified external cold backup.
- * @param predecessorInventory Captured complete predecessor file inventory.
- * @throws Error when any predecessor path, size, or digest differs from the backup.
- */
-function assertBackupMatchesPredecessor(
-  backup: VerifiedDataRootBackupManifest,
-  predecessorInventory: readonly RegularFileInventoryEntry[]
-): void {
-  const backupInventory = backup.manifest.contentInventory.map((file) => ({
-    bytes: file.bytes,
-    digest: file.digest,
-    path: file.path,
-  }));
-
-  if (JSON.stringify(predecessorInventory) !== JSON.stringify(backupInventory)) {
-    throw new Error('Verified backup does not match the complete predecessor inventory.');
-  }
 }
 
 /**
@@ -1397,24 +1313,6 @@ function mapWorkspaceInventories(
 function redactFailureMessage(error: unknown, dataRoot: string): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replaceAll(resolve(dataRoot), '<DATA_ROOT>').replaceAll(dataRoot, '<DATA_ROOT>');
-}
-
-/**
- * Writes one JSON document through a same-directory temporary file and rename.
- *
- * @param path Final JSON path.
- * @param value JSON-serializable value.
- */
-function writeJsonAtomically(path: string, value: unknown): void {
-  const temporaryPath = `${path}.tmp`;
-  mkdirSync(dirname(path), { recursive: true });
-
-  try {
-    writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`);
-    renameSync(temporaryPath, path);
-  } finally {
-    rmSync(temporaryPath, { force: true });
-  }
 }
 
 /**

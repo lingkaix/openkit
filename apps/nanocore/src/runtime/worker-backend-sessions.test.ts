@@ -13,6 +13,10 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target.js';
+import {
   getWorkerBackendSession,
   markWorkerBackendSessionLaunching,
   markWorkerBackendWorkspaceHandoffComplete,
@@ -85,6 +89,20 @@ function createFixture() {
     schedulerEpoch: 1,
     startupTimeoutMs: 120_000,
   });
+  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: 'deployment-test',
+    identityId: 'nanohost-test',
+    observedAt: '2026-07-15T00:00:02.500Z',
+    targetId: 'runtime-target-test',
+  });
+  upsertNanoHostRuntimeTarget(coreDb, {
+    ...target,
+    freshEmpty: true,
+    observedAt: '2026-07-15T00:00:02.750Z',
+    physicalEpoch: 'a'.repeat(64),
+    predecessorFenced: true,
+    ready: true,
+  });
   return coreDb;
 }
 
@@ -142,6 +160,7 @@ describe('worker backend sessions', () => {
         createdAt: '2026-07-15T00:00:03.000Z',
         leaseId: 'lease_backend_session',
         packageSnapshotId: 'aepsnap_backend_session',
+        originPhysicalEpoch: 'a'.repeat(64),
         physicalCleanedAt: null,
         runtimeTargetId: 'runtime-target-test',
         sandboxBindingRef: 'lease-binding:lease_backend_session',
@@ -156,6 +175,54 @@ describe('worker backend sessions', () => {
       });
       expect(replay).toEqual(first);
       expect(getWorkerBackendSession(coreDb, first.leaseId)).toEqual(first);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('retains the pre-effect origin across same-Epoch reconnect and rejects a different Epoch', () => {
+    const coreDb = createFixture();
+    try {
+      expect(
+        recordWorkerBackendSessionMaterializing(coreDb, materializingInput()).originPhysicalEpoch
+      ).toBe('a'.repeat(64));
+      const successor = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'nanohost-test',
+        observedAt: '2026-07-15T00:00:04.000Z',
+        targetId: 'runtime-target-test',
+      });
+      expect(() => recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toThrow(
+        /physical Epoch authority/i
+      );
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...successor,
+        freshEmpty: true,
+        observedAt: '2026-07-15T00:00:05.000Z',
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      expect(
+        recordWorkerBackendSessionMaterializing(coreDb, materializingInput()).originPhysicalEpoch
+      ).toBe('a'.repeat(64));
+      const replacement = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'nanohost-test',
+        observedAt: '2026-07-15T00:00:06.000Z',
+        targetId: 'runtime-target-test',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...replacement,
+        freshEmpty: true,
+        observedAt: '2026-07-15T00:00:07.000Z',
+        physicalEpoch: 'b'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      expect(() => recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toThrow(
+        /identity conflicts|physical Epoch/i
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -181,7 +248,7 @@ describe('worker backend sessions', () => {
             runtimeTargetId: 'runtime-target-changed',
           },
         })
-      ).toThrow('Worker backend session identity conflicts with its durable lease.');
+      ).toThrow(/physical Epoch authority/i);
       expect(() =>
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
@@ -305,13 +372,13 @@ describe('worker backend sessions', () => {
             `INSERT INTO worker_backend_sessions (
                lease_id, workspace_id, thread_id, turn_id, agent_session_id,
                package_snapshot_id, backend_kind, deployment_id, backend_version,
-               runtime_target_id, backend_lineage_json, sandbox_binding_ref, backend_session_id,
+               runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, backend_session_id,
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                state, created_at, updated_at
              )
              SELECT 'lease_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
                     'aepsnap_other', backend_kind, deployment_id, backend_version,
-                    runtime_target_id, backend_lineage_json, sandbox_binding_ref, 'openkit-as_other',
+                    runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, 'openkit-as_other',
                     'server/runtime/worker-backend-sessions/aepsnap_other',
                     'provider-other', workspace_handoff_state,
                     state, created_at, updated_at
@@ -337,14 +404,14 @@ describe('worker backend sessions', () => {
             `INSERT INTO worker_backend_sessions (
                lease_id, workspace_id, thread_id, turn_id, agent_session_id,
                package_snapshot_id, backend_kind, deployment_id, backend_version,
-               runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+               runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
                backend_session_id, staging_directory_ref, transient_provider_instance_id,
                workspace_handoff_state,
                state, created_at, updated_at
              )
              SELECT 'lease_provider_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
                     'aepsnap_provider_other', backend_kind, deployment_id, backend_version,
-                    runtime_target_id, backend_lineage_json, 'lease-binding:lease-provider-other',
+                    runtime_target_id, origin_physical_epoch, backend_lineage_json, 'lease-binding:lease-provider-other',
                     'openkit-as_other',
                     'server/runtime/worker-backend-sessions/aepsnap_provider_other',
                     transient_provider_instance_id, workspace_handoff_state,
@@ -412,13 +479,13 @@ describe('worker backend sessions', () => {
             `INSERT INTO worker_backend_sessions (
                lease_id, workspace_id, thread_id, turn_id, agent_session_id,
                package_snapshot_id, backend_kind, deployment_id, backend_version,
-               runtime_target_id, backend_lineage_json, sandbox_binding_ref, backend_session_id,
+               runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, backend_session_id,
                staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                state, created_at, updated_at
              )
              SELECT 'lease_other', 'ws_other', 'thread_other', 'turn_other', 'as_other',
                     ${replacements.package_snapshot_id}, backend_kind, deployment_id, backend_version,
-                    runtime_target_id, backend_lineage_json, ${replacements.sandbox_binding_ref}, ${replacements.backend_session_id},
+                    runtime_target_id, origin_physical_epoch, backend_lineage_json, ${replacements.sandbox_binding_ref}, ${replacements.backend_session_id},
                     ${replacements.staging_directory_ref}, transient_provider_instance_id,
                     workspace_handoff_state,
                     state, created_at, updated_at

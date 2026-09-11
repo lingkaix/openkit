@@ -88,6 +88,11 @@ import {
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { createGoalRecord, createGoalTask, updateGoalStatus } from './goal-store.js';
 import { commandInputHash } from './idempotent-command.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
@@ -170,6 +175,22 @@ function dispatchExecutorLease(
     readonly turnInput?: string;
   }
 ): void {
+  if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
+    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: 'deployment_fake_executor',
+      identityId: 'identity_fake_executor',
+      observedAt: '2026-07-15T00:00:00.000Z',
+      targetId: 'runtime-target-test',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...runtimeTarget,
+      freshEmpty: true,
+      observedAt: '2026-07-15T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
+  }
   upsertSchedulerWorkerPool(coreDb, {
     allowedBackendKinds: ['openshell'],
     allowedPlacements: ['local'],

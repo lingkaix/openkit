@@ -14,6 +14,8 @@ import {
 } from './nanohost-runtime-target.js';
 
 const targetId = 'runtime-target-test';
+const physicalEpochA = 'a'.repeat(64);
+const physicalEpochB = 'b'.repeat(64);
 
 describe('durable NanoHost RuntimeTarget authority', () => {
   it('accepts readiness only for an existing exact allocated generation and identity', () => {
@@ -26,6 +28,7 @@ describe('durable NanoHost RuntimeTarget authority', () => {
         freshEmpty: true,
         identityId: 'nanohost-test',
         observedAt: '2026-08-10T00:00:01.000Z',
+        physicalEpoch: physicalEpochA,
         predecessorFenced: true,
         ready: true,
         targetId,
@@ -56,6 +59,7 @@ describe('durable NanoHost RuntimeTarget authority', () => {
           freshEmpty: true,
           identityId: 'nanohost-test',
           observedAt: '2026-08-10T00:00:01.000Z',
+          physicalEpoch: physicalEpochA,
           predecessorFenced: true,
           ready: true,
           targetId,
@@ -128,6 +132,7 @@ describe('durable NanoHost RuntimeTarget authority', () => {
         freshEmpty: true,
         identityId: 'nanohost-test',
         observedAt: '2026-08-10T00:00:02.000Z',
+        physicalEpoch: physicalEpochA,
         predecessorFenced: true,
         ready: true,
         targetId,
@@ -146,7 +151,85 @@ describe('durable NanoHost RuntimeTarget authority', () => {
         freshEmpty: false,
         predecessorFenced: true,
         ready: false,
+        physicalEpoch: null,
       });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves one physical Epoch across reconnect readiness and rejects a changed witness in one ready generation', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-epoch-')));
+    applyMigrations(coreDb);
+    try {
+      const first = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'nanohost-test',
+        observedAt: '2026-08-10T00:00:00.000Z',
+        targetId,
+      });
+      const ready = upsertNanoHostRuntimeTarget(coreDb, {
+        ...first,
+        freshEmpty: true,
+        observedAt: '2026-08-10T00:00:01.000Z',
+        physicalEpoch: physicalEpochA,
+        predecessorFenced: true,
+        ready: true,
+      });
+      expect(ready.physicalEpoch).toBe(physicalEpochA);
+      expect(
+        upsertNanoHostRuntimeTarget(coreDb, {
+          ...ready,
+          observedAt: '2026-08-10T00:00:02.000Z',
+          physicalEpoch: physicalEpochA,
+        }).physicalEpoch
+      ).toBe(physicalEpochA);
+      expect(() =>
+        upsertNanoHostRuntimeTarget(coreDb, {
+          ...ready,
+          observedAt: '2026-08-10T00:00:03.000Z',
+          physicalEpoch: physicalEpochB,
+        })
+      ).toThrow(/physical Epoch changed/i);
+      expect(getNanoHostRuntimeTarget(coreDb, targetId)?.physicalEpoch).toBe(physicalEpochA);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves successor readiness when a fenced predecessor closes late', () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-stale-close-')));
+    applyMigrations(coreDb);
+    try {
+      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'nanohost-test',
+        observedAt: '2026-08-10T00:00:00.000Z',
+        targetId,
+      });
+      const successor = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'nanohost-test',
+        observedAt: '2026-08-10T00:00:01.000Z',
+        targetId,
+      });
+      const readySuccessor = upsertNanoHostRuntimeTarget(coreDb, {
+        ...successor,
+        freshEmpty: true,
+        observedAt: '2026-08-10T00:00:02.000Z',
+        physicalEpoch: physicalEpochB,
+        predecessorFenced: true,
+        ready: true,
+      });
+
+      expect(
+        recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+          authoritativeGeneration: successor.connectionGeneration,
+          closedGeneration: 1,
+          observedAt: '2026-08-10T00:00:03.000Z',
+          targetId,
+        })
+      ).toEqual(readySuccessor);
     } finally {
       coreDb.sqlite.close();
     }

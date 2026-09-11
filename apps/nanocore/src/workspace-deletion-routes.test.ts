@@ -365,20 +365,20 @@ it.each([
           `INSERT INTO worker_backend_sessions (
              lease_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_session_id,
-             runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+             runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
              staging_directory_ref, workspace_handoff_state, state,
              physical_cleaned_at, created_at, updated_at
            ) VALUES (
              'lease_deletion_backend', ?, 'thread_deletion_backend',
              'turn_deletion_backend', 'session_deletion_backend',
              'package_deletion_backend', 'test', 'deployment_deletion_backend',
-             'backend_deletion_backend', 'target_deletion_backend',
+             'backend_deletion_backend', 'target_deletion_backend', ?,
              '{"imageRef":"openkit/test:deletion"}', 'sandbox_deletion_backend',
              'server/runtime/deletion-backend',
              'complete', 'physical-cleaned', ?, ?, ?
            )`
         )
-        .run(workspace.id, timestamp, timestamp, timestamp);
+        .run(workspace.id, 'a'.repeat(64), timestamp, timestamp, timestamp);
     } else {
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {

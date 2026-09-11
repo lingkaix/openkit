@@ -4,9 +4,10 @@
  *
  * Composes the existing Token store, named-slot sink, and process-local session
  * authority. Does not invent a parallel credential framework or durable session
- * store. Live epoch/Session topology evidence remains WP-6.
+ * store. Durable RuntimeTarget readiness is cleared with the same fencing event.
  */
 
+import { recordNanoHostRuntimeTargetConnectionClose } from '../runtime/nanohost-runtime-target.js';
 import type { CoreDb } from '../storage/db.js';
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
@@ -79,6 +80,31 @@ export interface DecommissionNanoHostTransportAndFenceInput {
   readonly now?: Date;
 }
 
+/** Fences process authority and clears the same identity's durable readiness witness. */
+function fenceNanoHostTransportAuthority(
+  coreDb: CoreDb,
+  authority: NanoHostTransportSessionAuthority,
+  identityId: string,
+  observedAt: string
+): void {
+  const target = coreDb.sqlite
+    .prepare(
+      `SELECT target_id AS targetId, connection_generation AS connectionGeneration
+       FROM nanohost_runtime_targets WHERE identity_id = ?`
+    )
+    .get(identityId) as
+    | { readonly connectionGeneration: number; readonly targetId: string }
+    | undefined;
+  authority.fenceAuthoritative(identityId);
+  if (!target) return;
+  recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+    authoritativeGeneration: null,
+    closedGeneration: target.connectionGeneration,
+    observedAt,
+    targetId: target.targetId,
+  });
+}
+
 /**
  * Aborts rotation by revoking the successor, clearing its slot, and restoring
  * the predecessor as the sole usable authoritative credential.
@@ -126,7 +152,12 @@ export function revokeNanoHostTransportTokenAndFence(
   if (!record) {
     return null;
   }
-  authority.fenceAuthoritative(record.ownerNanoHostIdentityId);
+  fenceNanoHostTransportAuthority(
+    coreDb,
+    authority,
+    record.ownerNanoHostIdentityId,
+    (input.now ?? new Date()).toISOString()
+  );
   return record;
 }
 
@@ -149,7 +180,12 @@ export function fenceNanoHostTransportOnTokenUnusable(
 ): FenceNanoHostTransportOnTokenUnusableResult {
   const record = getNanoHostTransportTokenRecord(coreDb, input.tokenId);
   if (!record) {
-    authority.fenceAuthoritative(input.identityId);
+    fenceNanoHostTransportAuthority(
+      coreDb,
+      authority,
+      input.identityId,
+      (input.now ?? new Date()).toISOString()
+    );
     return { usable: false, fenced: true };
   }
 
@@ -167,7 +203,12 @@ export function fenceNanoHostTransportOnTokenUnusable(
   }
 
   const hadAuthority = authority.authoritativeGeneration(input.identityId) !== null;
-  authority.fenceAuthoritative(input.identityId);
+  fenceNanoHostTransportAuthority(
+    coreDb,
+    authority,
+    input.identityId,
+    (input.now ?? new Date()).toISOString()
+  );
   return { usable: false, fenced: hadAuthority };
 }
 
@@ -190,6 +231,11 @@ export function decommissionNanoHostTransportAndFence(
     decommissionNanoHostIntegrationIdentity(coreDb, input.identityId, input.deploymentId, options);
     return records;
   })();
-  authority.fenceAuthoritative(input.identityId);
+  fenceNanoHostTransportAuthority(
+    coreDb,
+    authority,
+    input.identityId,
+    (input.now ?? new Date()).toISOString()
+  );
   return revoked;
 }

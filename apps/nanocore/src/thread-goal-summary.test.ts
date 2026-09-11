@@ -45,6 +45,10 @@ import {
 } from './runtime/goal-store.js';
 import { createGoalVerificationRecord } from './runtime/goal-verification-records.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './runtime/nanohost-runtime-target.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
   PrepareAgentSessionForTurnInput,
@@ -4250,6 +4254,20 @@ describe('thread goal summary app API', () => {
 
     try {
       seedReadyRepository(coreDb, repositoryPath);
+      const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'identity-test',
+        observedAt: '2026-05-31T00:00:00.000Z',
+        targetId: 'runtime-target-test',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...runtimeTarget,
+        freshEmpty: true,
+        observedAt: '2026-05-31T00:00:01.000Z',
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
       const contextTurn = store.createTurn('ws_demo', thread.id, 'Provide context', {
         kind: 'user',
         id: 'user_local',

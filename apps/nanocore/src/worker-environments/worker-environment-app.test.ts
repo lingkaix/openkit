@@ -349,10 +349,10 @@ function attachResidentStorage(input: {
     .prepare(
       `INSERT INTO nanohost_runtime_targets (
          target_id, identity_id, deployment_id, connection_generation,
-         predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-       ) VALUES ('target_local', 'identity_local', 'deployment_local', 1, 1, 1, 1, ?, 1)`
+         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+       ) VALUES ('target_local', 'identity_local', 'deployment_local', 1, 1, 1, 1, ?, ?, 1)`
     )
-    .run(now);
+    .run('a'.repeat(64), now);
   const created = createWorkerStorageBinding(input.coreDb, {
     deploymentId: 'deployment_local',
     layout: STORAGE_LAYOUT,
@@ -386,16 +386,16 @@ function attachResidentStorage(input: {
     .prepare(
       `INSERT INTO sandbox_runtime_records (
          sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
-         sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest,
+         sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, origin_physical_epoch,
          environment_class, max_open_sessions, max_harnesses, max_active_turns,
          lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
        ) VALUES (
          'sandbox_runtime_worker_environment', 'target_local', ?,
-         'sandbox_integration_worker_environment', 'compatibility_worker_environment', ?,
+         'sandbox_integration_worker_environment', 'compatibility_worker_environment', ?, ?,
          'worker', 8, 8, 1, 'open', 'ready', 'accepting', 'clean', ?, ?
        )`
     )
-    .run(input.sandboxBindingRef, `sha256:${'f'.repeat(64)}`, now, now);
+    .run(input.sandboxBindingRef, `sha256:${'f'.repeat(64)}`, 'a'.repeat(64), now, now);
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO harness_instance_records (

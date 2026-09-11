@@ -13,6 +13,10 @@ import {
 } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target';
 import { runSchedulerLeaseWatchLoop } from './scheduler-lease-watch-loop';
 import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions';
 
@@ -204,6 +208,20 @@ describe('scheduler lease watch loop', () => {
 
     try {
       dispatchLease(coreDb, 'anchored_startup');
+      const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        deploymentId: 'deployment-test',
+        identityId: 'identity-test',
+        observedAt: '2026-07-05T00:00:00.000Z',
+        targetId: 'runtime-target-test',
+      });
+      upsertNanoHostRuntimeTarget(coreDb, {
+        ...runtimeTarget,
+        freshEmpty: true,
+        observedAt: '2026-07-05T00:00:01.000Z',
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
       recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',

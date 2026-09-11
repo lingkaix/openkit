@@ -8,17 +8,13 @@ use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-    mpsc,
-};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -102,8 +98,31 @@ unsafe fn unshare_network() -> i32 {
     }
 }
 
-/// Monotonic in-process discriminator for plans created in the same instant.
-static NEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
+/// Reads one fresh 128-bit discriminator from the execution host's OS random device.
+fn fresh_epoch_discriminator() -> io::Result<[u8; 16]> {
+    let mut source = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open("/dev/urandom")?;
+    if !source.metadata()?.file_type().is_char_device() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "epoch randomness source is not a character device",
+        ));
+    }
+    let mut discriminator = [0_u8; 16];
+    source.read_exact(&mut discriminator)?;
+    Ok(discriminator)
+}
+
+/// Composes one bounded epoch name from a fresh random discriminator.
+fn compose_epoch_name(discriminator: &[u8; 16]) -> String {
+    let discriminator = discriminator
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("epoch-{discriminator}")
+}
 
 /// Runtime backend accepted by NanoHost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +271,7 @@ impl EpochMemberSpec {
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct EpochPlan {
+    epoch_name: String,
     epoch_root: PathBuf,
     run_root: PathBuf,
     containerd_socket: PathBuf,
@@ -270,19 +290,15 @@ impl EpochPlan {
     ///
     /// # Errors
     ///
-    /// Returns an error if the system clock cannot produce a fresh epoch name.
+    /// Returns an error if OS randomness cannot produce a fresh epoch name.
     pub fn fresh(
         state_root: &Path,
         run_root: &Path,
         gateway: &Path,
         nameservers: &[Ipv4Addr],
     ) -> io::Result<Self> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos();
-        let sequence = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let epoch_name = format!("epoch-{}-{timestamp}-{sequence}", std::process::id());
+        let discriminator = fresh_epoch_discriminator()?;
+        let epoch_name = compose_epoch_name(&discriminator);
         let epoch_root = state_root.join(&epoch_name);
         let run_root = run_root.join(&epoch_name);
         let containerd_socket = run_root.join("containerd.sock");
@@ -395,6 +411,7 @@ impl EpochPlan {
             },
         ];
         Ok(Self {
+            epoch_name,
             epoch_root,
             run_root,
             containerd_socket,
@@ -460,6 +477,11 @@ impl EpochPlan {
     pub fn members(&self) -> &[EpochMemberSpec] {
         &self.members
     }
+}
+
+/// Derives the private physical-incarnation witness from one fresh epoch name.
+fn physical_epoch_for_plan(plan: &EpochPlan) -> String {
+    format!("{:x}", Sha256::digest(plan.epoch_name.as_bytes()))
 }
 
 /// Closed certainty-loss points retained for an accepted sandbox create.
@@ -992,6 +1014,7 @@ pub struct EpochCoordinator {
     image_store: ImageStore,
     image_backend: DockerImageBackend,
     persistent_volumes: PersistentVolumeStore,
+    physical_epoch: String,
     run_root: PathBuf,
     bridge: Option<OpenSandboxBridge>,
     route_projection: OuterRouteProjection,
@@ -1143,6 +1166,7 @@ impl EpochCoordinator {
         image_backend: &mut Option<DockerImageBackend>,
         persistent_volumes: &mut Option<PersistentVolumeStore>,
     ) -> Result<Self, EpochFault> {
+        let physical_epoch = physical_epoch_for_plan(plan);
         let image_store = image_store.take().ok_or(EpochFault::PartialStart)?;
         let image_backend = image_backend.take().ok_or(EpochFault::PartialStart)?;
         let persistent_volumes = persistent_volumes.take().ok_or(EpochFault::PartialStart)?;
@@ -1364,12 +1388,18 @@ impl EpochCoordinator {
             image_store,
             image_backend,
             persistent_volumes,
+            physical_epoch,
             run_root: plan.run_root().to_path_buf(),
             bridge: None,
             route_projection: OuterRouteProjection::new(),
             current_sandbox: None,
             worker_bootstrap_monitor: None,
         })
+    }
+
+    /// Returns the private physical-incarnation witness retained by this coordinator.
+    pub fn physical_epoch(&self) -> &str {
+        &self.physical_epoch
     }
 
     /// Returns the epoch-retained outer route projection for successor rebinding.
@@ -2595,15 +2625,17 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use sha2::{Digest, Sha256};
+
     use super::{
         AttemptImportOutcome, CreateCertaintyLossPoint, CreateUncertainty, EpochAction,
         EpochEvidenceWriter, EpochFault, EpochInvalidationTrigger, EpochMemberMonitor,
         EpochNetworkNamespaceMode, EpochPlan, EpochProcessRole, ImageBackend, ImageImportError,
-        MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, dockerd_dns_arguments,
-        gateway_cert_command, has_up_tap0_default_route, import_attempt_image,
-        invalidation_report_fields, invalidation_trigger, is_canonical_local_digest,
-        preflight_lifecycle_result, resolve_epoch_nameservers, run_image_metadata_command,
-        wait_for_success,
+        MID_EPOCH_IMPORT_TIMEOUT, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, compose_epoch_name,
+        dockerd_dns_arguments, gateway_cert_command, has_up_tap0_default_route,
+        import_attempt_image, invalidation_report_fields, invalidation_trigger,
+        is_canonical_local_digest, physical_epoch_for_plan, preflight_lifecycle_result,
+        resolve_epoch_nameservers, run_image_metadata_command, wait_for_success,
     };
     #[cfg(target_os = "linux")]
     use super::{EpochMemberSpec, spawn_member, wait_for_child_success};
@@ -2927,7 +2959,7 @@ mod tests {
             .split_once("unsafe fn unshare_network() -> i32 {")
             .expect("network unshare wrapper")
             .1
-            .split_once("/// Monotonic in-process discriminator")
+            .split_once("/// Reads one fresh 128-bit discriminator")
             .expect("end of network unshare wrapper")
             .0;
         assert_eq!(
@@ -3241,6 +3273,11 @@ mod tests {
         );
         for path in [first.containerd_socket(), first.docker_socket()] {
             assert!(path.starts_with(run_root));
+            assert!(
+                path.to_str().expect("ASCII production socket path").len() <= 107,
+                "production Unix socket path exceeds Linux sun_path: {}",
+                path.display()
+            );
         }
         assert!(
             first.gateway_auth_path().starts_with(state_root)
@@ -3443,6 +3480,52 @@ mod tests {
         assert_eq!(
             dockerd_dns_arguments(&resolvers),
             ["--dns", "1.1.1.1", "--dns", "8.8.8.8", "--dns", "9.9.9.9",]
+        );
+    }
+
+    #[test]
+    fn physical_epoch_is_stable_for_one_plan_and_changes_for_replacement() {
+        let state_root = Path::new("/var/lib/openkit/nanohost");
+        let run_root = Path::new("/run/openkit/nanohost");
+        let gateway = Path::new("/usr/lib/openkit/openshell-gateway");
+        let nameservers = accepted_nameservers();
+        let first = EpochPlan::fresh(state_root, run_root, gateway, &nameservers)
+            .expect("first fresh plan");
+        let replacement = EpochPlan::fresh(state_root, run_root, gateway, &nameservers)
+            .expect("replacement fresh plan");
+
+        let first_physical_epoch = physical_epoch_for_plan(&first);
+        let epoch_name = first
+            .epoch_root()
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .expect("ASCII epoch name");
+        assert_eq!(first.run_root().file_name(), first.epoch_root().file_name());
+        assert_eq!(
+            first_physical_epoch,
+            format!("{:x}", Sha256::digest(epoch_name.as_bytes()))
+        );
+        assert_eq!(first_physical_epoch, physical_epoch_for_plan(&first));
+        assert_eq!(first_physical_epoch.len(), 64);
+        assert!(
+            first_physical_epoch
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        assert_ne!(first_physical_epoch, physical_epoch_for_plan(&replacement));
+    }
+
+    #[test]
+    fn random_discriminator_produces_distinct_bounded_replacement_epoch_names() {
+        let first = compose_epoch_name(&[0x11; 16]);
+        let replacement = compose_epoch_name(&[0x22; 16]);
+
+        assert_eq!(first, format!("epoch-{}", "11".repeat(16)));
+        assert_eq!(replacement, format!("epoch-{}", "22".repeat(16)));
+        assert_ne!(first, replacement);
+        assert_ne!(
+            format!("{:x}", Sha256::digest(first.as_bytes())),
+            format!("{:x}", Sha256::digest(replacement.as_bytes()))
         );
     }
 

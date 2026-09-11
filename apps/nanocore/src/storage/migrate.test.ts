@@ -328,6 +328,7 @@ describe('database setup', () => {
         'predecessor_fenced',
         'ready',
         'fresh_empty',
+        'physical_epoch',
         'observed_at',
         'slot_count',
         'last_fresh_ready_at',
@@ -335,6 +336,7 @@ describe('database setup', () => {
       expect(listColumnNames(coreDb, 'sandbox_runtime_records')).toEqual([
         'sandbox_runtime_id',
         'runtime_target_id',
+        'origin_physical_epoch',
         'sandbox_binding_ref',
         'sandbox_integration_binding_ref',
         'sandbox_compatibility_key',
@@ -456,6 +458,7 @@ describe('database setup', () => {
         'created_at',
         'updated_at',
         'runtime_target_id',
+        'origin_physical_epoch',
         'backend_lineage_json',
         'sandbox_binding_ref',
       ]);
@@ -489,25 +492,28 @@ describe('database setup', () => {
         sandbox_binding_ref: true,
         worker_image: true,
       });
+      expect(
+        backendProjectionColumns.find(({ name }) => name === 'origin_physical_epoch')?.notnull
+      ).toBe(1);
       coreDb.sqlite
         .prepare(
           `INSERT INTO worker_backend_sessions (
              lease_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_version,
              worker_image, cell_target_id, placement, gateway_name, gateway_endpoint,
-             backend_session_id, staging_directory_ref, transient_provider_instance_id,
+             backend_session_id, origin_physical_epoch, staging_directory_ref, transient_provider_instance_id,
              workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
              'lease-setup-writer', 'ws-setup-writer', 'thread-setup-writer',
              'turn-setup-writer', 'session-setup-writer', 'aepsnap-setup-writer',
              'openshell', 'deployment-setup-writer', '0.0.80',
              'openkit/worker:test', 'cell-setup-writer', 'local', 'openshell', NULL,
-             'sandbox-setup-writer', 'server/runtime/setup-writer', NULL,
+             'sandbox-setup-writer', ?, 'server/runtime/setup-writer', NULL,
              'pending', 'materializing',
              '2026-08-10T00:00:00.000Z', '2026-08-10T00:00:00.000Z'
            )`
         )
-        .run();
+        .run('a'.repeat(64));
       expect(
         coreDb.sqlite
           .prepare(
@@ -819,7 +825,7 @@ describe('database setup', () => {
     }
   });
 
-  it('keeps schema mutation SQL inside the committed database setup', () => {
+  it('keeps schema mutation SQL inside the committed setup or exact cold cutover', () => {
     const sourceRoot = join(process.cwd(), 'src');
     const schemaMutationPattern = new RegExp(
       `\\b(?:${['CREATE', 'ALTER', 'DROP'].join('|')})\\s+TABLE\\b`,
@@ -828,6 +834,8 @@ describe('database setup', () => {
     const offenders = listSourceFiles(sourceRoot)
       .filter((path) => !path.endsWith('migrate.test.ts'))
       .filter((path) => !path.endsWith(`generative-kernel${sep}native.ts`))
+      .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.ts`))
+      .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.test.ts`))
       .filter((path) => schemaMutationPattern.test(readFileSync(path, 'utf8')))
       .map((path) => relative(process.cwd(), path));
 

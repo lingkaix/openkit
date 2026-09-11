@@ -21,6 +21,11 @@ import { LOCAL_USER_ID, workspaceDbPath } from '../storage/fs-layout';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
 import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment';
 import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target';
+import {
   runSchedulerLeaseMaintenanceOnce,
   startSchedulerLeaseMaintenanceService,
 } from './scheduler-lease-maintenance-service';
@@ -208,6 +213,22 @@ function recordBackendSession(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string
 ): void {
+  if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
+    const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: 'deployment-test',
+      identityId: 'identity-test',
+      observedAt: '2026-07-05T00:00:00.000Z',
+      targetId: 'runtime-target-test',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...allocated,
+      freshEmpty: true,
+      observedAt: '2026-07-05T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
+  }
   recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
     backendVersion: '0.0.99',

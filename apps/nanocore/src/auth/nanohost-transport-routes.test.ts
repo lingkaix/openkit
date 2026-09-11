@@ -220,6 +220,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         predecessorFenced: true,
         ready: true,
         freshEmpty: true,
+        physicalEpoch: 'a'.repeat(64),
         observedAt: '2026-08-15T01:02:03.000Z',
       });
 

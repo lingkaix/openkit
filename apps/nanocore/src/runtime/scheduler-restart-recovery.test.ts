@@ -27,7 +27,6 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
-  recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import type {
@@ -244,6 +243,25 @@ function recordBackendSession(
   suffix: string,
   state: WorkerBackendSessionState = 'materializing'
 ): void {
+  const existingRuntimeTarget = coreDb.sqlite
+    .prepare('SELECT target_id FROM nanohost_runtime_targets LIMIT 1')
+    .get() as { readonly target_id: string } | undefined;
+  if (!existingRuntimeTarget) {
+    const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: 'deployment-test',
+      identityId: 'identity-test',
+      observedAt: '2026-07-05T00:00:00.000Z',
+      targetId: 'runtime-target-test',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...allocated,
+      freshEmpty: true,
+      observedAt: '2026-07-05T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
+  }
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   try {
     applyScopedMigrations(workspaceDb);
@@ -471,10 +489,10 @@ describe('scheduler restart recovery', () => {
         .prepare(
           `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-           ) VALUES (?, ?, 'deployment-test', 1, 1, 1, 1, ?, 1)`
+             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+           ) VALUES (?, ?, 'deployment-test', 1, 1, 1, 1, ?, ?, 1)`
         )
-        .run(runtimeTargetId, `identity_${suffix}`, '2026-07-05T00:00:00.000Z');
+        .run(runtimeTargetId, `identity_${suffix}`, 'a'.repeat(64), '2026-07-05T00:00:00.000Z');
       expectFencedAuthority();
 
       const initialRuntime = createRuntime();
@@ -494,6 +512,7 @@ describe('scheduler restart recovery', () => {
         freshEmpty: true,
         identityId: `identity_${suffix}`,
         observedAt: sameCoordinatorReadyAt,
+        physicalEpoch: 'a'.repeat(64),
         predecessorFenced: true,
         ready: true,
         targetId: runtimeTargetId,
@@ -515,10 +534,15 @@ describe('scheduler restart recovery', () => {
       coreDb.sqlite
         .prepare(
           `UPDATE nanohost_runtime_targets
-           SET predecessor_fenced = 1, ready = 1, fresh_empty = 1, observed_at = ?
+           SET predecessor_fenced = 1, ready = 1, fresh_empty = 1,
+               physical_epoch = ?, observed_at = ?
            WHERE target_id = ?`
         )
-        .run(new Date(Date.parse(fenceObservedAt) - 1).toISOString(), runtimeTargetId);
+        .run(
+          'a'.repeat(64),
+          new Date(Date.parse(fenceObservedAt) - 1).toISOString(),
+          runtimeTargetId
+        );
       await expectMaintenanceFenced(recovery.schedulerEpoch, initialInput);
 
       const restartedRuntime = createRuntime();
@@ -537,13 +561,15 @@ describe('scheduler restart recovery', () => {
         coreDb.sqlite
           .prepare(
             `UPDATE nanohost_runtime_targets
-             SET predecessor_fenced = ?, ready = ?, fresh_empty = ?, observed_at = ?
+             SET predecessor_fenced = ?, ready = ?, fresh_empty = ?,
+                 physical_epoch = ?, observed_at = ?
              WHERE target_id = ?`
           )
           .run(
             predecessorFenced,
             ready,
             freshEmpty,
+            ready === 1 ? 'a'.repeat(64) : null,
             new Date(Date.parse(fenceObservedAt) + observedOffsetMs).toISOString(),
             runtimeTargetId
           );
@@ -563,14 +589,9 @@ describe('scheduler restart recovery', () => {
         freshEmpty: true,
         identityId: `identity_${suffix}`,
         observedAt: successorObservedAt,
+        physicalEpoch: 'b'.repeat(64),
         predecessorFenced: true,
         ready: true,
-        targetId: runtimeTargetId,
-      });
-      recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-        authoritativeGeneration: null,
-        closedGeneration: successor.connectionGeneration,
-        observedAt: new Date(Date.parse(successorObservedAt) + 1).toISOString(),
         targetId: runtimeTargetId,
       });
       const finalMaintenance = runSchedulerRecoveryMaintenance(

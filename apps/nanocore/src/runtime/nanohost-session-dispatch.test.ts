@@ -57,7 +57,21 @@ describe('authoritative NanoHost session dispatch', () => {
         identityId: target.identityId,
         physicalConnection: physical,
       });
-      await dispatch.readiness!(physical, Buffer.from('{}'), target);
+      await expect(dispatch.readiness!(physical, Buffer.from('{}'), target)).rejects.toThrow(
+        /physicalEpoch/i
+      );
+      await dispatch.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
+      await expect(
+        dispatch.readiness!(
+          physical,
+          Buffer.from(JSON.stringify({ physicalEpoch: 'b'.repeat(64) })),
+          target
+        )
+      ).rejects.toThrow(/physical Epoch changed/i);
       const requestId = 'e'.repeat(64);
       const imageSettlement = {
         authoredArtifactId: 'artifact_settlement',
@@ -87,7 +101,11 @@ describe('authoritative NanoHost session dispatch', () => {
       await dispatch.result(physical, 'image.acquire', result);
       const restarted = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
       await expect(restarted.result(physical, 'image.acquire', result)).resolves.toBeUndefined();
-      await restarted.readiness!(physical, Buffer.from('{}'), target);
+      await restarted.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
       const replay = restarted.effect({
         kind: 'image.acquire',
         requestId,
@@ -141,7 +159,10 @@ describe('authoritative NanoHost session dispatch', () => {
     };
 
     await expect(
-      readiness.readiness(retiredHandle, new TextEncoder().encode('{}'))
+      readiness.readiness(
+        retiredHandle,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) }))
+      )
     ).rejects.toThrow(/native|connection|authoritative|fenc/i);
 
     await expect(
@@ -280,7 +301,11 @@ describe('authoritative NanoHost session dispatch', () => {
           physicalConnection: firstPhysical,
         }).role
       ).toBe('authoritative');
-      await dispatch.readiness?.(firstPhysical, new TextEncoder().encode('{}'), target);
+      await dispatch.readiness?.(
+        firstPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
 
       const requestId = 'a'.repeat(64);
       const pending = dispatch.effect({
@@ -323,7 +348,11 @@ describe('authoritative NanoHost session dispatch', () => {
         })
       ).rejects.toThrow(/authoritative|connection|candidate/i);
       authority.fencePredecessor(target.identityId, 1);
-      await dispatch.readiness?.(successorPhysical, new TextEncoder().encode('{}'), target);
+      await dispatch.readiness?.(
+        successorPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
       await expect(
         dispatch.result(successorPhysical, 'image.acquire', {
           failureCode: 'effect_failed',
@@ -474,7 +503,11 @@ describe('authoritative NanoHost session dispatch', () => {
         }).role
       ).toBe('candidate');
       authority.fencePredecessor(target.identityId, 2);
-      await dispatch.readiness?.(thirdPhysical, new TextEncoder().encode('{}'), target);
+      await dispatch.readiness?.(
+        thirdPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
 
       for (const request of ephemeralRequests) {
         await expect(dispatch.poll(thirdPhysical, request.kind)).resolves.toBeNull();
@@ -563,7 +596,11 @@ describe('authoritative NanoHost session dispatch', () => {
         }).role
       ).toBe('candidate');
       authority.fencePredecessor(target.identityId, 3);
-      await dispatch.readiness?.(fourthPhysical, new TextEncoder().encode('{}'), target);
+      await dispatch.readiness?.(
+        fourthPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
 
       await expect(dispatch.poll(fourthPhysical, pollOrder[0])).rejects.toThrow(/unknown|fenc/i);
       const unknownError = await unknownOutcome;
@@ -631,7 +668,11 @@ describe('authoritative NanoHost session dispatch', () => {
           physicalConnection: firstPhysical,
         }).role
       ).toBe('authoritative');
-      await dispatch.readiness?.(firstPhysical, new TextEncoder().encode('{}'), target);
+      await dispatch.readiness?.(
+        firstPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
 
       const createRequestId = '6'.repeat(64);
       let createSettled = false;
@@ -687,7 +728,11 @@ describe('authoritative NanoHost session dispatch', () => {
         }).role
       ).toBe('candidate');
       authority.fencePredecessor(target.identityId, 1);
-      await dispatch.readiness?.(successorPhysical, new TextEncoder().encode('{}'), target);
+      await dispatch.readiness?.(
+        successorPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
 
       await expect(dispatch.poll(successorPhysical, 'image.acquire')).rejects.toThrow(
         /unknown|fenc/i
@@ -719,7 +764,11 @@ describe('authoritative NanoHost session dispatch', () => {
           physicalConnection: freshPhysical,
         }).role
       ).toBe('authoritative');
-      await dispatch.readiness?.(freshPhysical, new TextEncoder().encode('{}'), target);
+      await dispatch.readiness?.(
+        freshPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
 
       await expect(dispatch.poll(freshPhysical, 'image.acquire')).resolves.toMatchObject({
         requestId: queuedRequestId,
@@ -734,6 +783,117 @@ describe('authoritative NanoHost session dispatch', () => {
       firstClient?.destroy();
       successorClient?.destroy();
       freshClient?.destroy();
+      server.close();
+      await once(server, 'close');
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('never delivers a queued effect to a different physical Epoch', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-effect-epoch-origin-')));
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = {
+      coreDb,
+      deploymentId: 'deployment-effect-epoch-origin',
+      identityId: 'nanohost-effect-epoch-origin',
+      targetId: 'nanohost-effect-epoch-origin',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: '2026-09-11T00:00:00.000Z',
+    });
+
+    let acceptConnection: ((physicalConnection: object) => void) | undefined;
+    const server = createHttp2Server((request, response) => {
+      const physicalConnection = readNanoHostPhysicalConnectionContext(request);
+      if (physicalConnection) acceptConnection?.(physicalConnection);
+      response.writeHead(204).end();
+    });
+    const clients: ReturnType<typeof connectHttp2>[] = [];
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Effect Epoch test server did not expose an address.');
+      }
+      const origin = `http://127.0.0.1:${address.port}`;
+      const connect = async (generation: number): Promise<object> => {
+        const physicalPromise = new Promise<object>((resolve) => {
+          acceptConnection = resolve;
+        });
+        const client = connectHttp2(origin);
+        clients.push(client);
+        await once(client, 'connect');
+        client.request({ ':method': 'POST', ':path': '/' }).end();
+        const physical = await physicalPromise;
+        authority.admit({
+          connectionGeneration: generation,
+          identityId: target.identityId,
+          physicalConnection: physical,
+        });
+        if (generation > 1) authority.fencePredecessor(target.identityId, generation - 1);
+        return physical;
+      };
+
+      const firstPhysical = await connect(1);
+      await dispatch.readiness?.(
+        firstPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
+      const staleRequestId = '1'.repeat(64);
+      const staleOutcome = dispatch.effect({
+        input: { imageDigest: `sha256:${'1'.repeat(64)}` },
+        kind: 'image.inspect',
+        requestId: staleRequestId,
+      });
+      void staleOutcome.catch(() => undefined);
+
+      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: '2026-09-11T00:00:01.000Z',
+      });
+      await expect(dispatch.poll(firstPhysical, 'image.inspect')).rejects.toThrow(
+        /current physical Epoch authority/i
+      );
+      const secondPhysical = await connect(2);
+      await dispatch.readiness?.(
+        secondPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'b'.repeat(64) })),
+        target
+      );
+      await expect(dispatch.poll(secondPhysical, 'image.inspect')).resolves.toBeNull();
+      await expect(staleOutcome).rejects.toThrow(/physical Epoch|origin/i);
+
+      const reconnectRequestId = '2'.repeat(64);
+      const reconnectOutcome = dispatch.effect({
+        input: { imageDigest: `sha256:${'2'.repeat(64)}` },
+        kind: 'image.inspect',
+        requestId: reconnectRequestId,
+      });
+      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: '2026-09-11T00:00:02.000Z',
+      });
+      const thirdPhysical = await connect(3);
+      await dispatch.readiness?.(
+        thirdPhysical,
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: 'b'.repeat(64) })),
+        target
+      );
+      await expect(dispatch.poll(thirdPhysical, 'image.inspect')).resolves.toMatchObject({
+        requestId: reconnectRequestId,
+      });
+      await dispatch.result(thirdPhysical, 'image.inspect', {
+        digest: `sha256:${'2'.repeat(64)}`,
+        requestId: reconnectRequestId,
+      });
+      await expect(reconnectOutcome).resolves.toEqual({ digest: `sha256:${'2'.repeat(64)}` });
+    } finally {
+      for (const client of clients) client.destroy();
       server.close();
       await once(server, 'close');
       coreDb.sqlite.close();

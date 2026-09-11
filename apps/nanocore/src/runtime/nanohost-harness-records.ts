@@ -5,6 +5,9 @@ import { bindSchedulerLeaseRouteTokenHashes } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { hashWorkerRouteToken } from './worker-control-gateway.js';
 
+/** Exact enqueue-to-result outage budget for one private Harness operation. */
+export const NANO_HOST_HARNESS_RESULT_BUDGET_MS = 300_000;
+
 /** Exact private Harness operation vocabulary. */
 export const NANO_HOST_HARNESS_OPERATIONS = [
   'session.open',
@@ -47,6 +50,7 @@ export interface CreateNanoHostHarnessRuntimeInput {
   readonly harnessCompatibilityKey: string;
   readonly harnessInstanceId: string;
   readonly imageDigest: string;
+  readonly originPhysicalEpoch: string;
   readonly sandboxBindingRef: string;
   readonly sandboxCompatibilityKey: string;
   readonly sandboxIntegrationBindingRef: string;
@@ -93,6 +97,12 @@ export interface SettleNanoHostHarnessOperationInput {
 export interface MarkNanoHostHarnessOperationUnknownInput {
   readonly harnessBindingRef: string;
   readonly operationId: string;
+  readonly timestamp: string;
+}
+
+/** Input for expiring one command that was never delivered. */
+export interface ExpireNanoHostHarnessQueuedOperationInput {
+  readonly harnessBindingRef: string;
   readonly timestamp: string;
 }
 
@@ -172,6 +182,7 @@ interface HarnessRow {
   readonly operation: NanoHostHarnessOperation | null;
   readonly command_body_json: string | null;
   readonly result_json: string | null;
+  readonly updated_at: string;
 }
 
 /** Creates the fixed first-slice private Sandbox and Codex Harness projections. */
@@ -191,6 +202,9 @@ export function createNanoHostHarnessRuntime(
   if (!/^sha256:[0-9a-f]{64}$/.test(input.imageDigest)) {
     throw new Error('NanoHost image digest is invalid.');
   }
+  if (!/^[0-9a-f]{64}$/.test(input.originPhysicalEpoch)) {
+    throw new Error('NanoHost Sandbox physical Epoch origin is invalid.');
+  }
   if (
     new Set([input.sandboxBindingRef, input.sandboxIntegrationBindingRef, input.harnessBindingRef])
       .size !== 3
@@ -206,26 +220,51 @@ export function createNanoHostHarnessRuntime(
       | {
           readonly image_digest: string;
           readonly max_harnesses: number;
+          readonly origin_physical_epoch: string;
           readonly runtime_target_id: string;
           readonly sandbox_binding_ref: string;
           readonly sandbox_compatibility_key: string;
           readonly sandbox_integration_binding_ref: string;
         }
       | undefined;
+    const target = coreDb.sqlite
+      .prepare(
+        `SELECT physical_epoch AS physicalEpoch, predecessor_fenced AS predecessorFenced,
+                ready, fresh_empty AS freshEmpty
+         FROM nanohost_runtime_targets WHERE target_id = ?`
+      )
+      .get(input.runtimeTargetId) as
+      | {
+          readonly freshEmpty: 0 | 1;
+          readonly physicalEpoch: string | null;
+          readonly predecessorFenced: 0 | 1;
+          readonly ready: 0 | 1;
+        }
+      | undefined;
+    if (
+      !target ||
+      target.predecessorFenced !== 1 ||
+      target.ready !== 1 ||
+      target.freshEmpty !== 1 ||
+      target.physicalEpoch !== input.originPhysicalEpoch
+    ) {
+      throw new Error('NanoHost Sandbox publication physical Epoch is not current.');
+    }
     if (!sandbox) {
       coreDb.sqlite
         .prepare(
           `INSERT INTO sandbox_runtime_records (
-             sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
+             sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
              sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest,
              environment_class, max_open_sessions, max_harnesses, max_active_turns,
              lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, 'shared-worker', 64, 8, 1,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'shared-worker', 64, 8, 1,
              'open', 'ready', 'accepting', 'clean', ?, ?)`
         )
         .run(
           input.sandboxRuntimeId,
           input.runtimeTargetId,
+          input.originPhysicalEpoch,
           input.sandboxBindingRef,
           input.sandboxIntegrationBindingRef,
           input.sandboxCompatibilityKey,
@@ -235,6 +274,7 @@ export function createNanoHostHarnessRuntime(
         );
     } else if (
       sandbox.runtime_target_id !== input.runtimeTargetId ||
+      sandbox.origin_physical_epoch !== input.originPhysicalEpoch ||
       sandbox.sandbox_binding_ref !== input.sandboxBindingRef ||
       sandbox.sandbox_integration_binding_ref !== input.sandboxIntegrationBindingRef ||
       sandbox.sandbox_compatibility_key !== input.sandboxCompatibilityKey ||
@@ -642,6 +682,12 @@ export function dispatchNanoHostHarnessOperation(
       coreDb.sqlite.exec('COMMIT');
       return null;
     }
+    const now = input.now?.() ?? new Date().toISOString();
+    if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
+      setHarnessUnknown(coreDb, harness.harness_instance_id, now, 'queued');
+      coreDb.sqlite.exec('COMMIT');
+      return null;
+    }
     if (
       harness.operation_sequence !== harness.next_sequence ||
       !harness.operation ||
@@ -713,7 +759,7 @@ export function dispatchNanoHostHarnessOperation(
         operationId,
         durableBodyJson,
         sha256(durableBodyJson),
-        input.now?.() ?? new Date().toISOString(),
+        now,
         harness.harness_instance_id,
         harness.next_sequence,
         harness.next_sequence
@@ -731,6 +777,25 @@ export function dispatchNanoHostHarnessOperation(
       schemaVersion: 2,
       sequence: harness.next_sequence,
     };
+  } catch (error) {
+    coreDb.sqlite.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+/** Expires one exact queued command before it can be delivered. */
+export function expireNanoHostHarnessQueuedOperation(
+  coreDb: CoreDb,
+  input: ExpireNanoHostHarnessQueuedOperationInput
+): void {
+  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+  try {
+    const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+    if (harness.operation_state !== 'queued') {
+      throw new Error('NanoHost Harness enqueue expiry does not match a queued operation.');
+    }
+    setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp, 'queued');
+    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
     throw error;
@@ -1288,15 +1353,20 @@ function requireNativeHandle(body: Readonly<Record<string, unknown>>): void {
 }
 
 /** Widens uncertain execution to the existing Harness admission fence. */
-function setHarnessUnknown(coreDb: CoreDb, harnessInstanceId: string, timestamp: string): void {
+function setHarnessUnknown(
+  coreDb: CoreDb,
+  harnessInstanceId: string,
+  timestamp: string,
+  fromState: 'queued' | 'dispatched' = 'dispatched'
+): void {
   const update = coreDb.sqlite
     .prepare(
       `UPDATE harness_instance_records
        SET operation_state = 'unknown', lifecycle_state = 'failed',
            drain_state = 'draining', updated_at = ?
-       WHERE harness_instance_id = ? AND operation_state = 'dispatched'`
+       WHERE harness_instance_id = ? AND operation_state = ?`
     )
-    .run(timestamp, harnessInstanceId);
+    .run(timestamp, harnessInstanceId, fromState);
   if (update.changes !== 1) {
     throw new Error('NanoHost Harness unknown cleanup transition changed concurrently.');
   }

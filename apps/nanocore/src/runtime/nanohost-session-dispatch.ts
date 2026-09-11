@@ -23,7 +23,11 @@ import {
   type NanoHostHarnessResult,
   settleNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
-import { upsertNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
+import {
+  getNanoHostRuntimeTarget,
+  requireNanoHostPhysicalEpoch,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target.js';
 import {
   readWorkerImageSettlement,
   type WorkerImageSettlement,
@@ -173,6 +177,14 @@ export interface CreateNanoHostSessionDispatchInput {
   readonly sessionAuthority: NanoHostTransportSessionAuthority;
 }
 
+/** Stable configured target binding used to recheck durable readiness at effect carriage. */
+interface NanoHostReadinessRuntimeTarget {
+  readonly coreDb: CoreDb;
+  readonly deploymentId: string;
+  readonly identityId: string;
+  readonly targetId: string;
+}
+
 /** Authoritative NanoHost route and effect dispatcher. */
 export interface NanoHostSessionDispatch {
   /** Queues one fixed NanoHost effect for the authoritative client to poll. */
@@ -218,12 +230,7 @@ export interface NanoHostSessionDispatch {
   readiness?(
     physicalConnection: object,
     body: Uint8Array,
-    runtimeTarget?: {
-      readonly coreDb: CoreDb;
-      readonly deploymentId: string;
-      readonly identityId: string;
-      readonly targetId: string;
-    }
+    runtimeTarget?: NanoHostReadinessRuntimeTarget
   ): Promise<void>;
   /** Dispatches one existing semantic route on the current generation. */
   route(physicalConnection: object, request: NanoHostSessionRouteRequest): Promise<unknown>;
@@ -241,6 +248,8 @@ interface PendingNanoHostEffect {
   readonly resolve: (result: unknown) => void;
   accepted: boolean;
   imageBuildInputServed?: boolean;
+  /** Physical Epoch current when this command entered the dispatch queue. */
+  originPhysicalEpoch?: string;
   resultOnlyGroup?: NanoHostResultOnlyGroup;
 }
 
@@ -301,7 +310,40 @@ export function createNanoHostSessionDispatch(
 ): NanoHostSessionDispatch {
   const pendingEffects = new Map<NanoHostEffectOperation, PendingNanoHostEffect>();
   const completedEffects = new Map<NanoHostEffectOperation, CompletedNanoHostEffect>();
-  const readyPhysicalConnections = new WeakSet<object>();
+  const readyPhysicalConnections = new WeakMap<
+    object,
+    {
+      readonly connectionGeneration: number;
+      readonly physicalEpoch: string;
+      readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
+    }
+  >();
+  let currentReadiness: {
+    readonly connectionGeneration: number;
+    readonly physicalEpoch: string;
+    readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
+  } | null = null;
+
+  /** Rechecks one process-local readiness observation against its durable current owner. */
+  const requireCurrentReadiness = (readiness: NonNullable<typeof currentReadiness>): string => {
+    const target = getNanoHostRuntimeTarget(
+      readiness.runtimeTarget.coreDb,
+      readiness.runtimeTarget.targetId
+    );
+    if (
+      !target ||
+      target.identityId !== readiness.runtimeTarget.identityId ||
+      target.deploymentId !== readiness.runtimeTarget.deploymentId ||
+      target.connectionGeneration !== readiness.connectionGeneration ||
+      !target.predecessorFenced ||
+      !target.ready ||
+      !target.freshEmpty ||
+      target.physicalEpoch !== readiness.physicalEpoch
+    ) {
+      throw new Error('NanoHost effect dispatch has no current physical Epoch authority.');
+    }
+    return readiness.physicalEpoch;
+  };
 
   return {
     effect(
@@ -348,12 +390,18 @@ export function createNanoHostSessionDispatch(
         if (pendingEffects.has(operation)) {
           throw new Error(`NanoHost effect ${operation} already has a pending command.`);
         }
+        const readiness = currentReadiness;
+        if (!readiness) {
+          throw new Error('NanoHost effect dispatch has no current physical Epoch authority.');
+        }
+        const originPhysicalEpoch = requireCurrentReadiness(readiness);
         completedEffects.delete(operation);
         return new Promise<unknown>((resolve, reject) => {
           pendingEffects.set(operation, {
             accepted: false,
             ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
             command,
+            originPhysicalEpoch,
             reject,
             requestId,
             resolve,
@@ -423,9 +471,11 @@ export function createNanoHostSessionDispatch(
 
     async poll(physicalConnection, operation) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (!readyPhysicalConnections.has(physicalConnection)) {
+      const pollingReadiness = readyPhysicalConnections.get(physicalConnection);
+      if (!pollingReadiness) {
         throw new Error('NanoHost physical connection has not completed durable readiness.');
       }
+      const pollingPhysicalEpoch = requireCurrentReadiness(pollingReadiness);
       const priorConnectionEffects = [...pendingEffects.entries()].filter(
         ([, candidate]) =>
           candidate.resultOnlyGroup ||
@@ -463,6 +513,17 @@ export function createNanoHostSessionDispatch(
       }
       const pending = pendingEffects.get(operation);
       if (!pending) {
+        return null;
+      }
+      if (
+        pending.command &&
+        pending.originPhysicalEpoch !== undefined &&
+        pending.originPhysicalEpoch !== pollingPhysicalEpoch
+      ) {
+        pendingEffects.delete(operation);
+        pending.reject(
+          new Error('NanoHost queued effect origin physical Epoch is no longer current.')
+        );
         return null;
       }
       if (pending.accepted) {
@@ -521,9 +582,11 @@ export function createNanoHostSessionDispatch(
         throw new Error('NanoHost readiness requires a native physical connection.');
       }
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (Buffer.compare(Buffer.from(body), Buffer.from('{}')) !== 0) {
-        throw new Error('NanoHost readiness body must be the exact empty object.');
+      const readiness = parseJsonObject(body, 'NanoHost readiness body is invalid.');
+      if (Object.keys(readiness).length !== 1 || typeof readiness.physicalEpoch !== 'string') {
+        throw new Error('NanoHost readiness body must contain only physicalEpoch.');
       }
+      const physicalEpoch = requireNanoHostPhysicalEpoch(readiness.physicalEpoch);
       if (!runtimeTarget) {
         throw new Error('NanoHost RuntimeTarget readiness composition is unavailable.');
       }
@@ -537,11 +600,18 @@ export function createNanoHostSessionDispatch(
         freshEmpty: true,
         identityId: runtimeTarget.identityId,
         observedAt: new Date().toISOString(),
+        physicalEpoch,
         predecessorFenced: true,
         ready: true,
         targetId: runtimeTarget.targetId,
       });
-      readyPhysicalConnections.add(physicalConnection);
+      const acceptedReadiness = {
+        connectionGeneration,
+        physicalEpoch,
+        runtimeTarget,
+      };
+      readyPhysicalConnections.set(physicalConnection, acceptedReadiness);
+      currentReadiness = acceptedReadiness;
     },
 
     async result(physicalConnection, operation, result) {

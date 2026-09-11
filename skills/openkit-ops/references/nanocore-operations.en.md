@@ -47,6 +47,28 @@ Worker execution volumes live on NanoHost separately from NanoCore's Data Root. 
 
 Record source version, image identity and backup scope. An old image does not reverse a database migration. If compatibility of the old executable with current data is not established, stop to an explicit recovery procedure rather than automatically starting it or restoring old data over newer writes. Restore into a stopped, correctly identified target and prove lock exclusivity, readable durable records and credential usability before resuming work.
 
+## Convert A Pre-Witness Deployment
+
+This one-time internal protocol conversion is a separately authorized NanoCore and NanoHost maintenance operation. It is not a routine App update and cannot use the migration-free App-update helper. Acquire the exact reviewed source, matching App and NanoHost builds, and the source toolchain described in [getting started](getting-started.en.md). Fresh installations already use the new schema and must not run this conversion.
+
+1. Inspect current Tasks, leases, service identities, storage associations and deployment mounts. Preserve pending or unknown work for ordinary recovery; do not replay it. Stop NanoCore and prove its Data Root has no writer and its lock is released.
+2. Stop the selected NanoHost through its existing complete effect-domain fence. Verify actual predecessor processes, cgroup members and private backend namespaces are absent; a stop request or supplied report alone is insufficient. Preserve its credentials, Image Store and complete retained Worker volumes. Never reset a rebuild marker to force startup.
+3. Keep both services stopped. Run the selected source's cold converter with the exact Data Root and a new external backup destination. The converter verifies the complete backup before changing the three existing runtime record schemas in one transaction; retain the backup and its evidence report.
+4. Install the matched NanoCore and NanoHost versions, preserving configuration, credentials, mounts and retained data. Start NanoCore, then the fresh NanoHost coordinator through its normal startup fence. Old and new readiness protocols cannot be mixed.
+5. Verify the matched installed versions and authenticated readiness from the newly started coordinator. Inspect pending Task recovery and storage disposition through their existing owners; conversion itself neither settles work nor grants a new attachment. Use a new authorized Task to check the original volume bytes and requested work after recovery.
+
+Run step 3 from the verified source checkout using its pinned Node and pnpm:
+
+```bash
+pnpm --filter @openkit/nanocore run physical-epoch:migrate -- \
+  --data-root /absolute/path/to/openkit-data \
+  --backup-root /absolute/path/to/openkit-pre-witness-backup
+```
+
+The evidence report is `server/migrations/physical-epoch-cutover.json` inside Data Root. Its backup identity refers to the complete external predecessor copy; it does not cover separately retained NanoHost volumes or external secrets.
+
+A failed transaction preserves the predecessor records; a failed backup or unproved physical fence stops the dependent operation. Converted old physical handles carry `pre-witness` provenance and cannot be reused as live handles. A repeated conversion is refused. The migration report is evidence, not retry, resume or replay authority. Do not start the predecessor App against the converted database as an automatic rollback; the retained external cold backup is the recovery source, and restoring it is a separate stopped-target operation.
+
 ## Recover Access Or Startup
 
 If access alone is lost, the stopped-server commands in [deployment modes](nanocore-deployment-modes.en.md) use the existing App image's `openkit-operator` executable. They require a functioning container runtime and a compatible local image, but not a running NanoCore. Choose a current active user and a future expiry within the permitted bound. Keep the resulting envelope private and pass it directly to the public Skill credential-store operation when available; never inspect its token in Agent context.

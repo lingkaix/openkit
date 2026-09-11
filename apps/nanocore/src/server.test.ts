@@ -134,7 +134,11 @@ import {
 } from './runtime/goal-verification-records.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
-import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
@@ -6388,6 +6392,20 @@ describe('nanocore server', () => {
 
   it('closes one deterministic Chat-subordinate non-secret Gate under the sole outer Chat receipt', async () => {
     const coreDb = createCoreDb();
+    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+      identityId: 'identity_local',
+      observedAt: '2026-06-16T00:00:00.000Z',
+      targetId: 'target_local',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...runtimeTarget,
+      freshEmpty: true,
+      observedAt: '2026-06-16T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
@@ -13690,11 +13708,16 @@ describe('nanocore server', () => {
       );
       expect(Math.floor(nonemptyReadiness.status / 100)).not.toBe(2);
       await expect(
-        postEffect(firstClient, '/api/nanohost/transport/session/readiness')
+        postEffect(
+          firstClient,
+          '/api/nanohost/transport/session/readiness',
+          JSON.stringify({ physicalEpoch: 'a'.repeat(64) })
+        )
       ).resolves.toMatchObject({ body: '', status: 204 });
       expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
         connectionGeneration: 1,
         freshEmpty: true,
+        physicalEpoch: 'a'.repeat(64),
         predecessorFenced: true,
         ready: true,
       });
@@ -13931,7 +13954,8 @@ describe('nanocore server', () => {
       expect(Math.floor(candidatePoll.status / 100)).not.toBe(2);
       const candidateReadiness = await postEffect(
         secondClient,
-        '/api/nanohost/transport/session/readiness'
+        '/api/nanohost/transport/session/readiness',
+        JSON.stringify({ physicalEpoch: 'b'.repeat(64) })
       );
       expect(Math.floor(candidateReadiness.status / 100)).not.toBe(2);
       await expect(
@@ -14021,11 +14045,16 @@ describe('nanocore server', () => {
         ready: false,
       });
       await expect(
-        postEffect(thirdClient, '/api/nanohost/transport/session/readiness')
+        postEffect(
+          thirdClient,
+          '/api/nanohost/transport/session/readiness',
+          JSON.stringify({ physicalEpoch: 'b'.repeat(64) })
+        )
       ).resolves.toMatchObject({ body: '', status: 204 });
       expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
         connectionGeneration: 3,
         freshEmpty: true,
+        physicalEpoch: 'b'.repeat(64),
         predecessorFenced: true,
         ready: true,
       });
@@ -14146,7 +14175,11 @@ describe('nanocore server', () => {
       expect(authority.mayCarryWork(thirdServerSession)).toBe(false);
       expect(authority.mayCarryWork(fourthServerSession)).toBe(true);
       await expect(
-        postEffect(fourthClient, '/api/nanohost/transport/session/readiness')
+        postEffect(
+          fourthClient,
+          '/api/nanohost/transport/session/readiness',
+          JSON.stringify({ physicalEpoch: 'c'.repeat(64) })
+        )
       ).resolves.toMatchObject({ body: '', status: 204 });
       await expect(
         postEffect(fourthClient, '/api/nanohost/transport/effects/file.export/result', absenceBody)
@@ -14159,8 +14192,9 @@ describe('nanocore server', () => {
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(4);
       expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
         connectionGeneration: 4,
+        physicalEpoch: 'c'.repeat(64),
         predecessorFenced: true,
-        ready: false,
+        ready: true,
       });
 
       const observedSoleClose = once(fourthServerSession, 'close');

@@ -4,6 +4,7 @@ import type {
   WorkerBackendSessionState,
   WorkerBackendWorkspaceHandoffState,
 } from '../storage/schema/index.js';
+import { requireStoredNanoHostPhysicalEpoch } from './nanohost-runtime-target.js';
 
 export type { WorkerBackendSessionState } from '../storage/schema/index.js';
 
@@ -94,6 +95,8 @@ export interface WorkerBackendSessionRecord {
   readonly backendVersion: string | null;
   /** Configured RuntimeTarget that owns execution. */
   readonly runtimeTargetId: string;
+  /** Immutable physical Epoch captured before the first backend effect. */
+  readonly originPhysicalEpoch: string;
   /** Exact reference or NanoHost build-result lineage. */
   readonly backendLineage: WorkerBackendLineage;
   /** Scheduler-owned sandbox binding. */
@@ -187,6 +190,7 @@ interface WorkerBackendSessionRow {
   readonly deployment_id: string;
   readonly backend_version: string | null;
   readonly runtime_target_id: string;
+  readonly origin_physical_epoch: string;
   readonly backend_lineage_json: string;
   readonly sandbox_binding_ref: string;
   readonly backend_session_id: string;
@@ -244,6 +248,33 @@ export function recordWorkerBackendSessionMaterializing(
 
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
+    const runtimeTarget = coreDb.sqlite
+      .prepare(
+        `SELECT deployment_id AS deploymentId, predecessor_fenced AS predecessorFenced,
+                ready, fresh_empty AS freshEmpty, physical_epoch AS physicalEpoch
+         FROM nanohost_runtime_targets WHERE target_id = ?`
+      )
+      .get(input.identity.runtimeTargetId) as
+      | {
+          readonly deploymentId: string;
+          readonly freshEmpty: 0 | 1;
+          readonly physicalEpoch: string | null;
+          readonly predecessorFenced: 0 | 1;
+          readonly ready: 0 | 1;
+        }
+      | undefined;
+    if (
+      !runtimeTarget ||
+      runtimeTarget.deploymentId !== input.identity.deploymentId ||
+      runtimeTarget.predecessorFenced !== 1 ||
+      runtimeTarget.ready !== 1 ||
+      runtimeTarget.freshEmpty !== 1 ||
+      !runtimeTarget.physicalEpoch ||
+      !/^[0-9a-f]{64}$/.test(runtimeTarget.physicalEpoch)
+    ) {
+      throw new Error('Worker backend materialization requires current physical Epoch authority.');
+    }
+    const originPhysicalEpoch = runtimeTarget.physicalEpoch;
     const lease = coreDb.sqlite
       .prepare(
         `SELECT lease_id, workspace_id, thread_id, turn_id, agent_session_id,
@@ -275,7 +306,7 @@ export function recordWorkerBackendSessionMaterializing(
     const existing = selectWorkerBackendSession(coreDb, leaseId);
     if (existing) {
       const record = mapWorkerBackendSessionRow(existing);
-      if (!workerBackendSessionMatchesInput(record, input)) {
+      if (!workerBackendSessionMatchesInput(record, input, originPhysicalEpoch)) {
         throw new Error('Worker backend session identity conflicts with its durable lease.');
       }
       if (record.state !== 'materializing') {
@@ -293,10 +324,10 @@ export function recordWorkerBackendSessionMaterializing(
         `INSERT INTO worker_backend_sessions (
            lease_id, workspace_id, thread_id, turn_id, agent_session_id,
            package_snapshot_id, backend_kind, deployment_id, backend_version,
-           backend_session_id, runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+           backend_session_id, runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
            staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
            state, physical_cleaned_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'materializing', NULL, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'materializing', NULL, ?, ?)`
       )
       .run(
         leaseId,
@@ -310,6 +341,7 @@ export function recordWorkerBackendSessionMaterializing(
         input.backendVersion,
         input.identity.backendSessionId,
         input.identity.runtimeTargetId,
+        originPhysicalEpoch,
         JSON.stringify(normalizeBackendLineage(input.backendLineage)),
         input.sandboxBindingRef,
         input.identity.stagingDirectoryRef,
@@ -521,7 +553,7 @@ function selectWorkerBackendSession(
 function workerBackendSessionSelectSql(): string {
   return `SELECT lease_id, workspace_id, thread_id, turn_id, agent_session_id,
                  package_snapshot_id, backend_kind, deployment_id, backend_version,
-                 backend_session_id, runtime_target_id, backend_lineage_json, sandbox_binding_ref,
+                 backend_session_id, runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
                  staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
                  state, physical_cleaned_at, created_at, updated_at
           FROM worker_backend_sessions`;
@@ -544,7 +576,8 @@ function leaseMatchesInput(
 /** Checks whether an existing anchor is an exact retry of the insertion input. */
 function workerBackendSessionMatchesInput(
   record: WorkerBackendSessionRecord,
-  input: RecordWorkerBackendSessionMaterializingInput
+  input: RecordWorkerBackendSessionMaterializingInput,
+  originPhysicalEpoch: string
 ): boolean {
   return (
     record.workspaceId === input.lineage.workspaceId &&
@@ -558,6 +591,7 @@ function workerBackendSessionMatchesInput(
     JSON.stringify(record.backendLineage) ===
       JSON.stringify(normalizeBackendLineage(input.backendLineage)) &&
     record.runtimeTargetId === input.identity.runtimeTargetId &&
+    record.originPhysicalEpoch === originPhysicalEpoch &&
     record.sandboxBindingRef === input.sandboxBindingRef &&
     record.backendSessionId === input.identity.backendSessionId &&
     record.stagingDirectoryRef === input.identity.stagingDirectoryRef &&
@@ -578,6 +612,7 @@ function mapWorkerBackendSessionRow(row: WorkerBackendSessionRow): WorkerBackend
     deploymentId: row.deployment_id,
     backendVersion: row.backend_version,
     runtimeTargetId: row.runtime_target_id,
+    originPhysicalEpoch: requireStoredNanoHostPhysicalEpoch(row.origin_physical_epoch),
     backendLineage: parseBackendLineage(row.backend_lineage_json),
     sandboxBindingRef: row.sandbox_binding_ref,
     backendSessionId: row.backend_session_id,

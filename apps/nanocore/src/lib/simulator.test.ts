@@ -21,6 +21,11 @@ import {
 } from '../config/runtime-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from '../runtime/nanohost-runtime-target.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import {
   ensureConfiguredSchedulerBaseline,
@@ -28,6 +33,7 @@ import {
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
@@ -64,6 +70,22 @@ function createCoreDb(): CoreDb {
  * @param capacity Concurrent local lease capacity.
  */
 function configureLocalSchedulerCapacity(coreDb: CoreDb, capacity: number): void {
+  if (!getNanoHostRuntimeTarget(coreDb, 'target_local')) {
+    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+      identityId: 'identity_local',
+      observedAt: '2026-07-05T00:00:00.000Z',
+      targetId: 'target_local',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...runtimeTarget,
+      freshEmpty: true,
+      observedAt: '2026-07-05T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
+  }
   ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
   upsertSchedulerWorkerPool(coreDb, {
     allowedBackendKinds: ['openshell'],

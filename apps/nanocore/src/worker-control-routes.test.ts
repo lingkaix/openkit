@@ -13,6 +13,11 @@ import { createDefaultWorkerControlGateway } from './app.js';
 import type { FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
+  upsertNanoHostRuntimeTarget,
+} from './runtime/nanohost-runtime-target.js';
 import { runSchedulerLeaseMaintenanceOnce } from './runtime/scheduler-lease-maintenance-service.js';
 import {
   markWorkerBackendWorkspaceHandoffComplete,
@@ -254,6 +259,22 @@ function recordWorkerControlBackendSession(
   sandboxBindingRef: string,
   backendSessionId: string
 ): string {
+  if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
+    const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: 'deployment-worker-control-test',
+      identityId: 'identity-worker-control-test',
+      observedAt: '2026-06-16T00:00:00.000Z',
+      targetId: 'runtime-target-test',
+    });
+    upsertNanoHostRuntimeTarget(coreDb, {
+      ...allocated,
+      freshEmpty: true,
+      observedAt: '2026-06-16T00:00:01.000Z',
+      physicalEpoch: 'a'.repeat(64),
+      predecessorFenced: true,
+      ready: true,
+    });
+  }
   return recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
     backendVersion: '0.0.99',

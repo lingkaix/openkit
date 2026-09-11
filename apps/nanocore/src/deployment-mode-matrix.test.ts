@@ -250,6 +250,7 @@ function seedReadyNanoHostRuntimeTarget(coreDb: CoreDb): void {
     ...allocated,
     freshEmpty: true,
     observedAt: '2026-06-28T00:00:02.000Z',
+    physicalEpoch: 'a'.repeat(64),
     predecessorFenced: true,
     ready: true,
   });

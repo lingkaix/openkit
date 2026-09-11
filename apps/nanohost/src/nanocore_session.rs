@@ -1166,6 +1166,14 @@ impl std::fmt::Display for OuterSessionFailure {
     }
 }
 
+/// Returns whether one physical Epoch witness has the exact closed wire grammar.
+fn is_physical_epoch(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// Runs one authenticated outbound HTTP/2 connection to NanoCore.
 ///
 /// # Errors
@@ -1179,7 +1187,7 @@ pub async fn run_outer_session<IO, R, D, F>(
     context: &CredentialSelectionContext,
     presentation: &CredentialPresentationOutcome,
     reconnect_after: Option<u64>,
-    readiness_gate: R,
+    readiness: (&str, R),
     dispatch: D,
 ) -> Result<u64, OuterSessionFailure>
 where
@@ -1188,6 +1196,17 @@ where
     D: FnOnce(u64, h2::client::SendRequest<Bytes>) -> F,
     F: Future<Output = Result<(), OuterSessionFailure>>,
 {
+    let (physical_epoch, readiness_gate) = readiness;
+    if !is_physical_epoch(physical_epoch) {
+        return Err(OuterSessionFailure::terminal(
+            OuterSessionStage::Readiness,
+            OuterSessionOperation::None,
+            None,
+            "physical epoch witness invalid",
+        )
+        .with_reconnect_after(reconnect_after));
+    }
+    let readiness_body = Bytes::from(format!(r#"{{"physicalEpoch":"{physical_epoch}"}}"#));
     let authorization_secret = match presentation {
         CredentialPresentationOutcome::Presented { secret, .. } if secret.starts_with("okt_") => {
             secret
@@ -1430,17 +1449,15 @@ where
                         Some(connection_generation),
                     )
                 })?;
-            request_body
-                .send_data(Bytes::from_static(b"{}"), true)
-                .map_err(|_| {
-                    OuterSessionFailure::reconnect(
-                        OuterSessionStage::Readiness,
-                        OuterSessionOperation::None,
-                        None,
-                        "outer-session physical connection closed",
-                        Some(connection_generation),
-                    )
-                })?;
+            request_body.send_data(readiness_body, true).map_err(|_| {
+                OuterSessionFailure::reconnect(
+                    OuterSessionStage::Readiness,
+                    OuterSessionOperation::None,
+                    None,
+                    "outer-session physical connection closed",
+                    Some(connection_generation),
+                )
+            })?;
             let response = response.await.map_err(|_| {
                 OuterSessionFailure::reconnect(
                     OuterSessionStage::Readiness,
@@ -2453,6 +2470,8 @@ impl OuterSessionState {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+
     use super::*;
     use crate::credential_slots::{CredentialSlot, SelectedCredential};
     use crate::sandbox_bridge::{
@@ -2675,7 +2694,7 @@ mod tests {
             .expect("first effect dispatcher boundary");
         assert!(admission < readiness_gate && readiness_gate < readiness && readiness < dispatch);
         let readiness_exchange = &source[readiness..dispatch];
-        assert!(readiness_exchange.contains("send_data(Bytes::from_static(b\"{}\"), true)"));
+        assert!(readiness_exchange.contains("send_data(readiness_body, true)"));
         assert!(readiness_exchange.contains("StatusCode::NO_CONTENT"));
         assert!(readiness_exchange.contains("return Err"));
         assert!(readiness_exchange.contains("response.into_body()"));
@@ -2688,7 +2707,7 @@ mod tests {
             .0;
         assert!(timed_exchange.contains("is_some_and"));
         assert!(timed_exchange.contains("sender.send_request(readiness, false)"));
-        assert!(timed_exchange.contains("send_data(Bytes::from_static(b\"{}\"), true)"));
+        assert!(timed_exchange.contains("send_data(readiness_body, true)"));
         assert!(timed_exchange.contains("response.into_body()"));
         assert!(readiness_exchange.contains("tokio::time::timeout_at"));
 
@@ -3261,9 +3280,18 @@ mod tests {
         PhysicalClose,
     }
 
+    #[derive(Clone, Copy)]
+    enum TestReadinessResponse {
+        Status(StatusCode),
+        PhysicalClose,
+    }
+
+    const TEST_PHYSICAL_EPOCH: &str =
+        "1111111111111111111111111111111111111111111111111111111111111111";
+
     fn scripted_outer_server(
         generation: u64,
-        readiness_status: StatusCode,
+        readiness_response: TestReadinessResponse,
         readiness_delay: Option<std::time::Duration>,
         effects: Vec<(&'static str, TestEffectResponse)>,
     ) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<()>) {
@@ -3291,7 +3319,14 @@ mod tests {
                         .expect("request flow control");
                     request_bytes.extend_from_slice(&chunk);
                 }
-                assert_eq!(request_bytes.as_ref(), b"{}");
+                if expected_path == "/api/nanohost/transport/session/admit" {
+                    assert_eq!(request_bytes.as_ref(), b"{}");
+                } else {
+                    assert_eq!(
+                        request_bytes.as_ref(),
+                        format!(r#"{{"physicalEpoch":"{TEST_PHYSICAL_EPOCH}"}}"#).as_bytes()
+                    );
+                }
 
                 match expected_path {
                     "/api/nanohost/transport/session/admit" => {
@@ -3319,6 +3354,10 @@ mod tests {
                             .expect("admission response body");
                     }
                     "/api/nanohost/transport/session/readiness" => {
+                        let TestReadinessResponse::Status(readiness_status) = readiness_response
+                        else {
+                            return;
+                        };
                         if let Some(delay) = readiness_delay {
                             tokio::time::sleep(delay).await;
                         }
@@ -3393,6 +3432,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_physical_epoch_is_refused_before_admission_or_effects() {
+        for physical_epoch in [
+            "",
+            "1",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
+            let (client_io, _server_io) = tokio::io::duplex(4096);
+            let (context, presentation) = test_outer_credentials();
+            let readiness_gate_called = Arc::new(AtomicBool::new(false));
+            let readiness_gate_observation = Arc::clone(&readiness_gate_called);
+            let dispatch_called = Arc::new(AtomicBool::new(false));
+            let dispatch_observation = Arc::clone(&dispatch_called);
+
+            let failure = run_outer_session(
+                client_io,
+                "http://nanocore.test",
+                &context,
+                &presentation,
+                None,
+                (physical_epoch, move || {
+                    readiness_gate_observation.store(true, Ordering::Relaxed);
+                    Ok(None)
+                }),
+                move |_, _| async move {
+                    dispatch_observation.store(true, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+            .await
+            .expect_err("malformed physical Epoch witness must fail closed");
+
+            assert_eq!(failure.stage, OuterSessionStage::Readiness);
+            assert_eq!(failure.reason(), "physical epoch witness invalid");
+            assert!(!readiness_gate_called.load(Ordering::Relaxed));
+            assert!(!dispatch_called.load(Ordering::Relaxed));
+        }
+    }
+
+    #[tokio::test]
+    async fn lost_readiness_ack_reasserts_the_same_physical_epoch_before_dispatch() {
+        let (context, presentation) = test_outer_credentials();
+        let dispatch_called = Arc::new(AtomicBool::new(false));
+        let first_dispatch = Arc::clone(&dispatch_called);
+        let (client_io, server) =
+            scripted_outer_server(1, TestReadinessResponse::PhysicalClose, None, vec![]);
+        let failure = run_outer_session(
+            client_io,
+            "http://nanocore.test",
+            &context,
+            &presentation,
+            None,
+            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            move |_, _| async move {
+                first_dispatch.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("lost readiness acknowledgement must reconnect");
+        server.await.expect("first readiness server");
+        assert_eq!(failure.disposition(), OuterSessionDisposition::Reconnect);
+        assert_eq!(failure.stage, OuterSessionStage::Readiness);
+        assert!(!dispatch_called.load(Ordering::Relaxed));
+
+        let successor_dispatch = Arc::clone(&dispatch_called);
+        let (client_io, server) = scripted_outer_server(
+            2,
+            TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+            None,
+            vec![],
+        );
+        let failure = run_outer_session(
+            client_io,
+            "http://nanocore.test",
+            &context,
+            &presentation,
+            Some(1),
+            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            move |_, _| async move {
+                successor_dispatch.store(true, Ordering::Relaxed);
+                Err(OuterSessionFailure::terminal(
+                    OuterSessionStage::Poll,
+                    OuterSessionOperation::None,
+                    None,
+                    "test session complete",
+                ))
+            },
+        )
+        .await
+        .expect_err("test dispatch ends the successor session");
+        server.await.expect("successor readiness server");
+        assert_eq!(failure.reason(), "test session complete");
+        assert!(dispatch_called.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
     async fn consumes_rebuild_marker_only_after_exact_readiness_acknowledgement() {
         static NEXT_MARKER: AtomicU64 = AtomicU64::new(0);
 
@@ -3427,8 +3564,12 @@ mod tests {
             let dispatch_marker = marker.clone();
             let gate_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let gate_observation = Arc::clone(&gate_called);
-            let (client_io, server) =
-                scripted_outer_server(1, readiness_status, readiness_delay, vec![]);
+            let (client_io, server) = scripted_outer_server(
+                1,
+                TestReadinessResponse::Status(readiness_status),
+                readiness_delay,
+                vec![],
+            );
             let (context, presentation) = test_outer_credentials();
 
             let failure = run_outer_session(
@@ -3437,10 +3578,10 @@ mod tests {
                 &context,
                 &presentation,
                 None,
-                move || {
+                (TEST_PHYSICAL_EPOCH, move || {
                     gate_observation.store(true, Ordering::Relaxed);
                     Ok(Some(tokio::time::Instant::now() + readiness_timeout))
-                },
+                }),
                 move |_, _| async move {
                     std::fs::remove_file(dispatch_marker).expect("consume first-fence marker");
                     Err(OuterSessionFailure::terminal(
@@ -3478,7 +3619,7 @@ mod tests {
         let generation = reconnect_after.map_or(1, |predecessor| predecessor + 1);
         let (client_io, server) = scripted_outer_server(
             generation,
-            StatusCode::NO_CONTENT,
+            TestReadinessResponse::Status(StatusCode::NO_CONTENT),
             None,
             vec![(
                 "/api/nanohost/transport/effects/sandbox.create",
@@ -3492,7 +3633,7 @@ mod tests {
             &context,
             &presentation,
             reconnect_after,
-            || Ok(None),
+            (TEST_PHYSICAL_EPOCH, || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
@@ -3536,7 +3677,7 @@ mod tests {
         };
         let (client_io, server) = scripted_outer_server(
             8,
-            StatusCode::NO_CONTENT,
+            TestReadinessResponse::Status(StatusCode::NO_CONTENT),
             None,
             vec![
                 (
@@ -3555,7 +3696,7 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            || Ok(None),
+            (TEST_PHYSICAL_EPOCH, || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(true);
                 submit_effect_result(
@@ -3581,7 +3722,7 @@ mod tests {
 
         let (client_io, server) = scripted_outer_server(
             8,
-            StatusCode::NO_CONTENT,
+            TestReadinessResponse::Status(StatusCode::NO_CONTENT),
             None,
             vec![
                 (
@@ -3600,7 +3741,7 @@ mod tests {
             &context,
             &presentation,
             Some(7),
-            || Ok(None),
+            (TEST_PHYSICAL_EPOCH, || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = effect_cursor_start(false);
                 assert!(
@@ -3627,7 +3768,7 @@ mod tests {
     async fn nhc_fnd_059_live_bridge_poll_close_remains_reconnectable() {
         let (client_io, server) = scripted_outer_server(
             1,
-            StatusCode::NO_CONTENT,
+            TestReadinessResponse::Status(StatusCode::NO_CONTENT),
             None,
             vec![(
                 "/api/nanohost/transport/effects/bridge.open",
@@ -3641,7 +3782,7 @@ mod tests {
             &context,
             &presentation,
             None,
-            || Ok(None),
+            (TEST_PHYSICAL_EPOCH, || Ok(None)),
             |_, mut sender| async move {
                 let mut cursor = 2;
                 poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, true)
